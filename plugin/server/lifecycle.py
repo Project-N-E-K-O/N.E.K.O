@@ -1007,15 +1007,6 @@ async def _ensure_plugin_router_started() -> None:
     the port split and orphaned runner this PR already fixed twice, reachable
     through a door the delivery-path call opened.
     """
-    try:
-        _ = state.plugin_response_map
-    except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
-        logger.warning(
-            "failed to initialize plugin response map early: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
-
     await plugin_router.start()
     logger.debug("plugin router started")
 

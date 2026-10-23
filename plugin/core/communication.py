@@ -7,30 +7,34 @@ media uplink so large payloads cannot block results, status, or stop commands.
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, ClassVar, Dict, Optional, TypeVar
+from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, TypeVar
 
+from plugin._types.entry_metadata import entry_contract_fields
+from plugin._types.exceptions import PluginExecutionError
+from plugin.core.rpc import RpcPeer, RpcRemoteError
+from plugin.core.zmq_transport import (
+    CH_COMM,
+    CH_MSG,
+    CH_MSG_BATCH,
+    CH_RES,
+    CH_STS,
+    HostTransport,
+)
+from plugin.logging_config import format_log_text as _format_log_text
 from plugin.logging_config import logger
-
-from plugin.utils.time_utils import now_iso
 from plugin.settings import (
-    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
-    PLUGIN_TRIGGER_TIMEOUT,
-    PLUGIN_SHUTDOWN_TIMEOUT,
-    QUEUE_GET_TIMEOUT,
     MESSAGE_CONSUMER_SLEEP_INTERVAL,
     PLUGIN_LOG_MESSAGE_FORWARD,
     PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
+    PLUGIN_SHUTDOWN_TIMEOUT,
+    PLUGIN_TRIGGER_TIMEOUT,
+    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
+    QUEUE_GET_TIMEOUT,
 )
-from plugin._types.exceptions import PluginExecutionError
-from plugin._types.entry_metadata import entry_contract_fields
-from plugin.logging_config import format_log_text as _format_log_text
-from plugin.core.zmq_transport import (
-    HostTransport, CH_RES, CH_STS, CH_MSG, CH_MSG_BATCH, CH_COMM,
-)
+from plugin.utils.time_utils import now_iso
 
 _T = TypeVar("_T")
 STARTUP_RESULT_REQ_ID = "__plugin_startup__"
@@ -73,15 +77,19 @@ class PluginCommunicationResourceManager:
     plugin_id: str
     transport: HostTransport
     logger: Any = field(default_factory=lambda: logger.bind(component="communication"))
+    process_status: Optional[Callable[[], bool | None]] = None
 
     # async internals
-    _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)
+    _rpc_peer: Optional[RpcPeer] = field(default=None, init=False, repr=False)
+    _startup_ready: Optional[asyncio.Event] = field(default=None, init=False, repr=False)
+    _process_watch_task: Optional[asyncio.Task] = field(default=None, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+    _connection_id: str = field(default_factory=lambda: str(uuid.uuid4()), init=False, repr=False)
     _uplink_consumer_task: Optional[asyncio.Task] = None
     _message_consumer_task: Optional[asyncio.Task] = None
     _image_consumer_task: Optional[asyncio.Task] = None
     _shutdown_event: Optional[asyncio.Event] = None
     _message_target_queue: Optional[asyncio.Queue] = None
-    _background_tasks: set[asyncio.Task] = field(default_factory=set)
     _owner_loop: Optional[asyncio.AbstractEventLoop] = None
     _startup_result: Optional[dict] = field(default=None, init=False, repr=False)
     _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
@@ -127,6 +135,7 @@ class PluginCommunicationResourceManager:
         return await asyncio.wrap_future(future)
 
     async def _start_local(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
+        self._closed = False
         self._message_target_queue = message_target_queue
         if self._uplink_consumer_task is None or self._uplink_consumer_task.done():
             self._uplink_consumer_task = asyncio.create_task(self._consume_uplink())
@@ -152,49 +161,48 @@ class PluginCommunicationResourceManager:
         ):
             self._image_consumer_task = asyncio.create_task(self._consume_images())
             self.logger.debug("Started image consumer for plugin {}", self.plugin_id)
+        if self.process_status is not None and (self._process_watch_task is None or self._process_watch_task.done()):
+            self._process_watch_task = asyncio.create_task(self._watch_process())
+
+    async def _watch_process(self) -> None:
+        self._ensure_shutdown_event()
+        while self._shutdown_event is not None and not self._shutdown_event.is_set():
+            if self.process_status is not None and self.process_status() is False:
+                # A final result may already be in the control socket. Let its
+                # independent consumer drain before failing the remaining calls.
+                await asyncio.sleep(0.02)
+                self._close_rpc_requests()
+                self.logger.warning("Plugin process exited: plugin_id={}", self.plugin_id)
+                return
+            await asyncio.sleep(0.05)
 
     async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
         await self._run_on_owner_loop(self._start_local(message_target_queue=message_target_queue))
 
     async def _prepare_startup_wait_local(self) -> None:
-        existing = self._pending_futures.pop(STARTUP_RESULT_REQ_ID, None)
-        if existing is not None and not existing.done():
-            existing.cancel()
         self._startup_result = None
-        self._pending_futures[STARTUP_RESULT_REQ_ID] = asyncio.get_running_loop().create_future()
+        self._startup_ready = asyncio.Event()
 
     async def prepare_startup_wait(self) -> None:
         await self._run_on_owner_loop(self._prepare_startup_wait_local())
 
     async def _wait_for_startup_local(self, timeout: float, allow_startup_error: bool = False) -> Any:
-        result = self._startup_result
-        if result is None:
-            future = self._pending_futures.get(STARTUP_RESULT_REQ_ID)
-            if future is None:
-                future = asyncio.get_running_loop().create_future()
-                self._pending_futures[STARTUP_RESULT_REQ_ID] = future
-            try:
-                result = await asyncio.wait_for(future, timeout=timeout)
-            except asyncio.TimeoutError:
-                self._pending_futures.pop(STARTUP_RESULT_REQ_ID, None)
-                raise TimeoutError(
-                    f"Plugin {self.plugin_id} startup timed out after {timeout}s"
-                ) from None
-
-        self._pending_futures.pop(STARTUP_RESULT_REQ_ID, None)
-        self._startup_result = None
-        if isinstance(result, dict):
-            data = result.get("data")
-            if isinstance(data, dict) and data.get("startup_error"):
-                if allow_startup_error:
-                    return data
-                raise RuntimeError(str(data["startup_error"]))
-            if result.get("success"):
+        if self._startup_result is None:
+            if self._startup_ready is None:
+                self._startup_ready = asyncio.Event()
+            await asyncio.wait_for(self._startup_ready.wait(), timeout=timeout)
+        result, self._startup_result = self._startup_result, None
+        self._startup_ready = None
+        if not isinstance(result, dict):
+            raise RuntimeError("Plugin connection closed during startup")
+        data = result.get("data")
+        if isinstance(data, dict) and data.get("startup_error"):
+            if allow_startup_error:
                 return data
-            error = result.get("error")
-        else:
-            error = result
-        raise RuntimeError(str(error or "plugin startup failed"))
+            raise RuntimeError(str(data["startup_error"]))
+        if result.get("success"):
+            return data
+        raise RuntimeError(str(result.get("error") or "plugin startup failed"))
 
     async def wait_for_startup(self, timeout: float, allow_startup_error: bool = False) -> Any:
         return await self._run_on_owner_loop(
@@ -221,6 +229,7 @@ class PluginCommunicationResourceManager:
             self._uplink_consumer_task,
             self._message_consumer_task,
             self._image_consumer_task,
+            self._process_watch_task,
         ]
         for consumer_task in consumer_tasks:
             if consumer_task is None or consumer_task.done():
@@ -266,21 +275,7 @@ class PluginCommunicationResourceManager:
                 else:
                     task.cancel()
 
-        self._cleanup_pending_futures()
-
-        if self._background_tasks:
-            for t in list(self._background_tasks):
-                try:
-                    if t.get_loop() is asyncio.get_running_loop():
-                        t.cancel()
-                    else:
-                        t.get_loop().call_soon_threadsafe(t.cancel)
-                except Exception:
-                    pass
-            same_loop_tasks = [t for t in self._background_tasks if not t.done() and t.get_loop() is asyncio.get_running_loop()]
-            if same_loop_tasks:
-                await asyncio.gather(*same_loop_tasks, return_exceptions=True)
-            self._background_tasks.clear()
+        self._close_rpc_requests()
 
         self._uplink_consumer_task = None
         self._message_consumer_task = None
@@ -291,59 +286,60 @@ class PluginCommunicationResourceManager:
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         await self._run_on_owner_loop(self._shutdown_local(timeout=timeout))
         self._owner_loop = None
+        if self._rpc_peer is not None:
+            await self._rpc_peer.aclose()
+        self._rpc_peer = None
 
     # ── pending futures ──────────────────────────────────────────
 
     def get_pending_requests_count(self) -> int:
-        return len(self._pending_futures)
+        return self._rpc_peer.pending_count if self._rpc_peer else 0
 
-    def _cleanup_pending_futures(self) -> None:
-        count = len(self._pending_futures)
-        for _rid, fut in self._pending_futures.items():
-            if not fut.done():
-                fut.cancel()
-        self._pending_futures.clear()
-        if count > 0:
-            self.logger.debug("Cleaned up {} pending futures for plugin {}", count, self.plugin_id)
+    def _close_rpc_requests(self) -> None:
+        was_closed = self._closed
+        self._closed = True
+        if self._rpc_peer is not None:
+            self._rpc_peer.close()
+        if self._startup_ready is not None:
+            self._startup_ready.set()
+        if not was_closed and self.process_status is not None:
+            from plugin.core.state import state
+            try:
+                state.plugin_comm_queue.put_nowait({"type": "RPC_DISCONNECT", "from_plugin": self.plugin_id,
+                    "_rpc_connection_id": self._connection_id})
+            except asyncio.QueueFull:
+                self.logger.warning("RPC disconnect notification queue is full: plugin_id={}", self.plugin_id)
 
     # ── send commands (downlink) ─────────────────────────────────
 
-    async def _send_command_and_wait_local(
-        self,
-        req_id: str,
-        msg: dict,
-        timeout: float | None,
-        error_context: str,
-    ) -> Any:
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending_futures[req_id] = future
-        try:
-            await self.transport.send_command(msg)
-        except Exception as e:
-            self._pending_futures.pop(req_id, None)
-            raise RuntimeError(
-                f"Failed to send command to plugin {self.plugin_id} ({error_context}): {e}"
-            ) from e
+    def _get_rpc_peer(self) -> RpcPeer:
+        if self._closed:
+            from plugin.core.rpc import RpcClosedError
+            raise RpcClosedError("Plugin RPC connection closed")
+        if self._rpc_peer is None:
+            self._rpc_peer = RpcPeer(self._send_rpc_request, cancel=self._cancel_rpc_request, logger=self.logger)
+        return self._rpc_peer
 
+    async def _send_rpc_request(self, request: dict, timeout: float | None) -> None:
+        command = dict(request)
+        command["req_id"] = command.pop("request_id")
+        await self.transport.send_command(command)
+
+    async def _cancel_rpc_request(self, request: dict) -> None:
+        operation = request.get("type")
+        prefix = {"TRIGGER_CUSTOM": "custom", "TRIGGER": "trigger", "UI_CONTEXT": "ui_context"}.get(operation)
+        if prefix is None:
+            return
+        args = request.get("args", {})
+        context = args.get("_ctx", {}) if isinstance(args, dict) else {}
+        run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, dict) else None
+        await self.transport.send_command({"type": "CANCEL_RUN", "run_id": run_id or f"{prefix}:{request['request_id']}"})
+
+    async def _send_command_and_wait_local(self, req_id: str, msg: dict, timeout: float | None, error_context: str) -> Any:
         try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-            if result["success"]:
-                return result["data"]
-            raise PluginExecutionError(
-                self.plugin_id, error_context, result.get("error", "Unknown error"),
-            )
-        except asyncio.TimeoutError:
-            self.logger.error(
-                "Plugin {} {} timed out after {}s, req_id={}",
-                self.plugin_id, error_context, timeout, req_id,
-            )
-            async def _cleanup():
-                await asyncio.sleep(2.0)
-                self._pending_futures.pop(req_id, None)
-            ct = asyncio.create_task(_cleanup())
-            self._background_tasks.add(ct)
-            ct.add_done_callback(self._background_tasks.discard)
-            raise TimeoutError(f"{error_context} execution timed out after {timeout}s") from None
+            return await self._get_rpc_peer().request(str(msg["type"]), msg, timeout=timeout, request_id=req_id)
+        except RpcRemoteError as exc:
+            raise PluginExecutionError(self.plugin_id, error_context, exc.message) from exc
 
     async def _send_command_and_wait(
         self,
@@ -409,6 +405,7 @@ class PluginCommunicationResourceManager:
             "event_type": event_type,
             "event_id": event_id,
             "args": args,
+            "timeout": timeout,
         }
         return await self._send_command_and_wait_local(
             req_id, msg, timeout, f"custom event {event_type}.{event_id}",
@@ -482,11 +479,7 @@ class PluginCommunicationResourceManager:
         await self._run_on_owner_loop(self._send_plugin_response_local(msg))
 
     async def _send_plugin_response_local(self, msg: dict) -> None:
-        """Forward a plugin-to-plugin response to the child via the downlink."""
-        try:
-            await self.transport.send_response(msg)
-        except Exception as e:
-            self.logger.warning("Failed to send plugin response to {}: {}", self.plugin_id, e)
+        await self.transport.send_response(msg)
 
     # ── status drain (sync, called from routes) ──────────────────
 
@@ -714,22 +707,19 @@ class PluginCommunicationResourceManager:
 
     def _dispatch_result(self, res: dict) -> None:
         req_id = res.get("req_id")
-        if not req_id:
+        if req_id == STARTUP_RESULT_REQ_ID:
+            self._startup_result = res
+            if self._startup_ready is not None:
+                self._startup_ready.set()
+            return
+        if not isinstance(req_id, str) or not req_id:
             self.logger.warning("Result without req_id from plugin {}", self.plugin_id)
             return
-        fut = self._pending_futures.get(req_id)
-        if fut:
-            if not fut.done():
-                fut.set_result(res)
-            if req_id != STARTUP_RESULT_REQ_ID:
-                self._pending_futures.pop(req_id, None)
-        elif req_id == STARTUP_RESULT_REQ_ID:
-            self._startup_result = res
+        error = None if res.get("success") else res.get("error") or "Plugin execution failed"
+        if self._rpc_peer is not None:
+            self._rpc_peer.receive(req_id, result=res.get("data"), error=error)
         else:
-            self.logger.warning(
-                "Result for unknown req_id {} from plugin {}. Known: {}",
-                req_id, self.plugin_id, list(self._pending_futures.keys())[:5],
-            )
+            self.logger.debug("Result without an active RPC peer: plugin_id={}, req_id={}", self.plugin_id, req_id)
 
     # ── message routing ──────────────────────────────────────────
 
@@ -919,6 +909,7 @@ class PluginCommunicationResourceManager:
             if comm_queue is not None:
                 trusted_msg = dict(msg)
                 trusted_msg["from_plugin"] = self.plugin_id
+                trusted_msg["_rpc_connection_id"] = self._connection_id
                 await comm_queue.put(trusted_msg)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)
@@ -927,8 +918,8 @@ class PluginCommunicationResourceManager:
 
     async def _handle_entry_update(self, msg: Dict[str, Any]) -> None:
         try:
+            from plugin._types.events import EventHandler, EventMeta
             from plugin.core.state import state
-            from plugin._types.events import EventMeta, EventHandler
 
             action = msg.get("action")
             entry_id = msg.get("entry_id")

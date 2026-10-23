@@ -52,7 +52,7 @@ class _FakeProcess:
 
 
 @pytest.mark.plugin_unit
-def test_plugin_host_preinitializes_response_proxies_on_the_default_context(
+def test_plugin_host_uses_default_process_context_without_shared_response_proxies(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -71,16 +71,7 @@ def test_plugin_host_preinitializes_response_proxies_on_the_default_context(
 
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
-    monkeypatch.setattr(
-        type(host_module.state),
-        "plugin_response_map",
-        property(lambda _self: accessed_response_proxies.append("map")),
-    )
-    monkeypatch.setattr(
-        type(host_module.state),
-        "plugin_response_notify_event",
-        property(lambda _self: accessed_response_proxies.append("event")),
-    )
+    monkeypatch.setattr(host_module.multiprocessing, "Manager", lambda: accessed_response_proxies.append("manager"))
     monkeypatch.setattr(host_module.multiprocessing, "get_context", _reject_explicit_context)
     monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: default_event)
     monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: default_process)
@@ -91,9 +82,7 @@ def test_plugin_host_preinitializes_response_proxies_on_the_default_context(
         config_path=tmp_path / "demo" / "plugin.toml",
     )
 
-    # Both proxies must be materialised in the parent: on a fork start method
-    # a child that touches them first builds its own Manager proxies instead.
-    assert accessed_response_proxies == ["map", "event"]
+    assert accessed_response_proxies == []
     assert plugin_host._process_stop_event is default_event
     assert plugin_host.process is default_process
 

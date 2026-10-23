@@ -16,6 +16,17 @@ from plugin.server.messaging.handlers.plugin_config import (
 )
 
 
+
+
+async def _invoke(handler, request, recorder):
+    from plugin.core.rpc import RpcDispatcher
+    from plugin.server.messaging.request_router import _domain_error
+    dispatcher = RpcDispatcher({"test": handler}, error_mapper=_domain_error)
+    reply = await dispatcher.dispatch(dict(request, type="test"))
+    error = reply["error"]
+    error = error.get("message") if isinstance(error, dict) else error
+    recorder(reply["to_plugin"], reply["request_id"], reply["result"], error, timeout=request.get("timeout", 10.0))
+
 def test_resolve_plugin_config_initializes_external_config_from_example(
     monkeypatch,
     tmp_path: Path,
@@ -294,14 +305,7 @@ async def test_plugin_config_replace_handler_removes_stale_runtime_keys(
     ) -> None:
         responses.append((result, error))
 
-    await handle_plugin_config_replace(
-        {
-            "from_plugin": "demo",
-            "request_id": "replace-root",
-            "config": {"feature": {"keep": True}},
-        },
-        _send_response,
-    )
+    await _invoke(handle_plugin_config_replace, {'from_plugin': 'demo', 'request_id': 'replace-root', 'config': {'feature': {'keep': True}}}, _send_response)
 
     assert responses[-1][1] is None
     resolved = resolve_plugin_config_from_path(
@@ -383,7 +387,7 @@ async def test_plugin_config_write_timeout_cannot_commit_after_response(
         if operation == "replace"
         else handle_plugin_config_update
     )
-    handler_task = asyncio.create_task(handler(request, _send_response))
+    handler_task = asyncio.create_task(_invoke(handler, request, _send_response))
     await asyncio.wait_for(
         asyncio.to_thread(temp_file_fsync_started.wait, 1),
         timeout=1.5,
@@ -452,26 +456,11 @@ async def test_plugin_config_write_honors_client_deadline_after_queue_delay(
         if operation == "replace"
         else handle_plugin_config_update
     )
-    await handler(
-        {
-            "from_plugin": "demo",
-            "request_id": f"delayed-{operation}",
-            "timeout": 10.0,
-            "_request_deadline_monotonic": time.monotonic() - 1.0,
-            "config" if operation == "replace" else "updates": {
-                "feature": {"enabled": True}
-            },
-        },
-        lambda _plugin, _request, result, error, **_kwargs: responses.append(
-            (result, error)
-        ),
-    )
+    await _invoke(handler, {'from_plugin': 'demo', 'request_id': f'delayed-{operation}', 'timeout': 10.0, '_request_deadline_monotonic': time.monotonic() - 1.0, 'config' if operation == 'replace' else 'updates': {'feature': {'enabled': True}}}, lambda _plugin, _request, result, error, **_kwargs: responses.append((result, error)))
 
     assert external_config.read_text(encoding="utf-8") == original_runtime
-    if operation == "replace":
-        assert responses == [(None, "Config persistence timed out; replacement was not applied")]
-    else:
-        assert responses[0][0]["persisted"] is False  # type: ignore[index]
+    assert responses == [(None, "test request deadline exceeded")]
+
 
 
 @pytest.mark.asyncio
@@ -516,19 +505,7 @@ async def test_plugin_config_write_returns_real_result_when_commit_wins_deadline
         else handle_plugin_config_update
     )
     task = asyncio.create_task(
-        handler(
-            {
-                "from_plugin": "demo",
-                "request_id": f"commit-wins-{operation}",
-                "timeout": 0.8,
-                "config" if operation == "replace" else "updates": {
-                    "feature": {"enabled": True}
-                },
-            },
-            lambda _plugin, _request, result, error, **_kwargs: responses.append(
-                (result, error)
-            ),
-        )
+        _invoke(handler, {'from_plugin': 'demo', 'request_id': f'commit-wins-{operation}', 'timeout': 0.8, 'config' if operation == 'replace' else 'updates': {'feature': {'enabled': True}}}, lambda _plugin, _request, result, error, **_kwargs: responses.append((result, error)))
     )
     assert await asyncio.wait_for(
         asyncio.to_thread(replace_finished.wait, 1),
@@ -594,17 +571,7 @@ async def test_cancelled_plugin_config_write_cannot_commit_before_next_write(
         else handle_plugin_config_update
     )
     cancelled_task = asyncio.create_task(
-        handler(
-            {
-                "from_plugin": "demo",
-                "request_id": f"cancelled-{operation}",
-                "config" if operation == "replace" else "updates": {
-                    "feature": {"generation": 1}
-                },
-                "timeout": 10.0,
-            },
-            lambda *_args, **_kwargs: None,
-        )
+        _invoke(handler, {'from_plugin': 'demo', 'request_id': f'cancelled-{operation}', 'config' if operation == 'replace' else 'updates': {'feature': {'generation': 1}}, 'timeout': 10.0}, lambda *_args, **_kwargs: None)
     )
     await asyncio.wait_for(
         asyncio.to_thread(first_temp_file_fsync_started.wait, 1),
@@ -627,17 +594,7 @@ async def test_cancelled_plugin_config_write_cannot_commit_before_next_write(
         responses.append((result, error))
 
     await asyncio.wait_for(
-        handler(
-            {
-                "from_plugin": "demo",
-                "request_id": f"next-{operation}",
-                "config" if operation == "replace" else "updates": {
-                    "feature": {"generation": 2}
-                },
-                "timeout": 2.0,
-            },
-            _send_response,
-        ),
+        _invoke(handler, {'from_plugin': 'demo', 'request_id': f'next-{operation}', 'config' if operation == 'replace' else 'updates': {'feature': {'generation': 2}}, 'timeout': 2.0}, _send_response),
         timeout=1.5,
     )
 

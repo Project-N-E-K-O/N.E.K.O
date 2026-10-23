@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pickle
 import os
+import pickle
 import queue
 import secrets
 import threading
@@ -98,29 +98,44 @@ def _normalize_uplink_extension(value: object) -> object:
     raise TypeError(f"unsupported uplink value type: {type(value).__name__}")
 
 
+def pack_rpc_payload(value: Any) -> bytes:
+    """The control protocol's supported value types, shared by its adapters."""
+    return ormsgpack.packb(value, default=_normalize_uplink_extension, option=_UPLINK_PACK_OPTIONS)
+
+
+def unpack_rpc_payload(raw: bytes) -> Any:
+    return ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+
+
+def _result_fault(payload: dict, code: str, message: str) -> dict:
+    req_id = payload.get("req_id")
+    return {"req_id": req_id if isinstance(req_id, (str, int)) else "unknown", "success": False,
+            "data": None, "error": {"code": code, "message": message}}
+
+
 def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
     if not token or channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
         raise TypeError("invalid uplink message")
     try:
-        return ormsgpack.packb(
-            [token, channel, payload],
-            default=_normalize_uplink_extension,
-            option=_UPLINK_PACK_OPTIONS,
-        )
+        return pack_rpc_payload([token, channel, payload])
     except Exception as exc:
         if channel == CH_RES:
-            req_id = payload.get("req_id")
-            error_payload = {
-                "req_id": req_id if isinstance(req_id, (str, int)) else "unknown",
-                "success": False,
-                "data": None,
-                "error": "Plugin result is not MessagePack-serializable",
-            }
-            return ormsgpack.packb(
-                [token, channel, error_payload],
-                option=_UPLINK_PACK_OPTIONS,
-            )
+            return pack_rpc_payload([token, channel, _result_fault(payload, "SERIALIZATION_FAILED",
+                "Plugin result is not MessagePack-serializable")])
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
+
+
+def _encode_bounded_uplink(token: str, channel: str, payload: Any) -> bytes:
+    data = _encode_uplink(token, channel, payload)
+    try:
+        _refuse_oversized_uplink_frame(channel, data)
+    except ValueError:
+        if channel != CH_RES or not isinstance(payload.get("req_id"), str):
+            raise
+        data = _encode_uplink(token, channel, _result_fault(payload, "RESULT_TOO_LARGE",
+            f"Plugin result exceeds control transport limit: {len(data)} > {_control_uplink_max_bytes()} bytes"))
+        _refuse_oversized_uplink_frame(channel, data)
+    return data
 
 
 def _decode_uplink(
@@ -130,7 +145,7 @@ def _decode_uplink(
     allowed_channels: frozenset = _UPLINK_CHANNELS,
 ) -> Tuple[str, dict]:
     try:
-        decoded = ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+        decoded = unpack_rpc_payload(raw)
     except Exception as exc:
         raise ValueError("invalid uplink payload") from exc
     if not isinstance(decoded, list) or len(decoded) != 3:
@@ -665,8 +680,7 @@ class ChildTransport:
         ``ChannelSender`` stands in for a ``multiprocessing.Queue``, and that
         is what ``Queue.put(timeout=...)`` raises when it cannot deliver.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         budget = max(0.0, float(timeout))
         deadline = time.monotonic() + budget
@@ -699,8 +713,7 @@ class ChildTransport:
         one in-flight send; blocking on it without a cap is what made this
         method's name a lie while a bounded ``send_uplink`` held the lock.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         if not lock.acquire(timeout=_UPLINK_NOWAIT_LOCK_WAIT_S):
             raise queue.Full(f"uplink busy: {channel}")

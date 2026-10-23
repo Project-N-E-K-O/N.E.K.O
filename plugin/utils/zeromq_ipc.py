@@ -1,46 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import time
-import threading
 import queue
-import os
+import threading
+import time
 import uuid
-from dataclasses import dataclass
 from typing import Any, Dict, Optional
-
-from plugin.logging_config import logger
 
 import ormsgpack
 
+from plugin.logging_config import logger
 
-_ENV_VAL = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED")
-if _ENV_VAL is None:
-    _ZMQ_ENABLED = True
-else:
-    _ZMQ_ENABLED = _ENV_VAL.lower() in ("true", "1", "yes", "on")
-
-if _ZMQ_ENABLED:
-    try:
-        import zmq
-        import zmq.asyncio
-    except Exception as e:  # pragma: no cover
-        zmq = None
-        zmq_asyncio = None
-
-        # ZeroMQ IPC is enabled but pyzmq is missing; emit an explicit error log
-        try:
-            logger.bind(component="zmq").error(
-                "ZeroMQ IPC is enabled (NEKO_PLUGIN_ZMQ_IPC_ENABLED) but pyzmq is not available: {}",
-                type(e).__name__,
-            )
-        except Exception:
-            # Logging failures must never break import path
-            pass
-else:
-    # Explicitly disabled; never attempt to import pyzmq
+# Configuration decides whether to start a listener. Backend availability must
+# not be frozen by whichever plugin happens to import this module first.
+try:
+    import zmq
+    import zmq.asyncio
+except ImportError:  # pragma: no cover
     zmq = None
-    zmq_asyncio = None
+
+from plugin.core.rpc import encode_rpc_reply, log_rpc_failure, rpc_reply
+from plugin.core.zmq_transport import pack_rpc_payload, unpack_rpc_payload
 
 
 def _dumps(obj: Any) -> bytes:
@@ -51,118 +31,50 @@ def _loads(data: bytes) -> Any:
     return ormsgpack.unpackb(data)
 
 
-@dataclass
-class ZmqIpcClient:
-    plugin_id: str
-    endpoint: str
-
-    def __post_init__(self) -> None:
-        if zmq is None:
-            raise RuntimeError("pyzmq is not available")
-        self._tls = threading.local()
-
-    def _get_sock(self):
-        sock = getattr(self._tls, "sock", None)
-        if sock is not None:
-            return sock
-        if zmq is None:
-            return None
-        ctx = zmq.Context.instance()
-        sock = ctx.socket(zmq.DEALER)
-        ident = f"{self.plugin_id}:{threading.get_ident()}".encode("utf-8")
-        sock.setsockopt(zmq.IDENTITY, ident)
-        sock.setsockopt(zmq.LINGER, 0)
-        sock.connect(self.endpoint)
-        try:
-            self._tls.sock = sock
-        except Exception:
-            pass
-        return sock
-
-    def request(self, request: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
-        if zmq is None:
-            return None
-        sock = self._get_sock()
-        if sock is None:
-            return None
-        req_id = request.get("request_id")
-        if not isinstance(req_id, str) or not req_id:
-            return None
-        try:
-            sock.send_multipart([req_id.encode("utf-8"), _dumps(request)], flags=0)
-        except Exception as e:
-            try:
-                logger.bind(component="zmq.client").warning(
-                    "[ZmqIpcClient] send_multipart failed for plugin={} req_id={} error={}: {}",
-                    self.plugin_id,
-                    req_id,
-                    type(e).__name__,
-                    str(e),
-                )
-            except Exception:
-                pass
-            return None
-
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
-        deadline = time.time() + max(0.0, float(timeout))
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return None
-            try:
-                events = dict(poller.poll(timeout=int(remaining * 1000)))
-            except Exception:
-                return None
-            if sock not in events:
-                continue
-            try:
-                frames = sock.recv_multipart(flags=0)
-            except Exception:
-                return None
-            if len(frames) < 2:
-                continue
-            rid = None
-            try:
-                rid = frames[0].decode("utf-8")
-            except Exception:
-                rid = None
-            if rid != req_id:
-                continue
-            try:
-                payload = _loads(frames[1])
-            except Exception:
-                return None
-            if isinstance(payload, dict):
-                return payload
-            return None
-
-    def close(self) -> None:
-        try:
-            sock = getattr(self._tls, "sock", None)
-            if sock is not None:
-                sock.close(0)
-        except Exception:
-            pass
 
 
 class ZmqIpcServer:
-    def __init__(self, endpoint: str, request_handler):
+    """Compatibility wire adapter; host request semantics live in RpcDispatcher."""
+
+    def __init__(self, endpoint: str, request_handler, *, max_in_flight: int = 256):
         if zmq is None:
             raise RuntimeError("pyzmq is not available")
-        self._endpoint = str(endpoint)
         self._request_handler = request_handler
-        self._ctx = zmq.asyncio.Context.instance()
-        self._sock = self._ctx.socket(zmq.ROUTER)
+        self._sock = zmq.asyncio.Context.instance().socket(zmq.ROUTER)
         self._sock.setsockopt(zmq.LINGER, 0)
-        self._sock.bind(self._endpoint)
+        self._sock.bind(endpoint)
+        self.endpoint = self._sock.getsockopt(zmq.LAST_ENDPOINT).decode()
         self._running = True
-        self._recv_count = 0
-        self._last_log_ts = 0.0
-        self._enqueued_count = 0
-        self._dropped_count = 0
-        self._handled_count = 0
-        self._handled_items = 0
+        self._limit = max_in_flight
+        self._tasks: set[asyncio.Task] = set()
+        self._send_lock = asyncio.Lock()
+
+    async def _send(self, ident: bytes, req_id: bytes, response: dict) -> None:
+        try:
+            _, encoded = encode_rpc_reply(response, pack_rpc_payload)
+            async with self._send_lock:
+                await asyncio.wait_for(self._sock.send_multipart([ident, req_id, encoded]), timeout=1.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_rpc_failure(logger, f"Plugin IPC reply delivery failed: request_id={req_id!r}", exc)
+
+    async def _serve(self, ident: bytes, req_id: bytes, request: dict) -> None:
+        try:
+            response = await self._request_handler(request)
+            if not isinstance(response, dict):
+                raise TypeError("Invalid RPC handler response")
+            await self._send(ident, req_id, response)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_rpc_failure(logger, f"Plugin IPC compatibility request failed: request_id={req_id!r}", exc)
+            await self._send(ident, req_id, rpc_reply(request, error={"code": "INTERNAL_ERROR", "message": "Internal plugin request error"}))
+
+    def _finished(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
 
     async def serve_forever(self, shutdown_event) -> None:
         while self._running and not shutdown_event.is_set():
@@ -170,99 +82,39 @@ class ZmqIpcServer:
                 frames = await asyncio.wait_for(self._sock.recv_multipart(), timeout=0.2)
             except asyncio.TimeoutError:
                 continue
+            if len(frames) != 3:
+                continue
+            ident, req_id, payload = frames
+            try:
+                request = unpack_rpc_payload(payload)
+                if not isinstance(request, dict):
+                    raise ValueError("RPC request must be an object")
             except Exception:
-                await _async_sleep(0.01)
+                await self._send(ident, req_id, {"request_id": req_id.decode("utf-8", errors="replace"),
+                    "result": None, "error": {"code": "INVALID_REQUEST", "message": "Invalid IPC request"}})
                 continue
-            if len(frames) < 3:
-                # Cannot parse a complete [ident, req_id, payload] frame; discard it.
+            if len(self._tasks) >= self._limit:
+                await self._send(ident, req_id, {"request_id": request.get("request_id"), "result": None,
+                    "error": {"code": "BUSY", "message": "Plugin IPC listener is busy"}})
                 continue
-            ident = frames[0]
-            try:
-                req_id = frames[1].decode("utf-8")
-            except Exception:
-                # Cannot even parse request_id, so the client cannot match a response; discard it.
-                continue
-            try:
-                request = _loads(frames[2])
-            except Exception as e:
-                # Return a structured error response even after unpacking fails, preventing clients from timing out without any response.
-                try:
-                    err_payload = {
-                        "request_id": req_id,
-                        "error": f"invalid ZMQ request payload: {type(e).__name__}",
-                        "result": None,
-                    }
-                    await self._sock.send_multipart([
-                        ident,
-                        req_id.encode("utf-8"),
-                        _dumps(err_payload),
-                    ])
-                except Exception:
-                    # Silently ignore failures sending error responses, preserving the subsequent loop.
-                    pass
-                continue
-            if not isinstance(request, dict):
-                # A successfully decoded non-dict payload also gets a standard error response.
-                try:
-                    err_payload = {
-                        "request_id": req_id,
-                        "error": "invalid ZMQ request payload type",
-                        "result": None,
-                    }
-                    await self._sock.send_multipart([
-                        ident,
-                        req_id.encode("utf-8"),
-                        _dumps(err_payload),
-                    ])
-                except Exception:
-                    pass
-                continue
-
-            self._recv_count += 1
-            try:
-                now_ts = time.time()
-                if now_ts - float(self._last_log_ts) >= 5.0:
-                    self._last_log_ts = float(now_ts)
-                    logger.bind(component="router").debug(
-                        "[ZeroMQ IPC] recv={} last_type={} from={}",
-                        int(self._recv_count),
-                        str(request.get("type")),
-                        str(request.get("from_plugin")),
-                    )
-            except Exception:
-                pass
-
-            try:
-                resp = await self._request_handler(request)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                resp = {
-                    "request_id": req_id,
-                    "error": str(e),
-                    "result": None,
-                }
-
-            if not isinstance(resp, dict):
-                resp = {"request_id": req_id, "error": "invalid response", "result": None}
-            resp.setdefault("request_id", req_id)
-            try:
-                await self._sock.send_multipart([ident, req_id.encode("utf-8"), _dumps(resp)])
-            except Exception:
-                continue
+            task = asyncio.create_task(self._serve(ident, req_id, request))
+            self._tasks.add(task)
+            task.add_done_callback(self._finished)
 
     def close(self) -> None:
         self._running = False
-        try:
-            self._sock.close(0)
-        except Exception:
-            pass
+        for task in tuple(self._tasks):
+            task.cancel()
+        self._sock.close(0)
+
+    async def aclose(self) -> None:
+        tasks = tuple(self._tasks)
+        self.close()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _async_sleep(seconds: float) -> None:
-    import asyncio
 
-    await asyncio.sleep(seconds)
 
 
 class ZmqMessagePushBatcher:

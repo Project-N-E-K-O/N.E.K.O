@@ -52,7 +52,6 @@ def test_public_image_upload_crosses_the_dedicated_media_transport(
             config_path=tmp_path / "plugin.toml",
             logger=_Logger(),  # type: ignore[arg-type]
             status_queue=None,
-            _response_queue=responses,
             _image_transport=child,
         )
 
@@ -60,7 +59,7 @@ def test_public_image_upload_crosses_the_dedicated_media_transport(
             while True:
                 item = await child.recv_downlink(timeout_ms=100)
                 if item is not None and item[0] == CH_RESP:
-                    if not ctx._dispatch_direct_response(item[1]):
+                    if not ctx._dispatch_rpc_response(item[1]):
                         await responses.put(item[1])
 
         await manager.start()
@@ -162,7 +161,6 @@ def test_image_upload_from_a_timer_thread_resolves_on_its_own_event_loop(
             config_path=tmp_path / "plugin.toml",
             logger=_Logger(),  # type: ignore[arg-type]
             status_queue=None,
-            _response_queue=asyncio.Queue(),
             _image_transport=child,
         )
 
@@ -170,7 +168,7 @@ def test_image_upload_from_a_timer_thread_resolves_on_its_own_event_loop(
             while True:
                 item = await child.recv_downlink(timeout_ms=100)
                 if item is not None and item[0] == CH_RESP:
-                    ctx._dispatch_direct_response(item[1])
+                    ctx._dispatch_rpc_response(item[1])
 
         await manager.start()
         pump = asyncio.create_task(_pump_responses())

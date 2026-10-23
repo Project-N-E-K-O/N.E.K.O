@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_TIMEOUT_SECONDS,
@@ -15,6 +14,7 @@ from plugin.server.domain.normalization import (
     normalize_pagination_limit,
     resolve_wildcard_scope_id,
 )
+
 
 def resolve_common_fields(
     request: Mapping[str, object],
@@ -39,16 +39,6 @@ def resolve_common_fields(
     return from_plugin, request_id, timeout
 
 
-def domain_error_payload(error: ServerDomainError) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "code": error.code,
-        "message": error.message,
-    }
-    if error.details:
-        payload["details"] = error.details
-    return payload
-
-
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
@@ -61,5 +51,4 @@ __all__ = [
     "resolve_wildcard_scope_id",
     "normalize_pagination_limit",
     "resolve_common_fields",
-    "domain_error_payload",
 ]

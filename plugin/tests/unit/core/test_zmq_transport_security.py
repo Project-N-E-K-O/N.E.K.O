@@ -341,7 +341,10 @@ def test_uplink_result_rejects_non_json_container_types(container: object) -> No
         "req_id": "request-1",
         "success": False,
         "data": None,
-        "error": "Plugin result is not MessagePack-serializable",
+        "error": {
+            "code": "SERIALIZATION_FAILED",
+            "message": "Plugin result is not MessagePack-serializable",
+        },
     }
 
 
@@ -370,8 +373,25 @@ def test_unserializable_uplink_result_returns_an_immediate_error() -> None:
         "req_id": "request-1",
         "success": False,
         "data": None,
-        "error": "Plugin result is not MessagePack-serializable",
+        "error": {
+            "code": "SERIALIZATION_FAILED",
+            "message": "Plugin result is not MessagePack-serializable",
+        },
     }
+
+
+def test_oversized_result_returns_a_correlated_fault(monkeypatch):
+    monkeypatch.setattr(zmq_transport, "_control_uplink_max_bytes", lambda: 1024)
+    raw = zmq_transport._encode_bounded_uplink(
+        "token",
+        zmq_transport.CH_RES,
+        {"req_id": "large", "success": True, "data": "x" * 4096, "error": None},
+    )
+    channel, result = zmq_transport._decode_uplink(raw, expected_token="token")
+    assert channel == zmq_transport.CH_RES
+    assert len(raw) <= 1024
+    assert result["req_id"] == "large"
+    assert result["error"]["code"] == "RESULT_TOO_LARGE"
 
 
 @pytest.mark.plugin_unit
@@ -451,13 +471,16 @@ async def test_oversized_authenticated_message_never_reaches_the_host(
         # Guard the guard: if a future headroom change made this payload fit
         # under the ceiling, the assertion below would pass for the wrong
         # reason.
-        assert len(
-            zmq_transport._encode_uplink(
-                host.uplink_token,
-                zmq_transport.CH_MSG,
-                oversized,
+        assert (
+            len(
+                zmq_transport._encode_uplink(
+                    host.uplink_token,
+                    zmq_transport.CH_MSG,
+                    oversized,
+                )
             )
-        ) > ceiling
+            > ceiling
+        )
         sender.put_nowait(oversized)
 
         assert await host.recv_message(timeout_ms=1500) is None
@@ -677,25 +700,30 @@ def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
     from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
     ceiling = _control_uplink_max_bytes()
-    worst_case_frame = len(ormsgpack.packb([
-        "t" * 43,          # per-host token
-        "res",             # CH_RES
-        {
-            "req_id": "r" * 36,
-            "ok": True,
-            "result": {
-                "output": {"text": "z" * MESSAGE_PLANE_PAYLOAD_MAX_BYTES},
-                "images": [
-                    {
-                        "data_b64": "A" * _MAX_TOOL_IMAGE_B64_BYTES,
-                        "mime": "image/jpeg",
-                        "vision_prompt": "p" * _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS,
-                    }
-                    for _ in range(_MAX_TOOL_IMAGES)
-                ],
-            },
-        },
-    ]))
+    worst_case_frame = len(
+        ormsgpack.packb(
+            [
+                "t" * 43,  # per-host token
+                "res",  # CH_RES
+                {
+                    "req_id": "r" * 36,
+                    "ok": True,
+                    "result": {
+                        "output": {"text": "z" * MESSAGE_PLANE_PAYLOAD_MAX_BYTES},
+                        "images": [
+                            {
+                                "data_b64": "A" * _MAX_TOOL_IMAGE_B64_BYTES,
+                                "mime": "image/jpeg",
+                                "vision_prompt": "p"
+                                * _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS,
+                            }
+                            for _ in range(_MAX_TOOL_IMAGES)
+                        ],
+                    },
+                },
+            ]
+        )
+    )
 
     assert ceiling >= worst_case_frame, (
         f"控制上行上限 {ceiling} 装不下一次合法的带图工具结果 "
@@ -913,9 +941,7 @@ def test_a_held_lock_defers_the_close_to_the_sender(
     except Exception:
         pass
 
-    assert closed == [], (
-        "锁还被别人拿着就把 socket 关了——对面可能正在 send 里，这是 UB"
-    )
+    assert closed == [], "锁还被别人拿着就把 socket 关了——对面可能正在 send 里，这是 UB"
 
     # ...and the sender, once interrupted, is the one that closes it.
     transport._msg_lock = threading.Lock()
@@ -1071,10 +1097,10 @@ def _assert_same_including_key_types(got, expected, path: str = "data") -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        {"by_year": {2024: 3}},          # int keys — a group-by result
-        {"flags": {True: "yes"}},        # bool keys
-        {"buckets": {1.5: "a"}},         # float keys
-        {"nested": {"inner": {7: [1]}}}, # nested, one level down
+        {"by_year": {2024: 3}},  # int keys — a group-by result
+        {"flags": {True: "yes"}},  # bool keys
+        {"buckets": {1.5: "a"}},  # float keys
+        {"nested": {"inner": {7: [1]}}},  # nested, one level down
     ],
 )
 def test_non_string_keys_survive_the_uplink(value: dict) -> None:
@@ -1117,7 +1143,9 @@ def test_the_unpack_options_are_a_subset_of_the_pack_options() -> None:
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.parametrize(("configured", "expected"), [("0", 1), ("-5", 1), ("256", 256)])
+@pytest.mark.parametrize(
+    ("configured", "expected"), [("0", 1), ("-5", 1), ("256", 256)]
+)
 def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
     configured: str, expected: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1155,14 +1183,18 @@ def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
         reject_ratio=0.9,
         enqueue_timeout_s=0,
     )
-    assert batcher._batch_size <= configured_values["PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE"], (
+    assert (
+        batcher._batch_size <= configured_values["PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE"]
+    ), (
         f"子进程会发出宿主必然拒收的批量大小："
         f"{batcher._batch_size} > {configured_values['PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE']}"
     )
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.parametrize(("configured", "expected"), [("0", 1), ("-1", 1), ("100000", 100000)])
+@pytest.mark.parametrize(
+    ("configured", "expected"), [("0", 1), ("-1", 1), ("100000", 100000)]
+)
 def test_the_batcher_queue_limit_is_clamped_where_it_is_loaded(
     configured: str, expected: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:

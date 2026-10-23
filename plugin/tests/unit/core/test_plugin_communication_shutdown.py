@@ -62,9 +62,11 @@ async def test_message_routing_cannot_block_control_results() -> None:
         await release_route.wait()
 
     manager._route_message = _blocked_route  # type: ignore[method-assign]
-    result_future = asyncio.get_running_loop().create_future()
-    manager._pending_futures["request-one"] = result_future
     await manager.start()
+    result_future = asyncio.create_task(manager._send_command_and_wait_local(
+        "request-one", {"type": "TRIGGER"}, 1, "test"))
+    while manager.get_pending_requests_count() != 1:
+        await asyncio.sleep(0)
     try:
         await transport.messages.put((CH_MSG, {"type": "MESSAGE_PUSH"}))
         await asyncio.wait_for(route_started.wait(), timeout=0.5)
@@ -74,11 +76,7 @@ async def test_message_routing_cannot_block_control_results() -> None:
             "data": "ok",
         }))
 
-        assert await asyncio.wait_for(result_future, timeout=0.5) == {
-            "req_id": "request-one",
-            "success": True,
-            "data": "ok",
-        }
+        assert await asyncio.wait_for(result_future, timeout=0.5) == "ok"
     finally:
         release_route.set()
         await manager.shutdown(timeout=0.2)
@@ -173,7 +171,7 @@ async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_cleanu
     def _cleanup() -> None:
         order.append("cleaned")
 
-    manager._cleanup_pending_futures = _cleanup  # type: ignore[method-assign]
+    manager._close_rpc_requests = _cleanup  # type: ignore[method-assign]
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
     assert loop_ready.wait(timeout=1.0)
@@ -229,7 +227,7 @@ async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked() -> N
             loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
         loop.close()
 
-    manager._cleanup_pending_futures = lambda: cleaned.append("cleaned")  # type: ignore[method-assign]
+    manager._close_rpc_requests = lambda: cleaned.append("cleaned")  # type: ignore[method-assign]
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
     assert loop_ready.wait(timeout=1.0)
@@ -447,7 +445,7 @@ async def test_wait_for_startup_uses_result_dispatched_before_wait_call() -> Non
     result = await manager.wait_for_startup(timeout=0.01)
 
     assert result == {"status": "ready"}
-    assert STARTUP_RESULT_REQ_ID not in manager._pending_futures
+    assert manager.get_pending_requests_count() == 0
 
 
 @pytest.mark.asyncio
