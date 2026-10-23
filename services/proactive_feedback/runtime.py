@@ -75,6 +75,9 @@ class ProactiveFeedbackRuntime:
         async with asyncio.timeout(15), self.http.stream(method, self.origin + path, headers=headers, content=body, follow_redirects=False) as response:
             if response.status_code >= 300:
                 status = response.status_code
+                await self._guard(owner, token)
+                if status == 426:
+                    raise SyncFailure("upgrade_required", permanent=True)
                 if status in (409, 422):
                     raise SyncFailure("cloud_conflict" if status == 409 else "cloud_rejected", permanent=True)
                 if status in (401, 403):
@@ -210,6 +213,9 @@ class ProactiveFeedbackRuntime:
                 raise SyncFailure("upload_paused")
             if owner["community"] != self.origin:
                 raise SyncFailure("community_origin_mismatch")
+            upgrade_status = await asyncio.to_thread(self.store.sync_status, owner)
+            if upgrade_status.get("last_error") == "upgrade_required":
+                raise SyncFailure("upgrade_required", permanent=True)
             async with asyncio.timeout(30):
                 resolved = await self.session_provider()
             await self._guard(owner)
@@ -277,13 +283,18 @@ class ProactiveFeedbackRuntime:
             verified = (signed_in and owner["community"] == self.origin
                         and self._verified_sessions.get(owner["key"]) == (snapshot or {}).get("access_token"))
             has_receipt = result.get("acked", 0) > 0
+            upgrade_required = (self._errors.get(owner["key"]) == "upgrade_required"
+                                or result.get("last_error") == "upgrade_required")
             return {**result, "signed_in": signed_in, "owner_key": owner["key"],
                     "running": self._task is not None and not self._task.done() and not self._closing,
                     "settings_import_error": error, "settings_journal_pending": journal_pending,
                     "local_queue_empty": queue_empty, "identity_verified": verified,
                     "has_cloud_receipt": has_receipt, "upload_paused": self.upload_paused,
                     "last_sync_error": error or result.get("last_error") or self._errors.get(owner["key"], ""),
-                    "fully_synced": queue_empty and verified and has_receipt and not self.upload_paused,
+                    "fully_synced": queue_empty and verified and has_receipt and not self.upload_paused and not upgrade_required,
+                    "upgrade_required": upgrade_required,
+                    "minimum_protocol": 2 if upgrade_required else None,
+                    "upgrade_url": "https://github.com/Project-N-E-K-O/N.E.K.O/releases",
                     "retry_after_seconds": max(0, self._retry_at.get(owner["key"], 0) - self.clock())}
 
     async def _run(self):
@@ -323,7 +334,13 @@ def drain_settings(store):
     """Transfer exact journal members before acknowledging the atomic settings file."""
     from utils.preferences import acknowledge_settings_changes, pending_settings_changes
     for entry in pending_settings_changes(limit=100):
-        store.enqueue_settings(entry["owner"], entry["id"], entry["payload"])
+        if store.protocol_version == 2:
+            custody = store.enqueue_settings(entry["owner"], entry["id"], entry["payload"],
+                                             context=entry.get("context"))
+            if custody.get("status") not in {"durable", "discarded"}:
+                continue
+        else:
+            store.enqueue_settings(entry["owner"], entry["id"], entry["payload"])
         acknowledge_settings_changes([entry["id"]])
 
 

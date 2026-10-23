@@ -41,7 +41,9 @@ from utils.preferences_audit import (
     JOURNAL_KEY as _SETTINGS_JOURNAL_KEY,
     attach_journal as _attach_settings_journal,
     install_settings_attribution_context,
+    install_settings_capture_provider,
     prepare_atomic_preferences as _prepare_atomic_preferences,
+    proactive_snapshot as _proactive_settings_snapshot,
     read_journal as _read_settings_journal,
     settings_attribution_context as _settings_attribution_context,
     without_journal as _without_settings_journal,
@@ -924,6 +926,38 @@ def pending_settings_changes(limit: int = 100) -> List[Dict[str, Any]]:
         raise ValueError("Settings journal limit must be between 1 and 4096")
     with _locked_preferences_store(attribute=False):
         return _read_settings_journal(_load_preferences_data_for_write_unlocked())["entries"][:limit]
+
+
+def settings_capture_status() -> Dict[str, Any]:
+    """Minimal local diagnostic; no raw entries or values leave this boundary."""
+    with _locked_preferences_store(attribute=False):
+        journal = _read_settings_journal(_load_preferences_data_for_write_unlocked())
+        return {"scope": "all_local_accounts", "statistics_incomplete": bool(journal.get("incomplete")),
+                "protocol_version": journal.get("protocol_version", 1)}
+
+
+def reserve_current_settings_snapshot(owner, capture_provider) -> Dict[str, Any]:
+    """Reserve the shared revision without changing any current setting value.
+
+    Composition must already hold the credential attribution fence. This uses
+    only the preferences lock, preserving credential -> preferences -> SQLite
+    ordering. The snapshot has no custody promise until Store admission.
+    """
+    assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+    with _locked_preferences_store(attribute=False):
+        data = _load_preferences_data_for_write_unlocked()
+        journal = _read_settings_journal(data)
+        if journal["revision"] >= 2**53 - 1:
+            raise ValueError("Settings revision exhausted")
+        context = capture_provider(owner)
+        if not isinstance(context, dict) or context.get("owner_key") != owner.get("key"):
+            raise ValueError("Current settings capture unavailable")
+        snapshot = _proactive_settings_snapshot(data)
+        journal["revision"] += 1
+        committed = _attach_settings_journal(data, journal)
+        atomic_write_json(_get_preferences_write_path(), committed, ensure_ascii=False, indent=2)
+        return {"context": context, "payload": {"revision": journal["revision"], "origin": "baseline",
+                "occurred_at": time.time(), "previous": snapshot, "settings": snapshot}}
 
 
 def acknowledge_settings_changes(ids) -> int:

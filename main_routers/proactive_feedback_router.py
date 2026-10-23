@@ -9,12 +9,14 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from main_logic.recommendation_feedback import FeedbackConflict, RecommendationStore
 from services.proactive_feedback import host
 from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, SyncFailure, drain_settings, pending_settings
+from services.proactive_feedback import capture
+from services.proactive_feedback.runtime_v2 import ProactiveFeedbackRuntimeV2
 
 router = APIRouter(prefix="/api/proactive/feedback", tags=["proactive-feedback"])
 _runtime = None
@@ -32,7 +34,9 @@ class ResumeBlockedBatch(BaseModel):
 def _create_store():
     from utils.config_manager import get_config_manager
     manager = get_config_manager()
-    return RecommendationStore(Path(manager.get_runtime_config_path("recommendation_feedback.sqlite3")))
+    version = 2 if os.environ.get("NEKO_PROACTIVE_FEEDBACK_PROTOCOL", "1") == "2" else 1
+    return RecommendationStore(Path(manager.get_runtime_config_path("recommendation_feedback.sqlite3")),
+                               protocol_version=version)
 
 
 async def create_runtime():
@@ -40,8 +44,13 @@ async def create_runtime():
     # A cancelled worker-thread read may complete late, but owns no HTTP pool.
     store = await asyncio.to_thread(_create_store)
     paused = os.environ.get("NEKO_PROACTIVE_FEEDBACK_UPLOAD_PAUSED", "").strip().lower() in {"1", "true", "yes", "on"}
-    return ProactiveFeedbackRuntime(store, settings_drain=drain_settings, settings_pending_provider=pending_settings,
-                                    upload_paused=paused)
+    runtime_type = ProactiveFeedbackRuntimeV2 if store.protocol_version == 2 else ProactiveFeedbackRuntime
+    options = {}
+    if store.protocol_version == 2:
+        from utils.preferences import reserve_current_settings_snapshot
+        options["current_settings_provider"] = lambda owner: reserve_current_settings_snapshot(owner, capture.get_control_snapshot)
+    return runtime_type(store, settings_drain=drain_settings, settings_pending_provider=pending_settings,
+                        upload_paused=paused, **options)
 
 
 @router.on_event("startup")
@@ -68,6 +77,13 @@ def schedule_start():
                 await runtime.close()
                 return
             _runtime = runtime
+            if isinstance(runtime, ProactiveFeedbackRuntimeV2):
+                from main_routers.recommendation_router import install_store_protocol
+                from utils.preferences import install_settings_capture_provider
+                install_store_protocol(2)
+                capture.install_control_provider(runtime.control_snapshot)
+                await asyncio.to_thread(install_settings_capture_provider, capture.get_control_snapshot,
+                                        protocol_version=2)
             runtime.start()
         except (OSError, sqlite3.Error, RuntimeError, ValueError):
             # Optional feedback synchronization cannot prevent normal chat boot.
@@ -90,6 +106,11 @@ async def close_runtime():
     runtime, _runtime = _runtime, None
     if runtime is not None:
         await runtime.close()
+    capture.install_control_provider(None)
+    from main_routers.recommendation_router import install_store_protocol
+    install_store_protocol(1)
+    from utils.preferences import install_settings_capture_provider
+    await asyncio.to_thread(install_settings_capture_provider, None, protocol_version=1)
     from utils.preferences import install_settings_attribution_context
     await asyncio.to_thread(install_settings_attribution_context, None)
 
@@ -120,6 +141,96 @@ async def feedback_status(request: Request):
 @router.post("/sync")
 async def feedback_sync(request: Request):
     return await _operate(request, synchronize=True)
+
+
+class CaptureContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    clock_session_id: str = Field(min_length=32, max_length=36)
+
+
+class ActivateDeviceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    replace_registration_id: str | None = Field(default=None, max_length=36)
+    display_name: str | None = Field(default=None, max_length=64)
+    expected_owner_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class RemoveDeviceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_registration_version: int = Field(ge=1)
+    expected_owner_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+def _control_failure(error):
+    code = error.code if isinstance(error, SyncFailure) else "feedback_control_unavailable"
+    status = 426 if code == "upgrade_required" else 409 if code == "cloud_conflict" else 503
+    return JSONResponse({"success": False, "error_code": code}, status_code=status,
+                        headers={"Cache-Control": "no-store"})
+
+
+async def _control_command(request, model, operation):
+    rejected = _validate(request)
+    if rejected is not None:
+        return rejected
+    runtime = _runtime
+    if not isinstance(runtime, ProactiveFeedbackRuntimeV2):
+        return JSONResponse({"success": False, "error_code": "feedback_protocol_unavailable"}, status_code=503)
+    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
+        return JSONResponse({"success": False, "error_code": "invalid_feedback_control"}, status_code=415)
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 2048:
+            return JSONResponse({"success": False, "error_code": "invalid_feedback_control"}, status_code=413)
+        raw.extend(chunk)
+    try:
+        command = model.model_validate(json.loads(raw))
+        result = await operation(runtime, command)
+    except (ValueError, UnicodeError, ValidationError):
+        return JSONResponse({"success": False, "error_code": "invalid_feedback_control"}, status_code=422)
+    except (SyncFailure, OSError, sqlite3.Error, httpx.HTTPError, TimeoutError) as error:
+        return _control_failure(error)
+    return JSONResponse({"success": True, **result}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/capture-context")
+async def feedback_capture_context(request: Request):
+    async def run(runtime, command):
+        return {"context": await runtime.capture_context(command.clock_session_id)}
+    return await _control_command(request, CaptureContextRequest, run)
+
+
+@router.post("/devices/activate")
+async def feedback_activate_device(request: Request):
+    async def run(runtime, command):
+        return await runtime.activate_device(command.replace_registration_id, command.display_name, command.expected_owner_key)
+    return await _control_command(request, ActivateDeviceRequest, run)
+
+
+@router.get("/devices")
+async def feedback_devices(request: Request):
+    rejected = _validate(request)
+    if rejected is not None:
+        return rejected
+    if not isinstance(_runtime, ProactiveFeedbackRuntimeV2):
+        return JSONResponse({"success": False, "error_code": "feedback_protocol_unavailable"}, status_code=503)
+    try:
+        result = await _runtime.list_devices()
+    except (SyncFailure, OSError, sqlite3.Error, httpx.HTTPError, TimeoutError) as error:
+        return _control_failure(error)
+    return JSONResponse({"success": True, **result}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/devices/{registration_id}/remove")
+async def feedback_remove_device(request: Request, registration_id: str):
+    async def run(runtime, command):
+        return await runtime.remove_device(registration_id, command.expected_registration_version, command.expected_owner_key)
+    return await _control_command(request, RemoveDeviceRequest, run)
+
+
+@router.get("/manage")
+async def feedback_management_page():
+    return FileResponse(Path(__file__).resolve().parents[1] / "templates" / "feedback_devices.html",
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/resume")

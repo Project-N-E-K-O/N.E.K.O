@@ -37,6 +37,7 @@ function createSurface(t, options = {}) {
     let relay = () => {};
     const RealDate = w.Date;
     w.Date = class extends RealDate { static now() { return now; } };
+    Object.defineProperty(w.performance, 'now', { value: () => now });
     const schedule = (fn, ms = 0, interval = 0) => {
         const id = ++timerId;
         timers.set(id, { fn, at: now + Number(ms), interval });
@@ -197,7 +198,7 @@ const endedState = { track: {name:'finished', artist:'test'}, playbackId:'finish
     ended:true, currentTime:60, duration:60, volume:0.2 };
 const remoteEvent = (type, payload) => ({ sender:'remote-owner', type, payload });
 
-function offerRecommendation(s, awarenessState) {
+function offerRecommendation(s, awarenessState, options = {}) {
     const events = [], awareness = [], messages = new Map();
     const socket = awarenessState === undefined ? null : { readyState: awarenessState,
         send(value) { awareness.push(JSON.parse(value)); } };
@@ -207,9 +208,16 @@ function offerRecommendation(s, awarenessState) {
     s.w.AbortSignal.timeout = () => undefined;
     s.w.fetch = async (url, init) => {
         if (!init || !init.body) return { ok: true, json: async () => ({ domains: [] }) };
+        if (options.capture && url.endsWith('/capture-context')) return { ok:true,
+            json:async () => ({success:true,context:options.capture()}) };
+        if (options.capture && url.endsWith('/dispatch')) return {ok:true,json:async () => ({success:true,dispatch_grant:true})};
         const event = JSON.parse(init.body); events.push(event);
+        const telemetry = options.capture ? {event_id:event.event_id,
+            payload_hash:require('node:crypto').createHash('sha256')
+                .update(Buffer.from(init.headers['X-NEKO-Feedback-Canonical'], 'base64')).digest('hex'),
+            status:'durable', ...(options.telemetry ? options.telemetry(event) : {})} : undefined;
         return { ok: true, status: 200, json: async () => ({ success: true, state: event.kind,
-            playback_grant: event.kind === 'accepted' }) };
+            playback_grant: event.kind === 'accepted', telemetry }) };
     };
     s.w.reactChatWindowHost = { appendMessage(m) { messages.set(m.id, m); },
         updateMessage(id, patch) { Object.assign(messages.get(id), patch); } };
@@ -218,6 +226,7 @@ function offerRecommendation(s, awarenessState) {
     s.w.eval(fs.readFileSync(path.join(root, 'static/app/app-recommendations.js'), 'utf8'));
     const id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
     s.w.nekoMusicRecommendations.offer({ id, state: 'pending', expires_at: s.w.Date.now()/1000+1800,
+        ...(options.offerContext ? {offer_context:options.offerContext} : {}),
         track: { name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3', cover: '' } });
     const message = messages.values().next().value;
     const action = name => s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', { detail: { message,
@@ -239,6 +248,95 @@ async function startRecommendation(s, awarenessState) {
     audio.played = { length: 1, start: () => 0, end: () => 12 };
     return r;
 }
+
+test('v2 real player callbacks checkpoint independent disjoint ranges without changing playback state', async t => {
+    const s = createSurface(t), events = [];
+    const offerContext = { owner_key: 'a'.repeat(64), offer_id: 'offer-v2', origin_context: { capture: { tick_ms: 1 } } };
+    let generation = 1;
+    s.w.nekoFeedbackCapture = { capture: () => ({ clear_generation: generation, capture: { tick_ms: Math.floor(s.w.performance.now()) } }) };
+    s.w.nekoMusicRecommendations = { recordPlayback(id, kind, fields) { events.push(JSON.parse(JSON.stringify({ id, kind, fields }))); } };
+    const playing = s.w.sendMusicMessageDetailed({name:'v2', url:'https://music.163.com/test.mp3'}, true,
+        {recommendationId:'offer-v2', offerContext});
+    await s.advance(100); await playing;
+    const player = s.players[0], audio = player.audio;
+    for (let i = 1; i <= 16; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    const checkpoint = events.find(e => e.kind === 'measurement');
+    assert.ok(checkpoint, 'existing timeupdate produces a 15-second checkpoint');
+    assert.equal(checkpoint.fields.measurement.version, 'playback_elapsed_observed_v2');
+    assert.equal(checkpoint.fields.measurement.range_start_ms, 0);
+    assert.equal(checkpoint.fields.measurement.range_end_ms, 15000);
+    assert.equal(audio.paused, false);
+    assert.equal(events.filter(e => e.kind === 'playing').length, 1, 'checkpoints do not fabricate playing transitions');
+    audio.pause();
+    const paused = events.findLast(e => e.kind === 'paused');
+    assert.equal(paused.fields.measurement.range_start_ms, 15000);
+    assert.equal(paused.fields.measurement.range_end_ms, 16000);
+    offerContext.owner_key = 'mutated-after-dispatch';
+    assert.equal(player._musicPlaybackReportContext.offerContext.owner_key, 'a'.repeat(64));
+    generation = 2;
+    s.w.dispatchEvent(new s.w.Event('neko:feedback-capture-changed'));
+    await audio.play();
+    for (let i = 1; i <= 2; i++) { await s.advance(1000); audio.currentTime = 16 + i; player.emit('timeupdate'); }
+    audio.pause();
+    const renewed = events.findLast(e => e.kind === 'paused').fields.measurement;
+    assert.equal(renewed.range_start_ms, 0);
+    assert.equal(renewed.range_end_ms, 2000);
+    assert.notEqual(renewed.epoch_id, checkpoint.fields.measurement.epoch_id);
+    assert.equal(renewed.origin_context.clear_generation, 2);
+    assert.equal(checkpoint.fields.measurement.origin_context.clear_generation, 1);
+    assert.equal(s.players.length, 1, 'control refresh does not restart the audio player');
+    audio.ended = true; player.emit('ended');
+    await audio.play();
+    for (let i = 1; i <= 2; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    audio.pause();
+    const replay = events.findLast(e => e.kind === 'measurement').fields.measurement;
+    assert.equal(replay.range_start_ms, 2000);
+    assert.equal(replay.range_end_ms, 4000, 'a short replay must flush on pause even after the business state became terminal');
+    assert.equal(events.findLast(e => e.kind !== 'measurement').kind, 'ended', 'replay statistics do not rewrite the old terminal business state');
+});
+
+test('actual app capture bridge advances a playing audio after clear and holds observations during failed refresh', async t => {
+    const s = createSurface(t);
+    const id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    let generation = 1, failed = false;
+    const owner = 'a'.repeat(64);
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id,origin_context:{capture:{tick_ms:0}}},
+        capture() {
+            if (failed) throw new TypeError('synthetic network failure');
+            return {owner_key:owner,account_incarnation:'account-a',clear_generation:generation,
+                registration_id:'device-a',registration_version:1,binding_revision:generation,
+                anchor_id:'anchor-'+generation,anchor_token:'proof-'+generation};
+        }, telemetry(event) { return event.context.clear_generation < generation ? {status:'discarded',reason:'binding_changed'} : {}; } });
+    await flush(); r.choose(); await s.advance(100);
+    const player = s.players[0], audio = player.audio;
+    generation = 2;
+    for (let i = 1; i <= 16; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); await flush(); }
+    const retired = r.events.find(event => event.kind === 'measurement');
+    assert.equal(retired.context.clear_generation, 1);
+    assert.equal(s.w.nekoFeedbackCapture.capture().clear_generation, 2);
+    assert.equal(audio.paused, false);
+    assert.equal(s.players.length, 1);
+    failed = true; await s.w.nekoFeedbackCapture.refresh();
+    assert.equal(s.w.nekoFeedbackCapture.capture().owner_key, undefined);
+    for (let i = 17; i <= 18; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    audio.pause(); await flush();
+    const held = r.events.findLast(event => event.measurement);
+    assert.equal(held.context.owner_key, undefined);
+    assert.equal(held.measurement.origin_context.owner_key, undefined);
+    failed = false; generation = 3; await s.w.nekoFeedbackCapture.refresh();
+    await audio.play();
+    for (let i = 19; i <= 20; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    audio.pause(); await flush();
+    const resumed = r.events.findLast(event => event.measurement);
+    assert.equal(resumed.context.clear_generation, 3);
+    assert.equal(resumed.measurement.origin_context.clear_generation, 3);
+    assert.equal(resumed.measurement.range_start_ms, 0);
+    assert.equal(resumed.measurement.range_end_ms, 2000);
+    assert.equal(retired.context.clear_generation, 1);
+    assert.equal(held.context.owner_key, undefined);
+    assert.equal(s.players.length, 1, 'qualification changes never rebuild or replace audio');
+    assert.equal(r.events.filter(event => event.kind === 'accepted').length, 1);
+});
 
 for (const stage of ['dispatcher', 'library', 'factory', 'delayed play', 'media wait', 'interaction unlock']) {
     for (const invalidation of ['hidden then restored', 'clear', 'character']) {
