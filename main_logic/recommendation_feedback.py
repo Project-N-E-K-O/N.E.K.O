@@ -66,6 +66,7 @@ class RecommendationStore:
     MAX_BATCH_BYTES = 1_048_576
     HISTORY_WARNING_BYTES = 512 * 1024 * 1024
     MAX_V2_PENDING_BYTES = 64 * 1024 * 1024
+    MAX_V2_PENDING_AGE_SECONDS = 7 * 86400
     V2_SCHEMA = "desktop-proactive-feedback-v2"
     _BINDING_FIELDS = ("account_incarnation", "clear_generation", "registration_id", "registration_version")
 
@@ -380,6 +381,11 @@ class RecommendationStore:
         result = []
         for row in rows:
             item = dict(row)
+            original = item.pop("v2_event", None)
+            item.pop("v2_hash", None)
+            item.pop("v2_custody", None)
+            if original is not None:
+                item["original_event"] = json.loads(original)
             item["track"] = json.loads(item["track"])
             item["settings"] = json.loads(item["settings"])
             item["category"] = item["track"].get("category", "music")
@@ -518,9 +524,9 @@ class RecommendationStore:
         safe_code = re.sub(r"[^a-zA-Z0-9_:-]", "_", str(error_code))[:80]
         with self._transaction() as db:
             self._source(db, owner)
-            db.execute("""UPDATE feedback_sync_batches SET attempts=attempts+1,last_error=?,
+            return db.execute("""UPDATE feedback_sync_batches SET attempts=attempts+1,last_error=?,
                 blocked=CASE WHEN ? THEN 1 ELSE blocked END WHERE owner=? AND batch_id=?""",
-                       (safe_code, bool(permanent), owner["key"], batch_id))
+                       (safe_code, bool(permanent), owner["key"], batch_id)).rowcount == 1
 
     def resume_blocked_batch(self, owner: dict, batch_id: str, batch_hash: str):
         """Explicit retry of exactly the inspected immutable batch, never a replacement.
@@ -593,6 +599,11 @@ class RecommendationStore:
         db.execute("""CREATE TABLE IF NOT EXISTS feedback_v2_meta (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), storage_incarnation TEXT NOT NULL)""")
         db.execute("INSERT OR IGNORE INTO feedback_v2_meta VALUES (1,?)", (str(uuid.uuid4()),))
+        event_columns = {row[1] for row in db.execute("PRAGMA table_info(recommendation_events)")}
+        migrate_events = "v2_event" not in event_columns
+        for column in ("v2_event", "v2_hash", "v2_custody"):
+            if column not in event_columns:
+                db.execute(f"ALTER TABLE recommendation_events ADD COLUMN {column} TEXT")
         if first_upgrade:
             # The agreed first-upgrade rule invalidates the old pending
             # transport. Retained facts/current preferences are untouched.
@@ -632,6 +643,14 @@ class RecommendationStore:
         db.execute("""CREATE INDEX IF NOT EXISTS feedback_v2_deferred_due
             ON feedback_v2_spool(owner,state,retry_after,seq)""")
         db.execute("CREATE INDEX IF NOT EXISTS feedback_v2_spool_offer ON feedback_v2_spool(recommendation_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS feedback_v2_spool_age ON feedback_v2_spool(created_at,seq)")
+        if migrate_events:
+            # Only still-retained v2 originals can be migrated; never invent
+            # history already released by an older implementation.
+            for row in db.execute("SELECT * FROM feedback_v2_spool WHERE kind<>'settings'"):
+                RecommendationStore._v2_save_event(db, row["recommendation_id"], json.loads(row["event"]),
+                    row["payload_hash"], {"event_id": row["event_id"], "payload_hash": row["payload_hash"],
+                    "status": "durable", "reason": row["reason"]}, row["created_at"])
         db.execute("""CREATE TABLE IF NOT EXISTS feedback_v2_usage (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), rows_used INTEGER NOT NULL, bytes_used INTEGER NOT NULL)""")
         if not db.execute("SELECT 1 FROM feedback_v2_usage WHERE singleton=1").fetchone():
@@ -680,6 +699,12 @@ class RecommendationStore:
                     raise FeedbackConflict("feedback_binding_revision_collision")
             db.execute("INSERT OR REPLACE INTO feedback_v2_controls VALUES (?,?)", (owner["key"], _canonical(snapshot)))
             binding_changed = previous and any(snapshot.get(key) != previous.get(key) for key in self._BINDING_FIELDS)
+            if previous and any(snapshot.get(key) != previous.get(key)
+                                for key in ("account_incarnation", "clear_generation")):
+                # Account history clearing also covers the local export ledger;
+                # device replacement alone preserves its retained history.
+                db.execute("""DELETE FROM recommendation_events WHERE recommendation_id IN
+                    (SELECT id FROM recommendations WHERE owner=?)""", (owner["key"],))
             for row in db.execute("SELECT * FROM feedback_v2_spool WHERE owner=?", (owner["key"],)).fetchall():
                 event = json.loads(row["event"])
                 original_context = event.get("context") or {}
@@ -815,6 +840,7 @@ class RecommendationStore:
                 "offer_context": context}
 
     def _v2_custody(self, db, owner, event, proof, payload_hash, category, control, recommendation_id):
+        self._v2_retire_pending(db)
         if not owner.get("user_id") or not owner.get("community"):
             return {"event_id": event["event_id"], "payload_hash": payload_hash,
                     "status": "discarded", "reason": "anonymous_not_uploadable"}
@@ -838,6 +864,37 @@ class RecommendationStore:
             VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (owner["key"], event["event_id"], recommendation_id, event["kind"], category, encoded,
                 payload_hash, _canonical(proof), state, reason, time.time()))
         return {"event_id": event["event_id"], "payload_hash": payload_hash, "status": "durable", "reason": reason}
+
+    @staticmethod
+    def _v2_save_event(db, recommendation_id, event, event_hash, custody, received_at):
+        # Reuse the local history ledger, not an additional cloud ACK log. The
+        # initial handoff result survives transport retirement and reply loss.
+        db.execute("""INSERT OR IGNORE INTO recommendation_events
+            (event_id,recommendation_id,kind,occurred_at,received_at,playback_id,
+             listened_seconds,position_seconds,reason,v2_event,v2_hash,v2_custody)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (event["event_id"], recommendation_id, event["kind"],
+                event.get("occurred_at") if event.get("occurred_at") is not None else received_at,
+                received_at, event.get("playback_id"), event.get("listened_seconds", 0),
+                event.get("position_seconds", 0), event.get("reason", ""),
+                _canonical(event), event_hash, _canonical(custody)))
+
+    def _v2_retire_pending(self, db):
+        # Retire in bounded batches across local accounts. Frozen transport is
+        # immutable and remains owned until its receipt or a control change.
+        now = time.time()
+        expired = db.execute("""SELECT * FROM feedback_v2_spool
+            WHERE created_at<=? AND state IN ('held','ready') ORDER BY created_at,seq LIMIT 256""",
+            (now - self.MAX_V2_PENDING_AGE_SECONDS,)).fetchall()
+        for row in expired:
+            if row["kind"] != "settings":
+                self._v2_save_event(db, row["recommendation_id"], json.loads(row["event"]), row["payload_hash"],
+                    {"event_id": row["event_id"], "payload_hash": row["payload_hash"],
+                     "status": "durable", "reason": row["reason"]}, row["created_at"])
+            db.execute("DELETE FROM feedback_v2_spool WHERE seq=?", (row["seq"],))
+            db.execute("""UPDATE feedback_v2_baseline SET state='pending',event_id=NULL
+                WHERE owner=? AND event_id=?""", (row["owner"], row["event_id"]))
+            db.execute("""INSERT INTO feedback_v2_status(owner,incomplete,acknowledged_at) VALUES (?,1,?)
+                ON CONFLICT(owner) DO UPDATE SET incomplete=1""", (row["owner"], now))
 
     def _record_v2(self, owner, recommendation_id, event, *, disabled_categories, control, canonical_header=None):
         self._validate_v2_event(event)
@@ -882,12 +939,27 @@ class RecommendationStore:
             category = json.loads(row["track"]).get("category", "music")
             if category != "music" and kind not in {"shown", "accepted", "skipped"}:
                 raise FeedbackConflict("invalid_feedback_kind")
+            saved = db.execute("SELECT * FROM recommendation_events WHERE event_id=?", (original["event_id"],)).fetchone()
+            if saved:
+                if saved["recommendation_id"] != recommendation_id or saved["v2_hash"] != event_hash:
+                    raise FeedbackConflict("feedback_event_collision")
+                result = self._result(row, original, False)
+                result["telemetry"] = json.loads(saved["v2_custody"])
+                state, reason = self._v2_classify(owner, original, control, proof)
+                if state == "discarded":
+                    result["telemetry"] = {"event_id": original["event_id"], "payload_hash": event_hash,
+                                           "status": "discarded", "reason": reason}
+                return result
             existing = db.execute("SELECT payload_hash FROM feedback_v2_spool WHERE owner=? AND event_id=?", (owner["key"], original["event_id"])).fetchone()
             if existing and existing[0] != event_hash:
                 raise FeedbackConflict("feedback_event_collision")
             if existing:
                 result = self._result(row, original, False)
                 result["telemetry"] = self._v2_custody(db, owner, original, proof, event_hash, category, control, recommendation_id)
+                received = db.execute("SELECT created_at FROM feedback_v2_spool WHERE owner=? AND event_id=?",
+                                      (owner["key"], original["event_id"])).fetchone()
+                self._v2_save_event(db, recommendation_id, original, event_hash, result["telemetry"],
+                                    received[0] if received else time.time())
                 return result
             applied = True
             if kind == "shown":
@@ -952,6 +1024,8 @@ class RecommendationStore:
             row = db.execute("SELECT * FROM recommendations WHERE id=?", (recommendation_id,)).fetchone()
             result = self._result(row, original, applied)
             result["telemetry"] = custody
+            if (applied or kind == "measurement") and custody.get("reason") != "binding_changed":
+                self._v2_save_event(db, recommendation_id, original, event_hash, custody, time.time())
             return result
 
     @staticmethod
@@ -1055,6 +1129,7 @@ class RecommendationStore:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise FeedbackConflict("invalid_feedback_batch_limit")
         with self._transaction() as db:
+            self._v2_retire_pending(db)
             self._v2_gc_offers(db)
             active = db.execute("SELECT * FROM feedback_sync_batches WHERE owner=?", (owner["key"],)).fetchone()
             if active:

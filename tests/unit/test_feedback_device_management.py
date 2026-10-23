@@ -62,10 +62,15 @@ async def test_snapshot_capacity_skips_old_attempt_then_captures_current_again(e
 
 @pytest.mark.asyncio
 async def test_lost_baseline_reply_uses_same_frozen_body_without_new_snapshot(env):
+    clock = [1000.0]
+    env.runtime.clock = lambda: clock[0]
     calls = install_snapshot(env)
     env.options["lose_response"] = True
     try:
         assert (await env.runtime.sync_once())["state"] == "retry_wait"
+        assert (await env.runtime.sync_once())["state"] == "retry_wait"
+        assert len(env.uploads) == 1
+        clock[0] += 31
         assert (await env.runtime.sync_once())["state"] == "synced"
         assert len(calls) == 1 and env.uploads[0] == env.uploads[1]
     finally:

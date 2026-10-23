@@ -333,6 +333,110 @@ def test_playback_tail_wire_version_matches_measurement_and_frozen_retry(store, 
     assert reopened.prepare_batch(OWNER) == batch
 
 
+def test_lost_renderer_reply_after_cloud_ack_does_not_recreate_measurement(store):
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    fact = event(card, "measurement", "meter", playback_id="playback", measurement={
+        "version": "playback_elapsed_observed_v2", "epoch_id": "epoch", "range_start_ms": 0,
+        "range_end_ms": 20, "origin_context": control()})
+    first = store.record(OWNER, card["id"], fact, control=control())
+    batch = store.prepare_batch(OWNER)
+    assert store.acknowledge_batch(OWNER, answer(batch))
+    reopened = RecommendationStore(store.path, protocol_version=2)
+    retry = reopened.record(OWNER, card["id"], fact, control=control())
+    assert retry["telemetry"] == first["telemetry"] and not retry["applied"]
+    assert reopened.prepare_batch(OWNER) is None
+    changed = copy.deepcopy(fact)
+    changed["measurement"]["range_end_ms"] = 21
+    with pytest.raises(FeedbackConflict, match="collision"):
+        reopened.record(OWNER, card["id"], changed, control=control())
+
+
+def test_v2_local_history_survives_upload_and_keeps_cursor_and_owner_isolation(store):
+    card = offer(store)
+    for kind in ("shown", "accepted", "playing", "ended"):
+        value = event(card, kind, kind, **({"playback_id": "playback"} if kind in {"playing", "ended"} else {}))
+        store.record(OWNER, card["id"], value, control=control())
+    first = store.events(OWNER, 0, 2)
+    assert [row["kind"] for row in first["events"]] == ["shown", "accepted"]
+    batch = store.prepare_batch(OWNER)
+    store.acknowledge_batch(OWNER, answer(batch))
+    reopened = RecommendationStore(store.path, protocol_version=2)
+    after = reopened.events(OWNER, first["next_cursor"], 100)
+    assert [row["kind"] for row in after["events"]] == ["playing", "ended"]
+    assert reopened.events(OTHER, 0, 100)["events"] == []
+    assert len(reopened.events(OWNER, 0, 100)["events"]) == 4
+
+
+def test_clearing_v2_history_clears_local_export_without_reviving_late_old_fact(store):
+    store.apply_control(OWNER, control())
+    card = offer(store)
+    original = event(card, "accepted", "accept")
+    store.record(OWNER, card["id"], original, control=control())
+    replaced = {**control(0, 2), "registration_version": 2}
+    store.apply_control(OWNER, replaced)
+    assert len(store.events(OWNER, 0, 100)["events"]) == 1
+    store.apply_control(OWNER, control(1, 3))
+    assert store.events(OWNER, 0, 100)["events"] == []
+    old_metric = event(card, "measurement", "late", playback_id="playback", measurement={
+        "version": "playback_elapsed_observed_v2", "epoch_id": "epoch", "range_start_ms": 0,
+        "range_end_ms": 10, "origin_context": control()})
+    assert store.record(OWNER, card["id"], old_metric, control=control(1, 3))["telemetry"]["reason"] == "binding_changed"
+    assert store.events(OWNER, 0, 100)["events"] == []
+    assert store.prepare_batch(OWNER) is None
+
+
+def test_existing_v2_spool_migrates_to_history_before_transport_is_retired(store):
+    card = offer(store)
+    original = event(card)
+    first = store.record(OWNER, card["id"], original, control=control())
+    with sqlite3.connect(store.path) as db:
+        db.execute("DELETE FROM recommendation_events")
+        for column in ("v2_event", "v2_hash", "v2_custody"):
+            db.execute(f"ALTER TABLE recommendation_events DROP COLUMN {column}")
+    reopened = RecommendationStore(store.path, protocol_version=2)
+    assert [row["event_id"] for row in reopened.events(OWNER, 0, 100)["events"]] == ["shown"]
+    batch = reopened.prepare_batch(OWNER)
+    reopened.acknowledge_batch(OWNER, answer(batch))
+    assert reopened.record(OWNER, card["id"], original, control=control())["telemetry"] == first["telemetry"]
+    assert reopened.prepare_batch(OWNER) is None
+
+
+def test_expired_held_capture_releases_global_quota_without_touching_frozen_batch(store, monkeypatch):
+    from types import SimpleNamespace
+    from main_logic import recommendation_feedback as module
+    clock = [1000.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
+    card = offer(store)
+    partial = {"version": "desktop-feedback-capture-v2", "owner_key": OWNER["key"]}
+    fact = event(card, snapshot=partial)
+    assert store.record(OWNER, card["id"], fact)["telemetry"]["status"] == "durable"
+    clock[0] += 7 * 86400 + 1
+    store.MAX_PENDING_UPLOADS = 1
+    fresh = offer(store)
+    assert store.record(OWNER, fresh["id"], event(fresh, event_id="fresh"), control=control())["telemetry"]["status"] == "durable"
+    batch = store.prepare_batch(OWNER)
+    assert [item["id"] for item in batch["items"]] == ["fresh"]
+    assert store.sync_status(OWNER)["held"] == 0
+    assert store.sync_status(OWNER)["statistics_incomplete"]
+    clock[0] += 7 * 86400 + 1
+    assert store.prepare_batch(OWNER) == batch
+    assert store.acknowledge_batch(OWNER, answer(batch))
+
+
+def test_reading_status_does_not_retire_pending_captures(store, monkeypatch):
+    from types import SimpleNamespace
+    from main_logic import recommendation_feedback as module
+    clock = [1000.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, snapshot={"owner_key": OWNER["key"]}))
+    clock[0] += 7 * 86400 + 1
+    assert store.sync_status(OWNER)["pending"] == 1
+    assert store.prepare_batch(OWNER) is None
+    assert store.sync_status(OWNER)["pending"] == 0
+
+
 @pytest.mark.parametrize("phase", ["before", "after"])
 def test_real_store_process_exit_at_commit_has_no_handoff_gap(store, phase):
     card = offer(store)
@@ -471,9 +575,8 @@ def test_terminal_rehear_new_epoch_late_old_range_and_clear_are_telemetry_only(s
     assert short["state"] == "ended" and not short["applied"]
     assert short["telemetry"]["status"] == "durable"
     assert not short["playback_grant"] and not store.claim_dispatch(OWNER, card["id"], "accept")
-    # A response/ACK may have already released old local evidence. Replaying
-    # it keeps the original epoch and fact; local slots are not a permanent
-    # epoch seen-set. Cloud coverage remains the authoritative range deduper.
+    # ACK retires transport, not the original local handoff. A lost renderer
+    # reply is confirmed without rebuilding an already accepted cloud fact.
     store.acknowledge_batch(OWNER, answer(store.prepare_batch(OWNER)))
     replay = store.record(OWNER, card["id"], old, control=control())
     tail = store.record(OWNER, card["id"], metric("seek-tail", "seek-epoch", 250, 500), control=control())
@@ -481,7 +584,7 @@ def test_terminal_rehear_new_epoch_late_old_range_and_clear_are_telemetry_only(s
     assert not replay["applied"] and not tail["applied"]
     pending = store.prepare_batch(OWNER)
     assert {item["id"]: item["payload"]["measurement"]["epoch_id"] for item in pending["items"]} == {
-        "old-range": "old-epoch", "seek-tail": "seek-epoch"}
+        "seek-tail": "seek-epoch"}
     store.apply_control(OWNER, control(1, 2))
     cleared = store.record(OWNER, card["id"], old, control=control(1, 2))
     assert cleared["telemetry"]["status"] == "discarded"

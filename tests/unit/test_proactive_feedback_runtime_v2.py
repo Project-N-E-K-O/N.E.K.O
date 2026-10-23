@@ -72,6 +72,10 @@ def env(tmp_path):
         if request.url.path.endswith("/batches"):
             batch = json.loads(request.content)
             uploads.append(batch)
+            if options.get("upload_status"):
+                if options.get("on_upload_error"):
+                    options["on_upload_error"]()
+                return httpx.Response(options["upload_status"])
             if options["lose_response"]:
                 options["lose_response"] = False
                 raise httpx.ReadError("synthetic reply loss", request=request)
@@ -199,18 +203,93 @@ async def test_oauth_identity_mismatch_cannot_discover_or_write_other_account_co
 
 @pytest.mark.asyncio
 async def test_real_local_outbox_retries_same_frozen_body_and_only_matching_receipt_acks(env):
+    clock = [1000.0]
+    env.runtime.clock = lambda: clock[0]
     try:
         await env.runtime.sync_once()
         shown(env)
         env.options["lose_response"] = True
         assert (await env.runtime.sync_once())["state"] == "retry_wait"
         assert env.store.sync_status(env.owner)["pending"] == 1
+        assert (await env.runtime.sync_once())["state"] == "retry_wait"
+        assert len(env.uploads) == 1
+        clock[0] += 31
         assert (await env.runtime.sync_once())["state"] == "synced"
         assert env.uploads[0] == env.uploads[1]
         status = await env.runtime.status()
         assert status["local_queue_empty"] and status["fully_synced"]
         assert "synthetic-token" not in json.dumps(status)
     finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_upload_failure_is_durable_and_backs_off_without_blocking_control(env):
+    clock = [1000.0]
+    env.runtime.clock = lambda: clock[0]
+    try:
+        await env.runtime.sync_once()
+        shown(env)
+        env.options["upload_status"] = 503
+        assert (await env.runtime.sync_once())["state"] == "retry_wait"
+        status = await env.runtime.status()
+        assert status["attempts"] == 1 and status["last_error"] == "cloud_unavailable"
+        assert status["retry_after_seconds"] == 30
+        reads = env.requests.count("/api/proactive/feedback/v2/control")
+        assert (await env.runtime.sync_once())["state"] == "retry_wait"
+        assert len(env.uploads) == 1
+        assert env.requests.count("/api/proactive/feedback/v2/control") == reads + 1
+        clock[0] += 31
+        await env.runtime.sync_once()
+        assert env.store.sync_status(env.owner)["attempts"] == 2
+        assert (await env.runtime.status())["retry_after_seconds"] == 60
+        clock[0] += 61
+        env.options["upload_status"] = 409
+        assert (await env.runtime.sync_once())["state"] == "blocked"
+        assert env.store.sync_status(env.owner)["blocked"]
+        assert env.store.sync_status(env.owner)["last_error"] == "cloud_conflict"
+        env.state["clear_generation"] += 1
+        assert (await env.runtime.sync_once())["state"] == "idle"
+        assert not env.store.sync_status(env.owner)["blocked"]
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_commit_cannot_mark_batch_after_credential_fence_opens(env):
+    import asyncio
+    import threading
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    @contextmanager
+    def blocked_fence():
+        entered.set()
+        try:
+            assert release.wait(5)
+            yield env.owner
+        finally:
+            finished.set()
+
+    task = None
+    try:
+        await env.runtime.sync_once()
+        shown(env)
+        env.options["upload_status"] = 503
+        env.options["on_upload_error"] = lambda: setattr(env.runtime, "attribution_context", blocked_fence)
+        task = asyncio.create_task(env.runtime.sync_once())
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 5)
+        assert env.store.sync_status(env.owner)["attempts"] == 0
+        assert env.store.sync_status(env.owner)["pending"] == 1
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await env.client.aclose()
 
 

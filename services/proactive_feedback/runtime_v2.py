@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import sqlite3
+import threading
 import time
 import uuid
 
@@ -97,6 +98,8 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
         if changed:
             self._native_anchor = None
             self._has_v2_receipt = False
+            self._retry_at.pop(owner["key"], None)
+            self._failures.pop(owner["key"], None)
         if value.get("active") is not True:
             self._native_anchor = None
             self._control_state = "registration_removed"
@@ -237,6 +240,17 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                 self._record_failure("cloud_unavailable", owner)
                 raise
 
+    def _commit_batch_error(self, owner, token, batch, failure, cancelled):
+        with self.attribution_context() as current_owner:
+            snapshot = self.fenced_snapshot_provider()
+            if self._closing or cancelled.is_set():
+                raise SyncFailure("closing")
+            if (current_owner != owner or host.owner_from_snapshot(snapshot) != owner
+                    or (snapshot or {}).get("access_token") != token):
+                raise SyncFailure("session_changed")
+            if not self.store.mark_batch_error(owner, batch["batch_id"], failure.code, failure.permanent):
+                raise SyncFailure("session_changed")
+
     async def sync_once(self):
         async with self._lock:
             if self._closing:
@@ -263,6 +277,12 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                             await asyncio.to_thread(self._capture_current_settings, owner)
                         except (OSError, sqlite3.Error, ValueError, LockException):
                             self._settings_import_error = "settings_import_unavailable"
+                status = await asyncio.to_thread(self.store.sync_status, owner)
+                await self._guard(owner, token)
+                if status["blocked"]:
+                    return {"state": "blocked", "error_code": status["last_error"]}
+                if self._retry_at.get(owner["key"], 0) > self.clock():
+                    return {"state": "retry_wait", "error_code": self._errors.get(owner["key"], "retry_wait")}
                 batch = await asyncio.to_thread(self.store.prepare_batch, owner, 100)
                 if batch is None and await asyncio.to_thread(self.store.retry_deferred, owner):
                     batch = await asyncio.to_thread(self.store.prepare_batch, owner, 100)
@@ -277,13 +297,36 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                     raise SyncFailure("session_changed")
                 self._has_v2_receipt = True
                 self._errors.pop(owner["key"], None)
+                self._failures.pop(owner["key"], None)
+                self._retry_at.pop(owner["key"], None)
                 return {"state": "synced", "batch_id": batch["batch_id"], "items": len(batch["items"])}
             except SyncFailure as error:
-                code = error.code
+                failure = error
             except (OSError, sqlite3.Error, httpx.HTTPError, TimeoutError, ValueError):
-                code = "cloud_unavailable"
+                failure = SyncFailure("cloud_unavailable")
+            code = failure.code
+            if code in {"closing", "session_changed"}:
+                self._record_failure(code, owner)
+                return {"state": "stopped" if code == "closing" else "session_changed", "error_code": code}
+            if batch is not None:
+                cancelled = threading.Event()
+                try:
+                    await asyncio.to_thread(self._commit_batch_error, owner, token, batch, failure, cancelled)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                except SyncFailure as error:
+                    self._record_failure(error.code, owner)
+                    return {"state": "stopped" if error.code == "closing" else "session_changed", "error_code": error.code}
+                except (OSError, sqlite3.Error):
+                    failure = SyncFailure("cloud_unavailable")
+                    code = failure.code
+                count = max(self._failures.get(owner["key"], 0), status["attempts"]) + 1
+                self._failures[owner["key"]] = count
+                self._retry_at[owner["key"]] = self.clock() + min(900, 30 * 2 ** min(count - 1, 5))
             self._record_failure(code, owner)
-            return {"state": "upgrade_required" if code == "upgrade_required" else "retry_wait", "error_code": code}
+            state = "upgrade_required" if code == "upgrade_required" else "blocked" if failure.permanent and batch is not None else "retry_wait"
+            return {"state": state, "error_code": code}
 
     async def status(self):
         result = await super().status()
