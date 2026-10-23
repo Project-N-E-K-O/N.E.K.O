@@ -4,6 +4,7 @@
     <el-radio-group
       :model-value="layoutMode"
       size="small"
+      class="wb-segmented"
       :aria-label="$t('plugins.layoutLabel')"
       @update:model-value="(v: LayoutMode) => $emit('update:layoutMode', v)"
     >
@@ -45,20 +46,5 @@ defineEmits<{
 .wb-layout-switcher__icon {
   font-size: 15px;
   color: var(--el-text-color-secondary);
-}
-
-.wb-layout-switcher :deep(.el-radio-button__inner) {
-  border-radius: var(--radius-chip);
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  transition:
-    background-color var(--motion-duration-normal) var(--motion-ease-standard),
-    color var(--motion-duration-normal) var(--motion-ease-standard),
-    box-shadow var(--motion-duration-normal) var(--motion-ease-standard);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wb-layout-switcher :deep(.el-radio-button__inner) { transition: none; }
 }
 </style>

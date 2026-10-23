@@ -86,6 +86,10 @@
         @update:model-value="(v: string) => $emit('update:filterText', v)"
       />
     </div>
+    <!-- 分组筛选与视图切换属于同一个“筛选什么、怎么看”的块，共用这一块底色。 -->
+    <div v-if="$slots.footer" class="wb-filter-bar__footer">
+      <slot name="footer" />
+    </div>
   </div>
 </template>
 
@@ -122,6 +126,10 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:filterText': [value: string]
+}>()
+
+defineSlots<{
+  footer?: () => unknown
 }>()
 
 // ─── 规则下拉定位 + 悬停关闭 ──────────────────────────────────────
@@ -329,6 +337,15 @@ onBeforeUnmount(stopListeners)
   gap: 10px;
   flex-wrap: wrap;
   width: 100%;
+}
+
+.wb-filter-bar__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 
 .wb-filter-bar__input {

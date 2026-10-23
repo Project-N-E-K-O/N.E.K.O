@@ -100,6 +100,39 @@ html.dark .el-checkbox-button {
   --el-checkbox-button-checked-border-color: var(--el-color-primary-light-5);
 }
 
+/* Workbench segmented controls (group filter, layout switcher) share one joined
+ * track with a quiet tint for the selection, in both themes. */
+.wb-segmented .el-radio-button {
+  --el-radio-button-checked-text-color: var(--el-color-primary);
+  --el-radio-button-checked-bg-color: var(--el-color-primary-light-9);
+  --el-radio-button-checked-border-color: var(--el-color-primary-light-5);
+}
+
+.wb-segmented .el-checkbox-button {
+  --el-checkbox-button-checked-text-color: var(--el-color-primary);
+  --el-checkbox-button-checked-bg-color: var(--el-color-primary-light-9);
+  --el-checkbox-button-checked-border-color: var(--el-color-primary-light-5);
+}
+
+.wb-segmented :is(.el-radio-button__inner, .el-checkbox-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard),
+    color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-segmented :is(.el-radio-button__inner, .el-checkbox-button__inner) {
+    transition: none;
+  }
+}
+
 html.dark .el-checkbox {
   --el-checkbox-checked-icon-color: var(--on-primary);
 }

@@ -20,7 +20,6 @@
   --surface-shadow-hover: 0 7px 22px rgba(52, 106, 148, 0.08);
   --on-primary: #ffffff;
   --on-danger: #ffffff;
-  --control-selection-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 24%, transparent);
 
   /* 布局：shell 只管理两块白色内容面的外边距、间隔和圆角。
      阅读页自己选择 content-padding 或 spacing-lg；填满型工作台保持零外层 padding，
@@ -111,8 +110,6 @@ html:root.dark {
   --surface-shadow: 0 3px 12px rgb(0 0 0 / 12%);
   --surface-shadow-hover: 0 8px 24px rgb(0 0 0 / 22%);
   --shadow-lg: 0 16px 40px rgb(0 0 0 / 36%);
-  --control-selection-shadow: none;
-  --group-filter-selected-bg: var(--el-color-primary-light-9);
   --on-primary: #112039;
   --on-danger: #35151e;
   --el-bg-color-overlay: #252e3b;

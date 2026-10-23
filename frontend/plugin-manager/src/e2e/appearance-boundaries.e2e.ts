@@ -492,6 +492,56 @@ for (const scenario of [
   })
 }
 
+appearanceTest('workbench header keeps one action row and collapses labels when narrow', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  // 英文带文字的按钮行约 1202px；侧边栏展开时 1600px 视口给头部留出约 1304px。
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  await page.route('**/plugin/metrics/**', route => route.fulfill({ json: { metrics: null } }))
+  // Keep the boot update popup from covering the header actions.
+  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
+    route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
+  )
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+
+  const header = page.locator('.workbench-header')
+  const actions = page.getByTestId('plugin-list-header-actions')
+  // 控件高度不一、按中线对齐，所以按竖直中点判断是否同一行。
+  const rowCenters = () => header.evaluate(element => [
+    ...element.querySelectorAll('.workbench-header__market > *, .header-actions > .el-button, .header-actions > .el-dropdown'),
+  ].map(child => {
+    const rect = child.getBoundingClientRect()
+    return `${child.className.toString().split(' ')[0]}:${Math.round(rect.top + rect.height / 2)}`
+  }))
+  const centers = await rowCenters()
+  expect(new Set(centers.map(entry => entry.split(':')[1])).size, centers.join(' ')).toBe(1)
+  await expect(actions.locator('.el-button--primary:not(.is-plain)')).toHaveCount(1)
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]')).toHaveClass(/el-button--primary/)
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-package-panel-toggle"]')).toContainText('Package')
+
+  const moreActions = page.getByTestId('plugin-list-more-actions')
+  await expect(moreActions).toHaveAccessibleName('More')
+  await moreActions.click()
+  const metricsItem = page.locator('[data-yui-guide-id="plugin-list-metrics-toggle"]')
+  await expect(metricsItem).toHaveAccessibleName('Show Metrics')
+  await expect(metricsItem.locator('.header-more-menu__check')).not.toHaveClass(/is-checked/)
+  await metricsItem.click()
+  await moreActions.click()
+  await expect(metricsItem).toHaveAccessibleName('Hide Metrics')
+  await expect(metricsItem.locator('.header-more-menu__check')).toHaveClass(/is-checked/)
+  await page.keyboard.press('Escape')
+
+  await page.setViewportSize({ width: 800, height: 1000 })
+  await expect(header).toHaveClass(/workbench-header--compact/)
+  const packageToggle = actions.locator('[data-yui-guide-id="plugin-list-package-panel-toggle"]')
+  await expect(packageToggle).not.toContainText('Package')
+  await expect(packageToggle).toHaveAccessibleName('Package Manager')
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-refresh"]')).toHaveAccessibleName('Refresh')
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]')).toContainText('Import')
+  expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+})
+
 appearanceTest('card extras, themes and layout switches preserve aligned, reachable content', async ({ page }) => {
   await installCardLayoutFixture(page)
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -503,7 +553,12 @@ appearanceTest('card extras, themes and layout switches preserve aligned, reacha
   } } }))
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
   await expect(page.locator('.plugin-card')).toHaveCount(8)
+  // 夹具带有可更新版本，启动时会弹出更新浮窗并盖住头部操作。
+  await page.locator('.update-float__icon-btn[title="Close"]').click()
+  const moreActions = page.getByTestId('plugin-list-more-actions')
+  await moreActions.click()
   await page.locator('[data-yui-guide-id="plugin-list-metrics-toggle"]').click()
+  await moreActions.click()
   await page.locator('[data-yui-guide-id="plugin-list-source-toggle"]').click()
   await expect(page.locator('.plugin-card .metrics-bar')).toHaveCount(8)
   await expect(page.locator('.plugin-card').first().locator('.metrics-bar')).toContainText('3.5%')

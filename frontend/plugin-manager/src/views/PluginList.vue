@@ -31,8 +31,13 @@
     >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
-          <div class="workbench-header">
-            <div class="workbench-header__copy">
+          <div
+            ref="workbenchHeaderRef"
+            class="workbench-header"
+            :class="{ 'workbench-header--compact': headerActionsCompact }"
+          >
+            <!-- 左：市场相关入口；右：模式 │ 面板 │ 视图选项 │ 数据操作。窄头部只保留图标。 -->
+            <div ref="headerMarketRef" class="workbench-header__market">
               <button
                 v-if="marketUrl"
                 class="market-trigger"
@@ -40,10 +45,11 @@
                 type="button"
                 data-yui-guide-id="plugin-list-market-toggle"
                 :title="marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')"
+                :aria-label="headerActionsCompact ? (marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')) : undefined"
                 @click="toggleMarketPanel"
               >
                 <el-icon class="market-trigger__icon"><ShoppingCart /></el-icon>
-                <span class="market-trigger__label">
+                <span v-if="!headerActionsCompact" class="market-trigger__label">
                   {{ marketPanelVisible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
                 </span>
                 <el-icon class="market-trigger__arrow">
@@ -57,10 +63,11 @@
                 plain
                 data-yui-guide-id="plugin-list-update-check"
                 :title="$t('pluginUpdates.button')"
+                :aria-label="headerActionsCompact ? $t('pluginUpdates.button') : undefined"
                 @click="handleCheckUpdates"
               >
                 <el-icon><Top /></el-icon>
-                <span>{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
+                <span v-if="!headerActionsCompact">{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
                 <span
                   v-if="pluginUpdatesStore.candidates.length > 0"
                   class="plugin-update-trigger__badge"
@@ -71,12 +78,13 @@
                 class="market-auth-trigger"
                 :loading="marketLogoutBusy"
                 aria-live="polite"
+                :aria-label="headerActionsCompact ? `${$t('market.authVerificationPendingLabel')} · ${$t('market.logout')}` : undefined"
                 :title="$t('market.logout')"
                 plain
                 @click="confirmMarketLogout"
               >
                 <el-icon><User /></el-icon>
-                {{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}
+                <span v-if="!headerActionsCompact">{{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}</span>
               </el-button>
               <el-popover
                 v-else-if="marketUrl && marketAuth.authenticated"
@@ -90,10 +98,11 @@
                   <el-button
                     class="market-auth-trigger market-auth-trigger--connected"
                     :loading="marketAuthBusy"
+                    :title="$t('market.accountConnected', { name: marketAuthDisplayName })"
                     plain
                   >
                     <el-icon><User /></el-icon>
-                    {{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}
+                    <span v-if="!headerActionsCompact">{{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}</span>
                   </el-button>
                 </template>
                 <div class="market-account-card" v-loading="marketAccountSummaryBusy">
@@ -134,115 +143,137 @@
                 v-else-if="marketUrl"
                 class="market-auth-trigger"
                 :loading="marketAuthBusy"
+                :title="$t('market.login')"
                 plain
                 @click="startMarketLogin()"
               >
                 <el-icon><User /></el-icon>
-                {{ $t('market.login') }}
-              </el-button>
-              <el-button
-                class="multi-select-trigger"
-                :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
-                :type="multiSelectEnabled ? 'primary' : 'default'"
-                data-yui-guide-id="plugin-list-multi-select"
-                plain
-                @click="toggleMultiSelectMode"
-              >
-                <el-icon><Finished /></el-icon>
-                {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
+                <span v-if="!headerActionsCompact">{{ $t('market.login') }}</span>
               </el-button>
             </div>
 
-            <div class="header-actions">
-              <button
-                class="header-btn header-btn--accent"
+            <!-- 三级：导入是唯一主按钮；其余为描边次按钮，开关态用浅底；低频视图选项和全部重载收进“更多”。 -->
+            <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions">
+              <el-button
+                :type="multiSelectEnabled ? 'primary' : 'default'"
+                :plain="multiSelectEnabled"
+                :aria-pressed="multiSelectEnabled"
+                :aria-label="headerActionsCompact ? $t('plugins.multiSelect') : undefined"
+                :title="headerActionsCompact ? $t('plugins.multiSelect') : undefined"
+                data-yui-guide-id="plugin-list-multi-select"
+                @click="toggleMultiSelectMode"
+              >
+                <el-icon><Finished /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('plugins.multiSelect') }}</span>
+              </el-button>
+              <span class="header-actions__divider" aria-hidden="true" />
+              <el-button
+                :type="packagePanelVisible ? 'primary' : 'default'"
+                :plain="packagePanelVisible"
+                :aria-pressed="packagePanelVisible"
+                :aria-label="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
+                :title="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
+                data-yui-guide-id="plugin-list-package-panel-toggle"
+                @click="togglePackagePanel"
+              >
+                <el-icon><Box /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('plugins.openPackageManager') }}</span>
+              </el-button>
+              <el-button
+                :type="mirrorPanelVisible ? 'primary' : 'default'"
+                :plain="mirrorPanelVisible"
+                :aria-pressed="mirrorPanelVisible"
+                :aria-label="headerActionsCompact ? $t('plugins.openMirrorSource') : undefined"
+                :title="headerActionsCompact ? $t('plugins.openMirrorSource') : undefined"
+                data-yui-guide-id="plugin-list-mirror-source-toggle"
+                @click="toggleMirrorPanel"
+              >
+                <el-icon><Connection /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('plugins.openMirrorSource') }}</span>
+              </el-button>
+              <span class="header-actions__divider" aria-hidden="true" />
+              <el-dropdown trigger="click" :persistent="false" @command="handleMoreAction">
+                <el-button
+                  :aria-label="$t('plugins.moreActions')"
+                  :title="$t('plugins.moreActions')"
+                  data-testid="plugin-list-more-actions"
+                >
+                  <el-icon><MoreFilled /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <!-- 视觉上是勾选项；menuitem 不能带 aria-checked，读屏用 aria-label 读出将要执行的动作。 -->
+                  <el-dropdown-menu class="header-more-menu">
+                    <el-dropdown-item
+                      command="metrics"
+                      :aria-label="showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics')"
+                      data-yui-guide-id="plugin-list-metrics-toggle"
+                    >
+                      <el-icon class="header-more-menu__check" :class="{ 'is-checked': showMetrics }"><Check /></el-icon>
+                      {{ $t('plugins.showMetrics') }}
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      command="sourceDetail"
+                      :aria-label="showSourceDetail ? $t('plugins.hideSourceDetail') : $t('plugins.showSourceDetail')"
+                      data-yui-guide-id="plugin-list-source-toggle"
+                    >
+                      <el-icon class="header-more-menu__check" :class="{ 'is-checked': showSourceDetail }"><Check /></el-icon>
+                      {{ $t('plugins.showSourceDetail') }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="reloadAll" divided :disabled="reloadAllDisabled">
+                      <span class="header-more-menu__danger">
+                        <el-icon><RefreshRight /></el-icon>
+                        {{ $t('plugins.reloadAll') }}
+                      </span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <span class="header-actions__divider" aria-hidden="true" />
+              <el-button
+                :disabled="loading"
+                :aria-label="headerActionsCompact ? $t('common.refresh') : undefined"
+                :title="headerActionsCompact ? $t('common.refresh') : undefined"
+                data-yui-guide-id="plugin-list-refresh"
+                @click="handleRefresh"
+              >
+                <el-icon><Refresh /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('common.refresh') }}</span>
+              </el-button>
+              <el-button
+                type="primary"
                 :disabled="importing"
                 data-yui-guide-id="plugin-list-import"
                 @click="importDialogVisible = true"
               >
                 <el-icon><Upload /></el-icon>
                 <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active': packagePanelVisible }"
-                data-yui-guide-id="plugin-list-package-panel-toggle"
-                @click="togglePackagePanel"
-              >
-                <el-icon><Box /></el-icon>
-                <span>{{ packagePanelVisible ? $t('plugins.closePackageManager') : $t('plugins.openPackageManager') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active': mirrorPanelVisible }"
-                data-yui-guide-id="plugin-list-mirror-source-toggle"
-                @click="toggleMirrorPanel"
-              >
-                <el-icon><Connection /></el-icon>
-                <span>{{ mirrorPanelVisible ? $t('plugins.closeMirrorSource') : $t('plugins.openMirrorSource') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active header-btn--success': showMetrics }"
-                data-yui-guide-id="plugin-list-metrics-toggle"
-                @click="toggleMetrics"
-              >
-                <el-icon><DataAnalysis /></el-icon>
-                <span>{{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active': showSourceDetail }"
-                data-yui-guide-id="plugin-list-source-toggle"
-                @click="toggleSourceDetail"
-              >
-                <el-icon><InfoFilled /></el-icon>
-                <span>{{ showSourceDetail ? $t('plugins.hideSourceDetail') : $t('plugins.showSourceDetail') }}</span>
-              </button>
-              <button
-                class="header-btn header-btn--warn"
-                :disabled="reloadingAll || runningPlugins.length === 0"
-                @click="handleReloadAll"
-              >
-                <el-icon><RefreshRight /></el-icon>
-                <span>{{ $t('plugins.reloadAll') }}</span>
-              </button>
-              <button
-                class="header-btn header-btn--primary"
-                :disabled="loading"
-                data-yui-guide-id="plugin-list-refresh"
-                @click="handleRefresh"
-              >
-                <el-icon><Refresh /></el-icon>
-                <span>{{ $t('common.refresh') }}</span>
-              </button>
+              </el-button>
             </div>
+
+            <WorkbenchFilterBar
+              v-model:filter-text="filterText"
+              :rule-groups="filterRuleGroups"
+              :placeholder="$t('plugins.filterPlaceholder')"
+              :rules-trigger-label="$t('plugins.filterRules')"
+              :rules-title="$t('plugins.filterRulesTitle')"
+              :rules-hint="$t('plugins.filterRulesHint')"
+              :guide-ids="{ rulesTrigger: 'plugin-list-filter-rules', input: 'plugin-list-filter-input' }"
+            >
+              <template #footer>
+                <WorkbenchGroupFilter
+                  v-model:selected-ids="selectedTypes"
+                  :choices="typeFilterChoices"
+                  :counts="groupCounts"
+                  guide-id="plugin-list-type-filter"
+                />
+                <WorkbenchLayoutSwitcher
+                  v-model:layout-mode="layoutMode"
+                  :choices="layoutChoices"
+                  guide-id="plugin-list-layout-mode"
+                />
+              </template>
+            </WorkbenchFilterBar>
           </div>
-
-          <WorkbenchFilterBar
-            v-model:filter-text="filterText"
-            :rule-groups="filterRuleGroups"
-            :placeholder="$t('plugins.filterPlaceholder')"
-            :rules-trigger-label="$t('plugins.filterRules')"
-            :rules-title="$t('plugins.filterRulesTitle')"
-            :rules-hint="$t('plugins.filterRulesHint')"
-            :guide-ids="{ rulesTrigger: 'plugin-list-filter-rules', input: 'plugin-list-filter-input' }"
-            class="filter-bar-spacing"
-          />
-
-          <WorkbenchToolbar class="toolbar-spacing">
-            <WorkbenchGroupFilter
-              v-model:selected-ids="selectedTypes"
-              :choices="typeFilterChoices"
-              :counts="groupCounts"
-              guide-id="plugin-list-type-filter"
-            />
-            <WorkbenchLayoutSwitcher
-              v-model:layout-mode="layoutMode"
-              :choices="layoutChoices"
-              guide-id="plugin-list-layout-mode"
-            />
-          </WorkbenchToolbar>
         </template>
 
         <div v-if="listRefreshError || listRefreshWarning" class="plugin-list-feedback" data-testid="plugin-list-feedback">
@@ -450,7 +481,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User, Top } from '@element-plus/icons-vue'
+import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -470,7 +501,6 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
 import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
 import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
-import WorkbenchToolbar from '@/components/common/WorkbenchToolbar.vue'
 import type {
   FilterRuleGroupDescriptor,
   GroupChoiceDescriptor,
@@ -482,6 +512,7 @@ import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
+import { useCollapsibleLabels } from '@/composables/useCollapsibleLabels'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -1109,6 +1140,34 @@ const runningPlugins = computed(() => {
   return rawPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
+const reloadAllDisabled = computed(() => reloadingAll.value || runningPlugins.value.length === 0)
+
+// 头部按内容测量（市场/包管理抽屉打开后主区变窄；文案随语言和登录态变化），而不是固定阈值。
+const workbenchHeaderRef = ref<HTMLElement | null>(null)
+const headerMarketRef = ref<HTMLElement | null>(null)
+const headerActionsRef = ref<HTMLElement | null>(null)
+const { compact: headerActionsCompact } = useCollapsibleLabels(
+  workbenchHeaderRef,
+  [headerMarketRef, headerActionsRef],
+  () => [
+    locale.value,
+    marketUrl.value,
+    marketAuth.value.auth_state,
+    marketAuth.value.authenticated,
+    marketAuthDisplayName.value,
+    pluginUpdatesStore.checking,
+    importing.value,
+  ],
+)
+
+type MoreActionCommand = 'metrics' | 'sourceDetail' | 'reloadAll'
+
+function handleMoreAction(command: MoreActionCommand) {
+  if (command === 'metrics') void toggleMetrics()
+  else if (command === 'sourceDetail') void toggleSourceDetail()
+  else void handleReloadAll()
+}
+
 // ── Export (build + download) ─────────────────────────────────────────
 
 async function handleBatchExport() {
@@ -1519,25 +1578,71 @@ onUnmounted(() => {
   border-bottom-color: var(--surface-border);
 }
 
+/* 单行头部：左侧市场组，右侧动作组；空间不足时动作组整体换到下一行，不拆散。 */
 .workbench-header {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
 }
 
-.workbench-header__copy {
+.workbench-header__market,
+.header-actions {
   display: flex;
   align-items: center;
   min-width: 0;
-  flex: 0 1 auto;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.workbench-header__copy :deep(.el-button) {
+.workbench-header__market :deep(.el-button),
+.header-actions :deep(.el-button) {
+  --el-button-border-radius: var(--radius-control);
   margin-left: 0;
+  /* 收起文字会改内边距；Element Plus 默认 transition: all，按钮组宽度会在过渡中被测到。 */
+  transition-property: color, background-color, border-color;
+}
+
+.header-actions {
+  margin-left: auto;
+}
+
+/* 筛选块始终独占按钮行下方的一整行。 */
+.workbench-header > .wb-filter-bar {
+  flex-basis: 100%;
+}
+
+.header-actions__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--surface-border);
+}
+
+.workbench-header--compact .header-actions :deep(.el-button),
+.workbench-header--compact .workbench-header__market :deep(.el-button) {
+  padding-inline: 9px;
+}
+
+.workbench-header--compact .market-trigger {
+  padding: 8px 10px;
+}
+
+/* “更多”菜单被 teleport 到 body，只有本模板写进插槽的节点带 scoped 属性。 */
+.header-more-menu__check {
+  margin-right: 8px;
+  visibility: hidden;
+}
+
+.header-more-menu__check.is-checked {
+  visibility: visible;
+  color: var(--el-color-primary);
+}
+
+.header-more-menu__danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--el-color-danger);
 }
 
 /* ── Market quick-access trigger (top-left) ── */
@@ -1667,132 +1772,6 @@ onUnmounted(() => {
 .market-account-card__logout {
   justify-self: start;
   padding-left: 0;
-}
-
-/* ── Multi-select trigger button (top) ── */
-.multi-select-trigger {
-  --el-button-border-radius: var(--radius-control);
-  font-weight: 600;
-  padding: 8px 18px;
-  gap: 6px;
-  transition:
-    transform 0.22s ease,
-    box-shadow 0.22s ease,
-    background-color 0.22s ease,
-    border-color 0.22s ease;
-}
-
-.multi-select-trigger:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
-}
-
-.multi-select-trigger--active {
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 24%, transparent),
-    0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
-}
-
-/* ── Header action buttons (unified) ── */
-.header-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-control);
-  background: var(--surface-card);
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.18s ease,
-    box-shadow 0.2s ease;
-}
-
-.header-btn .el-icon {
-  font-size: 15px;
-}
-
-.header-btn:hover {
-  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
-}
-
-.header-btn:active {
-  transform: translateY(0) scale(0.97);
-}
-
-.header-btn:disabled {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-/* Active state (toggled on) */
-.header-btn--active {
-  border-color: color-mix(in srgb, var(--el-color-primary) 40%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 8%, var(--el-bg-color));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-}
-
-/* Color variants */
-.header-btn--accent {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--el-color-success) 40%, var(--el-border-color));
-  color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 4%, var(--el-bg-color));
-}
-
-.header-btn--accent:hover {
-  border-color: var(--el-color-success);
-  color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-success) 16%, transparent);
-}
-
-.header-btn--primary {
-  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
-}
-
-.header-btn--primary:hover {
-  border-color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 16%, transparent);
-}
-
-.header-btn--success {
-  border-color: color-mix(in srgb, var(--el-color-success) 30%, var(--el-border-color));
-  color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 4%, var(--el-bg-color));
-}
-
-.header-btn--success:hover {
-  border-color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-success) 16%, transparent);
-}
-
-.header-btn--warn {
-  border-color: color-mix(in srgb, var(--el-color-warning) 30%, var(--el-border-color));
-  color: var(--el-color-warning);
-  background: color-mix(in srgb, var(--el-color-warning) 4%, var(--el-bg-color));
-}
-
-.header-btn--warn:hover {
-  border-color: var(--el-color-warning);
-  background: color-mix(in srgb, var(--el-color-warning) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-warning) 16%, transparent);
 }
 
 /* ── Export button in batch row ── */
@@ -2026,26 +2005,6 @@ onUnmounted(() => {
 .float-bar-leave-from {
   opacity: 1;
   transform: translateX(-50%) translateY(0) scale(1);
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  width: 100%;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-/* ── Spacing for workbench filter bar + toolbar ── */
-.filter-bar-spacing {
-  margin-top: 14px;
-}
-
-.toolbar-spacing {
-  margin-top: 10px;
 }
 
 @media (max-width: 1280px) {

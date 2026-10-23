@@ -96,35 +96,35 @@
       :rules-trigger-label="t('market.filterRules')"
       :rules-title="t('market.filterRulesTitle')"
       :rules-hint="t('market.filterRulesHint')"
-    />
-
-    <WorkbenchToolbar class="market-panel__toolbar">
-      <WorkbenchGroupFilter
-        v-model:selected-ids="selectedGroupIds"
-        :choices="groupChoices"
-        :counts="groupCounts"
-        selection-mode="single"
-      />
-      <div class="market-panel__toolbar-right">
-        <el-select
-          v-model="sortBy"
-          size="small"
-          class="market-panel__sort"
-          @change="onSortChange"
-        >
-          <el-option
-            v-for="opt in sortOptions"
-            :key="opt.value"
-            :value="opt.value"
-            :label="opt.label"
-          />
-        </el-select>
-        <WorkbenchLayoutSwitcher
-          v-model:layout-mode="layoutMode"
-          :choices="layoutChoices"
+    >
+      <template #footer>
+        <WorkbenchGroupFilter
+          v-model:selected-ids="selectedGroupIds"
+          :choices="groupChoices"
+          :counts="groupCounts"
+          selection-mode="single"
         />
-      </div>
-    </WorkbenchToolbar>
+        <div class="market-panel__toolbar-right">
+          <el-select
+            v-model="sortBy"
+            size="small"
+            class="market-panel__sort"
+            @change="onSortChange"
+          >
+            <el-option
+              v-for="opt in sortOptions"
+              :key="opt.value"
+              :value="opt.value"
+              :label="opt.label"
+            />
+          </el-select>
+          <WorkbenchLayoutSwitcher
+            v-model:layout-mode="layoutMode"
+            :choices="layoutChoices"
+          />
+        </div>
+      </template>
+    </WorkbenchFilterBar>
 
     <div class="market-panel__content">
       <EmptyState
@@ -262,7 +262,6 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
 import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
 import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
-import WorkbenchToolbar from '@/components/common/WorkbenchToolbar.vue'
 import GridSection from '@/components/common/GridSection.vue'
 import {
   fetchMarketPlugins,
@@ -1274,10 +1273,6 @@ watch(
 .market-panel__icon-btn:hover {
   background: color-mix(in srgb, var(--el-color-primary) 8%, transparent);
   color: var(--el-color-primary);
-}
-
-.market-panel__toolbar {
-  margin-top: 0;
 }
 
 .market-panel__toolbar-right {
