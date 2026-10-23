@@ -51,6 +51,8 @@ def env(tmp_path):
                 return httpx.Response(409, json={"detail": "device_limit"})
             if replace:
                 row = state["registrations"][replace]
+                if not row["active"] or command.get("expected_replace_registration_version") != row["version"]:
+                    return httpx.Response(409, json={"detail": "device_version"})
                 row.update(active=False, version=row["version"] + 1)
             previous = state["registrations"].get(registration, {"version": 0})
             state["registrations"][registration] = {"installation_id": command["installation_id"], "active": True,

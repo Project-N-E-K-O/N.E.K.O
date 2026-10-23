@@ -131,6 +131,8 @@ async def test_actual_store_runtime_signed_backend_statistics_roundtrip(tmp_path
             metrics = {row["metric"]: row for row in response.json()["categories"]}
             assert metrics["playback_elapsed_observed_v2"]["playback_ms"] == 60
             assert store.sync_status(owner)["pending"] == 0
+            if tail_kind == "ended":
+                await _assert_actual_device_replacement_cas(runtime, client, origin, headers, tmp_path)
         finally:
             try:
                 await client.post(origin + "/_fixture_stop", headers={"Authorization": "Bearer synthetic-integration-token"})
@@ -142,3 +144,50 @@ async def test_actual_store_runtime_signed_backend_statistics_roundtrip(tmp_path
                 process.terminate()
                 await asyncio.to_thread(process.wait, 5)
             log.close()
+
+
+async def _assert_actual_device_replacement_cas(runtime, client, origin, headers, root):
+    """A second real desktop preserves a viewed version through the real peer."""
+    bindings = []
+    installations = []
+    for _ in range(4):
+        installation = str(uuid.uuid4())
+        response = await client.post(origin + "/api/proactive/feedback/v2/devices/activate",
+                                     headers=headers, json={"installation_id": installation})
+        assert response.status_code == 200, response.text
+        bindings.append(response.json()["binding"])
+        installations.append(installation)
+    second = ProactiveFeedbackRuntimeV2(RecommendationStore(root / "second-desktop.sqlite3", protocol_version=2),
+        snapshot_provider=runtime.snapshot_provider, session_provider=runtime.session_provider, client=client,
+        attribution_context=runtime.attribution_context, fenced_snapshot_provider=runtime.fenced_snapshot_provider,
+        trusted_origin=origin)
+    try:
+        viewed = await second.list_devices()
+        assert sum(row["active"] for row in viewed["devices"]) == 5
+        chosen = bindings[0]
+        response = await client.post(origin + f"/api/proactive/feedback/v2/devices/{chosen['registration_id']}/remove",
+                                     headers=headers, json={"expected_registration_version": 1})
+        assert response.status_code == 200, response.text
+        response = await client.post(origin + "/api/proactive/feedback/v2/devices/activate", headers=headers,
+                                     json={"installation_id": installations[0]})
+        assert response.status_code == 200, response.text
+        assert response.json()["binding"]["registration_version"] == 3
+        from services.proactive_feedback.runtime import SyncFailure
+        with pytest.raises(SyncFailure, match="cloud_conflict"):
+            await second.activate_device(chosen["registration_id"], expected_owner_key=viewed["owner_key"],
+                                         expected_replace_registration_version=1)
+        unchanged = await second.list_devices()
+        target = next(row for row in unchanged["devices"] if row["registration_id"] == chosen["registration_id"])
+        assert target["active"] and target["registration_version"] == 3
+        assert len(unchanged["devices"]) == 5
+        first = await second.activate_device(chosen["registration_id"], expected_owner_key=viewed["owner_key"],
+                                            expected_replace_registration_version=3)
+        state = await second.list_devices()
+        assert sum(row["active"] for row in state["devices"]) == 5
+        assert not next(row for row in state["devices"] if row["registration_id"] == chosen["registration_id"])["active"]
+        retry = await second.activate_device(chosen["registration_id"], expected_owner_key=viewed["owner_key"],
+                                            expected_replace_registration_version=3)
+        assert retry == first
+        assert (await second.list_devices())["devices"] == state["devices"]
+    finally:
+        await second.close()
