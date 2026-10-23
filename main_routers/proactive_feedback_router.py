@@ -173,7 +173,7 @@ def _control_failure(error):
                         headers={"Cache-Control": "no-store"})
 
 
-async def _control_command(request, model, operation):
+async def _control_command(request, model, operation, *, max_body_bytes=2048):
     rejected = _validate(request)
     if rejected is not None:
         return rejected
@@ -184,13 +184,13 @@ async def _control_command(request, model, operation):
         return JSONResponse({"success": False, "error_code": "invalid_feedback_control"}, status_code=415)
     raw = bytearray()
     async for chunk in request.stream():
-        if len(raw) + len(chunk) > 2048:
+        if len(raw) + len(chunk) > max_body_bytes:
             return JSONResponse({"success": False, "error_code": "invalid_feedback_control"}, status_code=413)
         raw.extend(chunk)
     try:
         command = model.model_validate(json.loads(raw))
         result = await operation(runtime, command)
-    except (ValueError, UnicodeError, ValidationError):
+    except (ValueError, UnicodeError, ValidationError, RecursionError):
         return JSONResponse({"success": False, "error_code": "invalid_feedback_control"}, status_code=422)
     except (SyncFailure, OSError, sqlite3.Error, httpx.HTTPError, TimeoutError) as error:
         return _control_failure(error)
@@ -210,7 +210,9 @@ async def feedback_activate_device(request: Request):
         return await runtime.activate_device(command.replace_registration_id, command.display_name, command.expected_owner_key,
             expected_replace_registration_version=command.expected_replace_registration_version,
             activation_context=command.activation_context)
-    return await _control_command(request, ActivateDeviceRequest, run)
+    # Allow the 2048-character signed ASCII proof plus optional fields, even
+    # when JSON escapes each character. Other control commands keep 2 KiB.
+    return await _control_command(request, ActivateDeviceRequest, run, max_body_bytes=16 * 1024)
 
 
 @router.get("/devices")

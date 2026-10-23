@@ -1,5 +1,6 @@
 """Local management, baseline admission and upgrade recovery with synthetic data."""
 import copy
+import json
 import uuid
 
 import httpx
@@ -8,6 +9,91 @@ from fastapi import FastAPI
 
 from services.proactive_feedback.runtime import SyncFailure
 from tests.unit.test_proactive_feedback_runtime_v2 import env
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escaped", [False, True], ids=["utf8", "json-escaped"])
+async def test_local_activation_accepts_maximum_context_and_optional_fields(env, monkeypatch, escaped):
+    from main_routers import proactive_feedback_router as routes
+    monkeypatch.setattr(routes, "_runtime", env.runtime)
+    monkeypatch.setattr(routes, "_validate", lambda request: None)
+    env.options["activation_context"] = "A" * 2048
+    target = str(uuid.uuid4())
+    env.state["registrations"][target] = {"installation_id": str(uuid.uuid4()), "active": True, "version": 7}
+    command = {"activation_context": env.options["activation_context"], "expected_owner_key": env.owner["key"],
+               "replace_registration_id": target, "expected_replace_registration_version": 7,
+               "display_name": "🎵" * 64}
+    raw = json.dumps(command, ensure_ascii=escaped).encode()
+    if escaped:
+        raw = raw.replace(b"A", b"\\u0041")
+    assert 2048 < len(raw) < 16 * 1024
+    app = FastAPI()
+    app.include_router(routes.router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            response = await client.post("/api/proactive/feedback/devices/activate", content=raw,
+                                         headers={"Content-Type": "application/json"})
+        assert response.status_code == 200, response.text
+        assert not env.state["registrations"][target]["active"]
+        assert env.state["registrations"][env.registration]["display_name"] == command["display_name"]
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_local_activation_body_limit_accepts_exact_boundary_and_stops_oversized_stream(env, monkeypatch):
+    from main_routers import proactive_feedback_router as routes
+    monkeypatch.setattr(routes, "_runtime", env.runtime)
+    monkeypatch.setattr(routes, "_validate", lambda request: None)
+    raw = json.dumps({"activation_context": "synthetic-activation-context", "expected_owner_key": env.owner["key"]}).encode()
+    raw = raw.ljust(16 * 1024, b" ")
+    app = FastAPI()
+    app.include_router(routes.router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            headers = {"Content-Type": "application/json"}
+            path = "/api/proactive/feedback/devices/activate"
+            response = await client.post(path, content=raw, headers=headers)
+            assert response.status_code == 200, response.text
+            before = list(env.requests)
+
+            async def oversized():
+                yield raw[:8192]
+                yield raw[8192:]
+                yield b" "
+                pytest.fail("oversized request must stop consuming the stream")
+
+            for content in (raw + b" ", oversized()):
+                response = await client.post(path, content=content, headers=headers)
+                assert response.status_code == 413
+                assert response.json()["error_code"] == "invalid_feedback_control"
+                assert env.requests == before
+            response = await client.post(path, json={"activation_context": "A" * 2049})
+            assert response.status_code == 422
+            assert env.requests == before
+            response = await client.post(path, content=b"[" * 3000 + b"]" * 3000, headers=headers)
+            assert response.status_code == 422
+            assert env.requests == before
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/capture-context", "/devices/fixture/remove"])
+async def test_other_control_commands_keep_original_body_limit(env, monkeypatch, suffix):
+    from main_routers import proactive_feedback_router as routes
+    monkeypatch.setattr(routes, "_runtime", env.runtime)
+    monkeypatch.setattr(routes, "_validate", lambda request: None)
+    app = FastAPI()
+    app.include_router(routes.router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            response = await client.post("/api/proactive/feedback" + suffix, content=b" " * 2049,
+                                         headers={"Content-Type": "application/json"})
+        assert response.status_code == 413
+        assert not env.requests
+    finally:
+        await env.client.aclose()
 
 
 def install_snapshot(env):

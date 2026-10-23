@@ -40,12 +40,12 @@ def env(tmp_path):
             return httpx.Response(426, json={"detail": "proactive_upgrade_required"})
         if request.url.path.endswith("/devices"):
             return httpx.Response(200, json={"account_incarnation": state["account_incarnation"], "clear_generation": state["clear_generation"],
-                "max_active_devices": 5, "activation_context": "synthetic-activation-context", "devices": [{"registration_id": key, "registration_version": row["version"],
+                "max_active_devices": 5, "activation_context": options.get("activation_context", "synthetic-activation-context"), "devices": [{"registration_id": key, "registration_version": row["version"],
                     "installation_id": row["installation_id"], "active": row["active"], "display_name": row.get("display_name")}
                     for key, row in state["registrations"].items()]})
         if request.url.path.endswith("/devices/activate"):
             command = json.loads(request.content)
-            assert command["activation_context"] == "synthetic-activation-context"
+            assert command["activation_context"] == options.get("activation_context", "synthetic-activation-context")
             active = [row for row in state["registrations"].values() if row["active"]]
             replace = command.get("replace_registration_id")
             if len(active) >= 5 and replace is None:
