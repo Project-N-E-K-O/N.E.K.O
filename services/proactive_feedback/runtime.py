@@ -20,6 +20,10 @@ class SyncFailure(Exception):
         self.code, self.permanent = code, permanent
 
 
+class SettingsAcknowledgementPending(OSError):
+    """V2 custody exists, but its independent source-journal ACK did not finish."""
+
+
 class ProactiveFeedbackRuntime:
     """One worker; a frozen batch is retried until its exact receipt is durable."""
 
@@ -344,7 +348,14 @@ def drain_settings(store):
                 continue
         else:
             store.enqueue_settings(entry["owner"], entry["id"], entry["payload"])
-        acknowledge_settings_changes([entry["id"]])
+        try:
+            acknowledge_settings_changes([entry["id"]])
+        except Exception as exc:
+            if store.protocol_version == 2 and custody.get("status") == "durable":
+                # Uploading and retiring this fact before its source ACK can
+                # recreate it with a new sequence on the next journal import.
+                raise SettingsAcknowledgementPending("settings_source_acknowledgement_pending") from exc
+            raise
 
 
 def pending_settings():

@@ -448,6 +448,49 @@ def test_real_json_to_sqlite_handoff_survives_ack_failure_without_duplicate(isol
     assert json.loads(payload) == original[0]["payload"]
 
 
+@pytest.mark.parametrize("protocol,durable", [(1, True), (2, True), (2, False)])
+def test_source_ack_failure_is_distinct_only_after_durable_v2_handoff(isolated, monkeypatch, protocol, durable):
+    from main_logic.recommendation_feedback import RecommendationStore
+    from services.proactive_feedback.runtime import drain_settings
+
+    owner = {"key": "synthetic-owner", "user_id": "synthetic-user", "community": "https://community.example"}
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    preferences.install_settings_attribution_context(attribution)
+    if protocol == 2 and durable:
+        preferences.install_settings_capture_provider(lambda value: {
+            "version": "desktop-feedback-capture-v2", "owner_key": value["key"]}, protocol_version=2)
+    seed(isolated, proactiveMusicEnabled=False)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    original = preferences.pending_settings_changes()
+    before = isolated.read_bytes()
+    atomic = preferences.atomic_write_json
+    store = RecommendationStore(isolated.parent / "source-ack.sqlite3", protocol_version=protocol)
+
+    def fail_ack(*args, **kwargs):
+        raise OSError("synthetic acknowledgement write failure")
+
+    monkeypatch.setattr(preferences, "atomic_write_json", fail_ack)
+    with pytest.raises(OSError) as caught:
+        drain_settings(store)
+    assert isolated.read_bytes() == before
+    assert preferences.pending_settings_changes() == original
+    assert preferences.load_global_conversation_settings()["proactiveMusicEnabled"] is True
+    if protocol == 2 and durable:
+        assert type(caught.value).__name__ == "SettingsAcknowledgementPending"
+        assert store.sync_status(owner)["held"] == 1
+    else:
+        assert type(caught.value) is OSError
+    monkeypatch.setattr(preferences, "atomic_write_json", atomic)
+    drain_settings(store)
+    assert preferences.pending_settings_changes() == []
+    if protocol == 2 and durable:
+        assert store.sync_status(owner)["pending"] == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field,value", [("origin", []), ("origin", {}), ("revision", []),
                                          ("occurred_at", []), ("occurred_at", 10 ** 400)])

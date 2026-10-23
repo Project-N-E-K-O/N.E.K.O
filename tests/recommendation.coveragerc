@@ -4,8 +4,11 @@
 [run]
 include =
     main_logic/recommendation_feedback.py
+    main_routers/proactive_feedback_router.py
     main_routers/recommendation_router.py
     services/proactive_feedback/capture.py
+    services/proactive_feedback/protocol.py
+    services/proactive_feedback/runtime.py
     services/proactive_feedback/runtime_v2.py
     utils/preferences.py
     utils/preferences_audit.py

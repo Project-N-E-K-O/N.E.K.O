@@ -526,3 +526,104 @@ async def test_settings_io_failure_keeps_queued_facts_uploadable(env):
         assert status["settings_import_error"] == "settings_import_unavailable"
     finally:
         await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_settings_source_ack_failure_keeps_original_sequence_until_source_recovers(env, monkeypatch):
+    import sqlite3
+    from utils import preferences
+    from services.proactive_feedback.runtime import drain_settings
+
+    try:
+        await env.runtime.sync_once()
+        shown(env)
+        context = copy.deepcopy(env.runtime.control_snapshot(env.owner))
+        entry = {"id": "synthetic-settings-ack", "owner": env.owner, "context": context,
+                 "payload": {"revision": 1, "origin": "user", "occurred_at": 100,
+                             "previous": {}, "settings": {"proactiveMusicEnabled": True}}}
+        journal = [entry]
+        failures = [2]
+
+        def acknowledge(ids):
+            if failures[0]:
+                failures[0] -= 1
+                raise OSError("synthetic source ACK failure")
+            journal[:] = [value for value in journal if value["id"] not in ids]
+
+        monkeypatch.setattr(preferences, "pending_settings_changes", lambda limit=100: copy.deepcopy(journal))
+        monkeypatch.setattr(preferences, "acknowledge_settings_changes", acknowledge)
+        env.runtime.settings_drain = drain_settings
+        original_row = None
+        controls = env.requests.count("/api/proactive/feedback/v2/control")
+        for _ in range(2):
+            result = await env.runtime.sync_once()
+            assert result == {"state": "retry_wait", "error_code": "settings_import_unavailable"}
+            with sqlite3.connect(env.store.path) as db:
+                row = db.execute("SELECT seq,event,payload_hash,created_at FROM feedback_v2_spool WHERE event_id=?",
+                                 (entry["id"],)).fetchone()
+            if original_row is None:
+                original_row = row
+            assert row == original_row and row is not None
+            assert not env.uploads and journal == [entry]
+            assert env.store.sync_status(env.owner)["batch_id"] is None
+            assert env.runtime._control_state == "ready"
+        assert env.requests.count("/api/proactive/feedback/v2/control") == controls + 2
+        assert (await env.runtime.sync_once())["state"] == "synced"
+        assert not journal and len(env.uploads) == 1
+        uploaded = next(item for item in env.uploads[0]["items"] if item["id"] == entry["id"])
+        assert uploaded["sequence"] == original_row[0]
+        assert uploaded["capture"] == context["capture"]
+        assert (await env.runtime.sync_once())["state"] == "idle"
+        assert len(env.uploads) == 1
+        assert env.runtime._settings_import_error == ""
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["none", "account", "logout", "token", "closing"])
+async def test_status_preferences_diagnostic_cannot_outlive_final_identity_check(env, monkeypatch, change):
+    import asyncio
+    import threading
+    from utils import preferences
+
+    entered, release = threading.Event(), threading.Event()
+
+    def diagnostic():
+        entered.set()
+        assert release.wait(5)
+        return {"scope": "all_local_accounts", "statistics_incomplete": False}
+
+    task = None
+    try:
+        await env.runtime.sync_once()
+        shown(env)
+        await env.runtime.sync_once()
+        monkeypatch.setattr(preferences, "settings_capture_status", diagnostic)
+        task = asyncio.create_task(env.runtime.status())
+        assert await asyncio.to_thread(entered.wait, 5)
+        if change == "account":
+            env.saved["local_user_id"] = str(uuid.uuid4())
+        elif change == "logout":
+            env.saved.pop("access_token")
+        elif change == "token":
+            env.saved["access_token"] = "synthetic-rotated-token"
+        elif change == "closing":
+            await env.runtime.close()
+        release.set()
+        if change == "closing":
+            with pytest.raises(SyncFailure, match="closing"):
+                await task
+        else:
+            result = await task
+            current_owner = host.owner_from_snapshot(env.saved)
+            assert result["owner_key"] == current_owner["key"]
+            assert result["signed_in"] == bool(current_owner["user_id"])
+            assert result["identity_verified"] == (change == "none")
+            assert result["fully_synced"] == (change == "none")
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await env.client.aclose()

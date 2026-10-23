@@ -123,13 +123,17 @@
                 body: JSON.stringify({ clock_session_id: documentClockId }), signal: AbortSignal.timeout(5000)
             });
             const receiveTick = captureTick();
+            if (disposed || revision !== evidenceEpoch) return;
+            // An authentication proxy may return an empty or HTML 401 body.
+            // Its explicit status retires this identity before JSON decoding.
+            if (response.status === 401) { invalidateCapture(true); return; }
             const result = await response.json();
             if (response.status === 426 && !disposed && revision === evidenceEpoch) {
                 window.dispatchEvent(new CustomEvent('neko:feedback-upgrade-required'));
             }
             if (disposed || revision !== evidenceEpoch) return;
             if (!response.ok || !result.success || !result.context) {
-                invalidateCapture(response.status === 401 || ['authentication_required', 'account_mismatch', 'session_changed'].includes(result.error_code));
+                invalidateCapture(['authentication_required', 'account_mismatch', 'session_changed'].includes(result.error_code));
                 return;
             }
             const value = result.context;

@@ -12,7 +12,7 @@ import httpx
 
 from services.proactive_feedback import host
 from services.proactive_feedback.protocol import canonical_bytes, valid_receipt
-from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, SyncFailure
+from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, SettingsAcknowledgementPending, SyncFailure
 from portalocker.exceptions import LockException
 
 BINDING_KEYS = ("account_incarnation", "clear_generation", "registration_id", "registration_version")
@@ -281,6 +281,10 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                         try:
                             await asyncio.to_thread(self.settings_drain, self.store)
                             self._settings_import_error = ""
+                        except SettingsAcknowledgementPending:
+                            self._settings_import_error = "settings_import_unavailable"
+                            await self._guard(owner, token)
+                            return {"state": "retry_wait", "error_code": self._settings_import_error}
                         except (OSError, sqlite3.Error, ValueError, LockException):
                             self._settings_import_error = "settings_import_unavailable"
                 if self.current_settings_provider is not None:
@@ -357,9 +361,12 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
             return {"state": state, "error_code": code}
 
     async def status(self):
-        result = await super().status()
         from utils.preferences import settings_capture_status
+        # This diagnostic covers all local accounts. Read it before the
+        # parent takes its account snapshot and performs its final identity
+        # fence; no awaited diagnostic may outlive that check.
         settings_status = await asyncio.to_thread(settings_capture_status)
+        result = await super().status()
         has_receipt = result.get("acked", 0) > 0
         return {**result, "protocol_version": 2, "control_state": self._control_state,
                 "statistics_incomplete": bool(result.get("statistics_incomplete")

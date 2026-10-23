@@ -303,6 +303,55 @@ test('switching to another verified owner and back cannot revive an old in-fligh
     assert.equal(r.message.blocks[0].state, 'unavailable');
 });
 
+for (const variant of ['401 HTML', '401 empty', '401 JSON', '503 HTML']) {
+    test(`HTTP identity status is preserved independently of body decoding: ${variant}`, async t => {
+        const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+        const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},capture:()=>feedbackBinding(owner)});
+        await flush(); const base = s.w.fetch; let release, revoked = false;
+        s.w.fetch = async (url, init) => {
+            if (revoked && url.endsWith('/capture-context')) {
+                const body = variant === '401 JSON' ? JSON.stringify({success:false,error_code:'authentication_required'})
+                    : variant === '401 empty' ? '' : '<html>Authentication required</html>';
+                return new Response(body, {status:variant === '503 HTML' ? 503 : 401,
+                    headers:{'Content-Type':variant === '401 JSON' ? 'application/json' : 'text/html'}});
+            }
+            const result = await base(url, init);
+            if (url.endsWith('/dispatch')) return new Promise(resolve => {release = () => resolve(result);});
+            return result;
+        };
+        r.choose(); await flush(); assert.equal(typeof release, 'function');
+        revoked = true; await s.w.nekoFeedbackCapture.refresh(); release(); await s.advance(100);
+        assert.equal(r.events.filter(event => event.kind === 'playing').length, variant === '503 HTML' ? 1 : 0);
+        if (variant === '503 HTML') assert.equal(s.players[0].audio.paused, false);
+        else { assert.equal(s.players.length, 0); assert.equal(r.message.blocks[0].state, 'unavailable'); }
+    });
+}
+
+test('an old-revision HTTP 401 cannot revoke a new page lifecycle operation', async t => {
+    const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},capture:()=>feedbackBinding(owner)});
+    await flush(); const base = s.w.fetch; let finishCapture, finishDispatch;
+    s.w.fetch = async (url, init) => {
+        if (url.endsWith('/capture-context')) return new Promise(resolve => {
+            finishCapture = () => resolve(new Response('<html>Old authentication failure</html>', {status:401}));
+        });
+        const result = await base(url, init);
+        if (url.endsWith('/dispatch')) return new Promise(resolve => {finishDispatch = () => resolve(result);});
+        return result;
+    };
+    const oldRefresh = s.w.nekoFeedbackCapture.refresh(); await flush();
+    assert.equal(typeof finishCapture, 'function');
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide'));
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pageshow'));
+    r.choose(); await flush(); assert.equal(typeof finishDispatch, 'function');
+    finishCapture(); await oldRefresh;
+    assert.equal(s.w.nekoFeedbackCapture.capture().owner_key, owner, 'the old response cannot invalidate current qualification');
+    finishDispatch(); await s.advance(100);
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.equal(r.events.filter(event => event.kind === 'playing').length, 1);
+});
+
 for (const condition of ['transient 503', 'upgrade 426', 'same-owner clear']) {
     test(`${condition} only changes statistics qualification and preserves a pending legitimate dispatch`, async t => {
         const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
