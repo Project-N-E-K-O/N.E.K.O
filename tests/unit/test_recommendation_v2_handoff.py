@@ -52,9 +52,10 @@ def answer(batch, statuses=None):
 @pytest.mark.parametrize("kind", ["measurement", "playing", "paused", "ended", "stopped", "failed"])
 @pytest.mark.parametrize("patch", [
     {"version": "media-played-union-v1"}, {"epoch_id": ""},
+    {"epoch_id": "x" * 101}, {"epoch_id": "bad\x00epoch"},
     {"range_start_ms": True}, {"range_end_ms": 1.5},
     {"range_start_ms": -1}, {"range_start_ms": 10},
-    {"range_start_ms": 11}, {"range_end_ms": 2**53},
+    {"range_start_ms": 11}, {"range_end_ms": 86400001}, {"range_end_ms": 2**53},
 ])
 def test_malformed_measurement_cannot_change_business_or_enter_spool(store, kind, patch):
     store.apply_control(OWNER, control())
@@ -331,6 +332,227 @@ def test_playback_tail_wire_version_matches_measurement_and_frozen_retry(store, 
     assert payloads["accept"]["measurement_version"] == "media-played-union-v1"
     reopened = RecommendationStore(store.path, protocol_version=2)
     assert reopened.prepare_batch(OWNER) == batch
+
+
+@pytest.mark.parametrize("timestamp", [None, "omitted"])
+def test_optional_event_timestamp_uses_first_local_receipt_without_changing_original(store, monkeypatch, timestamp):
+    from types import SimpleNamespace
+    from main_logic import recommendation_feedback as module
+    clock = [1000.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
+    card = offer(store)
+    value = event(card)
+    if timestamp == "omitted":
+        value.pop("occurred_at")
+    else:
+        value["occurred_at"] = timestamp
+    original = copy.deepcopy(value)
+    first = store.record(OWNER, card["id"], value, control=control())
+    batch = store.prepare_batch(OWNER)
+    item = batch["items"][0]
+    assert item["payload"]["occurred_at"] == 1000.0
+    assert value == original
+    clock[0] += 100
+    reopened = RecommendationStore(store.path, protocol_version=2)
+    assert reopened.prepare_batch(OWNER) == batch
+    assert reopened.acknowledge_batch(OWNER, answer(batch))
+    assert reopened.record(OWNER, card["id"], value, control=control())["telemetry"] == first["telemetry"]
+    assert reopened.prepare_batch(OWNER) is None
+    assert reopened.events(OWNER, 0, 100)["events"][0]["original_event"] == store.event_identity(original)[0]
+
+
+@pytest.mark.parametrize("area,key,value", [
+    ("time_proof", "anchor_token", None),
+    ("time_proof", "anchor_token", ["not-a-token"]),
+    ("time_proof", "send_tick_ms", None),
+    ("time_proof", "receive_tick_ms", None),
+    ("time_proof", "send_tick_ms", True),
+    ("time_proof", "send_tick_ms", -1),
+    ("time_proof", "send_tick_ms", 1001),
+    ("time_proof", "receive_tick_ms", "1000"),
+    ("time_proof", "receive_tick_ms", 2**53),
+    ("capture", "tick_ms", 10**400),
+    ("capture", "tick_ms", 2**53),
+    ("capture", "clock_session_id", ""),
+    ("capture", "anchor_id", ["not-an-id"]),
+])
+def test_incomplete_time_evidence_is_held_without_blocking_healthy_facts(store, area, key, value):
+    store.apply_control(OWNER, control())
+    card = offer(store)
+    context = control()
+    if value is None:
+        context[area].pop(key)
+    else:
+        context[area][key] = value
+    original = event(card, "accepted", "unqualified", snapshot=context)
+    before = copy.deepcopy(original)
+    result = store.record(OWNER, card["id"], original, control=control())
+    assert result["playback_grant"] and result["telemetry"]["status"] == "durable"
+    assert result["telemetry"]["reason"] == "time_unproven"
+    assert original == before
+    healthy = offer(store)
+    store.record(OWNER, healthy["id"], event(healthy, event_id="healthy"), control=control())
+    batch = store.prepare_batch(OWNER)
+    assert [item["id"] for item in batch["items"]] == ["healthy"]
+    assert store.acknowledge_batch(OWNER, answer(batch))
+    assert store.sync_status(OWNER)["held"] == 1
+
+
+def test_partial_time_proof_can_be_completed_without_rebinding_original(store):
+    store.apply_control(OWNER, control())
+    card = offer(store)
+    context = control()
+    context["time_proof"].pop("send_tick_ms")
+    original = event(card, snapshot=context)
+    saved, _, _ = store.event_identity(original)
+    first = store.record(OWNER, card["id"], original, control=control())
+    assert first["telemetry"]["reason"] == "time_unproven"
+    assert store.prepare_batch(OWNER) is None
+    assert store.update_time_proof(OWNER, original["event_id"], first["telemetry"]["payload_hash"], control()["time_proof"])
+    batch = store.prepare_batch(OWNER)
+    assert batch["items"][0]["capture"] == context["capture"]
+    assert batch["items"][0]["time_proof"] == control()["time_proof"]
+    assert store.event_identity(original)[0] == saved
+    assert store.acknowledge_batch(OWNER, answer(batch))
+    assert store.prepare_batch(OWNER) is None
+
+
+@pytest.mark.parametrize("proof", [None, {}, {**control()["time_proof"], "extra": 1}])
+def test_store_reproof_cannot_queue_incomplete_or_extra_time_fields(store, proof):
+    card = offer(store)
+    original = event(card)
+    first = store.record(OWNER, card["id"], original, control=None)
+    if proof is None:
+        incomplete = control()
+        incomplete["time_proof"] = None
+        original = event(card, "accepted", "null-proof", snapshot=incomplete)
+        assert store.record(OWNER, card["id"], original, control=control())["telemetry"]["reason"] == "time_unproven"
+    else:
+        assert store.update_time_proof(OWNER, original["event_id"], first["telemetry"]["payload_hash"], proof, control=control())
+    assert store.prepare_batch(OWNER) is None
+
+
+def test_measurement_range_accepts_actual_peer_upper_bound(store):
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    original = event(card, "measurement", "one-day", playback_id="playback", measurement={
+        "version": "playback_elapsed_observed_v2", "epoch_id": "x" * 100, "range_start_ms": 86400000 - 1,
+        "range_end_ms": 86400000, "origin_context": control()})
+    assert store.record(OWNER, card["id"], original, control=control())["telemetry"]["status"] == "durable"
+    assert store.prepare_batch(OWNER)["items"][-1]["payload"]["measurement"] == original["measurement"]
+
+
+@pytest.mark.parametrize("area,key,value", [
+    (None, "version", "unknown"), (None, "owner_key", []),
+    (None, "account_incarnation", ""), (None, "clear_generation", True),
+    (None, "registration_id", "r" * 101), (None, "registration_version", True),
+    (None, "binding_revision", -1),
+    ("capture", "clock_session_id", "s" * 129),
+    ("capture", "tick_ms", 10**400), ("capture", "anchor_id", ["bad"]),
+    ("time_proof", "anchor_token", ["bad"]),
+    ("time_proof", "send_tick_ms", "wrong"), ("time_proof", "receive_tick_ms", True),
+])
+@pytest.mark.parametrize("container", ["offer_context", "measurement"])
+def test_invalid_origin_scalar_is_held_without_poisoning_healthy_batch(store, container, area, key, value):
+    origin = control()
+    (origin if area is None else origin[area])[key] = value
+    card = offer(store, snapshot=origin if container == "offer_context" else None)
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    original = event(card, "measurement", "invalid-origin", playback_id="playback", measurement={
+        "version": "playback_elapsed_observed_v2", "epoch_id": "epoch", "range_start_ms": 0,
+        "range_end_ms": 1, "origin_context": origin if container == "measurement" else control()})
+    before = copy.deepcopy(original)
+    result = store.record(OWNER, card["id"], original, control=control())
+    assert result["telemetry"]["status"] == "durable" and result["telemetry"]["reason"] == "time_unproven"
+    assert original == before
+    healthy = offer(store)
+    store.record(OWNER, healthy["id"], event(healthy, event_id="healthy"), control=control())
+    batch = store.prepare_batch(OWNER)
+    assert "healthy" in [item["id"] for item in batch["items"]]
+    assert "invalid-origin" not in [item["id"] for item in batch["items"]]
+    assert store.acknowledge_batch(OWNER, answer(batch))
+    assert store.sync_status(OWNER)["held"] >= 1
+
+
+@pytest.mark.parametrize("origin", [None, {}, {"capture": None, "time_proof": None}, {
+    "version": None, "owner_key": None, "account_incarnation": None, "clear_generation": None,
+    "registration_id": None, "registration_version": None, "binding_revision": None,
+    "capture": {"clock_session_id": None, "tick_ms": None, "anchor_id": None},
+    "time_proof": {"anchor_token": None, "send_tick_ms": None, "receive_tick_ms": None}},
+    {"capture": {"tick_ms": 1}}, {"time_proof": {"send_tick_ms": 1000, "receive_tick_ms": 900}},
+])
+def test_schema_compatible_partial_origin_is_preserved_for_server_per_item_defer(store, origin):
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    original = event(card, "measurement", "partial-origin", playback_id="playback", measurement={
+        "version": "playback_elapsed_observed_v2", "epoch_id": "epoch", "range_start_ms": 0,
+        "range_end_ms": 1, "origin_context": origin})
+    assert store.record(OWNER, card["id"], original, control=control())["telemetry"]["reason"] == ""
+    payload = store.prepare_batch(OWNER)["items"][-1]["payload"]
+    expected = copy.deepcopy(origin)
+    if isinstance(expected, dict) and not expected.get("time_proof"):
+        expected.pop("time_proof", None)
+    assert payload["measurement"]["origin_context"] == expected
+
+
+@pytest.mark.parametrize("context", [["bad"], "bad", 1, {"capture": ["bad"]}, {"time_proof": ["bad"]}])
+def test_settings_invalid_context_is_typed_conflict_without_poisoning_journal_handoff(store, context):
+    payload = {"revision": 1, "origin": "user", "occurred_at": 100, "previous": {}, "settings": {}}
+    with pytest.raises(FeedbackConflict, match="invalid_feedback_context"):
+        store.enqueue_settings(OWNER, "bad-setting", payload, context=context)
+    assert store.sync_status(OWNER)["pending"] == 0
+    assert store.enqueue_settings(OWNER, "partial-setting", payload, context={"version": "desktop-feedback-capture-v2"})["status"] == "durable"
+    assert store.sync_status(OWNER)["held"] == 1
+
+
+@pytest.mark.parametrize("budget", ["rows", "bytes"])
+def test_full_spool_stops_new_raw_history_while_actions_and_exact_existing_facts_continue(store, budget):
+    store.apply_control(OWNER, control())
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "shown", "shown"), control=control())
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    frozen = store.prepare_batch(OWNER)
+    before = store.events(OWNER, 0, 100)["events"]
+    if budget == "rows":
+        store.MAX_PENDING_UPLOADS = 1
+    else:
+        store.MAX_V2_PENDING_BYTES = store.sync_status(OWNER)["capacity"]["pending_bytes"]
+    discarded = []
+    for index in range(8):
+        value = event(card, "measurement", f"discarded-{index}", playback_id="playback", measurement={
+            "version": "playback_elapsed_observed_v2", "epoch_id": "epoch", "range_start_ms": index,
+            "range_end_ms": index + 1, "origin_context": control()})
+        discarded.append(value)
+        assert store.record(OWNER, card["id"], value, control=control())["telemetry"]["reason"] == "capacity_reached"
+    other = offer(store)
+    action = event(other, "accepted", "other-accept")
+    result = store.record(OWNER, other["id"], action, control=control())
+    assert result["playback_grant"] and result["telemetry"]["reason"] == "capacity_reached"
+    assert store.claim_dispatch(OWNER, other["id"], action["event_id"])
+    assert not store.claim_dispatch(OWNER, other["id"], action["event_id"])
+    assert store.events(OWNER, 0, 100)["events"] == before
+    assert store.prepare_batch(OWNER) == frozen
+    assert store.sync_status(OWNER)["statistics_incomplete"]
+    assert store.acknowledge_batch(OWNER, answer(frozen))
+    assert store.prepare_batch(OWNER) is None  # No automatic reconstruction of discarded facts.
+    # Reply loss leaves the renderer owning this exact real intent; a retry may
+    # acquire custody for the first time, with its original capture unchanged.
+    retried = store.record(OWNER, card["id"], discarded[-1], control=control())
+    assert retried["telemetry"]["status"] == "durable"
+    retry_batch = store.prepare_batch(OWNER)
+    assert [item["id"] for item in retry_batch["items"]] == [discarded[-1]["event_id"]]
+    assert retry_batch["items"][0]["capture"] == discarded[-1]["context"]["capture"]
+
+
+@pytest.mark.parametrize("field,value", [("event_id", "bad\x00id"), ("playback_id", "bad\x00id")])
+def test_nul_wire_identity_is_rejected_before_business_or_batch_creation(store, field, value):
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    original = event(card, "playing", "playing", playback_id="playback")
+    original[field] = value
+    with pytest.raises(FeedbackConflict):
+        store.record(OWNER, card["id"], original, control=control())
+    assert [item["id"] for item in store.prepare_batch(OWNER)["items"]] == ["accept"]
 
 
 def test_lost_renderer_reply_after_cloud_ack_does_not_recreate_measurement(store):

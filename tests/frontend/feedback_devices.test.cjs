@@ -142,6 +142,102 @@ test('failed mutation and failed follow-up read still leave a usable retry butto
     assert.equal(s.elements.status.textContent, 'feedbackDevices.ready');
 });
 
+test('device refresh recovers a token rotated by a backend restart', async () => {
+    const s = await fixture();
+    let configReads = 0;
+    s.setIntercept((url, options) => {
+        if (url.endsWith('page_config')) {
+            configReads++;
+            return {ok:true,status:200,json:async()=>({autostart_csrf_token:'restarted-csrf'})};
+        }
+        if (options.headers['X-CSRF-Token'] !== 'restarted-csrf') {
+            return {ok:false,status:403,json:async()=>({error_code:'csrf_validation_failed'})};
+        }
+        return null;
+    });
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.ready');
+    assert.equal(configReads, 1);
+    assert.equal(s.elements.refresh.disabled, false);
+});
+
+test('only a definite CSRF rejection retries a mutation, preserving its owner and selection', async () => {
+    const s = await fixture();
+    let attempts = 0, configReads = 0;
+    const bodies = [];
+    s.setIntercept((url, options) => {
+        if (url.endsWith('page_config')) {
+            configReads++;
+            return {ok:true,json:async()=>({autostart_csrf_token:'new-token'})};
+        }
+        if (!url.endsWith('/activate')) return null;
+        attempts++; bodies.push(JSON.parse(options.body));
+        if (attempts === 1) return {ok:false,status:403,json:async()=>({error_code:'csrf_validation_failed'})};
+        assert.equal(options.headers['X-CSRF-Token'], 'new-token');
+        return null;
+    });
+    s.elements['replacement-id'].value = 'old-2'; s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    assert.equal(attempts, 2);
+    assert.equal(configReads, 1);
+    assert.deepEqual(bodies, [
+        {expected_owner_key:'account-a',replace_registration_id:'old-2'},
+        {expected_owner_key:'account-a',replace_registration_id:'old-2'},
+    ]);
+});
+
+for (const code of ['cloud_conflict', 'permission_denied']) {
+    test(`a business 403 does not refresh credentials or retry a mutation: ${code}`, async () => {
+        const s = await fixture(); let attempts = 0, configReads = 0;
+        s.setIntercept(url => {
+            if (url.endsWith('page_config')) configReads++;
+            if (url.endsWith('/activate')) {
+                attempts++;
+                return {ok:false,status:403,json:async()=>({error_code:code})};
+            }
+            return null;
+        });
+        s.elements['replacement-id'].value = 'old-0'; s.elements['replacement-id'].listeners.change();
+        s.elements.activate.click(); await settle();
+        assert.equal(attempts, 1); assert.equal(configReads, 0);
+        assert.equal(s.elements.refresh.disabled, false);
+        assert.equal(s.data.devices.filter(row => row.active).length, 5);
+    });
+}
+
+test('a persistent CSRF rejection retries at most once and leaves refresh available', async () => {
+    const s = await fixture(); let attempts = 0;
+    s.setIntercept(url => {
+        if (!url.endsWith('/activate')) return null;
+        attempts++;
+        return {ok:false,status:403,json:async()=>({error_code:'csrf_validation_failed'})};
+    });
+    s.elements['replacement-id'].value = 'old-0'; s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    assert.equal(attempts, 2);
+    assert.equal(s.elements.refresh.disabled, false);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.unavailable');
+});
+
+test('teardown during token recovery prevents a stale mutation from retrying after pageshow', async () => {
+    const s = await fixture(); let attempts = 0, finishConfig;
+    s.setIntercept(url => {
+        if (url.endsWith('/activate')) {
+            attempts++;
+            return {ok:false,status:403,json:async()=>({error_code:'csrf_validation_failed'})};
+        }
+        if (url.endsWith('page_config')) return new Promise(resolve => {finishConfig = resolve;});
+        return null;
+    });
+    s.elements['replacement-id'].value = 'old-0'; s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    assert.equal(typeof finishConfig, 'function');
+    s.events.pagehide(); s.setIntercept(null); s.data.owner = 'account-b'; s.events.pageshow(); await settle();
+    finishConfig({ok:true,json:async()=>({autostart_csrf_token:'late-token'})}); await settle();
+    assert.equal(attempts, 1, 'the old page owner cannot resubmit a control mutation');
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.ready');
+});
+
 test('device management resumes after BFCache and rejects a stale pre-hide response', async () => {
     const s = await fixture();
     let oldRead;

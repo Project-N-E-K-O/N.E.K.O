@@ -407,11 +407,11 @@ class RecommendationStore:
                 or not {"user_id", "community"} <= owner.keys()
                 or any(value is not None and not isinstance(value, str)
                        for value in (owner["user_id"], owner["community"]))
-                or not isinstance(entry_id, str) or not entry_id
+                or not isinstance(entry_id, str) or not 1 <= len(entry_id) <= 100 or "\x00" in entry_id
                 or not isinstance(payload, dict) or set(payload) != allowed
                 or not isinstance(payload["origin"], str)
                 or payload["origin"] not in {"user", "system", "baseline"}
-                or type(payload["revision"]) is not int or payload["revision"] < 1
+                or type(payload["revision"]) is not int or not 1 <= payload["revision"] <= 2**53 - 1
                 or type(payload["occurred_at"]) not in (int, float)):
             raise FeedbackConflict("invalid_settings_evidence")
         try:
@@ -419,12 +419,13 @@ class RecommendationStore:
         except OverflowError:
             # A JSON integer may exceed the finite timestamp representation.
             finite_timestamp = False
-        if not finite_timestamp:
+        if not finite_timestamp or not 0 <= payload["occurred_at"] <= 1e12:
             raise FeedbackConflict("invalid_settings_evidence")
         for name in ("previous", "settings"):
             if not isinstance(payload[name], dict) or _settings_snapshot(payload[name]) != payload[name]:
                 raise FeedbackConflict("invalid_settings_evidence")
         if self.protocol_version == 2:
+            self._validate_v2_context(context)
             intent = {"event_id": entry_id, "kind": "settings", "context": context, "settings_payload": payload}
             original, proofs, digest = self.event_identity(intent)
             with self._transaction() as db:
@@ -811,13 +812,74 @@ class RecommendationStore:
             return "held", "upgrade_required"
         capture = context.get("capture") or {}
         event_proof = proof.get("event", proof) if isinstance(proof, dict) else {}
+        def clock_tick(value):
+            # Check the wire bound before converting a JSON integer to float;
+            # very large integers otherwise raise OverflowError in isfinite.
+            return (type(value) in (int, float) and 0 <= value <= 2**53 - 1
+                    and math.isfinite(value))
+        def text(value, maximum):
+            return isinstance(value, str) and 0 < len(value) <= maximum and "\x00" not in value
+        def origin(value):
+            # The peer accepts permanently partial origins, but every present
+            # scalar must still fit its wire type. A malformed origin must not
+            # turn one unqualified fact into a permanent rejection of its batch.
+            if value is None:
+                return True
+            if not isinstance(value, dict):
+                return False
+            if value.get("version") not in (None, "desktop-feedback-capture-v2"):
+                return False
+            for key, maximum in (("owner_key", 512), ("account_incarnation", 128), ("registration_id", 100)):
+                if value.get(key) is not None and not text(value[key], maximum):
+                    return False
+            for key, minimum in (("clear_generation", 0), ("registration_version", 1), ("binding_revision", 0)):
+                number = value.get(key)
+                if number is not None and (type(number) is not int or not minimum <= number <= 2**53 - 1):
+                    return False
+            captured = value.get("capture")
+            if captured is not None:
+                if not isinstance(captured, dict):
+                    return False
+                for key, maximum in (("clock_session_id", 128), ("anchor_id", 100)):
+                    if captured.get(key) is not None and not text(captured[key], maximum):
+                        return False
+                if captured.get("tick_ms") is not None and not clock_tick(captured["tick_ms"]):
+                    return False
+            proved = value.get("time_proof")
+            if proved is not None:
+                if not isinstance(proved, dict):
+                    return False
+                if proved.get("anchor_token") is not None and not text(proved["anchor_token"], 8192):
+                    return False
+                if any(proved.get(key) is not None and not clock_tick(proved[key])
+                       for key in ("send_tick_ms", "receive_tick_ms")):
+                    return False
+            return True
         if (context.get("version") != "desktop-feedback-capture-v2"
-                or not isinstance(capture.get("clock_session_id"), str)
-                or type(capture.get("tick_ms")) not in (int, float)
-                or not math.isfinite(capture["tick_ms"]) or capture["tick_ms"] < 0
-                or not capture.get("anchor_id") or not isinstance(proof, dict)
-                or not event_proof.get("anchor_token")):
+                or not origin(context)
+                or not isinstance(capture, dict) or not isinstance(event_proof, dict)
+                or not text(capture.get("clock_session_id"), 128)
+                or not clock_tick(capture.get("tick_ms"))
+                or not text(capture.get("anchor_id"), 100)
+                or set(event_proof) != {"anchor_token", "send_tick_ms", "receive_tick_ms"}
+                or not text(event_proof.get("anchor_token"), 8192)
+                or not clock_tick(event_proof.get("send_tick_ms"))
+                or not clock_tick(event_proof.get("receive_tick_ms"))
+                or event_proof["receive_tick_ms"] < event_proof["send_tick_ms"]):
             return "held", "time_unproven"
+        for key, proof_key in (("offer_context", "offer"), ("measurement", "measurement")):
+            container = event.get(key)
+            if container is None:
+                continue
+            if not isinstance(container, dict):
+                return "held", "time_unproven"
+            original_origin = container.get("origin_context")
+            # Validate precisely the proof projection used by _v2_wire_item;
+            # immutable originals deliberately have their time_proof removed.
+            if isinstance(original_origin, dict) and isinstance(proof, dict) and proof.get(proof_key):
+                original_origin = {**original_origin, "time_proof": proof[proof_key]}
+            if not origin(original_origin):
+                return "held", "time_unproven"
         return "ready", ""
 
     def _create_v2(self, owner, character, turn_id, track, settings, *, category, control):
@@ -907,11 +969,12 @@ class RecommendationStore:
         kind = original.get("kind")
         if kind not in RECOMMENDATION_EVENT_KINDS | {"measurement"}:
             raise FeedbackConflict("invalid_feedback_kind")
-        if not isinstance(original.get("event_id"), str) or not original["event_id"]:
+        if (not isinstance(original.get("event_id"), str) or not 1 <= len(original["event_id"]) <= 100
+                or "\x00" in original["event_id"]):
             raise FeedbackConflict("invalid_feedback_identity")
         for field in ("listened_seconds", "position_seconds"):
             value = original.get(field, 0)
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86400:
+            if type(value) not in (int, float) or not 0 <= value <= 86400 or not math.isfinite(value):
                 raise FeedbackConflict("invalid_feedback_duration")
         if kind in {"shown", "accepted", "skipped"} and (
                 original.get("playback_id") is not None or original.get("listened_seconds", 0) != 0
@@ -987,6 +1050,8 @@ class RecommendationStore:
                 playback = original.get("playback_id")
                 if not playback:
                     raise FeedbackConflict("missing_playback_id")
+                if not isinstance(playback, str) or len(playback) > 512 or "\x00" in playback:
+                    raise FeedbackConflict("invalid_feedback_identity")
                 if row["playback_id"] and row["playback_id"] != playback:
                     raise FeedbackConflict("playback_owner_changed")
                 if kind != "measurement" and row["state"] in {"ended", "stopped", "failed"}:
@@ -1025,9 +1090,27 @@ class RecommendationStore:
             row = db.execute("SELECT * FROM recommendations WHERE id=?", (recommendation_id,)).fetchone()
             result = self._result(row, original, applied)
             result["telemetry"] = custody
-            if (applied or kind == "measurement") and custody.get("reason") != "binding_changed":
+            if ((applied or kind == "measurement")
+                    and custody.get("reason") not in {"binding_changed", "capacity_reached"}):
                 self._v2_save_event(db, recommendation_id, original, event_hash, custody, time.time())
             return result
+
+    @staticmethod
+    def _validate_v2_context(value):
+        if value is None:
+            return
+        if not isinstance(value, dict) or set(value) - {
+                "version", "owner_key", "account_incarnation", "clear_generation", "registration_id",
+                "registration_version", "binding_revision", "capture", "time_proof"}:
+            raise FeedbackConflict("invalid_feedback_context")
+        capture = value.get("capture")
+        if capture is not None and (not isinstance(capture, dict)
+                or set(capture) - {"clock_session_id", "tick_ms", "anchor_id"}):
+            raise FeedbackConflict("invalid_feedback_context")
+        proof = value.get("time_proof")
+        if proof is not None and (not isinstance(proof, dict)
+                or set(proof) - {"anchor_token", "send_tick_ms", "receive_tick_ms"}):
+            raise FeedbackConflict("invalid_feedback_context")
 
     @staticmethod
     def _validate_v2_event(event):
@@ -1035,27 +1118,12 @@ class RecommendationStore:
                 "event_id", "kind", "occurred_at", "playback_id", "listened_seconds", "position_seconds",
                 "reason", "context", "offer_context", "measurement"}:
             raise FeedbackConflict("invalid_feedback_event")
-        def context(value):
-            if value is None:
-                return
-            if not isinstance(value, dict) or set(value) - {
-                    "version", "owner_key", "account_incarnation", "clear_generation", "registration_id",
-                    "registration_version", "binding_revision", "capture", "time_proof"}:
-                raise FeedbackConflict("invalid_feedback_context")
-            capture = value.get("capture")
-            if capture is not None and (not isinstance(capture, dict)
-                    or set(capture) - {"clock_session_id", "tick_ms", "anchor_id"}):
-                raise FeedbackConflict("invalid_feedback_context")
-            proof = value.get("time_proof")
-            if proof is not None and (not isinstance(proof, dict)
-                    or set(proof) - {"anchor_token", "send_tick_ms", "receive_tick_ms"}):
-                raise FeedbackConflict("invalid_feedback_context")
-        context(event.get("context"))
+        RecommendationStore._validate_v2_context(event.get("context"))
         offer = event.get("offer_context")
         if offer is not None:
             if not isinstance(offer, dict) or set(offer) - {"owner_key", "offer_id", "origin_context"}:
                 raise FeedbackConflict("invalid_feedback_offer_context")
-            context(offer.get("origin_context"))
+            RecommendationStore._validate_v2_context(offer.get("origin_context"))
         measurement = event.get("measurement")
         if event.get("kind") == "measurement" or measurement is not None:
             if not isinstance(measurement, dict) or set(measurement) - {
@@ -1066,10 +1134,11 @@ class RecommendationStore:
             start, end = measurement.get("range_start_ms"), measurement.get("range_end_ms")
             if (measurement.get("version") != "playback_elapsed_observed_v2"
                     or not isinstance(measurement.get("epoch_id"), str) or not measurement["epoch_id"]
+                    or len(measurement["epoch_id"]) > 100 or "\x00" in measurement["epoch_id"]
                     or type(start) is not int or type(end) is not int
-                    or not 0 <= start < end <= 2**53 - 1):
+                    or not 0 <= start < end <= 86400000):
                 raise FeedbackConflict("invalid_feedback_measurement")
-            context(measurement.get("origin_context"))
+            RecommendationStore._validate_v2_context(measurement.get("origin_context"))
 
     def claim_dispatch(self, owner, recommendation_id, event_id):
         """Claim once before dispatch. A lost reply remains unknown, not replayable.
@@ -1095,7 +1164,11 @@ class RecommendationStore:
         if reason and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason) is None:
             reason = "media_error"
         payload = {"recommendation_id": recommendation_id, "kind": original["kind"],
-                   "occurred_at": original.get("occurred_at", 0), "local_received_at": row["created_at"],
+                   # The local API permits a missing/null wall timestamp. Use
+                   # its first durable receipt, as v1 does, without rewriting
+                   # the immutable original or using a retry's current clock.
+                   "occurred_at": original.get("occurred_at") if original.get("occurred_at") is not None else row["created_at"],
+                   "local_received_at": row["created_at"],
                    "playback_id": original.get("playback_id"), "listened_seconds": original.get("listened_seconds", 0),
                    "position_seconds": original.get("position_seconds", 0), "reason": reason,
                    # Normal pause/terminal callbacks also carry a final elapsed

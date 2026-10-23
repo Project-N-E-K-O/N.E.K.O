@@ -284,6 +284,22 @@ def test_settings_numeric_timestamps_and_existing_non_uuid_ids_remain_compatible
     assert item["id"] == "settings-1" and item["payload"] == payload
 
 
+@pytest.mark.parametrize("protocol", [1, 2])
+@pytest.mark.parametrize("field,value", [("revision", 2**53), ("occurred_at", -1), ("occurred_at", 1e12 + 1),
+                                          ("entry_id", "x" * 101), ("entry_id", "bad\x00id")])
+def test_persisted_settings_wire_bounds_fail_before_transport_custody(tmp_path, protocol, field, value):
+    store = RecommendationStore(tmp_path / "bounds.sqlite3", protocol_version=protocol)
+    payload = settings()
+    identity = "valid-non-uuid-id"
+    if field == "entry_id":
+        identity = value
+    else:
+        payload[field] = value
+    with pytest.raises(FeedbackConflict, match="invalid_settings_evidence"):
+        store.enqueue_settings(OWNER, identity, payload)
+    assert store.sync_status(OWNER)["pending"] == 0
+
+
 @pytest.mark.parametrize("kind", ["shown", "accepted", "skipped"])
 @pytest.mark.parametrize("fields", [{"playback_id": "bad"}, {"listened_seconds": 1}, {"position_seconds": 1}])
 def test_non_playback_fields_are_rejected_before_local_commit(store, kind, fields):

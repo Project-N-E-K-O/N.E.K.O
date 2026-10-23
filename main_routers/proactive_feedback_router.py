@@ -58,7 +58,9 @@ async def start_runtime():
     global _closing
     _closing = False
     from utils.preferences import install_settings_attribution_context
-    await asyncio.to_thread(install_settings_attribution_context, host.attribution_context)
+    # Pure in-memory assembly must finish in this task. An abandoned thread
+    # could otherwise install an obsolete provider after shutdown resets it.
+    install_settings_attribution_context(host.attribution_context)
     # The main application starts storage-backed work only after its selection
     # and initialization barrier. This hook installs attribution without opening
     # or pinning a database in an obsolete storage root.
@@ -73,7 +75,7 @@ def schedule_start():
         global _runtime
         try:
             runtime = await create_runtime()
-            if _closing:
+            if _closing or _bootstrap_task is not asyncio.current_task():
                 await runtime.close()
                 return
             _runtime = runtime
@@ -82,8 +84,7 @@ def schedule_start():
                 from utils.preferences import install_settings_capture_provider
                 install_store_protocol(2)
                 capture.install_control_provider(runtime.control_snapshot)
-                await asyncio.to_thread(install_settings_capture_provider, capture.get_control_snapshot,
-                                        protocol_version=2)
+                install_settings_capture_provider(capture.get_control_snapshot, protocol_version=2)
             runtime.start()
         except (OSError, sqlite3.Error, RuntimeError, ValueError):
             # Optional feedback synchronization cannot prevent normal chat boot.
@@ -97,22 +98,24 @@ async def close_runtime():
     global _runtime, _bootstrap_task, _closing
     _closing = True
     bootstrap, _bootstrap_task = _bootstrap_task, None
+    runtime, _runtime = _runtime, None
+    # These setters do no IO. Retire this lifecycle before the first await;
+    # an overlapping startup may then install its own bindings, which this
+    # old closer must never reset after joining an old task or HTTP pool.
+    capture.install_control_provider(None)
+    from main_routers.recommendation_router import install_store_protocol
+    install_store_protocol(1)
+    from utils.preferences import install_settings_capture_provider, install_settings_attribution_context
+    install_settings_capture_provider(None, protocol_version=1)
+    install_settings_attribution_context(None)
     if bootstrap is not None:
         bootstrap.cancel()
         try:
             await bootstrap
         except asyncio.CancelledError:
             pass
-    runtime, _runtime = _runtime, None
     if runtime is not None:
         await runtime.close()
-    capture.install_control_provider(None)
-    from main_routers.recommendation_router import install_store_protocol
-    install_store_protocol(1)
-    from utils.preferences import install_settings_capture_provider
-    await asyncio.to_thread(install_settings_capture_provider, None, protocol_version=1)
-    from utils.preferences import install_settings_attribution_context
-    await asyncio.to_thread(install_settings_attribution_context, None)
 
 
 def _validate(request):

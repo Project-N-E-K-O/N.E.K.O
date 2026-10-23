@@ -114,6 +114,105 @@ def shown(env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("clear_generation", -1), ("clear_generation", 2**53),
+    ("account_incarnation", ""), ("account_incarnation", "x" * 129),
+    ("account_incarnation", "invalid\x00incarnation"),
+    ("registration_version", 2**53),
+    ("registration_id", ""), ("registration_id", "x" * 101),
+    ("registration_id", "invalid\x00registration"),
+])
+async def test_invalid_control_wire_fields_cannot_become_capture_authority(env, field, value):
+    if field == "registration_version":
+        env.state["registrations"][env.registration]["version"] = value
+    elif field == "registration_id":
+        env.state["registrations"][value] = env.state["registrations"].pop(env.registration)
+    else:
+        env.state[field] = value
+    try:
+        result = await env.runtime.sync_once()
+        assert result == {"state": "retry_wait", "error_code": "invalid_control"}
+        assert env.store.load_control(env.owner) is None
+        assert env.runtime.control_snapshot(env.owner) is None
+        assert not env.uploads
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("anchor_id", ""), ("anchor_id", "x" * 101), ("anchor_id", "invalid\x00anchor"),
+    ("anchor_token", ""), ("anchor_token", "x" * 8193), ("anchor_token", "invalid\x00token"),
+])
+async def test_invalid_anchor_wire_fields_never_publish_ready_capture(env, field, value):
+    async def response(request):
+        if request.url.path.endswith("/anchors"):
+            return httpx.Response(200, json={"anchor_id": str(uuid.uuid4()),
+                                           "anchor_token": "synthetic-anchor", field: value})
+        return await env.client.send(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        env.runtime.http = client
+        try:
+            assert await env.runtime.sync_once() == {"state": "retry_wait", "error_code": "invalid_anchor"}
+            assert env.runtime.control_snapshot(env.owner) is None
+            assert env.runtime._control_state != "ready"
+            assert not env.uploads
+        finally:
+            await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_renderer_anchor_is_checked_independently_of_native_handshake(env):
+    anchors = 0
+
+    async def response(request):
+        nonlocal anchors
+        if request.url.path.endswith("/anchors"):
+            anchors += 1
+            return httpx.Response(200, json={"anchor_id": str(uuid.uuid4()),
+                                           "anchor_token": "synthetic-anchor" if anchors == 1 else ""})
+        return await env.client.send(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        env.runtime.http = client
+        try:
+            with pytest.raises(SyncFailure, match="invalid_anchor"):
+                await env.runtime.capture_context(str(uuid.uuid4()))
+            assert anchors == 2
+            assert env.runtime._control_state == "invalid_anchor"
+        finally:
+            await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_wire_maxima_and_non_uuid_protocol_identities_remain_supported(env):
+    env.state["account_incarnation"] = "i" * 128
+    env.state["clear_generation"] = 2**53 - 1
+    row = env.state["registrations"].pop(env.registration)
+    row["version"] = 2**53 - 1
+    env.state["registrations"]["r" * 100] = row
+
+    async def response(request):
+        if request.url.path.endswith("/anchors"):
+            return httpx.Response(200, json={"anchor_id": "a" * 100, "anchor_token": "t" * 8192})
+        return await env.client.send(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        env.runtime.http = client
+        try:
+            assert await env.runtime.sync_once() == {"state": "idle"}
+            context = env.runtime.control_snapshot(env.owner)
+            assert context["account_incarnation"] == "i" * 128
+            assert context["clear_generation"] == context["registration_version"] == 2**53 - 1
+            assert context["registration_id"] == "r" * 100
+            assert context["capture"]["anchor_id"] == "a" * 100
+            assert len(context["time_proof"]["anchor_token"]) == 8192
+        finally:
+            await env.client.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("version", [None, 0, -1, True, "1"])
 async def test_invalid_registration_version_is_retryable_without_killing_worker(env, version):
     try:

@@ -16,6 +16,18 @@ from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, SyncFa
 from portalocker.exceptions import LockException
 
 BINDING_KEYS = ("account_incarnation", "clear_generation", "registration_id", "registration_version")
+MAX_WIRE_SEQUENCE = 2**53 - 1
+
+
+def _wire_text(value, maximum):
+    return isinstance(value, str) and 0 < len(value) <= maximum and "\x00" not in value
+
+
+def _checked_anchor(value):
+    if (not isinstance(value, dict) or not _wire_text(value.get("anchor_id"), 100)
+            or not _wire_text(value.get("anchor_token"), 8192)):
+        raise SyncFailure("invalid_anchor")
+    return value
 
 
 class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
@@ -69,8 +81,9 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
     async def _refresh_control(self, owner, token):
         state = await self._json_request("GET", "/api/proactive/feedback/v2/control", token, owner)
         if (not isinstance(state, dict) or not isinstance(state.get("registrations"), dict)
-                or not isinstance(state.get("account_incarnation"), str)
-                or type(state.get("clear_generation")) is not int):
+                or not _wire_text(state.get("account_incarnation"), 128)
+                or type(state.get("clear_generation")) is not int
+                or not 0 <= state["clear_generation"] <= MAX_WIRE_SEQUENCE):
             raise SyncFailure("invalid_control")
         installation = await asyncio.to_thread(self.store.storage_incarnation, owner)
         registration = next(((key, value) for key, value in state["registrations"].items()
@@ -80,8 +93,8 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
             self._control_state = "device_activation_required"
             return False
         key, value = registration
-        if (not isinstance(key, str) or not key or type(value.get("version")) is not int
-                or value["version"] < 1 or type(value.get("active")) is not bool):
+        if (not _wire_text(key, 100) or type(value.get("version")) is not int
+                or not 1 <= value["version"] <= MAX_WIRE_SEQUENCE or type(value.get("active")) is not bool):
             raise SyncFailure("invalid_control")
         previous = await asyncio.to_thread(self.store.load_control, owner)
         binding = {"account_incarnation": state["account_incarnation"],
@@ -109,9 +122,7 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                                           body=canonical_bytes({"binding": binding,
                                                                 "clock_session_id": self._clock_session}))
         received = self._tick()
-        if (not isinstance(anchor, dict) or not isinstance(anchor.get("anchor_id"), str)
-                or not isinstance(anchor.get("anchor_token"), str)):
-            raise SyncFailure("invalid_anchor")
+        _checked_anchor(anchor)
         self._native_anchor = {**anchor, "send_tick_ms": sent, "receive_tick_ms": received}
         self._control_state = "ready"
         self._verified_sessions[owner["key"]] = token
@@ -161,6 +172,7 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                 anchor = await self._json_request("POST", "/api/proactive/feedback/v2/anchors", token, owner,
                                                   body=canonical_bytes({"binding": binding,
                                                                         "clock_session_id": clock_session_id}))
+                _checked_anchor(anchor)
                 return {**self._control, **anchor}
             except SyncFailure as error:
                 self._record_failure(error.code, owner)

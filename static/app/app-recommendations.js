@@ -29,6 +29,8 @@
     let captureBinding = null;
     let captureRefresh = null;
     let captureSupported = false;
+    let captureOwner = null;
+    let authorityEpoch = 0;
     const captureTick = () => typeof performance !== 'undefined' && typeof performance.now === 'function'
         ? Math.floor(performance.now()) : null;
     const copy = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -99,7 +101,11 @@
         catch (_) { console.warn('[Music recommendation] Could not persist pending evidence'); }
         return item;
     }
-    function invalidateCapture() {
+    function invalidateCapture(authorityLost = false) {
+        if (authorityLost) {
+            captureOwner = null;
+            authorityEpoch++;
+        }
         if (!captureBinding) return;
         captureBinding = null;
         window.dispatchEvent(new CustomEvent('neko:feedback-capture-changed'));
@@ -122,11 +128,16 @@
                 window.dispatchEvent(new CustomEvent('neko:feedback-upgrade-required'));
             }
             if (disposed || revision !== evidenceEpoch) return;
-            if (!response.ok || !result.success || !result.context) { invalidateCapture(); return; }
+            if (!response.ok || !result.success || !result.context) {
+                invalidateCapture(response.status === 401 || ['authentication_required', 'account_mismatch', 'session_changed'].includes(result.error_code));
+                return;
+            }
             const value = result.context;
             if (typeof value.owner_key !== 'string' || !value.anchor_token || !value.anchor_id
                 || !Number.isFinite(sendTick) || !Number.isFinite(receiveTick)) { invalidateCapture(); return; }
             const previous = captureBinding && captureBinding.value;
+            if (captureOwner !== null && captureOwner !== value.owner_key) authorityEpoch++;
+            captureOwner = value.owner_key;
             captureBinding = { value: copy(value), sendTick, receiveTick };
             if (!previous || ['owner_key','account_incarnation','clear_generation','registration_id','registration_version','binding_revision']
                 .some(key => previous[key] !== value[key])) {
@@ -532,8 +543,15 @@
         const operation = {};
         inFlight.set(id, operation);
         const originalOffer = offerContexts.get(id);
-        const hasOriginalOwner = () => !originalOffer || !captureBinding
-            || originalOffer.owner_key === captureBinding.value.owner_key;
+        const originalAuthorityEpoch = authorityEpoch;
+        const originalAuthorityKnown = captureOwner !== null
+            || (typeof originalOffer?.origin_context?.account_incarnation === 'string'
+                && originalOffer.origin_context.account_incarnation.length > 0);
+        // A failed statistics refresh alone cannot stop ordinary playback.
+        // Explicit identity loss or a verified account switch retires only the
+        // operations already in flight; fresh anonymous choices remain usable.
+        const hasOriginalOwner = () => !originalOffer || ((!originalAuthorityKnown || originalAuthorityEpoch === authorityEpoch)
+            && (!captureBinding || originalOffer.owner_key === captureBinding.value.owner_key));
         const isCurrent = () => !disposed && epoch === lifecycleEpoch && inFlight.get(id) === operation
             && hasOriginalOwner() && belongsHere(messages.get(id)) && !retiredIds.has(id);
         // Outlives the HTTP/dispatch await: the UI may still be waiting to play
@@ -633,6 +651,10 @@
             }
         } finally {
             if (!isCurrent()) closePlaceholder();
+            if (!disposed && epoch === lifecycleEpoch && originalOffer && originalAuthorityKnown && originalAuthorityEpoch !== authorityEpoch
+                && belongsHere(messages.get(id)) && ['pending', 'saving', 'accepted'].includes(messages.get(id)?.blocks[0].state)) {
+                update(id, 'unavailable');
+            }
             if (inFlight.get(id) === operation) inFlight.delete(id);
             if (dispatched.size > 128) dispatched.delete(dispatched.values().next().value);
             if (decisionIds.size > 256) decisionIds.delete(decisionIds.keys().next().value);

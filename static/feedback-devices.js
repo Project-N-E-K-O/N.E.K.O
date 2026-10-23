@@ -5,17 +5,26 @@
     let view = 0, disposed = false, busy = false, mutation = null, current = null, csrf = null, statusKey = '';
     const t = key => typeof window.t === 'function' ? window.t('feedbackDevices.' + key) : key;
     const status = key => { statusKey = key; nodes.status.textContent = t(key); };
-    async function request(path, body) {
+    async function request(path, body, retry = true, epoch = view) {
+        if (disposed || epoch !== view) throw Error('session_changed');
         if (!csrf) {
             const response = await fetch('/api/config/page_config', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
             const config = await response.json();
             if (!response.ok || typeof config.autostart_csrf_token !== 'string') throw Error('unavailable');
+            if (disposed || epoch !== view) throw Error('session_changed');
             csrf = config.autostart_csrf_token;
         }
         const response = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', cache: 'no-store',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
             body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000) });
         const value = await response.json();
+        // This guard rejects before any control mutation. A restarted backend
+        // can rotate its token while the management page remains open.
+        if (response.status === 403 && value && value.error_code === 'csrf_validation_failed' && retry) {
+            if (disposed || epoch !== view) throw Error('session_changed');
+            csrf = null;
+            return request(path, body, false, epoch);
+        }
         if (!response.ok || !value || value.success !== true) throw Error(value && value.error_code || 'unavailable');
         return value;
     }
