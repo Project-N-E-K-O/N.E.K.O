@@ -308,8 +308,29 @@ def test_measurement_is_separate_from_business_playing_and_prefix_survives_resta
     out_of_order = reopened.record(OWNER, card["id"], event(card, "measurement", "gap", playback_id="playback",
         measurement={**metric, "range_start_ms": 3000, "range_end_ms": 4000}), control=control())
     assert out_of_order["telemetry"]["status"] == "durable"
+    batch = reopened.prepare_batch(OWNER)
+    measured = [item["payload"] for item in batch["items"] if item["payload"].get("measurement") is not None]
+    assert {payload["kind"] for payload in measured} == {"measurement"}
+    assert all(payload["measurement_version"] == "playback_elapsed_observed_v2" for payload in measured)
     with sqlite3.connect(store.path) as db:
         assert db.execute("SELECT meter_prefix FROM feedback_v2_offers").fetchone()[0] == 2000
+
+
+@pytest.mark.parametrize("kind", ["playing", "paused", "ended", "stopped", "failed"])
+def test_playback_tail_wire_version_matches_measurement_and_frozen_retry(store, kind):
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "accepted", "accept"), control=control())
+    metric = {"version": "playback_elapsed_observed_v2", "epoch_id": "epoch",
+              "range_start_ms": 40, "range_end_ms": 60, "origin_context": control()}
+    tail = event(card, kind, "tail", playback_id="playback", measurement=metric)
+    assert store.record(OWNER, card["id"], tail, control=control())["telemetry"]["status"] == "durable"
+    batch = store.prepare_batch(OWNER)
+    payloads = {item["id"]: item["payload"] for item in batch["items"]}
+    assert payloads["tail"]["measurement_version"] == "playback_elapsed_observed_v2"
+    assert payloads["tail"]["measurement"] == metric
+    assert payloads["accept"]["measurement_version"] == "media-played-union-v1"
+    reopened = RecommendationStore(store.path, protocol_version=2)
+    assert reopened.prepare_batch(OWNER) == batch
 
 
 @pytest.mark.parametrize("phase", ["before", "after"])
