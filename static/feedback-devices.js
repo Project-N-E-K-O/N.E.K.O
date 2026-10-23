@@ -3,6 +3,7 @@
     const base = '/api/proactive/feedback';
     const nodes = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices'].map(id => [id, document.getElementById(id)]));
     let view = 0, disposed = false, busy = false, mutation = null, current = null, csrf = null, statusKey = '';
+    let replacementChoice = null;
     const t = key => typeof window.t === 'function' ? window.t('feedbackDevices.' + key) : key;
     const status = key => { statusKey = key; nodes.status.textContent = t(key); };
     async function request(path, body, retry = true, epoch = view) {
@@ -36,7 +37,10 @@
         const local = devices.find(row => row.is_current && row.active);
         const full = !local && active.length >= current.max_active_devices;
         nodes.replacement.hidden = !full;
-        const chosen = nodes['replacement-id'].value;
+        const chosen = replacementChoice && replacementChoice.owner === ownerKey
+            && active.some(row => !row.is_current && row.registration_id === replacementChoice.id
+                && row.registration_version === replacementChoice.version) ? replacementChoice.id : '';
+        if (!chosen) replacementChoice = null;
         nodes['replacement-id'].replaceChildren();
         const placeholder = document.createElement('option');
         placeholder.value = ''; placeholder.textContent = t('selectDevice');
@@ -46,7 +50,7 @@
             option.value = row.registration_id; option.textContent = row.display_name || row.registration_id.slice(0, 8);
             nodes['replacement-id'].appendChild(option);
         }
-        if (active.some(row => row.registration_id === chosen)) nodes['replacement-id'].value = chosen;
+        nodes['replacement-id'].value = chosen;
         nodes.activate.disabled = busy || !!local || (full && !nodes['replacement-id'].value);
         nodes.refresh.disabled = busy;
         nodes.devices.replaceChildren();
@@ -109,13 +113,24 @@
     nodes.activate.disabled = true;
     nodes.activate.addEventListener('click', () => {
         if (!current) return;
-        const body = { expected_owner_key: current.owner_key };
-        if (nodes['replacement-id'].value && !nodes.replacement.hidden) body.replace_registration_id = nodes['replacement-id'].value;
+        const body = { expected_owner_key: current.owner_key, activation_context: current.activation_context };
+        if (!nodes.replacement.hidden) {
+            if (!replacementChoice || replacementChoice.owner !== current.owner_key
+                || replacementChoice.id !== nodes['replacement-id'].value) return;
+            body.replace_registration_id = replacementChoice.id;
+            body.expected_replace_registration_version = replacementChoice.version;
+        }
         const name = nodes['device-name'].value.trim();
         if (name) body.display_name = name;
         void mutate('/devices/activate', body);
     });
-    nodes['replacement-id'].addEventListener('change', render);
+    nodes['replacement-id'].addEventListener('change', () => {
+        const selected = current && current.devices.find(row => row.active && !row.is_current
+            && row.registration_id === nodes['replacement-id'].value);
+        replacementChoice = selected && Number.isSafeInteger(selected.registration_version) && selected.registration_version >= 1
+            ? { owner: current.owner_key, id: selected.registration_id, version: selected.registration_version } : null;
+        render();
+    });
     nodes.refresh.addEventListener('click', () => { if (!busy) void refresh(); });
     window.addEventListener('localechange', () => { if (statusKey) status(statusKey); render(); });
     window.addEventListener('pagehide', () => { disposed = true; ++view; mutation = null; busy = false; });

@@ -29,7 +29,7 @@ async function fixture(options = {}) {
         let value;
         if (url.endsWith('page_config')) value = { autostart_csrf_token: 'fixture-csrf' };
         else if (url.endsWith('/status')) value = { success: true, owner_key: data.owner, protocol_version: data.protocol, upgrade_required: data.upgrade };
-        else if (url.endsWith('/devices')) value = { success: true, owner_key: data.owner, devices: data.devices, max_active_devices: 5 };
+        else if (url.endsWith('/devices')) value = { success: true, owner_key: data.owner, devices: data.devices, max_active_devices: 5, activation_context: "synthetic-activation-context" };
         else if (url.endsWith('/activate')) {
             const body = JSON.parse(options.body);
             assert.equal(body.expected_owner_key, data.owner);
@@ -63,7 +63,7 @@ test('sixth device requires an explicit choice and a click; names are only user 
     elements.activate.click();
     await settle();
     const call = data.calls.find(row => row.url.endsWith('/activate'));
-    assert.deepEqual(JSON.parse(call.options.body), { expected_owner_key: 'account-a', replace_registration_id: 'old-3', display_name: 'My desktop' });
+    assert.deepEqual(JSON.parse(call.options.body), { expected_owner_key: 'account-a', activation_context: 'synthetic-activation-context', replace_registration_id: 'old-3', expected_replace_registration_version: 1, display_name: 'My desktop' });
     assert.equal(call.options.headers['X-CSRF-Token'], 'fixture-csrf');
     assert.equal(data.devices.filter(row => row.active).length, 5);
     assert.equal(elements.activate.disabled, true);
@@ -84,6 +84,47 @@ test('upgrade state hides stale devices and keeps refresh available for recovery
     assert.equal(elements.upgrade.hidden, true);
     assert.equal(elements.devices.children.length, 5);
     assert.equal(data.calls.filter(row => row.url.endsWith('/activate')).length, 0);
+});
+
+test('replacement pins the viewed version and a changed device requires a fresh selection', async () => {
+    const s = await fixture();
+    s.elements['replacement-id'].value = 'old-2'; s.elements['replacement-id'].listeners.change();
+    let attempts = 0;
+    s.setIntercept((url, options) => {
+        if (!url.endsWith('/activate')) return null;
+        attempts++;
+        const body = JSON.parse(options.body);
+        if (attempts === 1) {
+            assert.equal(body.expected_replace_registration_version, 1);
+            s.data.devices[2].registration_version = 3;
+            return {ok:false,status:409,json:async()=>({error_code:'cloud_conflict'})};
+        }
+        assert.equal(body.expected_replace_registration_version, 3);
+        return null;
+    });
+    s.elements.activate.click(); await settle();
+    assert.equal(attempts, 1);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.conflict');
+    assert.equal(s.elements['replacement-id'].value, '');
+    assert.equal(s.elements.activate.disabled, true);
+    assert.equal(s.data.devices[2].active, true);
+    s.elements.activate.click(); await settle();
+    assert.equal(attempts, 1);
+    s.elements['replacement-id'].value = 'old-2'; s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    assert.equal(attempts, 2);
+    assert.equal(s.data.devices[2].active, false);
+});
+
+test('refresh preserves a replacement choice only for the same owner and version', async () => {
+    const s = await fixture();
+    s.elements['replacement-id'].value = 'old-1'; s.elements['replacement-id'].listeners.change();
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['replacement-id'].value, 'old-1');
+    s.data.owner = 'account-b';
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['replacement-id'].value, '');
+    assert.equal(s.elements.activate.disabled, true);
 });
 
 test('management copy has the same complete keys in all eight locales', () => {
@@ -181,8 +222,8 @@ test('only a definite CSRF rejection retries a mutation, preserving its owner an
     assert.equal(attempts, 2);
     assert.equal(configReads, 1);
     assert.deepEqual(bodies, [
-        {expected_owner_key:'account-a',replace_registration_id:'old-2'},
-        {expected_owner_key:'account-a',replace_registration_id:'old-2'},
+        {expected_owner_key:'account-a',activation_context:'synthetic-activation-context',replace_registration_id:'old-2',expected_replace_registration_version:1},
+        {expected_owner_key:'account-a',activation_context:'synthetic-activation-context',replace_registration_id:'old-2',expected_replace_registration_version:1},
     ]);
 });
 

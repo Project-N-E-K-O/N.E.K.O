@@ -153,7 +153,9 @@ class CaptureContextRequest(BaseModel):
 
 class ActivateDeviceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    activation_context: str | None = Field(default=None, min_length=1, max_length=2048)
     replace_registration_id: str | None = Field(default=None, max_length=36)
+    expected_replace_registration_version: int | None = Field(default=None, ge=1, le=2**53 - 1)
     display_name: str | None = Field(default=None, max_length=64)
     expected_owner_key: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -205,7 +207,9 @@ async def feedback_capture_context(request: Request):
 @router.post("/devices/activate")
 async def feedback_activate_device(request: Request):
     async def run(runtime, command):
-        return await runtime.activate_device(command.replace_registration_id, command.display_name, command.expected_owner_key)
+        return await runtime.activate_device(command.replace_registration_id, command.display_name, command.expected_owner_key,
+            expected_replace_registration_version=command.expected_replace_registration_version,
+            activation_context=command.activation_context)
     return await _control_command(request, ActivateDeviceRequest, run)
 
 

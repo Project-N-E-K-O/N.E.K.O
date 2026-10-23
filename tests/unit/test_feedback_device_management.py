@@ -91,10 +91,48 @@ async def test_sixth_device_requires_explicit_choice_and_stale_owner_cannot_acti
         with pytest.raises(SyncFailure, match="session_changed"):
             await env.runtime.activate_device(expected_owner_key="old-owner")
         previous = listed["devices"][0]["registration_id"]
-        await env.runtime.activate_device(previous, "My desktop", env.owner["key"])
+        await env.runtime.activate_device(previous, "My desktop", env.owner["key"],
+                                          expected_replace_registration_version=1)
         assert not env.state["registrations"][previous]["active"]
         assert env.state["registrations"][env.registration]["display_name"] == "My desktop"
         assert sum(row["active"] for row in env.state["registrations"].values()) == 5
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_local_replacement_version_is_preserved_through_both_http_hops(env, monkeypatch):
+    from main_routers import proactive_feedback_router as routes
+    monkeypatch.setattr(routes, "_runtime", env.runtime)
+    monkeypatch.setattr(routes, "_validate", lambda request: None)
+    env.state["registrations"].clear()
+    target = str(uuid.uuid4())
+    env.state["registrations"][target] = {"installation_id": str(uuid.uuid4()), "active": True, "version": 3}
+    app = FastAPI()
+    app.include_router(routes.router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            command = {"replace_registration_id": target, "expected_owner_key": env.owner["key"],
+                       "expected_replace_registration_version": 1}
+            response = await client.post("/api/proactive/feedback/devices/activate", json=command)
+            assert response.status_code == 409 and response.json()["error_code"] == "cloud_conflict"
+            assert env.state["registrations"][target]["active"]
+            command["expected_replace_registration_version"] = 3
+            response = await client.post("/api/proactive/feedback/devices/activate", json=command)
+            assert response.status_code == 200, response.text
+            assert not env.state["registrations"][target]["active"]
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [None, 0, -1, True, 1.5, "1", 2**53])
+async def test_runtime_invalid_replacement_view_never_sends_a_command(env, version):
+    before = list(env.requests)
+    try:
+        with pytest.raises(SyncFailure, match="cloud_conflict"):
+            await env.runtime.activate_device(str(uuid.uuid4()), expected_replace_registration_version=version)
+        assert env.requests == before
     finally:
         await env.client.aclose()
 

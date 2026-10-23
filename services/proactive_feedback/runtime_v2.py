@@ -181,10 +181,16 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                 self._record_failure("cloud_unavailable", owner)
                 raise
 
-    async def activate_device(self, replace_registration_id=None, display_name=None, expected_owner_key=None):
+    async def activate_device(self, replace_registration_id=None, display_name=None, expected_owner_key=None, *,
+                              expected_replace_registration_version=None, activation_context=None):
         """Only a user-triggered local endpoint calls this, never sync_once."""
         if replace_registration_id is not None:
             replace_registration_id = str(uuid.UUID(replace_registration_id))
+        if ((replace_registration_id is None) != (expected_replace_registration_version is None)
+                or (expected_replace_registration_version is not None
+                    and (type(expected_replace_registration_version) is not int
+                         or not 1 <= expected_replace_registration_version <= MAX_WIRE_SEQUENCE))):
+            raise SyncFailure("cloud_conflict")
         async with self._lock:
             owner = None
             try:
@@ -192,7 +198,15 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                 if expected_owner_key is not None and owner["key"] != expected_owner_key:
                     raise SyncFailure("session_changed")
                 installation = await asyncio.to_thread(self.store.storage_incarnation, owner)
-                command = {"installation_id": installation, "replace_registration_id": replace_registration_id}
+                if activation_context is None:
+                    view = await self._json_request("GET", "/api/proactive/feedback/v2/devices", token, owner)
+                    activation_context = view.get("activation_context") if isinstance(view, dict) else None
+                if not _wire_text(activation_context, 2048):
+                    raise SyncFailure("invalid_control")
+                command = {"installation_id": installation, "replace_registration_id": replace_registration_id,
+                           "activation_context": activation_context}
+                if replace_registration_id is not None:
+                    command["expected_replace_registration_version"] = expected_replace_registration_version
                 if display_name:
                     command["display_name"] = display_name
                 result = await self._json_request("POST", "/api/proactive/feedback/v2/devices/activate", token, owner,
