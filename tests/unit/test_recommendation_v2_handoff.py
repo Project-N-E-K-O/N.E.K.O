@@ -49,6 +49,45 @@ def answer(batch, statuses=None):
             for item, status in zip(batch["items"], statuses)]}
 
 
+@pytest.mark.parametrize("kind", ["measurement", "playing", "paused", "ended", "stopped", "failed"])
+@pytest.mark.parametrize("patch", [
+    {"version": "media-played-union-v1"}, {"epoch_id": ""},
+    {"range_start_ms": True}, {"range_end_ms": 1.5},
+    {"range_start_ms": -1}, {"range_start_ms": 10},
+    {"range_start_ms": 11}, {"range_end_ms": 2**53},
+])
+def test_malformed_measurement_cannot_change_business_or_enter_spool(store, kind, patch):
+    store.apply_control(OWNER, control())
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card, "accepted", "accepted"), control=control())
+    with sqlite3.connect(store.path) as db:
+        before = db.execute("SELECT decision,state,playback_id FROM recommendations WHERE id=?", (card["id"],)).fetchone()
+    pending = store.sync_status(OWNER)["pending"]
+    measurement = {"version": "playback_elapsed_observed_v2", "epoch_id": "epoch",
+                   "range_start_ms": 0, "range_end_ms": 10, "origin_context": control(), **patch}
+    fact = event(card, kind, "malformed", playback_id="playback", measurement=measurement)
+    original = copy.deepcopy(fact)
+    with pytest.raises(FeedbackConflict, match="invalid_feedback_measurement"):
+        store.record(OWNER, card["id"], fact, control=control())
+    assert fact == original
+    assert store.sync_status(OWNER)["pending"] == pending
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT decision,state,playback_id FROM recommendations WHERE id=?", (card["id"],)).fetchone() == before
+
+
+@pytest.mark.parametrize("kind", ["shown", "accepted", "skipped"])
+def test_nonplayback_measurement_is_rejected_before_action(store, kind):
+    store.apply_control(OWNER, control())
+    card = offer(store)
+    measurement = {"version": "playback_elapsed_observed_v2", "epoch_id": "epoch",
+                   "range_start_ms": 0, "range_end_ms": 10, "origin_context": control()}
+    with pytest.raises(FeedbackConflict, match="invalid_observation_fields"):
+        store.record(OWNER, card["id"], event(card, kind, "invalid-action", measurement=measurement), control=control())
+    assert store.sync_status(OWNER)["pending"] == 0
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT decision FROM recommendations WHERE id=?", (card["id"],)).fetchone() == (None,)
+
+
 def test_anonymous_v2_events_and_settings_never_consume_shared_upload_capacity(store):
     anonymous = {"key": "anonymous-fixture", "user_id": None, "community": None}
     card = store.create(anonymous, "Fixture", "turn", TRACK, {})

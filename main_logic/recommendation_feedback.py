@@ -921,11 +921,6 @@ class RecommendationStore:
                 if kind == "measurement":
                     measurement = original.get("measurement") or {}
                     start, end = measurement.get("range_start_ms"), measurement.get("range_end_ms")
-                    if (measurement.get("version") != "playback_elapsed_observed_v2"
-                            or not isinstance(measurement.get("epoch_id"), str) or not measurement["epoch_id"]
-                            or type(start) is not int or type(end) is not int
-                            or not 0 <= start < end <= 2**53 - 1):
-                        raise FeedbackConflict("invalid_feedback_measurement")
                     # This fixed slot is a local contiguous-prefix cache, not
                     # an infinite seen-epoch log. A new real epoch starts at
                     # zero; delayed old epochs keep their original identity
@@ -987,9 +982,17 @@ class RecommendationStore:
                 raise FeedbackConflict("invalid_feedback_offer_context")
             context(offer.get("origin_context"))
         measurement = event.get("measurement")
-        if measurement is not None:
+        if event.get("kind") == "measurement" or measurement is not None:
             if not isinstance(measurement, dict) or set(measurement) - {
                     "version", "epoch_id", "range_start_ms", "range_end_ms", "origin_context"}:
+                raise FeedbackConflict("invalid_feedback_measurement")
+            if event.get("kind") in {"shown", "accepted", "skipped"}:
+                raise FeedbackConflict("invalid_observation_fields")
+            start, end = measurement.get("range_start_ms"), measurement.get("range_end_ms")
+            if (measurement.get("version") != "playback_elapsed_observed_v2"
+                    or not isinstance(measurement.get("epoch_id"), str) or not measurement["epoch_id"]
+                    or type(start) is not int or type(end) is not int
+                    or not 0 <= start < end <= 2**53 - 1):
                 raise FeedbackConflict("invalid_feedback_measurement")
             context(measurement.get("origin_context"))
 
