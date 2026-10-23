@@ -188,6 +188,8 @@ def test_unsafe_paths_and_asset_names_fail_before_mount(tmp_path, mode, director
     (tmp_path / "neko").mkdir()
     result = execute(mode, "Mount plugin into N.E.K.O tree", tmp_path, environment(tmp_path, mode, directory, name))
     assert result.returncode != 0
+    expected = "Invalid package-name" if name else "Invalid plugin-directory"
+    assert expected in result.stderr, result.stderr
     assert not (tmp_path / "github-env").exists()
     assert not (tmp_path / "neko/plugin").exists()
 
