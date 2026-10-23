@@ -21,14 +21,19 @@
             <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
             <h2>{{ pluginDisplayText.name }}</h2>
           </div>
+          <div class="header-status">
+            <div v-if="surfacesLoading" class="surfaces-loading" role="status" data-testid="surfaces-loading">
+              <el-icon class="is-loading" aria-hidden="true"><Loading /></el-icon>
+              <span class="surfaces-loading__text">{{ $t('plugins.ui.loading') }}</span>
+            </div>
+          </div>
           <div data-yui-guide-id="plugin-detail-actions">
             <PluginActions :plugin-id="pluginId" />
           </div>
         </div>
       </template>
 
-      <div v-if="surfacesLoading" role="status" data-testid="surfaces-loading">{{ $t('plugins.ui.loading') }}</div>
-      <div v-else-if="surfaceLoadError" role="alert" data-testid="surfaces-error">
+      <div v-if="!surfacesLoading && surfaceLoadError" role="alert" data-testid="surfaces-error">
         {{ surfaceLoadError }}
         <el-button data-testid="surfaces-retry" @click="retrySurfaces">{{ $t('market.retry') }}</el-button>
       </div>
@@ -814,6 +819,42 @@ watch(
 
 .loading-container .el-icon {
   color: var(--el-color-primary);
+}
+
+/* /surfaces 加载提示放在标题和操作按钮之间的空隙里。占位盒的基准宽度为 0、可收缩到 0，
+   只吃剩余空间，不会挤压标题让它换行；提示比按钮矮，也撑不高标题行。所以提示出现和
+   消失都不会让下方标签页上下跳。空间不够时文字截断直至隐藏。多数请求在延迟内就返回，
+   提示根本不会露出来。 */
+.header-status {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.surfaces-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  animation: surfaces-loading-in var(--motion-duration-normal) var(--motion-ease-standard) 300ms both;
+}
+
+.surfaces-loading .el-icon {
+  flex-shrink: 0;
+}
+
+.surfaces-loading__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@keyframes surfaces-loading-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .card-header {

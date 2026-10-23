@@ -209,6 +209,40 @@ test('surface 运行时告警占用自己的高度，iframe 底部不会被裁�
   expect(gap).toBeLessThanOrEqual(2)
 })
 
+// ── surfaces 加载提示：出现和消失都不能让标签页上下跳 ─────────────────────────
+// 提示以前是标签页上方的一行文字，surfaces 返回前把整个标签区推低一行，返回后又弹回去。
+// 用相对卡片的偏移量比较：.app-main 自身的滚动不属于这里的布局。
+for (const width of [1000, 375]) {
+  test(`[w=${width}] surfaces 加载提示不改变标签页位置，也不盖住操作按钮`, async ({ page }) => {
+    let release = () => {}
+    const surfaces = new Promise<void>((resolve) => { release = resolve })
+    await stubLayoutPluginApis(page)
+    await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, async (route) => {
+      await surfaces
+      await route.fulfill({ json: { surfaces: SURFACES, warnings: [] } })
+    })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setViewportSize({ width, height: 800 })
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`)
+    const hint = page.getByTestId('surfaces-loading')
+    await expect(hint).toBeAttached()
+    const tabsOffset = () =>
+      page.evaluate(() => {
+        const top = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().top
+        return top('[data-yui-guide-id="plugin-detail-tabs"]') - top('.plugin-detail')
+      })
+    const loadingOffset = await tabsOffset()
+    const gap = (await page.locator('.header-status').boundingBox())!
+    const actions = (await page.locator('[data-yui-guide-id="plugin-detail-actions"]').boundingBox())!
+    expect(gap.x + gap.width, '提示区伸进了操作按钮').toBeLessThanOrEqual(actions.x)
+
+    release()
+    await expect(hint).toHaveCount(0)
+    await expect(page.locator('#tab-panel')).toBeVisible()
+    expect(await tabsOffset(), '提示消失后标签页移动了').toBe(loadingOffset)
+  })
+}
+
 // ── 长内容 tab：必须继续由 .app-main 滚动，不能被压到一屏后被裁 ──────────────
 test('长内容 tab（入口点）仍由外层滚动，内容没有被裁', async ({ page }) => {
   await openDetail(page, 1340)

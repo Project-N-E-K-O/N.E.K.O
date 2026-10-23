@@ -1,6 +1,5 @@
 <template>
   <div class="wb-layout-switcher" :data-yui-guide-id="guideId">
-    <el-icon class="wb-layout-switcher__icon"><Grid /></el-icon>
     <el-radio-group
       :model-value="layoutMode"
       size="small"
@@ -20,7 +19,6 @@
 </template>
 
 <script setup lang="ts">
-import { Grid } from '@element-plus/icons-vue'
 import type { LayoutMode } from '@/composables/useGridWorkbench'
 import type { LayoutChoiceDescriptor } from '@/composables/workbenchDescriptors'
 
@@ -39,12 +37,6 @@ defineEmits<{
 .wb-layout-switcher {
   display: flex;
   align-items: center;
-  gap: 8px;
   flex-shrink: 0;
-}
-
-.wb-layout-switcher__icon {
-  font-size: 15px;
-  color: var(--el-text-color-secondary);
 }
 </style>

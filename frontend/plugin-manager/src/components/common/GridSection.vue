@@ -28,7 +28,7 @@
             <span class="grid-section__title-count">
               (
               <Transition name="count-fade" mode="out-in">
-                <span :key="items.length">{{ items.length }}</span>
+                <span :key="displayCount">{{ displayCount }}</span>
               </Transition>
               )
             </span>
@@ -114,6 +114,8 @@ const props = withDefaults(defineProps<{
   title?: string
   icon?: Component
   items: T[]
+  /** 标题里显示的总数；分页时传入全部命中数，默认取 items.length。 */
+  count?: number
   layoutMode: LayoutMode
   multiSelectEnabled: boolean
   selectedIds: string[]
@@ -127,6 +129,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   title: undefined,
   icon: undefined,
+  count: undefined,
   variant: 'default',
   itemRowSpan: 1,
   guidePrefix: undefined,
@@ -145,6 +148,7 @@ const {
 } = useGridMotionController({
   phase: () => props.motionPhase,
 })
+const displayCount = computed(() => props.count ?? props.items.length)
 const sharedRows = computed(() => props.itemRowSpan > 1 && props.layoutMode !== 'list')
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)
 

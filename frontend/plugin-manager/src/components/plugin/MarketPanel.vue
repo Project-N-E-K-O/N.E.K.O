@@ -160,7 +160,8 @@
       <template v-else>
         <GridSection
           :title="activeGroupLabel"
-          :items="filteredItems"
+          :items="pagedItems"
+          :count="totalCount"
           :layout-mode="layoutMode"
           :multi-select-enabled="false"
           :selected-ids="[]"
@@ -190,7 +191,6 @@
             :total="totalCount"
             :small="embedded"
             layout="prev, pager, next, total"
-            @current-change="handlePageChange"
           />
         </div>
       </template>
@@ -264,12 +264,11 @@ import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
 import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
 import GridSection from '@/components/common/GridSection.vue'
 import {
-  fetchMarketPlugins,
+  fetchMarketCatalog,
   fetchMarketPluginVersions,
   getMarketUrl,
   isMarketAvailable,
   type MarketPlugin,
-  type FetchMarketPluginsParams,
 } from '@/api/market'
 import { useMarketWorkbench, type MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
 import type {
@@ -341,7 +340,6 @@ const marketBaseUrl = ref<string | null>(null)
 const plugins = ref<MarketPlugin[]>([])
 const currentPage = ref(1)
 const pageSize = props.embedded ? 8 : 12
-const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
 const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
@@ -622,25 +620,12 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
   },
 ])
 
+// ─── 分页：先在完整目录上过滤，再对命中结果分页 ──────────────────
+const totalCount = computed(() => filteredItems.value.length)
 const totalPages = computed(() => Math.ceil(totalCount.value / pageSize))
-
-// ─── 后端查询：提取纯关键词，qualifier 和排除项留给前端 ────────
-/** 从用户输入里抽取可以直传给后端 q= 的"裸 term"。 */
-function extractServerQuery(input: string): string {
-  if (!input.trim()) return ''
-  const tokens = input.match(/"[^"]+"|\S+/g) || []
-  const terms = tokens
-    .map((raw) => {
-      const negated = raw.startsWith('-')
-      const body = negated ? raw.slice(1) : raw
-      const unquoted = body.replace(/^"(.*)"$/, '$1').trim()
-      if (!unquoted || unquoted.includes(':')) return ''
-      if (negated) return ''
-      return unquoted
-    })
-    .filter(Boolean)
-  return terms.join(' ').trim()
-}
+const pagedItems = computed(() =>
+  filteredItems.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize),
+)
 
 let loadSeq = 0
 
@@ -649,27 +634,19 @@ async function loadPlugins() {
   const mySeq = ++loadSeq
   loading.value = true
   try {
-    const params: FetchMarketPluginsParams = {
-      page: currentPage.value,
-      page_size: pageSize,
+    const result = await fetchMarketCatalog({
       sort_by: sortBy.value,
       sort_order: sortOrder.value,
       // v2 (R7.3): 全局 channel 偏好透传给 Market；切换后 watcher 会触发重载
       channel: userPref.channel,
-    }
-    const q = extractServerQuery(filterText.value)
-    if (q) params.search = q
-    if (activeGroupId.value === 'recommended') params.featured_only = true
-
-    const result = await fetchMarketPlugins(params)
+    })
     // 只接受最新一次请求的返回值，避免乱序覆盖
     if (mySeq !== loadSeq) return
     if (result) {
-      plugins.value = result.items
-      totalCount.value = result.total
+      plugins.value = result
       lastLoadFailed.value = false
     } else {
-      // ``fetchMarketPlugins`` returns null on transient API/network error.
+      // ``fetchMarketCatalog`` returns null on transient API/network error.
       // Keep ``marketAvailable`` driven by ``isMarketAvailable()`` only so a
       // hiccup here does not freeze the early-return guard below and lock
       // the user into the "not configured" empty state until remount.
@@ -781,16 +758,16 @@ async function runYankSweep(revision: number, channel: 'stable' | 'beta'): Promi
   yankedMap.value = nextYanked
 }
 
-// ─── 交互：分页、搜索 debounce、排序、分组切换 ────────────────────
+// ─── 交互：分页、筛选、排序、分组切换 ────────────────────────────
 
-let searchDebounceTimer: number | null = null
+// 筛选和分组都在本地目录上计算，变化后回到第一页即可，无需重新请求。
+watch([filterText, activeGroupId], () => {
+  currentPage.value = 1
+})
 
-watch(filterText, () => {
-  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = window.setTimeout(() => {
-    currentPage.value = 1
-    loadPlugins()
-  }, 400)
+// 已安装状态等变化可能让命中结果变少，当前页不能停在末页之后。
+watch(totalPages, (pages) => {
+  if (currentPage.value > Math.max(1, pages)) currentPage.value = Math.max(1, pages)
 })
 
 // v2 (R7.5): 切换全局 channel 立即重载列表 + 重新跑 yank sweep
@@ -805,20 +782,10 @@ watch(
   },
 )
 
-watch(activeGroupId, () => {
-  currentPage.value = 1
-  loadPlugins()
-})
-
 function onSortChange() {
   // name 字段默认升序，其他字段默认降序
   sortOrder.value = sortBy.value === 'name' ? 'asc' : 'desc'
   currentPage.value = 1
-  loadPlugins()
-}
-
-function handlePageChange(page: number) {
-  currentPage.value = page
   loadPlugins()
 }
 
@@ -1174,10 +1141,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  if (searchDebounceTimer) {
-    clearTimeout(searchDebounceTimer)
-    searchDebounceTimer = null
-  }
   // 让在途 loadPlugins 的 mySeq 全部失效
   loadSeq++
 })

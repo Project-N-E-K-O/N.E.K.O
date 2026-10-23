@@ -6,6 +6,7 @@
       :model-value="selectedIds"
       size="small"
       class="wb-segmented"
+      :class="{ 'wb-segmented--all-selected': allSelected }"
       :data-yui-guide-id="guideId"
       @update:model-value="(v: string[]) => $emit('update:selectedIds', v)"
     >
@@ -47,10 +48,11 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { GroupSelectionMode } from '@/composables/useGridWorkbench'
 import type { GroupChoiceDescriptor } from '@/composables/workbenchDescriptors'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   choices: GroupChoiceDescriptor[]
   selectedIds: string[]
   counts?: Map<string, number>
@@ -67,6 +69,12 @@ withDefaults(defineProps<{
 defineEmits<{
   'update:selectedIds': [value: string[]]
 }>()
+
+// Every group checked means nothing is filtered out.
+const allSelected = computed(() =>
+  props.choices.length > 1
+  && props.choices.every((choice) => props.selectedIds.includes(choice.id)),
+)
 </script>
 
 <style scoped>
@@ -76,7 +84,7 @@ defineEmits<{
 }
 
 .wb-group-filter__count {
-  opacity: 0.8;
+  color: var(--el-text-color-secondary);
   font-weight: 400;
 }
 </style>

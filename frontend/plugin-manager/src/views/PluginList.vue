@@ -168,8 +168,8 @@
               </el-button>
               <span class="header-actions__divider" aria-hidden="true" />
               <el-button
-                :type="packagePanelVisible ? 'primary' : 'default'"
-                :plain="packagePanelVisible"
+                class="package-trigger"
+                :class="{ 'package-trigger--active': packagePanelVisible }"
                 :aria-pressed="packagePanelVisible"
                 :aria-label="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
                 :title="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
@@ -1646,17 +1646,18 @@ onUnmounted(() => {
 }
 
 /* ── Market quick-access trigger (top-left) ── */
+/* 浅蓝渐变底配主色字；面板打开后转为实心主色。 */
 .market-trigger {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   padding: 8px 14px 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 30%, var(--surface-card));
   border-radius: var(--radius-control);
   background: linear-gradient(
     135deg,
-    color-mix(in srgb, var(--el-color-primary) 10%, transparent) 0%,
-    color-mix(in srgb, var(--el-color-primary) 2%, transparent) 100%
+    color-mix(in srgb, var(--el-color-primary) 14%, var(--surface-card)) 0%,
+    color-mix(in srgb, var(--el-color-primary) 4%, var(--surface-card)) 100%
   );
   color: var(--el-color-primary);
   font-size: 13px;
@@ -1676,11 +1677,42 @@ onUnmounted(() => {
   box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 18%, transparent);
 }
 
+.market-trigger:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
 .market-trigger--active {
+  border-color: var(--el-color-primary);
   background: var(--el-color-primary);
   color: var(--on-primary);
-  border-color: var(--el-color-primary);
   box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 22%, transparent);
+}
+
+/* 包管理用 success 语义色：平时浅绿底绿字，面板打开时实心绿底。 */
+.header-actions :deep(.package-trigger) {
+  --el-button-text-color: var(--el-color-success);
+  --el-button-bg-color: var(--el-color-success-light-9);
+  --el-button-border-color: var(--el-color-success-light-5);
+  --el-button-hover-text-color: var(--el-color-success);
+  --el-button-hover-bg-color: var(--el-color-success-light-8);
+  --el-button-hover-border-color: var(--el-color-success-light-3);
+  --el-button-active-text-color: var(--el-color-success);
+  --el-button-active-bg-color: var(--el-color-success-light-7);
+  --el-button-active-border-color: var(--el-color-success);
+  font-weight: 600;
+}
+
+.header-actions :deep(.package-trigger--active) {
+  --el-button-text-color: var(--on-primary);
+  --el-button-bg-color: var(--el-color-success);
+  --el-button-border-color: var(--el-color-success);
+  --el-button-hover-text-color: var(--on-primary);
+  --el-button-hover-bg-color: var(--el-color-success-light-3);
+  --el-button-hover-border-color: var(--el-color-success-light-3);
+  --el-button-active-text-color: var(--on-primary);
+  --el-button-active-bg-color: var(--el-color-success-dark-2);
+  --el-button-active-border-color: var(--el-color-success-dark-2);
 }
 
 .market-trigger__icon {

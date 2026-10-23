@@ -331,6 +331,36 @@ appearanceTest(
   }
 )
 
+appearanceTest('sidebar icons move only horizontally while the sidebar collapses and expands', async ({ page }) => {
+  // CJK labels have a taller line box than the 20px icon, which used to set the row height.
+  await page.addInitScript(() => window.localStorage.setItem('locale', 'zh-CN'))
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  // The adapter link arrives with the plugin list; sample only once every row is in place.
+  await expect(page.locator('.sidebar').getByRole('button', { name: ADAPTER_NAME, exact: true })).toBeVisible()
+  const sampleIconTops = (toggleLabel: RegExp) =>
+    page.evaluate(async (label) => {
+      const tops = () =>
+        [...document.querySelectorAll('.nav-item__icon')].map((icon) => icon.getBoundingClientRect().top)
+      const before = tops()
+      const toggle = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find((button) =>
+        new RegExp(label).test(button.getAttribute('aria-label')!)
+      )!
+      toggle.click()
+      const frames: number[][] = []
+      const start = performance.now()
+      while (performance.now() - start < 600) {
+        await new Promise(requestAnimationFrame)
+        frames.push(tops())
+      }
+      return { before, frames }
+    }, toggleLabel.source)
+  for (const label of [/收起/, /展开/]) {
+    const { before, frames } = await sampleIconTops(label)
+    for (const frame of frames) expect(frame).toEqual(before)
+  }
+})
+
 // Exercise the production card/grid with short-only and mixed-content rows.
 async function installCardLayoutFixture(page: Page, count = 8) {
   const plugins = Array.from({ length: count }, (_, index) => ({
@@ -693,4 +723,41 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await expect(page.locator('html')).not.toHaveClass(/dark/)
   await page.mouse.move(0, 0)
   await expect.poll(palette).toEqual(lightPalette)
+})
+
+appearanceTest('segmented controls frame only the selection and keep a keyboard focus ring', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1600, height: 900 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+  // Framed segments, and segments drawing an outline, as text labels.
+  const marked = () => page.evaluate(() => {
+    const items = [...document.querySelectorAll('.wb-segmented :is(.el-radio-button, .el-checkbox-button)')]
+    const inner = (item: Element) => getComputedStyle(item.querySelector(':is(.el-radio-button__inner, .el-checkbox-button__inner)')!)
+    const label = (item: Element) => item.textContent!.replace(/\s+/g, ' ').trim()
+    return {
+      framed: items.filter(item => inner(item).borderTopColor !== 'rgba(0, 0, 0, 0)').map(label),
+      outlined: items.filter(item => inner(item).outlineStyle !== 'none').map(label),
+    }
+  })
+  const groups = page.locator('.wb-group-filter .el-checkbox-button')
+  const pluginGroup = (await groups.nth(0).textContent())!.replace(/\s+/g, ' ').trim()
+  const compact = (await page.locator('.wb-layout-switcher .el-radio-button.is-active').textContent())!.trim()
+
+  // Every group selected reads as "no filter", so only the layout is framed.
+  await expect.poll(marked).toEqual({ framed: [compact], outlined: [] })
+
+  // A mouse click leaves Element's .is-focus behind; it must not draw a frame.
+  await groups.nth(1).click()
+  await page.mouse.move(0, 0)
+  await expect.poll(marked).toEqual({ framed: [pluginGroup, compact], outlined: [] })
+  await groups.nth(1).click()
+  await page.mouse.move(0, 0)
+  await expect.poll(marked).toEqual({ framed: [compact], outlined: [] })
+
+  await page.locator('.wb-layout-switcher .el-radio-button__original-radio').last().focus()
+  await page.keyboard.press('ArrowLeft')
+  const focused = (await page.locator('.wb-layout-switcher .el-radio-button.is-active').textContent())!.trim()
+  await expect.poll(marked).toEqual({ framed: [focused], outlined: [focused] })
 })

@@ -235,10 +235,12 @@ onMounted(() => {
   font-size: 13px;
 }
 
+/* 行高只由 20px 的图标盒和同高的文字行决定：收起时文字隐藏，行高不变，图标只做水平移动。 */
 .nav-item__icon {
   font-size: 17px;
   flex-shrink: 0;
   width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -246,6 +248,7 @@ onMounted(() => {
 }
 
 .nav-item__label {
+  line-height: 20px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -263,6 +266,8 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  /* 展开动画的首帧侧栏仍是收起宽度，换行会把下方适配器整体推低一帧。 */
+  white-space: nowrap;
 }
 
 .adapter-links { position: relative; display: flex; flex-direction: column; gap: 2px; }
