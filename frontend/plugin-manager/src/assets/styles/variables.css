@@ -97,7 +97,8 @@ html:root.dark {
   --color-border-hover: var(--el-border-color-dark);
 
   /* Light-theme primary keeps Element Plus's bright #409eff, the colour the
-   * workbench has always used; tints are mixed with our card colour. */
+   * workbench has always used. Tints are mixed with our card colour, not
+   * Element Plus's white or near-black, so each theme only sets its base. */
   --el-color-primary: #409eff;
   --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 70%, var(--surface-card));
   --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 50%, var(--surface-card));
@@ -146,13 +147,8 @@ html:root.dark {
 
   /* Pale accents remain readable on dark surfaces. Solid primary controls
    * use on-primary ink; white text on these accents has too little contrast.
-   * Every tint is mixed with our card colour, not Element Plus's near-black. */
+   * The shared light-* tints follow this base; dark-2 lightens instead. */
   --el-color-primary: #79bbff;
-  --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 70%, var(--surface-card));
-  --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 50%, var(--surface-card));
-  --el-color-primary-light-7: color-mix(in srgb, var(--el-color-primary) 30%, var(--surface-card));
-  --el-color-primary-light-8: color-mix(in srgb, var(--el-color-primary) 20%, var(--surface-card));
-  --el-color-primary-light-9: color-mix(in srgb, var(--el-color-primary) 10%, var(--surface-card));
   --el-color-primary-dark-2: color-mix(in srgb, var(--el-color-primary) 80%, white);
 
   --el-color-success: #83d5b3;
