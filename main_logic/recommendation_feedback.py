@@ -528,7 +528,7 @@ class RecommendationStore:
                 blocked=CASE WHEN ? THEN 1 ELSE blocked END WHERE owner=? AND batch_id=?""",
                        (safe_code, bool(permanent), owner["key"], batch_id)).rowcount == 1
 
-    def resume_blocked_batch(self, owner: dict, batch_id: str, batch_hash: str):
+    def resume_blocked_batch(self, owner: dict, batch_id: str, batch_hash: str, *, expected_error=None):
         """Explicit retry of exactly the inspected immutable batch, never a replacement.
 
         The caller fences the logged-in account. BEGIN IMMEDIATE serializes this
@@ -539,11 +539,12 @@ class RecommendationStore:
             active = db.execute("SELECT * FROM feedback_sync_batches WHERE owner=? AND batch_id=?",
                                 (owner["key"], batch_id)).fetchone()
             if (active is None or not active["blocked"]
+                    or (expected_error is not None and active["last_error"] != expected_error)
                     or _digest(json.loads(active["body"])) != batch_hash):
                 raise FeedbackConflict("feedback_resume_conflict")
             changed = db.execute("""UPDATE feedback_sync_batches SET blocked=0,last_error=''
-                WHERE owner=? AND batch_id=? AND body=? AND blocked=1""",
-                (owner["key"], batch_id, active["body"])).rowcount
+                WHERE owner=? AND batch_id=? AND body=? AND last_error=? AND blocked=1""",
+                (owner["key"], batch_id, active["body"], active["last_error"])).rowcount
             if changed != 1:
                 raise FeedbackConflict("feedback_resume_conflict")
         return True

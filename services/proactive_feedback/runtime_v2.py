@@ -279,6 +279,22 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
                             self._settings_import_error = "settings_import_unavailable"
                 status = await asyncio.to_thread(self.store.sync_status, owner)
                 await self._guard(owner, token)
+                if status["blocked"] and status["last_error"] == "upgrade_required":
+                    # Reaching here proves the v2 control/anchor handshake now
+                    # works. Release only this diagnosed upgrade block, with
+                    # the same credential/cancellation fence as explicit retry.
+                    cancelled = threading.Event()
+                    try:
+                        await asyncio.to_thread(self._resume_commit, owner, token,
+                            status["batch_id"], status["batch_hash"], cancelled, expected_error="upgrade_required")
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        raise
+                    await self._guard(owner, token)
+                    self._retry_at.pop(owner["key"], None)
+                    self._failures.pop(owner["key"], None)
+                    self._errors.pop(owner["key"], None)
+                    status["blocked"] = False
                 if status["blocked"]:
                     return {"state": "blocked", "error_code": status["last_error"]}
                 if self._retry_at.get(owner["key"], 0) > self.clock():

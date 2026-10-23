@@ -188,7 +188,7 @@ class ProactiveFeedbackRuntime:
             self._retry_at[owner["key"]] = self.clock() + min(900, 30 * 2 ** min(count - 1, 5))
             return {"state": "blocked" if failure.permanent else "retry_wait", "error_code": failure.code}
 
-    def _resume_commit(self, owner, token, batch_id, batch_hash, cancelled):
+    def _resume_commit(self, owner, token, batch_id, batch_hash, cancelled, *, expected_error=None):
         with self.attribution_context() as current_owner:
             snapshot = self.fenced_snapshot_provider()
             if self._closing or cancelled.is_set():
@@ -196,6 +196,8 @@ class ProactiveFeedbackRuntime:
             if (current_owner != owner or host.owner_from_snapshot(snapshot) != owner
                     or (snapshot or {}).get("access_token") != token):
                 raise SyncFailure("session_changed")
+            if expected_error is not None:
+                return self.store.resume_blocked_batch(owner, batch_id, batch_hash, expected_error=expected_error)
             return self.store.resume_blocked_batch(owner, batch_id, batch_hash)
 
     async def resume_blocked_batch(self, *, owner_key, batch_id, batch_hash):

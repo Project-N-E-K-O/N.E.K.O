@@ -437,6 +437,17 @@ def test_reading_status_does_not_retire_pending_captures(store, monkeypatch):
     assert store.sync_status(OWNER)["pending"] == 0
 
 
+def test_upgrade_resume_cannot_release_a_different_permanent_error(store):
+    card = offer(store)
+    store.record(OWNER, card["id"], event(card), control=control())
+    batch = store.prepare_batch(OWNER)
+    assert store.mark_batch_error(OWNER, batch["batch_id"], "cloud_conflict", permanent=True)
+    with pytest.raises(FeedbackConflict, match="feedback_resume_conflict"):
+        store.resume_blocked_batch(OWNER, batch["batch_id"], payload_hash(batch), expected_error="upgrade_required")
+    assert store.sync_status(OWNER)["blocked"]
+    assert store.sync_status(OWNER)["last_error"] == "cloud_conflict"
+
+
 @pytest.mark.parametrize("phase", ["before", "after"])
 def test_real_store_process_exit_at_commit_has_no_handoff_gap(store, phase):
     card = offer(store)

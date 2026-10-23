@@ -294,6 +294,28 @@ async def test_cancelled_error_commit_cannot_mark_batch_after_credential_fence_o
 
 
 @pytest.mark.asyncio
+async def test_upgrade_handshake_releases_only_upgrade_block_and_retries_exact_original(env):
+    try:
+        await env.runtime.sync_once()
+        shown(env)
+        env.options["upload_status"] = 426
+        assert (await env.runtime.sync_once())["state"] == "upgrade_required"
+        status = env.store.sync_status(env.owner)
+        assert status["blocked"] and status["last_error"] == "upgrade_required"
+        env.options["upgrade"] = True
+        assert (await env.runtime.sync_once())["state"] == "upgrade_required"
+        assert len(env.uploads) == 1 and env.store.sync_status(env.owner)["blocked"]
+        env.options["upgrade"] = False
+        env.options["upload_status"] = None
+        assert (await env.runtime.sync_once())["state"] == "synced"
+        assert env.uploads[0] == env.uploads[1]
+        assert env.store.sync_status(env.owner)["pending"] == 0
+        assert not (await env.runtime.status())["upgrade_required"]
+    finally:
+        await env.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_generation_change_before_upload_discards_backlog_without_rebinding(env):
     try:
         await env.runtime.sync_once()
