@@ -3,21 +3,21 @@ Plugin context module
 
 Provides plugin runtime context, including status updates and message-push features.
 """
-import contextlib
-import contextvars
 import asyncio
 import base64
+import contextlib
+import contextvars
 import copy
 import queue
 import threading
 import time
+
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib
-import uuid
 import functools
-
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,10 +34,9 @@ try:
 except ImportError:  # pragma: no cover
     zmq = None
 
-from plugin.core.state import state
+from plugin.core.rpc import RpcPeer
 from plugin.settings import (
     EXPORT_INLINE_BINARY_MAX_BYTES,
-    PLUGIN_LOG_CTX_MESSAGE_PUSH,
     PLUGIN_LOG_CTX_STATUS_UPDATE,
     PLUGIN_LOG_SYNC_CALL_WARNINGS,
     SYNC_CALL_IN_HANDLER_POLICY,
@@ -46,16 +45,18 @@ from plugin.settings import (
 if TYPE_CHECKING:
     # Used only for type annotations on PluginContext.app; importing at runtime would pull all of fastapi/starlette into every plugin subprocess.
     from fastapi import FastAPI
-    from plugin.core.bus.types import BusHubProtocol
+
+    from plugin.core.bus.conversations import ConversationClient
     from plugin.core.bus.events import EventClient
+    from plugin.core.bus.frames import FrameClient
     from plugin.core.bus.lifecycle import LifecycleClient
     from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
-    from plugin.core.bus.conversations import ConversationClient
-    from plugin.core.bus.frames import FrameClient
-    from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
+    from plugin.core.bus.types import BusHubProtocol
+
     # ⚠ Never import loguru. The actual type of the logger field is plugin.logging_config.PluginLoggerAdapter.
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
+    from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
 
 
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
@@ -255,13 +256,9 @@ class PluginContext:
     message_queue: Any = None  # Message-push queue
     app: Optional["FastAPI"] = None
     _plugin_comm_queue: Optional[Any] = None  # Inter-plugin communication queue (provided by the main process)
-    _zmq_ipc_client: Optional[Any] = None
-    _cmd_queue: Optional[Any] = None  # Command queue (for handling commands while waiting)
-    _res_queue: Optional[Any] = None  # Result queue (for handling responses while waiting)
-    _response_queue: Optional[Any] = None
-    _response_pending: Optional[Dict[str, Any]] = None
-    _direct_response_waiters: Optional[Dict[str, Any]] = None
-    _direct_response_lock: Any = field(
+    _rpc_peer: Optional[RpcPeer] = field(default=None, init=False, repr=False)
+    _rpc_closed: bool = field(default=False, init=False, repr=False)
+    _runtime_lock: Any = field(
         default_factory=threading.Lock,
         init=False,
         repr=False,
@@ -308,7 +305,7 @@ class PluginContext:
 
     @property
     def models(self) -> Any:
-        with self._direct_response_lock:
+        with self._runtime_lock:
             models = self._models
             if models is None:
                 from plugin.sdk.shared.core.models import PluginModels
@@ -317,126 +314,70 @@ class PluginContext:
                 self._models = models
             return models
 
-    async def _upload_image(
-        self,
-        data: bytes,
-        *,
-        mime: str,
-        deadline: float | None = None,
-        timeout: float,
-    ) -> dict[str, object]:
-        """Upload one image within ``timeout`` TOTAL.
-
-        ``deadline`` is a monotonic instant established by the caller before it
-        began any work on this upload. Without it the legs each got a fresh
-        ``timeout`` — send, then wait — so an upload could take past twice its
-        advertised budget and overrun a timer or entry handler's own deadline.
-        The decode gate widened that further, since queueing for a slot happens
-        before the transport is even touched (Codex).
-        """
+    async def _upload_image(self, data: bytes, *, mime: str, deadline: float | None = None, timeout: float) -> dict[str, object]:
         self._ensure_image_upload_available()
-        transport = self._image_transport
-        if transport is None:
+        if self._image_transport is None:
             raise RuntimeError("temporary image transport is not available")
         if timeout <= 0:
             raise ValueError("image upload timeout must be positive")
-
-        request_id = str(uuid.uuid4())
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        with self._direct_response_lock:
-            waiters = self._direct_response_waiters
-            if waiters is None:
-                waiters = {}
-                self._direct_response_waiters = waiters
-            waiters[request_id] = (loop, future)
+        deadline = deadline if deadline is not None else asyncio.get_running_loop().time() + timeout
+        ready = getattr(self, "_downlink_ready", None)
+        while ready is not None and not ready.is_set():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(f"image upload timed out after {timeout}s (plugin downlink not ready)")
+            await asyncio.sleep(min(0.02, remaining))
         try:
-            def _remaining() -> float:
-                if deadline is None:
-                    return timeout
-                return deadline - asyncio.get_running_loop().time()
-
-            # The host starts timer and custom-event handler threads BEFORE the
-            # downlink loop begins reading, and _on_command_loop_start can await
-            # for as long as it likes in between. An upload launched in that
-            # window is sent to nobody: the reply has no reader, so it can only
-            # time out (Codex).
-            #
-            # Waiting is the honest answer rather than refusing, because those
-            # handlers are legitimate uploaders the moment the loop is up -- a
-            # refusal keyed on handler NAME would also reject them afterwards.
-            # The wait is charged to the SAME deadline, so it is never a second
-            # budget stacked on the caller's: a plugin that asked for three
-            # seconds still gets an answer within three seconds.
-            ready = getattr(self, "_downlink_ready", None)
-            while ready is not None and not ready.is_set():
-                remaining = _remaining()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"image upload timed out after {timeout}s "
-                        "(plugin downlink not ready)"
-                    )
-                await asyncio.sleep(min(0.02, remaining))
-
-            send_budget = _remaining()
-            if send_budget <= 0:
-                raise TimeoutError(f"image upload timed out after {timeout}s")
-            await transport.send_image(
-                request_id,
-                mime=mime,
-                data=data,
-                timeout=send_budget,
-            )
-            wait_budget = _remaining()
-            if wait_budget <= 0:
-                raise TimeoutError(f"image upload timed out after {timeout}s")
-            try:
-                response = await asyncio.wait_for(future, timeout=wait_budget)
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"image upload timed out after {timeout}s") from None
-            return self._unwrap_image_upload_response(response)
-        finally:
-            with self._direct_response_lock:
-                waiters.pop(request_id, None)
+            # SDK image normalization uses the caller loop's clock. Transfer
+            # its remaining budget, never that loop's arbitrary clock epoch.
+            rpc_deadline = time.monotonic() + max(0.0, deadline - asyncio.get_running_loop().time())
+            result = await self._get_rpc_peer().request("IMAGE_UPLOAD", {
+                "data": data, "mime": mime, "_request_deadline_monotonic": rpc_deadline,
+            }, timeout=timeout)
+        except TimeoutError:
+            raise TimeoutError(f"image upload timed out after {timeout}s") from None
+        return self._unwrap_image_upload_response({"result": result})
 
     def _ensure_image_upload_available(self) -> None:
         if self._image_uploads_blocked:
             raise RuntimeError("ctx.images.upload() is not available while the plugin is freezing")
 
-    def _dispatch_direct_response(self, response: Any) -> bool:
-        """Resolve SDK-owned response futures before the legacy shared inbox."""
-        if not isinstance(response, dict) or response.get("type") != "IMAGE_UPLOAD_RESULT":
+    def _get_rpc_peer(self) -> RpcPeer:
+        with self._runtime_lock:
+            if self._rpc_closed:
+                raise RuntimeError("Plugin context is closed")
+            if self._rpc_peer is None:
+                self._rpc_peer = RpcPeer(self._send_rpc_request, cancel=self._cancel_rpc_request, logger=self.logger)
+            return self._rpc_peer
+
+    async def _send_rpc_request(self, request: dict, timeout: float | None) -> None:
+        if request["type"] == "IMAGE_UPLOAD":
+            await self._image_transport.send_image(request["request_id"], mime=request["mime"],
+                data=request["data"], timeout=timeout)
+            return
+        queue = self._plugin_comm_queue
+        if queue is None:
+            raise RuntimeError(f"Plugin communication queue not available for plugin {self.plugin_id}")
+        request = dict(request, from_plugin=self.plugin_id)
+        await asyncio.to_thread(queue.put, request, timeout=timeout)
+
+    async def _cancel_rpc_request(self, request: dict) -> None:
+        if request["type"] != "IMAGE_UPLOAD" and self._plugin_comm_queue is not None:
+            await asyncio.to_thread(self._plugin_comm_queue.put, {
+                "type": "RPC_CANCEL", "from_plugin": self.plugin_id,
+                "request_id": request["request_id"],
+            }, timeout=0.1)
+
+    def _dispatch_rpc_response(self, response: Any) -> bool:
+        if not isinstance(response, dict) or response.get("type") not in ("IMAGE_UPLOAD_RESULT", "PLUGIN_TO_PLUGIN_RESPONSE"):
             return False
         request_id = response.get("request_id")
-        with self._direct_response_lock:
-            waiters = self._direct_response_waiters
-            waiter = waiters.get(request_id) if waiters and request_id else None
-        if waiter is not None:
-            loop, future = waiter
-            try:
-                loop.call_soon_threadsafe(
-                    self._resolve_direct_response,
-                    future,
-                    response,
-                )
-            except RuntimeError:
-                pass
-        # A late image result is owned by this path too; don't leak it into the
-        # plugin-to-plugin response inbox where it can confuse correlation.
+        with self._runtime_lock:
+            peer = self._rpc_peer
+        if peer is not None and isinstance(request_id, str):
+            peer.receive(request_id, result=response.get("result"), error=response.get("error"))
         return True
 
-    @staticmethod
-    def _resolve_direct_response(
-        future: asyncio.Future[Any],
-        response: dict[str, Any],
-    ) -> None:
-        if not future.done():
-            future.set_result(response)
-
-    @staticmethod
-    def _cancel_direct_response(future: asyncio.Future[Any]) -> None:
-        if not future.done():
-            future.cancel()
 
     @staticmethod
     def _unwrap_image_upload_response(response: dict[str, Any]) -> dict[str, object]:
@@ -453,37 +394,16 @@ class PluginContext:
         return dict(result)
 
     def close(self) -> None:
-        """Release resources owned directly by this context.
-
-        This is safe to call multiple times.
-        """
+        """Close this context and terminate all its outstanding requests."""
         self._model_gateway_closed = True
+        with self._runtime_lock:
+            self._rpc_closed = True
+            peer = self._rpc_peer
+        if peer is not None:
+            peer.close()
         models = getattr(self, "_models", None)
         if models is not None:
             models.close()
-        with self._direct_response_lock:
-            waiters = getattr(self, "_direct_response_waiters", None)
-            pending = tuple(waiters.values()) if waiters else ()
-            if waiters:
-                waiters.clear()
-        for loop, future in pending:
-            try:
-                loop.call_soon_threadsafe(self._cancel_direct_response, future)
-            except RuntimeError:
-                pass
-
-        zmq_client = getattr(self, "_zmq_ipc_client", None)
-        if zmq_client is not None:
-            try:
-                close_fn = getattr(zmq_client, "close", None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
-            try:
-                self._zmq_ipc_client = None
-            except Exception:
-                pass
 
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
@@ -1560,214 +1480,23 @@ class PluginContext:
         """
         return await asyncio.to_thread(self.push_message, *args, **kwargs)
 
-    def _send_request_and_wait(
-        self,
-        *,
-        method_name: str,
-        request_type: str,
-        request_data: Dict[str, Any],
-        timeout: float,
-        wrap_result: bool = True,
-        send_log_template: Optional[str] = None,
-        error_log_template: Optional[str] = None,
-        warn_on_orphan_response: bool = False,
-        orphan_warning_template: Optional[str] = None,
-    ) -> Any:
+    def _send_request_and_wait(self, *, method_name: str, request_type: str,
+                               request_data: Dict[str, Any], timeout: float, wrap_result: bool = True) -> Any:
         self._enforce_sync_call_policy(method_name)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(
-                self._send_request_and_wait_async(
-                    method_name=method_name,
-                    request_type=request_type,
-                    request_data=request_data,
-                    timeout=timeout,
-                    wrap_result=wrap_result,
-                    send_log_template=send_log_template,
-                    error_log_template=error_log_template,
-                    warn_on_orphan_response=warn_on_orphan_response,
-                    orphan_warning_template=orphan_warning_template,
-                )
-            )
-        raise RuntimeError(
-            f"Sync call '{method_name}' cannot be used inside a running event loop. "
-            "Use _send_request_and_wait_async(...) instead."
-        )
+        if self._is_in_event_loop():
+            raise RuntimeError(f"Sync call '{method_name}' cannot be used inside a running event loop")
+        return asyncio.run(self._send_request_and_wait_async(
+            method_name=method_name, request_type=request_type, request_data=request_data,
+            timeout=timeout, wrap_result=wrap_result,
+        ))
 
-    async def _send_request_and_wait_async(
-        self,
-        *,
-        method_name: str,
-        request_type: str,
-        request_data: Dict[str, Any],
-        timeout: float,
-        wrap_result: bool = True,
-        send_log_template: Optional[str] = None,
-        error_log_template: Optional[str] = None,
-        warn_on_orphan_response: bool = False,
-        orphan_warning_template: Optional[str] = None,
-    ) -> Any:
-        _ = method_name
-
-        def _error_to_message(error: Any) -> str:
-            if isinstance(error, str):
-                return error
-            if isinstance(error, dict):
-                code = error.get("code")
-                message = error.get("message")
-                details = error.get("details")
-                parts = []
-                if isinstance(code, str) and code:
-                    parts.append(f"[{code}]")
-                if isinstance(message, str) and message:
-                    parts.append(message)
-                if details is not None:
-                    parts.append(f"details={details}")
-                if parts:
-                    return " ".join(parts)
-            return str(error)
-
-        plugin_comm_queue = self._plugin_comm_queue
-        if plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        request_id = str(uuid.uuid4())
-        payload = dict(request_data or {})
-        for _k in ("type", "from_plugin", "request_id", "timeout"):
-            payload.pop(_k, None)
-        request: Dict[str, Any] = {
-            **payload,
-            "type": request_type,
-            "from_plugin": self.plugin_id,
-            "request_id": request_id,
-            "timeout": timeout,
-        }
-
-        deadline = time.time() + timeout
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: plugin_comm_queue.put(request, timeout=max(0.0, deadline - time.time())),
-            )
-            if send_log_template:
-                try:
-                    self.logger.debug(
-                        send_log_template.format(
-                            request_id=request_id,
-                            from_plugin=self.plugin_id,
-                            **payload,
-                        )
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            if error_log_template:
-                try:
-                    self.logger.exception(error_log_template.format(error=e))
-                except Exception:
-                    pass
-            raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
-
-        response_queue = getattr(self, "_response_queue", None)
-        pending = getattr(self, "_response_pending", None)
-        if pending is None:
-            pending = {}
-            try:
-                object.__setattr__(self, "_response_pending", pending)
-            except Exception:
-                self._response_pending = pending
-
-        if isinstance(pending, dict) and request_id in pending:
-            response = pending.pop(request_id)
-            if isinstance(response, dict) and response.get("error"):
-                raise RuntimeError(_error_to_message(response.get("error")))
-            result = response.get("result") if isinstance(response, dict) else None
-            if wrap_result:
-                return result if isinstance(result, dict) else {"result": result}
-            return result
-
-        if response_queue is not None:
-            while time.time() < deadline:
-                response = state.get_plugin_response(request_id)
-                if isinstance(response, dict):
-                    if response.get("error"):
-                        raise RuntimeError(_error_to_message(response.get("error")))
-                    result = response.get("result")
-                    if wrap_result:
-                        return result if isinstance(result, dict) else {"result": result}
-                    return result
-
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        response_queue.get(), timeout=min(0.05, remaining),
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                except Exception:
-                    break
-                if not isinstance(msg, dict):
-                    continue
-                rid = msg.get("request_id")
-                if rid == request_id:
-                    if msg.get("error"):
-                        raise RuntimeError(_error_to_message(msg.get("error")))
-                    result = msg.get("result")
-                    if wrap_result:
-                        return result if isinstance(result, dict) else {"result": result}
-                    return result
-                if isinstance(pending, dict) and rid:
-                    if len(pending) > 1024:
-                        raise RuntimeError(
-                            f"_response_pending overflow (size={len(pending)}, rid={rid}); "
-                            "upstream response correlation/backpressure bug must be fixed."
-                        )
-                    pending[str(rid)] = msg
-
-        check_interval = 0.01
-        while time.time() < deadline:
-            response = state.get_plugin_response(request_id)
-            if not isinstance(response, dict):
-                await asyncio.sleep(check_interval)
-                continue
-
-            if response.get("error"):
-                raise RuntimeError(_error_to_message(response.get("error")))
-
-            result = response.get("result")
-            if wrap_result:
-                return result if isinstance(result, dict) else {"result": result}
-            return result
-
-        orphan_response = None
-        try:
-            orphan_response = state.peek_plugin_response(request_id)
-        except Exception:
-            orphan_response = None
-        if warn_on_orphan_response and orphan_response is not None:
-            try:
-                state.get_plugin_response(request_id)
-            except Exception:
-                pass
-            if orphan_warning_template:
-                try:
-                    self.logger.warning(
-                        orphan_warning_template.format(
-                            request_id=request_id,
-                            from_plugin=self.plugin_id,
-                            **payload,
-                        )
-                    )
-                except Exception:
-                    pass
-        raise TimeoutError(f"{request_type} timed out after {timeout}s")
+    async def _send_request_and_wait_async(self, *, method_name: str, request_type: str,
+                                            request_data: Dict[str, Any], timeout: float, wrap_result: bool = True) -> Any:
+        payload = dict(request_data)
+        for key in ("type", "from_plugin", "request_id", "timeout"):
+            payload.pop(key, None)
+        result = await self._get_rpc_peer().request(request_type, payload, timeout=timeout)
+        return (result if isinstance(result, dict) else {"result": result}) if wrap_result else result
     
     def trigger_plugin_event_sync(
         self,
@@ -1801,16 +1530,6 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=False,
-                send_log_template=(
-                    "[PluginContext] Sent plugin communication request: {from_plugin} -> {to_plugin}, "
-                    "event={event_type}.{event_id}, req_id={request_id}"
-                ),
-                error_log_template="Failed to send plugin communication request: {error}",
-                warn_on_orphan_response=True,
-                orphan_warning_template=(
-                    "[PluginContext] Timeout reached, but response was found (likely delayed). "
-                    "Cleaned up orphan response for req_id={request_id}"
-                ),
             )
         except TimeoutError as e:
             raise TimeoutError(
@@ -1838,16 +1557,6 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=False,
-                send_log_template=(
-                    "[PluginContext] Sent plugin communication request: {from_plugin} -> {to_plugin}, "
-                    "event={event_type}.{event_id}, req_id={request_id}"
-                ),
-                error_log_template="Failed to send plugin communication request: {error}",
-                warn_on_orphan_response=True,
-                orphan_warning_template=(
-                    "[PluginContext] Timeout reached, but response was found (likely delayed). "
-                    "Cleaned up orphan response for req_id={request_id}"
-                ),
             )
         except TimeoutError as e:
             raise TimeoutError(
@@ -1892,8 +1601,6 @@ class PluginContext:
                 request_data={"filters": filters or {}},
                 timeout=timeout,
                 wrap_result=True,
-                send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
-                error_log_template="Failed to send plugin query request: {error}",
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
@@ -1907,8 +1614,6 @@ class PluginContext:
                 request_data={"filters": filters or {}},
                 timeout=timeout,
                 wrap_result=True,
-                send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
-                error_log_template="Failed to send plugin query request: {error}",
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
@@ -2003,7 +1708,6 @@ class PluginContext:
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
@@ -2019,7 +1723,6 @@ class PluginContext:
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
@@ -2035,7 +1738,6 @@ class PluginContext:
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin profiles state get timed out after {timeout}s") from e
@@ -2060,7 +1762,6 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin profile config get timed out after {timeout}s") from e
@@ -2100,7 +1801,6 @@ class PluginContext:
                 request_data=request_data,
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin effective config get timed out after {timeout}s") from e
@@ -2113,7 +1813,6 @@ class PluginContext:
                 request_data={},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"System config get timed out after {timeout}s") from e
@@ -2130,7 +1829,6 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Memory query timed out after {timeout}s") from e
@@ -2147,7 +1845,6 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Memory query timed out after {timeout}s") from e
@@ -2187,7 +1884,6 @@ class PluginContext:
                 },
                 timeout=request_timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
             if isinstance(config_obj, dict):
@@ -2246,7 +1942,6 @@ class PluginContext:
                 },
                 timeout=request_timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
             if isinstance(config_obj, dict):

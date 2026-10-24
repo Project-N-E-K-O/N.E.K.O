@@ -26,7 +26,7 @@ async def _run_fixture(tmp_path, plugin_id: str, class_name: str, *, timeout: fl
         config_path=config_path,
     )
     try:
-        await host.start(message_target_queue=asyncio.Queue())
+        await host.start()
         return await host.get_ui_context("main", timeout=timeout)
     finally:
         await host.shutdown(timeout=2.0)
@@ -192,7 +192,7 @@ async def test_concurrent_card_helpers_use_invocation_target_in_both_context_api
         config_path=config_path,
     )
     try:
-        await host.start(message_target_queue=asyncio.Queue())
+        await host.start()
         alice, bob = await asyncio.gather(
             host.trigger("emit", {"label": "first", "wait": True, "_ctx": {"lanlan_name": "Alice"}}, timeout=10),
             host.trigger("emit", {"label": "second", "peer": True, "_ctx": {"lanlan_name": "Bob"}}, timeout=10),
