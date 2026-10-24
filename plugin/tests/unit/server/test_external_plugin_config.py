@@ -14,18 +14,8 @@ from plugin.server.messaging.handlers.plugin_config import (
     handle_plugin_config_replace,
     handle_plugin_config_update,
 )
+from tests.plugin_handler_rpc import invoke_handler as _invoke
 
-
-
-
-async def _invoke(handler, request, recorder):
-    from plugin.core.rpc import RpcDispatcher
-    from plugin.server.messaging.request_router import _domain_error
-    dispatcher = RpcDispatcher({"test": handler}, error_mapper=_domain_error)
-    reply = await dispatcher.dispatch(dict(request, type="test"))
-    error = reply["error"]
-    error = error.get("message") if isinstance(error, dict) else error
-    recorder(reply["to_plugin"], reply["request_id"], reply["result"], error, timeout=request.get("timeout", 10.0))
 
 def test_resolve_plugin_config_initializes_external_config_from_example(
     monkeypatch,
@@ -405,7 +395,9 @@ async def test_plugin_config_write_timeout_cannot_commit_after_response(
 
     assert handler_returned_before_release is True
     if operation == "replace":
-        assert responses == [(None, "Config persistence timed out; replacement was not applied")]
+        assert [(result, error["message"]) for result, error in responses] == [  # type: ignore[index]
+            (None, "Config persistence timed out; replacement was not applied")
+        ]
     else:
         assert responses == [
             (
@@ -459,7 +451,9 @@ async def test_plugin_config_write_honors_client_deadline_after_queue_delay(
     await _invoke(handler, {'from_plugin': 'demo', 'request_id': f'delayed-{operation}', 'timeout': 10.0, '_request_deadline_monotonic': time.monotonic() - 1.0, 'config' if operation == 'replace' else 'updates': {'feature': {'enabled': True}}}, lambda _plugin, _request, result, error, **_kwargs: responses.append((result, error)))
 
     assert external_config.read_text(encoding="utf-8") == original_runtime
-    assert responses == [(None, "test request deadline exceeded")]
+    assert [(result, error["message"]) for result, error in responses] == [  # type: ignore[index]
+        (None, "test request deadline exceeded")
+    ]
 
 
 

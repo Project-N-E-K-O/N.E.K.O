@@ -1,5 +1,8 @@
 # Plugin control requests and entry execution
 
+Status: implemented record. The code and tests under `plugin/core/rpc.py`,
+`plugin/core/entry_executor.py` and `plugin/server/messaging/` are authoritative.
+
 ## Decision
 
 Control requests use one lifetime implementation, `plugin/core/rpc.py`.
@@ -48,6 +51,10 @@ own event coordinates while sharing lifetime and result handling.
   before entering RPC; an event loop's clock epoch is not a protocol timestamp.
 - Nested calls inherit trace identity, parent request identity and the remaining
   deadline. Call depth is bounded and malformed metadata receives an error.
+- Host operations from the same plugin run concurrently and can complete in any
+  order; the previous router handled them one at a time. A plugin that needs
+  one operation's effect before the next (write a value, then read it) must
+  await the first call before issuing the second.
 - Receiving requests does not wait for their handlers. Admission is fail-fast
   under saturation, including when an existing request is sending its reply.
   A child request can receive `BUSY`; it never waits indefinitely for a slot held
@@ -66,6 +73,11 @@ own event coordinates while sharing lifetime and result handling.
   connection can be lost to a frame-size rejection.
 - A timeout does not roll back committed effects. Configuration writes keep
   their existing commit guard. Non-idempotent operations are not retried by RPC.
+- The dispatcher cuts a handler off at the request deadline unless the handler
+  is marked `owns_deadline`; such a handler plans against `ctx.deadline` and
+  produces its own degraded reply. Configuration writes own their deadline: an
+  update that cannot persist in time returns `persisted: false` with the
+  in-memory view, and a replace that cannot persist is rejected unapplied.
 - Failed `Result` values retain the ordinary entry's state-persistence semantics.
 - Logs contain operation identifiers, correlation identifiers, error types and
   stack locations. Exception text and parameter/model values are excluded from
@@ -96,23 +108,3 @@ replies, malformed depth metadata, bounded admission during reply delivery,
 private validation input, failed-result persistence, serialization errors and
 internal timeouts. The removed shared-map and callback tests are replaced by
 these observable contracts, rather than preserved as tests of deleted internals.
-
-## Local verification, 2026-10-23
-
-Tests ran with storage and application data redirected to temporary directories
-before importing the application. No remote repository operations were involved.
-
-- Main unit suite, using the CI file-parallel/serial marker split: 44,132 passed,
-  183 skipped, five failures.
-- Plugin unit/integration suite: 4,408 passed, 13 skipped, three failures.
-- Final affected-runtime regression set, including media and value-codec
-  compatibility after the last changes: 132 passed.
-- Module layering, asynchronous blocking checks and changed-source lint passed.
-
-All eight full-suite failures were separately reproduced by loading repository
-Python modules from the unchanged starting HEAD, while retaining the same local
-data/fixtures. They concern web-search coordinator timing, two existing selfie
-metadata/schema checks, read-only directory removal, existing marketplace plugin
-directories, a pre-existing hyphenated reference directory, Node reporter output
-and exact floating-point equality of enrollment time remaining. These unrelated
-modules and local plugin directories were left unchanged.

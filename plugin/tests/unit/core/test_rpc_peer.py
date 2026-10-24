@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import queue
 
 import pytest
 
 from plugin.core.rpc import (
+    DEFAULT_HANDLER_TIMEOUT_SECONDS,
+    MAX_HANDLER_TIMEOUT_SECONDS,
     RpcClosedError,
     RpcDispatcher,
     RpcPeer,
     RpcRemoteError,
     RpcTransportError,
+    owns_deadline,
 )
 
 
@@ -102,7 +106,7 @@ async def test_nested_dispatch_does_not_block_receiving_requests() -> None:
     replies = []
     completed = asyncio.Event()
 
-    async def leaf(request):
+    async def leaf(ctx, request):
         return "leaf-result"
 
     async def send(request, timeout):
@@ -117,7 +121,7 @@ async def test_nested_dispatch_does_not_block_receiving_requests() -> None:
 
     peer = RpcPeer(send)
 
-    async def parent(request):
+    async def parent(ctx, request):
         return await peer.request("leaf", {"from_plugin": "b"}, timeout=1)
 
     dispatcher = RpcDispatcher({"parent": parent, "leaf": leaf})
@@ -137,10 +141,10 @@ async def test_nested_dispatch_does_not_block_receiving_requests() -> None:
 
 
 async def test_dispatch_failure_does_not_kill_other_requests() -> None:
-    async def fail(request):
+    async def fail(ctx, request):
         raise ValueError("private input")
 
-    async def good(request):
+    async def good(ctx, request):
         return "ok"
 
     dispatcher = RpcDispatcher({"bad": fail, "good": good})
@@ -160,7 +164,7 @@ async def test_overload_fails_promptly_and_does_not_wait_for_parent_slot() -> No
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def block(request):
+    async def block(ctx, request):
         entered.set()
         await release.wait()
 
@@ -201,7 +205,7 @@ async def test_close_interrupts_a_blocked_send_and_joins_its_cleanup():
 
 @pytest.mark.parametrize("depth", [None, "bad", -1, True])
 async def test_malformed_depth_produces_a_reply(depth):
-    async def good(request):
+    async def good(ctx, request):
         return "ok"
 
     dispatcher = RpcDispatcher({"good": good})
@@ -212,7 +216,7 @@ async def test_malformed_depth_produces_a_reply(depth):
 
 
 async def test_internal_timeout_has_its_own_error_code():
-    async def timeout(request):
+    async def timeout(ctx, request):
         raise TimeoutError("backend timed out")
 
     reply = await RpcDispatcher({"timeout": timeout}).dispatch(
@@ -221,10 +225,48 @@ async def test_internal_timeout_has_its_own_error_code():
     assert reply["error"]["code"] == "OPERATION_TIMEOUT"
 
 
+async def test_dispatcher_cuts_off_a_handler_at_the_deadline():
+    async def slow(ctx, request):
+        await asyncio.sleep(1)
+
+    reply = await RpcDispatcher({"slow": slow}).dispatch(
+        {"type": "slow", "from_plugin": "a", "request_id": "1", "timeout": 0.05}
+    )
+    assert reply["error"]["code"] == "DEADLINE_EXCEEDED"
+
+
+async def test_deadline_owning_handler_replies_after_its_deadline():
+    @owns_deadline
+    async def degraded(ctx, request):
+        await asyncio.sleep(max(0.0, ctx.deadline - time.monotonic()) + 0.02)
+        return "degraded"
+
+    reply = await RpcDispatcher({"degraded": degraded}).dispatch(
+        {"type": "degraded", "from_plugin": "a", "request_id": "1", "timeout": 0.05}
+    )
+    assert reply["error"] is None
+    assert reply["result"] == "degraded"
+
+
+async def test_request_expired_in_queue_is_a_deadline_error():
+    async def good(ctx, request):
+        return "ok"
+
+    reply = await RpcDispatcher({"good": good}).dispatch(
+        {
+            "type": "good",
+            "from_plugin": "a",
+            "request_id": "1",
+            "_request_deadline_monotonic": time.monotonic() - 1,
+        }
+    )
+    assert reply["error"]["code"] == "DEADLINE_EXCEEDED"
+
+
 async def test_admission_covers_blocked_reply_delivery():
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def good(request):
+    async def good(ctx, request):
         return "ok"
 
     async def send(reply):
@@ -244,7 +286,7 @@ async def test_admission_covers_blocked_reply_delivery():
 
 
 async def test_unexpected_exception_text_is_not_logged(caplog):
-    async def fail(request):
+    async def fail(ctx, request):
         raise ValueError("PRIVATE_DIALOG_SENTINEL")
 
     await RpcDispatcher({"fail": fail}).dispatch(
@@ -295,7 +337,7 @@ async def test_disconnect_is_scoped_to_the_original_connection():
     entered = {"old": asyncio.Event(), "new": asyncio.Event()}
     ended = {"old": asyncio.Event(), "new": asyncio.Event()}
 
-    async def wait(request):
+    async def wait(ctx, request):
         connection = request["_rpc_connection_id"]
         entered[connection].set()
         try:
@@ -327,3 +369,63 @@ async def test_disconnect_is_scoped_to_the_original_connection():
     await asyncio.wait_for(ended["old"].wait(), 1)
     assert not ended["new"].is_set()
     await dispatcher.close()
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [{}, {"from_plugin": " ", "request_id": "r1"}, {"from_plugin": "p1", "request_id": " "}],
+)
+async def test_missing_identity_is_rejected_before_the_handler_runs(identity):
+    called = False
+
+    async def good(ctx, request):
+        nonlocal called
+        called = True
+        return "ok"
+
+    reply = await RpcDispatcher({"good": good}).dispatch(dict(identity, type="good"))
+    assert reply["error"]["code"] == "INVALID_REQUEST"
+    assert called is False
+
+
+async def test_handler_receives_normalized_context():
+    seen = []
+
+    async def good(ctx, request):
+        seen.append(ctx)
+        return "ok"
+
+    reply = await RpcDispatcher({"good": good}).dispatch(
+        {"type": "good", "from_plugin": " p1 ", "request_id": " r1 ", "timeout": 1.5}
+    )
+    assert reply["error"] is None
+    (ctx,) = seen
+    assert (ctx.from_plugin, ctx.request_id, ctx.depth) == ("p1", "r1", 0)
+    assert 0 < ctx.remaining() <= 1.5
+
+
+@pytest.mark.parametrize(
+    ("timeout", "budget"),
+    [
+        (None, DEFAULT_HANDLER_TIMEOUT_SECONDS),
+        (0, DEFAULT_HANDLER_TIMEOUT_SECONDS),
+        (-1, DEFAULT_HANDLER_TIMEOUT_SECONDS),
+        (True, DEFAULT_HANDLER_TIMEOUT_SECONDS),
+        ("5", DEFAULT_HANDLER_TIMEOUT_SECONDS),
+        (float("inf"), DEFAULT_HANDLER_TIMEOUT_SECONDS),
+        (1000, MAX_HANDLER_TIMEOUT_SECONDS),
+    ],
+)
+async def test_unusable_timeout_falls_back_instead_of_rejecting(timeout, budget):
+    seen = []
+
+    async def good(ctx, request):
+        seen.append(ctx.remaining())
+        return "ok"
+
+    reply = await RpcDispatcher({"good": good}).dispatch(
+        {"type": "good", "from_plugin": "p1", "request_id": "r1", "timeout": timeout}
+    )
+    assert reply["error"] is None
+    (remaining,) = seen
+    assert budget - 1 < remaining <= budget

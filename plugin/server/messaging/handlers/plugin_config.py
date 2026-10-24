@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
+from typing import Any
 
-from plugin.core.rpc import RpcRemoteError
+from plugin.core.rpc import RpcContext, RpcRemoteError, owns_deadline
 from plugin.logging_config import get_logger
 from plugin.server.application.config import ConfigCommandService, ConfigQueryService
 from plugin.server.domain.errors import ServerDomainError
@@ -13,12 +13,12 @@ from plugin.server.infrastructure.config_storage import (
     ConfigCommitCancelled,
     ConfigCommitGuard,
 )
-from plugin.server.messaging.handlers.common import resolve_common_fields
 
 logger = get_logger("server.messaging.handlers.plugin_config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
 _CONFIG_WRITE_PERSIST_BUDGET_SECONDS = 4.0
+# Leave time for the degraded reply to reach the caller before its deadline.
 _CONFIG_WRITE_RESPONSE_GRACE_SECONDS = 0.25
 
 
@@ -32,7 +32,7 @@ def _consume_config_write_task(task: asyncio.Task[dict[str, object]]) -> None:
 async def _persist_before_request_deadline(
     *,
     request_deadline: float,
-    persist: Callable[[ConfigCommitGuard], Awaitable[dict[str, object]]],
+    persist: Callable[[ConfigCommitGuard], Coroutine[Any, Any, dict[str, object]]],
 ) -> dict[str, object] | None:
     now = time.monotonic()
     remaining = max(0.0, request_deadline - now)
@@ -62,19 +62,6 @@ async def _persist_before_request_deadline(
             return await task
         task.add_done_callback(_consume_config_write_task)
         return None
-
-
-def _resolve_config_write_deadline(
-    *, request: Mapping[str, object], timeout: float
-) -> float:
-    now = time.monotonic()
-    relative_deadline = now + timeout
-    deadline_obj = request.get("_request_deadline_monotonic")
-    if isinstance(deadline_obj, (int, float)) and (not isinstance(deadline_obj, bool)):
-        deadline = float(deadline_obj)
-        if math.isfinite(deadline):
-            return min(deadline, relative_deadline)
-    return relative_deadline
 
 
 def _resolve_target_plugin_id(
@@ -137,58 +124,45 @@ def _ensure_own_plugin_scope(
         )
 
 
-async def handle_plugin_config_get(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
+def _own_target_plugin_id(
+    ctx: RpcContext,
+    request: Mapping[str, object],
+    message: str = "Permission denied: can only access own config",
+) -> str:
     target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
+        request=request, from_plugin=ctx.from_plugin
     )
-    _ensure_own_plugin_scope(from_plugin=from_plugin, target_plugin_id=target_plugin_id)
-    payload = await config_query_service.get_plugin_config(plugin_id=target_plugin_id)
-    return payload
+    _ensure_own_plugin_scope(
+        from_plugin=ctx.from_plugin, target_plugin_id=target_plugin_id, message=message
+    )
+    return target_plugin_id
 
 
-async def handle_plugin_config_base_get(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
-    target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
-    )
-    _ensure_own_plugin_scope(from_plugin=from_plugin, target_plugin_id=target_plugin_id)
-    payload = await config_query_service.get_plugin_base_config(
+async def handle_plugin_config_get(ctx: RpcContext, request: dict[str, object]) -> object:
+    target_plugin_id = _own_target_plugin_id(ctx, request)
+    return await config_query_service.get_plugin_config(plugin_id=target_plugin_id)
+
+
+async def handle_plugin_config_base_get(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(ctx, request)
+    return await config_query_service.get_plugin_base_config(plugin_id=target_plugin_id)
+
+
+async def handle_plugin_config_profiles_get(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(ctx, request)
+    return await config_query_service.get_plugin_profiles_state(
         plugin_id=target_plugin_id
     )
-    return payload
 
 
-async def handle_plugin_config_profiles_get(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
-    target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
-    )
-    _ensure_own_plugin_scope(from_plugin=from_plugin, target_plugin_id=target_plugin_id)
-    payload = await config_query_service.get_plugin_profiles_state(
-        plugin_id=target_plugin_id
-    )
-    return payload
-
-
-async def handle_plugin_config_profile_get(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
-    target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
-    )
-    _ensure_own_plugin_scope(from_plugin=from_plugin, target_plugin_id=target_plugin_id)
+async def handle_plugin_config_profile_get(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(ctx, request)
     profile_name = _normalize_profile_name(request.get("profile_name"))
     payload = await config_query_service.get_plugin_profile_config(
         plugin_id=target_plugin_id, profile_name=profile_name
@@ -196,15 +170,10 @@ async def handle_plugin_config_profile_get(request: dict[str, object]) -> object
     return payload
 
 
-async def handle_plugin_config_effective_get(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
-    target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
-    )
-    _ensure_own_plugin_scope(from_plugin=from_plugin, target_plugin_id=target_plugin_id)
+async def handle_plugin_config_effective_get(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(ctx, request)
     raw_profile_name = request.get("profile_name")
     profile_name: str | None
     if raw_profile_name is None:
@@ -217,24 +186,16 @@ async def handle_plugin_config_effective_get(request: dict[str, object]) -> obje
     return payload
 
 
-async def handle_plugin_config_update(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
-    target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
-    )
-    _ensure_own_plugin_scope(
-        from_plugin=from_plugin,
-        target_plugin_id=target_plugin_id,
-        message="Permission denied: can only update own config",
+@owns_deadline
+async def handle_plugin_config_update(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only update own config"
     )
     updates = _normalize_updates_payload(request.get("updates"))
     payload = await _persist_before_request_deadline(
-        request_deadline=_resolve_config_write_deadline(
-            request=request, timeout=timeout
-        ),
+        request_deadline=ctx.deadline,
         persist=lambda commit_guard: config_command_service.update_plugin_config(
             plugin_id=target_plugin_id, updates=updates, commit_guard=commit_guard
         ),
@@ -243,7 +204,7 @@ async def handle_plugin_config_update(request: dict[str, object]) -> object:
         logger.warning(
             "PLUGIN_CONFIG_UPDATE persistence cancelled before request deadline: plugin_id={}, req_id={}",
             target_plugin_id,
-            request_id,
+            ctx.request_id,
         )
         payload = {
             "success": False,
@@ -256,24 +217,16 @@ async def handle_plugin_config_update(request: dict[str, object]) -> object:
     return payload
 
 
-async def handle_plugin_config_replace(request: dict[str, object]) -> object:
-    common_fields = resolve_common_fields(request)
-    if common_fields is None:
-        return
-    from_plugin, request_id, timeout = common_fields
-    target_plugin_id = _resolve_target_plugin_id(
-        request=request, from_plugin=from_plugin
-    )
-    _ensure_own_plugin_scope(
-        from_plugin=from_plugin,
-        target_plugin_id=target_plugin_id,
-        message="Permission denied: can only replace own config",
+@owns_deadline
+async def handle_plugin_config_replace(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only replace own config"
     )
     config = _normalize_updates_payload(request.get("config"))
     payload = await _persist_before_request_deadline(
-        request_deadline=_resolve_config_write_deadline(
-            request=request, timeout=timeout
-        ),
+        request_deadline=ctx.deadline,
         persist=lambda commit_guard: config_command_service.replace_plugin_config(
             plugin_id=target_plugin_id, config=config, commit_guard=commit_guard
         ),
@@ -282,7 +235,7 @@ async def handle_plugin_config_replace(request: dict[str, object]) -> object:
         logger.warning(
             "PLUGIN_CONFIG_REPLACE persistence cancelled before request deadline: plugin_id={}, req_id={}",
             target_plugin_id,
-            request_id,
+            ctx.request_id,
         )
         raise RpcRemoteError(
             {

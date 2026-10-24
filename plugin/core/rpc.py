@@ -19,12 +19,25 @@ from concurrent.futures import Future as ThreadFuture
 from concurrent.futures import InvalidStateError
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, overload
 
 SendRequest = Callable[[dict[str, Any], float | None], Awaitable[None]]
 CancelRequest = Callable[[dict[str, Any]], Awaitable[None]]
-Handler = Callable[[dict[str, Any]], Awaitable[object]]
+Handler = Callable[["RpcContext", dict[str, Any]], Awaitable[object]]
 SendReply = Callable[[dict[str, Any]], Awaitable[None]]
+
+_OWNS_DEADLINE = "__rpc_owns_deadline__"
+
+
+def owns_deadline(handler: Handler) -> Handler:
+    """Mark a handler that answers by ``ctx.deadline`` itself.
+
+    The dispatcher then does not cut it off: an operation that must reply with a
+    degraded result (e.g. "applied in memory, not persisted") cannot share the
+    deadline with a timer that would cancel it first.
+    """
+    setattr(handler, _OWNS_DEADLINE, True)
+    return handler
 
 
 def rpc_reply(
@@ -111,6 +124,37 @@ class _CallScope:
     depth: int = 0
 
 
+@dataclass(frozen=True)
+class RpcContext:
+    """What the dispatcher has validated about one incoming request.
+
+    ``from_plugin`` is the identity the transport bound to the connection; the
+    deadline is the only execution budget a handler may plan against.
+    """
+
+    from_plugin: str
+    request_id: str
+    deadline: float
+    trace_id: str
+    depth: int
+
+    def remaining(self) -> float:
+        return max(0.0, self.deadline - time.monotonic())
+
+
+DEFAULT_HANDLER_TIMEOUT_SECONDS = 10.0
+MAX_HANDLER_TIMEOUT_SECONDS = 60.0
+
+
+def _resolve_handler_timeout(value: object) -> float:
+    """Anything but a positive finite number means "use the default"."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return DEFAULT_HANDLER_TIMEOUT_SECONDS
+    if not math.isfinite(value) or value <= 0:
+        return DEFAULT_HANDLER_TIMEOUT_SECONDS
+    return min(float(value), MAX_HANDLER_TIMEOUT_SECONDS)
+
+
 _scope: contextvars.ContextVar[_CallScope | None] = contextvars.ContextVar(
     "plugin_rpc_scope", default=None
 )
@@ -121,6 +165,16 @@ def remaining_budget(timeout: float | None, deadline: float | None) -> float | N
         return timeout
     remaining = max(0.0, deadline - time.monotonic())
     return remaining if timeout is None else min(timeout, remaining)
+
+
+@overload
+def request_deadline(request: Mapping[str, Any], timeout: float) -> float: ...
+
+
+@overload
+def request_deadline(
+    request: Mapping[str, Any], timeout: float | None
+) -> float | None: ...
 
 
 def request_deadline(request: Mapping[str, Any], timeout: float | None) -> float | None:
@@ -482,15 +536,21 @@ class RpcDispatcher:
                 "message": "Plugin RPC dispatcher is unavailable",
             }
             return reply
-        if any(
-            not isinstance(value, str) or not value.strip()
-            for value in (reply["to_plugin"], reply["request_id"])
+        from_plugin_raw = reply["to_plugin"]
+        request_id_raw = reply["request_id"]
+        if (
+            not isinstance(from_plugin_raw, str)
+            or not from_plugin_raw.strip()
+            or not isinstance(request_id_raw, str)
+            or not request_id_raw.strip()
         ):
             reply["error"] = {
                 "code": "INVALID_REQUEST",
                 "message": "from_plugin and request_id are required",
             }
             return reply
+        from_plugin = from_plugin_raw.strip()
+        request_id = request_id_raw.strip()
         operation = str(request.get("type", ""))
         handler = self._handlers.get(operation)
         if handler is None:
@@ -499,19 +559,8 @@ class RpcDispatcher:
                 "message": f"Unknown request type: {operation}",
             }
             return reply
-        timeout = request.get("timeout", 10.0)
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout)
-            or timeout <= 0
-        ):
-            reply["error"] = {
-                "code": "INVALID_REQUEST",
-                "message": "timeout must be positive and finite",
-            }
-            return reply
-        deadline = request_deadline(request, min(float(timeout), 60.0))
+        timeout = _resolve_handler_timeout(request.get("timeout"))
+        deadline = request_deadline(request, timeout)
         depth = request.get("_rpc_depth", 0)
         if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
             reply["error"] = {
@@ -519,35 +568,39 @@ class RpcDispatcher:
                 "message": "Call depth must be a non-negative integer",
             }
             return reply
-        scope = _CallScope(
-            str(reply["request_id"]),
-            str(request.get("_rpc_trace_id") or reply["request_id"]),
-            deadline,
-            depth,
-        )
-        if scope.depth > 32:
+        if depth > 32:
             reply["error"] = {
                 "code": "CALL_DEPTH_EXCEEDED",
                 "message": "Plugin call depth exceeded",
             }
             return reply
-        request = dict(request, _request_deadline_monotonic=deadline)
+        trace_id = str(request.get("_rpc_trace_id") or request_id)
+        ctx = RpcContext(
+            from_plugin=from_plugin,
+            request_id=request_id,
+            deadline=deadline,
+            trace_id=trace_id,
+            depth=depth,
+        )
+        scope = _CallScope(request_id, trace_id, deadline, depth)
         token = _scope.set(scope)
         self._active += 1
         timer = None
         try:
-            budget = remaining_budget(float(timeout), deadline)
-            if budget is not None and budget <= 0:
-                raise TimeoutError("Request expired in queue")
-            timer = asyncio.timeout(budget)
-            async with timer:
-                reply["result"] = await handler(request)
+            budget = ctx.remaining()
+            if budget <= 0:
+                raise RpcDeadlineExceededError("Request expired in queue")
+            if getattr(handler, _OWNS_DEADLINE, False):
+                reply["result"] = await handler(ctx, request)
+            else:
+                timer = asyncio.timeout(budget)
+                async with timer:
+                    reply["result"] = await handler(ctx, request)
         except asyncio.CancelledError:
             raise
         except TimeoutError as exc:
             expired = (
-                timer is None
-                or timer.expired()
+                (timer is not None and timer.expired())
                 or isinstance(exc, RpcDeadlineExceededError)
             )
             reply["error"] = {

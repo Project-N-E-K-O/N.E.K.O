@@ -32,10 +32,10 @@ async def test_validation_unknown_and_domain_failure_use_one_reply_contract(rout
 async def test_failed_request_does_not_stop_the_queue(router, monkeypatch):
     replies = asyncio.Queue()
 
-    async def fail(request):
+    async def fail(ctx, request):
         raise ServerDomainError("PLUGIN_EXECUTION_FAILED", "target rejected input", 502, details={"x": 1})
 
-    async def good(request):
+    async def good(ctx, request):
         return "ok"
 
     router._handlers.update(FAIL=fail, GOOD=good)
@@ -62,7 +62,7 @@ async def test_failed_request_does_not_stop_the_queue(router, monkeypatch):
 async def test_response_delivery_failure_is_logged_without_fallback(
     router, monkeypatch, caplog
 ):
-    async def good(request):
+    async def good(ctx, request):
         return "ok"
 
     router._handlers["GOOD"] = good

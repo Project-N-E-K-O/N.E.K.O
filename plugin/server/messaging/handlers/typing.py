@@ -4,5 +4,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
+from plugin.core.rpc import RpcContext
+
 Request = dict[str, object]
-RequestHandler = Callable[[Request], Awaitable[object]]
+RequestHandler = Callable[[RpcContext, Request], Awaitable[object]]

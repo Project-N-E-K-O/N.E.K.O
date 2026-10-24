@@ -9,17 +9,8 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers import bus_delete as bus_delete_module
 from plugin.server.messaging.handlers import bus_subscribe as bus_subscribe_module
 from plugin.server.messaging.handlers import plugin_config as plugin_config_module
+from tests.plugin_handler_rpc import invoke_handler as _invoke
 
-
-
-
-async def _invoke(handler, request, recorder):
-    from plugin.core.rpc import RpcDispatcher
-    from plugin.server.messaging.request_router import _domain_error
-    dispatcher = RpcDispatcher({"test": handler}, error_mapper=_domain_error)
-    reply = await dispatcher.dispatch(dict(request, type="test"))
-    error = reply["error"]
-    recorder(reply["to_plugin"], reply["request_id"], reply["result"], error, timeout=request.get("timeout", 10.0))
 
 class _Recorder:
     def __init__(self) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 
 import pytest
 
@@ -14,28 +15,19 @@ from plugin.server.messaging.handlers import registry as registry_module
 from plugin.server.messaging.handlers import run_update as run_update_module
 from plugin.server.messaging.handlers import system_config as system_config_module
 from plugin.server.messaging.handlers import user_context as user_context_module
+from tests.plugin_handler_rpc import invoke_handler as _invoke
 
-
-
-
-async def _invoke(handler, request, recorder):
-    from plugin.core.rpc import RpcDispatcher
-    from plugin.server.messaging.request_router import _domain_error
-    dispatcher = RpcDispatcher({"test": handler}, error_mapper=_domain_error)
-    reply = await dispatcher.dispatch(dict(request, type="test"))
-    error = reply["error"]
-    recorder(reply["to_plugin"], reply["request_id"], reply["result"], error, timeout=request.get("timeout", 10.0))
 
 class _Recorder:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, object, object, float]] = []
+        self.calls: list[tuple[str, str, Any, Any, float]] = []
 
     def __call__(
         self,
         to_plugin: str,
         request_id: str,
-        result: object,
-        error: object,
+        result: Any,
+        error: Any,
         timeout: float = 10.0,
     ) -> None:
         self.calls.append((to_plugin, request_id, result, error, timeout))
@@ -109,6 +101,7 @@ async def test_user_context_and_plugin_query_handlers(monkeypatch: pytest.Monkey
     assert send.calls[-1][2] == {"history": []}
 
     await _invoke(user_context_module.handle_user_context_get, {'from_plugin': 'p', 'request_id': '2'}, send)
+    assert send.calls[-1][3]["code"] == "INVALID_ARGUMENT"
     assert send.calls[-1][3]["message"] == "Invalid bucket_id"
 
     async def _query_plugins(**kwargs) -> list[dict[str, object]]:

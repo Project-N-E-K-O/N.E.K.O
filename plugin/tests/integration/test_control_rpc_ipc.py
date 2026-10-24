@@ -14,7 +14,7 @@ pytestmark = pytest.mark.plugin_integration
 
 
 async def test_compatibility_listener_returns_serialization_fault_and_stays_live():
-    async def handler(request):
+    async def handler(ctx, request):
         return object() if request.get("bad") else "ok"
 
     dispatcher = RpcDispatcher({"echo": handler})

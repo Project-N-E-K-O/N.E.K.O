@@ -1,23 +1,18 @@
 from __future__ import annotations
 
-from plugin.core.rpc import RpcRemoteError
+from plugin.core.rpc import RpcContext, RpcRemoteError
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
 from plugin.server.messaging.handlers.common import (
     coerce_string_key_mapping,
     normalize_non_empty_str,
-    resolve_common_fields,
 )
 
 logger = get_logger("server.messaging.handlers.plugin_to_plugin")
 plugin_dispatch_service = PluginDispatchService()
 
 
-async def handle_plugin_to_plugin(request: dict[str, object]) -> object:
-    context = resolve_common_fields(request, timeout_default=10.0, timeout_max=60.0)
-    if context is None:
-        return
-    from_plugin, request_id, timeout = context
+async def handle_plugin_to_plugin(ctx: RpcContext, request: dict[str, object]) -> object:
     to_plugin_obj = request.get("to_plugin")
     event_type_obj = request.get("event_type")
     event_id_obj = request.get("event_id")
@@ -39,17 +34,17 @@ async def handle_plugin_to_plugin(request: dict[str, object]) -> object:
         )
     logger.info(
         "routing plugin event: from_plugin={}, to_plugin={}, event_type={}, event_id={}, request_id={}",
-        from_plugin,
+        ctx.from_plugin,
         to_plugin,
         event_type,
         event_id,
-        request_id,
+        ctx.request_id,
     )
     result = await plugin_dispatch_service.trigger_custom_event(
         to_plugin=to_plugin,
         event_type=event_type,
         event_id=event_id,
         args=args,
-        timeout=timeout,
+        timeout=ctx.remaining(),
     )
     return result

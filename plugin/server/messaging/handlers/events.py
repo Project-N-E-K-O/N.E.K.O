@@ -1,27 +1,21 @@
 from __future__ import annotations
 
-from plugin.logging_config import get_logger
+from plugin.core.rpc import RpcContext
 from plugin.server.application.bus.query_service import BusQueryService
 from plugin.server.messaging.handlers.common import (
     coerce_bool,
     coerce_optional_float,
     coerce_optional_int,
     coerce_string_key_mapping,
-    resolve_common_fields,
     resolve_wildcard_scope_id,
 )
 
-logger = get_logger("server.messaging.handlers.events")
 bus_query_service = BusQueryService()
 
 
-async def handle_event_get(request: dict[str, object]) -> object:
-    context = resolve_common_fields(request)
-    if context is None:
-        return
-    from_plugin, request_id, timeout = context
+async def handle_event_get(ctx: RpcContext, request: dict[str, object]) -> object:
     plugin_id = resolve_wildcard_scope_id(
-        value=request.get("plugin_id"), fallback=from_plugin
+        value=request.get("plugin_id"), fallback=ctx.from_plugin
     )
     max_count = coerce_optional_int(request.get("max_count", request.get("limit")))
     since_ts = coerce_optional_float(request.get("since_ts"))
