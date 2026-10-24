@@ -2,27 +2,28 @@
   <div
     class="plugin-workbench"
     :class="{
-      'plugin-workbench--market-open': marketPanelVisible,
-      'plugin-workbench--package-open': packagePanelVisible,
-      'plugin-workbench--mirror-open': mirrorPanelVisible,
+      'plugin-workbench--market-open': drawers.market.visible,
+      'plugin-workbench--package-open': drawers.package.visible,
+      'plugin-workbench--mirror-open': drawers.mirror.visible,
       'plugin-workbench--multi-select': multiSelectEnabled,
     }"
     data-yui-guide-id="plugin-list-workbench"
   >
     <aside
       class="plugin-workbench__rail plugin-workbench__rail--market"
-      :aria-hidden="!marketPanelVisible"
-      :inert="!marketPanelVisible"
+      :aria-hidden="!drawers.market.visible"
+      :inert="!drawers.market.visible"
     >
-      <div class="plugin-workbench__rail-inner">
-        <MarketPanel
-          v-if="marketPanelEverOpened"
-          v-show="marketPanelVisible"
-          embedded
-          :active="marketPanelVisible"
-          @close="closeMarketPanel"
-        />
-      </div>
+      <Transition name="drawer-start">
+        <div v-show="drawers.market.visible" class="plugin-workbench__rail-inner">
+          <MarketPanel
+            v-if="drawers.market.everOpened"
+            embedded
+            :active="drawers.market.visible"
+            @close="drawers.market.visible = false"
+          />
+        </div>
+      </Transition>
     </aside>
 
     <section
@@ -41,19 +42,19 @@
               <button
                 v-if="marketUrl"
                 class="market-trigger"
-                :class="{ 'market-trigger--active': marketPanelVisible }"
+                :class="{ 'market-trigger--active': drawers.market.visible }"
                 type="button"
                 data-yui-guide-id="plugin-list-market-toggle"
-                :title="marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')"
-                :aria-label="headerActionsCompact ? (marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')) : undefined"
-                @click="toggleMarketPanel"
+                :title="drawers.market.visible ? $t('market.closeMarket') : $t('market.openMarket')"
+                :aria-label="headerActionsCompact ? (drawers.market.visible ? $t('market.closeMarket') : $t('market.openMarket')) : undefined"
+                @click="toggleDrawer('market')"
               >
                 <el-icon class="market-trigger__icon"><ShoppingCart /></el-icon>
                 <span v-if="!headerActionsCompact" class="market-trigger__label">
-                  {{ marketPanelVisible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
+                  {{ drawers.market.visible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
                 </span>
                 <el-icon class="market-trigger__arrow">
-                  <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
+                  <component :is="drawers.market.visible ? ArrowLeft : ArrowRight" />
                 </el-icon>
               </button>
               <el-button
@@ -169,24 +170,24 @@
               <span class="header-actions__divider" aria-hidden="true" />
               <el-button
                 class="package-trigger"
-                :class="{ 'package-trigger--active': packagePanelVisible }"
-                :aria-pressed="packagePanelVisible"
+                :class="{ 'package-trigger--active': drawers.package.visible }"
+                :aria-pressed="drawers.package.visible"
                 :aria-label="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
                 :title="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
                 data-yui-guide-id="plugin-list-package-panel-toggle"
-                @click="togglePackagePanel"
+                @click="toggleDrawer('package')"
               >
                 <el-icon><Box /></el-icon>
                 <span v-if="!headerActionsCompact">{{ $t('plugins.openPackageManager') }}</span>
               </el-button>
               <el-button
-                :type="mirrorPanelVisible ? 'primary' : 'default'"
-                :plain="mirrorPanelVisible"
-                :aria-pressed="mirrorPanelVisible"
+                :type="drawers.mirror.visible ? 'primary' : 'default'"
+                :plain="drawers.mirror.visible"
+                :aria-pressed="drawers.mirror.visible"
                 :aria-label="headerActionsCompact ? $t('plugins.openMirrorSource') : undefined"
                 :title="headerActionsCompact ? $t('plugins.openMirrorSource') : undefined"
                 data-yui-guide-id="plugin-list-mirror-source-toggle"
-                @click="toggleMirrorPanel"
+                @click="toggleDrawer('mirror')"
               >
                 <el-icon><Connection /></el-icon>
                 <span v-if="!headerActionsCompact">{{ $t('plugins.openMirrorSource') }}</span>
@@ -328,32 +329,34 @@
 
     <aside
       class="plugin-workbench__rail plugin-workbench__rail--package"
-      :aria-hidden="!packagePanelVisible"
-      :inert="!packagePanelVisible"
+      :aria-hidden="!drawers.package.visible"
+      :inert="!drawers.package.visible"
     >
-      <div class="plugin-workbench__rail-inner">
-        <PackageManagerPanel
-          v-if="packagePanelEverOpened"
-          v-show="packagePanelVisible"
-          embedded
-          :external-selected-plugin-ids="selectedPluginIds"
-          @close="closePackagePanel"
-        />
-      </div>
+      <Transition name="drawer-end">
+        <div v-show="drawers.package.visible" class="plugin-workbench__rail-inner">
+          <PackageManagerPanel
+            v-if="drawers.package.everOpened"
+            embedded
+            :external-selected-plugin-ids="selectedPluginIds"
+            @close="drawers.package.visible = false"
+          />
+        </div>
+      </Transition>
     </aside>
 
     <aside
       class="plugin-workbench__rail plugin-workbench__rail--mirror"
-      :aria-hidden="!mirrorPanelVisible"
-      :inert="!mirrorPanelVisible"
+      :aria-hidden="!drawers.mirror.visible"
+      :inert="!drawers.mirror.visible"
     >
-      <div class="plugin-workbench__rail-inner">
-        <GithubMirrorSourcePanel
-          v-if="mirrorPanelEverOpened"
-          v-show="mirrorPanelVisible"
-          @close="closeMirrorPanel"
-        />
-      </div>
+      <Transition name="drawer-end">
+        <div v-show="drawers.mirror.visible" class="plugin-workbench__rail-inner">
+          <GithubMirrorSourcePanel
+            v-if="drawers.mirror.everOpened"
+            @close="drawers.mirror.visible = false"
+          />
+        </div>
+      </Transition>
     </aside>
 
     <!-- Floating multi-select action bar; teleported so the route transition's
@@ -478,7 +481,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
@@ -511,6 +514,7 @@ import { deletePlugin } from '@/api/plugins'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
+import { useBatchActions } from '@/composables/useBatchActions'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { useCollapsibleLabels } from '@/composables/useCollapsibleLabels'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
@@ -535,15 +539,19 @@ const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListConte
 const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
 const reloadingAll = ref(false)
-const batchBusy = ref(false)
 const importing = ref(false)
 const importDialogVisible = ref(false)
-const packagePanelVisible = ref(false)
-const packagePanelEverOpened = ref(false)
-const mirrorPanelVisible = ref(false)
-const mirrorPanelEverOpened = ref(false)
-const marketPanelVisible = ref(false)
-const marketPanelEverOpened = ref(false)
+type DrawerKey = 'package' | 'mirror' | 'market'
+interface DrawerState {
+  visible: boolean
+  everOpened: boolean
+}
+const DRAWER_KEYS: readonly DrawerKey[] = ['package', 'mirror', 'market']
+const drawers = reactive<Record<DrawerKey, DrawerState>>({
+  package: { visible: false, everOpened: false },
+  mirror: { visible: false, everOpened: false },
+  market: { visible: false, everOpened: false },
+})
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
@@ -937,53 +945,20 @@ function toggleMultiSelectMode() {
   toggleMultiSelect()
 }
 
-function togglePackagePanel() {
-  const next = !packagePanelVisible.value
-  packagePanelVisible.value = next
-  if (next) {
-    packagePanelEverOpened.value = true
-    marketPanelVisible.value = false
-    mirrorPanelVisible.value = false
+// Drawers are mutually exclusive: opening one closes the others.
+function openDrawer(key: DrawerKey) {
+  for (const other of DRAWER_KEYS) {
+    drawers[other].visible = other === key
   }
+  drawers[key].everOpened = true
 }
 
-function openPackagePanel() {
-  packagePanelVisible.value = true
-  packagePanelEverOpened.value = true
-  marketPanelVisible.value = false
-  mirrorPanelVisible.value = false
-}
-
-function closePackagePanel() {
-  packagePanelVisible.value = false
-}
-
-function toggleMirrorPanel() {
-  const next = !mirrorPanelVisible.value
-  mirrorPanelVisible.value = next
-  if (next) {
-    mirrorPanelEverOpened.value = true
-    packagePanelVisible.value = false
-    marketPanelVisible.value = false
+function toggleDrawer(key: DrawerKey) {
+  if (drawers[key].visible) {
+    drawers[key].visible = false
+  } else {
+    openDrawer(key)
   }
-}
-
-function closeMirrorPanel() {
-  mirrorPanelVisible.value = false
-}
-
-function toggleMarketPanel() {
-  const next = !marketPanelVisible.value
-  marketPanelVisible.value = next
-  if (next) {
-    marketPanelEverOpened.value = true
-    packagePanelVisible.value = false
-    mirrorPanelVisible.value = false
-  }
-}
-
-function closeMarketPanel() {
-  marketPanelVisible.value = false
 }
 
 function closePluginContextMenu() {
@@ -1056,7 +1031,7 @@ async function showTutorialContextMenu() {
   if (!plugin) {
     return
   }
-  packagePanelVisible.value = false
+  drawers.package.visible = false
   await nextTick()
   const target = document.querySelector('[data-yui-guide-id="plugin-list-card"]') as HTMLElement | null
   const rect = target?.getBoundingClientRect()
@@ -1080,7 +1055,7 @@ function openTutorialPluginDetail() {
 function handleTutorialAction(event: Event) {
   const action = (event as CustomEvent<{ action?: string }>).detail?.action
   if (action === 'open-package-panel') {
-    openPackagePanel()
+    openDrawer('package')
     return
   }
   if (action === 'show-plugin-context-menu') {
@@ -1221,79 +1196,42 @@ function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
 
-async function handleBatchStart() {
-  const plugins = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled')
-  if (plugins.length === 0) {
-    ElMessage.info(t('plugins.batchNoStartable'))
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      t('plugins.batchStartConfirm', { count: plugins.length }),
-      t('common.confirm'),
-      { type: 'info' },
-    )
-  } catch { return }
+const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refreshAfterPluginChange)
 
-  batchBusy.value = true
-  let ok = 0; let fail = 0
-  for (const p of plugins) {
-    try { await pluginStore.start(p.id, { refresh: false }); ok++ } catch { fail++ }
-  }
-  batchBusy.value = false
-  if (fail === 0) ElMessage.success(t('plugins.batchStartSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await refreshAfterPluginChange()
+async function handleBatchStart() {
+  await runBatch({
+    filter: (p) => p.status !== 'running' && p.status !== 'disabled',
+    action: (p) => pluginStore.start(p.id, { refresh: false }),
+    noItemsKey: 'plugins.batchNoStartable',
+    confirmKey: 'plugins.batchStartConfirm',
+    confirmType: 'info',
+    successKey: 'plugins.batchStartSuccess',
+    partialKey: 'plugins.batchPartial',
+  })
 }
 
 async function handleBatchStop() {
-  const plugins = getSelectedPlugins().filter((p) => p.status === 'running')
-  if (plugins.length === 0) {
-    ElMessage.info(t('plugins.batchNoStoppable'))
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      t('plugins.batchStopConfirm', { count: plugins.length }),
-      t('common.confirm'),
-      { type: 'warning' },
-    )
-  } catch { return }
-
-  batchBusy.value = true
-  let ok = 0; let fail = 0
-  for (const p of plugins) {
-    try { await pluginStore.stop(p.id, { refresh: false }); ok++ } catch { fail++ }
-  }
-  batchBusy.value = false
-  if (fail === 0) ElMessage.success(t('plugins.batchStopSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await refreshAfterPluginChange()
+  await runBatch({
+    filter: (p) => p.status === 'running',
+    action: (p) => pluginStore.stop(p.id, { refresh: false }),
+    noItemsKey: 'plugins.batchNoStoppable',
+    confirmKey: 'plugins.batchStopConfirm',
+    confirmType: 'warning',
+    successKey: 'plugins.batchStopSuccess',
+    partialKey: 'plugins.batchPartial',
+  })
 }
 
 async function handleBatchReload() {
-  const plugins = getSelectedPlugins().filter((p) => p.status === 'running')
-  if (plugins.length === 0) {
-    ElMessage.info(t('plugins.batchNoReloadable'))
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      t('plugins.batchReloadConfirm', { count: plugins.length }),
-      t('common.confirm'),
-      { type: 'warning' },
-    )
-  } catch { return }
-
-  batchBusy.value = true
-  let ok = 0; let fail = 0
-  for (const p of plugins) {
-    try { await pluginStore.reload(p.id, { refresh: false }); ok++ } catch { fail++ }
-  }
-  batchBusy.value = false
-  if (fail === 0) ElMessage.success(t('plugins.batchReloadSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await refreshAfterPluginChange()
+  await runBatch({
+    filter: (p) => p.status === 'running',
+    action: (p) => pluginStore.reload(p.id, { refresh: false }),
+    noItemsKey: 'plugins.batchNoReloadable',
+    confirmKey: 'plugins.batchReloadConfirm',
+    confirmType: 'warning',
+    successKey: 'plugins.batchReloadSuccess',
+    partialKey: 'plugins.batchPartial',
+  })
 }
 
 async function handleBatchDelete() {
@@ -1391,19 +1329,18 @@ watch(
   () => route.query.tab,
   (tab) => {
     const shouldOpen = tab === 'packages'
-    if (packagePanelVisible.value !== shouldOpen) {
-      packagePanelVisible.value = shouldOpen
+    if (drawers.package.visible !== shouldOpen) {
       if (shouldOpen) {
-        packagePanelEverOpened.value = true
-        marketPanelVisible.value = false
-        mirrorPanelVisible.value = false
+        openDrawer('package')
+      } else {
+        drawers.package.visible = false
       }
     }
   },
   { immediate: true },
 )
 
-watch(packagePanelVisible, (visible) => {
+watch(() => drawers.package.visible, (visible) => {
   closePluginContextMenu()
   const nextQuery = { ...route.query }
   if (visible) {
@@ -1445,8 +1382,6 @@ onUnmounted(() => {
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
   --drawer-width: clamp(320px, 42vw, 620px);
-  --drawer-duration: 320ms;
-  --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   align-items: stretch;
   /*
@@ -1497,10 +1432,8 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   contain: layout paint size;
-  transition:
-    flex-basis var(--drawer-duration) var(--drawer-ease),
-    width var(--drawer-duration) var(--drawer-ease),
-    margin var(--drawer-duration) var(--drawer-ease);
+  /* 宽度不做过渡：开关抽屉时列表宽度一步到位，卡片由网格的 reflow 动画一次滑到新位置；
+     宽度连续过渡会让列数多次跨阈值、reflow 反复重启。滑入滑出只交给 rail-inner 的 transform。 */
   margin: 0;
 }
 
@@ -1517,7 +1450,15 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入。
+/* 关闭时 rail 宽度立即归零（列表一步到位），面板还在滑出：这段时间取消 rail 的裁剪，
+   让面板从列表上方滑出工作区，由 .app-body 的圆角裁掉。z-index 盖过正在 reflow 的卡片。 */
+.plugin-workbench__rail:has(> :is(.drawer-start-leave-active, .drawer-end-leave-active)) {
+  z-index: 1;
+  overflow: visible;
+  contain: layout size;
+}
+
+/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入滑出。
    靠工作区边缘的三边留出 shell 间距，面板作为独立圆角卡片浮在工作区里；
    朝向列表的一边由工作台的 gap 分隔。 */
 .plugin-workbench__rail-inner {
@@ -1527,31 +1468,41 @@ onUnmounted(() => {
   width: var(--drawer-width);
   max-width: 100%;
   padding-block: var(--shell-spacing);
-  transition: transform var(--drawer-duration) var(--drawer-ease);
 }
 
 .plugin-workbench__rail--market .plugin-workbench__rail-inner {
   left: 0;
   padding-left: var(--shell-spacing);
-  transform: translate3d(-100%, 0, 0);
 }
 
-.plugin-workbench__rail--package .plugin-workbench__rail-inner {
-  right: 0;
-  padding-right: var(--shell-spacing);
-  transform: translate3d(100%, 0, 0);
-}
-
+.plugin-workbench__rail--package .plugin-workbench__rail-inner,
 .plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
   right: 0;
   padding-right: var(--shell-spacing);
-  transform: translate3d(100%, 0, 0);
 }
 
-.plugin-workbench--market-open .plugin-workbench__rail--market .plugin-workbench__rail-inner,
-.plugin-workbench--package-open .plugin-workbench__rail--package .plugin-workbench__rail-inner,
-.plugin-workbench--mirror-open .plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
-  transform: translate3d(0, 0, 0);
+/* 与网格 reflow 同一条曲线和时长，面板滑入滑出和卡片让位是同一个动作。 */
+.drawer-start-enter-active,
+.drawer-start-leave-active,
+.drawer-end-enter-active,
+.drawer-end-leave-active {
+  transition: transform var(--motion-duration-layout) var(--motion-ease-layout);
+}
+
+/* rail 已归零，max-width: 100% 会把滑出中的面板压成 0 宽。 */
+.drawer-start-leave-active,
+.drawer-end-leave-active {
+  max-width: none;
+}
+
+.drawer-start-enter-from,
+.drawer-start-leave-to {
+  transform: translate3d(-100%, 0, 0);
+}
+
+.drawer-end-enter-from,
+.drawer-end-leave-to {
+  transform: translate3d(100%, 0, 0);
 }
 
 .plugin-workbench__rail-inner > * {

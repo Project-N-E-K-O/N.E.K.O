@@ -126,6 +126,9 @@ describe('plugin card information order', () => {
     })
     const card = container.querySelector('.plugin-card')!
     expect(Array.from(card.children, (child) => child.className)).toEqual([
+      'plugin-card__surface', 'plugin-card__content',
+    ])
+    expect(Array.from(card.querySelector('.plugin-card__content')!.children, (child) => child.className)).toEqual([
       'plugin-card-header', 'plugin-card-body', 'plugin-card-footer',
     ])
     expect(card.querySelector('.plugin-card-header .plugin-name')).not.toBeNull()

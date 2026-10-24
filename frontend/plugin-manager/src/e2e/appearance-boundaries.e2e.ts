@@ -419,14 +419,15 @@ async function expectOrderedCards(page: Page) {
     const bottomInsets: number[] = []
     for (const card of cards) {
       const name = card.querySelector('.plugin-name')?.textContent?.trim() || '?'
-      const sections = Array.from(card.children, child => child.className.split(' ')[0])
-      if (sections.join() !== 'plugin-card-header,plugin-card-body,plugin-card-footer') {
+      const content = card.querySelector(':scope > .plugin-card__content')
+      const sections = Array.from(content?.children ?? [], child => child.className.split(' ')[0])
+      if (!content || sections.join() !== 'plugin-card-header,plugin-card-body,plugin-card-footer') {
         issues.push(`${name}: sections are ${sections.join()}`)
         continue
       }
-      const [header, body] = Array.from(card.children, child => child.getBoundingClientRect())
+      const [header, body] = Array.from(content.children, child => child.getBoundingClientRect())
       const box = card.getBoundingClientRect()
-      const controls = Array.from(card.lastElementChild!.querySelectorAll(
+      const controls = Array.from(content.lastElementChild!.querySelectorAll(
         '.plugin-version-tag, .source-tag, [data-testid="plugin-open-ui"]'
       )).filter(visible).map(element => element.getBoundingClientRect())
       if (!controls.length) {
@@ -640,7 +641,7 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
   await expect(page.locator('.plugin-card')).toHaveCount(8)
   const palette = () => page.evaluate(() => {
-    const selectors = ['.app-shell', '.app-body', '.plugin-card', '.wb-filter-bar', '.plugin-description']
+    const selectors = ['.app-shell', '.app-body', '.plugin-card__surface', '.wb-filter-bar', '.plugin-description']
     return selectors.map(selector => {
       const style = getComputedStyle(document.querySelector(selector)!)
       return [style.backgroundColor, style.color]
