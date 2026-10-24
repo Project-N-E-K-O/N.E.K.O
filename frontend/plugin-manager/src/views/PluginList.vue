@@ -1469,9 +1469,7 @@ onUnmounted(() => {
    改成：只在该模式下给**可滚内容**加底部内边距（它们本来就是滚动容器），
    最后一行依旧能滚到浮动条上方；抽屉的高度则是 padding box，绝对定位的内容会自动让位。 */
 .plugin-workbench--multi-select .plugin-list-card :deep(.el-card__body),
-.plugin-workbench--multi-select .plugin-workbench__rail--market,
-.plugin-workbench--multi-select .plugin-workbench__rail--package,
-.plugin-workbench--multi-select .plugin-workbench__rail--mirror {
+.plugin-workbench--multi-select .plugin-workbench__rail-inner > * {
   padding-bottom: 80px;
 }
 
@@ -1517,33 +1515,36 @@ onUnmounted(() => {
   flex-basis: var(--drawer-width);
   width: var(--drawer-width);
   margin: 0;
-  /* 抽屉自己滞：rail 是 overflow:hidden + contain:paint，不自滞的话超出部分直接
-     被裁掉（尤其把高度绑到视口之后）。三个抽屉共用同一套 rail 机制，一起改。 */
-  overflow-y: auto;
 }
 
-/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入 */
+/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入。
+   靠工作区边缘的三边留出 shell 间距，面板作为独立圆角卡片浮在工作区里；
+   朝向列表的一边由工作台的 gap 分隔。 */
 .plugin-workbench__rail-inner {
   position: absolute;
   top: 0;
   bottom: 0;
   width: var(--drawer-width);
   max-width: 100%;
+  padding-block: var(--shell-spacing);
   transition: transform var(--drawer-duration) var(--drawer-ease);
 }
 
 .plugin-workbench__rail--market .plugin-workbench__rail-inner {
   left: 0;
+  padding-left: var(--shell-spacing);
   transform: translate3d(-100%, 0, 0);
 }
 
 .plugin-workbench__rail--package .plugin-workbench__rail-inner {
   right: 0;
+  padding-right: var(--shell-spacing);
   transform: translate3d(100%, 0, 0);
 }
 
 .plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
   right: 0;
+  padding-right: var(--shell-spacing);
   transform: translate3d(100%, 0, 0);
 }
 
@@ -1556,14 +1557,11 @@ onUnmounted(() => {
 .plugin-workbench__rail-inner > * {
   width: 100%;
   /*
-    用 min-height 而不是 height：抽屉里的面板（如 .market-panel--embedded）自带白底、
-    圆角和阴影，这些都是“画在元素自己盒子上”的。写成 height:100% 就把它钉成固定高度，
-    面板内容一旦高于抽屉，溢出的部分（后面的卡片、分页条）就落在页面底色上——
-    实测小窗口下市场列表滚到底时，分页条两侧是 rgb(242,243,245) 而不是白底。
-    min-height 让面板随内容长高，白纸面始终覆盖全部内容；抽屉自己是滚动容器
-    （打开态 overflow-y:auto），所以滚动行为不变。
+    面板本身就是滚动容器：白底、圆角、边框画在固定高度的卡片上，内容在卡片里滚动，
+    滚动条也落在卡片的圆角边框之内，和左侧列表的滚动区域界限分明。
   */
-  min-height: 100%;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .plugin-list-card {

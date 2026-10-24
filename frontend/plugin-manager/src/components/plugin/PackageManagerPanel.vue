@@ -320,6 +320,11 @@ const {
 
 .package-manager--embedded {
   gap: 14px;
+  padding: 18px 18px 24px;
+  background: var(--surface-card);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .main-grid {

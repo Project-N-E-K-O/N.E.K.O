@@ -13,7 +13,9 @@ export const motionPolicy = {
 } as const
 
 export const motionPresets = {
-  page: { duration: 220, distance: 8, scale: 0.995, opacity: 0 },
+  /* No vertical travel: a view that fills the scroll container would stick out
+     below it while translated down and flash a scrollbar on every route change. */
+  page: { duration: 220, distance: 0, scale: 0.995, opacity: 0 },
   section: { duration: 300, distance: 12, scale: 1, opacity: 0 },
   card: { duration: 300, distance: 14, scale: 0.97, opacity: 0 },
   item: { duration: 220, distance: 8, scale: 0.985, opacity: 0 },

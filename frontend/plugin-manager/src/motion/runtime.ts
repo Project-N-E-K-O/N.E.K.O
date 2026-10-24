@@ -28,7 +28,7 @@ export function cancelMotion(element: HTMLElement) {
   active.get(element)?.finish()
 }
 
-const pinnedProperties = ['position', 'left', 'top', 'width', 'height', 'margin', 'pointer-events']
+const pinnedProperties = ['position', 'left', 'top', 'width', 'height', 'margin', 'pointer-events', 'overflow']
 
 export type PinBox = Pick<HTMLElement, 'offsetLeft' | 'offsetTop' | 'offsetWidth' | 'offsetHeight'>
 
@@ -48,6 +48,27 @@ export function pinInPlace(element: HTMLElement, box: PinBox = measurePinBox(ele
     width: `${offsetWidth}px`, height: `${offsetHeight}px`,
     margin: '0', pointerEvents: 'none',
   })
+}
+
+/** Pins a leaving view at the frame its scroll container currently shows and
+ * cuts it off at the container's bottom edge, so a tall view adds no scrollable
+ * overflow (no transient scrollbar, no width jump) while the next view enters
+ * at the top of the container. */
+export function pinInScrollport(element: HTMLElement) {
+  const scroller = element.parentElement
+  const box = measurePinBox(element)
+  if (!scroller) {
+    pinInPlace(element, box)
+    return
+  }
+  const { scrollTop, clientHeight } = scroller
+  pinInPlace(element, {
+    ...box,
+    offsetTop: box.offsetTop - scrollTop,
+    offsetHeight: Math.max(0, Math.min(box.offsetHeight, scrollTop + clientHeight - box.offsetTop)),
+  })
+  element.style.overflow = 'hidden'
+  scroller.scrollTop = 0
 }
 
 export function releasePin(element: HTMLElement) {
