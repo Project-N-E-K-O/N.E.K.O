@@ -42,13 +42,22 @@ def preferences_path() -> Path:
 
 
 def load_preferences() -> tuple[DownloadPreferences, bool]:
+    """Return the saved preferences and whether they count as configured.
+
+    A file that exists but cannot be read still counts, so a browser seeding
+    the server cannot replace a choice that is only temporarily unreadable.
+    One whose content is invalid does not: that choice is already lost.
+    """
     try:
         raw = read_json_tolerating_replace(preferences_path())
         return validate_preferences(raw["mode"], raw["specified_source_id"]), True
     except FileNotFoundError:
         return DownloadPreferences(), False
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except OSError as exc:
         logger.warning("ignoring unreadable package download preferences: {}", exc)
+        return DownloadPreferences(), True
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("ignoring invalid package download preferences: {}", exc)
         return DownloadPreferences(), False
 
 

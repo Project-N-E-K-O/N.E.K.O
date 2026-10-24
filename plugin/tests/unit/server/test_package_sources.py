@@ -104,13 +104,33 @@ async def test_a_reset_keeps_statistics_written_after_it(monkeypatch):
     assert list(saved) == ["gh-proxy-com"]
 
 
-def test_unreadable_files_fall_back_to_defaults():
+def test_unreadable_route_statistics_file_falls_back_to_priors():
     sources.route_stats_path().mkdir()
-    sources.preferences_path().unlink(missing_ok=True)
-    sources.preferences_path().mkdir(exist_ok=True)
     sources._routes.clear()
     sources._loaded = False
     assert sources.estimate_route("github-direct").confidence == 0.0
+
+
+async def test_an_unreadable_saved_choice_is_not_replaced_by_seeding(monkeypatch):
+    sources.save_preferences(sources.DownloadPreferences(mode="direct"))
+
+    def unreadable(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(sources, "read_json_tolerating_replace", unreadable)
+    app = FastAPI()
+    app.include_router(bridge.router)
+    params = {"token": bridge.get_bridge_token()}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local") as client:
+        assert (await client.get("/market/download-preferences", params=params)).json()["configured"] is True
+        await client.put("/market/download-preferences", params=params, json={
+            "mode": "specified", "specified_source_id": "gh-proxy-com", "initialize_only": True,
+        })
+    assert json.loads(sources.preferences_path().read_text(encoding="utf-8"))["mode"] == "direct"
+
+
+def test_invalid_saved_preferences_count_as_unconfigured():
+    sources.preferences_path().write_text('{"mode": "turbo"}', encoding="utf-8")
     assert sources.load_preferences() == (sources.DownloadPreferences(), False)
 
 
