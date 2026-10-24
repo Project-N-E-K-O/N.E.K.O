@@ -628,22 +628,30 @@ const pagedItems = computed(() =>
 )
 
 let loadSeq = 0
+// 当前 ``plugins`` 对应的查询（channel + 排序）。
+let loadedQuery = ''
 
 async function loadPlugins() {
   if (!marketAvailable.value) return
   const mySeq = ++loadSeq
+  const query = {
+    sort_by: sortBy.value,
+    sort_order: sortOrder.value,
+    // v2 (R7.3): 全局 channel 偏好透传给 Market；切换后 watcher 会触发重载
+    channel: userPref.channel,
+  }
+  const queryKey = `${query.channel}|${query.sort_by}|${query.sort_order}`
+  // 换了 channel 或排序，旧目录就不再对应当前查询：先清空，避免全量目录加载期间
+  // 还能从旧卡片安装旧 channel 的版本，加载失败时也能落到可重试的错误态。
+  if (queryKey !== loadedQuery) plugins.value = []
   loading.value = true
   try {
-    const result = await fetchMarketCatalog({
-      sort_by: sortBy.value,
-      sort_order: sortOrder.value,
-      // v2 (R7.3): 全局 channel 偏好透传给 Market；切换后 watcher 会触发重载
-      channel: userPref.channel,
-    })
+    const result = await fetchMarketCatalog(query)
     // 只接受最新一次请求的返回值，避免乱序覆盖
     if (mySeq !== loadSeq) return
     if (result) {
       plugins.value = result
+      loadedQuery = queryKey
       lastLoadFailed.value = false
     } else {
       // ``fetchMarketCatalog`` returns null on transient API/network error.

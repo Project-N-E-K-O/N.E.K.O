@@ -16,6 +16,8 @@ vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginState }))
 vi.mock('@/stores/pluginUpdates', () => ({
   usePluginUpdatesStore: () => ({ completedUpgrades: 0, check: vi.fn() }),
 }))
+const userPref = reactive({ channel: 'stable' as 'stable' | 'beta' })
+vi.mock('@/stores/userPreference', () => ({ useUserPreferenceStore: () => userPref }))
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => ({ running: false, owner: null, done: false }),
 }))
@@ -80,6 +82,16 @@ vi.mock('@/components/plugin/MarketPluginCard.vue', async () => {
     }),
   }
 })
+vi.mock('@/components/common/EmptyState.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      props: ['description'],
+      setup: (props) => () =>
+        h('div', { 'data-testid': 'market-empty', 'data-description': props.description }),
+    }),
+  }
+})
 vi.mock('@/components/common/WorkbenchFilterBar.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/components/common/WorkbenchGroupFilter.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/components/common/WorkbenchLayoutSwitcher.vue', () => ({
@@ -130,12 +142,15 @@ function mount() {
     cardCount: () => root.querySelectorAll('[data-testid="market-action"]').length,
     sectionCount: () =>
       root.querySelector('[data-testid="market-section"]')?.getAttribute('data-count'),
+    emptyDescription: () =>
+      root.querySelector('[data-testid="market-empty"]')?.getAttribute('data-description'),
   }
 }
 beforeEach(() => {
   vi.clearAllMocks()
   pluginState.registryRevision = 0
   pluginState.pluginSummariesWithStatus = []
+  userPref.channel = 'stable'
   vi.mocked(fetchMarketCatalog).mockResolvedValue([
     { id: '1', slug: 'demo', name: 'Demo', version: '2.0.0', has_release: true },
   ] as never)
@@ -216,5 +231,36 @@ describe('market pagination', () => {
     expect(ui.cardCount()).toBe(10)
     expect(ui.sectionCount()).toBe('10')
     expect(fetchMarketCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the old channel catalog while the new one loads', async () => {
+    const ui = mount()
+    await flush()
+    expect(ui.cardCount()).toBe(1)
+
+    let resolveCatalog: (value: unknown) => void = () => {}
+    vi.mocked(fetchMarketCatalog).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCatalog = resolve
+      }) as never
+    )
+    userPref.channel = 'beta'
+    await flush()
+    expect(fetchMarketCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'beta' }))
+    expect(ui.cardCount()).toBe(0)
+
+    resolveCatalog([{ id: '2', slug: 'beta-demo', name: 'Beta', version: '2.0.0', has_release: true }])
+    await flush()
+    expect(ui.cardCount()).toBe(1)
+  })
+
+  it('shows the retry state when a channel refresh fails', async () => {
+    const ui = mount()
+    await flush()
+    vi.mocked(fetchMarketCatalog).mockResolvedValueOnce(null)
+    userPref.channel = 'beta'
+    await flush()
+    expect(ui.cardCount()).toBe(0)
+    expect(ui.emptyDescription()).toBe('market.loadFailed')
   })
 })
