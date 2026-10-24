@@ -2,27 +2,28 @@
   <div
     class="plugin-workbench"
     :class="{
-      'plugin-workbench--market-open': marketPanelVisible,
-      'plugin-workbench--package-open': packagePanelVisible,
-      'plugin-workbench--mirror-open': mirrorPanelVisible,
+      'plugin-workbench--market-open': drawers.market.visible,
+      'plugin-workbench--package-open': drawers.package.visible,
+      'plugin-workbench--mirror-open': drawers.mirror.visible,
       'plugin-workbench--multi-select': multiSelectEnabled,
     }"
     data-yui-guide-id="plugin-list-workbench"
   >
     <aside
       class="plugin-workbench__rail plugin-workbench__rail--market"
-      :aria-hidden="!marketPanelVisible"
-      :inert="!marketPanelVisible"
+      :aria-hidden="!drawers.market.visible"
+      :inert="!drawers.market.visible"
     >
-      <div class="plugin-workbench__rail-inner">
-        <MarketPanel
-          v-if="marketPanelEverOpened"
-          v-show="marketPanelVisible"
-          embedded
-          :active="marketPanelVisible"
-          @close="closeMarketPanel"
-        />
-      </div>
+      <Transition name="drawer-start">
+        <div v-show="drawers.market.visible" class="plugin-workbench__rail-inner">
+          <MarketPanel
+            v-if="drawers.market.everOpened"
+            embedded
+            :active="drawers.market.visible"
+            @close="drawers.market.visible = false"
+          />
+        </div>
+      </Transition>
     </aside>
 
     <section
@@ -31,23 +32,29 @@
     >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
-          <div class="workbench-header">
-            <div class="workbench-header__copy">
+          <div
+            ref="workbenchHeaderRef"
+            class="workbench-header"
+            :class="{ 'workbench-header--compact': headerActionsCompact }"
+          >
+            <!-- 左：市场相关入口；右：模式 │ 面板 │ 视图选项 │ 数据操作。窄头部只保留图标。 -->
+            <div ref="headerMarketRef" class="workbench-header__market">
               <button
                 v-if="marketUrl"
                 class="market-trigger"
-                :class="{ 'market-trigger--active': marketPanelVisible }"
+                :class="{ 'market-trigger--active': drawers.market.visible }"
                 type="button"
                 data-yui-guide-id="plugin-list-market-toggle"
-                :title="marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')"
-                @click="toggleMarketPanel"
+                :title="drawers.market.visible ? $t('market.closeMarket') : $t('market.openMarket')"
+                :aria-label="headerActionsCompact ? (drawers.market.visible ? $t('market.closeMarket') : $t('market.openMarket')) : undefined"
+                @click="toggleDrawer('market')"
               >
                 <el-icon class="market-trigger__icon"><ShoppingCart /></el-icon>
-                <span class="market-trigger__label">
-                  {{ marketPanelVisible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
+                <span v-if="!headerActionsCompact" class="market-trigger__label">
+                  {{ drawers.market.visible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
                 </span>
                 <el-icon class="market-trigger__arrow">
-                  <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
+                  <component :is="drawers.market.visible ? ArrowLeft : ArrowRight" />
                 </el-icon>
               </button>
               <el-button
@@ -57,10 +64,11 @@
                 plain
                 data-yui-guide-id="plugin-list-update-check"
                 :title="$t('pluginUpdates.button')"
+                :aria-label="headerActionsCompact ? $t('pluginUpdates.button') : undefined"
                 @click="handleCheckUpdates"
               >
                 <el-icon><Top /></el-icon>
-                <span>{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
+                <span v-if="!headerActionsCompact">{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
                 <span
                   v-if="pluginUpdatesStore.candidates.length > 0"
                   class="plugin-update-trigger__badge"
@@ -71,12 +79,13 @@
                 class="market-auth-trigger"
                 :loading="marketLogoutBusy"
                 aria-live="polite"
+                :aria-label="headerActionsCompact ? `${$t('market.authVerificationPendingLabel')} · ${$t('market.logout')}` : undefined"
                 :title="$t('market.logout')"
                 plain
                 @click="confirmMarketLogout"
               >
                 <el-icon><User /></el-icon>
-                {{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}
+                <span v-if="!headerActionsCompact">{{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}</span>
               </el-button>
               <el-popover
                 v-else-if="marketUrl && marketAuth.authenticated"
@@ -90,10 +99,11 @@
                   <el-button
                     class="market-auth-trigger market-auth-trigger--connected"
                     :loading="marketAuthBusy"
+                    :title="$t('market.accountConnected', { name: marketAuthDisplayName })"
                     plain
                   >
                     <el-icon><User /></el-icon>
-                    {{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}
+                    <span v-if="!headerActionsCompact">{{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}</span>
                   </el-button>
                 </template>
                 <div class="market-account-card" v-loading="marketAccountSummaryBusy">
@@ -134,115 +144,137 @@
                 v-else-if="marketUrl"
                 class="market-auth-trigger"
                 :loading="marketAuthBusy"
+                :title="$t('market.login')"
                 plain
                 @click="startMarketLogin()"
               >
                 <el-icon><User /></el-icon>
-                {{ $t('market.login') }}
-              </el-button>
-              <el-button
-                class="multi-select-trigger"
-                :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
-                :type="multiSelectEnabled ? 'primary' : 'default'"
-                data-yui-guide-id="plugin-list-multi-select"
-                plain
-                @click="toggleMultiSelectMode"
-              >
-                <el-icon><Finished /></el-icon>
-                {{ multiSelectEnabled ? $t('plugins.exitMultiSelect') : $t('plugins.multiSelect') }}
+                <span v-if="!headerActionsCompact">{{ $t('market.login') }}</span>
               </el-button>
             </div>
 
-            <div class="header-actions">
-              <button
-                class="header-btn header-btn--accent"
+            <!-- 三级：导入是唯一主按钮；其余为描边次按钮，开关态用浅底；低频视图选项和全部重载收进“更多”。 -->
+            <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions">
+              <el-button
+                :type="multiSelectEnabled ? 'primary' : 'default'"
+                :plain="multiSelectEnabled"
+                :aria-pressed="multiSelectEnabled"
+                :aria-label="headerActionsCompact ? $t('plugins.multiSelect') : undefined"
+                :title="headerActionsCompact ? $t('plugins.multiSelect') : undefined"
+                data-yui-guide-id="plugin-list-multi-select"
+                @click="toggleMultiSelectMode"
+              >
+                <el-icon><Finished /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('plugins.multiSelect') }}</span>
+              </el-button>
+              <span class="header-actions__divider" aria-hidden="true" />
+              <el-button
+                class="package-trigger"
+                :class="{ 'package-trigger--active': drawers.package.visible }"
+                :aria-pressed="drawers.package.visible"
+                :aria-label="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
+                :title="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
+                data-yui-guide-id="plugin-list-package-panel-toggle"
+                @click="toggleDrawer('package')"
+              >
+                <el-icon><Box /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('plugins.openPackageManager') }}</span>
+              </el-button>
+              <el-button
+                :type="drawers.mirror.visible ? 'primary' : 'default'"
+                :plain="drawers.mirror.visible"
+                :aria-pressed="drawers.mirror.visible"
+                :aria-label="headerActionsCompact ? $t('plugins.openMirrorSource') : undefined"
+                :title="headerActionsCompact ? $t('plugins.openMirrorSource') : undefined"
+                data-yui-guide-id="plugin-list-mirror-source-toggle"
+                @click="toggleDrawer('mirror')"
+              >
+                <el-icon><Connection /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('plugins.openMirrorSource') }}</span>
+              </el-button>
+              <span class="header-actions__divider" aria-hidden="true" />
+              <el-dropdown trigger="click" :persistent="false" @command="handleMoreAction">
+                <el-button
+                  :aria-label="$t('plugins.moreActions')"
+                  :title="$t('plugins.moreActions')"
+                  data-testid="plugin-list-more-actions"
+                >
+                  <el-icon><MoreFilled /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <!-- 视觉上是勾选项；menuitem 不能带 aria-checked，读屏用 aria-label 读出将要执行的动作。 -->
+                  <el-dropdown-menu class="header-more-menu">
+                    <el-dropdown-item
+                      command="metrics"
+                      :aria-label="showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics')"
+                      data-yui-guide-id="plugin-list-metrics-toggle"
+                    >
+                      <el-icon class="header-more-menu__check" :class="{ 'is-checked': showMetrics }"><Check /></el-icon>
+                      {{ $t('plugins.showMetrics') }}
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      command="sourceDetail"
+                      :aria-label="showSourceDetail ? $t('plugins.hideSourceDetail') : $t('plugins.showSourceDetail')"
+                      data-yui-guide-id="plugin-list-source-toggle"
+                    >
+                      <el-icon class="header-more-menu__check" :class="{ 'is-checked': showSourceDetail }"><Check /></el-icon>
+                      {{ $t('plugins.showSourceDetail') }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="reloadAll" divided :disabled="reloadAllDisabled">
+                      <span class="header-more-menu__danger">
+                        <el-icon><RefreshRight /></el-icon>
+                        {{ $t('plugins.reloadAll') }}
+                      </span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <span class="header-actions__divider" aria-hidden="true" />
+              <el-button
+                :disabled="loading"
+                :aria-label="headerActionsCompact ? $t('common.refresh') : undefined"
+                :title="headerActionsCompact ? $t('common.refresh') : undefined"
+                data-yui-guide-id="plugin-list-refresh"
+                @click="handleRefresh"
+              >
+                <el-icon><Refresh /></el-icon>
+                <span v-if="!headerActionsCompact">{{ $t('common.refresh') }}</span>
+              </el-button>
+              <el-button
+                type="primary"
                 :disabled="importing"
                 data-yui-guide-id="plugin-list-import"
                 @click="importDialogVisible = true"
               >
                 <el-icon><Upload /></el-icon>
                 <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active': packagePanelVisible }"
-                data-yui-guide-id="plugin-list-package-panel-toggle"
-                @click="togglePackagePanel"
-              >
-                <el-icon><Box /></el-icon>
-                <span>{{ packagePanelVisible ? $t('plugins.closePackageManager') : $t('plugins.openPackageManager') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active': mirrorPanelVisible }"
-                data-yui-guide-id="plugin-list-mirror-source-toggle"
-                @click="toggleMirrorPanel"
-              >
-                <el-icon><Connection /></el-icon>
-                <span>{{ mirrorPanelVisible ? $t('plugins.closeMirrorSource') : $t('plugins.openMirrorSource') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active header-btn--success': showMetrics }"
-                data-yui-guide-id="plugin-list-metrics-toggle"
-                @click="toggleMetrics"
-              >
-                <el-icon><DataAnalysis /></el-icon>
-                <span>{{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}</span>
-              </button>
-              <button
-                class="header-btn"
-                :class="{ 'header-btn--active': showSourceDetail }"
-                data-yui-guide-id="plugin-list-source-toggle"
-                @click="toggleSourceDetail"
-              >
-                <el-icon><InfoFilled /></el-icon>
-                <span>{{ showSourceDetail ? $t('plugins.hideSourceDetail') : $t('plugins.showSourceDetail') }}</span>
-              </button>
-              <button
-                class="header-btn header-btn--warn"
-                :disabled="reloadingAll || runningPlugins.length === 0"
-                @click="handleReloadAll"
-              >
-                <el-icon><RefreshRight /></el-icon>
-                <span>{{ $t('plugins.reloadAll') }}</span>
-              </button>
-              <button
-                class="header-btn header-btn--primary"
-                :disabled="loading"
-                data-yui-guide-id="plugin-list-refresh"
-                @click="handleRefresh"
-              >
-                <el-icon><Refresh /></el-icon>
-                <span>{{ $t('common.refresh') }}</span>
-              </button>
+              </el-button>
             </div>
+
+            <WorkbenchFilterBar
+              v-model:filter-text="filterText"
+              :rule-groups="filterRuleGroups"
+              :placeholder="$t('plugins.filterPlaceholder')"
+              :rules-trigger-label="$t('plugins.filterRules')"
+              :rules-title="$t('plugins.filterRulesTitle')"
+              :rules-hint="$t('plugins.filterRulesHint')"
+              :guide-ids="{ rulesTrigger: 'plugin-list-filter-rules', input: 'plugin-list-filter-input' }"
+            >
+              <template #footer>
+                <WorkbenchGroupFilter
+                  v-model:selected-ids="selectedTypes"
+                  :choices="typeFilterChoices"
+                  :counts="groupCounts"
+                  guide-id="plugin-list-type-filter"
+                />
+                <WorkbenchLayoutSwitcher
+                  v-model:layout-mode="layoutMode"
+                  :choices="layoutChoices"
+                  guide-id="plugin-list-layout-mode"
+                />
+              </template>
+            </WorkbenchFilterBar>
           </div>
-
-          <WorkbenchFilterBar
-            v-model:filter-text="filterText"
-            :rule-groups="filterRuleGroups"
-            :placeholder="$t('plugins.filterPlaceholder')"
-            :rules-trigger-label="$t('plugins.filterRules')"
-            :rules-title="$t('plugins.filterRulesTitle')"
-            :rules-hint="$t('plugins.filterRulesHint')"
-            :guide-ids="{ rulesTrigger: 'plugin-list-filter-rules', input: 'plugin-list-filter-input' }"
-            class="filter-bar-spacing"
-          />
-
-          <WorkbenchToolbar class="toolbar-spacing">
-            <WorkbenchGroupFilter
-              v-model:selected-ids="selectedTypes"
-              :choices="typeFilterChoices"
-              :counts="groupCounts"
-              guide-id="plugin-list-type-filter"
-            />
-            <WorkbenchLayoutSwitcher
-              v-model:layout-mode="layoutMode"
-              :choices="layoutChoices"
-              guide-id="plugin-list-layout-mode"
-            />
-          </WorkbenchToolbar>
         </template>
 
         <div v-if="listRefreshError || listRefreshWarning" class="plugin-list-feedback" data-testid="plugin-list-feedback">
@@ -297,32 +329,34 @@
 
     <aside
       class="plugin-workbench__rail plugin-workbench__rail--package"
-      :aria-hidden="!packagePanelVisible"
-      :inert="!packagePanelVisible"
+      :aria-hidden="!drawers.package.visible"
+      :inert="!drawers.package.visible"
     >
-      <div class="plugin-workbench__rail-inner">
-        <PackageManagerPanel
-          v-if="packagePanelEverOpened"
-          v-show="packagePanelVisible"
-          embedded
-          :external-selected-plugin-ids="selectedPluginIds"
-          @close="closePackagePanel"
-        />
-      </div>
+      <Transition name="drawer-end">
+        <div v-show="drawers.package.visible" class="plugin-workbench__rail-inner">
+          <PackageManagerPanel
+            v-if="drawers.package.everOpened"
+            embedded
+            :external-selected-plugin-ids="selectedPluginIds"
+            @close="drawers.package.visible = false"
+          />
+        </div>
+      </Transition>
     </aside>
 
     <aside
       class="plugin-workbench__rail plugin-workbench__rail--mirror"
-      :aria-hidden="!mirrorPanelVisible"
-      :inert="!mirrorPanelVisible"
+      :aria-hidden="!drawers.mirror.visible"
+      :inert="!drawers.mirror.visible"
     >
-      <div class="plugin-workbench__rail-inner">
-        <GithubMirrorSourcePanel
-          v-if="mirrorPanelEverOpened"
-          v-show="mirrorPanelVisible"
-          @close="closeMirrorPanel"
-        />
-      </div>
+      <Transition name="drawer-end">
+        <div v-show="drawers.mirror.visible" class="plugin-workbench__rail-inner">
+          <GithubMirrorSourcePanel
+            v-if="drawers.mirror.everOpened"
+            @close="drawers.mirror.visible = false"
+          />
+        </div>
+      </Transition>
     </aside>
 
     <!-- Floating multi-select action bar; teleported so the route transition's
@@ -447,10 +481,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User, Top } from '@element-plus/icons-vue'
+import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -470,7 +504,6 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
 import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
 import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
-import WorkbenchToolbar from '@/components/common/WorkbenchToolbar.vue'
 import type {
   FilterRuleGroupDescriptor,
   GroupChoiceDescriptor,
@@ -481,7 +514,9 @@ import { deletePlugin } from '@/api/plugins'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
+import { useBatchActions } from '@/composables/useBatchActions'
 import { useMarketAuth } from '@/composables/useMarketAuth'
+import { useCollapsibleLabels } from '@/composables/useCollapsibleLabels'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -504,15 +539,19 @@ const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListConte
 const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
 const reloadingAll = ref(false)
-const batchBusy = ref(false)
 const importing = ref(false)
 const importDialogVisible = ref(false)
-const packagePanelVisible = ref(false)
-const packagePanelEverOpened = ref(false)
-const mirrorPanelVisible = ref(false)
-const mirrorPanelEverOpened = ref(false)
-const marketPanelVisible = ref(false)
-const marketPanelEverOpened = ref(false)
+type DrawerKey = 'package' | 'mirror' | 'market'
+interface DrawerState {
+  visible: boolean
+  everOpened: boolean
+}
+const DRAWER_KEYS: readonly DrawerKey[] = ['package', 'mirror', 'market']
+const drawers = reactive<Record<DrawerKey, DrawerState>>({
+  package: { visible: false, everOpened: false },
+  mirror: { visible: false, everOpened: false },
+  market: { visible: false, everOpened: false },
+})
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
@@ -906,53 +945,20 @@ function toggleMultiSelectMode() {
   toggleMultiSelect()
 }
 
-function togglePackagePanel() {
-  const next = !packagePanelVisible.value
-  packagePanelVisible.value = next
-  if (next) {
-    packagePanelEverOpened.value = true
-    marketPanelVisible.value = false
-    mirrorPanelVisible.value = false
+// Drawers are mutually exclusive: opening one closes the others.
+function openDrawer(key: DrawerKey) {
+  for (const other of DRAWER_KEYS) {
+    drawers[other].visible = other === key
   }
+  drawers[key].everOpened = true
 }
 
-function openPackagePanel() {
-  packagePanelVisible.value = true
-  packagePanelEverOpened.value = true
-  marketPanelVisible.value = false
-  mirrorPanelVisible.value = false
-}
-
-function closePackagePanel() {
-  packagePanelVisible.value = false
-}
-
-function toggleMirrorPanel() {
-  const next = !mirrorPanelVisible.value
-  mirrorPanelVisible.value = next
-  if (next) {
-    mirrorPanelEverOpened.value = true
-    packagePanelVisible.value = false
-    marketPanelVisible.value = false
+function toggleDrawer(key: DrawerKey) {
+  if (drawers[key].visible) {
+    drawers[key].visible = false
+  } else {
+    openDrawer(key)
   }
-}
-
-function closeMirrorPanel() {
-  mirrorPanelVisible.value = false
-}
-
-function toggleMarketPanel() {
-  const next = !marketPanelVisible.value
-  marketPanelVisible.value = next
-  if (next) {
-    marketPanelEverOpened.value = true
-    packagePanelVisible.value = false
-    mirrorPanelVisible.value = false
-  }
-}
-
-function closeMarketPanel() {
-  marketPanelVisible.value = false
 }
 
 function closePluginContextMenu() {
@@ -1025,7 +1031,7 @@ async function showTutorialContextMenu() {
   if (!plugin) {
     return
   }
-  packagePanelVisible.value = false
+  drawers.package.visible = false
   await nextTick()
   const target = document.querySelector('[data-yui-guide-id="plugin-list-card"]') as HTMLElement | null
   const rect = target?.getBoundingClientRect()
@@ -1049,7 +1055,7 @@ function openTutorialPluginDetail() {
 function handleTutorialAction(event: Event) {
   const action = (event as CustomEvent<{ action?: string }>).detail?.action
   if (action === 'open-package-panel') {
-    openPackagePanel()
+    openDrawer('package')
     return
   }
   if (action === 'show-plugin-context-menu') {
@@ -1109,6 +1115,34 @@ const runningPlugins = computed(() => {
   return rawPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
+const reloadAllDisabled = computed(() => reloadingAll.value || runningPlugins.value.length === 0)
+
+// 头部按内容测量（市场/包管理抽屉打开后主区变窄；文案随语言和登录态变化），而不是固定阈值。
+const workbenchHeaderRef = ref<HTMLElement | null>(null)
+const headerMarketRef = ref<HTMLElement | null>(null)
+const headerActionsRef = ref<HTMLElement | null>(null)
+const { compact: headerActionsCompact } = useCollapsibleLabels(
+  workbenchHeaderRef,
+  [headerMarketRef, headerActionsRef],
+  () => [
+    locale.value,
+    marketUrl.value,
+    marketAuth.value.auth_state,
+    marketAuth.value.authenticated,
+    marketAuthDisplayName.value,
+    pluginUpdatesStore.checking,
+    importing.value,
+  ],
+)
+
+type MoreActionCommand = 'metrics' | 'sourceDetail' | 'reloadAll'
+
+function handleMoreAction(command: MoreActionCommand) {
+  if (command === 'metrics') void toggleMetrics()
+  else if (command === 'sourceDetail') void toggleSourceDetail()
+  else void handleReloadAll()
+}
+
 // ── Export (build + download) ─────────────────────────────────────────
 
 async function handleBatchExport() {
@@ -1162,79 +1196,42 @@ function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
 
-async function handleBatchStart() {
-  const plugins = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled')
-  if (plugins.length === 0) {
-    ElMessage.info(t('plugins.batchNoStartable'))
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      t('plugins.batchStartConfirm', { count: plugins.length }),
-      t('common.confirm'),
-      { type: 'info' },
-    )
-  } catch { return }
+const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refreshAfterPluginChange)
 
-  batchBusy.value = true
-  let ok = 0; let fail = 0
-  for (const p of plugins) {
-    try { await pluginStore.start(p.id, { refresh: false }); ok++ } catch { fail++ }
-  }
-  batchBusy.value = false
-  if (fail === 0) ElMessage.success(t('plugins.batchStartSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await refreshAfterPluginChange()
+async function handleBatchStart() {
+  await runBatch({
+    filter: (p) => p.status !== 'running' && p.status !== 'disabled',
+    action: (p) => pluginStore.start(p.id, { refresh: false }),
+    noItemsKey: 'plugins.batchNoStartable',
+    confirmKey: 'plugins.batchStartConfirm',
+    confirmType: 'info',
+    successKey: 'plugins.batchStartSuccess',
+    partialKey: 'plugins.batchPartial',
+  })
 }
 
 async function handleBatchStop() {
-  const plugins = getSelectedPlugins().filter((p) => p.status === 'running')
-  if (plugins.length === 0) {
-    ElMessage.info(t('plugins.batchNoStoppable'))
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      t('plugins.batchStopConfirm', { count: plugins.length }),
-      t('common.confirm'),
-      { type: 'warning' },
-    )
-  } catch { return }
-
-  batchBusy.value = true
-  let ok = 0; let fail = 0
-  for (const p of plugins) {
-    try { await pluginStore.stop(p.id, { refresh: false }); ok++ } catch { fail++ }
-  }
-  batchBusy.value = false
-  if (fail === 0) ElMessage.success(t('plugins.batchStopSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await refreshAfterPluginChange()
+  await runBatch({
+    filter: (p) => p.status === 'running',
+    action: (p) => pluginStore.stop(p.id, { refresh: false }),
+    noItemsKey: 'plugins.batchNoStoppable',
+    confirmKey: 'plugins.batchStopConfirm',
+    confirmType: 'warning',
+    successKey: 'plugins.batchStopSuccess',
+    partialKey: 'plugins.batchPartial',
+  })
 }
 
 async function handleBatchReload() {
-  const plugins = getSelectedPlugins().filter((p) => p.status === 'running')
-  if (plugins.length === 0) {
-    ElMessage.info(t('plugins.batchNoReloadable'))
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      t('plugins.batchReloadConfirm', { count: plugins.length }),
-      t('common.confirm'),
-      { type: 'warning' },
-    )
-  } catch { return }
-
-  batchBusy.value = true
-  let ok = 0; let fail = 0
-  for (const p of plugins) {
-    try { await pluginStore.reload(p.id, { refresh: false }); ok++ } catch { fail++ }
-  }
-  batchBusy.value = false
-  if (fail === 0) ElMessage.success(t('plugins.batchReloadSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await refreshAfterPluginChange()
+  await runBatch({
+    filter: (p) => p.status === 'running',
+    action: (p) => pluginStore.reload(p.id, { refresh: false }),
+    noItemsKey: 'plugins.batchNoReloadable',
+    confirmKey: 'plugins.batchReloadConfirm',
+    confirmType: 'warning',
+    successKey: 'plugins.batchReloadSuccess',
+    partialKey: 'plugins.batchPartial',
+  })
 }
 
 async function handleBatchDelete() {
@@ -1332,19 +1329,18 @@ watch(
   () => route.query.tab,
   (tab) => {
     const shouldOpen = tab === 'packages'
-    if (packagePanelVisible.value !== shouldOpen) {
-      packagePanelVisible.value = shouldOpen
+    if (drawers.package.visible !== shouldOpen) {
       if (shouldOpen) {
-        packagePanelEverOpened.value = true
-        marketPanelVisible.value = false
-        mirrorPanelVisible.value = false
+        openDrawer('package')
+      } else {
+        drawers.package.visible = false
       }
     }
   },
   { immediate: true },
 )
 
-watch(packagePanelVisible, (visible) => {
+watch(() => drawers.package.visible, (visible) => {
   closePluginContextMenu()
   const nextQuery = { ...route.query }
   if (visible) {
@@ -1386,8 +1382,6 @@ onUnmounted(() => {
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
   --drawer-width: clamp(320px, 42vw, 620px);
-  --drawer-duration: 320ms;
-  --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
   display: flex;
   align-items: stretch;
   /*
@@ -1410,9 +1404,7 @@ onUnmounted(() => {
    改成：只在该模式下给**可滚内容**加底部内边距（它们本来就是滚动容器），
    最后一行依旧能滚到浮动条上方；抽屉的高度则是 padding box，绝对定位的内容会自动让位。 */
 .plugin-workbench--multi-select .plugin-list-card :deep(.el-card__body),
-.plugin-workbench--multi-select .plugin-workbench__rail--market,
-.plugin-workbench--multi-select .plugin-workbench__rail--package,
-.plugin-workbench--multi-select .plugin-workbench__rail--mirror {
+.plugin-workbench--multi-select .plugin-workbench__rail-inner > * {
   padding-bottom: 80px;
 }
 
@@ -1440,10 +1432,8 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   contain: layout paint size;
-  transition:
-    flex-basis var(--drawer-duration) var(--drawer-ease),
-    width var(--drawer-duration) var(--drawer-ease),
-    margin var(--drawer-duration) var(--drawer-ease);
+  /* 宽度不做过渡：开关抽屉时列表宽度一步到位，卡片由网格的 reflow 动画一次滑到新位置；
+     宽度连续过渡会让列数多次跨阈值、reflow 反复重启。滑入滑出只交给 rail-inner 的 transform。 */
   margin: 0;
 }
 
@@ -1458,53 +1448,71 @@ onUnmounted(() => {
   flex-basis: var(--drawer-width);
   width: var(--drawer-width);
   margin: 0;
-  /* 抽屉自己滞：rail 是 overflow:hidden + contain:paint，不自滞的话超出部分直接
-     被裁掉（尤其把高度绑到视口之后）。三个抽屉共用同一套 rail 机制，一起改。 */
-  overflow-y: auto;
 }
 
-/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入 */
+/* 关闭时 rail 宽度立即归零（列表一步到位），面板还在滑出：这段时间取消 rail 的裁剪，
+   让面板从列表上方滑出工作区，由 .app-body 的圆角裁掉。z-index 盖过正在 reflow 的卡片。 */
+.plugin-workbench__rail:has(> :is(.drawer-start-leave-active, .drawer-end-leave-active)) {
+  z-index: 1;
+  overflow: visible;
+  contain: layout size;
+}
+
+/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入滑出。
+   靠工作区边缘的三边留出 shell 间距，面板作为独立圆角卡片浮在工作区里；
+   朝向列表的一边由工作台的 gap 分隔。 */
 .plugin-workbench__rail-inner {
   position: absolute;
   top: 0;
   bottom: 0;
   width: var(--drawer-width);
   max-width: 100%;
-  transition: transform var(--drawer-duration) var(--drawer-ease);
+  padding-block: var(--shell-spacing);
 }
 
 .plugin-workbench__rail--market .plugin-workbench__rail-inner {
   left: 0;
+  padding-left: var(--shell-spacing);
+}
+
+.plugin-workbench__rail--package .plugin-workbench__rail-inner,
+.plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
+  right: 0;
+  padding-right: var(--shell-spacing);
+}
+
+/* 与网格 reflow 同一条曲线和时长，面板滑入滑出和卡片让位是同一个动作。 */
+.drawer-start-enter-active,
+.drawer-start-leave-active,
+.drawer-end-enter-active,
+.drawer-end-leave-active {
+  transition: transform var(--motion-duration-layout) var(--motion-ease-layout);
+}
+
+/* rail 已归零，max-width: 100% 会把滑出中的面板压成 0 宽。 */
+.drawer-start-leave-active,
+.drawer-end-leave-active {
+  max-width: none;
+}
+
+.drawer-start-enter-from,
+.drawer-start-leave-to {
   transform: translate3d(-100%, 0, 0);
 }
 
-.plugin-workbench__rail--package .plugin-workbench__rail-inner {
-  right: 0;
+.drawer-end-enter-from,
+.drawer-end-leave-to {
   transform: translate3d(100%, 0, 0);
-}
-
-.plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
-  right: 0;
-  transform: translate3d(100%, 0, 0);
-}
-
-.plugin-workbench--market-open .plugin-workbench__rail--market .plugin-workbench__rail-inner,
-.plugin-workbench--package-open .plugin-workbench__rail--package .plugin-workbench__rail-inner,
-.plugin-workbench--mirror-open .plugin-workbench__rail--mirror .plugin-workbench__rail-inner {
-  transform: translate3d(0, 0, 0);
 }
 
 .plugin-workbench__rail-inner > * {
   width: 100%;
   /*
-    用 min-height 而不是 height：抽屉里的面板（如 .market-panel--embedded）自带白底、
-    圆角和阴影，这些都是“画在元素自己盒子上”的。写成 height:100% 就把它钉成固定高度，
-    面板内容一旦高于抽屉，溢出的部分（后面的卡片、分页条）就落在页面底色上——
-    实测小窗口下市场列表滚到底时，分页条两侧是 rgb(242,243,245) 而不是白底。
-    min-height 让面板随内容长高，白纸面始终覆盖全部内容；抽屉自己是滚动容器
-    （打开态 overflow-y:auto），所以滚动行为不变。
+    面板本身就是滚动容器：白底、圆角、边框画在固定高度的卡片上，内容在卡片里滚动，
+    滚动条也落在卡片的圆角边框之内，和左侧列表的滚动区域界限分明。
   */
-  min-height: 100%;
+  height: 100%;
+  overflow-y: auto;
 }
 
 .plugin-list-card {
@@ -1519,39 +1527,86 @@ onUnmounted(() => {
   border-bottom-color: var(--surface-border);
 }
 
+/* 单行头部：左侧市场组，右侧动作组；空间不足时动作组整体换到下一行，不拆散。 */
 .workbench-header {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
 }
 
-.workbench-header__copy {
+.workbench-header__market,
+.header-actions {
   display: flex;
   align-items: center;
   min-width: 0;
-  flex: 0 1 auto;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.workbench-header__copy :deep(.el-button) {
+.workbench-header__market :deep(.el-button),
+.header-actions :deep(.el-button) {
+  --el-button-border-radius: var(--radius-control);
   margin-left: 0;
+  /* 收起文字会改内边距；Element Plus 默认 transition: all，按钮组宽度会在过渡中被测到。 */
+  transition-property: color, background-color, border-color;
+}
+
+.header-actions {
+  margin-left: auto;
+}
+
+/* 筛选块始终独占按钮行下方的一整行。 */
+.workbench-header > .wb-filter-bar {
+  flex-basis: 100%;
+}
+
+.header-actions__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--surface-border);
+}
+
+.workbench-header--compact .header-actions :deep(.el-button),
+.workbench-header--compact .workbench-header__market :deep(.el-button) {
+  padding-inline: 9px;
+}
+
+.workbench-header--compact .market-trigger {
+  padding: 8px 10px;
+}
+
+/* “更多”菜单被 teleport 到 body，只有本模板写进插槽的节点带 scoped 属性。 */
+.header-more-menu__check {
+  margin-right: 8px;
+  visibility: hidden;
+}
+
+.header-more-menu__check.is-checked {
+  visibility: visible;
+  color: var(--el-color-primary);
+}
+
+.header-more-menu__danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--el-color-danger);
 }
 
 /* ── Market quick-access trigger (top-left) ── */
+/* 浅蓝渐变底配主色字；面板打开后转为实心主色。 */
 .market-trigger {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   padding: 8px 14px 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 30%, var(--surface-card));
   border-radius: var(--radius-control);
   background: linear-gradient(
     135deg,
-    color-mix(in srgb, var(--el-color-primary) 10%, transparent) 0%,
-    color-mix(in srgb, var(--el-color-primary) 2%, transparent) 100%
+    color-mix(in srgb, var(--el-color-primary) 14%, var(--surface-card)) 0%,
+    color-mix(in srgb, var(--el-color-primary) 4%, var(--surface-card)) 100%
   );
   color: var(--el-color-primary);
   font-size: 13px;
@@ -1571,11 +1626,42 @@ onUnmounted(() => {
   box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 18%, transparent);
 }
 
+.market-trigger:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
 .market-trigger--active {
+  border-color: var(--el-color-primary);
   background: var(--el-color-primary);
   color: var(--on-primary);
-  border-color: var(--el-color-primary);
   box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 22%, transparent);
+}
+
+/* 包管理用 success 语义色：平时浅绿底绿字，面板打开时实心绿底。 */
+.header-actions :deep(.package-trigger) {
+  --el-button-text-color: var(--el-color-success);
+  --el-button-bg-color: var(--el-color-success-light-9);
+  --el-button-border-color: var(--el-color-success-light-5);
+  --el-button-hover-text-color: var(--el-color-success);
+  --el-button-hover-bg-color: var(--el-color-success-light-8);
+  --el-button-hover-border-color: var(--el-color-success-light-3);
+  --el-button-active-text-color: var(--el-color-success);
+  --el-button-active-bg-color: var(--el-color-success-light-7);
+  --el-button-active-border-color: var(--el-color-success);
+  font-weight: 600;
+}
+
+.header-actions :deep(.package-trigger--active) {
+  --el-button-text-color: var(--on-primary);
+  --el-button-bg-color: var(--el-color-success);
+  --el-button-border-color: var(--el-color-success);
+  --el-button-hover-text-color: var(--on-primary);
+  --el-button-hover-bg-color: var(--el-color-success-light-3);
+  --el-button-hover-border-color: var(--el-color-success-light-3);
+  --el-button-active-text-color: var(--on-primary);
+  --el-button-active-bg-color: var(--el-color-success-dark-2);
+  --el-button-active-border-color: var(--el-color-success-dark-2);
 }
 
 .market-trigger__icon {
@@ -1667,132 +1753,6 @@ onUnmounted(() => {
 .market-account-card__logout {
   justify-self: start;
   padding-left: 0;
-}
-
-/* ── Multi-select trigger button (top) ── */
-.multi-select-trigger {
-  --el-button-border-radius: var(--radius-control);
-  font-weight: 600;
-  padding: 8px 18px;
-  gap: 6px;
-  transition:
-    transform 0.22s ease,
-    box-shadow 0.22s ease,
-    background-color 0.22s ease,
-    border-color 0.22s ease;
-}
-
-.multi-select-trigger:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
-}
-
-.multi-select-trigger--active {
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 24%, transparent),
-    0 6px 16px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
-}
-
-/* ── Header action buttons (unified) ── */
-.header-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-control);
-  background: var(--surface-card);
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.18s ease,
-    box-shadow 0.2s ease;
-}
-
-.header-btn .el-icon {
-  font-size: 15px;
-}
-
-.header-btn:hover {
-  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
-}
-
-.header-btn:active {
-  transform: translateY(0) scale(0.97);
-}
-
-.header-btn:disabled {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-/* Active state (toggled on) */
-.header-btn--active {
-  border-color: color-mix(in srgb, var(--el-color-primary) 40%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 8%, var(--el-bg-color));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-}
-
-/* Color variants */
-.header-btn--accent {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--el-color-success) 40%, var(--el-border-color));
-  color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 4%, var(--el-bg-color));
-}
-
-.header-btn--accent:hover {
-  border-color: var(--el-color-success);
-  color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-success) 16%, transparent);
-}
-
-.header-btn--primary {
-  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
-}
-
-.header-btn--primary:hover {
-  border-color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 16%, transparent);
-}
-
-.header-btn--success {
-  border-color: color-mix(in srgb, var(--el-color-success) 30%, var(--el-border-color));
-  color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 4%, var(--el-bg-color));
-}
-
-.header-btn--success:hover {
-  border-color: var(--el-color-success);
-  background: color-mix(in srgb, var(--el-color-success) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-success) 16%, transparent);
-}
-
-.header-btn--warn {
-  border-color: color-mix(in srgb, var(--el-color-warning) 30%, var(--el-border-color));
-  color: var(--el-color-warning);
-  background: color-mix(in srgb, var(--el-color-warning) 4%, var(--el-bg-color));
-}
-
-.header-btn--warn:hover {
-  border-color: var(--el-color-warning);
-  background: color-mix(in srgb, var(--el-color-warning) 10%, var(--el-bg-color));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-warning) 16%, transparent);
 }
 
 /* ── Export button in batch row ── */
@@ -2026,26 +1986,6 @@ onUnmounted(() => {
 .float-bar-leave-from {
   opacity: 1;
   transform: translateX(-50%) translateY(0) scale(1);
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  width: 100%;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-/* ── Spacing for workbench filter bar + toolbar ── */
-.filter-bar-spacing {
-  margin-top: 14px;
-}
-
-.toolbar-spacing {
-  margin-top: 10px;
 }
 
 @media (max-width: 1280px) {

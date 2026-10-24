@@ -20,7 +20,6 @@
   --surface-shadow-hover: 0 7px 22px rgba(52, 106, 148, 0.08);
   --on-primary: #ffffff;
   --on-danger: #ffffff;
-  --control-selection-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 24%, transparent);
 
   /* 布局：shell 只管理两块白色内容面的外边距、间隔和圆角。
      阅读页自己选择 content-padding 或 spacing-lg；填满型工作台保持零外层 padding，
@@ -80,8 +79,8 @@ html:root.dark {
   --el-fill-color-darker: #dce8f2;
   --el-text-color-primary: #243f55;
   --el-text-color-regular: #506c80;
-  --el-text-color-secondary: #667f93;
-  --el-text-color-placeholder: #8095a6;
+  --el-text-color-secondary: #5c7488;
+  --el-text-color-placeholder: #6a8092;
   --el-text-color-disabled: #a3b2bf;
   --el-border-color: #cfdfeb;
   --el-border-color-light: var(--surface-border);
@@ -96,6 +95,17 @@ html:root.dark {
   --color-heading: var(--el-text-color-primary);
   --color-border: var(--surface-border);
   --color-border-hover: var(--el-border-color-dark);
+
+  /* Light-theme primary keeps Element Plus's bright #409eff, the colour the
+   * workbench has always used. Tints are mixed with our card colour, not
+   * Element Plus's white or near-black, so each theme only sets its base. */
+  --el-color-primary: #409eff;
+  --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 70%, var(--surface-card));
+  --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 50%, var(--surface-card));
+  --el-color-primary-light-7: color-mix(in srgb, var(--el-color-primary) 30%, var(--surface-card));
+  --el-color-primary-light-8: color-mix(in srgb, var(--el-color-primary) 20%, var(--surface-card));
+  --el-color-primary-light-9: color-mix(in srgb, var(--el-color-primary) 10%, var(--surface-card));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--el-color-primary) 80%, black);
 }
 
 /* Dark surfaces stay neutral; accent colours are reserved for meaning and
@@ -111,8 +121,6 @@ html:root.dark {
   --surface-shadow: 0 3px 12px rgb(0 0 0 / 12%);
   --surface-shadow-hover: 0 8px 24px rgb(0 0 0 / 22%);
   --shadow-lg: 0 16px 40px rgb(0 0 0 / 36%);
-  --control-selection-shadow: none;
-  --group-filter-selected-bg: var(--el-color-primary-light-9);
   --on-primary: #112039;
   --on-danger: #35151e;
   --el-bg-color-overlay: #252e3b;
@@ -139,13 +147,8 @@ html:root.dark {
 
   /* Pale accents remain readable on dark surfaces. Solid primary controls
    * use on-primary ink; white text on these accents has too little contrast.
-   * Every tint is mixed with our card colour, not Element Plus's near-black. */
-  --el-color-primary: #8dbbff;
-  --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 70%, var(--surface-card));
-  --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 50%, var(--surface-card));
-  --el-color-primary-light-7: color-mix(in srgb, var(--el-color-primary) 30%, var(--surface-card));
-  --el-color-primary-light-8: color-mix(in srgb, var(--el-color-primary) 20%, var(--surface-card));
-  --el-color-primary-light-9: color-mix(in srgb, var(--el-color-primary) 10%, var(--surface-card));
+   * The shared light-* tints follow this base; dark-2 lightens instead. */
+  --el-color-primary: #79bbff;
   --el-color-primary-dark-2: color-mix(in srgb, var(--el-color-primary) 80%, white);
 
   --el-color-success: #83d5b3;

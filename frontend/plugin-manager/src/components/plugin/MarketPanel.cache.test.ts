@@ -4,7 +4,7 @@ import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import MarketPanel from './MarketPanel.vue'
 import { fetchBridge } from '@/api/marketBridge'
-import { fetchMarketPlugins } from '@/api/market'
+import { fetchMarketCatalog } from '@/api/market'
 
 const pluginState = reactive({
   registryRevision: 0,
@@ -16,6 +16,8 @@ vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginState }))
 vi.mock('@/stores/pluginUpdates', () => ({
   usePluginUpdatesStore: () => ({ completedUpgrades: 0, check: vi.fn() }),
 }))
+const userPref = reactive({ channel: 'stable' as 'stable' | 'beta' })
+vi.mock('@/stores/userPreference', () => ({ useUserPreferenceStore: () => userPref }))
 vi.mock('@/stores/marketInstallTask', () => ({
   useMarketInstallTaskStore: () => ({ running: false, owner: null, done: false }),
 }))
@@ -25,7 +27,7 @@ vi.mock('@/api/marketBridge', () => ({
   readErrorCode: vi.fn(),
 }))
 vi.mock('@/api/market', () => ({
-  fetchMarketPlugins: vi.fn(),
+  fetchMarketCatalog: vi.fn(),
   fetchMarketPluginVersions: vi.fn(async () => []),
   getMarketUrl: vi.fn(async () => 'https://market.example'),
   isMarketAvailable: vi.fn(async () => true),
@@ -35,28 +37,36 @@ vi.mock('@/composables/useGithubMirrorSource', () => ({
   useGithubMirrorSource: () => ({ resolveGithubDownloadUrl: vi.fn(), ensureAutoSource: vi.fn() }),
 }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+const workbench = vi.hoisted(() => ({ filterText: null as unknown as { value: string } }))
 vi.mock('@/composables/useMarketWorkbench', async () => {
   const { ref, computed } = await import('vue')
   return {
-    useMarketWorkbench: (plugins: { value: unknown[] }) => ({
-      filterText: ref(''),
-      selectedGroupIds: ref(['all']),
-      layoutMode: ref('compact'),
-      groupCounts: ref({}),
-      filteredItems: computed(() => plugins.value),
-    }),
+    useMarketWorkbench: (plugins: { value: { name: string }[] }) => {
+      const filterText = ref('')
+      workbench.filterText = filterText
+      return {
+        filterText,
+        selectedGroupIds: ref(['all']),
+        layoutMode: ref('compact'),
+        groupCounts: ref({}),
+        filteredItems: computed(() =>
+          plugins.value.filter((plugin) => plugin.name.includes(filterText.value))
+        ),
+      }
+    },
   }
 })
 vi.mock('@/components/common/GridSection.vue', async () => {
   const { defineComponent, h } = await import('vue')
   return {
     default: defineComponent({
-      props: ['items'],
+      props: ['items', 'count'],
       setup:
         (props, { slots }) =>
         () =>
           h(
             'div',
+            { 'data-testid': 'market-section', 'data-count': props.count },
             props.items.map((item: unknown) => slots.item?.({ item }))
           ),
     }),
@@ -69,6 +79,16 @@ vi.mock('@/components/plugin/MarketPluginCard.vue', async () => {
       props: ['installed', 'action'],
       setup: (props) => () =>
         h('span', { 'data-testid': 'market-action' }, `${props.installed}:${props.action.kind}`),
+    }),
+  }
+})
+vi.mock('@/components/common/EmptyState.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      props: ['description'],
+      setup: (props) => () =>
+        h('div', { 'data-testid': 'market-empty', 'data-description': props.description }),
     }),
   }
 })
@@ -116,16 +136,24 @@ function mount() {
     app.unmount()
     root.remove()
   }
-  return { active, action: () => root.querySelector('[data-testid="market-action"]')?.textContent }
+  return {
+    active,
+    action: () => root.querySelector('[data-testid="market-action"]')?.textContent,
+    cardCount: () => root.querySelectorAll('[data-testid="market-action"]').length,
+    sectionCount: () =>
+      root.querySelector('[data-testid="market-section"]')?.getAttribute('data-count'),
+    emptyDescription: () =>
+      root.querySelector('[data-testid="market-empty"]')?.getAttribute('data-description'),
+  }
 }
 beforeEach(() => {
   vi.clearAllMocks()
   pluginState.registryRevision = 0
   pluginState.pluginSummariesWithStatus = []
-  vi.mocked(fetchMarketPlugins).mockResolvedValue({
-    items: [{ id: '1', slug: 'demo', name: 'Demo', version: '2.0.0', has_release: true }],
-    total: 1,
-  } as never)
+  userPref.channel = 'stable'
+  vi.mocked(fetchMarketCatalog).mockResolvedValue([
+    { id: '1', slug: 'demo', name: 'Demo', version: '2.0.0', has_release: true },
+  ] as never)
   vi.mocked(fetchBridge).mockResolvedValue(response([installed]))
 })
 afterEach(() => {
@@ -148,7 +176,7 @@ describe('market installed state across a retained drawer', () => {
     await flush()
     expect(ui.action()).toBe('false:install')
     expect(fetchBridge).toHaveBeenCalledTimes(2)
-    expect(fetchMarketPlugins).toHaveBeenCalledTimes(1)
+    expect(fetchMarketCatalog).toHaveBeenCalledTimes(1)
   })
 
   it('retains its successful projection on a failed reopen and retries on the next reopen', async () => {
@@ -168,7 +196,7 @@ describe('market installed state across a retained drawer', () => {
     await flush()
     expect(ui.action()).toBe('false:install')
     expect(fetchBridge).toHaveBeenCalledTimes(3)
-    expect(fetchMarketPlugins).toHaveBeenCalledTimes(1)
+    expect(fetchMarketCatalog).toHaveBeenCalledTimes(1)
   })
 
   it('refreshes the active market after registry reconciliation', async () => {
@@ -179,5 +207,60 @@ describe('market installed state across a retained drawer', () => {
     await flush()
     expect(ui.action()).toBe('false:install')
     expect(fetchBridge).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('market pagination', () => {
+  it('pages the filtered catalog instead of filtering each catalog page', async () => {
+    // 匹配项全部排在目录末尾：按页过滤时第一页会是空的
+    const catalog = Array.from({ length: 30 }, (_, i) => ({
+      id: String(i),
+      slug: `plugin-${i}`,
+      name: i >= 20 ? `match-${i}` : `other-${i}`,
+      version: '1.0.0',
+      has_release: true,
+    }))
+    vi.mocked(fetchMarketCatalog).mockResolvedValue(catalog as never)
+    const ui = mount()
+    await flush()
+    expect(ui.cardCount()).toBe(12)
+    expect(ui.sectionCount()).toBe('30')
+
+    workbench.filterText.value = 'match-'
+    await flush()
+    expect(ui.cardCount()).toBe(10)
+    expect(ui.sectionCount()).toBe('10')
+    expect(fetchMarketCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the old channel catalog while the new one loads', async () => {
+    const ui = mount()
+    await flush()
+    expect(ui.cardCount()).toBe(1)
+
+    let resolveCatalog: (value: unknown) => void = () => {}
+    vi.mocked(fetchMarketCatalog).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCatalog = resolve
+      }) as never
+    )
+    userPref.channel = 'beta'
+    await flush()
+    expect(fetchMarketCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'beta' }))
+    expect(ui.cardCount()).toBe(0)
+
+    resolveCatalog([{ id: '2', slug: 'beta-demo', name: 'Beta', version: '2.0.0', has_release: true }])
+    await flush()
+    expect(ui.cardCount()).toBe(1)
+  })
+
+  it('shows the retry state when a channel refresh fails', async () => {
+    const ui = mount()
+    await flush()
+    vi.mocked(fetchMarketCatalog).mockResolvedValueOnce(null)
+    userPref.channel = 'beta'
+    await flush()
+    expect(ui.cardCount()).toBe(0)
+    expect(ui.emptyDescription()).toBe('market.loadFailed')
   })
 })

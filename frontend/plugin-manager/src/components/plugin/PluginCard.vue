@@ -5,59 +5,63 @@
     @click="$emit('click')"
     @contextmenu.prevent="$emit('contextmenu', $event)"
   >
-    <header class="plugin-card-header">
-      <div class="plugin-heading">
-        <h3 class="plugin-name">
-          <button
-            type="button"
-            class="plugin-name__button"
-            data-testid="plugin-details-button"
-            @click.stop="$emit('click')"
-          >{{ displayText.name }}</button>
-        </h3>
-        <span
-          v-if="showIdentity"
-          class="plugin-identity"
-          data-testid="plugin-identity"
-        >ID: {{ plugin.id }}</span>
-      </div>
-      <div class="plugin-statuses">
-        <StatusIndicator :status="plugin.status || 'stopped'" />
-        <PluginAutoStartBadge v-if="plugin.autoStart === true" />
-      </div>
-    </header>
+    <div class="plugin-card__surface" data-reflow="surface" aria-hidden="true" />
+    <div class="plugin-card__content" data-reflow="content">
+      <header class="plugin-card-header">
+        <div class="plugin-heading">
+          <h3 class="plugin-name">
+            <button
+              type="button"
+              class="plugin-name__button"
+              data-testid="plugin-details-button"
+              @click.stop="$emit('click')"
+            >{{ displayText.name }}</button>
+          </h3>
+          <span
+            v-if="showIdentity"
+            class="plugin-identity"
+            data-testid="plugin-identity"
+          >ID: {{ plugin.id }}</span>
+        </div>
+        <div class="plugin-statuses">
+          <StatusIndicator :status="plugin.status || 'stopped'" />
+          <PluginAutoStartBadge v-if="plugin.autoStart === true" />
+        </div>
+      </header>
 
-    <div class="plugin-card-body">
-      <p class="plugin-description">{{ displayText.description || t('common.noData') }}</p>
-      <PluginMetricsInline
-        v-if="showMetrics"
-        :plugin-id="plugin.id"
-        :plugin-status="plugin.status || 'stopped'"
-      />
-      <SourceDetailRow
-        v-if="showSourceDetail"
-        :install-source="plugin.install_source"
-        :latest-version="latestVersion"
-      />
+      <div class="plugin-card-body">
+        <p class="plugin-description">{{ displayText.description || t('common.noData') }}</p>
+        <PluginMetricsInline
+          v-if="showMetrics"
+          :plugin-id="plugin.id"
+          :plugin-status="plugin.status || 'stopped'"
+        />
+        <SourceDetailRow
+          v-if="showSourceDetail"
+          :install-source="plugin.install_source"
+          :latest-version="latestVersion"
+        />
+      </div>
+
+      <footer class="plugin-card-footer" data-reflow="bottom">
+        <div class="plugin-card-footer__main">
+          <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
+            <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
+          </el-tag>
+          <SourceTag :source="plugin.install_source?.source" :has-update="hasUpdate" compact />
+        </div>
+        <el-button
+          v-if="availableUiAction"
+          data-testid="plugin-open-ui"
+          data-reflow="end"
+          class="plugin-ui-action"
+          size="small"
+          type="primary"
+          plain
+          @click.stop="$emit('open-ui', availableUiAction)"
+        >{{ t('plugins.ui.open') }}</el-button>
+      </footer>
     </div>
-
-    <footer class="plugin-card-footer">
-      <div class="plugin-card-footer__main">
-        <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
-          <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
-        </el-tag>
-        <SourceTag :source="plugin.install_source?.source" :has-update="hasUpdate" compact />
-      </div>
-      <el-button
-        v-if="availableUiAction"
-        data-testid="plugin-open-ui"
-        class="plugin-ui-action"
-        size="small"
-        type="primary"
-        plain
-        @click.stop="$emit('open-ui', availableUiAction)"
-      >{{ t('plugins.ui.open') }}</el-button>
-    </footer>
   </article>
 </template>
 
@@ -135,21 +139,47 @@ const hasUpdate = computed<boolean>(() => {
 </script>
 
 <style scoped>
+/* Two stacked layers on the same box, so a grid reflow can stretch the card
+ * without squashing its text (see motion/grid.ts): the surface paints the
+ * border, fill and shadow; the content repaints the fill inside the border
+ * (so contrast resolves against its own ancestors) and lays out the text. */
 .plugin-card {
   --plugin-card-control-height: 22px;
+  --plugin-card-radius: var(--plugin-entry-radius, var(--radius-card));
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
   gap: 0;
   min-width: 0;
   cursor: pointer;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--plugin-entry-radius, var(--radius-card));
-  background: var(--surface-card);
+  transition: transform var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.plugin-card__surface,
+.plugin-card__content {
+  grid-area: 1 / 1 / -1 / -1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: var(--plugin-card-radius);
+  background: var(--surface-card) padding-box;
+  transition: background-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.plugin-card__surface {
+  border-color: var(--surface-border);
   box-shadow: var(--surface-shadow);
+  transform-origin: 0 0;
   transition:
-    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
     box-shadow var(--motion-duration-normal) var(--motion-ease-standard),
     border-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+/* Positioned so it stays above the surface while the surface is transformed. */
+.plugin-card__content {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
 }
 
 /* Three tracks: header (name + state), body, footer.
@@ -159,16 +189,23 @@ const hasUpdate = computed<boolean>(() => {
     grid-row: 1 / -1;
     grid-template-rows: subgrid;
   }
+
+  .plugin-card__content {
+    grid-template-rows: subgrid;
+  }
 }
 
 .plugin-card:hover {
   transform: translateY(-2px);
+}
+
+.plugin-card:hover .plugin-card__surface {
   border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
   box-shadow: var(--surface-shadow-hover);
 }
 
-.plugin-card--selected,
-.plugin-card--selected:hover {
+.plugin-card--selected .plugin-card__surface,
+.plugin-card--selected:hover .plugin-card__surface {
   border-color: var(--el-color-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
@@ -219,7 +256,7 @@ const hasUpdate = computed<boolean>(() => {
   outline-offset: 3px;
 }
 
-.plugin-card:focus-within {
+.plugin-card:focus-within .plugin-card__surface {
   border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
 }
 
@@ -353,6 +390,7 @@ const hasUpdate = computed<boolean>(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .plugin-card,
+  .plugin-card__surface,
   .plugin-ui-action {
     transition: none;
   }

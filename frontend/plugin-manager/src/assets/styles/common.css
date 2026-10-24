@@ -100,6 +100,85 @@ html.dark .el-checkbox-button {
   --el-checkbox-button-checked-border-color: var(--el-color-primary-light-5);
 }
 
+/* Workbench segmented controls (group filter, layout switcher): an inset track
+ * holds borderless options; the selected option is a solid primary pill. */
+.wb-segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-inset);
+  border: 1px solid var(--el-border-color-dark);
+  border-radius: var(--radius-control);
+  --wb-seg-on-bg: var(--el-color-primary);
+  --wb-seg-on-border: var(--el-color-primary);
+  --wb-seg-on-ink: var(--on-primary);
+  --wb-seg-on-weight: 600;
+}
+
+/* Everything selected is the unfiltered default: checked groups render as
+ * plain options so the row doesn't read as a bar of highlighted chips. Set on
+ * the items so it overrides whatever the theme gives the group. */
+.wb-segmented--all-selected .el-checkbox-button {
+  --wb-seg-on-bg: transparent;
+  --wb-seg-on-border: transparent;
+  --wb-seg-on-ink: var(--el-text-color-regular);
+  --wb-seg-on-weight: 500;
+}
+
+/* Each selector below is more specific than the Element Plus state rule it
+ * replaces, because Element's stylesheets may load after this one. Element
+ * otherwise outlines every segment, adds joining left borders and a -1px
+ * shadow to checked ones, and keeps a border on a clicked checkbox
+ * (.is-focus) after it is unchecked. */
+.wb-segmented:is(.el-radio-group, .el-checkbox-group)
+  :is(.el-radio-button, .el-checkbox-button) > :is(.el-radio-button__inner, .el-checkbox-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard),
+    color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.wb-segmented:is(.el-radio-group, .el-checkbox-group)
+  :is(.el-radio-button, .el-checkbox-button) > :is(.el-radio-button__inner, .el-checkbox-button__inner):hover {
+  color: var(--el-color-primary);
+}
+
+.wb-segmented .el-radio-button.is-active .el-radio-button__original-radio:not(:disabled) + .el-radio-button__inner,
+.wb-segmented.el-checkbox-group .el-checkbox-button.is-checked > .el-checkbox-button__inner {
+  border-color: var(--wb-seg-on-border);
+  box-shadow: none;
+  background: var(--wb-seg-on-bg);
+  color: var(--wb-seg-on-ink);
+  font-weight: var(--wb-seg-on-weight);
+}
+
+.wb-segmented:is(.el-radio-group, .el-checkbox-group)
+  :is(.el-radio-button__original-radio, .el-checkbox-button__original):focus-visible
+  + :is(.el-radio-button__inner, .el-checkbox-button__inner) {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-segmented:is(.el-radio-group, .el-checkbox-group)
+    :is(.el-radio-button, .el-checkbox-button) > :is(.el-radio-button__inner, .el-checkbox-button__inner) {
+    transition: none;
+  }
+}
+
 html.dark .el-checkbox {
   --el-checkbox-checked-icon-color: var(--on-primary);
 }

@@ -89,14 +89,17 @@ async function isolateAppearanceApis(page: Page) {
   return unexpectedRequests
 }
 
-const appearanceTest = test.extend<{ isolateNetwork: void }>({
+// The only writer of the stored locale: init scripts run in no guaranteed
+// order, so a test needing another locale overrides this option instead.
+const appearanceTest = test.extend<{ appLocale: string; isolateNetwork: void }>({
+  appLocale: ['en-US', { option: true }],
   isolateNetwork: [
-    async ({ page }, use) => {
+    async ({ page, appLocale }, use) => {
       const requests = await isolateAppearanceApis(page)
-      await page.addInitScript(() => {
-        window.localStorage.setItem('locale', 'en-US')
+      await page.addInitScript(locale => {
+        window.localStorage.setItem('locale', locale)
         window.localStorage.setItem('neko-dark-mode', 'false')
-      })
+      }, appLocale)
       await use()
       expect(requests, 'all HTTP requests must use explicit fixtures').toEqual([])
     },
@@ -331,6 +334,38 @@ appearanceTest(
   }
 )
 
+test.describe('sidebar zh-CN label rendering', () => {
+  appearanceTest.use({ appLocale: 'zh-CN' })
+  appearanceTest('sidebar icons move only horizontally while the sidebar collapses and expands', async ({ page }) => {
+    // CJK labels have a taller line box than the 20px icon, which used to set the row height.
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+    // The adapter link arrives with the plugin list; sample only once every row is in place.
+    await expect(page.locator('.sidebar').getByRole('button', { name: ADAPTER_NAME, exact: true })).toBeVisible()
+    const sampleIconTops = (toggleLabel: RegExp) =>
+      page.evaluate(async (label) => {
+        const tops = () =>
+          [...document.querySelectorAll('.nav-item__icon')].map((icon) => icon.getBoundingClientRect().top)
+        const before = tops()
+        const toggle = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find((button) =>
+          new RegExp(label).test(button.getAttribute('aria-label')!)
+        )!
+        toggle.click()
+        const frames: number[][] = []
+        const start = performance.now()
+        while (performance.now() - start < 600) {
+          await new Promise(requestAnimationFrame)
+          frames.push(tops())
+        }
+        return { before, frames }
+      }, toggleLabel.source)
+    for (const label of [/收起/, /展开/]) {
+      const { before, frames } = await sampleIconTops(label)
+      for (const frame of frames) expect(frame).toEqual(before)
+    }
+  })
+})
+
 // Exercise the production card/grid with short-only and mixed-content rows.
 async function installCardLayoutFixture(page: Page, count = 8) {
   const plugins = Array.from({ length: count }, (_, index) => ({
@@ -389,14 +424,15 @@ async function expectOrderedCards(page: Page) {
     const bottomInsets: number[] = []
     for (const card of cards) {
       const name = card.querySelector('.plugin-name')?.textContent?.trim() || '?'
-      const sections = Array.from(card.children, child => child.className.split(' ')[0])
-      if (sections.join() !== 'plugin-card-header,plugin-card-body,plugin-card-footer') {
+      const content = card.querySelector(':scope > .plugin-card__content')
+      const sections = Array.from(content?.children ?? [], child => child.className.split(' ')[0])
+      if (!content || sections.join() !== 'plugin-card-header,plugin-card-body,plugin-card-footer') {
         issues.push(`${name}: sections are ${sections.join()}`)
         continue
       }
-      const [header, body] = Array.from(card.children, child => child.getBoundingClientRect())
+      const [header, body] = Array.from(content.children, child => child.getBoundingClientRect())
       const box = card.getBoundingClientRect()
-      const controls = Array.from(card.lastElementChild!.querySelectorAll(
+      const controls = Array.from(content.lastElementChild!.querySelectorAll(
         '.plugin-version-tag, .source-tag, [data-testid="plugin-open-ui"]'
       )).filter(visible).map(element => element.getBoundingClientRect())
       if (!controls.length) {
@@ -448,49 +484,102 @@ for (const scenario of [
   { width: 1440, zoom: 1, fontSize: 16, locale: 'zh-CN' },
   { width: 960, zoom: 1, fontSize: 24, locale: 'zh-CN' },
 ]) {
-  appearanceTest(`cards stay ordered at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`, async ({ page }) => {
-    await installCardLayoutFixture(page)
-    await page.addInitScript(locale => localStorage.setItem('locale', locale), scenario.locale)
-    await page.emulateMedia({ reducedMotion: 'reduce' })
-    await page.setViewportSize({ width: scenario.width, height: 1000 })
-    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
-    await expect(page.locator('.plugin-card')).toHaveCount(8)
-    await page.evaluate(({ zoom, fontSize }) => {
-      document.documentElement.style.zoom = String(zoom)
-      document.documentElement.style.fontSize = `${fontSize}px`
-    }, scenario)
-    await expectOrderedCards(page)
-    await expect(page.locator('.plugin-start-mode')).toHaveCount(4)
-    await expect(page.locator('.plugin-start-mode svg[aria-hidden="true"]')).toHaveCount(4)
-    await expect(page.locator('.plugin-entries')).toHaveCount(0)
-    await expect(page.locator('.plugin-workbench')).not.toContainText(scenario.locale === 'zh-CN' ? '手动启动' : /manual start/i)
-    const first = page.locator('.plugin-card').first()
-    // Short-only rows must not reserve an imaginary second title line.
-    const gap = await first.evaluate(card => {
-      const title = card.querySelector('.plugin-name')!.getBoundingClientRect()
-      const states = card.querySelector('.plugin-statuses')!
-      const contentTop = Math.min(...Array.from(states.children, child => child.getBoundingClientRect().top))
-      return contentTop - title.bottom
+  const name = `cards stay ordered at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`
+  test.describe(name, () => {
+    appearanceTest.use({ appLocale: scenario.locale })
+    appearanceTest(name, async ({ page }) => {
+      await installCardLayoutFixture(page)
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await page.setViewportSize({ width: scenario.width, height: 1000 })
+      await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+      await expect(page.locator('.plugin-card')).toHaveCount(8)
+      await page.evaluate(({ zoom, fontSize }) => {
+        document.documentElement.style.zoom = String(zoom)
+        document.documentElement.style.fontSize = `${fontSize}px`
+      }, scenario)
+      await expectOrderedCards(page)
+      await expect(page.locator('.plugin-start-mode')).toHaveCount(4)
+      await expect(page.locator('.plugin-start-mode svg[aria-hidden="true"]')).toHaveCount(4)
+      await expect(page.locator('.plugin-entries')).toHaveCount(0)
+      await expect(page.locator('.plugin-workbench')).not.toContainText(scenario.locale === 'zh-CN' ? '手动启动' : /manual start/i)
+      const first = page.locator('.plugin-card').first()
+      // Short-only rows must not reserve an imaginary second title line.
+      const gap = await first.evaluate(card => {
+        const title = card.querySelector('.plugin-name')!.getBoundingClientRect()
+        const states = card.querySelector('.plugin-statuses')!
+        const contentTop = Math.min(...Array.from(states.children, child => child.getBoundingClientRect().top))
+        return contentTop - title.bottom
+      })
+      expect(gap).toBeGreaterThanOrEqual(7 * scenario.zoom)
+      expect(gap).toBeLessThanOrEqual(9 * scenario.zoom)
+      await expect(first.locator('footer [data-testid="plugin-open-ui"]')).toBeVisible()
+      expect(await page.locator('.plugin-card').evaluateAll(cards => cards.every(card => {
+        const box = card.getBoundingClientRect()
+        return card.scrollWidth <= card.clientWidth + 1 &&
+          [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-version-tag, .plugin-ui-action')]
+            .every(element => {
+              const bounds = element.getBoundingClientRect()
+              return bounds.left >= box.left && bounds.right <= box.right + 1 &&
+                element.scrollWidth <= element.clientWidth + 1
+            })
+      }))).toBe(true)
+      await page.locator('[data-yui-guide-id="plugin-list-multi-select"]').click()
+      await expect(page.locator('.grid-section__select')).toHaveCount(8)
+      await page.locator('.grid-section__select').first().click()
+      await expect(page.locator('.grid-section__select').first()).toHaveAttribute('aria-pressed', 'true')
     })
-    expect(gap).toBeGreaterThanOrEqual(7 * scenario.zoom)
-    expect(gap).toBeLessThanOrEqual(9 * scenario.zoom)
-    await expect(first.locator('footer [data-testid="plugin-open-ui"]')).toBeVisible()
-    expect(await page.locator('.plugin-card').evaluateAll(cards => cards.every(card => {
-      const box = card.getBoundingClientRect()
-      return card.scrollWidth <= card.clientWidth + 1 &&
-        [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-version-tag, .plugin-ui-action')]
-          .every(element => {
-            const bounds = element.getBoundingClientRect()
-            return bounds.left >= box.left && bounds.right <= box.right + 1 &&
-              element.scrollWidth <= element.clientWidth + 1
-          })
-    }))).toBe(true)
-    await page.locator('[data-yui-guide-id="plugin-list-multi-select"]').click()
-    await expect(page.locator('.grid-section__select')).toHaveCount(8)
-    await page.locator('.grid-section__select').first().click()
-    await expect(page.locator('.grid-section__select').first()).toHaveAttribute('aria-pressed', 'true')
   })
 }
+
+appearanceTest('workbench header keeps one action row and collapses labels when narrow', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  // 英文带文字的按钮行约 1202px；侧边栏展开时 1600px 视口给头部留出约 1304px。
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  await page.route('**/plugin/metrics/**', route => route.fulfill({ json: { metrics: null } }))
+  // Keep the boot update popup from covering the header actions.
+  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
+    route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
+  )
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+
+  const header = page.locator('.workbench-header')
+  const actions = page.getByTestId('plugin-list-header-actions')
+  // 控件高度不一、按中线对齐，所以按竖直中点判断是否同一行。
+  const rowCenters = () => header.evaluate(element => [
+    ...element.querySelectorAll('.workbench-header__market > *, .header-actions > .el-button, .header-actions > .el-dropdown'),
+  ].map(child => {
+    const rect = child.getBoundingClientRect()
+    return `${child.className.toString().split(' ')[0]}:${Math.round(rect.top + rect.height / 2)}`
+  }))
+  const centers = await rowCenters()
+  expect(new Set(centers.map(entry => entry.split(':')[1])).size, centers.join(' ')).toBe(1)
+  await expect(actions.locator('.el-button--primary:not(.is-plain)')).toHaveCount(1)
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]')).toHaveClass(/el-button--primary/)
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-package-panel-toggle"]')).toContainText('Package')
+
+  const moreActions = page.getByTestId('plugin-list-more-actions')
+  await expect(moreActions).toHaveAccessibleName('More')
+  await moreActions.click()
+  const metricsItem = page.locator('[data-yui-guide-id="plugin-list-metrics-toggle"]')
+  await expect(metricsItem).toHaveAccessibleName('Show Metrics')
+  await expect(metricsItem.locator('.header-more-menu__check')).not.toHaveClass(/is-checked/)
+  await metricsItem.click()
+  await moreActions.click()
+  await expect(metricsItem).toHaveAccessibleName('Hide Metrics')
+  await expect(metricsItem.locator('.header-more-menu__check')).toHaveClass(/is-checked/)
+  await page.keyboard.press('Escape')
+
+  await page.setViewportSize({ width: 800, height: 1000 })
+  await expect(header).toHaveClass(/workbench-header--compact/)
+  const packageToggle = actions.locator('[data-yui-guide-id="plugin-list-package-panel-toggle"]')
+  await expect(packageToggle).not.toContainText('Package')
+  await expect(packageToggle).toHaveAccessibleName('Package Manager')
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-refresh"]')).toHaveAccessibleName('Refresh')
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]')).toContainText('Import')
+  expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+})
 
 appearanceTest('card extras, themes and layout switches preserve aligned, reachable content', async ({ page }) => {
   await installCardLayoutFixture(page)
@@ -503,7 +592,12 @@ appearanceTest('card extras, themes and layout switches preserve aligned, reacha
   } } }))
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
   await expect(page.locator('.plugin-card')).toHaveCount(8)
+  // 夹具带有可更新版本，启动时会弹出更新浮窗并盖住头部操作。
+  await page.locator('.update-float__icon-btn[title="Close"]').click()
+  const moreActions = page.getByTestId('plugin-list-more-actions')
+  await moreActions.click()
   await page.locator('[data-yui-guide-id="plugin-list-metrics-toggle"]').click()
+  await moreActions.click()
   await page.locator('[data-yui-guide-id="plugin-list-source-toggle"]').click()
   await expect(page.locator('.plugin-card .metrics-bar')).toHaveCount(8)
   await expect(page.locator('.plugin-card').first().locator('.metrics-bar')).toContainText('3.5%')
@@ -555,7 +649,7 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
   await expect(page.locator('.plugin-card')).toHaveCount(8)
   const palette = () => page.evaluate(() => {
-    const selectors = ['.app-shell', '.app-body', '.plugin-card', '.wb-filter-bar', '.plugin-description']
+    const selectors = ['.app-shell', '.app-body', '.plugin-card__surface', '.wb-filter-bar', '.plugin-description']
     return selectors.map(selector => {
       const style = getComputedStyle(document.querySelector(selector)!)
       return [style.backgroundColor, style.color]
@@ -638,4 +732,41 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await expect(page.locator('html')).not.toHaveClass(/dark/)
   await page.mouse.move(0, 0)
   await expect.poll(palette).toEqual(lightPalette)
+})
+
+appearanceTest('segmented controls frame only the selection and keep a keyboard focus ring', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1600, height: 900 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+  // Framed segments, and segments drawing an outline, as text labels.
+  const marked = () => page.evaluate(() => {
+    const items = [...document.querySelectorAll('.wb-segmented :is(.el-radio-button, .el-checkbox-button)')]
+    const inner = (item: Element) => getComputedStyle(item.querySelector(':is(.el-radio-button__inner, .el-checkbox-button__inner)')!)
+    const label = (item: Element) => item.textContent!.replace(/\s+/g, ' ').trim()
+    return {
+      framed: items.filter(item => inner(item).borderTopColor !== 'rgba(0, 0, 0, 0)').map(label),
+      outlined: items.filter(item => inner(item).outlineStyle !== 'none').map(label),
+    }
+  })
+  const groups = page.locator('.wb-group-filter .el-checkbox-button')
+  const pluginGroup = (await groups.nth(0).textContent())!.replace(/\s+/g, ' ').trim()
+  const compact = (await page.locator('.wb-layout-switcher .el-radio-button.is-active').textContent())!.trim()
+
+  // Every group selected reads as "no filter", so only the layout is framed.
+  await expect.poll(marked).toEqual({ framed: [compact], outlined: [] })
+
+  // A mouse click leaves Element's .is-focus behind; it must not draw a frame.
+  await groups.nth(1).click()
+  await page.mouse.move(0, 0)
+  await expect.poll(marked).toEqual({ framed: [pluginGroup, compact], outlined: [] })
+  await groups.nth(1).click()
+  await page.mouse.move(0, 0)
+  await expect.poll(marked).toEqual({ framed: [compact], outlined: [] })
+
+  await page.locator('.wb-layout-switcher .el-radio-button__original-radio').last().focus()
+  await page.keyboard.press('ArrowLeft')
+  const focused = (await page.locator('.wb-layout-switcher .el-radio-button.is-active').textContent())!.trim()
+  await expect.poll(marked).toEqual({ framed: [focused], outlined: [focused] })
 })
