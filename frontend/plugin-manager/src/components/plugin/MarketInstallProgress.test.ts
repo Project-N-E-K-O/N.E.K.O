@@ -310,6 +310,18 @@ describe('market install progress', () => {
     expect(mount({ showCancel: true }).querySelector('[data-yui-guide-id="market-install-cancel"]')).toBeNull()
   })
 
+  it('shows the route the backend is actually downloading from', () => {
+    makeStore({ task: {
+      task_id: 't', status: 'downloading', stage: 'download', active_sources: ['cdn-gh-proxy-org'],
+    } })
+    const root = mount()
+    expect(root.querySelector('[data-download-sources]')?.textContent).toContain('https://cdn.gh-proxy.org/')
+
+    cleanup()
+    makeStore({ task: { task_id: 't', status: 'installing', stage: 'install', active_sources: ['cdn-gh-proxy-org'] } })
+    expect(mount().querySelector('[data-download-sources]')).toBeNull()
+  })
+
   it('surfaces overtime and rollback outcomes', () => {
     makeStore({ overtime: true })
     let root = mount()
