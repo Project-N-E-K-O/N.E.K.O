@@ -288,10 +288,7 @@ import { usePluginStore } from '@/stores/plugin'
 import { useMarketInstalledStore } from '@/stores/marketInstalled'
 import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import { useUserPreferenceStore } from '@/stores/userPreference'
-import {
-  isGithubReleaseDownloadUrl,
-  useGithubMirrorSource,
-} from '@/composables/useGithubMirrorSource'
+import { useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 import {
@@ -345,7 +342,7 @@ const pageSize = props.embedded ? 8 : 12
 const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
-const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
+const { ensureDownloadPreferences } = useGithubMirrorSource()
 // Install requests keep a rejected fetch as an exception: `handleInstall`
 // opens the package URL as the manual fallback from its catch, and a `null`
 // here would be misreported as "pairing required".
@@ -866,7 +863,7 @@ async function resolveInstallPayload(
   let payloadHash: string | null = null
   let version = plugin.version
   let channel: string | null = plugin.latest_channel || null
-  let publishedAt: string | null = plugin.latest_published_at || null
+  const publishedAt: string | null = plugin.latest_published_at || null
 
   try {
     const versions = await fetchMarketPluginVersions(plugin.rawId, {
@@ -928,14 +925,13 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
     }
 
     installingId.value = plugin.id
-    if (isGithubReleaseDownloadUrl(payload.package_url)) {
-      try {
-        await ensureAutoSource()
-      } catch {
-        ElMessage.warning(t('mirrorSource.installFallback'))
-      }
+    try {
+      await ensureDownloadPreferences()
+    } catch {
+      ElMessage.error(t('mirrorSource.saveFailed'))
+      return
     }
-    packageUrl = resolveGithubDownloadUrl(payload.package_url)
+    packageUrl = payload.package_url
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1026,14 +1022,13 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     }
 
     upgradingId.value = plugin.id
-    if (isGithubReleaseDownloadUrl(payload.package_url)) {
-      try {
-        await ensureAutoSource()
-      } catch {
-        ElMessage.warning(t('mirrorSource.installFallback'))
-      }
+    try {
+      await ensureDownloadPreferences()
+    } catch {
+      ElMessage.error(t('mirrorSource.saveFailed'))
+      return
     }
-    const packageUrl = resolveGithubDownloadUrl(payload.package_url)
+    const packageUrl = payload.package_url
     const installRequest: Record<string, unknown> = {
       package_url: packageUrl,
       canonical_package_url: payload.package_url,

@@ -87,7 +87,9 @@ type Route = { status: number; body: unknown }
 
 function mockFetch(handler: (url: string, init?: RequestInit) => Route | undefined) {
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const route = handler(String(input), init) ?? { status: 404, body: {} }
+    const route = handler(String(input), init) ?? (String(input).startsWith('/market/download-preferences')
+      ? { status: 200, body: { mode: 'auto', specified_source_id: 'gh-proxy-com', ...(init?.body ? JSON.parse(String(init.body)) : {}), configured: true } }
+      : { status: 404, body: {} })
     return new Response(JSON.stringify(route.body), { status: route.status })
   })
   vi.stubGlobal('fetch', fn)
@@ -720,7 +722,7 @@ describe('plugin updates store — upgrade', () => {
     expect(store.candidates[0]!.errorKey).toBeNull()
   })
 
-  it('routes a GitHub release package through the configured mirror', async () => {
+  it('delegates the canonical release to the saved backend policy', async () => {
     const githubUrl = 'https://github.com/neko/alpha/releases/download/v1.1.0/alpha.neko-plugin'
     vi.mocked(fetchMarketPluginVersions).mockResolvedValue([
       { ...release('1.1.0'), package_url: githubUrl },
@@ -740,17 +742,17 @@ describe('plugin updates store — upgrade', () => {
       const store = await seedOneCandidate()
       await expect(store.updateOne('alpha')).resolves.toBe(true)
 
-      // Regression guard: the popup used to submit the canonical GitHub URL,
-      // which fails wherever GitHub itself is unreachable.
+      // URL selection belongs to the backend, including external installs.
       expect(installBodies(fetchMock)).toEqual([
         expect.objectContaining({
-          package_url: `https://gh-proxy.com/${githubUrl}`,
+          package_url: githubUrl,
           canonical_package_url: githubUrl,
         }),
       ])
     } finally {
       mirror.setMode(previousMode)
       mirror.setSpecifiedSourceId(previousSource)
+      await mirror.ensureDownloadPreferences()
     }
   })
 

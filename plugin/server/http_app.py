@@ -233,6 +233,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         from plugin.server.routes.model_gateway import close_model_executor
 
         await close_model_executor(app)
+        from plugin.server.infrastructure.package_download import aclose_package_http_client
+
+        await aclose_package_http_client()
         stop_event.set()
         heartbeat_task.cancel()
         try:

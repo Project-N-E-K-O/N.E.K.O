@@ -25,6 +25,10 @@
       </span>
     </div>
 
+    <p v-if="downloadSources" class="install-progress__status" data-download-sources>
+      {{ downloadSources }}
+    </p>
+
     <p v-if="statusText" class="install-progress__status" :class="statusTone">
       {{ statusText }}
     </p>
@@ -128,6 +132,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowDown, ArrowUp, Check, CloseBold, Loading, Remove } from '@element-plus/icons-vue'
 
+import { GITHUB_PROXY_SOURCES } from '@/composables/useGithubMirrorSource'
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 import { normalizePluginInstallErrorCode, pluginPackageSizeDetails } from '@/utils/pluginInstallError'
 
@@ -150,6 +155,21 @@ const emit = defineEmits<{ cancel: [] }>()
 
 const { t } = useI18n()
 const store = useMarketInstallTaskStore()
+
+function downloadSourceLabel(sourceId: string): string {
+  if (sourceId === 'github-direct') return t('mirrorSource.direct')
+  return GITHUB_PROXY_SOURCES.find((source) => source.id === sourceId)?.label ?? sourceId
+}
+
+/** The routes the backend is actually using, which may differ from the saved preference. */
+const downloadSources = computed(() => {
+  const task = store.task
+  if (task?.stage !== 'download' || !task.active_sources?.length) return ''
+  return t('mirrorSource.actualSources', {
+    sources: task.active_sources.map(downloadSourceLabel).join(', '),
+  })
+})
+
 const sizeExceeded = computed(() => store.task?.status === 'failed'
   && normalizePluginInstallErrorCode(store.task.error_code) === 'package_size_exceeded')
 const sizeDetails = computed(() => pluginPackageSizeDetails(store.task?.error_details))

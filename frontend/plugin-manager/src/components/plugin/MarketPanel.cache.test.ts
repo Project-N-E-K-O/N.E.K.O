@@ -31,8 +31,7 @@ vi.mock('@/api/market', () => ({
   isMarketAvailable: vi.fn(async () => true),
 }))
 vi.mock('@/composables/useGithubMirrorSource', () => ({
-  isGithubReleaseDownloadUrl: vi.fn(),
-  useGithubMirrorSource: () => ({ resolveGithubDownloadUrl: vi.fn(), ensureAutoSource: vi.fn() }),
+  useGithubMirrorSource: () => ({ ensureDownloadPreferences: vi.fn() }),
 }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/composables/useMarketWorkbench', async () => {
