@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="feedbackDevices.title">Recommendation history devices</title>
+<script src="/static/i18n-i18next.js"></script>
+<style>body{font:16px system-ui,sans-serif;background:#eef8ff;color:#183b55;margin:0}main{max-width:680px;margin:32px auto;padding:24px;background:white;border-radius:20px}button,input,select{font:inherit;padding:10px;margin:6px 0}button{cursor:pointer}input,select{box-sizing:border-box;width:100%}button:disabled{cursor:default;opacity:.5}li{padding:12px 0;border-bottom:1px solid #ddeaf3;list-style:none}ul{padding:0}label{display:block}#status{min-height:1.5em}aside{padding:16px;background:#fff4dd;border-radius:12px}[hidden]{display:none!important}@media(max-width:720px){main{margin:12px;padding:20px}}</style>
+<script src="/static/feedback-devices.js" defer></script></head><body><main>
+<h1 data-i18n="feedbackDevices.title">Recommendation history devices</h1>
+<p data-i18n="feedbackDevices.description">Manage recommendation history uploads. Listening and recommendations keep working.</p>
+<p id="status" role="status" aria-live="polite"></p>
+<aside id="upgrade" hidden><p data-i18n="feedbackDevices.upgrade">Update the desktop app to resume history uploads. Normal use is unaffected.</p><a href="https://github.com/Project-N-E-K-O/N.E.K.O/releases" target="_blank" rel="noopener noreferrer" data-i18n="feedbackDevices.update">Get the update</a></aside>
+<button id="refresh" type="button" data-i18n="feedbackDevices.refresh">Refresh</button>
+<section id="device-controls"><label for="device-name" data-i18n="feedbackDevices.name">Device name (optional)</label><input id="device-name" maxlength="64" autocomplete="off">
+<div id="replacement" hidden><label for="replacement-id" data-i18n="feedbackDevices.chooseReplacement">Five devices are enabled. Choose which old device to replace.</label><select id="replacement-id"></select></div>
+<button id="activate" type="button" data-i18n="feedbackDevices.enable">Enable this device</button>
+<p data-i18n="feedbackDevices.removalNote">Removing a device stops its uploads. Its current settings stay unchanged. It must be enabled manually to join again.</p>
+<ul id="devices"></ul></section></main></body></html>

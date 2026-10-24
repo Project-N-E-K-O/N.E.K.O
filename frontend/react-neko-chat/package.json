@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run && npm run test:music",
-    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs ../../tests/frontend/music_recommendations.test.cjs ../../tests/frontend/recommendation_countdown.test.cjs ../../tests/frontend/proactive_recommendations.test.cjs ../../tests/frontend/proactive_registration_failures.test.cjs ../../tests/frontend/recommendation_outbox_retry.test.cjs ../../tests/frontend/recommendation_snapshot_config.test.cjs ../../tests/frontend/message_reaction_export.test.cjs",
+    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs ../../tests/frontend/music_recommendations.test.cjs ../../tests/frontend/recommendation_countdown.test.cjs ../../tests/frontend/proactive_recommendations.test.cjs ../../tests/frontend/proactive_registration_failures.test.cjs ../../tests/frontend/recommendation_outbox_retry.test.cjs ../../tests/frontend/recommendation_snapshot_config.test.cjs ../../tests/frontend/message_reaction_export.test.cjs ../../tests/frontend/playback_observation.test.cjs ../../tests/frontend/recommendation_capture_handoff.test.cjs ../../tests/frontend/feedback_devices.test.cjs",
     "sync-css": "node scripts/sync-css.mjs"
   },
   "dependencies": {

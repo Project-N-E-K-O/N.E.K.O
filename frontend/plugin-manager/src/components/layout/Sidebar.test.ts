@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick } from 'vue'
+import { getByRole, queryByRole } from '@testing-library/dom'
 import { createPinia, setActivePinia } from 'pinia'
 import Sidebar from './Sidebar.vue'
 import { usePluginStore } from '@/stores/plugin'
@@ -16,7 +17,8 @@ vi.mock('@/i18n', () => ({
   getLocale: () => 'en-US',
   i18n: { global: { t: (key: string) => key, locale: { value: 'en-US' } } },
 }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ path: '/' }) }))
+const routeState = vi.hoisted(() => ({ path: '/' }))
+vi.mock('vue-router', () => ({ useRoute: () => routeState }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 /** 取某个标签对应那项路由链接的 `to`。 */
@@ -35,6 +37,7 @@ async function mountSidebar(): Promise<{ container: HTMLDivElement; unmount: () 
   const store = usePluginStore()
   store.pluginSummaries = [
     { id: 'adapter#demo', name: '哈希适配器', type: 'adapter', status: 'running', version: '1.0.0' },
+    { id: 'adapter?demo/next', name: '特殊适配器', type: 'adapter', status: 'running', version: '1.0.0' },
     { id: 'adapter_demo', name: '普通适配器', type: 'adapter', status: 'running', version: '1.0.0' },
     { id: 'study_companion', name: '普通插件', type: 'plugin', status: 'running', version: '1.0.0' },
   ] as never
@@ -66,9 +69,97 @@ async function mountSidebar(): Promise<{ container: HTMLDivElement; unmount: () 
   return { container, unmount: () => { app.unmount(); container.remove() } }
 }
 
-describe('Sidebar adapter links', () => {
+describe('Sidebar navigation', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    routeState.path = '/'
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => saved.set(key, value),
+    })
+  })
+
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+  it('桌面侧栏可收起并恢复偏好，图标入口仍有名称', async () => {
+    let mounted = await mountSidebar()
+    const toggle = getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    toggle.click()
+    await nextTick()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.expandSidebar' }).getAttribute('aria-expanded')).toBe('false')
+    expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('title')).toBe('nav.plugins')
+    mounted.unmount()
+
+    mounted = await mountSidebar()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.expandSidebar' }).getAttribute('aria-expanded')).toBe('false')
+    mounted.unmount()
+  })
+
+  it('适配器分组可独立收起，隐藏的入口不在可访问树中', async () => {
+    const mounted = await mountSidebar()
+    const toggle = getByRole(mounted.container, 'button', { name: 'nav.adapters' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    getByRole(mounted.container, 'button', { name: '哈希适配器' }).focus()
+    toggle.click()
+    await nextTick()
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(queryByRole(mounted.container, 'button', { name: '哈希适配器' })).toBeNull()
+    expect(document.activeElement).toBe(toggle)
+    toggle.click()
+    await nextTick()
+    expect(getByRole(mounted.container, 'button', { name: '哈希适配器' })).toBeTruthy()
+    mounted.unmount()
+  })
+
+  it('窄屏自动使用图标导航，返回桌面保留原展开偏好并安置焦点', async () => {
+    const media = new EventTarget() as MediaQueryList
+    Object.defineProperty(media, 'matches', { value: false, writable: true })
+    vi.spyOn(window, 'matchMedia').mockReturnValue(media)
+    const mounted = await mountSidebar()
+    getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).focus()
+    Object.assign(media, { matches: true })
+    media.dispatchEvent(Object.assign(new Event('change'), { matches: true }))
+    await nextTick()
+    expect(queryByRole(mounted.container, 'button', { name: 'nav.expandSidebar' })).toBeNull()
+    expect(queryByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' })).toBeNull()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.dashboard' }).getAttribute('title')).toBe('nav.dashboard')
+    expect(document.activeElement).toBe(getByRole(mounted.container, 'button', { name: 'nav.dashboard' }))
+    Object.assign(media, { matches: false })
+    media.dispatchEvent(Object.assign(new Event('change'), { matches: false }))
+    await nextTick()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).getAttribute('aria-expanded')).toBe('true')
+    mounted.unmount()
+  })
+
+  it('存储被拒绝时仍可展开收起和访问原导航', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new DOMException('Access denied', 'SecurityError') },
+      setItem: () => { throw new DOMException('Access denied', 'SecurityError') },
+    })
+    const mounted = await mountSidebar()
+    getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()
+    await nextTick()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.expandSidebar' }).getAttribute('aria-expanded')).toBe('false')
+    getByRole(mounted.container, 'button', { name: 'nav.expandSidebar' }).click()
+    await nextTick()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' })).toBeTruthy()
+    mounted.unmount()
+  })
+
+  it('保留七个主入口顺序与路径，折叠后详情页仍标记插件管理为当前页', async () => {
+    routeState.path = '/plugins/demo'
+    const mounted = await mountSidebar()
+    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 7).map((element) => element.getAttribute('data-to'))).toEqual([
+      '/', '/plugins', '/knowledge', '/model-api', '/runs', '/logs/_server', '/development',
+    ])
+    expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
+    getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()
+    await nextTick()
+    expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
+    expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('data-yui-guide-id')).toBe('sidebar-plugins')
+    mounted.unmount()
   })
 
   it('适配器子项的 id 编码后再进路径段，普通 id 不受影响', async () => {
@@ -78,6 +169,7 @@ describe('Sidebar adapter links', () => {
       '/adapter/adapter%23demo/ui',
     )
     expect(linkTo(mounted.container, '普通适配器')).toBe('/adapter/adapter_demo/ui')
+    expect(linkTo(mounted.container, '特殊适配器')).toBe('/adapter/adapter%3Fdemo%2Fnext/ui')
     mounted.unmount()
   })
 

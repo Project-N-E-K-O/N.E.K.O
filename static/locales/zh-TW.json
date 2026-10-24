@@ -7036,5 +7036,25 @@
     "visitFrame": {
         "peerAway": "離開了一下",
         "visitingAway": "串門中"
+    },
+    "feedbackDevices": {
+        "title": "推薦歷史裝置管理",
+        "description": "這裡只管理推薦歷史上傳，不影響聽歌和正常推薦。",
+        "name": "裝置名稱（選填）",
+        "chooseReplacement": "已啟用5台裝置，請選擇要替換的舊裝置。",
+        "selectDevice": "請選擇裝置",
+        "enable": "啟用這台裝置",
+        "refresh": "重新整理",
+        "removalNote": "移除後停止該裝置上傳，保留其目前設定。重新加入需要在那台裝置上手動啟用。",
+        "thisDevice": "本機",
+        "enabled": "已啟用",
+        "removed": "已移除",
+        "remove": "移除",
+        "ready": "裝置清單已更新。",
+        "upgrade": "請更新桌面用戶端以恢復歷史上傳，正常使用不受影響。",
+        "update": "取得更新",
+        "conflict": "裝置狀態已變更，請重新整理後再選擇。",
+        "notEnabled": "推薦歷史裝置管理尚未啟用，正常使用不受影響。",
+        "unavailable": "暫時無法讀取裝置，請檢查社群登入和網路後重新整理。"
     }
 }

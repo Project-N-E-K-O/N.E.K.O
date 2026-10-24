@@ -7036,5 +7036,25 @@
     "visitFrame": {
         "peerAway": "离开了一下",
         "visitingAway": "在串门中"
+    },
+    "feedbackDevices": {
+        "title": "推荐历史设备管理",
+        "description": "这里只管理推荐历史上传，不影响听歌和正常推荐。",
+        "name": "设备名称（选填）",
+        "chooseReplacement": "已启用5台设备，请选择要替换的旧设备。",
+        "selectDevice": "请选择设备",
+        "enable": "启用这台设备",
+        "refresh": "刷新",
+        "removalNote": "移除后停止该设备上传，保留其当前设置。重新加入需要在那台设备上手动启用。",
+        "thisDevice": "本机",
+        "enabled": "已启用",
+        "removed": "已移除",
+        "remove": "移除",
+        "ready": "设备列表已更新。",
+        "upgrade": "请更新桌面客户端以恢复历史上传，正常使用不受影响。",
+        "update": "获取更新",
+        "conflict": "设备状态已变化，请刷新后重新选择。",
+        "notEnabled": "推荐历史设备管理尚未启用，正常使用不受影响。",
+        "unavailable": "暂时无法读取设备，请检查社区登录和网络后刷新。"
     }
 }

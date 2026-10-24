@@ -157,7 +157,7 @@ watch(
 
 // ─── drag handle ────────────────────────────────────────────────────────────
 //
-// The window is anchored to the app header's bottom-right in CSS. Once the
+// The window is anchored below the connection banner in CSS. Once the
 // user drags it, that anchor is replaced by explicit offsets measured from the
 // same offsetParent, so the two never fight each other.
 
@@ -231,8 +231,7 @@ function onDragStart(event: PointerEvent): void {
   dragStart.boxLeft = box.left
   dragStart.boxTop = box.top
   dragStart.boxWidth = box.width
-  // Refuse to cover the app header, which sits directly under the titlebar's
-  // window controls.
+  // Stay below the content's top edge, clear of the titlebar and any banner.
   dragStart.minViewportTop = parentBox?.bottom ?? 0
   dragStart.maxViewportLeft = window.innerWidth - MIN_VISIBLE_EDGE_PX
   dragStart.maxViewportTop = window.innerHeight - MIN_VISIBLE_BOTTOM_PX
@@ -369,10 +368,8 @@ async function handleUpdateAll(): Promise<void> {
 
 <style scoped>
 .update-float {
-  /* Anchored to the app header's bottom-right corner by AppLayout, at the
-     same 20px inset the header itself uses. Fixed/absolute-in-viewport
-     placements would either cover the custom titlebar's window controls or
-     drift once the disconnect banner appears. */
+  /* AppLayout provides a zero-height anchor below the connection banner,
+     keeping this popup clear of the titlebar without a separate header row. */
   position: absolute;
   top: calc(100% + 10px);
   right: 20px;
@@ -380,7 +377,7 @@ async function handleUpdateAll(): Promise<void> {
   display: flex;
   flex-direction: column;
   width: 380px;
-  max-width: calc(100vw - 40px);
+  max-width: calc(100% - 40px);
   max-height: min(60vh, 520px);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 16px;

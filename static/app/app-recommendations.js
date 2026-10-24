@@ -2,6 +2,7 @@
 (function () {
     'use strict';
     const KEY = 'neko.music-recommendation-event.v1.';
+    const CAPTURE_KEY = 'neko.recommendation-capture.v2.';
     const MAX_QUEUE = 256;
     const messages = new Map();
     const inFlight = new Map();
@@ -22,6 +23,168 @@
     let retryDelay = 1000;
     let evidenceEpoch = 0;
     let observedPageConfig = null;
+    const uid = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+    const documentClockId = uid().replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+    const offerContexts = new Map();
+    let captureBinding = null;
+    let captureRefresh = null;
+    let captureSupported = false;
+    let captureOwner = null;
+    let authorityEpoch = 0;
+    const captureTick = () => typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? Math.floor(performance.now()) : null;
+    const copy = value => value == null ? value : JSON.parse(JSON.stringify(value));
+    function withoutProof(value) {
+        if (Array.isArray(value)) return value.map(withoutProof);
+        if (!value || typeof value !== 'object') return value;
+        const result = {};
+        for (const key of Object.keys(value).sort()) if (key !== 'time_proof') result[key] = withoutProof(value[key]);
+        return result;
+    }
+    const canonicalEvent = event => JSON.stringify(withoutProof(event));
+    const canonicalEventBytes = event => unescape(encodeURIComponent(canonicalEvent(event)));
+    // Local handoff hashes use the original JSON, before Python adds schema defaults.
+    // Keep the fallback synchronous for ordinary HTTP hosts without SubtleCrypto.
+    function eventHash(event) {
+        const input = canonicalEventBytes(event);
+        const bytes = Array.from(input, c => c.charCodeAt(0));
+        const bits = bytes.length * 8;
+        bytes.push(128);
+        while (bytes.length % 64 !== 56) bytes.push(0);
+        for (let i = 7; i >= 0; i--) bytes.push(Math.floor(bits / 2 ** (8 * i)) & 255);
+        const k = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+        const h = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+        const rotate = (x, n) => (x >>> n) | (x << (32 - n));
+        for (let offset = 0; offset < bytes.length; offset += 64) {
+            const w = new Array(64);
+            for (let i = 0; i < 16; i++) w[i] = (bytes[offset+i*4]<<24)|(bytes[offset+i*4+1]<<16)|(bytes[offset+i*4+2]<<8)|bytes[offset+i*4+3];
+            for (let i = 16; i < 64; i++) {
+                const a = w[i-15], b = w[i-2];
+                w[i] = (w[i-16] + (rotate(a,7)^rotate(a,18)^(a>>>3)) + w[i-7] + (rotate(b,17)^rotate(b,19)^(b>>>10))) | 0;
+            }
+            let [a,b,c,d,e,f,g,j] = h;
+            for (let i = 0; i < 64; i++) {
+                const t = (j+(rotate(e,6)^rotate(e,11)^rotate(e,25))+((e&f)^(~e&g))+k[i]+w[i])|0;
+                const u = ((rotate(a,2)^rotate(a,13)^rotate(a,22))+((a&b)^(a&c)^(b&c)))|0;
+                j=g;g=f;f=e;e=(d+t)|0;d=c;c=b;b=a;a=(t+u)|0;
+            }
+            [a,b,c,d,e,f,g,j].forEach((v, i) => { h[i] = (h[i] + v) | 0; });
+        }
+        return h.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+    }
+    function handoffComplete(event, result) {
+        if (!event.context) return true; // Rolling compatibility with an older local backend.
+        const receipt = result && result.telemetry;
+        return !!receipt && receipt.event_id === event.event_id && receipt.payload_hash === eventHash(event)
+            && ['durable', 'discarded'].includes(receipt.status);
+    }
+    function eventStorageKey(event) { return (event.context ? CAPTURE_KEY : KEY) + event.event_id; }
+    function removeQueued(item) {
+        const index = queue.indexOf(item);
+        if (index !== -1) queue.splice(index, 1);
+        try { localStorage.removeItem(eventStorageKey(item.event)); } catch (_) {}
+    }
+    function queueEvent(id, event) {
+        const existing = queue.find(item => item.event.event_id === event.event_id);
+        if (existing) return existing;
+        if (queue.length >= MAX_QUEUE) return null;
+        const item = { id, event };
+        queue.push(item);
+        try { localStorage.setItem(eventStorageKey(event), JSON.stringify(item)); }
+        catch (_) { console.warn('[Music recommendation] Could not persist pending evidence'); }
+        return item;
+    }
+    function invalidateCapture(authorityLost = false) {
+        if (authorityLost) {
+            captureOwner = null;
+            authorityEpoch++;
+        }
+        if (!captureBinding) return;
+        captureBinding = null;
+        window.dispatchEvent(new CustomEvent('neko:feedback-capture-changed'));
+    }
+    async function refreshCapture() {
+        if (captureRefresh || disposed) return captureRefresh;
+        const revision = evidenceEpoch;
+        const operation = (async () => {
+            const security = window.nekoLocalMutationSecurity;
+            if (!security || typeof security.getMutationHeaders !== 'function') return;
+            const headers = await security.getMutationHeaders();
+            const sendTick = captureTick();
+            const response = await fetch('/api/proactive/feedback/capture-context', {
+                method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+                body: JSON.stringify({ clock_session_id: documentClockId }), signal: AbortSignal.timeout(5000)
+            });
+            const receiveTick = captureTick();
+            if (disposed || revision !== evidenceEpoch) return;
+            // An authentication proxy may return an empty or HTML 401 body.
+            // Its explicit status retires this identity before JSON decoding.
+            if (response.status === 401) { invalidateCapture(true); return; }
+            const result = await response.json();
+            if (response.status === 426 && !disposed && revision === evidenceEpoch) {
+                window.dispatchEvent(new CustomEvent('neko:feedback-upgrade-required'));
+            }
+            if (disposed || revision !== evidenceEpoch) return;
+            if (!response.ok || !result.success || !result.context) {
+                invalidateCapture(['authentication_required', 'account_mismatch', 'session_changed'].includes(result.error_code));
+                return;
+            }
+            const value = result.context;
+            if (typeof value.owner_key !== 'string' || !value.anchor_token || !value.anchor_id
+                || !Number.isFinite(sendTick) || !Number.isFinite(receiveTick)) { invalidateCapture(); return; }
+            const previous = captureBinding && captureBinding.value;
+            if (captureOwner !== null && captureOwner !== value.owner_key) authorityEpoch++;
+            captureOwner = value.owner_key;
+            captureBinding = { value: copy(value), sendTick, receiveTick };
+            if (!previous || ['owner_key','account_incarnation','clear_generation','registration_id','registration_version','binding_revision']
+                .some(key => previous[key] !== value[key])) {
+                window.dispatchEvent(new CustomEvent('neko:feedback-capture-changed'));
+            }
+        })().catch(() => { if (!disposed && revision === evidenceEpoch) invalidateCapture(); });
+        captureRefresh = operation;
+        try { await operation; } finally { if (captureRefresh === operation) captureRefresh = null; }
+    }
+    function captureContext(offerContext) {
+        const tick = captureTick();
+        const result = { version: 'desktop-feedback-capture-v2',
+            capture: { clock_session_id: documentClockId } };
+        if (Number.isFinite(tick)) result.capture.tick_ms = tick;
+        const bound = captureBinding;
+        if (!bound || (offerContext && bound.value.owner_key !== offerContext.owner_key)) return result;
+        for (const key of ['owner_key','account_incarnation','clear_generation','registration_id','registration_version','binding_revision']) {
+            if (bound.value[key] !== undefined) result[key] = bound.value[key];
+        }
+        result.capture.anchor_id = bound.value.anchor_id;
+        result.time_proof = { anchor_token: bound.value.anchor_token,
+            send_tick_ms: bound.sendTick, receive_tick_ms: bound.receiveTick };
+        return result;
+    }
+    function rememberOfferContext(id, value) {
+        if (!value || typeof value.owner_key !== 'string' || value.offer_id !== id) return;
+        if (JSON.stringify(offerContexts.get(id)) === JSON.stringify(value)) return;
+        offerContexts.set(id, copy(value));
+        if (!captureSupported) {
+            captureSupported = true;
+            for (const item of queue.slice()) if (!item.event.context) removeQueued(item);
+            // The loaded queue is capped. Retire dormant legacy entries too;
+            // a later reload must not resurrect pre-upgrade evidence.
+            try {
+                for (let i = localStorage.length - 1; i >= 0; i--) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith(KEY)) localStorage.removeItem(key);
+                }
+            } catch (_) { /* Storage access failure cannot affect normal playback. */ }
+        }
+        void refreshCapture();
+    }
+    window.nekoFeedbackCapture = { capture: captureContext, refresh: refreshCapture };
     const requestSnapshot = () => {
         if (!disposed && hasCharacter() && typeof window.__nekoBroadcastChatMirror === 'function') {
             snapshotRequestId = uid();
@@ -56,6 +219,7 @@
             retiredIds.add(id);
             const message = messages.get(id);
             messages.delete(id);
+            offerContexts.delete(id);
             inFlight.delete(id);
             dispatched.delete(id);
             decisionIds.delete(id + ':accepted');
@@ -126,7 +290,7 @@
     try {
         for (let i = 0; i < localStorage.length && queue.length < MAX_QUEUE; i++) {
             const key = localStorage.key(i);
-            if (!key || !key.startsWith(KEY)) continue;
+            if (!key || (!key.startsWith(KEY) && !key.startsWith(CAPTURE_KEY))) continue;
             try {
                 const item = JSON.parse(localStorage.getItem(key));
                 if (item && typeof item.id === 'string' && item.event) queue.push(item);
@@ -134,16 +298,20 @@
         }
         queue.sort((a, b) => (a.event.occurred_at || 0) - (b.event.occurred_at || 0));
     } catch (_) { /* A damaged queue never enables playback. */ }
-    const uid = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
     async function request(id, event, retry = true) {
         const security = window.nekoLocalMutationSecurity;
         if (!security || typeof security.getMutationHeaders !== 'function') throw new Error('feedback_security_not_ready');
         const headers = await security.getMutationHeaders();
         const response = await fetch('/api/proactive/recommendations/' + encodeURIComponent(id) + '/events', {
-            method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+            method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers,
+                event.context ? { 'X-NEKO-Feedback-Canonical': btoa(canonicalEventBytes(event)) } : {}),
             body: JSON.stringify(event), signal: AbortSignal.timeout(5000), keepalive: true
         });
         const result = await response.json();
+        // The backend may learn a clear while the same audio keeps playing.
+        // Retire only the original fact; refresh qualification for future captures.
+        if (event.context && result.telemetry && ['binding_changed', 'binding_unavailable', 'control_unavailable', 'time_unproven']
+            .includes(result.telemetry.reason)) void refreshCapture();
         if (response.status === 403 && retry && security && security.refreshToken) {
             await security.refreshToken();
             return request(id, event, false);
@@ -151,6 +319,7 @@
         if (!response.ok || !result.success) {
             const error = new Error(result.error_code || 'feedback_unavailable');
             error.code = result.error_code;
+            error.telemetry = result.telemetry;
             error.permanent = (response.status === 409 || response.status === 422)
                 && !['feedback_capacity_reached', 'feedback_upload_capacity_reached'].includes(result.error_code);
             throw error;
@@ -169,6 +338,7 @@
     }
     function remember(message) {
         const id = message.blocks[0].recommendationId;
+        rememberOfferContext(id, message.blocks[0].offer_context);
         // Host rendering may sanitize the display author. Ownership remains the
         // original offer's character, including after choices and mirror updates.
         const previous = messages.get(id);
@@ -205,6 +375,7 @@
             cancelMusicCountdown(oldest);
             countdownShown.delete(oldest);
             messages.delete(oldest);
+            offerContexts.delete(oldest);
         }
     }
     function cancelMusicCountdown(id) {
@@ -264,8 +435,18 @@
             for (const item of queue.slice(0, MAX_QUEUE)) {
                 if (disposed || epoch !== evidenceEpoch) break;
                 if (deferred.has(item.id)) continue;
-                try { await request(item.id, item.event); }
+                try {
+                    const result = await request(item.id, item.event);
+                    if (!handoffComplete(item.event, result)) {
+                        deferred.add(item.id);
+                        continue;
+                    }
+                }
                 catch (error) {
+                    if (item.event.context && handoffComplete(item.event, error)) {
+                        removeQueued(item);
+                        continue;
+                    }
                     // The UUID already belongs to its original owner in SQLite.
                     // A different account (or logout) cannot acknowledge it;
                     // retain the exact event for when that owner returns.
@@ -273,11 +454,10 @@
                         deferred.add(item.id);
                         continue;
                     }
+                    if (item.event.context) { deferred.add(item.id); continue; }
                     if (!error.permanent) break;
                 }
-                const index = queue.indexOf(item);
-                if (index !== -1) queue.splice(index, 1);
-                try { localStorage.removeItem(KEY + item.event.event_id); } catch (_) {}
+                removeQueued(item);
             }
         })();
         flushing = operation;
@@ -300,11 +480,13 @@
             console.warn('[Music recommendation] Evidence queue is full');
             return;
         }
-        const item = { id, event: Object.assign({ event_id: uid(), kind, occurred_at: Date.now() / 1000 }, fields) };
-        queue.push(item);
-        // One key per event prevents two windows overwriting each other's outbox.
-        try { localStorage.setItem(KEY + item.event.event_id, JSON.stringify(item)); }
-        catch (_) { console.warn('[Music recommendation] Could not persist pending evidence'); }
+        const event = Object.assign({ event_id: uid(), kind, occurred_at: Date.now() / 1000 }, fields);
+        const original = fields && fields.offer_context || offerContexts.get(id);
+        if (original) {
+            event.offer_context = copy(original);
+            event.context = captureContext(original);
+        }
+        queueEvent(id, event);
         void flush();
     }
     function offer(recommendation, turnId) {
@@ -318,6 +500,7 @@
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             turnId: turnId || undefined,
             blocks: [{ type: 'music_recommendation', recommendationId: recommendation.id,
+                offer_context: copy(recommendation.offer_context),
                 track: recommendation.track, state: recommendation.state || 'pending',
                 autoPlayAt: 0,
                 expiresAt: Number(recommendation.expires_at) * 1000 || 0 }]
@@ -343,6 +526,7 @@
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             turnId: turnId || undefined,
             blocks: [{ type: 'proactive_recommendation', recommendationId: recommendation.id,
+                offer_context: copy(recommendation.offer_context),
                 category: recommendation.category, content: Object.assign({}, recommendation.content, {url: href}),
                 directDelivery: recommendation.category === 'meme' || !!screenObservation,
                 state: recommendation.state || 'pending', expiresAt: Number(recommendation.expires_at) * 1000 || 0 }]
@@ -362,12 +546,22 @@
         const visibilityEpoch = autoplayVisibilityEpoch;
         const operation = {};
         inFlight.set(id, operation);
+        const originalOffer = offerContexts.get(id);
+        const originalAuthorityEpoch = authorityEpoch;
+        const originalAuthorityKnown = captureOwner !== null
+            || (typeof originalOffer?.origin_context?.account_incarnation === 'string'
+                && originalOffer.origin_context.account_incarnation.length > 0);
+        // A failed statistics refresh alone cannot stop ordinary playback.
+        // Explicit identity loss or a verified account switch retires only the
+        // operations already in flight; fresh anonymous choices remain usable.
+        const hasOriginalOwner = () => !originalOffer || ((!originalAuthorityKnown || originalAuthorityEpoch === authorityEpoch)
+            && (!captureBinding || originalOffer.owner_key === captureBinding.value.owner_key));
         const isCurrent = () => !disposed && epoch === lifecycleEpoch && inFlight.get(id) === operation
-            && belongsHere(messages.get(id)) && !retiredIds.has(id);
+            && hasOriginalOwner() && belongsHere(messages.get(id)) && !retiredIds.has(id);
         // Outlives the HTTP/dispatch await: the UI may still be waiting to play
         // after inFlight is released. A hide-and-show must not restore permission.
         const getCancellationReason = () => disposed || epoch !== lifecycleEpoch
-            || !belongsHere(messages.get(id)) || retiredIds.has(id) ? 'recommendation_retired'
+            || !hasOriginalOwner() || !belongsHere(messages.get(id)) || retiredIds.has(id) ? 'recommendation_retired'
             : automatic && (visibilityEpoch !== autoplayVisibilityEpoch || document.visibilityState === 'hidden')
                 ? 'autoplay_visibility_changed' : '';
         update(id, 'saving');
@@ -383,16 +577,37 @@
         const key = id + ':' + kind;
         if (!decisionIds.has(key)) decisionIds.set(key, { eventId: uid(), occurredAt: Date.now() / 1000, reason: automatic ? 'countdown_elapsed' : '' });
         const decision = decisionIds.get(key);
-        const event = { event_id: decision.eventId, kind, occurred_at: decision.occurredAt };
-        if (decision.reason) event.reason = decision.reason;
+        if (!decision.event) {
+            decision.event = { event_id: decision.eventId, kind, occurred_at: decision.occurredAt };
+            if (decision.reason) decision.event.reason = decision.reason;
+            if (originalOffer) {
+                decision.event.offer_context = copy(originalOffer);
+                decision.event.context = captureContext(originalOffer);
+            }
+        }
+        const event = decision.event;
+        const pendingEvidence = event.context ? queueEvent(id, event) : null;
         try {
             const result = await request(id, event);
+            if (pendingEvidence && handoffComplete(event, result)) removeQueued(pendingEvidence);
             if (!isCurrent()) return;
             // Another window may already have advanced playback while this
             // decision response was in flight. Do not roll its status back.
             const currentState = messages.get(id)?.blocks[0].state || 'saving';
             if (!['accepted', 'skipped'].includes(result.state)
                 || ['pending', 'saving', 'accepted'].includes(currentState)) update(id, result.state);
+            if (event.context && kind === 'accepted' && (result.playback_grant || result.action_grant) && !dispatched.has(id)) {
+                const security = window.nekoLocalMutationSecurity;
+                const headers = await security.getMutationHeaders();
+                if (!isCurrent()) return;
+                const response = await fetch('/api/proactive/recommendations/' + encodeURIComponent(id) + '/dispatch', {
+                    method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+                    body: JSON.stringify({ event_id: event.event_id }), signal: AbortSignal.timeout(5000)
+                });
+                const claim = await response.json();
+                if (!isCurrent()) return;
+                if (!response.ok || !claim.success || !claim.dispatch_grant) { closePlaceholder(); return; }
+            }
             if (block.type === 'proactive_recommendation') {
                 if (kind !== 'accepted' || !result.action_grant || dispatched.has(id)) { closePlaceholder(); return; }
                 dispatched.add(id);
@@ -417,6 +632,7 @@
             const playback = typeof window.dispatchMusicPlayDetailed === 'function'
                 ? await window.dispatchMusicPlayDetailed(block.track, {
                     source: 'proactive', recommendationId: id, cardScopeId: 'recommendation:' + id,
+                    offerContext: copy(originalOffer),
                     getCancellationReason
                 }) : { ok: false, reason: 'ui_not_ready' };
             if (!isCurrent()) return;
@@ -426,6 +642,7 @@
             }
         } catch (error) {
             closePlaceholder();
+            if (pendingEvidence && handoffComplete(event, error)) removeQueued(pendingEvidence);
             if (!isCurrent()) return;
             if (block.type === 'proactive_recommendation' && dispatched.has(id)) {
                 // A dispatch error does not undo an already committed preference.
@@ -438,9 +655,14 @@
             }
         } finally {
             if (!isCurrent()) closePlaceholder();
+            if (!disposed && epoch === lifecycleEpoch && originalOffer && originalAuthorityKnown && originalAuthorityEpoch !== authorityEpoch
+                && belongsHere(messages.get(id)) && ['pending', 'saving', 'accepted'].includes(messages.get(id)?.blocks[0].state)) {
+                update(id, 'unavailable');
+            }
             if (inFlight.get(id) === operation) inFlight.delete(id);
             if (dispatched.size > 128) dispatched.delete(dispatched.values().next().value);
             if (decisionIds.size > 256) decisionIds.delete(decisionIds.keys().next().value);
+            if (pendingEvidence && queue.includes(pendingEvidence)) scheduleEvidenceRetry();
         }
     }
     window.addEventListener('react-chat-window:action', event => {
@@ -464,7 +686,8 @@
             void decide(detail.message, block.recommendationId, payload.kind);
         }
     });
-    window.addEventListener('online', () => { void flush(); });
+    window.addEventListener('online', () => { if (captureSupported) void refreshCapture(); void flush(); });
+    window.addEventListener('neko:feedback-control-changed', () => { if (captureSupported) void refreshCapture(); });
     document.addEventListener('DOMContentLoaded', () => {
         if (flushing) void flushing.then(() => flush());
         else void flush();
@@ -482,6 +705,7 @@
     });
     window.addEventListener('pageshow', () => {
         disposed = false;
+        if (captureSupported) void refreshCapture();
         for (const [id, message] of messages) if (message.blocks[0].state === 'saving') update(id, 'pending', true);
         observePageConfig();
         requestSnapshot();
@@ -493,6 +717,7 @@
             autoplayVisibilityEpoch++;
             for (const id of musicCountdowns.keys()) cancelMusicCountdown(id);
         } else {
+            if (captureSupported) void refreshCapture();
             for (const id of countdownShown) armMusicCountdown(id);
         }
     });
@@ -507,7 +732,7 @@
         },
         recordPlayback(id, state, fields) {
             if (!id) return;
-            update(id, state);
+            if (state !== 'measurement') update(id, state);
             evidence(id, state, fields);
         }
     };

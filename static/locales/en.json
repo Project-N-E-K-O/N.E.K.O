@@ -7036,5 +7036,25 @@
     "visitFrame": {
         "peerAway": "Stepped away",
         "visitingAway": "Out visiting"
+    },
+    "feedbackDevices": {
+        "title": "Recommendation history devices",
+        "description": "Manage recommendation history uploads. Listening and recommendations keep working.",
+        "name": "Device name (optional)",
+        "chooseReplacement": "Five devices are enabled. Choose which old device to replace.",
+        "selectDevice": "Choose a device",
+        "enable": "Enable this device",
+        "refresh": "Refresh",
+        "removalNote": "Removing a device stops its uploads. Its current settings stay unchanged. It must be enabled manually to join again.",
+        "thisDevice": "This device",
+        "enabled": "Enabled",
+        "removed": "Removed",
+        "remove": "Remove",
+        "ready": "Devices loaded.",
+        "upgrade": "Update the desktop app to resume history uploads. Normal use is unaffected.",
+        "update": "Get the update",
+        "conflict": "The device list changed. Refresh and choose again.",
+        "notEnabled": "Recommendation history device management is not enabled. Normal use is unaffected.",
+        "unavailable": "Unable to load devices. Check your community login and connection, then refresh."
     }
 }

@@ -34,6 +34,80 @@
   align-items: center;
 }
 
+/* 组件级变量覆盖默认外观，不接管焦点、校验、选择与禁用状态。 */
+.app-main .el-card {
+  --el-card-border-radius: var(--radius-card);
+  --el-card-border-color: var(--surface-border);
+  --el-card-bg-color: var(--surface-card);
+}
+
+.app-main .el-card__header {
+  border-bottom-color: var(--surface-border);
+}
+
+.app-main .el-table {
+  --el-table-bg-color: var(--surface-card);
+  --el-table-tr-bg-color: var(--surface-card);
+  --el-table-header-bg-color: var(--surface-inset);
+  --el-table-border-color: var(--surface-border);
+  --el-table-header-text-color: var(--el-text-color-primary);
+}
+
+.app-root .el-tabs__nav-wrap::after {
+  background-color: var(--surface-border);
+}
+
+.app-root .el-tabs__active-bar {
+  border-radius: var(--radius-chip);
+}
+
+/* Element Plus 的弹层会 teleport 到 body，使用组件本身的变量。 */
+html .el-dialog,
+html .el-message-box {
+  --el-dialog-border-radius: var(--radius-card);
+  --el-messagebox-border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--shadow-lg);
+}
+
+html .el-popper.is-light {
+  border-color: var(--surface-border);
+}
+
+html .el-dropdown-menu {
+  border-radius: var(--radius-panel);
+}
+
+/* The dark palette uses light accent inks. Filled buttons need dark text;
+ * plain/text/link buttons keep their semantic accent on the neutral surface. */
+html.dark .el-button:is(.el-button--primary, .el-button--success, .el-button--warning, .el-button--danger, .el-button--info):not(.is-plain, .is-text, .is-link) {
+  --el-button-text-color: var(--on-primary);
+  --el-button-hover-text-color: var(--on-primary);
+  --el-button-active-text-color: var(--on-primary);
+  --el-button-disabled-text-color: color-mix(in srgb, var(--on-primary) 70%, transparent);
+}
+
+/* Segmented selections use a quiet tint instead of competing solid blocks. */
+html.dark .el-radio-button {
+  --el-radio-button-checked-text-color: var(--el-color-primary);
+  --el-radio-button-checked-bg-color: var(--el-color-primary-light-9);
+  --el-radio-button-checked-border-color: var(--el-color-primary-light-5);
+}
+
+html.dark .el-checkbox-button {
+  --el-checkbox-button-checked-text-color: var(--el-color-primary);
+  --el-checkbox-button-checked-bg-color: var(--el-color-primary-light-9);
+  --el-checkbox-button-checked-border-color: var(--el-color-primary-light-5);
+}
+
+html.dark .el-checkbox {
+  --el-checkbox-checked-icon-color: var(--on-primary);
+}
+
+html.dark .el-radio__input.is-checked .el-radio__inner::after {
+  background: var(--on-primary);
+}
+
 /* 工具类 */
 .text-center {
   text-align: center;
@@ -66,4 +140,3 @@
 .mb-lg {
   margin-bottom: var(--spacing-lg);
 }
-

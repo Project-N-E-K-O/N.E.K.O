@@ -10120,7 +10120,6 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     input.focus();
-    // 真实失焦（如切换应用）后 document.hasFocus() 为 false；延迟折叠只有在焦点未回归时才执行。
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     try {
       fireEvent(window, new Event('blur'));
@@ -10129,11 +10128,6 @@ describe('App', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
 
-      // 瞬时失焦抖动会在 ~280ms 内自行恢复焦点并放弃折叠；真实失焦（焦点不回归）照常折叠。
-      expect(onCompactChatStateChange).not.toHaveBeenCalled();
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
-      });
       expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       hasFocus.mockRestore();

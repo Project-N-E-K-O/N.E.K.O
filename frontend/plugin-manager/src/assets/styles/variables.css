@@ -4,16 +4,33 @@
 
 :root {
   /* 主色 */
-  --primary-color: #409EFF;
-  --success-color: #67C23A;
-  --warning-color: #E6A23C;
-  --danger-color: #F56C6C;
-  --info-color: #909399;
+  --primary-color: var(--el-color-primary);
+  --success-color: var(--el-color-success);
+  --warning-color: var(--el-color-warning);
+  --danger-color: var(--el-color-danger);
+  --info-color: var(--el-color-info);
 
-  /* 布局 */
-  --sidebar-width: 240px;
+  /* 表面层级：外层底色、工作区、内容卡片与凹入区域。 */
+  --surface-page: #edf5fb;
+  --surface-card: #ffffff;
+  --surface-workspace: var(--surface-card);
+  --surface-inset: #f3f9fd;
+  --surface-border: #dbe8f2;
+  --surface-shadow: 0 3px 14px rgba(52, 106, 148, 0.04);
+  --surface-shadow-hover: 0 7px 22px rgba(52, 106, 148, 0.08);
+  --on-primary: #ffffff;
+  --on-danger: #ffffff;
+  --control-selection-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+
+  /* 布局：shell 只管理两块白色内容面的外边距、间隔和圆角。
+     阅读页自己选择 content-padding 或 spacing-lg；填满型工作台保持零外层 padding，
+     由已有卡片/工具栏提供内部留白，避免重新叠加一圈页面内衬。 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 68px;
   --header-height: 60px;
+  --shell-spacing: 12px;
   --content-padding: 20px;
+  --content-padding-compact: 12px;
   --card-gap: 16px;
 
   /* 间距 */
@@ -24,49 +41,153 @@
   --spacing-xl: 32px;
 
   /* 圆角 */
-  --border-radius-sm: 4px;
-  --border-radius-md: 8px;
-  --border-radius-lg: 12px;
+  --radius-card: 16px;
+  --radius-panel: 12px;
+  --radius-control: 10px;
+  --radius-chip: 8px;
+  --border-radius-sm: var(--radius-chip);
+  --border-radius-md: var(--radius-control);
+  --border-radius-lg: var(--radius-panel);
 
   /* 阴影 */
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.1);
+  --shadow-sm: var(--surface-shadow);
+  --shadow-md: var(--surface-shadow-hover);
+  --shadow-lg: 0 12px 32px rgba(52, 106, 148, 0.12);
 }
 
-/* 自定义深色模式 - 使用更柔和的灰色 */
-html.dark {
-  /* 背景颜色 - 使用柔和的灰色而不是纯黑 */
-  --el-bg-color-page: #2d2d2d;
-  --el-bg-color: #363636;
-  --el-bg-color-overlay: #404040;
-  
-  /* 文本颜色 */
-  --el-text-color-primary: #e5e5e5;
-  --el-text-color-regular: #d0d0d0;
-  --el-text-color-secondary: #b0b0b0;
-  --el-text-color-placeholder: #909090;
-  --el-text-color-disabled: #707070;
-  
-  /* 边框颜色 */
-  --el-border-color: #4a4a4a;
-  --el-border-color-light: #3d3d3d;
-  --el-border-color-lighter: #353535;
-  --el-border-color-extra-light: #2f2f2f;
-  --el-border-color-dark: #5a5a5a;
-  --el-border-color-darker: #6a6a6a;
-  
-  /* 填充颜色 */
-  --el-fill-color: #404040;
-  --el-fill-color-light: #363636;
-  --el-fill-color-lighter: #2d2d2d;
-  --el-fill-color-extra-light: #252525;
-  --el-fill-color-dark: #4a4a4a;
-  --el-fill-color-darker: #545454;
-  --el-fill-color-blank: transparent;
-  
-  /* 遮罩层 */
-  --el-mask-color: rgba(0, 0, 0, 0.6);
-  --el-mask-color-extra-light: rgba(0, 0, 0, 0.3);
+@media (max-width: 640px) {
+  :root {
+    --shell-spacing: 6px;
+  }
 }
 
+/* 对接 Element Plus 的公共变量，组件自行保留状态与尺寸处理。 */
+html:root,
+html:root.dark {
+  --el-border-radius-base: var(--radius-control);
+  --el-border-radius-small: var(--radius-chip);
+  --el-box-shadow-light: var(--surface-shadow);
+  --el-box-shadow: var(--surface-shadow-hover);
+  --el-bg-color-page: var(--surface-page);
+  --el-bg-color: var(--surface-card);
+  --el-bg-color-overlay: var(--surface-card);
+  --el-fill-color-blank: var(--surface-card);
+  --el-fill-color: #edf5fb;
+  --el-fill-color-light: var(--surface-inset);
+  --el-fill-color-lighter: #f6faff;
+  --el-fill-color-extra-light: #f9fcff;
+  --el-fill-color-dark: #e4eef6;
+  --el-fill-color-darker: #dce8f2;
+  --el-text-color-primary: #243f55;
+  --el-text-color-regular: #506c80;
+  --el-text-color-secondary: #667f93;
+  --el-text-color-placeholder: #8095a6;
+  --el-text-color-disabled: #a3b2bf;
+  --el-border-color: #cfdfeb;
+  --el-border-color-light: var(--surface-border);
+  --el-border-color-lighter: #e5eef6;
+  --el-border-color-extra-light: #edf4f9;
+  --el-border-color-dark: #bacfdf;
+  --el-border-color-darker: #a7bfce;
+  --color-background: var(--surface-page);
+  --color-background-soft: var(--surface-inset);
+  --color-background-mute: var(--surface-inset);
+  --color-text: var(--el-text-color-primary);
+  --color-heading: var(--el-text-color-primary);
+  --color-border: var(--surface-border);
+  --color-border-hover: var(--el-border-color-dark);
+}
+
+/* Dark surfaces stay neutral; accent colours are reserved for meaning and
+ * interaction. Workspace, cards, inset controls and overlays have distinct
+ * luminance instead of sharing the same blue-green tint. */
+html:root.dark {
+  color-scheme: dark;
+  --surface-page: #10141b;
+  --surface-workspace: #181d26;
+  --surface-card: #202733;
+  --surface-inset: #151b24;
+  --surface-border: #303a49;
+  --surface-shadow: 0 3px 12px rgb(0 0 0 / 12%);
+  --surface-shadow-hover: 0 8px 24px rgb(0 0 0 / 22%);
+  --shadow-lg: 0 16px 40px rgb(0 0 0 / 36%);
+  --control-selection-shadow: none;
+  --group-filter-selected-bg: var(--el-color-primary-light-9);
+  --on-primary: #112039;
+  --on-danger: #35151e;
+  --el-bg-color-overlay: #252e3b;
+
+  --el-text-color-primary: #edf2fa;
+  --el-text-color-regular: #c5cfdd;
+  --el-text-color-secondary: #9eacbf;
+  --el-text-color-placeholder: #8d9baf;
+  --el-text-color-disabled: #657286;
+
+  --el-border-color: #3e4b5e;
+  --el-border-color-light: var(--surface-border);
+  --el-border-color-lighter: #293341;
+  --el-border-color-extra-light: #252e3a;
+  --el-border-color-dark: #536279;
+  --el-border-color-darker: #6d7e96;
+
+  --el-fill-color: #2a3443;
+  --el-fill-color-light: var(--surface-inset);
+  --el-fill-color-lighter: #1b222d;
+  --el-fill-color-extra-light: #181f29;
+  --el-fill-color-dark: #354154;
+  --el-fill-color-darker: #424f64;
+
+  /* Pale accents remain readable on dark surfaces. Solid primary controls
+   * use on-primary ink; white text on these accents has too little contrast.
+   * Every tint is mixed with our card colour, not Element Plus's near-black. */
+  --el-color-primary: #8dbbff;
+  --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 70%, var(--surface-card));
+  --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 50%, var(--surface-card));
+  --el-color-primary-light-7: color-mix(in srgb, var(--el-color-primary) 30%, var(--surface-card));
+  --el-color-primary-light-8: color-mix(in srgb, var(--el-color-primary) 20%, var(--surface-card));
+  --el-color-primary-light-9: color-mix(in srgb, var(--el-color-primary) 10%, var(--surface-card));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--el-color-primary) 80%, white);
+
+  --el-color-success: #83d5b3;
+  --el-color-success-light-3: color-mix(in srgb, var(--el-color-success) 70%, var(--surface-card));
+  --el-color-success-light-5: color-mix(in srgb, var(--el-color-success) 50%, var(--surface-card));
+  --el-color-success-light-7: color-mix(in srgb, var(--el-color-success) 30%, var(--surface-card));
+  --el-color-success-light-8: color-mix(in srgb, var(--el-color-success) 20%, var(--surface-card));
+  --el-color-success-light-9: color-mix(in srgb, var(--el-color-success) 10%, var(--surface-card));
+  --el-color-success-dark-2: color-mix(in srgb, var(--el-color-success) 80%, white);
+
+  --el-color-warning: #edc487;
+  --el-color-warning-light-3: color-mix(in srgb, var(--el-color-warning) 70%, var(--surface-card));
+  --el-color-warning-light-5: color-mix(in srgb, var(--el-color-warning) 50%, var(--surface-card));
+  --el-color-warning-light-7: color-mix(in srgb, var(--el-color-warning) 30%, var(--surface-card));
+  --el-color-warning-light-8: color-mix(in srgb, var(--el-color-warning) 20%, var(--surface-card));
+  --el-color-warning-light-9: color-mix(in srgb, var(--el-color-warning) 10%, var(--surface-card));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--el-color-warning) 80%, white);
+
+  --el-color-danger: #f393a2;
+  --el-color-danger-light-3: color-mix(in srgb, var(--el-color-danger) 70%, var(--surface-card));
+  --el-color-danger-light-5: color-mix(in srgb, var(--el-color-danger) 50%, var(--surface-card));
+  --el-color-danger-light-7: color-mix(in srgb, var(--el-color-danger) 30%, var(--surface-card));
+  --el-color-danger-light-8: color-mix(in srgb, var(--el-color-danger) 20%, var(--surface-card));
+  --el-color-danger-light-9: color-mix(in srgb, var(--el-color-danger) 10%, var(--surface-card));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--el-color-danger) 80%, white);
+
+  --el-color-info: #a0aec1;
+  --el-color-info-light-3: color-mix(in srgb, var(--el-color-info) 70%, var(--surface-card));
+  --el-color-info-light-5: color-mix(in srgb, var(--el-color-info) 50%, var(--surface-card));
+  --el-color-info-light-7: color-mix(in srgb, var(--el-color-info) 30%, var(--surface-card));
+  --el-color-info-light-8: color-mix(in srgb, var(--el-color-info) 20%, var(--surface-card));
+  --el-color-info-light-9: color-mix(in srgb, var(--el-color-info) 10%, var(--surface-card));
+  --el-color-info-dark-2: color-mix(in srgb, var(--el-color-info) 80%, white);
+
+  --el-color-error: var(--el-color-danger);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+
+  --el-mask-color: rgb(4 8 14 / 68%);
+  --el-mask-color-extra-light: rgb(4 8 14 / 35%);
+}

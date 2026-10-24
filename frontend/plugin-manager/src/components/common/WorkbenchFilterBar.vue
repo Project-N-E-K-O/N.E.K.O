@@ -7,11 +7,16 @@
         class="wb-filter-bar__rules-anchor"
       >
         <button
+          ref="triggerRef"
           class="wb-filter-bar__rules-trigger"
           :class="{ 'wb-filter-bar__rules-trigger--active': rulesVisible }"
           type="button"
+          aria-haspopup="dialog"
+          :aria-expanded="rulesVisible"
+          :aria-controls="rulesId"
           :data-yui-guide-id="guideIds?.rulesTrigger"
           @click.stop="toggleRules"
+          @keydown.down.prevent="openRules()"
         >
           <el-icon><Operation /></el-icon>
           <span>{{ rulesTriggerLabel }}</span>
@@ -32,8 +37,12 @@
           <div
             v-if="rulesVisible"
             ref="panelRef"
+            :id="rulesId"
+            role="dialog"
+            :aria-label="rulesTitle || rulesTriggerLabel"
             class="wb-filter-rules-dropdown"
             :style="dropdownStyle"
+            @keydown="onPanelKeyDown"
           >
             <div class="wb-filter-rules-panel">
               <div class="wb-filter-rules-panel__header">
@@ -76,38 +85,14 @@
         :placeholder="placeholder"
         @update:model-value="(v: string) => $emit('update:filterText', v)"
       />
-
-      <div class="wb-filter-bar__toggles">
-        <el-switch
-          :model-value="useRegex"
-          class="wb-filter-bar__switch"
-          :active-text="regexLabel"
-          :inactive-text="textLabel"
-          @update:model-value="(v: boolean) => $emit('update:useRegex', v)"
-        />
-        <el-radio-group
-          :model-value="filterMode"
-          size="small"
-          class="wb-filter-bar__mode"
-          @update:model-value="(v: FilterMode) => $emit('update:filterMode', v)"
-        >
-          <el-radio-button value="whitelist">{{ whitelistLabel }}</el-radio-button>
-          <el-radio-button value="blacklist">{{ blacklistLabel }}</el-radio-button>
-        </el-radio-group>
-      </div>
-
-      <Transition name="wb-filter-error-fade">
-        <span v-if="regexError" class="wb-filter-bar__error">{{ invalidRegexLabel }}</span>
-      </Transition>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { Operation } from '@element-plus/icons-vue'
 import { ElInput } from 'element-plus'
-import type { FilterMode } from '@/composables/useGridWorkbench'
 import type { FilterRuleGroupDescriptor } from '@/composables/workbenchDescriptors'
 
 interface GuideIds {
@@ -117,9 +102,6 @@ interface GuideIds {
 
 const props = withDefaults(defineProps<{
   filterText: string
-  useRegex: boolean
-  filterMode: FilterMode
-  regexError?: boolean
   ruleGroups?: FilterRuleGroupDescriptor[]
   placeholder?: string
   /** Filter-rules 下拉触发按钮的文字。 */
@@ -128,68 +110,114 @@ const props = withDefaults(defineProps<{
   rulesTitle?: string
   /** Filter-rules 下拉内部提示。 */
   rulesHint?: string
-  /** Regex/Text 开关标签。 */
-  regexLabel?: string
-  textLabel?: string
-  /** 白/黑名单标签。 */
-  whitelistLabel?: string
-  blacklistLabel?: string
-  /** 正则非法的提示。 */
-  invalidRegexLabel?: string
   guideIds?: GuideIds
 }>(), {
-  regexError: false,
   ruleGroups: () => [],
   placeholder: '',
   rulesTriggerLabel: '',
   rulesTitle: '',
   rulesHint: '',
-  regexLabel: 'Regex',
-  textLabel: 'Text',
-  whitelistLabel: '',
-  blacklistLabel: '',
-  invalidRegexLabel: '',
   guideIds: undefined,
 })
 
 const emit = defineEmits<{
   'update:filterText': [value: string]
-  'update:useRegex': [value: boolean]
-  'update:filterMode': [value: FilterMode]
 }>()
 
 // ─── 规则下拉定位 + 悬停关闭 ──────────────────────────────────────
 
 const rulesVisible = ref(false)
+const rulesId = `workbench-rules-${useId()}`
+const triggerRef = ref<HTMLButtonElement | null>(null)
 const anchorRef = ref<HTMLElement | null>(null)
 const panelRef = ref<HTMLElement | null>(null)
 const inputRef = ref<InstanceType<typeof ElInput> | null>(null)
-const dropdownPos = ref({ top: 0, left: 0 })
+const dropdownPos = ref({ top: 0, left: 0, width: 400, maxHeight: 0 })
 let hideTimer: number | null = null
 
 const dropdownStyle = computed(() => ({
   position: 'fixed' as const,
   top: `${dropdownPos.value.top}px`,
   left: `${dropdownPos.value.left}px`,
+  width: `${dropdownPos.value.width}px`,
+  maxHeight: `${dropdownPos.value.maxHeight}px`,
+  overflowY: 'auto' as const,
 }))
 
 function updateDropdownPos() {
   const anchor = anchorRef.value
   if (!anchor) return
   const rect = anchor.getBoundingClientRect()
-  dropdownPos.value = { top: rect.bottom + 8, left: rect.left }
+  const viewport = window.visualViewport
+  const viewportLeft = viewport?.offsetLeft ?? 0
+  const viewportTop = viewport?.offsetTop ?? 0
+  const width = Math.max(0, (viewport?.width ?? window.innerWidth) - 16)
+  const bottom = viewportTop + (viewport?.height ?? window.innerHeight) - 8
+  const left = viewportLeft + 8
+  const top = viewportTop + 8
+  const panelWidth = Math.min(400, width)
+  const below = Math.max(0, bottom - Math.max(top, rect.bottom + 8))
+  const above = Math.max(0, Math.min(bottom, rect.top - 8) - top)
+  // scrollHeight retains the natural content height after the panel is capped.
+  const naturalHeight = Math.max(panelRef.value?.scrollHeight ?? 0, panelRef.value?.getBoundingClientRect().height ?? 0)
+  const opensAbove = naturalHeight > below && above > below
+  const maxHeight = opensAbove ? above : below
+  const panelHeight = Math.min(naturalHeight, maxHeight)
+  dropdownPos.value = {
+    top: opensAbove ? Math.max(top, Math.min(bottom, rect.top - 8) - panelHeight) : Math.min(bottom, Math.max(top, rect.bottom + 8)),
+    left: Math.max(left, Math.min(rect.left, left + width - panelWidth)),
+    width: panelWidth,
+    maxHeight,
+  }
 }
 
-function toggleRules() {
-  if (!rulesVisible.value) updateDropdownPos()
-  rulesVisible.value = !rulesVisible.value
+function closeRules(restoreFocus = true) {
+  if (restoreFocus) triggerRef.value?.focus()
+  if (panelRef.value) panelRef.value.inert = true
+  rulesVisible.value = false
+  clearHideTimer()
+}
+
+async function openRules(focusRules = true) {
+  clearHideTimer()
+  updateDropdownPos()
+  rulesVisible.value = true
+  await nextTick()
+  if (panelRef.value) panelRef.value.inert = false
+  updateDropdownPos()
+  if (focusRules) panelRef.value?.querySelector<HTMLButtonElement>('button')?.focus()
+}
+
+function toggleRules(event: MouseEvent) {
+  if (rulesVisible.value) closeRules()
+  else void openRules(event.detail === 0)
+}
+
+function onDocumentKeyDown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  closeRules()
+}
+
+function onPanelKeyDown(event: KeyboardEvent) {
+  if (event.key !== 'Tab') return
+  const buttons = panelRef.value?.querySelectorAll<HTMLButtonElement>('button')
+  if (!buttons?.length) return
+  if (event.shiftKey && document.activeElement === buttons[0]) {
+    event.preventDefault()
+    closeRules()
+  } else if (!event.shiftKey && document.activeElement === buttons[buttons.length - 1]) {
+    event.preventDefault()
+    closeRules(false)
+    inputRef.value?.focus()
+  }
 }
 
 function appendToken(token: string) {
   const current = props.filterText.trim()
   const nextValue = current ? `${current} ${token}` : token
   emit('update:filterText', nextValue)
-  rulesVisible.value = false
+  closeRules(false)
   nextTick(() => inputRef.value?.focus())
 }
 
@@ -222,7 +250,8 @@ function clearHideTimer() {
 function scheduleHide() {
   clearHideTimer()
   hideTimer = window.setTimeout(() => {
-    rulesVisible.value = false
+    // Mouse movement must not dismiss a disclosure being used with a keyboard.
+    if (!panelRef.value?.contains(document.activeElement)) closeRules(false)
     hideTimer = null
   }, 1000)
 }
@@ -240,13 +269,13 @@ function onDocumentMouseDown(event: MouseEvent) {
   if (!rulesVisible.value) return
   const target = event.target as Node
   if (anchorRef.value?.contains(target) || panelRef.value?.contains(target)) return
-  rulesVisible.value = false
-  clearHideTimer()
+  closeRules(false)
 }
 
 function startListeners() {
   document.addEventListener('mousemove', onDocumentMouseMove)
   document.addEventListener('mousedown', onDocumentMouseDown, true)
+  document.addEventListener('keydown', onDocumentKeyDown)
   // The rules panel is ``position: fixed`` and only computes its top/left
   // once at open time. Without these listeners, scrolling any ancestor
   // (sidebar list, page main, dropdown's own container) or resizing the
@@ -260,13 +289,18 @@ function startListeners() {
   // which a single getBoundingClientRect doesn't strain.
   window.addEventListener('scroll', updateDropdownPos, true)
   window.addEventListener('resize', updateDropdownPos)
+  window.visualViewport?.addEventListener('resize', updateDropdownPos)
+  window.visualViewport?.addEventListener('scroll', updateDropdownPos)
 }
 
 function stopListeners() {
   document.removeEventListener('mousemove', onDocumentMouseMove)
   document.removeEventListener('mousedown', onDocumentMouseDown, true)
+  document.removeEventListener('keydown', onDocumentKeyDown)
   window.removeEventListener('scroll', updateDropdownPos, true)
   window.removeEventListener('resize', updateDropdownPos)
+  window.visualViewport?.removeEventListener('resize', updateDropdownPos)
+  window.visualViewport?.removeEventListener('scroll', updateDropdownPos)
   clearHideTimer()
 }
 
@@ -280,18 +314,13 @@ onBeforeUnmount(stopListeners)
 
 <style scoped>
 .wb-filter-bar {
-  --wb-radius-panel: 14px;
-  --wb-radius-control: 10px;
-  --wb-radius-chip: 8px;
+  --wb-radius-panel: var(--radius-panel);
+  --wb-radius-control: var(--radius-control);
   padding: 10px 14px;
-  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
   border-radius: var(--wb-radius-panel);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
+  box-shadow: none;
 }
 
 .wb-filter-bar__controls {
@@ -309,7 +338,7 @@ onBeforeUnmount(stopListeners)
 
 .wb-filter-bar__input :deep(.el-input__wrapper) {
   border-radius: var(--wb-radius-control);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-border-color) 50%, transparent) inset;
+  box-shadow: 0 0 0 1px var(--surface-border) inset;
   transition:
     box-shadow 0.2s ease,
     border-color 0.2s ease;
@@ -325,43 +354,6 @@ onBeforeUnmount(stopListeners)
     0 0 0 3px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
 }
 
-.wb-filter-bar__toggles {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.wb-filter-bar__switch,
-.wb-filter-bar__mode {
-  flex-shrink: 0;
-}
-
-.wb-filter-bar__mode :deep(.el-radio-button__inner) {
-  border-radius: var(--wb-radius-chip);
-}
-
-.wb-filter-bar__error {
-  color: var(--el-color-danger);
-  font-size: 12px;
-  font-weight: 500;
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: var(--wb-radius-chip);
-  background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
-}
-
-.wb-filter-error-fade-enter-active,
-.wb-filter-error-fade-leave-active {
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
-}
-
-.wb-filter-error-fade-enter-from,
-.wb-filter-error-fade-leave-to {
-  opacity: 0;
-  transform: translateX(-4px);
-}
-
 .wb-filter-bar__rules-anchor {
   position: relative;
   flex-shrink: 0;
@@ -372,20 +364,20 @@ onBeforeUnmount(stopListeners)
   align-items: center;
   gap: 6px;
   padding: 7px 14px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
+  border: 1px solid var(--surface-border);
   border-radius: var(--wb-radius-control);
-  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
+  background: var(--surface-card);
   color: var(--el-text-color-regular);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   flex-shrink: 0;
   transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.18s ease,
-    box-shadow 0.2s ease;
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard),
+    color var(--motion-duration-normal) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .wb-filter-bar__rules-trigger .el-icon {
@@ -423,17 +415,19 @@ onBeforeUnmount(stopListeners)
 :global(.wb-filter-rules-dropdown) {
   z-index: 2100;
   width: 400px;
+  box-sizing: border-box;
   padding: 16px;
-  border-radius: 16px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  background: color-mix(in srgb, var(--el-bg-color) 86%, transparent);
-  backdrop-filter: blur(24px) saturate(1.8);
-  -webkit-backdrop-filter: blur(24px) saturate(1.8);
-  box-shadow:
-    0 24px 64px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
-    0 8px 24px color-mix(in srgb, var(--el-color-primary) 6%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  background: var(--surface-card);
+  box-shadow: var(--surface-shadow-hover);
   transform-origin: top left;
+}
+
+.wb-filter-bar__rules-trigger:focus-visible,
+:global(.wb-filter-rule-chip:focus-visible) {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
 }
 
 :global(.wb-rules-panel-enter-active) {
@@ -526,20 +520,20 @@ onBeforeUnmount(stopListeners)
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-chip);
+  background: var(--surface-card);
   color: var(--el-text-color-primary);
   font-size: 12px;
   cursor: pointer;
   animation: wb-chip-pop-in var(--motion-duration-emphasis) var(--motion-ease-spring) backwards;
   animation-delay: min(calc(var(--chip-index, 0) * 25ms + 120ms), var(--motion-stagger-max));
   transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    background 0.18s ease,
-    color 0.18s ease;
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 @keyframes wb-chip-pop-in {
@@ -562,7 +556,7 @@ onBeforeUnmount(stopListeners)
 
 :global(.wb-filter-rule-chip:active) {
   transform: translateY(0) scale(0.96);
-  transition-duration: 0.08s;
+  transition-duration: var(--motion-duration-fast);
 }
 
 :global(.wb-filter-rule-chip__token) {
@@ -575,5 +569,25 @@ onBeforeUnmount(stopListeners)
 :global(.wb-filter-rule-chip__label) {
   font-size: 11.5px;
   color: var(--el-text-color-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-filter-bar__rules-trigger,
+  .wb-filter-bar__rules-arrow,
+  .wb-filter-bar__input :deep(.el-input__wrapper),
+  :global(.wb-filter-rules-dropdown),
+  :global(.wb-filter-rules-group),
+  :global(.wb-filter-rule-chip) {
+    transition: none;
+    animation: none;
+  }
+
+  .wb-filter-bar__rules-trigger:hover,
+  .wb-filter-bar__rules-trigger--active,
+  :global(.wb-filter-rules-dropdown),
+  :global(.wb-filter-rule-chip:hover),
+  :global(.wb-filter-rule-chip:active) {
+    transform: none;
+  }
 }
 </style>

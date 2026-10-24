@@ -478,12 +478,12 @@ function rewriteReadmeUrls(html: string): string {
 .market-plugin-detail__readme :deep(th), .market-plugin-detail__readme :deep(td) { padding: 7px 10px; border: 1px solid var(--el-border-color-lighter); text-align: left; }
 .market-plugin-detail__readme :deep(img) { max-width: 100%; height: auto; }
 .market-plugin-detail__readme :deep(input[type='checkbox']) { margin-right: 6px; }
-.market-plugin-detail__readme :deep(code) { padding: 2px 5px; border-radius: 4px; background: var(--el-fill-color-light); font-family: ui-monospace, monospace; }
-.market-plugin-detail__readme :deep(pre) { overflow-x: auto; padding: 12px; border-radius: 8px; background: var(--el-fill-color-light); }
+.market-plugin-detail__readme :deep(code) { padding: 2px 5px; border-radius: var(--radius-chip); background: var(--surface-inset); font-family: ui-monospace, monospace; }
+.market-plugin-detail__readme :deep(pre) { overflow-x: auto; padding: 12px; border-radius: var(--radius-panel); background: var(--surface-inset); }
 .market-plugin-detail__readme :deep(pre code) { padding: 0; background: transparent; }
 .market-plugin-detail__readme :deep(blockquote) { margin: 0 0 12px; padding-left: 12px; border-left: 3px solid var(--el-border-color); color: var(--el-text-color-secondary); }
 .market-plugin-detail__versions { display: grid; gap: 8px; }
-.market-plugin-detail__version { padding: 10px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.market-plugin-detail__version { padding: 10px 12px; border: 1px solid var(--surface-border); border-radius: var(--radius-panel); background: var(--surface-inset); }
 .market-plugin-detail__version > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .market-plugin-detail__version time { display: block; margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
 .market-plugin-detail__version p { margin: 7px 0 0; white-space: pre-wrap; color: var(--el-text-color-regular); line-height: 1.5; }

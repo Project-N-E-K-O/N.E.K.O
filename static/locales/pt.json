@@ -7036,5 +7036,25 @@
     "visitFrame": {
         "peerAway": "Saiu por um instante",
         "visitingAway": "Visitando"
+    },
+    "feedbackDevices": {
+        "title": "Dispositivos do histórico de recomendações",
+        "description": "Gerencie o envio do histórico. A música e as recomendações continuam funcionando.",
+        "name": "Nome do dispositivo (opcional)",
+        "chooseReplacement": "Há 5 dispositivos ativados. Escolha o dispositivo antigo que deseja substituir.",
+        "selectDevice": "Escolha um dispositivo",
+        "enable": "Ativar este dispositivo",
+        "refresh": "Atualizar",
+        "removalNote": "Remover um dispositivo interrompe seus envios e mantém suas configurações atuais. Para voltar, ele precisa ser ativado manualmente no próprio dispositivo.",
+        "thisDevice": "Este dispositivo",
+        "enabled": "Ativado",
+        "removed": "Removido",
+        "remove": "Remover",
+        "ready": "Lista de dispositivos atualizada.",
+        "upgrade": "Atualize o aplicativo para retomar o envio do histórico. O uso normal não é afetado.",
+        "update": "Obter atualização",
+        "conflict": "O estado dos dispositivos mudou. Atualize a lista e escolha novamente.",
+        "notEnabled": "O gerenciamento de dispositivos do histórico de recomendações não está ativado. O uso normal não é afetado.",
+        "unavailable": "Não foi possível carregar os dispositivos. Verifique o login na comunidade e a conexão e atualize a lista."
     }
 }

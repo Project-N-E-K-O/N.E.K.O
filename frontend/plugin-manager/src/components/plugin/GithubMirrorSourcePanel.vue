@@ -118,8 +118,8 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.mirror-source-panel { box-sizing: border-box; height: 100%; overflow: auto; padding: 18px; border: 1px solid var(--el-border-color-light); border-radius: var(--radius-card, 16px); background: var(--el-bg-color); }
-.mirror-source-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid var(--el-border-color-lighter); }
+.mirror-source-panel { box-sizing: border-box; height: 100%; overflow: auto; padding: 18px; border: 1px solid var(--surface-border); border-radius: var(--radius-card, 16px); background: var(--surface-card); box-shadow: var(--surface-shadow); }
+.mirror-source-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid var(--surface-border); }
 .mirror-source-panel__title { display: flex; align-items: center; gap: 8px; color: var(--el-text-color-primary); font-size: 18px; font-weight: 650; }
 .mirror-source-panel__title .el-icon { color: var(--el-color-primary); }
 .mirror-source-panel__header p { max-width: 410px; margin: 7px 0 0; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.55; }

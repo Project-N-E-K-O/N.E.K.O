@@ -45,6 +45,7 @@
         tag="div"
         class="grid-section__grid"
         :class="gridLayoutClass"
+        :style="{ '--grid-section-item-rows': sharedRows ? itemRowSpan : undefined }"
         @before-leave="pinLeavingItem"
         @after-leave="clearLeavingItemStyles"
       >
@@ -94,6 +95,7 @@
             :layout-mode="layoutMode"
             :is-selected="isItemSelected(item.id)"
             :multi-select-enabled="multiSelectEnabled"
+            :shared-rows="sharedRows"
           />
         </div>
       </TransitionGroup>
@@ -116,6 +118,8 @@ const props = withDefaults(defineProps<{
   multiSelectEnabled: boolean
   selectedIds: string[]
   variant?: string
+  /** Opt in to content-sized row tracks shared by neighbouring items. */
+  itemRowSpan?: number
   /** 可选：用于 data-yui-guide-id 的前缀（如 "plugin-list"）。 */
   guidePrefix?: string
   /** Lightweight updates used while the user is actively filtering. */
@@ -124,6 +128,7 @@ const props = withDefaults(defineProps<{
   title: undefined,
   icon: undefined,
   variant: 'default',
+  itemRowSpan: 1,
   guidePrefix: undefined,
   motionPhase: 'initial',
 })
@@ -140,6 +145,7 @@ const {
 } = useGridMotionController({
   phase: () => props.motionPhase,
 })
+const sharedRows = computed(() => props.itemRowSpan > 1 && props.layoutMode !== 'list')
 const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`)
 
 const headerClass = computed(() => {
@@ -177,6 +183,7 @@ function itemClass(item: T) {
   return {
     'grid-section__item--selection-mode': props.multiSelectEnabled,
     'grid-section__item--selected': selected,
+    'grid-section__item--shared-rows': sharedRows.value,
     'grid-section__item--list-layout': props.layoutMode === 'list',
   }
 }
@@ -257,11 +264,11 @@ function itemClass(item: T) {
  * The paint containment this implies clips the hover shadow/lift and the
  * select badge. The clip margin is scoped to the states that paint outside
  * the card: on every item it costs ~15% scroll fps under CPU throttling.
- * Dropping it waits out the card's 0.24s shadow fade. */
+ * Dropping it waits out the card's hover shadow fade. */
 .grid-section--large .grid-section__item {
   content-visibility: auto;
   contain-intrinsic-size: auto 0px auto 200px;
-  transition: overflow-clip-margin 0s 0.24s allow-discrete;
+  transition: overflow-clip-margin 0s var(--motion-duration-normal) allow-discrete;
 }
 
 /* Select badge sits 6px outside, plus its own shadow. */
@@ -270,7 +277,7 @@ function itemClass(item: T) {
   transition-delay: 0s;
 }
 
-/* Hover and selected shadows reach 48px below the card. */
+/* Reserve room for hover shadows and keyboard focus outside the card. */
 .grid-section--large .grid-section__item:is(:hover, :focus-within, .grid-section__item--selected) {
   overflow-clip-margin: 48px;
   transition-delay: 0s;
@@ -319,10 +326,10 @@ function itemClass(item: T) {
   justify-content: center;
   box-shadow: 0 4px 12px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
   transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 0.2s ease;
+    border-color var(--motion-duration-normal) var(--motion-ease-standard),
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    transform var(--motion-duration-normal) var(--motion-ease-spring),
+    box-shadow var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .grid-section__check:hover {
@@ -343,7 +350,7 @@ function itemClass(item: T) {
 .grid-section__check-icon {
   width: 14px;
   height: 14px;
-  color: #fff;
+  color: var(--on-primary);
   animation: check-draw var(--motion-duration-normal) var(--motion-ease-spring) forwards;
 }
 
@@ -381,29 +388,11 @@ function itemClass(item: T) {
 }
 
 .grid-section__item--selected :deep(.plugin-card),
-.grid-section__item--selected :deep(.grid-section-card) {
-  border-color: var(--el-color-primary);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color)),
-    color-mix(in srgb, var(--el-color-primary) 2%, var(--el-bg-color))
-  );
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
-    0 16px 32px color-mix(in srgb, var(--el-color-primary) 12%, transparent),
-    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 6%, transparent);
-}
-
+.grid-section__item--selected :deep(.grid-section-card),
 .grid-section__item--selected :deep(.plugin-list-row-card) {
   border-color: var(--el-color-primary);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color)),
-    color-mix(in srgb, var(--el-color-primary) 2%, var(--el-bg-color))
-  );
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 16%, transparent),
-    0 14px 28px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
+  background: color-mix(in srgb, var(--el-color-primary) 3%, var(--surface-card));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
 .grid-section__item--selection-mode {
@@ -417,16 +406,23 @@ function itemClass(item: T) {
 
 .grid-section__item :deep(.plugin-card) {
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  transition:
-    transform 0.24s ease,
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
 }
 
-.grid-section__item:hover :deep(.plugin-card) {
-  transform: translateY(-3px);
+/* Subgrid needs each card to contribute its intrinsic content sizes. Size
+ * containment for offscreen items would replace these with placeholders. */
+@supports (grid-template-rows: subgrid) {
+  .grid-section__item--shared-rows {
+    display: grid;
+    grid-row: span var(--grid-section-item-rows);
+    grid-template-rows: subgrid;
+    row-gap: 0;
+    height: auto;
+  }
+
+  .grid-section--large .grid-section__item--shared-rows {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+  }
 }
 
 .grid-section__item :deep(.el-card__body) {
@@ -463,5 +459,20 @@ function itemClass(item: T) {
   .grid-section__grid {
     transition: none;
   }
+
+  .grid-section__item :deep(.plugin-card),
+  .grid-section__item :deep(.plugin-list-row-card),
+  .grid-section__check,
+  .check-pop-enter-active,
+  .check-pop-leave-active {
+    transition: none;
+  }
+
+  .grid-section__check:hover,
+  .grid-section__check--checked:hover {
+    transform: none;
+  }
+
+  .grid-section__check-icon { animation: none; }
 }
 </style>

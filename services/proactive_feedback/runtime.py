@@ -20,6 +20,10 @@ class SyncFailure(Exception):
         self.code, self.permanent = code, permanent
 
 
+class SettingsAcknowledgementPending(OSError):
+    """V2 custody exists, but its independent source-journal ACK did not finish."""
+
+
 class ProactiveFeedbackRuntime:
     """One worker; a frozen batch is retried until its exact receipt is durable."""
 
@@ -75,6 +79,9 @@ class ProactiveFeedbackRuntime:
         async with asyncio.timeout(15), self.http.stream(method, self.origin + path, headers=headers, content=body, follow_redirects=False) as response:
             if response.status_code >= 300:
                 status = response.status_code
+                await self._guard(owner, token)
+                if status == 426:
+                    raise SyncFailure("upgrade_required", permanent=True)
                 if status in (409, 422):
                     raise SyncFailure("cloud_conflict" if status == 409 else "cloud_rejected", permanent=True)
                 if status in (401, 403):
@@ -185,7 +192,7 @@ class ProactiveFeedbackRuntime:
             self._retry_at[owner["key"]] = self.clock() + min(900, 30 * 2 ** min(count - 1, 5))
             return {"state": "blocked" if failure.permanent else "retry_wait", "error_code": failure.code}
 
-    def _resume_commit(self, owner, token, batch_id, batch_hash, cancelled):
+    def _resume_commit(self, owner, token, batch_id, batch_hash, cancelled, *, expected_error=None):
         with self.attribution_context() as current_owner:
             snapshot = self.fenced_snapshot_provider()
             if self._closing or cancelled.is_set():
@@ -193,6 +200,8 @@ class ProactiveFeedbackRuntime:
             if (current_owner != owner or host.owner_from_snapshot(snapshot) != owner
                     or (snapshot or {}).get("access_token") != token):
                 raise SyncFailure("session_changed")
+            if expected_error is not None:
+                return self.store.resume_blocked_batch(owner, batch_id, batch_hash, expected_error=expected_error)
             return self.store.resume_blocked_batch(owner, batch_id, batch_hash)
 
     async def resume_blocked_batch(self, *, owner_key, batch_id, batch_hash):
@@ -210,6 +219,9 @@ class ProactiveFeedbackRuntime:
                 raise SyncFailure("upload_paused")
             if owner["community"] != self.origin:
                 raise SyncFailure("community_origin_mismatch")
+            upgrade_status = await asyncio.to_thread(self.store.sync_status, owner)
+            if upgrade_status.get("last_error") == "upgrade_required":
+                raise SyncFailure("upgrade_required", permanent=True)
             async with asyncio.timeout(30):
                 resolved = await self.session_provider()
             await self._guard(owner)
@@ -277,13 +289,19 @@ class ProactiveFeedbackRuntime:
             verified = (signed_in and owner["community"] == self.origin
                         and self._verified_sessions.get(owner["key"]) == (snapshot or {}).get("access_token"))
             has_receipt = result.get("acked", 0) > 0
-            return {**result, "signed_in": signed_in, "owner_key": owner["key"],
+            upgrade_required = (self._errors.get(owner["key"]) == "upgrade_required"
+                                or result.get("last_error") == "upgrade_required")
+            return {**result, "protocol_version": self.store.protocol_version,
+                    "signed_in": signed_in, "owner_key": owner["key"],
                     "running": self._task is not None and not self._task.done() and not self._closing,
                     "settings_import_error": error, "settings_journal_pending": journal_pending,
                     "local_queue_empty": queue_empty, "identity_verified": verified,
                     "has_cloud_receipt": has_receipt, "upload_paused": self.upload_paused,
                     "last_sync_error": error or result.get("last_error") or self._errors.get(owner["key"], ""),
-                    "fully_synced": queue_empty and verified and has_receipt and not self.upload_paused,
+                    "fully_synced": queue_empty and verified and has_receipt and not self.upload_paused and not upgrade_required,
+                    "upgrade_required": upgrade_required,
+                    "minimum_protocol": 2 if upgrade_required else None,
+                    "upgrade_url": "https://github.com/Project-N-E-K-O/N.E.K.O/releases",
                     "retry_after_seconds": max(0, self._retry_at.get(owner["key"], 0) - self.clock())}
 
     async def _run(self):
@@ -323,8 +341,21 @@ def drain_settings(store):
     """Transfer exact journal members before acknowledging the atomic settings file."""
     from utils.preferences import acknowledge_settings_changes, pending_settings_changes
     for entry in pending_settings_changes(limit=100):
-        store.enqueue_settings(entry["owner"], entry["id"], entry["payload"])
-        acknowledge_settings_changes([entry["id"]])
+        if store.protocol_version == 2:
+            custody = store.enqueue_settings(entry["owner"], entry["id"], entry["payload"],
+                                             context=entry.get("context"))
+            if custody.get("status") not in {"durable", "discarded"}:
+                continue
+        else:
+            store.enqueue_settings(entry["owner"], entry["id"], entry["payload"])
+        try:
+            acknowledge_settings_changes([entry["id"]])
+        except Exception as exc:
+            if store.protocol_version == 2 and custody.get("status") == "durable":
+                # Uploading and retiring this fact before its source ACK can
+                # recreate it with a new sequence on the next journal import.
+                raise SettingsAcknowledgementPending("settings_source_acknowledgement_pending") from exc
+            raise
 
 
 def pending_settings():
