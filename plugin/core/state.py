@@ -230,7 +230,6 @@ class GlobalState:
 
         self._event_queue: Optional[asyncio.Queue] = None
         self._lifecycle_queue: Optional[asyncio.Queue] = None
-        self._message_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_lock = threading.Lock()
 
@@ -651,12 +650,6 @@ class GlobalState:
             self._lifecycle_queue = asyncio.Queue(maxsize=LIFECYCLE_QUEUE_MAX)
         return self._lifecycle_queue
 
-    @property
-    def message_queue(self) -> asyncio.Queue:
-        if self._message_queue is None:
-            self._message_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
-        return self._message_queue
-    
     @property
     def plugin_comm_queue(self) -> asyncio.Queue:
         """Central in-process queue for plugin-to-plugin requests (asyncio.Queue)."""

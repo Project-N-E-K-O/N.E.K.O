@@ -11,7 +11,6 @@ from plugin.server.messaging import request_router as module
 
 @pytest.fixture
 async def router(monkeypatch):
-    monkeypatch.setenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED", "false")
     monkeypatch.setattr(state, "_plugin_comm_queue", asyncio.Queue())
     instance = module.PluginRouter()
     try:
@@ -21,9 +20,9 @@ async def router(monkeypatch):
 
 
 async def test_validation_unknown_and_domain_failure_use_one_reply_contract(router):
-    bad = await router._handle_zmq_request({"type": "X", "request_id": "1"})
+    bad = await router._dispatcher.dispatch({"type": "X", "request_id": "1"})
     assert bad["error"]["code"] == "INVALID_REQUEST"
-    unknown = await router._handle_zmq_request(
+    unknown = await router._dispatcher.dispatch(
         {"type": "X", "request_id": "2", "from_plugin": "a"}
     )
     assert unknown["error"]["code"] == "UNKNOWN_OPERATION"

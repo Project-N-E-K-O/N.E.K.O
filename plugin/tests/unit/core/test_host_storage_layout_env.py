@@ -15,8 +15,8 @@ class _FakeCommManager:
     def send_plugin_response(self, *args, **kwargs) -> None:
         self.response = (args, kwargs)
 
-    async def start(self, message_target_queue=None) -> None:
-        self.message_target_queue = message_target_queue
+    async def start(self) -> None:
+        return None
 
     async def shutdown(self, timeout: float) -> None:
         self.shutdown_timeout = timeout
@@ -63,6 +63,7 @@ def test_plugin_host_uses_default_process_context_without_shared_response_proxie
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
     def _reject_explicit_context(method: str) -> object:
         raise AssertionError(
@@ -134,6 +135,7 @@ def test_plugin_process_runner_rejects_missing_uplink_token(
             config_path=config_path,
             downlink_endpoint="ipc://down",
             uplink_endpoint="ipc://up",
+            message_uplink_endpoint="ipc://msg",
         )
 
 
@@ -162,8 +164,10 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
             downlink_endpoint: str,
             uplink_endpoint: str,
             uplink_token: str,
+            *,
+            message_uplink_endpoint: str,
         ) -> None:
-            del downlink_endpoint, uplink_endpoint, uplink_token
+            del downlink_endpoint, uplink_endpoint, uplink_token, message_uplink_endpoint
 
         def channel_sender(self, channel: str) -> _Sender:
             del channel
@@ -180,7 +184,6 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
         def close(self) -> None:
             closed.append("context")
 
-    monkeypatch.setenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED", "0")
     monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
     monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
@@ -201,6 +204,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
         uplink_token="test-uplink-token",
+        message_uplink_endpoint="ipc://msg",
         model_gateway_options=model_gateway_options,
     )
 
@@ -270,7 +274,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         def __init__(self, channel: str) -> None:
             self.channel = channel
 
-        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+        def put(self, payload: dict[str, object], *, timeout: float | None = None) -> None:
             payloads.append(payload)
             if (
                 self.channel == host_module.CH_RES
@@ -287,8 +291,10 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
             downlink_endpoint: str,
             uplink_endpoint: str,
             uplink_token: str,
+            *,
+            message_uplink_endpoint: str,
         ) -> None:
-            del downlink_endpoint, uplink_endpoint, uplink_token
+            del downlink_endpoint, uplink_endpoint, uplink_token, message_uplink_endpoint
             self.stopped = False
 
         def channel_sender(self, channel: str) -> _Sender:
@@ -335,6 +341,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
         uplink_token="test-uplink-token",
+        message_uplink_endpoint="ipc://msg",
     )
 
     assert order == [
@@ -376,6 +383,7 @@ async def test_plugin_host_records_applied_config_only_after_ready_handshake(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             return
@@ -422,6 +430,7 @@ async def test_plugin_host_records_loaded_config_for_tolerated_startup_warning(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             return
@@ -480,15 +489,22 @@ def test_plugin_process_runner_cancels_trigger_without_run_id_before_closing_mod
                 raise
 
     class _Sender:
-        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+        def put(self, payload: dict[str, object], *, timeout: float | None = None) -> None:
             return
 
         def put_nowait(self, payload: dict[str, object]) -> None:
             return
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str, uplink_token: str) -> None:
-            del downlink_endpoint, uplink_endpoint, uplink_token
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+            *,
+            message_uplink_endpoint: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token, message_uplink_endpoint
             self.sent_trigger = False
 
         def channel_sender(self, channel: str) -> _Sender:
@@ -531,6 +547,7 @@ def test_plugin_process_runner_cancels_trigger_without_run_id_before_closing_mod
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
         uplink_token="test-uplink-token",
+        message_uplink_endpoint="ipc://msg",
     )
 
     # A trigger without _ctx.run_id must still be unwound before model clients close.
@@ -552,7 +569,7 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
         def __init__(self, channel: str) -> None:
             self.channel = channel
 
-        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+        def put(self, payload: dict[str, object], *, timeout: float | None = None) -> None:
             payloads.append(payload)
             timeouts.append(timeout)
 
@@ -565,8 +582,10 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             downlink_endpoint: str,
             uplink_endpoint: str,
             uplink_token: str,
+            *,
+            message_uplink_endpoint: str,
         ) -> None:
-            del downlink_endpoint, uplink_endpoint, uplink_token
+            del downlink_endpoint, uplink_endpoint, uplink_token, message_uplink_endpoint
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -594,6 +613,7 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             downlink_endpoint="ipc://down",
             uplink_endpoint="ipc://up",
             uplink_token="test-uplink-token",
+            message_uplink_endpoint="ipc://msg",
         )
 
     result_payloads = [
@@ -664,7 +684,7 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
         def __init__(self, channel: str) -> None:
             self.channel = channel
 
-        def put(self, payload: dict[str, object], block: bool = True, timeout: float | None = None) -> None:
+        def put(self, payload: dict[str, object], *, timeout: float | None = None) -> None:
             payloads.append(payload)
 
         def put_nowait(self, payload: dict[str, object]) -> None:
@@ -676,8 +696,10 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
             downlink_endpoint: str,
             uplink_endpoint: str,
             uplink_token: str,
+            *,
+            message_uplink_endpoint: str,
         ) -> None:
-            del downlink_endpoint, uplink_endpoint, uplink_token
+            del downlink_endpoint, uplink_endpoint, uplink_token, message_uplink_endpoint
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -711,6 +733,7 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
         uplink_token="test-uplink-token",
+        message_uplink_endpoint="ipc://msg",
         startup_options={"startup_failure": "fail"},
     )
 
@@ -732,6 +755,7 @@ async def test_plugin_process_start_refreshes_storage_layout_env(monkeypatch: py
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             self.closed = True
@@ -777,6 +801,7 @@ async def test_plugin_process_start_removes_downlink_sender_when_spawn_fails(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             self.closed = True
@@ -826,6 +851,7 @@ async def test_abort_startup_after_failure_removes_downlink_sender(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             self.closed = True
@@ -862,6 +888,7 @@ async def test_plugin_process_start_keeps_running_on_startup_error_by_default(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             self.closed = True
@@ -904,6 +931,7 @@ async def test_plugin_process_start_aborts_on_startup_error_in_fail_mode(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             self.closed = True
@@ -944,6 +972,7 @@ async def test_plugin_process_start_passes_startup_failure_policy_to_child(
     class _FakeTransport:
         downlink_endpoint = "ipc://down"
         uplink_endpoint = "ipc://up"
+        message_uplink_endpoint = "ipc://msg"
 
         def close(self) -> None:
             self.closed = True
@@ -954,9 +983,8 @@ async def test_plugin_process_start_passes_startup_failure_policy_to_child(
             self.args = kwargs["args"]
 
         def start(self) -> None:
-            # Positional index on purpose. args[-1] is message_uplink_endpoint,
-            # a str, so reading from the end would slip past the isinstance
-            # check below and leave the assertion vacuously green.
+            # startup_options is the eighth positional argument of
+            # _plugin_process_runner; the endpoints after it travel as kwargs.
             startup_options = self.args[7]
             captured_startup_options.append(
                 dict(startup_options)

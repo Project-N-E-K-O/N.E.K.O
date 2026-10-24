@@ -33,7 +33,11 @@ def test_uplink_decoder_rejects_pickle_without_executing_it() -> None:
     wire_payload = pickle.dumps((zmq_transport.CH_COMM, _MaliciousPayload()))
 
     with pytest.raises(ValueError, match="invalid uplink payload"):
-        zmq_transport._decode_uplink(wire_payload, expected_token="host-channel-token")
+        zmq_transport._decode_uplink(
+            wire_payload,
+            expected_token="host-channel-token",
+            allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
+        )
 
     assert _PICKLE_EXECUTED is False
 
@@ -58,6 +62,7 @@ def test_uplink_messagepack_round_trip_preserves_channel_and_payload() -> None:
     assert zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     ) == (
         zmq_transport.CH_COMM,
         payload,
@@ -80,6 +85,7 @@ def test_uplink_decoder_rejects_another_plugin_host_channel_token() -> None:
         zmq_transport._decode_uplink(
             encoded,
             expected_token="victim-channel-token",
+            allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
         )
 
 
@@ -306,6 +312,7 @@ def test_uplink_result_normalizes_path_values() -> None:
     _channel, payload = zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     )
 
     assert payload["data"]["path"] == str(Path("artifacts/result.json"))
@@ -335,6 +342,7 @@ def test_uplink_result_rejects_non_json_container_types(container: object) -> No
     _channel, payload = zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     )
 
     assert payload == {
@@ -367,6 +375,7 @@ def test_unserializable_uplink_result_returns_an_immediate_error() -> None:
     _channel, payload = zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     )
 
     assert payload == {
@@ -387,7 +396,7 @@ def test_oversized_result_returns_a_correlated_fault(monkeypatch):
         zmq_transport.CH_RES,
         {"req_id": "large", "success": True, "data": "x" * 4096, "error": None},
     )
-    channel, result = zmq_transport._decode_uplink(raw, expected_token="token")
+    channel, result = zmq_transport._decode_uplink(raw, expected_token="token", allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS)
     assert channel == zmq_transport.CH_RES
     assert len(raw) <= 1024
     assert result["req_id"] == "large"
@@ -594,9 +603,8 @@ async def test_control_uplink_refuses_message_channels(channel: str) -> None:
 
     The size ceiling bounds what one smuggled frame costs; this closes the
     route itself. Without it a plugin could keep pushing under-ceiling message
-    frames at the control endpoint and have them routed as messages by
-    ``_consume_uplink``'s compatibility branch, sidestepping the message
-    plane's own accounting.
+    frames at the control endpoint, sidestepping the message plane's own
+    accounting.
     """
     host = zmq_transport.HostTransport()
     child = zmq_transport.ChildTransport(
@@ -638,16 +646,12 @@ async def test_control_uplink_refuses_message_channels(channel: str) -> None:
 
 
 @pytest.mark.plugin_unit
-def test_uplink_decoder_still_accepts_both_planes_by_default() -> None:
-    """The refusal lives on the socket, not in the decoder.
+def test_uplink_decoder_accepts_message_channels_on_the_message_plane() -> None:
+    """The refusal is per socket, not a blanket refusal inside the decoder.
 
-    ``ChildTransport`` falls back to sending message channels on the control
-    socket when it is built without a dedicated message endpoint, and
-    ``_consume_uplink`` still routes CH_MSG for host transports that expose no
-    ``recv_message`` at all. Those pair only with each other -- a real
-    ``HostTransport`` always binds both sockets and always advertises the
-    message endpoint -- so refusing message channels on *this* host's control
-    socket must not turn into a blanket refusal inside the decoder.
+    Each host socket passes its own channel allowlist, so refusing message
+    channels on the control uplink must leave them decodable for the message
+    uplink that owns them.
     """
     for channel in (zmq_transport.CH_MSG, zmq_transport.CH_MSG_BATCH):
         encoded = zmq_transport._encode_uplink(
@@ -659,6 +663,7 @@ def test_uplink_decoder_still_accepts_both_planes_by_default() -> None:
         assert zmq_transport._decode_uplink(
             encoded,
             expected_token="host-channel-token",
+            allowed_channels=zmq_transport._MESSAGE_UPLINK_CHANNELS,
         ) == (channel, {"type": "MESSAGE_PUSH"})
 
 
@@ -1119,7 +1124,7 @@ def test_non_string_keys_survive_the_uplink(value: dict) -> None:
     payload = {"req_id": "r1", "success": True, "data": value}
 
     raw = zmq_transport._encode_uplink("tok", zmq_transport.CH_RES, payload)
-    channel, decoded = zmq_transport._decode_uplink(raw, expected_token="tok")
+    channel, decoded = zmq_transport._decode_uplink(raw, expected_token="tok", allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS)
 
     assert channel == zmq_transport.CH_RES
     _assert_same_including_key_types(decoded["data"], value)

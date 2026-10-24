@@ -31,6 +31,7 @@ def host_factory(monkeypatch, tmp_path):
         host_module, "HostTransport",
         lambda: SimpleNamespace(
             downlink_endpoint="ipc://down", uplink_endpoint="ipc://up",
+            message_uplink_endpoint="ipc://msg",
             close=lambda: None,
         ),
     )

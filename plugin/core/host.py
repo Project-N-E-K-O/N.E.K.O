@@ -771,8 +771,7 @@ async def _handle_config_update_command(
 ) -> None:
     """Handle CONFIG_UPDATE for hot configuration changes.
 
-    ``res_sender`` must expose ``.put(obj, timeout=...)`` — either a
-    :class:`ChannelSender` or legacy ``mp.Queue``.
+    ``res_sender`` is the :class:`ChannelSender` for the result channel.
     """
     req_id = msg.get("req_id", "unknown")
     new_config = msg.get("config", {})
@@ -907,9 +906,9 @@ def _plugin_process_runner(
     uplink_token: str = "",
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
-    message_uplink_endpoint: str = "",
-    image_uplink_endpoint: str | None = None,
     *,
+    message_uplink_endpoint: str,
+    image_uplink_endpoint: str | None = None,
     model_gateway_options: dict[str, str] | None = None,
 ) -> None:
     """Separate-process runner communicating with hosts through ZMQ."""
@@ -941,11 +940,9 @@ def _plugin_process_runner(
         )
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    child_transport_kwargs: dict[str, object] = {}
-    if message_uplink_endpoint:
-        child_transport_kwargs["message_uplink_endpoint"] = (
-            message_uplink_endpoint
-        )
+    child_transport_kwargs: dict[str, object] = {
+        "message_uplink_endpoint": message_uplink_endpoint,
+    }
     if image_uplink_endpoint:
         child_transport_kwargs["image_uplink_endpoint"] = image_uplink_endpoint
     child_transport = ChildTransport(
@@ -1964,9 +1961,9 @@ class PluginHost:
                 getattr(self.transport, "uplink_token", ""),
                 self._process_stop_event,
                 self._startup_options,
-                getattr(self.transport, "message_uplink_endpoint", ""),
             ),
             kwargs={
+                "message_uplink_endpoint": self.transport.message_uplink_endpoint,
                 "image_uplink_endpoint": getattr(
                     self.transport,
                     "image_uplink_endpoint",
@@ -2002,21 +1999,15 @@ class PluginHost:
 
     async def start(
         self,
-        message_target_queue=None,
         startup_timeout: float | None = None,
         startup_failure: str = "warn",
     ) -> Any:
-        """
-        Start background tasks from async contexts.
-        
-        Args:
-            message_target_queue: Main-process queue receiving plugin pushes.
-        """
+        """Start background tasks from async contexts."""
         # Register this plugin's downlink sender so plugin_router can
         # route plugin-to-plugin responses back to the child process.
         state.register_downlink_sender(self.plugin_id, self.comm_manager.send_plugin_response)
 
-        await self.comm_manager.start(message_target_queue=message_target_queue)
+        await self.comm_manager.start()
         should_wait_for_startup = startup_timeout is not None and startup_timeout > 0
         startup_failure_policy = str(startup_failure or "warn").strip().lower()
         self._startup_options["startup_failure"] = startup_failure_policy

@@ -16,6 +16,10 @@ class _Transport:
         await asyncio.sleep(10)
         return None
 
+    async def recv_message(self, timeout_ms=None):
+        await asyncio.sleep(10)
+        return None
+
     async def send_command(self, msg):
         return None
 
@@ -352,14 +356,13 @@ async def test_message_route_overwrites_the_plugin_supplied_identity(
         transport=_Transport(),
         logger=_Logger(),
     )
-    target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-    manager._message_target_queue = target_queue
     stored: list[dict[str, object]] = []
     monkeypatch.setattr(
         state,
         "append_message_record",
         lambda record: stored.append(copy.deepcopy(record)),
     )
+    written = _capture_plane(monkeypatch)
 
     await manager._route_message(
         {
@@ -370,10 +373,9 @@ async def test_message_route_overwrites_the_plugin_supplied_identity(
         }
     )
 
-    # Both the stored record and the forwarded copy have to carry the sender
-    # the host authenticated, not the one the payload claims.
-    forwarded = target_queue.get_nowait()
-    for payload in (stored[0], forwarded):
+    # Both the stored record and the copy published to the plane have to carry
+    # the sender the host authenticated, not the one the payload claims.
+    for payload in (stored[0], written[0]["record"]):
         assert payload["plugin_id"] == "authenticated-plugin"
         assert payload["metadata"] == {"public_hint": "keep-me"}
 
@@ -548,9 +550,8 @@ async def test_entry_update_register_keeps_the_declared_controls() -> None:
 #
 # Plugin pushes reach the user's ears only through message plane; ProactiveBridge subscribes
 # to its "messages." prefix and forwards received records to main_server. The control-plane store is a cache
-# (append_message_record's own comment forbids mirroring it into the plane), while
-# _message_target_queue has no consumers anywhere in the repository. This chain previously broke: push_message() returned
-# submitted=True while the character said nothing.
+# (append_message_record's own comment forbids mirroring it into the plane). This chain previously broke:
+# push_message() returned submitted=True while the character said nothing.
 
 
 def _capture_plane(monkeypatch, *, accepted: bool = True) -> list[dict]:
@@ -582,7 +583,6 @@ async def test_a_pushed_message_reaches_the_message_plane(monkeypatch) -> None:
         transport=_Transport(),
         logger=_Logger(),
     )
-    manager._message_target_queue = asyncio.Queue()
     monkeypatch.setattr(state, "append_message_record", lambda record: None)
     written = _capture_plane(monkeypatch)
 
@@ -604,29 +604,6 @@ async def test_a_pushed_message_reaches_the_message_plane(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_plane_write_does_not_depend_on_the_legacy_queue(monkeypatch) -> None:
-    """No consumer reads that queue, so it must not gate delivery.
-
-    Mutation: put the plane write back behind the ``_message_target_queue``
-    guard.
-    """
-    manager = PluginCommunicationResourceManager(
-        plugin_id="authenticated-plugin",
-        transport=_Transport(),
-        logger=_Logger(),
-    )
-    manager._message_target_queue = None
-    monkeypatch.setattr(state, "append_message_record", lambda record: None)
-    written = _capture_plane(monkeypatch)
-
-    await manager._route_message(
-        {"type": "MESSAGE_PUSH", "parts": [{"type": "text", "text": "hello"}]}
-    )
-
-    assert len(written) == 1, "没有 legacy 队列时消息就到不了 plane"
-
-
-@pytest.mark.asyncio
 async def test_a_replayed_record_is_not_published_twice(monkeypatch) -> None:
     """``_bus_stored`` already marks a record as handled; honour it here too."""
     manager = PluginCommunicationResourceManager(
@@ -634,7 +611,6 @@ async def test_a_replayed_record_is_not_published_twice(monkeypatch) -> None:
         transport=_Transport(),
         logger=_Logger(),
     )
-    manager._message_target_queue = asyncio.Queue()
     monkeypatch.setattr(state, "append_message_record", lambda record: None)
     written = _capture_plane(monkeypatch)
 
@@ -659,21 +635,21 @@ async def test_a_failing_plane_does_not_take_down_the_message_loop(monkeypatch) 
         transport=_Transport(),
         logger=_Logger(),
     )
-    target_queue: asyncio.Queue = asyncio.Queue()
-    manager._message_target_queue = target_queue
-    monkeypatch.setattr(state, "append_message_record", lambda record: None)
+    stored: list[dict] = []
+    monkeypatch.setattr(state, "append_message_record", stored.append)
 
     def _explode(**_kwargs):
         raise RuntimeError("plane down")
 
     monkeypatch.setattr(plane_bridge, "publish_record", _explode)
 
-    await manager._route_message(
-        {"type": "MESSAGE_PUSH", "parts": [{"type": "text", "text": "hello"}]}
-    )
+    for text in ("hello", "again"):
+        await manager._route_message(
+            {"type": "MESSAGE_PUSH", "parts": [{"type": "text", "text": text}]}
+        )
 
-    # The turn continues: the legacy queue receives normally and no exception propagates.
-    assert target_queue.qsize() == 1
+    # No exception propagates, and the next message is still handled.
+    assert len(stored) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +689,6 @@ async def test_the_host_does_not_inflate_the_payload_the_sdk_measured(monkeypatc
         transport=_Transport(),
         logger=_Logger(),
     )
-    manager._message_target_queue = asyncio.Queue()
 
     # Use the **worst-case shape**, not a convenient one: omit both message_id and time (the host adds
     # each), and use the schema's longest plugin_id (overwritten by authenticated identity). Measuring a
@@ -817,81 +792,3 @@ def _inspect_source(module, needle: str) -> str:
     text = Path(module.__file__).read_text(encoding="utf-8")
     assert needle in text, f"{needle} 不在 {module.__name__} 里"
     return text
-
-
-# ── the legacy message queue must never delay a push ───────────────────
-
-
-class _NoAwaitQueue:
-    """A queue that refuses to be awaited.
-
-    ``state.message_queue`` has no consumer anywhere in the tree, so it fills
-    once and stays full. Awaiting it -- even with a 50 ms bound -- charges every
-    push for a mirror nobody reads, and this branch made ``_forward_message``
-    the only push path.
-    """
-
-    def __init__(self, maxsize: int) -> None:
-        self.maxsize = maxsize
-        self.items: list = []
-
-    def put_nowait(self, item) -> None:
-        if len(self.items) >= self.maxsize:
-            raise asyncio.QueueFull
-        self.items.append(item)
-
-    async def put(self, item) -> None:  # pragma: no cover - the failure we guard
-        raise AssertionError(
-            "遗留队列这一跳被 await 了——消费者根本不存在，等它就是白等"
-        )
-
-
-def _push(manager, published: list):
-    manager._publish_message_to_plane = lambda msg: (published.append(msg), True)[1]
-    return manager._route_message(
-        {
-            "type": "MESSAGE_PUSH",
-            "plugin_id": "authenticated-plugin",
-            "parts": [{"type": "text", "text": "cue"}],
-        }
-    )
-
-
-@pytest.mark.asyncio
-async def test_legacy_queue_hop_is_never_awaited(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Mutation: restore ``await asyncio.wait_for(...put(msg), timeout=0.05)``."""
-    manager = PluginCommunicationResourceManager(
-        plugin_id="authenticated-plugin", transport=_Transport(), logger=_Logger()
-    )
-    manager._message_target_queue = _NoAwaitQueue(maxsize=4)
-    monkeypatch.setattr(state, "append_message_record", lambda record: None)
-
-    published: list = []
-    await _push(manager, published)
-
-    assert len(manager._message_target_queue.items) == 1
-    assert len(published) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_full_legacy_queue_does_not_hold_up_delivery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Delivery already happened in the plane write; the mirror may be dropped.
-
-    This is the state the queue is permanently in after 1000 pushes, so it is
-    the interesting one, not the edge case.
-    """
-    manager = PluginCommunicationResourceManager(
-        plugin_id="authenticated-plugin", transport=_Transport(), logger=_Logger()
-    )
-    manager._message_target_queue = _NoAwaitQueue(maxsize=0)
-    monkeypatch.setattr(state, "append_message_record", lambda record: None)
-
-    published: list = []
-    await _push(manager, published)
-
-    assert manager._message_target_queue.items == []
-    assert len(published) == 1, "队列满就把投递也一起丢了——投递不该依赖这个镜像"

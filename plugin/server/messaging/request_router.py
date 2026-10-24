@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import os
 from collections.abc import Mapping
 
 from plugin.core.rpc import (
@@ -19,7 +18,6 @@ from plugin.core.zmq_transport import pack_rpc_payload, unpack_rpc_payload
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers.registry import build_request_handlers
-from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
 
 logger = get_logger("server.messaging.request_router")
 
@@ -39,8 +37,6 @@ class PluginRouter:
             self._handlers, error_mapper=_domain_error, logger=logger
         )
         self._router_task: asyncio.Task | None = None
-        self._zmq_task: asyncio.Task | None = None
-        self._zmq_server = None
         self._shutdown_event = asyncio.Event()
 
     async def start(self) -> None:
@@ -56,24 +52,6 @@ class PluginRouter:
             self._router_loop(), name="plugin-router-loop"
         )
         self._router_task.add_done_callback(self._observe)
-        enabled = os.getenv(
-            "NEKO_PLUGIN_ZMQ_IPC_ENABLED", str(PLUGIN_ZMQ_IPC_ENABLED)
-        ).lower() in ("true", "1", "yes", "on")
-        if enabled:
-            from plugin.utils.zeromq_ipc import ZmqIpcServer
-
-            try:
-                self._zmq_server = ZmqIpcServer(
-                    os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", PLUGIN_ZMQ_IPC_ENDPOINT),
-                    self._handle_zmq_request,
-                )
-                self._zmq_task = asyncio.create_task(
-                    self._zmq_server.serve_forever(self._shutdown_event),
-                    name="plugin-router-zmq",
-                )
-                self._zmq_task.add_done_callback(self._observe)
-            except Exception:
-                logger.exception("Failed to start plugin IPC compatibility listener")
         logger.info("Plugin router started")
 
     @staticmethod
@@ -87,23 +65,12 @@ class PluginRouter:
 
     async def stop(self) -> None:
         self._shutdown_event.set()
-        tasks = [
-            task for task in (self._router_task, self._zmq_task) if task is not None
-        ]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if self._router_task is not None:
+            self._router_task.cancel()
+            await asyncio.gather(self._router_task, return_exceptions=True)
         await self._dispatcher.close()
-        if self._zmq_server is not None:
-            await self._zmq_server.aclose()
-        self._router_task = self._zmq_task = self._zmq_server = None
+        self._router_task = None
         logger.info("Plugin router stopped")
-
-    async def _handle_zmq_request(
-        self, request: dict[str, object]
-    ) -> dict[str, object]:
-        return await self._dispatcher.dispatch(request)
 
     async def _router_loop(self) -> None:
         while not self._shutdown_event.is_set():

@@ -89,7 +89,6 @@ class PluginCommunicationResourceManager:
     _message_consumer_task: Optional[asyncio.Task] = None
     _image_consumer_task: Optional[asyncio.Task] = None
     _shutdown_event: Optional[asyncio.Event] = None
-    _message_target_queue: Optional[asyncio.Queue] = None
     _owner_loop: Optional[asyncio.AbstractEventLoop] = None
     _startup_result: Optional[dict] = field(default=None, init=False, repr=False)
     _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
@@ -134,20 +133,12 @@ class PluginCommunicationResourceManager:
             raise
         return await asyncio.wrap_future(future)
 
-    async def _start_local(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
+    async def _start_local(self) -> None:
         self._closed = False
-        self._message_target_queue = message_target_queue
         if self._uplink_consumer_task is None or self._uplink_consumer_task.done():
             self._uplink_consumer_task = asyncio.create_task(self._consume_uplink())
             self.logger.debug("Started uplink consumer for plugin {}", self.plugin_id)
-        recv_message = getattr(self.transport, "recv_message", None)
-        if (
-            callable(recv_message)
-            and (
-                self._message_consumer_task is None
-                or self._message_consumer_task.done()
-            )
-        ):
+        if self._message_consumer_task is None or self._message_consumer_task.done():
             self._message_consumer_task = asyncio.create_task(
                 self._consume_message_uplink()
             )
@@ -176,8 +167,8 @@ class PluginCommunicationResourceManager:
                 return
             await asyncio.sleep(0.05)
 
-    async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
-        await self._run_on_owner_loop(self._start_local(message_target_queue=message_target_queue))
+    async def start(self) -> None:
+        await self._run_on_owner_loop(self._start_local())
 
     async def _prepare_startup_wait_local(self) -> None:
         self._startup_result = None
@@ -568,15 +559,6 @@ class PluginCommunicationResourceManager:
                             self._status_buffer.put_nowait(payload)
                         except asyncio.QueueFull:
                             pass
-                elif ch == CH_MSG:
-                    # Compatibility for host transports that expose no
-                    # recv_message at all, so the isolated consumer below never
-                    # starts and both planes arrive here. A real HostTransport
-                    # is not one of them: it always binds a message socket, and
-                    # its recv() refuses message channels on the control uplink
-                    # so that a plugin cannot use that socket to route message
-                    # traffic around the message plane's frame ceiling.
-                    await self._route_message(payload)
                 elif ch == CH_COMM:
                     await self._route_comm(payload)
                 else:
@@ -593,14 +575,13 @@ class PluginCommunicationResourceManager:
         """Consume authenticated plugin messages independently of control RPCs."""
         self._ensure_shutdown_event()
         se = self._shutdown_event
-        recv_message = getattr(self.transport, "recv_message", None)
-        if se is None or not callable(recv_message):
+        if se is None:
             return
 
         poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
         while not se.is_set():
             try:
-                result = await self._poll_transport(recv_message, poll_ms)
+                result = await self._poll_transport(self.transport.recv_message, poll_ms)
                 if result is None:
                     continue
                 channel, payload = result
@@ -745,9 +726,8 @@ class PluginCommunicationResourceManager:
         subscribes to the plane's ``messages.`` topic and pushes what it sees to
         main_server. The control-plane store this method sits next to is a cache
         -- ``append_message_record``'s own comment forbids mirroring it into the
-        plane -- and ``_message_target_queue`` has no consumer, so without this
-        write ``push_message()`` answers ``submitted=True`` for a message nobody
-        will ever hear.
+        plane -- so without this write ``push_message()`` answers
+        ``submitted=True`` for a message nobody will ever hear.
 
         The host is the writer on purpose. A plugin writing the ingest socket
         directly (what this branch replaced) can put any ``plugin_id`` it likes
@@ -837,31 +817,9 @@ class PluginCommunicationResourceManager:
                 state.append_message_record(msg)
             except Exception:
                 self.logger.debug("Failed to store message for plugin {}", self.plugin_id, exc_info=True)
-            # After the cache and BEFORE the legacy queue guard below: the plane
-            # is the delivery path and the queue is a leftover, so a host with no
-            # queue wired must still deliver. Gated on the same "not yet stored"
+            # The plane is the delivery path. Gated on the same "not yet stored"
             # condition so a record replayed through here is not published twice.
             self._publish_message_to_plane(msg)
-
-        if not self._message_target_queue:
-            return
-
-        try:
-            # put_nowait, never a bounded await. This queue (state.message_queue)
-            # has no consumer anywhere in the tree -- lifecycle_service passes it
-            # in and everything else only writes -- so it fills once and stays
-            # full. The old `wait_for(put(...), 0.05)` then charged every single
-            # push 50 ms for a mirror nobody reads; harmless while push_message
-            # wrote the plane itself, but this branch made _forward_message the
-            # only path, so it would have capped delivery at ~20 msg/s.
-            #
-            # Kept rather than deleted because it is still a compatibility
-            # mirror: a consumer attaching later gets messages while there is
-            # room, and gets nothing instead of a stall when there is not. The
-            # actual delivery already happened above, in the plane write.
-            self._message_target_queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            return
 
         if PLUGIN_LOG_MESSAGE_FORWARD:
             log_content = _format_log_text(msg.get("content", ""))

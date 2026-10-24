@@ -16,7 +16,6 @@ pytestmark = pytest.mark.plugin_integration
 
 @pytest.fixture
 async def rpc_hosts(monkeypatch, tmp_path):
-    monkeypatch.setenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED", "false")
     monkeypatch.setattr(
         host_module, "_refresh_child_storage_layout_env", lambda logger: None
     )
