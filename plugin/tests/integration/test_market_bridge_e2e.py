@@ -117,6 +117,21 @@ def _body(*chunks: bytes, error: BaseException | None = None) -> Any:
     return stream
 
 
+_RELEASE_URL = "https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin"
+_MIRROR_URL = f"https://cdn.gh-proxy.org/{_RELEASE_URL}"
+
+
+def _mirror_task(*, direct_fallback: bool) -> dict[str, Any]:
+    """An install task routed through ``_MIRROR_URL``, as a saved preference would route it."""
+    from plugin.server.routes import market_bridge
+
+    return {"_download_route": market_bridge._DownloadRoute(
+        candidates=(("cdn-gh-proxy-org", _MIRROR_URL),),
+        direct_fallback=direct_fallback,
+        deadline=time.monotonic() + 60,
+    )}
+
+
 # ─── Fixture: build a minimal valid .neko-plugin package ──────────────
 
 
@@ -1665,18 +1680,13 @@ async def test_download_package_retries_allowlisted_proxy_via_github_direct(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A stream failure after a proxy 200 falls back to the original asset URL."""
+    """A stream failure on a specified mirror is retried from GitHub direct."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    direct_url = (
-        "https://github.com/example/plugin/releases/download/v1.0.0/"
-        "plugin.neko-plugin"
-    )
-    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
     attempts: list[str] = []
 
     def respond(url: str) -> _FakeDownloadResponse:
-        if url == proxied_url:
+        if url == _MIRROR_URL:
             return _FakeDownloadResponse(url, _body(error=httpx.ReadError("proxy stream closed")), 14)
         return _FakeDownloadResponse(url, _body(b"direct-package"), 14)
 
@@ -1687,10 +1697,12 @@ async def test_download_package_retries_allowlisted_proxy_via_github_direct(
         classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
     )
 
-    result, effective_url = await market_bridge_module._download_package(proxied_url, {})
+    result, effective_url = await market_bridge_module._download_package(
+        _RELEASE_URL, _mirror_task(direct_fallback=True),
+    )
 
-    assert attempts == [proxied_url, direct_url]
-    assert effective_url == direct_url
+    assert attempts == [_MIRROR_URL, _RELEASE_URL]
+    assert effective_url == _RELEASE_URL
     assert result.read_bytes() == b"direct-package"
 
 
@@ -1703,15 +1715,10 @@ async def test_download_package_does_not_retry_oversized_allowlisted_proxy(
     """A size-policy refusal must not download the same release from another source."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    direct_url = (
-        "https://github.com/example/plugin/releases/download/v1.0.0/"
-        "plugin.neko-plugin"
-    )
-    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
     attempts: list[str] = []
 
     def respond(url: str) -> _FakeDownloadResponse:
-        length = market_bridge_module._DOWNLOAD_MAX_BYTES + 1 if url == proxied_url else 14
+        length = market_bridge_module._DOWNLOAD_MAX_BYTES + 1 if url == _MIRROR_URL else 14
         return _FakeDownloadResponse(url, _body(b"direct-package"), length)
 
     _fake_download_client(monkeypatch, respond, attempts)
@@ -1721,11 +1728,11 @@ async def test_download_package_does_not_retry_oversized_allowlisted_proxy(
         classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
     )
 
-    task = {}
+    task = _mirror_task(direct_fallback=True)
     with pytest.raises(market_bridge_module._DownloadAttemptError) as raised:
-        await market_bridge_module._download_package(proxied_url, task)
+        await market_bridge_module._download_package(_RELEASE_URL, task)
 
-    assert attempts == [proxied_url]
+    assert attempts == [_MIRROR_URL]
     assert raised.value.code == "package_size_exceeded"
     assert raised.value.retryable is False
     assert task["downloaded_bytes"] == 0
@@ -1742,15 +1749,10 @@ async def test_direct_download_hash_mismatch_does_not_retry_github_again(
     """A network fallback is verified as direct and never triggers a second retry."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    direct_url = (
-        "https://github.com/example/plugin/releases/download/v1.0.0/"
-        "plugin.neko-plugin"
-    )
-    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
     attempts: list[str] = []
 
     def respond(url: str) -> _FakeDownloadResponse:
-        if url == proxied_url:
+        if url == _MIRROR_URL:
             return _FakeDownloadResponse(url, _body(error=httpx.ReadError("proxy stream closed")), 13)
         return _FakeDownloadResponse(url, _body(b"wrong-package"), 13)
 
@@ -1761,16 +1763,17 @@ async def test_direct_download_hash_mismatch_does_not_retry_github_again(
         classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
     )
 
-    package_path, effective_url = await market_bridge_module._download_package(proxied_url, {})
+    task = _mirror_task(direct_fallback=True)
+    package_path, effective_url = await market_bridge_module._download_package(_RELEASE_URL, task)
     with pytest.raises(ValueError, match="SHA256 校验失败"):
         await market_bridge_module._verify_downloaded_package_with_fallback(
             effective_url,
             package_path,
             hashlib.sha256(b"valid-package").hexdigest(),
-            {},
+            task,
         )
 
-    assert attempts == [proxied_url, direct_url]
+    assert attempts == [_MIRROR_URL, _RELEASE_URL]
 
 
 @pytest.mark.asyncio
@@ -1871,10 +1874,10 @@ async def test_proxy_verification_cancellation_removes_temporary_package(
 
     verification = asyncio.create_task(
         market_bridge_module._verify_downloaded_package_with_fallback(
-            "https://cdn.gh-proxy.org/https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin",
+            _RELEASE_URL,
             package_path,
             "a" * 64,
-            {},
+            _mirror_task(direct_fallback=False),
         )
     )
     assert await asyncio.to_thread(verifier_started.wait, 1)
@@ -1900,8 +1903,6 @@ async def test_direct_verification_cancellation_removes_temporary_package(
     """Cancellation waits for the direct verifier thread before cleanup."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    direct_url = "https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin"
-    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
     proxy_path = tmp_path / "proxy.neko-plugin"
     direct_path = tmp_path / "direct.neko-plugin"
     proxy_path.write_bytes(b"proxy-package")
@@ -1922,7 +1923,8 @@ async def test_direct_verification_cancellation_removes_temporary_package(
         return "passed"
 
     async def download_direct(url: str, task: dict[str, Any]) -> Path:
-        assert url == direct_url
+        assert url == _RELEASE_URL
+        assert task["_download_route"].candidates == ()
         return direct_path
 
     async def observe_cancellation_wait(verification_task: asyncio.Task[Any]) -> None:
@@ -1939,10 +1941,10 @@ async def test_direct_verification_cancellation_removes_temporary_package(
 
     verification = asyncio.create_task(
         market_bridge_module._verify_downloaded_package_with_fallback(
-            proxied_url,
+            _RELEASE_URL,
             proxy_path,
             "a" * 64,
-            {},
+            _mirror_task(direct_fallback=False),
         )
     )
     assert await asyncio.to_thread(verifier_started.wait, 1)
@@ -1966,18 +1968,13 @@ async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A proxy 200 with invalid bytes retries direct before reporting a mismatch."""
+    """A mirror 200 with invalid bytes retries direct before reporting a mismatch."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    direct_url = (
-        "https://github.com/example/plugin/releases/download/v1.0.0/"
-        "plugin.neko-plugin"
-    )
-    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
     attempts: list[str] = []
 
     def respond(url: str) -> _FakeDownloadResponse:
-        body = b"proxy-error-page" if url == proxied_url else b"valid-package"
+        body = b"proxy-error-page" if url == _MIRROR_URL else b"valid-package"
         return _FakeDownloadResponse(url, _body(body), len(body))
 
     _fake_download_client(monkeypatch, respond, attempts)
@@ -1987,17 +1984,18 @@ async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
         classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
     )
 
-    proxy_path = await market_bridge_module._download_package_once(proxied_url, {})
+    task = _mirror_task(direct_fallback=False)
+    proxy_path = await market_bridge_module._download_package_once(_RELEASE_URL, task)
     expected_hash = hashlib.sha256(b"valid-package").hexdigest()
 
     package_path, sha_check = await market_bridge_module._verify_downloaded_package_with_fallback(
-        proxied_url,
+        _RELEASE_URL,
         proxy_path,
         expected_hash,
-        {},
+        task,
     )
 
-    assert attempts == [proxied_url, direct_url]
+    assert attempts == [_MIRROR_URL, _RELEASE_URL]
     assert package_path.read_bytes() == b"valid-package"
     assert sha_check == "passed"
     assert not proxy_path.exists()

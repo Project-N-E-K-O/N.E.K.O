@@ -4516,44 +4516,22 @@ def _download_task_error(exc: Exception) -> _TaskError:
     return _TaskError(code="download_failed", message=str(exc))
 
 
-def _direct_github_download_fallback(url: str) -> str | None:
-    """Return the original GitHub Release asset for an allowlisted proxy URL."""
-
-    for source_id, base_url in GITHUB_DOWNLOAD_SOURCES:
-        if source_id == "github-direct" or not url.startswith(base_url):
-            continue
-        candidate = url.removeprefix(base_url)
-        parsed = urlparse(candidate)
-        if (
-            parsed.scheme == "https"
-            and parsed.hostname == "github.com"
-            and parsed.username is None
-            and parsed.password is None
-            and parsed.path.startswith("/")
-            and "/releases/download/" in parsed.path
-        ):
-            return candidate
-    return None
-
-
-def _direct_github_retry_url(
-    url: str, task: dict[str, Any], *, after_hash_mismatch: bool,
-) -> str | None:
-    """The GitHub URL to retry a failed or mismatched download from, if any.
+def _retry_from_github_direct(task: dict[str, Any], *, after_hash_mismatch: bool) -> bool:
+    """Whether to retry a failed or mismatched download straight from GitHub.
 
     A routed download is retried once as a plain GitHub download within the
     same deadline: after a hash mismatch always, after a failure only when a
     specified mirror was chosen (auto mode already raced GitHub itself). An
-    unrouted download is retried only when it came through a known proxy.
+    unrouted download is not a GitHub release and is never retried. A retry
+    switches the task's route to GitHub direct.
     """
     route: _DownloadRoute | None = task.get("_download_route")
     if route is None:
-        return _direct_github_download_fallback(url)
+        return False
     retry = bool(route.candidates) if after_hash_mismatch else route.direct_fallback
-    if not retry:
-        return None
-    task["_download_route"] = route.direct_only()
-    return url
+    if retry:
+        task["_download_route"] = route.direct_only()
+    return retry
 
 
 def _prepare_direct_github_fallback(task: dict[str, Any], message: str) -> None:
@@ -4571,7 +4549,7 @@ async def _verify_downloaded_package_with_fallback(
     expected_hash: str,
     task: dict[str, Any],
 ) -> tuple[Path, Literal["passed", "mismatch"]]:
-    """Verify a package and retry one allowlisted proxy mismatch via GitHub."""
+    """Verify a package and retry one routed mismatch via GitHub direct."""
 
     expected_hash = _normalize_required_sha256(expected_hash)
     verification_task = asyncio.create_task(
@@ -4588,22 +4566,19 @@ async def _verify_downloaded_package_with_fallback(
         _cleanup_download_file(package_path)
         raise
     except ValueError:
-        fallback_url = _direct_github_retry_url(url, task, after_hash_mismatch=True)
-        if not fallback_url:
+        if not _retry_from_github_direct(task, after_hash_mismatch=True):
             raise
         _cleanup_download_file(package_path)
         logger.warning(
-            "[market-download] proxy package hash mismatch; retrying direct GitHub "
-            "origin={} fallback_origin={}",
+            "[market-download] package hash mismatch; retrying direct GitHub origin={}",
             _safe_url_log_origin(url),
-            _safe_url_log_origin(fallback_url),
         )
         _prepare_direct_github_fallback(
             task,
             "镜像下载内容校验失败，正在通过 GitHub 直连重试...",
         )
         try:
-            direct_path = await _download_package_once(fallback_url, task)
+            direct_path = await _download_package_once(url, task)
         except _TaskCancelled:
             raise
         except _DownloadAttemptError:
@@ -4662,27 +4637,24 @@ def _download_package_result(
 
 
 async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
-    """Download a package, retrying a failed allowlisted proxy via GitHub direct."""
+    """Download a package, retrying a failed routed proxy via GitHub direct."""
 
     try:
         return await _download_package_once(url, task), url
     except _DownloadAttemptError as exc:
         if not exc.retryable:
             raise
-        fallback_url = _direct_github_retry_url(url, task, after_hash_mismatch=False)
-        if not fallback_url:
+        if not _retry_from_github_direct(task, after_hash_mismatch=False):
             raise
         logger.warning(
-            "[market-download] proxy failed; retrying direct GitHub "
-            "origin={} fallback_origin={}",
+            "[market-download] proxy failed; retrying direct GitHub origin={}",
             _safe_url_log_origin(url),
-            _safe_url_log_origin(fallback_url),
         )
         _prepare_direct_github_fallback(
             task,
             "镜像下载失败，正在通过 GitHub 直连重试...",
         )
-        return await _download_package_once(fallback_url, task), fallback_url
+        return await _download_package_once(url, task), url
 
 
 async def _download_package_once(url: str, task: dict[str, Any]) -> Path:

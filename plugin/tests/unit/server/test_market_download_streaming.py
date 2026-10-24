@@ -251,7 +251,9 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
     httpx = load_httpx()
     client = httpx.AsyncClient
     direct = "https://github.com/example/demo/releases/download/v1/demo.neko-plugin"
-    proxy_base = next(base for source, base in sources.GITHUB_DOWNLOAD_SOURCES if source != "github-direct")
+    proxy_id, proxy_base = next(
+        (source, base) for source, base in sources.GITHUB_DOWNLOAD_SOURCES if source != "github-direct"
+    )
     urls = []
 
     def respond(request):
@@ -262,7 +264,12 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
 
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
-    path, source = await module._download_package(proxy_base + direct, {})
+    task = {"_download_route": module._DownloadRoute(
+        candidates=((proxy_id, proxy_base + direct),),
+        direct_fallback=True,
+        deadline=time.monotonic() + 60,
+    )}
+    path, source = await module._download_package(direct, task)
     assert urls == [proxy_base + direct, direct]
     assert source == direct
     assert path.read_bytes() == b"package"
