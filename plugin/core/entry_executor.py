@@ -54,8 +54,11 @@ class EntryExecutor:
         )
         self._logger = logger
 
-    def _resolve(self, event_type: str, event_id: str):
-        if event_type != "plugin_entry":
+    def _resolve(self, event_type: str, event_id: str, *, registered_only: bool):
+        # Custom-event calls (including cross-plugin ones) reach only handlers
+        # registered for that event type; the attribute fallback would expose
+        # any public or private instance method by name.
+        if registered_only or event_type != "plugin_entry":
             return self._events.get(event_type, {}).get(event_id)
         method = (
             self._entries.get(event_id)
@@ -91,12 +94,13 @@ class EntryExecutor:
         *,
         timeout: Any = UNSET_TIMEOUT,
         deadline: float | None = None,
+        registered_only: bool = False,
     ) -> object:
         if not isinstance(args, dict) or not event_id:
             raise PluginExecutionError(
                 self.plugin_id, event_id, "Entry ID and object arguments are required"
             )
-        method = self._resolve(event_type, event_id)
+        method = self._resolve(event_type, event_id, registered_only=registered_only)
         if method is None:
             raise PluginEntryNotFoundError(self.plugin_id, event_id)
         if not inspect.iscoroutinefunction(method):
@@ -192,6 +196,7 @@ async def execute_entry_command(
                 message.get("args", {}),
                 timeout=message.get("timeout", UNSET_TIMEOUT),
                 deadline=deadline,
+                registered_only=message.get("type") == "TRIGGER_CUSTOM",
             )
         reply["success"] = True
     except asyncio.CancelledError:

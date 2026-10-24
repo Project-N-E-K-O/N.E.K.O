@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin.core.rpc import RpcDeadlineExceededError
 from plugin.server.application.plugins import dispatch_service as dispatch_module
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
 
@@ -376,6 +377,23 @@ async def test_trigger_custom_event_subscribers_defers_timeout_to_host(
         "success": True,
         "result": {"action": "cancel_response"},
     }
+
+
+@pytest.mark.asyncio
+async def test_trigger_custom_event_keeps_deadline_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expired = RpcDeadlineExceededError("request deadline exceeded")
+    _patch_handlers_and_hosts(monkeypatch, {}, {"alpha": _Host({}, error=expired)})
+
+    with pytest.raises(RpcDeadlineExceededError):
+        await PluginDispatchService().trigger_custom_event(
+            to_plugin="alpha",
+            event_type="plugin_entry",
+            event_id="entry",
+            args={},
+            timeout=1.0,
+        )
 
 
 @pytest.mark.asyncio

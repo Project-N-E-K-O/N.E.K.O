@@ -134,6 +134,41 @@ async def test_entry_internal_timeout_is_distinct_from_budget_expiry():
     assert reply["error"]["message"] == "database timeout"
 
 
+async def test_custom_trigger_reaches_only_registered_handlers():
+    async def _load_config():
+        return {"token": "secret"}
+
+    async def registered():
+        return "ok"
+
+    runtime = executor({})
+    runtime._instance = SimpleNamespace(_load_config=_load_config)
+    runtime._events = {"plugin_entry": {"registered": registered}}
+    blocked = await execute_entry_command(
+        runtime,
+        {
+            "type": "TRIGGER_CUSTOM",
+            "req_id": "1",
+            "event_type": "plugin_entry",
+            "event_id": "_load_config",
+            "args": {},
+        },
+    )
+    assert blocked["success"] is False
+    assert "secret" not in str(blocked)
+    allowed = await execute_entry_command(
+        runtime,
+        {
+            "type": "TRIGGER_CUSTOM",
+            "req_id": "2",
+            "event_type": "plugin_entry",
+            "event_id": "registered",
+            "args": {},
+        },
+    )
+    assert allowed["data"] == "ok"
+
+
 async def test_expired_before_execution_is_a_deadline_fault():
     async def entry():
         pytest.fail("Expired request must not execute")

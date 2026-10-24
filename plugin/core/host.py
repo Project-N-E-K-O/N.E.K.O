@@ -1539,7 +1539,7 @@ def _plugin_process_runner(
                         msg.get("event_id") or msg.get("entry_id"), msg.get("req_id"))
             ret = await execute_entry_command(executor, msg)
             try:
-                await asyncio.to_thread(res_sender.put, ret, timeout=1.0)
+                await asyncio.to_thread(res_sender.put, ret, timeout=10.0)
             except Exception:
                 logger.exception("Failed to send response for req_id={}", msg.get("req_id"))
 

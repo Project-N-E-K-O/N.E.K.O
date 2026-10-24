@@ -188,6 +188,9 @@ class PluginDispatchService:
         except RpcClosedError as exc:
             raise ServerDomainError(code="PLUGIN_UNAVAILABLE", message=f"Plugin '{to_plugin}' connection closed",
                                     status_code=503, details={"plugin_id": to_plugin}) from exc
+        except TimeoutError:
+            # Let the RPC dispatcher report the caller's expired budget as DEADLINE_EXCEEDED.
+            raise
         except PluginError as exc:
             cause = exc.__cause__
             raise ServerDomainError(

@@ -903,8 +903,12 @@ class ChannelSender:
         self._transport = transport
         self._ch = channel
 
-    def put(self, obj: Any, *, timeout: float) -> None:
-        self._transport.send_uplink(self._ch, obj, timeout=timeout)
+    def put(self, obj: Any, *, timeout: float | None) -> None:
+        # An unlimited RPC still bounds the frame send itself.
+        if timeout is None:
+            self._transport.send_uplink(self._ch, obj)
+        else:
+            self._transport.send_uplink(self._ch, obj, timeout=timeout)
 
     def put_nowait(self, obj: Any) -> None:
         self._transport.send_uplink_nowait(self._ch, obj)

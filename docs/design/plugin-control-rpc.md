@@ -89,9 +89,13 @@ Control requests use authenticated per-plugin uplinks/downlinks. Image data stil
 uses the dedicated media socket, and messages retain their separate data plane;
 sharing reply correlation does not multiplex large data onto the control socket.
 
-The host's standalone ZMQ request listener remains a compatibility wire adapter
-to the same dispatcher. Current memory reads and bus mutations use the context's
-peer, not the former per-thread synchronous IPC client. Shared response maps,
+The host's former standalone ZMQ request listener (`ZmqIpcServer`, default
+`tcp://127.0.0.1:38765`) has been removed, along with its
+`NEKO_PLUGIN_ZMQ_IPC_*` settings. Clients must use the authenticated per-plugin
+control uplink that the host creates for each plugin process; there is no
+anonymous endpoint for out-of-process callers. Current memory reads and bus
+mutations use the context's peer, not the former per-thread synchronous IPC
+client. Shared response maps,
 Manager startup, queue stealing, short polling and fallback dictionary writes
 have been removed.
 

@@ -76,3 +76,33 @@ async def test_response_delivery_failure_is_logged_without_fallback(
         await asyncio.sleep(0.001)
     assert "RPC reply delivery failed" in caplog.text
     assert "lost" in caplog.text
+
+
+async def test_blocked_overload_reply_does_not_stall_other_requests(
+    router, monkeypatch
+):
+    replies = asyncio.Queue()
+    blocked = asyncio.Event()
+
+    async def good(ctx, request):
+        return "ok"
+
+    async def send(reply):
+        if reply["to_plugin"] == "slow":
+            await blocked.wait()
+        await replies.put(reply)
+
+    router._handlers["GOOD"] = good
+    monkeypatch.setattr(router, "_send_response", send)
+    await router.start()
+    router._dispatcher._limit = 0
+    for index in range(8):
+        await state.plugin_comm_queue.put(
+            {"type": "GOOD", "request_id": f"s{index}", "from_plugin": "slow"}
+        )
+    await state.plugin_comm_queue.put(
+        {"type": "GOOD", "request_id": "fast", "from_plugin": "fast"}
+    )
+    reply = await asyncio.wait_for(replies.get(), 0.2)
+    assert reply["request_id"] == "fast"
+    assert reply["error"]["code"] == "BUSY"
