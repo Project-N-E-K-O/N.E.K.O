@@ -186,6 +186,60 @@ async def test_a_single_route_that_drops_is_retried_from_where_it_stopped(tmp_pa
     assert calls == [None, f"bytes={len(BODY) // 2}-"]
 
 
+def answering_after(seconds: float, **stream):
+    async def respond(request):
+        await asyncio.sleep(seconds)
+        return serve(**stream)(request)
+
+    return respond
+
+
+async def test_a_route_still_connecting_when_the_race_ended_can_carry_the_rest(tmp_path, network):
+    # Both open together; the winner drops before its first byte, so only the
+    # route it beat while that one was still connecting is left.
+    network.handlers["a.test"] = answering_after(0.05, fail_after=0)
+    network.handlers["b.test"] = answering_after(0.3)
+    path, used, _ = await download(tmp_path, [("a", "https://a.test/pkg"), ("b", "https://b.test/pkg")])
+    assert path.read_bytes() == BODY
+    assert used == ["a", "b"]
+    assert [request.url.host for request in network.requests] == ["a.test", "b.test", "b.test"]
+
+
+class DropsFirstBody(Body):
+    """A body that fails before its first byte if no other body has been read yet."""
+
+    read: list[bool] = []
+
+    async def __aiter__(self):
+        if not self.read:
+            self.read.append(True)
+            raise httpx.ReadError("connection dropped")
+        async for chunk in super().__aiter__():
+            yield chunk
+
+
+async def test_a_route_that_lost_the_race_can_carry_the_rest(tmp_path, network, monkeypatch):
+    monkeypatch.setattr(DropsFirstBody, "read", [])
+    arrived: list[str] = []
+    both = asyncio.Event()
+
+    async def together(request):
+        arrived.append(request.url.host)
+        if len(arrived) == 2:
+            both.set()
+        await both.wait()
+        return httpx.Response(200, headers={"content-length": str(len(BODY))}, stream=DropsFirstBody(BODY))
+
+    # Both answer in the same round, so one wins and the other loses having
+    # answered. The winner drops its body without a byte; only the loser is left.
+    network.handlers["a.test"] = together
+    network.handlers["b.test"] = together
+    path, used, _ = await download(tmp_path, [("a", "https://a.test/pkg"), ("b", "https://b.test/pkg")])
+    assert path.read_bytes() == BODY
+    assert len(network.requests) == 3
+    assert len(set(used)) == 2
+
+
 async def test_a_route_ignoring_range_restarts_the_file(tmp_path, network):
     network.handlers["a.test"] = serve(fail_after=len(BODY) // 2)
     network.handlers["b.test"] = serve(ranges=False)

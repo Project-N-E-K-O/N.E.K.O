@@ -80,6 +80,44 @@ describe('server download preferences', () => {
     expect(mirror.specifiedSourceId.value).toBe('cdn-gh-proxy-org')
   })
 
+  it('seeds an unconfigured server from the legacy single-proxy setting', async () => {
+    localStorage.setItem('neko.market.github-mirror-source', 'github-proxy')
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(reply({ ...preferences, configured: false }))
+      .mockResolvedValueOnce(reply({ ...preferences, mode: 'specified' }))
+    const mirror = await loadComposable()
+
+    await mirror.ensureDownloadPreferences()
+
+    expect(putBodies()).toEqual([
+      { mode: 'specified', specified_source_id: 'gh-proxy-com', initialize_only: true },
+    ])
+  })
+
+  it('waits for a save made while an earlier one was pending', async () => {
+    let releaseFirst!: () => void
+    vi.mocked(fetchBridge)
+      .mockResolvedValueOnce(reply(preferences))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseFirst = () => resolve(reply(preferences))
+      }))
+    const mirror = await loadComposable()
+    let installed = false
+
+    mirror.setMode('direct')
+    const ready = mirror.ensureDownloadPreferences().then(() => { installed = true })
+    await vi.waitFor(() => expect(putBodies()).toHaveLength(1))
+    mirror.setMode('specified')
+    releaseFirst()
+    await ready
+
+    expect(installed).toBe(true)
+    expect(putBodies()).toEqual([
+      { mode: 'direct', specified_source_id: 'gh-proxy-com' },
+      { mode: 'specified', specified_source_id: 'gh-proxy-com' },
+    ])
+  })
+
   it('blocks installation while the chosen setting cannot be saved', async () => {
     vi.mocked(fetchBridge).mockResolvedValueOnce(reply(preferences)).mockResolvedValue(null)
     const mirror = await loadComposable()

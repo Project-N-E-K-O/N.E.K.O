@@ -4522,11 +4522,12 @@ def _retry_from_github_direct(task: dict[str, Any], *, after_hash_mismatch: bool
     A routed download is retried once as a plain GitHub download within the
     same deadline: after a hash mismatch always, after a failure only when a
     specified mirror was chosen (auto mode already raced GitHub itself). An
-    unrouted download is not a GitHub release and is never retried. A retry
-    switches the task's route to GitHub direct.
+    unrouted download is not a GitHub release and is never retried, nor is
+    one whose deadline has passed. A retry switches the task's route to
+    GitHub direct.
     """
     route: _DownloadRoute | None = task.get("_download_route")
-    if route is None:
+    if route is None or route.deadline <= time.monotonic():
         return False
     retry = bool(route.candidates) if after_hash_mismatch else route.direct_fallback
     if retry:

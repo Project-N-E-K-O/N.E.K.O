@@ -9,10 +9,12 @@ previous one has stayed silent for its expected round trip or has failed. The
 first to send acceptable headers carries the whole body. When it fails
 mid-stream, the remaining routes race again for the rest: one that honours the
 Range request resumes after the bytes already written, one that ignores it
-starts the file over. A route that delivered bytes before failing goes to the
-back of the queue, so the others are tried first and even a single route
-survives dropped connections; every retry makes progress and the total
-deadline bounds them. Routes must agree on the size;
+starts the file over. Routes that lost the opening race, or were still
+connecting when it ended, go to the back of the queue, as does a route that
+delivered bytes before failing, so untried routes come first and even a
+single route survives dropped connections. A route leaves the queue only by
+failing without progress, and the total deadline bounds the retries that do
+make progress. Routes must agree on the size;
 content integrity is left to the caller's SHA-256 check.
 """
 
@@ -171,15 +173,15 @@ class _Transfer:
 
     async def _open_first(self) -> _Opened:
         """Open queued routes, staggered by hedge delay, until one answers acceptably."""
-        pending: dict[asyncio.Task[_Opened], str] = {}
+        pending: dict[asyncio.Task[_Opened], Route] = {}
         try:
             while True:
                 wait: float | None = None
                 if self.queue and len(pending) < RACE_WIDTH:
-                    source_id, url = self.queue.pop(0)
-                    pending[asyncio.create_task(self._open(source_id, url))] = source_id
+                    route = self.queue.pop(0)
+                    pending[asyncio.create_task(self._open(*route))] = route
                     if self.queue:
-                        wait = _hedge_delay(source_id)
+                        wait = _hedge_delay(route[0])
                 elif not pending:
                     assert self.last_error is not None, "every route failed without an error"
                     raise self.last_error
@@ -187,7 +189,7 @@ class _Transfer:
                 opened: list[_Opened] = []
                 fatal: BaseException | None = None
                 for task in done:
-                    source_id = pending.pop(task)
+                    source_id, _ = pending.pop(task)
                     error = task.exception()
                     if error is None:
                         opened.append(task.result())
@@ -204,12 +206,16 @@ class _Transfer:
                 for loser in opened:
                     if loser is not winner:
                         await loser.response.aclose()
+                        # It answered, so it can carry the rest if the winner fails.
+                        self.queue.append((loser.source_id, loser.url))
                 if fatal is not None:
                     raise fatal
                 if winner is not None:
                     return winner
         finally:
             if pending:
+                # Still connecting is not failing: these routes stay queued too.
+                self.queue.extend(pending.values())
                 for task in pending:
                     task.cancel()
                 await await_cancellation_safe(asyncio.create_task(_discard(pending)))

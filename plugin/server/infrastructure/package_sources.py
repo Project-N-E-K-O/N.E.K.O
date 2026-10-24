@@ -45,7 +45,10 @@ def load_preferences() -> tuple[DownloadPreferences, bool]:
     try:
         raw = read_json_tolerating_replace(preferences_path())
         return validate_preferences(raw["mode"], raw["specified_source_id"]), True
-    except (FileNotFoundError, ValueError, KeyError, TypeError):
+    except FileNotFoundError:
+        return DownloadPreferences(), False
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("ignoring unreadable package download preferences: {}", exc)
         return DownloadPreferences(), False
 
 
@@ -131,6 +134,7 @@ _loaded = False
 _generation = 0
 _sequence = 0
 _written_sequence = 0
+_written_generation = 0
 _file_lock = threading.Lock()
 
 
@@ -155,7 +159,7 @@ def _ensure_loaded() -> None:
             )
     except FileNotFoundError:
         pass
-    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         logger.warning("ignoring unreadable package route statistics: {}", exc)
         _routes.clear()
 
@@ -204,12 +208,13 @@ def _record(observation: RouteObservation, now: float) -> None:
 
 
 def _write_snapshot(snapshot: _Snapshot) -> None:
-    global _written_sequence
+    global _written_sequence, _written_generation
     with _file_lock:
         if snapshot.generation != _generation or snapshot.sequence <= _written_sequence:
             return
         atomic_write_json(route_stats_path(), {"routes": snapshot.routes})
         _written_sequence = snapshot.sequence
+        _written_generation = snapshot.generation
 
 
 async def commit_route_observations(
@@ -239,8 +244,12 @@ async def commit_route_observations(
         logger.warning("failed to save package route statistics: {}", exc)
 
 
-def _delete_stats_file() -> None:
+def _delete_stats_file(generation: int) -> None:
     with _file_lock:
+        # A transfer that began after the reset may already have written the
+        # file, holding only observations made since.
+        if _written_generation >= generation:
+            return
         route_stats_path().unlink(missing_ok=True)
 
 
@@ -250,7 +259,7 @@ async def reset_transfer_history() -> None:
     _routes.clear()
     _generation += 1
     _loaded = True
-    await run_file_operation(_delete_stats_file)
+    await run_file_operation(_delete_stats_file, _generation)
 
 
 def download_candidates(url: str, preferences: DownloadPreferences) -> list[tuple[str, str]]:

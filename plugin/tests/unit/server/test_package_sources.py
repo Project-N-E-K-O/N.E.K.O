@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import time
 
 from fastapi import FastAPI
 import httpx
@@ -83,6 +84,34 @@ async def test_a_commit_from_before_a_reset_is_dropped():
     await sources.commit_route_observations([sources.RouteObservation("github-direct", latency=0.1)], generation)
     assert sources._routes == {}
     assert not sources.route_stats_path().exists()
+
+
+async def test_a_reset_keeps_statistics_written_after_it(monkeypatch):
+    await sources.commit_route_observations(
+        [sources.RouteObservation("github-direct", latency=0.1)], sources.route_generation())
+    run_file_operation = sources.run_file_operation
+
+    async def commit_before_deleting(operation, *args):
+        # A transfer that began after the reset finishes before the deletion runs.
+        if operation is sources._delete_stats_file:
+            await sources.commit_route_observations(
+                [sources.RouteObservation("gh-proxy-com", latency=0.2)], sources.route_generation())
+        return await run_file_operation(operation, *args)
+
+    monkeypatch.setattr(sources, "run_file_operation", commit_before_deleting)
+    await sources.reset_transfer_history()
+    saved = json.loads(sources.route_stats_path().read_text(encoding="utf-8"))["routes"]
+    assert list(saved) == ["gh-proxy-com"]
+
+
+def test_unreadable_files_fall_back_to_defaults():
+    sources.route_stats_path().mkdir()
+    sources.preferences_path().unlink(missing_ok=True)
+    sources.preferences_path().mkdir(exist_ok=True)
+    sources._routes.clear()
+    sources._loaded = False
+    assert sources.estimate_route("github-direct").confidence == 0.0
+    assert sources.load_preferences() == (sources.DownloadPreferences(), False)
 
 
 def test_route_estimates_persist_and_regress_towards_prior_with_age():
@@ -185,13 +214,24 @@ def test_task_status_exposes_the_route_in_use():
     assert dataclasses.asdict(sources.DownloadPreferences())["mode"] == "auto"
 
 
+@pytest.mark.parametrize("after_hash_mismatch", [False, True])
+def test_no_direct_retry_once_the_deadline_has_passed(after_hash_mismatch):
+    route = bridge._DownloadRoute(
+        candidates=(("gh-proxy-com", "https://gh-proxy.com/" + URL),), direct_fallback=True,
+        deadline=time.monotonic() - 1,
+    )
+    task = {"_download_route": route}
+    assert not bridge._retry_from_github_direct(task, after_hash_mismatch=after_hash_mismatch)
+    assert task["_download_route"] is route
+
+
 async def test_mixed_source_hash_failure_retries_once_without_resetting_budget(tmp_path, monkeypatch):
     bad = tmp_path / "bad.neko-plugin"
     good = tmp_path / "good.neko-plugin"
     bad.write_bytes(b"bad")
     good.write_bytes(b"verified")
     route = bridge._DownloadRoute(
-        candidates=(("github-direct", URL),), direct_fallback=False, deadline=123.0,
+        candidates=(("github-direct", URL),), direct_fallback=False, deadline=time.monotonic() + 60,
     )
     task = {"_download_route": route}
     attempts = []

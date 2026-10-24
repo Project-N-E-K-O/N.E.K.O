@@ -4,6 +4,8 @@ import { fetchBridge } from '@/api/marketBridge'
 
 const LOG_PREFIX = '[github-mirror]'
 const STORAGE_KEY = 'neko.market.github-mirror-source.v2'
+/** The single-proxy switch that preceded per-source settings. */
+const LEGACY_STORAGE_KEY = 'neko.market.github-mirror-source'
 
 const log = {
   warn: (...args: unknown[]) => console.warn(LOG_PREFIX, ...args),
@@ -54,7 +56,11 @@ function isProxySourceId(value: unknown): value is GithubProxySourceId {
 function loadCachedPreferences(): DownloadPreferences {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return DEFAULT_PREFERENCES
+    if (!raw) {
+      return localStorage.getItem(LEGACY_STORAGE_KEY) === 'github-proxy'
+        ? { ...DEFAULT_PREFERENCES, mode: 'specified' }
+        : DEFAULT_PREFERENCES
+    }
     const parsed = JSON.parse(raw) as { mode?: unknown; specifiedSourceId?: unknown }
     return {
       mode: isMode(parsed.mode) ? parsed.mode : DEFAULT_PREFERENCES.mode,
@@ -166,13 +172,23 @@ function setSpecifiedSourceId(next: GithubProxySourceId) {
 /** Resolve once the server holds the setting shown in the form, since every
  *  install reads its download policy from the server. */
 async function ensureDownloadPreferences(): Promise<void> {
-  await writes
+  await settleWrites()
   if (saveFailed.value) {
     // Retry the latest edit; the form still shows it.
-    await save({ mode: mode.value, specified_source_id: specifiedSourceId.value })
+    void save({ mode: mode.value, specified_source_id: specifiedSourceId.value })
+    await settleWrites()
   }
   if (saveFailed.value) throw new Error('download_preferences_save_failed')
   await initialize()
+}
+
+/** Wait for every queued save, including those made while waiting. */
+async function settleWrites(): Promise<void> {
+  let settled: Promise<void>
+  do {
+    settled = writes
+    await settled
+  } while (settled !== writes)
 }
 
 /** Forget the backend's learned route timings so the next install chooses again. */
