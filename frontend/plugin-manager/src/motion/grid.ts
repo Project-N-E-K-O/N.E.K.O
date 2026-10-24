@@ -76,7 +76,10 @@ export function useGridMotionController(options: {
   // hold each card near its start frame until the width settles.
   let columns = 0
   let width = 0
-  let drawnBoxes = new Map<HTMLElement, DOMRect>()
+  // The slot each item was last laid out in; a gliding item keeps the slot it
+  // is heading to, since its drawn box is offset by the running glide.
+  let laidBoxes = new Map<HTMLElement, DOMRect>()
+  const gliding = new Set<HTMLElement>()
   let syncFrame = 0
 
   function reflowParts(node: HTMLElement) {
@@ -107,21 +110,34 @@ export function useGridMotionController(options: {
   }
 
   function reflow(grid: HTMLElement, items: HTMLElement[]) {
+    const frame = grid.getBoundingClientRect()
     const plans = items.flatMap(node => {
-      const from = drawnBoxes.get(node)
-      const parts = from && reflowParts(node)
-      return parts ? [{ node, from, ...parts }] : []
+      const laid = laidBoxes.get(node)
+      const parts = laid && reflowParts(node)
+      if (!parts) return []
+      // A glide reversed midway (a drawer closed while opening) continues from
+      // where it is drawn; read its offset before settling it.
+      const drawn = gliding.has(node) ? boxIn(frame, parts.surface) : null
+      return [{ node, laid, drawn, ...parts }]
     })
     // Settle running reflows first, so every target is a plain layout box.
     for (const { node, surface, content, ends, bottoms } of plans) {
       for (const part of [node, surface, content, ...ends, ...bottoms]) cancelMotion(part)
     }
-    const frame = grid.getBoundingClientRect()
     const onScreen = (box: DOMRect) => new DOMRect(box.x + frame.left, box.y + frame.top, box.width, box.height)
     let order = 0
-    for (const { node, from, surface, content, ends, bottoms } of plans) {
+    for (const { node, laid, drawn, surface, content, ends, bottoms } of plans) {
       const to = boxIn(frame, surface)
-      if (!from.width || !to.width || !(visible(node, onScreen(from)) || visible(node, onScreen(to)))) continue
+      if (!laid.width || !to.width) continue
+      // `drawn` is the new slot offset and scaled by the settled glide; the
+      // last frame showed that same offset on the slot it was heading to.
+      const from = drawn
+        ? new DOMRect(
+            laid.x + drawn.x - to.x, laid.y + drawn.y - to.y,
+            laid.width * drawn.width / to.width, laid.height * drawn.height / to.height,
+          )
+        : laid
+      if (!(visible(node, onScreen(from)) || visible(node, onScreen(to)))) continue
       const dw = to.width - from.width
       const dh = to.height - from.height
       if (!dw && !dh && from.x === to.x && from.y === to.y) continue
@@ -132,10 +148,13 @@ export function useGridMotionController(options: {
       const border = Number.parseFloat(style.borderRightWidth) || 0
       const sx = from.width / to.width
       const sy = from.height / to.height
-      // A sync during the glide records a mid-glide box; re-record once it
-      // settles, or the next reflow would start from that stale box.
       const timing = reflowTiming(order++)
-      slide(node, `translate(${from.x - to.x}px, ${from.y - to.y}px)`, timing, () => syncColumns(grid))
+      laidBoxes.set(node, to)
+      gliding.add(node)
+      slide(node, `translate(${from.x - to.x}px, ${from.y - to.y}px)`, timing, () => {
+        gliding.delete(node)
+        syncColumns(grid)
+      })
       playFrames(surface, [
         { transform: `scale(${sx}, ${sy})`, borderRadius: `${radius / sx}px / ${radius / sy}px` },
         { transform: 'none', borderRadius: `${radius}px` },
@@ -159,18 +178,22 @@ export function useGridMotionController(options: {
     const next = width ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : 0
     const items = [...grid.children].filter((child): child is HTMLElement =>
       child instanceof HTMLElement && !animatedLeaves.has(child))
+    // Large lists never move their items (and skip rendering off-screen
+    // cards), and suppressed motion never plays: neither needs any boxes.
+    const still = items.length > motionPolicy.largeList || motionSuppressed()
     const relaid = next !== columns || Math.abs(width - previous) >= motionPolicy.reflowStep
-    if (animate && columns && next && relaid && !motionSuppressed()) reflow(grid, items)
+    if (animate && columns && next && relaid && !still) reflow(grid, items)
     columns = next
-    // Drawn boxes, transforms included: a column change in the middle of a
-    // reflow restarts from where each card is drawn, not from its old slot.
-    drawnBoxes = new Map()
-    if (!next) return
-    const frame = grid.getBoundingClientRect()
-    for (const node of items) {
-      const surface = reflowParts(node)?.surface
-      if (surface) drawnBoxes.set(node, boxIn(frame, surface))
+    const boxes = new Map<HTMLElement, DOMRect>()
+    if (next && !still) {
+      const frame = grid.getBoundingClientRect()
+      for (const node of items) {
+        const surface = reflowParts(node)?.surface
+        const box = gliding.has(node) ? laidBoxes.get(node) : surface && boxIn(frame, surface)
+        if (box) boxes.set(node, box)
+      }
     }
+    laidBoxes = boxes
   }
 
   /** Call from the grid's resize observer: animates a column count change or

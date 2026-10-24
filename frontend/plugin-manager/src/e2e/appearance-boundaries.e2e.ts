@@ -89,14 +89,17 @@ async function isolateAppearanceApis(page: Page) {
   return unexpectedRequests
 }
 
-const appearanceTest = test.extend<{ isolateNetwork: void }>({
+// The only writer of the stored locale: init scripts run in no guaranteed
+// order, so a test needing another locale overrides this option instead.
+const appearanceTest = test.extend<{ appLocale: string; isolateNetwork: void }>({
+  appLocale: ['en-US', { option: true }],
   isolateNetwork: [
-    async ({ page }, use) => {
+    async ({ page, appLocale }, use) => {
       const requests = await isolateAppearanceApis(page)
-      await page.addInitScript(() => {
-        window.localStorage.setItem('locale', 'en-US')
+      await page.addInitScript(locale => {
+        window.localStorage.setItem('locale', locale)
         window.localStorage.setItem('neko-dark-mode', 'false')
-      })
+      }, appLocale)
       await use()
       expect(requests, 'all HTTP requests must use explicit fixtures').toEqual([])
     },
@@ -331,34 +334,36 @@ appearanceTest(
   }
 )
 
-appearanceTest('sidebar icons move only horizontally while the sidebar collapses and expands', async ({ page }) => {
-  // CJK labels have a taller line box than the 20px icon, which used to set the row height.
-  await page.addInitScript(() => window.localStorage.setItem('locale', 'zh-CN'))
-  await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
-  // The adapter link arrives with the plugin list; sample only once every row is in place.
-  await expect(page.locator('.sidebar').getByRole('button', { name: ADAPTER_NAME, exact: true })).toBeVisible()
-  const sampleIconTops = (toggleLabel: RegExp) =>
-    page.evaluate(async (label) => {
-      const tops = () =>
-        [...document.querySelectorAll('.nav-item__icon')].map((icon) => icon.getBoundingClientRect().top)
-      const before = tops()
-      const toggle = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find((button) =>
-        new RegExp(label).test(button.getAttribute('aria-label')!)
-      )!
-      toggle.click()
-      const frames: number[][] = []
-      const start = performance.now()
-      while (performance.now() - start < 600) {
-        await new Promise(requestAnimationFrame)
-        frames.push(tops())
-      }
-      return { before, frames }
-    }, toggleLabel.source)
-  for (const label of [/收起/, /展开/]) {
-    const { before, frames } = await sampleIconTops(label)
-    for (const frame of frames) expect(frame).toEqual(before)
-  }
+test.describe('sidebar zh-CN label rendering', () => {
+  appearanceTest.use({ appLocale: 'zh-CN' })
+  appearanceTest('sidebar icons move only horizontally while the sidebar collapses and expands', async ({ page }) => {
+    // CJK labels have a taller line box than the 20px icon, which used to set the row height.
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+    // The adapter link arrives with the plugin list; sample only once every row is in place.
+    await expect(page.locator('.sidebar').getByRole('button', { name: ADAPTER_NAME, exact: true })).toBeVisible()
+    const sampleIconTops = (toggleLabel: RegExp) =>
+      page.evaluate(async (label) => {
+        const tops = () =>
+          [...document.querySelectorAll('.nav-item__icon')].map((icon) => icon.getBoundingClientRect().top)
+        const before = tops()
+        const toggle = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find((button) =>
+          new RegExp(label).test(button.getAttribute('aria-label')!)
+        )!
+        toggle.click()
+        const frames: number[][] = []
+        const start = performance.now()
+        while (performance.now() - start < 600) {
+          await new Promise(requestAnimationFrame)
+          frames.push(tops())
+        }
+        return { before, frames }
+      }, toggleLabel.source)
+    for (const label of [/收起/, /展开/]) {
+      const { before, frames } = await sampleIconTops(label)
+      for (const frame of frames) expect(frame).toEqual(before)
+    }
+  })
 })
 
 // Exercise the production card/grid with short-only and mixed-content rows.
@@ -479,47 +484,50 @@ for (const scenario of [
   { width: 1440, zoom: 1, fontSize: 16, locale: 'zh-CN' },
   { width: 960, zoom: 1, fontSize: 24, locale: 'zh-CN' },
 ]) {
-  appearanceTest(`cards stay ordered at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`, async ({ page }) => {
-    await installCardLayoutFixture(page)
-    await page.addInitScript(locale => localStorage.setItem('locale', locale), scenario.locale)
-    await page.emulateMedia({ reducedMotion: 'reduce' })
-    await page.setViewportSize({ width: scenario.width, height: 1000 })
-    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
-    await expect(page.locator('.plugin-card')).toHaveCount(8)
-    await page.evaluate(({ zoom, fontSize }) => {
-      document.documentElement.style.zoom = String(zoom)
-      document.documentElement.style.fontSize = `${fontSize}px`
-    }, scenario)
-    await expectOrderedCards(page)
-    await expect(page.locator('.plugin-start-mode')).toHaveCount(4)
-    await expect(page.locator('.plugin-start-mode svg[aria-hidden="true"]')).toHaveCount(4)
-    await expect(page.locator('.plugin-entries')).toHaveCount(0)
-    await expect(page.locator('.plugin-workbench')).not.toContainText(scenario.locale === 'zh-CN' ? '手动启动' : /manual start/i)
-    const first = page.locator('.plugin-card').first()
-    // Short-only rows must not reserve an imaginary second title line.
-    const gap = await first.evaluate(card => {
-      const title = card.querySelector('.plugin-name')!.getBoundingClientRect()
-      const states = card.querySelector('.plugin-statuses')!
-      const contentTop = Math.min(...Array.from(states.children, child => child.getBoundingClientRect().top))
-      return contentTop - title.bottom
+  const name = `cards stay ordered at ${scenario.width}px, zoom ${scenario.zoom}, text ${scenario.fontSize}px, ${scenario.locale}`
+  test.describe(name, () => {
+    appearanceTest.use({ appLocale: scenario.locale })
+    appearanceTest(name, async ({ page }) => {
+      await installCardLayoutFixture(page)
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await page.setViewportSize({ width: scenario.width, height: 1000 })
+      await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+      await expect(page.locator('.plugin-card')).toHaveCount(8)
+      await page.evaluate(({ zoom, fontSize }) => {
+        document.documentElement.style.zoom = String(zoom)
+        document.documentElement.style.fontSize = `${fontSize}px`
+      }, scenario)
+      await expectOrderedCards(page)
+      await expect(page.locator('.plugin-start-mode')).toHaveCount(4)
+      await expect(page.locator('.plugin-start-mode svg[aria-hidden="true"]')).toHaveCount(4)
+      await expect(page.locator('.plugin-entries')).toHaveCount(0)
+      await expect(page.locator('.plugin-workbench')).not.toContainText(scenario.locale === 'zh-CN' ? '手动启动' : /manual start/i)
+      const first = page.locator('.plugin-card').first()
+      // Short-only rows must not reserve an imaginary second title line.
+      const gap = await first.evaluate(card => {
+        const title = card.querySelector('.plugin-name')!.getBoundingClientRect()
+        const states = card.querySelector('.plugin-statuses')!
+        const contentTop = Math.min(...Array.from(states.children, child => child.getBoundingClientRect().top))
+        return contentTop - title.bottom
+      })
+      expect(gap).toBeGreaterThanOrEqual(7 * scenario.zoom)
+      expect(gap).toBeLessThanOrEqual(9 * scenario.zoom)
+      await expect(first.locator('footer [data-testid="plugin-open-ui"]')).toBeVisible()
+      expect(await page.locator('.plugin-card').evaluateAll(cards => cards.every(card => {
+        const box = card.getBoundingClientRect()
+        return card.scrollWidth <= card.clientWidth + 1 &&
+          [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-version-tag, .plugin-ui-action')]
+            .every(element => {
+              const bounds = element.getBoundingClientRect()
+              return bounds.left >= box.left && bounds.right <= box.right + 1 &&
+                element.scrollWidth <= element.clientWidth + 1
+            })
+      }))).toBe(true)
+      await page.locator('[data-yui-guide-id="plugin-list-multi-select"]').click()
+      await expect(page.locator('.grid-section__select')).toHaveCount(8)
+      await page.locator('.grid-section__select').first().click()
+      await expect(page.locator('.grid-section__select').first()).toHaveAttribute('aria-pressed', 'true')
     })
-    expect(gap).toBeGreaterThanOrEqual(7 * scenario.zoom)
-    expect(gap).toBeLessThanOrEqual(9 * scenario.zoom)
-    await expect(first.locator('footer [data-testid="plugin-open-ui"]')).toBeVisible()
-    expect(await page.locator('.plugin-card').evaluateAll(cards => cards.every(card => {
-      const box = card.getBoundingClientRect()
-      return card.scrollWidth <= card.clientWidth + 1 &&
-        [...card.querySelectorAll('.plugin-name__button, .plugin-start-mode, .plugin-version-tag, .plugin-ui-action')]
-          .every(element => {
-            const bounds = element.getBoundingClientRect()
-            return bounds.left >= box.left && bounds.right <= box.right + 1 &&
-              element.scrollWidth <= element.clientWidth + 1
-          })
-    }))).toBe(true)
-    await page.locator('[data-yui-guide-id="plugin-list-multi-select"]').click()
-    await expect(page.locator('.grid-section__select')).toHaveCount(8)
-    await page.locator('.grid-section__select').first().click()
-    await expect(page.locator('.grid-section__select').first()).toHaveAttribute('aria-pressed', 'true')
   })
 }
 

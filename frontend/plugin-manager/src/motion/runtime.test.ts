@@ -262,7 +262,7 @@ function reflowGrid(columns: () => number, width = () => 800) {
   const grid = document.createElement('div')
   Object.defineProperty(grid, 'clientWidth', { get: width })
   vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 600))
-  const { element: item } = fixture()
+  const { element: item, animation: itemAnimation } = fixture()
   const { element: surface, animate: surfaceAnimate } = fixture()
   const { element: content, animate: contentAnimate } = fixture()
   surface.dataset.reflow = 'surface'
@@ -278,7 +278,7 @@ function reflowGrid(columns: () => number, width = () => 800) {
     borderRightWidth: '1px',
   }) as CSSStyleDeclaration)
   return {
-    grid, item, surfaceAnimate, contentAnimate,
+    grid, item, itemAnimation, surfaceAnimate, contentAnimate,
     place: (next: DOMRect) => { box = next },
   }
 }
@@ -335,6 +335,31 @@ it('follows gradual widths that keep the column count, and never animates reduce
   controller.reflowColumns(grid)
 
   expect(item.animate).not.toHaveBeenCalled()
+  app.unmount()
+})
+
+it('reverses a glide from where the card is drawn, not from its last slot', () => {
+  const { controller, app } = mountGridController()
+  let columns = 2
+  const { grid, item, itemAnimation, surfaceAnimate, place } = reflowGrid(() => columns)
+
+  controller.reflowColumns(grid)
+  columns = 1
+  place(new DOMRect(0, 216, 800, 200))
+  controller.reflowColumns(grid)
+  // Halfway along that glide the layout reverts to the first slot, so the
+  // drawn box is that slot shifted 108px up and scaled by the running glide.
+  columns = 2
+  place(new DOMRect(0, -108, 300, 200))
+  // Settling the glide leaves the plain first slot.
+  vi.mocked(itemAnimation.cancel).mockImplementationOnce(() => place(new DOMRect(0, 0, 400, 200)))
+  controller.reflowColumns(grid)
+
+  // It was drawn halfway at (0, 108) and 600px wide; the reversal starts there.
+  const [frames] = vi.mocked(item.animate).mock.calls[1] as unknown as [Keyframe[]]
+  const [surfaceFrames] = vi.mocked(surfaceAnimate).mock.calls[1] as unknown as [Keyframe[]]
+  expect(frames[0]).toEqual({ transform: 'translate(0px, 108px)' })
+  expect(surfaceFrames[0]).toMatchObject({ transform: 'scale(1.5, 1)' })
   app.unmount()
 })
 
