@@ -64,10 +64,10 @@ test('stage 7 keeps the shared transparent pet asset in the desktop adapter, not
   assert.match(source, /static\/assets\/neko-idle\/cat-bad\.png/);
   assert.match(source, /neko:pet-care:exploration-departure-request/);
   assert.match(source, /explorationDepartureTimer/);
-  assert.doesNotMatch(source, /CARE_CONTENTS[\\s\\S]*exploration[\\s\\S]*yarn/);
+  assert.doesNotMatch(source, /CARE_CONTENTS[\s\S]*exploration[\s\S]*yarn/);
   assert.match(source, /neko-pet-care-exploration-summary/);
   assert.doesNotMatch(source, /neko-pet-care-exploration-image/);
-  assert.doesNotMatch(source, /location\.image_url[\\s\\S]{0,120}cat-bad/);
+  assert.doesNotMatch(source, /location\.image_url[\s\S]{0,120}cat-bad/);
   assert.match(assetAdapter, /neko-pet-care-exploration-note-overlay/);
   assert.doesNotMatch(assetAdapter, /neko-pet-care-exploration-letter-bubble/);
   assert.doesNotMatch(source, /neko:pet-care:exploration-letters/);
@@ -103,7 +103,8 @@ test('stage 7 keeps the chat follower out of the lifecycle and model switch owne
   assert.match(source, /PET_CARE_FOLLOWER_PATH/);
   assert.match(source, /if \(!isPetCareOwnerSurface\(\)\) return;/);
   assert.match(source, /neko:pet-care:context-change-request/);
-  assert.match(characterSource, /follower: true/);
+  assert.match(characterSource, /if \(isPetCareModelOwnerSurface\(\)\)/);
+  assert.doesNotMatch(characterSource, /return \{ success: true, follower: true \}/);
   assert.match(returnSurface, /ownsLifecycle === false/);
   assert.match(modelDisplaySource, /ensureExplorationEndedBeforeModelExit/);
 });

@@ -2549,15 +2549,12 @@ async function workshopDeleteCatgirl(name, options = {}) {
         }
         const retirement = responseData?.pet_care_role_alias_retirement;
         if (retirement && window.NekoPetCareRoleAliasSync?.retire) {
-            try {
-                await window.NekoPetCareRoleAliasSync.retire(retirement, petCareAccountId);
-            } catch (error) {
-                // retire() persists before network I/O.  A service outage or
-                // account-session race therefore keeps the exact event for an
-                // event-driven retry and must not roll back a committed local
-                // character deletion.
-                console.warn('PetCare 角色别名退役同步待重试:', error);
-            }
+            // The backend deletion transaction has already persisted the
+            // durable retirement event. Do not hold the character manager UI
+            // open while the remote idempotent delivery is attempted.
+            Promise.resolve()
+                .then(() => window.NekoPetCareRoleAliasSync.retire(retirement, petCareAccountId))
+                .catch(error => console.warn('PetCare 角色别名退役同步待重试:', error));
         }
         if (typeof window.clearConversationLanguagePreference === 'function') {
             window.clearConversationLanguagePreference(name);

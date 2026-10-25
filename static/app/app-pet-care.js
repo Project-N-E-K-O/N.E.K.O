@@ -2753,7 +2753,7 @@
             try { window.clearTimeout(explorationDepartureTimer); } catch (_) {}
             explorationDepartureTimer = 0;
         }
-        if (explorationReturnTimer) {
+        if (explorationReturnTimer && options.keepReturnPresentation !== true) {
             try { window.clearTimeout(explorationReturnTimer); } catch (_) {}
             explorationReturnTimer = 0;
         }
@@ -3047,7 +3047,10 @@
             clearExplorationLease();
             state.dismissedExplorationId = '';
             state.explorationRecallRequested = false;
-            clearExplorationTimer();
+            // A repeated terminal snapshot is still the same authoritative
+            // home state. Preserve the bounded visual return already in flight
+            // so it can restore the cat art and release the entity gate.
+            clearExplorationTimer({ keepReturnPresentation: true });
             if (state.explorationGateActive) {
                 state.explorationGateActive = false;
                 emitExplorationGate(false, reason || 'exploration-home');
@@ -4208,6 +4211,21 @@
     function observePlayObservation(observation) {
         if (!observation || typeof observation !== 'object') return;
         var type = str(observation.type);
+        if (type === 'playground_yarn_click_cancelled') {
+            var cancelledDetail = observation.detail && typeof observation.detail === 'object'
+                ? observation.detail : {};
+            var cancelledActivityId = explicitPlayActivityId(cancelledDetail);
+            if (!cancelledActivityId ||
+                !Object.prototype.hasOwnProperty.call(preauthorizedPlayActivities, cancelledActivityId)) return;
+            delete preauthorizedPlayActivities[cancelledActivityId];
+            if (state.playActivity && state.playActivity.activity_id === cancelledActivityId) {
+                clearPlayActivity(str(cancelledDetail.terminalStatus) || 'cancelled');
+                return;
+            }
+            syncCatMindCompatibility('playground-yarn-response-cancelled');
+            flushDeferredAccountResume('playground-yarn-response-cancelled');
+            return;
+        }
         if (type === 'chat_yarn_drag_completed') {
             beginPlayActivity(observation);
             return;
@@ -4308,6 +4326,7 @@
         // start account settlement immediately before the control's click;
         // replacing that control would swallow the same user intent. The
         // write entry waits on accountResumePromise and revalidates afterward.
+        var recoverAuthAfterResume = false;
         accountResumePromise = withPendingWriteAccountLock(requestAccountId, {
             // A new lifecycle event must not queue behind another renderer
             // and become a second write. Recovery of an already durable key
@@ -4335,7 +4354,10 @@
             var response = writeResult.response;
             var body = writeResult.body;
             if (isAuthExpiredResponse(response, body)) {
-                if (requestedFence === authFence()) await recoverFromAuthExpiry();
+                // Recovery can publish another session/resume for the same
+                // account. Defer it until this promise and its account lock are
+                // released; awaiting it here would make the request await itself.
+                recoverAuthAfterResume = requestedFence === authFence();
                 return null;
             }
             if (writeResult.rejected || !response.ok) {
@@ -4376,7 +4398,15 @@
             accountResumeTrailingReason = '';
             state.accountResumePending = false;
             render();
-            if (trailingFence && trailingFence === authFence() &&
+            if (recoverAuthAfterResume && requestedFence === authFence() &&
+                state.authStatus === 'logged-in') {
+                window.setTimeout(function () {
+                    recoverFromAuthExpiry().catch(function (error) {
+                        state.pendingWriteError = error && error.message || 'pet_care_auth_refresh_failed';
+                        render();
+                    });
+                }, 0);
+            } else if (trailingFence && trailingFence === authFence() &&
                 state.authStatus === 'logged-in') {
                 window.setTimeout(function () {
                     requestAccountResume(trailingReason || 'auth-generation-changed', { force: true });

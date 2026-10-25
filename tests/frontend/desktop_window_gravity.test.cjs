@@ -33,6 +33,8 @@ function installYarnActivation(r) {
     setTimeout: r.window.setTimeout, clearTimeout: r.window.clearTimeout,
     _nekoIdleCat1PlaygroundActivationSequence: 0,
     _NEKO_IDLE_CAT1_PLAYGROUND_BODY_PUSH_VELOCITY_PX_PER_SEC: 220,
+    _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX: 4,
+    _NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL: '/test/cat-air.png',
     _forEachNekoIdleReturnButton: callback => callback(r.button),
     _clearNekoIdleCat1PlaygroundPointerListeners() {},
     _installNekoIdleCat1PlaygroundPointerListeners() {},
@@ -47,9 +49,11 @@ function installYarnActivation(r) {
     '_handleNekoIdleCat1PlaygroundPointerDownForBody', '_handleNekoIdleCat1PlaygroundPointerUp',
     '_dispatchNekoIdleCat1PlaygroundYarnActivate',
     '_dispatchNekoIdleCat1PlaygroundDragState', '_removeNekoIdleCat1PlaygroundYarnBody',
+    '_cancelNekoIdleCat1PlaygroundYarnResponse',
     '_completeNekoIdleCat1PlaygroundYarnClickResponse',
     '_handleNekoIdleCat1PlaygroundYarnActivationAck',
     '_clearNekoIdleCat1PlaygroundYarnPendingState',
+    '_handleNekoIdleCat1PlaygroundPointerMove',
     '_releaseNekoIdleCat1PlaygroundDropLifecycle']) {
     const start = source.indexOf(`function ${name}(`);
     assert.notEqual(start, -1, name);
@@ -189,6 +193,46 @@ test('releasing playground cancels a delayed reward terminal', async () => {
   assert.equal(state.pendingYarnResponseTimer, 0);
   r.runTimers(1000);
   assert.equal(responses.length, 0);
+});
+
+test('dragging the cat interrupts a delayed reward response instead of reporting success', () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = {
+    id: 'cat', x: 100, y: 200, width: 80, height: 80, vx: 0, vy: 0,
+    grounded: true, dragging: false, wallLeft: 0, wallRight: 500, floorY: 500,
+  };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled',
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'cat',
+    pointerId: 23, draggingBodyId: '', pointerStartX: 0, pointerStartY: 0,
+    pointerOffsetX: 0, pointerOffsetY: 0, pointerMoved: false,
+    pointerSampleSession: null, lastPointerSamples: [], pendingYarnResponseId: '',
+  };
+  assert.equal(r.context._completeNekoIdleCat1PlaygroundYarnClickResponse(r.button, {
+    activationId: 'interrupted', source: 'yarn', petCareAuthorized: true,
+    minimumDurationMs: 1000,
+  }), true);
+  assert.ok(state.pendingYarnResponseTimer);
+  cat.dragging = true;
+  r.context._resolveNekoIdleCat1PlaygroundPointerClient = () => ({ x: 40, y: 40 });
+  r.context._updateNekoIdleCat1PlaygroundBodyBounds = () => {};
+  r.context._setNekoIdleCat1PlaygroundBodyPosition = () => {};
+  r.context._setNekoIdleCat1PlaygroundCatAirArt = () => {};
+
+  assert.equal(r.context._handleNekoIdleCat1PlaygroundPointerMove(r.button, {
+    pointerId: 23, clientX: 40, clientY: 40,
+    preventDefault() {}, stopPropagation() {},
+  }), true);
+  assert.equal(state.pendingYarnResponseTimer, 0);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_cancelled');
+  assert.equal(responses[0].detail.terminalStatus, 'cat-dragged');
+  r.runTimers(1000);
+  assert.equal(responses.filter(item => item.detail.terminalStatus === 'done').length, 0);
 });
 
 test('desktop confirmation waits for delayed authorization and the real cat response before removing yarn', async () => {

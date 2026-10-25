@@ -1061,6 +1061,39 @@ test('a newer auth generation gets one trailing resume behind the old in-flight 
   assert.equal(resumeCalls, 2);
 });
 
+test('a resume 401 releases its promise and account lock before auth recovery retries', async () => {
+  let oauthReads = 0;
+  let resumeCalls = 0;
+  const h = createHarness(async url => {
+    if (url.includes('/api/card-drop/oauth/status')) {
+      oauthReads += 1;
+      return { ok: true, status: 200, json: async () => ({
+        logged_in: true, local_user_id: 'account-a', session_id: 'session-a',
+      }) };
+    }
+    if (url === '/api/pet-care/session/resume') {
+      resumeCalls += 1;
+      if (resumeCalls === 1) {
+        return { ok: false, status: 401, json: async () => ({ detail: 'login_required' }) };
+      }
+      return { ok: true, status: 200, json: async () => resumeEnvelope() };
+    }
+    if (url.includes('/api/pet-care/pets/')) {
+      return { ok: true, status: 200, json: async () => ({
+        account_id: 'account-a', current_character_uid: 'local-role-a',
+        binding_status: 'needs-binding',
+      }) };
+    }
+    throw new Error('unexpected request: ' + url);
+  });
+
+  await waitFor(() => resumeCalls === 2 &&
+    h.window.nekoPetCareEntry.getState().accountResumePending === false, 1000);
+  assert.equal(oauthReads, 2);
+  assert.equal(resumeCalls, 2);
+  assert.equal(h.window.nekoPetCareEntry.getState().pendingWrite, null);
+});
+
 test('reauth reconciles an unknown resume key before recording the new generation', async () => {
   let oauthReads = 0;
   const resumeKeys = [];
@@ -6660,7 +6693,7 @@ test('one exploration recall waits for account resume and uses the refreshed CAS
   assert.equal(h.window.nekoPetCareEntry.getState().explorationRecallRequested, false);
 });
 
-test('stage 7 releases the renderer gate when a later authoritative snapshot has no current exploration', async () => {
+test('repeated terminal snapshots preserve the pending visual return and release the renderer gate', async () => {
   const active = {
     exploration_id: 'explore-null-home-1', status: 'active', active: true,
     started_at: new Date(Date.now() - 1000).toISOString(),
@@ -6700,6 +6733,7 @@ test('stage 7 releases the renderer gate when a later authoritative snapshot has
   h.window.addEventListener('neko:pet-care:exploration-gate', event => gates.push(event.detail));
   await waitFor(() => h.window.nekoPetCareEntry.getState().exploration?.exploration_id === 'explore-null-home-1');
   await h.window.nekoPetCareEntry.refreshBinding('authoritative-home-refresh');
+  await h.window.nekoPetCareEntry.refreshBinding('repeated-authoritative-home-refresh');
   await waitFor(() => gates.some(detail => detail.active === false), 600);
   const released = gates.find(detail => detail.active === false);
   assert.equal(released.activityId, 'explore-null-home-1');
@@ -7826,6 +7860,75 @@ test('formal playground yarn requests a service lease before accepting the cat r
   assert.equal(Object.hasOwn(completeBody, 'client_id'), false);
   await waitFor(() => calls.filter(call => call.url.endsWith('/session/resume')).length ===
     resumeCountBeforeResponse + 1);
+});
+
+test('an interrupted playground response retires its authorization without completing play', async () => {
+  const calls = [];
+  const snapshot = formalSnapshot({
+    service_capabilities: { play_lease_complete: 1 },
+    play_actions: { yarn: { minimum_duration_seconds: 2 } },
+  });
+  const h = createHarness(async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET', body: options.body });
+    if (url.includes('/api/card-drop/oauth/status')) {
+      return { ok: true, status: 200, json: async () => ({
+        logged_in: true, local_user_id: 'account-a', session_id: 'session-a',
+      }) };
+    }
+    if (url === '/api/pet-care/session/resume') {
+      return { ok: true, status: 200, json: async () => resumeEnvelope() };
+    }
+    if (url.endsWith('/play-leases')) {
+      const request = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => ({
+        operation_result: { status: 'confirmed' }, ok: true,
+        state_version: 1, binding_revision: 1, snapshot_required: false,
+        lease: {
+          lease_id: 'lease-yarn-cancelled', pet_id: 'pet-a', bound_role_id: 'server-role-a',
+          activity_id: request.activity_id, content_id: 'yarn', action_id: 'cat1_play_yarn',
+          source: 'cat-yarn-observation-adapter', issued_at: '2026-10-21T00:00:00Z',
+          issued_state_version: 1, issued_binding_revision: 1,
+          minimum_duration_seconds: 2, expires_at: '2026-10-21T00:00:30Z',
+        },
+      }) };
+    }
+    if (url.includes('/play-leases/') && url.endsWith('/complete')) {
+      throw new Error('interrupted response must not complete its play lease');
+    }
+    if (url.includes('/api/pet-care/pets/')) {
+      return { ok: true, status: 200, json: async () => ({
+        account_id: 'account-a', current_character_uid: 'local-role-a', binding_status: 'bound',
+        pet_id: 'pet-a', bound_role_id: 'server-role-a', snapshot,
+      }) };
+    }
+    throw new Error('unexpected request: ' + url);
+  }, { uid: 'local-role-a', name: '小猫 A' }, '/');
+  await waitFor(() => h.window.nekoPetCareEntry.getState().snapshot !== null);
+  enterCatForm(h);
+  const waits = [];
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:idle-cat1-playground-yarn-activate', {
+    detail: {
+      activationId: 'cancelled-1', source: 'yarn', timestamp: Date.now(),
+      waitUntil(value) { waits.push(Promise.resolve(value)); },
+    },
+  }));
+  assert.equal((await waits[0]).authorized, true);
+  assert.equal(h.window.nekoPetCareMode.getState().catMindSuppressed, true);
+
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:yarn-click-response', {
+    detail: {
+      type: 'playground_yarn_click_cancelled', source: 'cat-yarn-observation-adapter',
+      timestamp: Date.now(), detail: {
+        activityId: 'playground-yarn-click:cancelled-1', userInitiated: true,
+        catResponded: false, terminalStatus: 'cat-dragged', petCareAuthorized: true,
+      },
+    },
+  }));
+
+  assert.equal(h.window.nekoPetCareMode.getState().catMindSuppressed, false);
+  assert.equal(h.window.nekoPetCareEntry.getState().playActivity, null);
+  assert.equal(calls.some(call => call.url.includes('/play-leases/') &&
+    call.url.endsWith('/complete')), false);
 });
 
 test('playground yarn rejects rewardable authorization when its snapshot duration floor is invalid', async () => {

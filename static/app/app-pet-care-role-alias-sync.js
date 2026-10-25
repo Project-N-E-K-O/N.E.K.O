@@ -164,6 +164,10 @@
         if (!UID_RE.test(uid)) throw new Error('pet_care_role_alias_character_invalid');
         var owner = normalizeAccountId(accountId);
         var owners = readOwners();
+        if (!Object.prototype.hasOwnProperty.call(owners, uid) &&
+            Object.keys(owners).length >= MAX_RECORDS_PER_ACCOUNT) {
+            throw new Error('pet_care_role_alias_owner_storage_full');
+        }
         var rows = owners[uid] || [];
         if (rows.indexOf(owner) < 0) {
             if (rows.length >= MAX_ACCOUNTS) throw new Error('pet_care_role_alias_owner_storage_full');
@@ -172,6 +176,19 @@
             writeOwners(owners);
         }
         return owner;
+    }
+
+    function forgetOwnerLocked(characterUid, accountId) {
+        var uid = text(characterUid);
+        var account = normalizeAccountId(accountId);
+        if (!UID_RE.test(uid)) throw new Error('pet_care_role_alias_character_invalid');
+        var owners = readOwners();
+        var rows = owners[uid] || [];
+        var remaining = rows.filter(function (owner) { return owner !== account; });
+        if (remaining.length === rows.length) return;
+        if (remaining.length) owners[uid] = remaining;
+        else delete owners[uid];
+        writeOwners(owners);
     }
 
     function rememberOwner(characterUid, accountId) {
@@ -348,6 +365,7 @@
             // the lifecycle queue would retry forever on every focus.
             await withStateLock(function () {
                 removeLocked(accountId, retirement.source_revision);
+                forgetOwnerLocked(retirement.character_uid, accountId);
             });
             acknowledgeBackendRetirement(accountId, retirement).catch(function () {});
             return { status: 'absent', character_uid: retirement.character_uid };
@@ -359,6 +377,7 @@
         }
         await withStateLock(function () {
             removeLocked(accountId, retirement.source_revision);
+            forgetOwnerLocked(retirement.character_uid, accountId);
         });
         // A failed acknowledgement leaves the backend event ready. Its later
         // replay is harmless because the authority receipt is idempotent.
@@ -405,8 +424,11 @@
             var hasPending = Object.keys(queue.accounts).some(function (account) {
                 return queue.accounts[account].length > 0;
             });
-            var hasOwners = Object.keys(readOwners()).length > 0;
-            if (!hasPending && !hasOwners) return { status: 'idle', attempted: 0 };
+            // The backend outbox is the durable deletion record. Browser
+            // storage is only a retry cache and may be empty after renderer
+            // storage is cleared or when another browser opens this instance.
+            // Always identify the verified account before deciding that there
+            // is no retirement work to recover.
             var accountId = await captureAccount();
             if (!accountId) return { status: 'not-authenticated', attempted: 0 };
             try {

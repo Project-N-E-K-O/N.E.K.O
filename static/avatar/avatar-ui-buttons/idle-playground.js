@@ -181,6 +181,32 @@ function _clearNekoIdleCat1PlaygroundYarnPendingState(state) {
     state.pendingYarnResponseTimer = 0;
 }
 
+function _cancelNekoIdleCat1PlaygroundYarnResponse(state, reason) {
+    if (!state || !state.pendingYarnResponseId) return false;
+    const activationId = state.pendingYarnResponseId;
+    if (state.pendingYarnResponseTimer) clearTimeout(state.pendingYarnResponseTimer);
+    state.pendingYarnResponseId = '';
+    state.pendingYarnResponseTimer = 0;
+    try {
+        window.dispatchEvent(new CustomEvent('neko:pet-care:yarn-click-response', {
+            detail: {
+                type: 'playground_yarn_click_cancelled',
+                source: 'cat-yarn-observation-adapter',
+                timestamp: Date.now(),
+                detail: {
+                    activityId: `playground-yarn-click:${activationId}`,
+                    originSource: 'cat1-playground',
+                    userInitiated: true,
+                    catResponded: false,
+                    terminalStatus: reason || 'cancelled',
+                    petCareAuthorized: true
+                }
+            }
+        }));
+    } catch (_) {}
+    return true;
+}
+
 function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     const state = _getNekoIdleCat1PlaygroundDropState(button);
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -1649,6 +1675,10 @@ function _handleNekoIdleCat1PlaygroundPointerMove(button, event) {
         body.dragging = true;
         body.grounded = false;
         if (body.id === 'cat') {
+            // The authorized response is rewardable only if the cat owns the
+            // whole configured response window. A real user drag interrupts
+            // that presentation and must retire the pending success terminal.
+            _cancelNekoIdleCat1PlaygroundYarnResponse(state, 'cat-dragged');
             _setNekoIdleCat1PlaygroundCatAirArt(button);
         }
         const container = state.container;

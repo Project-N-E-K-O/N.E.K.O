@@ -6,6 +6,7 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '../..');
 const UID_A = 'a'.repeat(32);
 const UID_B = 'b'.repeat(32);
+const UID_C = 'c'.repeat(32);
 
 function deferred() {
     let resolve, reject;
@@ -64,7 +65,8 @@ function harness({ pathname = '/chat' } = {}) {
         if (target === '/api/characters') {
             return { ok: true, json: async () => ({ '猫娘': {
                 A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
-                B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+                B: { model_type: 'live2d', _reserved: { character_uid: UID_B } },
+                C: { model_type: 'live2d', _reserved: { character_uid: UID_C } }
             } }) };
         }
         if (target.startsWith('/api/characters/current_live2d_model?')) {
@@ -182,14 +184,40 @@ test('watchdog retires pending switch and late response cannot reclaim avatar id
     assert.deepEqual(calls, [['begin', 1], ['rollback', 1], ['begin', 2], ['commit', 2, { uid: UID_B, name: 'B' }]]);
 });
 
-test('chat follower accepts a character broadcast without starting the model-owner transaction', async () => {
+test('chat follower switches shared character identity and socket without loading a local model', async () => {
     const h = harness({ pathname: '/chat' }); const calls = avatarCalls(h);
+    let reconnects = 0;
+    let modelLoads = 0;
+    h.window.connectWebSocket = () => { reconnects += 1; };
+    h.window.live2dManager.loadModel = async () => { modelLoads += 1; };
     h.load('static/app/app-character.js');
-    const result = await h.window.handleCatgirlSwitch('B', 'A');
-    assert.equal(result.success, true);
-    assert.equal(result.follower, true);
-    assert.deepEqual(calls, []);
-    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
+    await h.window.handleCatgirlSwitch('B', 'A');
+    assert.deepEqual(calls, [['begin', 1], ['commit', 1, { uid: UID_B, name: 'B' }]]);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.equal(reconnects, 1);
+    assert.equal(modelLoads, 0);
+});
+
+test('character switch preflight admits only the first request while exploration recall waits', async () => {
+    const h = harness({ pathname: '/' });
+    const calls = avatarCalls(h);
+    const recall = deferred();
+    let recalls = 0;
+    h.window.nekoPetCareEntry = { getState: () => ({ exploration: {
+        exploration_id: 'away-1', status: 'active', active: true,
+    } }) };
+    h.window.appUi = { returnFromGoodbye: async () => { recalls += 1; return recall.promise; } };
+    h.load('static/app/app-character.js');
+
+    const first = h.window.handleCatgirlSwitch('B', 'A');
+    await Promise.resolve();
+    await h.window.handleCatgirlSwitch('C', 'A');
+    assert.equal(recalls, 1);
+    recall.resolve(true);
+    await first;
+
+    assert.equal(h.window.lanlan_config.lanlan_name, 'B');
+    assert.deepEqual(calls, [['begin', 1], ['commit', 1, { uid: UID_B, name: 'B' }]]);
 });
 
 test('display update refreshes existing assistant avatars without changing user messages', () => {

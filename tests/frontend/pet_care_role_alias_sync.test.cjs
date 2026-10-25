@@ -115,16 +115,44 @@ function retirement(characterUid = uid) {
   };
 }
 
-test('does not resolve account state when the durable queue is empty', async () => {
-  let calls = 0;
-  const { listeners } = load(async () => {
-    calls += 1;
-    throw new Error('unexpected request');
-  });
+test('checks the durable backend outbox when browser retirement state is empty', async () => {
+  const storage = memoryStorage();
+  const sent = [];
+  const localCalls = [];
+  const { api } = load(
+    async (url, options) => {
+      sent.push({ url, options });
+      return response(200, { ...retirement(), replayed: true });
+    },
+    storage,
+    async (url) => {
+      assert.equal(url, '/api/card-drop/oauth/status');
+      return response(200, { logged_in: true, local_user_id: accountId });
+    },
+    async (url, options) => {
+      localCalls.push({ url, options });
+      if (url.endsWith('/role-alias-retirements')) {
+        assert.equal(options.headers['X-Neko-Expected-Account'], accountId);
+        return response(200, { events: [retirement()] });
+      }
+      if (url.endsWith('/role-alias-retirements/ack')) {
+        return response(200, { status: 'acknowledged' });
+      }
+      throw new Error('unexpected local integration request: ' + url);
+    },
+  );
 
-  listeners.get('DOMContentLoaded')();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(calls, 0);
+  assert.equal(storage.getItem(storageKey), null);
+  assert.equal(storage.getItem(ownerStorageKey), null);
+  const result = await api.flush();
+
+  assert.equal(result.status, 'processed');
+  assert.equal(result.attempted, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, '/api/pet-care/role-aliases/sync');
+  assert.deepEqual(JSON.parse(sent[0].options.body), retirement());
+  assert.ok(localCalls.some(call => call.url.endsWith('/role-alias-retirements/ack')));
+  assert.deepEqual(JSON.parse(storage.getItem(storageKey)).accounts, {});
 });
 
 test('reads account state from the local N.E.K.O origin, outside the PetCare gateway', async () => {
@@ -218,6 +246,29 @@ test('owner registration fails closed when the crash-safe backend mirror rejects
   assert.deepEqual(JSON.parse(storage.getItem(ownerStorageKey)), { [uid]: [accountId] });
 });
 
+test('owner registry rejects a new character before exceeding its readable limit', async () => {
+  const storage = memoryStorage();
+  const owners = {};
+  for (let index = 0; index < 128; index += 1) {
+    owners[index.toString(16).padStart(32, '0')] = [accountId];
+  }
+  storage.setItem(ownerStorageKey, JSON.stringify(owners));
+  let localCalls = 0;
+  const { api } = load(
+    async () => { throw new Error('service transport must not run'); },
+    storage,
+    async () => response(200, { logged_in: true, local_user_id: accountId }),
+    async () => { localCalls += 1; throw new Error('local transport must not run'); },
+  );
+
+  await assert.rejects(
+    api.rememberOwner('f'.repeat(32), accountId),
+    /owner_storage_full/,
+  );
+  assert.equal(localCalls, 0);
+  assert.equal(Object.keys(JSON.parse(storage.getItem(ownerStorageKey))).length, 128);
+});
+
 test('ignores a deleted UID that never entered a verified bind and rejects invented fields', async () => {
   const calls = [];
   const { api, storage } = load(async (...args) => {
@@ -262,6 +313,7 @@ test('persists before sending the fixed retirement shape and clears confirmed ev
   assert.equal(syncCall.options.headers['X-Neko-Expected-Account'], accountId);
   assert.ok(syncCall.stored.includes(`delete:${uid}`));
   assert.deepEqual(JSON.parse(storage.getItem(storageKey)).accounts, {});
+  assert.deepEqual(JSON.parse(storage.getItem(ownerStorageKey)), {});
 });
 
 test('keeps ambiguous failures for the same account and retries only on lifecycle events', async () => {
@@ -455,6 +507,7 @@ test('character manager loads and consumes the retirement bridge without changin
   assert.match(handler, /pet_care_role_alias_retirement/);
   assert.match(handler, /NekoPetCareRoleAliasSync\.captureAccount/);
   assert.match(handler, /NekoPetCareRoleAliasSync\.retire/);
+  assert.doesNotMatch(handler, /await window\.NekoPetCareRoleAliasSync\.retire/);
   assert.doesNotMatch(handler, /petCareAccountId\s*&&\s*window\.NekoPetCareRoleAliasSync\.retire/);
   assert.match(subscriptions, /pet_care_role_alias_retirements/);
   assert.match(subscriptions, /NekoPetCareRoleAliasSync\.captureAccount/);
