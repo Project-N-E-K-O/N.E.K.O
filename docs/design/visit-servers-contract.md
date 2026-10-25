@@ -62,7 +62,7 @@
 - 面: 云端 HTTP
 - 字段: headers `{Authorization: Bearer <access_token>, X-Client-Id: <client_id>}`（`client_id` 是本机安装登记的稳定 id（`card_drop_router._get_client_id()`），不是公开的 OAuth client id）；无请求体（空 body 的 POST）→ 200 `{ok:true, cancelled:int}`（`cancelled` = 本次作废的邀请数，0..100 的整数）| 401 `unauthenticated` | 403 `{code:'banned'}` | 404（还没部署本端点的旧版 Servers）| 5xx
 - 字段集: headers `Authorization, X-Client-Id` · 200 `ok, cancelled` · 错误 `401 unauthenticated, 403 banned, 404, 5xx`
-- 上限: **作废本机上一次运行留下的未兑换邀请**：按 bearer 的社区账号**且** `X-Client-Id` 限定范围，只动这台机器上这个账号名下、签发记录里 guest 还没有 `joined_at` 的 host 房间，每个房间按 `POST /api/visit/rooms/{visit_id}/cancel` 的单房语义处理（邀请码立即作废、该房标为已结束、退回预留、结束 vendor 房间）；别的设备、别的账号的邀请不动；幂等，没有可作废的回 `{ok:true, cancelled:0}`；**调用时机**：本机后端启动时（启动恢复任务里）与长驻后端遇到新的桌面进程时（`visit_bind` 带来新的 `desktop_run_id`；同一桌面进程里的页面重载不算）各调一次，请求都在后台发：不阻塞启动；显示 socket 的 `visit_bind` 只等本机的本地收尾（结束上一次运行的待接受邀请，最多约 5 s），不等这次远端取消；本机建房（4.6 `POST /api/visit/rooms`）先等这次清理完成、失败就在建房时补跑一次，之后才建房、领新凭证，免得一次晚到的批量取消把刚发出的新邀请作废；**客户端处理**（`main_routers/visit_router/credentials.py::cancel_pending_host_invites`，超时 `_CANCEL_TIMEOUT_S`=8 s，调用内不重试、不跟随重定向）：2xx 要求正文有 `ok:true` 且 `cancelled` 是 0..100 的整数，否则按畸形响应 → `servers_unreachable`；404（不论 `code`）→ 当作作废了 0 个（滚动发布期间兼容还没有本端点的 Servers）；401 → `VISIT_LOGIN_REQUIRED`（本机 409）；403 `banned` → `VISIT_BANNED`（本机 403，并记 60 s 封禁缓存）；5xx、网络错误与其它未登记的 `(status, code)` → `servers_unreachable`（本机 503）（错误表 `STARTUP_CANCEL_ERROR_CONTRACT`）；建房因清理失败被拒时，本机原样回这些错误码
+- 上限: **作废本机上一次运行留下、guest 还没入房的邀请**：按 bearer 的社区账号**且** `X-Client-Id` 限定范围，只动这台机器上这个账号名下、签发记录里 guest 还没有 `joined_at` 的 host 房间（与单房取消同一判据：只看 `joined_at`，不看邀请码是否已兑换——guest 已领凭证但还没进 vendor 房的也作废），每个房间按 `POST /api/visit/rooms/{visit_id}/cancel` 的单房语义处理（邀请码立即作废、该房标为已结束、退回预留、结束 vendor 房间）；别的设备、别的账号的邀请不动；幂等，没有可作废的回 `{ok:true, cancelled:0}`；**调用时机**：本机后端启动时（启动恢复任务里）与长驻后端遇到新的桌面进程时（`visit_bind` 带来新的 `desktop_run_id`；同一桌面进程里的页面重载不算）各调一次，请求都在后台发：不阻塞启动；显示 socket 的 `visit_bind` 只等本机的本地收尾（结束上一次运行的待接受邀请，最多约 5 s），不等这次远端取消；本机建房（4.6 `POST /api/visit/rooms`）先等这次清理完成、失败就在建房时补跑一次，之后才建房、领新凭证，免得一次晚到的批量取消把刚发出的新邀请作废；**客户端处理**（`main_routers/visit_router/credentials.py::cancel_pending_host_invites`，超时 `_CANCEL_TIMEOUT_S`=8 s，调用内不重试、不跟随重定向）：2xx 要求正文有 `ok:true` 且 `cancelled` 是 0..100 的整数，否则按畸形响应 → `servers_unreachable`；404（不论 `code`）→ 当作作废了 0 个（滚动发布期间兼容还没有本端点的 Servers）；401 → `VISIT_LOGIN_REQUIRED`（本机 409）；403 `banned` → `VISIT_BANNED`（本机 403，并记 60 s 封禁缓存）；5xx、网络错误与其它未登记的 `(status, code)` → `servers_unreachable`（本机 503）（错误表 `STARTUP_CANCEL_ERROR_CONTRACT`）；建房因清理失败被拒时，本机原样回这些错误码
 
 ### POST /api/visit/reports
 - 方向: 本机后端 → Servers（bearer）
@@ -130,7 +130,7 @@
 - **免费额度**：`VISIT_FREE_MINUTES_PER_DAY` 占位 120，**由 owner 定价时拍板**；付费档只改响应里的 `entitlement`。
 - **并发房**：每账号同时 ≤2 房（`VISIT_MAX_CONCURRENT_ROOMS_PER_ACCOUNT`）；名额以 vendor 房间结束事件（TRTC 房间解散回调 / LiveKit `room_finished`）或 Servers 自行向 vendor 查询确认后释放；`POST /api/visit/transcripts` 只触发一次查询、不直接释放；凭证到期兜底。
 - **host 取消邀请**：`POST /api/visit/rooms/{visit_id}/cancel`（guest 还没有 `joined_at` 时有效，之后 409 `guest_joined`），作废邀请码、退回预留、结束 vendor 房间。
-- **作废本机旧邀请**：本机后端启动或换了新的桌面进程时调 `POST /api/visit/rooms/pending/cancel`，按账号 + `X-Client-Id` 批量作废上一次运行留下的未兑换邀请，每个房间的额度与 vendor 房间按上一条处理。
+- **作废本机旧邀请**：本机后端启动或换了新的桌面进程时调 `POST /api/visit/rooms/pending/cancel`，按账号 + `X-Client-Id` 批量作废上一次运行留下、guest 还没有 `joined_at` 的邀请，每个房间的额度与 vendor 房间按上一条处理。
 
 ## 封禁与在飞踢人（follow-up）
 
