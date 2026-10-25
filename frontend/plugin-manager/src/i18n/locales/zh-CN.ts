@@ -84,8 +84,11 @@ export default {
     noData: '暂无数据',
     unknown: '未知',
     nA: 'N/A',
-    darkMode: '深色模式',
-    lightMode: '浅色模式',
+    chooseTheme: '选择主题',
+    lightModeNeko: '浅色模式（N.E.K.O）',
+    lightModePaper: '浅色模式（宣纸）',
+    darkModeNeko: '深色模式（N.E.K.O）',
+    darkModeGraphite: '深色模式（石墨）',
     logoutConfirmTitle: '提示',
     disconnected: '服务器已断开连接',
     languageAuto: '自动'

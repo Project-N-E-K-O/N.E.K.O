@@ -1,9 +1,25 @@
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, type Ref } from 'vue'
 
 const DARK_MODE_KEY = 'neko-dark-mode'
 const isDark = ref(false)
 let listenersRegistered = false
 let darkModeInitEpoch = 0
+
+// Light/dark is shared with the main N.E.K.O app; each mode's palette is a
+// plugin-manager-only preference and never reaches the host bridge.
+const PALETTE_OPTIONS = {
+  light: ['neko', 'paper'],
+  dark: ['neko', 'graphite'],
+} as const
+type PaletteSlot = keyof typeof PALETTE_OPTIONS
+type Palette<S extends PaletteSlot> = (typeof PALETTE_OPTIONS)[S][number]
+export type LightPalette = Palette<'light'>
+export type DarkPalette = Palette<'dark'>
+const PALETTE_SLOTS = Object.keys(PALETTE_OPTIONS) as PaletteSlot[]
+const palettes: { [S in PaletteSlot]: Ref<Palette<S>> } = {
+  light: ref<LightPalette>('neko'),
+  dark: ref<DarkPalette>('neko'),
+}
 
 type NekoDarkModeBridge = {
   get?: () => boolean | Promise<boolean>
@@ -29,6 +45,23 @@ function writeStoredDarkMode(dark: boolean) {
   } catch (_) {}
 }
 
+function paletteKey(slot: PaletteSlot) {
+  return `neko-plugin-manager-${slot}-palette`
+}
+
+function parsePalette<S extends PaletteSlot>(slot: S, value: string | null): Palette<S> {
+  const options: readonly string[] = PALETTE_OPTIONS[slot]
+  return value !== null && options.includes(value) ? (value as Palette<S>) : 'neko'
+}
+
+function readStoredPalette<S extends PaletteSlot>(slot: S): Palette<S> {
+  try {
+    return parsePalette(slot, localStorage.getItem(paletteKey(slot)))
+  } catch {
+    return 'neko'
+  }
+}
+
 function applyDarkMode(dark: boolean | null | undefined, options: { persist?: boolean } = {}) {
   const resolvedDark = typeof dark === 'boolean' ? dark : getSystemPrefersDark()
   const html = document.documentElement
@@ -42,6 +75,29 @@ function applyDarkMode(dark: boolean | null | undefined, options: { persist?: bo
   isDark.value = resolvedDark
   if (options.persist !== false) {
     writeStoredDarkMode(resolvedDark)
+  }
+}
+
+// Both palette attributes stay set whichever mode is active, so a light/dark
+// switch made by the main app or another window lands on the palette the user
+// picked here for that mode.
+function applyPalette<S extends PaletteSlot>(
+  slot: S,
+  palette: Palette<S>,
+  options: { persist?: boolean } = {}
+) {
+  const html = document.documentElement
+  const attribute = `data-${slot}-palette`
+  if (palette === 'neko') {
+    html.removeAttribute(attribute)
+  } else {
+    html.setAttribute(attribute, palette)
+  }
+  palettes[slot].value = palette
+  if (options.persist !== false) {
+    try {
+      localStorage.setItem(paletteKey(slot), palette)
+    } catch {}
   }
 }
 
@@ -60,6 +116,11 @@ function setupThemeSyncListeners() {
   listenersRegistered = true
 
   window.addEventListener('storage', (event) => {
+    const slot = PALETTE_SLOTS.find((candidate) => event.key === paletteKey(candidate))
+    if (slot) {
+      applyPalette(slot, parsePalette(slot, event.newValue), { persist: false })
+      return
+    }
     if (event.key !== DARK_MODE_KEY) {
       return
     }
@@ -90,6 +151,9 @@ function setupThemeSyncListeners() {
 export function initDarkMode() {
   setupThemeSyncListeners()
 
+  for (const slot of PALETTE_SLOTS) {
+    applyPalette(slot, readStoredPalette(slot), { persist: false })
+  }
   const saved = readStoredDarkMode()
   applyDarkMode(saved !== null ? saved : getSystemPrefersDark(), { persist: saved !== null })
 
@@ -108,21 +172,32 @@ export function initDarkMode() {
   }
 }
 
-function toggleDarkMode() {
+function setDarkMode(dark: boolean) {
+  // An explicit choice wins over a bridge read that is still pending.
   darkModeInitEpoch += 1
-  const next = !isDark.value
-  applyDarkMode(next)
+  if (dark === isDark.value) {
+    return
+  }
+  applyDarkMode(dark)
 
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.set === 'function') {
     try {
-      Promise.resolve(bridge.set(next)).catch(() => {})
+      Promise.resolve(bridge.set(dark)).catch(() => {})
     } catch (_) {}
   }
 
   window.dispatchEvent(new CustomEvent('neko-theme-changed', {
-    detail: { darkMode: next },
+    detail: { darkMode: dark },
   }))
+}
+
+function setLightPalette(palette: LightPalette) {
+  applyPalette('light', palette)
+}
+
+function setDarkPalette(palette: DarkPalette) {
+  applyPalette('dark', palette)
 }
 
 export function useDarkMode() {
@@ -133,6 +208,10 @@ export function useDarkMode() {
 
   return {
     isDark,
-    toggleDarkMode,
+    lightPalette: palettes.light,
+    darkPalette: palettes.dark,
+    setDarkMode,
+    setLightPalette,
+    setDarkPalette,
   }
 }

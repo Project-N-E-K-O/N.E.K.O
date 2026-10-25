@@ -382,7 +382,7 @@ async function handleUpdateAll(): Promise<void> {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 16px;
   background: var(--el-bg-color);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 

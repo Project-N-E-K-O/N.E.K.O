@@ -84,8 +84,11 @@ export default {
     noData: 'Нет данных',
     unknown: 'Неизвестно',
     nA: 'Н/Д',
-    darkMode: 'Тёмная тема',
-    lightMode: 'Светлая тема',
+    chooseTheme: 'Выбрать тему',
+    lightModeNeko: 'Светлая тема (N.E.K.O)',
+    lightModePaper: 'Светлая тема (бумага)',
+    darkModeNeko: 'Тёмная тема (N.E.K.O)',
+    darkModeGraphite: 'Тёмная тема (графит)',
     logoutConfirmTitle: 'Уведомление',
     disconnected: 'Соединение с сервером потеряно',
     languageAuto: 'Авто'

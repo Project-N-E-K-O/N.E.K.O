@@ -10,7 +10,19 @@ const messages = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: 
 vi.mock('element-plus', () => ({ ElMessage: messages }))
 vi.mock('@/i18n', () => ({ getLocale: () => 'en-US', i18n: { global: { t: (key: string) => key } } }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
-vi.mock('@/composables/useDarkMode', () => ({ useDarkMode: () => ({ isDark: false, toggleDarkMode: vi.fn() }) }))
+vi.mock('@/composables/useDarkMode', async () => {
+  const { ref } = await import('vue')
+  return {
+    useDarkMode: () => ({
+      isDark: ref(false),
+      lightPalette: ref('neko'),
+      darkPalette: ref('neko'),
+      setDarkMode: vi.fn(),
+      setLightPalette: vi.fn(),
+      setDarkPalette: vi.fn(),
+    }),
+  }
+})
 vi.mock('@/components/common/LanguageSwitcher.vue', () => ({ default: { render: () => null } }))
 vi.mock('@/api/plugins', () => ({
   getPlugins: vi.fn(), getPlugin: vi.fn(), getPluginSummaries: vi.fn(), getPluginStatus: vi.fn(),

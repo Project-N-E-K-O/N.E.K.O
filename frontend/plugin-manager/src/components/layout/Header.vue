@@ -1,9 +1,22 @@
 <template>
   <div class="header__actions">
     <LanguageSwitcher />
-    <button class="header-btn" :title="isDark ? $t('common.lightMode') : $t('common.darkMode')" :aria-label="isDark ? $t('common.lightMode') : $t('common.darkMode')" @click="toggleDarkMode">
-      <el-icon :size="16"><Sunny v-if="isDark" /><Moon v-else /></el-icon>
-    </button>
+    <el-dropdown trigger="click" :persistent="false" @command="handleThemeCommand">
+      <button type="button" class="header-btn" :title="$t('common.chooseTheme')" :aria-label="$t('common.chooseTheme')" data-testid="theme-switcher">
+        <el-icon :size="16"><Moon v-if="isDark" /><Sunny v-else /></el-icon>
+      </button>
+      <template #dropdown>
+        <el-dropdown-menu>
+          <el-dropdown-item
+            v-for="choice in THEME_CHOICES"
+            :key="choice.id"
+            :command="choice.id"
+            :divided="choice.divided"
+            :disabled="currentTheme === choice.id"
+          >{{ $t(choice.label) }}</el-dropdown-item>
+        </el-dropdown-menu>
+      </template>
+    </el-dropdown>
     <button class="header-btn" :disabled="refreshing" :aria-label="$t('common.refresh')" @click="handleRefresh">
       <el-icon :size="16" :class="{ 'spin': refreshing }"><Refresh /></el-icon>
     </button>
@@ -11,18 +24,41 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Refresh, Sunny, Moon } from '@element-plus/icons-vue'
 import { PluginDataRefreshError, usePluginStore } from '@/stores/plugin'
 import { ElMessage } from 'element-plus'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
-import { useDarkMode } from '@/composables/useDarkMode'
+import { useDarkMode, type DarkPalette, type LightPalette } from '@/composables/useDarkMode'
+
+type ThemeChoice = `light-${LightPalette}` | `dark-${DarkPalette}`
+
+const THEME_CHOICES: { id: ThemeChoice; label: string; divided?: boolean }[] = [
+  { id: 'light-neko', label: 'common.lightModeNeko' },
+  { id: 'light-paper', label: 'common.lightModePaper' },
+  { id: 'dark-neko', label: 'common.darkModeNeko', divided: true },
+  { id: 'dark-graphite', label: 'common.darkModeGraphite' },
+]
 
 const pluginStore = usePluginStore()
 const { t } = useI18n()
 const refreshing = ref(false)
-const { isDark, toggleDarkMode } = useDarkMode()
+const { isDark, lightPalette, darkPalette, setDarkMode, setLightPalette, setDarkPalette } =
+  useDarkMode()
+const currentTheme = computed<ThemeChoice>(() =>
+  isDark.value ? `dark-${darkPalette.value}` : `light-${lightPalette.value}`
+)
+
+function handleThemeCommand(command: ThemeChoice) {
+  if (command.startsWith('dark-')) {
+    setDarkPalette(command.slice('dark-'.length) as DarkPalette)
+    setDarkMode(true)
+  } else {
+    setLightPalette(command.slice('light-'.length) as LightPalette)
+    setDarkMode(false)
+  }
+}
 
 async function handleRefresh() {
   if (refreshing.value) return

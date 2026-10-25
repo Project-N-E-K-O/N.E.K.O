@@ -222,18 +222,12 @@ watch(activeMatch, () => void focusMatch(), { immediate: true })
 </script>
 <style scoped>
 .output-reader {
-  --json-key: #315f92;
-  --json-string: #28704f;
-  --json-number: #7652a1;
-  --json-boolean: #955b27;
+  --json-key: var(--code-key);
+  --json-string: var(--code-string);
+  --json-number: var(--code-number);
+  --json-boolean: var(--code-keyword);
   min-width: 0;
   color: var(--el-text-color-regular);
-}
-:global(html.dark .output-reader) {
-  --json-key: #a2c8f1;
-  --json-string: #9bd4b4;
-  --json-number: #cbb5f0;
-  --json-boolean: #e4bc8d;
 }
 .reader-toolbar {
   position: sticky;
