@@ -548,6 +548,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/voice_identity",
     "/chara_manager",
     "/character_card_manager",
+    "/visit_persona",
     "/cloudsave_manager",
     "/memory_browser",
     "/cookies_login",

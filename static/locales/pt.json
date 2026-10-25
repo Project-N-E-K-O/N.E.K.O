@@ -6879,6 +6879,7 @@
         },
         "persona": {
             "title": "Apresentação para visitas",
+            "windowTitle": "Apresentação para visitas - Project N.E.K.O.",
             "intro": "É a apresentação que ela leva nas visitas. Não contém nada sobre você. A outra garota-gato pode vê-la e repetir o conteúdo.",
             "editHint": "Algumas linhas sobre ela: personalidade, hobbies, jeito de falar",
             "loading": "Carregando…",

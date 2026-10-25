@@ -6879,6 +6879,7 @@
         },
         "persona": {
             "title": "Visit introduction",
+            "windowTitle": "Visit introduction - Project N.E.K.O.",
             "intro": "This is the introduction she brings when visiting. It contains nothing about you. The other catgirl can see it and may repeat what's in it.",
             "editHint": "A few lines about her: personality, hobbies, how she talks",
             "loading": "Loading…",

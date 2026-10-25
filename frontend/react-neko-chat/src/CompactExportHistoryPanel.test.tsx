@@ -45,6 +45,31 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('keeps visit peer messages visually distinct from both the user and the local assistant', () => {
+    const visitPeerMessage = parseChatMessage({
+      id: 'visit-peer-message',
+      role: 'tool',
+      author: 'Guest Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'I came to visit.' }],
+      status: 'sent',
+    });
+    const { container } = renderPanel({
+      messages: [message, visitPeerMessage],
+      selectedIds: new Set(),
+      selectedCount: 0,
+      selectableCount: 2,
+      previewOpen: false,
+      visibilityState: 'open',
+    });
+
+    const row = container.querySelector('[data-compact-export-history-message-id="visit-peer-message"]');
+    expect(row).toHaveClass('is-visit-peer');
+    // Local assistant -> visit peer is a visual speaker switch, not one assistant group.
+    expect(row).toHaveAttribute('data-compact-history-group', 'switch');
+  });
+
   it('keeps image saving enabled in history and preserves message selection mode', () => {
     const imageMessage = parseChatMessage({
       ...message,

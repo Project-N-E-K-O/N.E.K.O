@@ -32,12 +32,15 @@ ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "design" / "visit-infrastructure.md"
 WS = ROOT / "static" / "app" / "app-websocket.js"
 CHAT = ROOT / "static" / "app" / "app-react-chat-window" / "visit-chat.js"
+DISPLAY_RELAY = ROOT / "static" / "visit" / "display-relay.js"
 PERSONA = ROOT / "static" / "app" / "visit-persona-panel.js"
 ADAPTER = ROOT / "static" / "app" / "app-chat-adapter.js"
 SUBMIT = ROOT / "static" / "app" / "app-react-chat-window" / "message-bundle-actions-and-prompts.js"
 SCHEMA = ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 BLOCK_VIEW = ROOT / "frontend" / "react-neko-chat" / "src" / "MessageBlockView.tsx"
 INDEX_CSS = ROOT / "static" / "css" / "index.css"
+PERSONA_WINDOW_CSS = ROOT / "static" / "css" / "visit_persona_window.css"
+PERSONA_TEMPLATE = ROOT / "templates" / "visit_persona.html"
 TEMPLATES = (ROOT / "templates" / "index.html", ROOT / "templates" / "chat.html")
 LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
@@ -157,6 +160,29 @@ def test_chat_window_skips_the_iframe_but_still_renders_lines():
     assert "_isVisitChatFollowerWindow" not in block[block.index("if (window.nekoVisitChat"):handle]
     follower = _function_body(source, "_isVisitChatFollowerWindow")
     assert "__NEKO_MULTI_WINDOW__ === true" in follower and "chat(?:_full)?" in follower
+
+
+def test_chat_window_relays_visit_lifecycle_to_the_pet_window():
+    chat = _read(CHAT)
+    state = _function_body(chat, "onStateChange")
+    assert "window.nekoRelayVisitStateToDisplay(frame)" in state
+    snapshot = _function_body(chat, "applyState")
+    assert "relayStateSnapshotToDisplay(state, snapshotVisit)" in snapshot
+
+    relay = _read(DISPLAY_RELAY)
+    assert "new BroadcastChannel(CHANNEL_NAME)" in relay
+    assert "neko_visit_display_v1" in relay
+    assert "bridge.onStateChange(frame)" in relay
+    # The transport bridge needs lifecycle metadata, not the host's invite code.
+    assert "'action', 'side', 'visit_id'" in relay
+    assert "invite_code" not in relay
+
+    index = _read(ROOT / "templates" / "index.html")
+    chat_template = _read(ROOT / "templates" / "chat.html")
+    assert index.index("/static/visit/parent-bridge.js") < index.index("/static/visit/display-relay.js")
+    assert chat_template.index("/static/visit/display-relay.js") < chat_template.index(
+        "/static/app/app-react-chat-window/visit-chat.js"
+    )
 
 
 # ── Plain-text dialogue (§3.6.6, two layers) ──────────────────────────────────────
@@ -457,33 +483,51 @@ def test_visit_dialog_owns_compact_input_until_it_closes():
 
 def test_persona_panel_keeps_actions_outside_its_scrollable_body():
     source = _read(PERSONA)
-    assert "var body = el('div', 'visit-persona-body');" in source
+    assert "? 'visit-persona-content'" in source
+    assert "? 'visit-persona-actions'" in source
+    assert "? 'visit-persona-editor'" in source
+    assert "var header = el('div', 'modal-header');" in source
+    assert "btnClass = 'visit-persona-action';" in source
     assert "body.appendChild(privateBox);" in source
     assert source.index("dialog.appendChild(body);") < source.index("dialog.appendChild(actions);")
 
-    css = _read(INDEX_CSS)
-    dialog = re.search(r"\.visit-dialog\.visit-persona\s*\{([^}]*)\}", css, re.S)
-    body = re.search(r"\.visit-persona-body\s*\{([^}]*)\}", css, re.S)
-    actions = re.search(r"\.visit-dialog\.visit-persona \.visit-dialog-actions\s*\{([^}]*)\}", css, re.S)
-    assert dialog and "overflow: hidden" in dialog.group(1)
-    assert body and "overflow-y: auto" in body.group(1) and "min-height: 0" in body.group(1)
+    css = _read(PERSONA_WINDOW_CSS)
+    root = re.search(r"#visit-persona-window-root\s*\{([^}]*)\}", css, re.S)
+    actions = re.search(r"\.visit-persona-actions\s*\{([^}]*)\}", css, re.S)
+    assert root and "overflow-y: auto" in root.group(1)
+    assert "#visit-persona-window-root::-webkit-scrollbar" in css
+    assert "width: 8px" in css and "rgba(64, 197, 241, 0.55)" in css
     assert actions and "flex: 0 0 auto" in actions.group(1)
+    assert actions and "position: sticky" in actions.group(1) and "bottom: 0" in actions.group(1)
+
+
+def test_standalone_persona_hides_redundant_close_and_private_card_sections():
+    source = _read(PERSONA)
+    assert "return standalone ? [] : [closeButton()];" in _function_body(source, "passiveButtons")
+    private = _function_body(source, "renderPrivate")
+    assert "data.private_sections" not in private
+    assert "visit-persona-private-list" not in private
+    assert "data.sections_outdated === true" in private
+    assert "data.scan_complete === false" in private
 
 
 def test_persona_panel_owns_compact_input_and_has_no_dim_backdrop():
     source = _read(PERSONA)
-    assert "visit-dialog-overlay visit-persona-overlay" in source
-    assert "var releaseInteractive = acquireForceInteractiveLease();" in source
+    assert "modal-overlay visit-persona-overlay" in source
+    assert "modal-dialog visit-persona" in source
+    assert "modal-input visit-persona-text" in source
+    assert "modal-btn-primary" in source and "modal-btn-secondary" in source
+    assert "standalone ? function () {} : acquireForceInteractiveLease();" in source
+    assert "if (!standalone)" in source
     assert "releaseInteractive();" in _function_body(source, "close")
     lease = _function_body(source, "acquireForceInteractiveLease")
     assert "window.__nekoAcquireForceInteractiveLease" in lease
     assert "window.__nekoForceInteractiveLeaseState" in lease
 
     css = _read(INDEX_CSS)
-    base_overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)
-    overlay = re.search(r"\.visit-persona-overlay\s*\{([^}]*)\}", css, re.S)
+    overlay = re.search(r"\.modal-overlay\.visit-persona-overlay\s*\{([^}]*)\}", css, re.S)
     dialog = re.search(r"\.visit-persona-overlay \.visit-persona\s*\{([^}]*)\}", css, re.S)
-    assert base_overlay and "background: transparent" in base_overlay.group(1)
+    assert overlay and "background: transparent" in overlay.group(1)
     assert overlay and "pointer-events: none" in overlay.group(1)
     assert dialog and "pointer-events: auto" in dialog.group(1)
 
@@ -500,6 +544,30 @@ def test_persona_panel_is_reused_only_for_the_same_character():
     assert "if (openPanel.catgirl === catgirl) return openPanel.result;" in source
     assert "openPanel.close(false);" in source
     assert "panel.close = close;" in source
+
+
+def test_persona_panel_displays_the_real_character_name_instead_of_the_placeholder():
+    source = _read(PERSONA)
+    render = _function_body(source, "renderPersonaText")
+    assert "value.split('{LANLAN_NAME}').join(catgirl)" in render
+    assert "loadedText = renderPersonaText(data.text, catgirl);" in source
+
+
+def test_persona_preview_opens_as_a_standalone_neko_tool_window():
+    source = _read(PERSONA)
+    template = _read(PERSONA_TEMPLATE)
+    css = _read(PERSONA_WINDOW_CSS)
+    assert "window.open('/visit_persona?' + params.toString()" in source
+    assert "window.buildCenteredPopupFeatures(820, 720)" in source
+    assert "type: 'neko:visit-persona-result'" in source
+    assert "window.__NEKO_VISIT_PERSONA_STANDALONE__ === true" in source
+    assert "return openStandaloneVisitPersonaPreview(catgirl, options);" in source
+    assert "visit-persona-page-surface" in source
+    assert "data-compact-geometry-owner" in source and "if (!standalone)" in source
+    assert "/static/common_dialogs.js" not in template
+    assert "/static/css/index.css" not in template
+    assert "modal-overlay" not in css and "modal-dialog" not in css
+    assert "-webkit-app-region: no-drag !important" in css
 
 
 def test_refused_ordinary_submission_releases_an_ack_only_text_session():

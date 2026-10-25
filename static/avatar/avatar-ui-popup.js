@@ -487,25 +487,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
 
-    // 2.5 串门设置（docs/design/visit-infrastructure.md §5 PR-13）：入口默认隐藏，
-    // static/visit/visit-settings.js 探到 NEKO_VISIT_ENABLED 总闸开着才显示
-    const visitSettingsBtn = manager._createSettingsMenuButton({
-        label: window.t ? window.t('visit.settings.groupTitle') : '串门',
-        labelKey: 'visit.settings.groupTitle'
-    });
-    visitSettingsBtn.style.display = 'none';
-    visitSettingsBtn.setAttribute('data-neko-visit-settings-entry', '');
-    popup.appendChild(visitSettingsBtn);
-
-    const visitSidePanel = manager._createVisitSettingsSidePanel(popup);
-    visitSidePanel._anchorElement = visitSettingsBtn;
-    visitSidePanel._popupElement = popup;
-    manager._attachSidePanelHover(visitSettingsBtn, visitSidePanel);
-    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.revealEntries === 'function') {
-        void window.nekoVisitSettings.revealEntries();
-    }
-
-    // 2.6 猫咪设置（自动变猫 / 重力猫猫 / 猫猫音效）：浏览器部署的独立入口，
+    // 2.5 猫咪设置（自动变猫 / 重力猫猫 / 猫猫音效）：浏览器部署的独立入口，
     // 与桌面壳聚合设置页「通用 → 猫咪」分组共用状态层
     const catSettingsBtn = manager._createSettingsMenuButton({
         label: window.t ? window.t('settings.toggles.catSettings') : '猫咪设置',
@@ -520,7 +502,28 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
-    // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
+    // 4. 串门、主动搭话和自主视觉：三个滑块连续排列。
+    // 串门整行同时仍是二级设置面板的悬停入口；发布总闸开启后才显示。
+    const visitSettingsToggle = manager._createSettingsToggleItem({
+        id: 'visit-enabled',
+        label: window.t ? window.t('visit.settings.groupTitle') : '串门',
+        labelKey: 'visit.settings.groupTitle',
+        tooltipKey: 'visit.settings.enabledTooltip',
+        storageKey: 'visitEnabled',
+        controlStyle: 'slider'
+    });
+    visitSettingsToggle.style.display = 'none';
+    visitSettingsToggle.setAttribute('data-neko-visit-settings-entry', '');
+    popup.appendChild(visitSettingsToggle);
+
+    const visitSidePanel = manager._createVisitSettingsSidePanel(popup);
+    visitSidePanel._anchorElement = visitSettingsToggle;
+    visitSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(visitSettingsToggle, visitSidePanel);
+    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.revealEntries === 'function') {
+        void window.nekoVisitSettings.revealEntries();
+    }
+
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
@@ -794,8 +797,8 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
 }
 
 /**
- * 创建串门设置侧边面板：两个开关（visitEnabled / visitVoiceEnabled）+ 构图 / 档位 / 人设入口。
- * 串门记忆开关是隐藏配置，不在这里出现（OD-09 v3）。
+ * 创建串门设置侧边面板：出声开关 + 构图 / 档位 / 人设入口。
+ * visitEnabled 已提升为主菜单的串门总开关；串门记忆开关是隐藏配置，不在这里出现（OD-09 v3）。
  */
 function createVisitSettingsSidePanel(manager, prefix, popup) {
     const container = manager._createSidePanelContainer();
@@ -808,7 +811,6 @@ function createVisitSettingsSidePanel(manager, prefix, popup) {
     container.style.padding = '4px 4px';
 
     const visitToggles = [
-        { id: 'visit-enabled', label: window.t ? window.t('visit.settings.enabled') : '允许串门', labelKey: 'visit.settings.enabled', tooltipKey: 'visit.settings.enabledTooltip', storageKey: 'visitEnabled', alwaysTinted: true },
         { id: 'visit-voice', label: window.t ? window.t('visit.settings.voice') : '串门时出声', labelKey: 'visit.settings.voice', tooltipKey: 'visit.settings.voiceTooltip', storageKey: 'visitVoiceEnabled', alwaysTinted: true },
     ];
 
@@ -821,7 +823,7 @@ function createVisitSettingsSidePanel(manager, prefix, popup) {
     });
 
     if (window.nekoVisitSettings && typeof window.nekoVisitSettings.appendPanelExtras === 'function') {
-        window.nekoVisitSettings.appendPanelExtras(container);
+        window.nekoVisitSettings.appendPanelExtras(container, manager);
     }
 
     document.body.appendChild(container);

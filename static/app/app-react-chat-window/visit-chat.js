@@ -800,6 +800,9 @@
 
     function renderLine(entry) {
         if (!isUiWindow()) return;
+        // 协议偶尔会在上游模型失败时收到空的 delta / final。空内容不是一条可见消息，
+        // 不应占出一个只有作者和时间的气泡；带“被打断”提示的空行仍保留提示。
+        if (relayCleanIsEmpty(entry.text) && !entry.truncated) return;
         var adapter = window.appChat;
         if (!adapter || typeof adapter.renderVisitLine !== 'function') return;
         var notice = entry.truncated ? t('visit.stream.truncated', '（被打断）') : '';
@@ -823,6 +826,13 @@
             replace: !!claimed
         });
         entry.rendered = true;
+    }
+
+    function removeRenderedLine(entry) {
+        if (!entry || !entry.rendered) return;
+        var host = getHost();
+        if (host && typeof host.removeMessage === 'function') host.removeMessage(entry.messageId);
+        entry.rendered = false;
     }
 
     function armStall(entry) {
@@ -870,6 +880,11 @@
         entry.text = String(frame.text || '');
         entry.truncated = frame.truncated === true;
         if (typing && frame.speaker && frame.speaker.name === typing.name) typing = null;
+        // authoritative final 为空时，撤掉此前 delta 形成的半截气泡；否则会留下“空回复”。
+        if (relayCleanIsEmpty(entry.text) && !entry.truncated) {
+            removeRenderedLine(entry);
+            return;
+        }
         renderLine(entry);
     }
 
@@ -1031,6 +1046,9 @@
         case 'ended':
             onEnded(frame);
             render();
+            if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+                window.nekoRelayVisitStateToDisplay(frame);
+            }
             return;
         case 'pending':
         case 'joining':
@@ -1057,6 +1075,11 @@
             clearReconnectPoll();
         }
         render();
+        // Electron 多窗口里 /chat 往往是最新的主 WebSocket，而媒体 iframe
+        // 必须由 Pet 窗创建；把已经校验并应用的生命周期状态同步过去。
+        if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+            window.nekoRelayVisitStateToDisplay(frame);
+        }
     }
 
     function onEnded(frame) {
@@ -2325,6 +2348,22 @@
             ? phase : null;
     }
 
+    function relayStateSnapshotToDisplay(state, visitId) {
+        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
+        var phase = phaseFromState(state.phase);
+        if (!phase) return;
+        var frame = {
+            type: 'visit_state_change',
+            action: phase === 'active' ? 'started' : phase,
+            side: state.side || state.role || '',
+            visit_id: visitId
+        };
+        if (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full')) {
+            frame.peer_crop = state.peer.crop;
+        }
+        window.nekoRelayVisitStateToDisplay(frame);
+    }
+
     // 快照里的对端信息与重载前的台词并进这一场；onlyFill：只填空缺字段（帧带来的更新不覆盖）
     function mergeSnapshotDetails(state, onlyFill) {
         var peer = state.peer;
@@ -2354,6 +2393,9 @@
         releaseEnabled = state.enabled === true;
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
+        // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；bind 后的
+        // 权威快照也同步给 Pet，确保传输 iframe 最终一定会被创建。
+        if (snapshotVisit) relayStateSnapshotToDisplay(state, snapshotVisit);
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
         // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
         if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {

@@ -3813,6 +3813,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   color: #142033;
 }
 
+.compact-export-history-message.is-visit-peer .compact-export-history-bubble {
+  background: linear-gradient(135deg, rgba(243, 237, 255, 0.96), rgba(222, 208, 255, 0.94));
+  border-color: transparent;
+  color: #352557;
+  box-shadow: 0 7px 18px rgba(99, 68, 158, 0.14);
+}
+
+.compact-export-history-message.is-visit-peer .compact-export-history-meta {
+  color: rgba(86, 59, 137, 0.76);
+}
+
 .compact-export-history-message.is-system .compact-export-history-bubble {
   max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));
   background: rgba(131, 148, 175, 0.18);
@@ -4776,6 +4787,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 .compact-export-preview-message.is-user .compact-export-preview-bubble {
   border-radius: 14px 8px 14px 14px;
   background: rgba(208, 231, 255, 0.7);
+}
+
+.compact-export-preview-message.is-visit-peer .compact-export-preview-bubble {
+  background: linear-gradient(135deg, rgba(243, 237, 255, 0.84), rgba(222, 208, 255, 0.82));
+  color: #352557;
+}
+
+.compact-export-preview-message.is-visit-peer .compact-export-preview-meta {
+  color: rgba(86, 59, 137, 0.72);
 }
 
 .compact-export-preview-message.is-system .compact-export-preview-bubble {
@@ -10213,6 +10233,16 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   color: #dceaff;
 }
 
+[data-theme="dark"] .compact-export-history-message.is-visit-peer .compact-export-history-bubble {
+  background: linear-gradient(135deg, rgba(57, 45, 80, 0.94), rgba(45, 35, 66, 0.94));
+  border-color: transparent;
+  color: #f0e9ff;
+}
+
+[data-theme="dark"] .compact-export-history-message.is-visit-peer .compact-export-history-meta {
+  color: rgba(219, 199, 250, 0.78);
+}
+
 [data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-bubble {
   background: rgba(80, 90, 110, 0.24);
   color: #b9c4d6;
@@ -10341,6 +10371,15 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 
 [data-theme="dark"] .compact-export-preview-message.is-user .compact-export-preview-bubble {
   background: rgba(33, 72, 118, 0.74);
+}
+
+[data-theme="dark"] .compact-export-preview-message.is-visit-peer .compact-export-preview-bubble {
+  background: linear-gradient(135deg, rgba(57, 45, 80, 0.84), rgba(45, 35, 66, 0.84));
+  color: #f0e9ff;
+}
+
+[data-theme="dark"] .compact-export-preview-message.is-visit-peer .compact-export-preview-meta {
+  color: rgba(219, 199, 250, 0.72);
 }
 
 [data-theme="dark"] .compact-export-preview-message.is-system .compact-export-preview-bubble {

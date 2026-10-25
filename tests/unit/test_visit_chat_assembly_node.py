@@ -1158,6 +1158,18 @@ const report = {};
     h.frame({ type: 'visit_line_abort', visit_id: VID, line_id: 'g:8', i_done: 1, reason: 'interrupted' });
     report.interrupted_kept = h.lineText('g:8');
   }
+  // ── 空的模型结果不是消息：不新建气泡，也撤掉此前 delta 留下的半截气泡 ──
+  {
+    const h = createHarness();
+    h.state('started');
+    const peerCat = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:empty', lp: 10, text: '', final: true, truncated: false, speaker: peerCat });
+    report.empty_final_never_rendered = !!h.lineMessage('g:empty');
+    h.frame({ type: 'visit_line_delta', visit_id: VID, line_id: 'g:emptied', i: 0, lp: 11, text: '半句', speaker: peerCat });
+    report.empty_final_before = !!h.lineMessage('g:emptied');
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:emptied', lp: 11, text: '', final: true, truncated: false, speaker: peerCat });
+    report.empty_final_after = !!h.lineMessage('g:emptied');
+  }
   // ── 漏了 started、/state 也读不到：收到过这一场的台词，结束时照样留结束消息 ──
   {
     const h = createHarness();
@@ -1919,6 +1931,12 @@ def test_rejected_line_bubble_is_withdrawn(report):
     assert report["rejected_after"] is False
     assert report["rejected_entry"] is False
     assert report["interrupted_kept"] == "被打断的|（被打断）"
+
+
+def test_empty_visit_lines_never_leave_blank_bubbles(report):
+    assert report["empty_final_never_rendered"] is False
+    assert report["empty_final_before"] is True
+    assert report["empty_final_after"] is False
 
 
 def test_a_received_line_proves_the_visit_started(report):

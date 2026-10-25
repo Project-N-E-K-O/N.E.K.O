@@ -457,6 +457,16 @@ async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     })
 
 
+@router.get('/visit_persona', response_class=HTMLResponse)
+async def visit_persona_page(request: Request):
+    """Standalone N.E.K.O tool window for reviewing the visit persona."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/visit_persona.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()

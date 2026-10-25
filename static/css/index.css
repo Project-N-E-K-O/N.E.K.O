@@ -4759,22 +4759,23 @@ body.chat-export-modal-open {
 
 /* ---------- 串门（docs/design/visit-infrastructure.md §3.6.6 / OD-19） ---------- */
 
-/* 访客猫娘与对方家里人的台词复用 role 'tool'：暖色气泡与头像，与她自己的气泡一眼分开 */
+/* 访客猫娘与对方家里人的台词复用 role 'tool'：用紫色底色与头像区分身份，
+   气泡轮廓仍与其他聊天消息一致，不额外描边。 */
 #react-chat-window-root .message-bubble-tool {
-    background: linear-gradient(180deg, #fff8ee 0%, #fdeedc 100%);
-    color: #47331d;
-    border: 1px solid rgba(232, 170, 96, 0.35);
+    background: linear-gradient(135deg, #f3edff 0%, #e6dcff 100%);
+    color: #352557;
+    box-shadow: 0 5px 14px rgba(99, 68, 158, 0.12);
 }
 
 #react-chat-window-root .avatar-tool {
     color: #fff;
-    background: linear-gradient(135deg, #ffb86b 0%, #f08a3c 100%);
+    background: linear-gradient(135deg, #a584e8 0%, #7951c9 100%);
 }
 
 [data-theme="dark"] #react-chat-window-root .message-bubble-tool {
-    background: linear-gradient(180deg, #3a2f24 0%, #33281d 100%);
-    color: #f3e3cf;
-    border-color: rgba(232, 170, 96, 0.28);
+    background: linear-gradient(135deg, #392d50 0%, #2d2342 100%);
+    color: #f0e9ff;
+    box-shadow: 0 5px 14px rgba(16, 10, 26, 0.28);
 }
 
 /* 串门对话框（出门确认、接待确认、邀请码、查看详情、举报、串门人设）：宿主页 DOM，文字一律 textContent */
@@ -4809,20 +4810,29 @@ body.chat-export-modal-open {
     -webkit-app-region: no-drag;
 }
 
-/* 自我介绍的私人段落可能很长：只滚动正文，标题与确认按钮始终留在可见区域。 */
-.visit-dialog.visit-persona {
+/* 自我介绍复用 N.E.K.O 通用 modal 骨架；私人段落可能很长，只滚动正文，
+   标题与确认按钮始终留在可见区域。 */
+.modal-dialog.visit-persona {
+    min-width: 0;
+    width: min(500px, calc(100vw - 32px));
+    max-width: min(500px, calc(100vw - 32px));
+    max-height: min(82vh, 760px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    -webkit-app-region: no-drag;
 }
 
-/* 人设确认的透明区域本身也不拦截页面点击。 */
-.visit-persona-overlay {
-    pointer-events: none;
+/* Electron 透明桌面窗不铺整屏灰幕；保留通用 modal 布局，只让卡片接管输入。 */
+.modal-overlay.visit-persona-overlay {
+    box-sizing: border-box;
+    padding: 16px;
+    background: transparent;
+    pointer-events: none !important;
 }
 
 .visit-persona-overlay .visit-persona {
-    pointer-events: auto;
+    pointer-events: auto !important;
 }
 
 .visit-persona-body {
@@ -4832,11 +4842,14 @@ body.chat-export-modal-open {
     padding-right: 4px;
 }
 
-.visit-dialog.visit-persona .visit-dialog-actions {
+.modal-dialog.visit-persona .visit-dialog-actions {
     flex: 0 0 auto;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid rgba(120, 135, 155, 0.22);
+    margin-top: 0;
+}
+
+.modal-dialog.visit-persona .modal-btn:disabled {
+    cursor: default;
+    opacity: 0.5;
 }
 
 .visit-dialog-title {
@@ -4904,6 +4917,10 @@ body.chat-export-modal-open {
 .visit-persona-text {
     min-height: 96px;
     resize: vertical;
+}
+
+.modal-dialog.visit-persona .visit-persona-text {
+    margin-top: 10px;
 }
 
 .visit-report-include {
