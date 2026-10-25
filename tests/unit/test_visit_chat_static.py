@@ -501,7 +501,7 @@ def test_persona_panel_keeps_actions_outside_its_scrollable_body():
     assert actions and "position: sticky" in actions.group(1) and "bottom: 0" in actions.group(1)
 
 
-def test_standalone_persona_hides_redundant_close_and_private_card_sections():
+def test_persona_hides_private_card_sections_in_both_modes_and_standalone_close():
     source = _read(PERSONA)
     assert "return standalone ? [] : [closeButton()];" in _function_body(source, "passiveButtons")
     private = _function_body(source, "renderPrivate")

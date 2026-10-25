@@ -361,7 +361,7 @@
             // 扫描不完整 / 清单过期这两类需要用户处理的状态提醒。
             if (data && data.sections_outdated === true) {
                 privateBox.appendChild(el('p', (standalone ? 'visit-persona-hint' : 'visit-dialog-line')
-                    + ' is-warning', t('visit.persona.sectionsOutdated', '这份私人段落清单基于改动之前的角色卡，新加的内容没有列进来，请自己再看一遍')));
+                    + ' is-warning', t('visit.persona.sectionsOutdated', '角色卡在上次自动检查后发生过变化，新加的内容可能还没检查，请自己再看一遍')));
             }
             if (data && data.scan_complete === false) {
                 privateBox.appendChild(el('p', (standalone ? 'visit-persona-hint' : 'visit-dialog-line')

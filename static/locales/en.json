@@ -6963,7 +6963,7 @@
             "unavailable": "Couldn't load the visit introduction. Try again later",
             "unknownCatgirl": "This character wasn't found",
             "unreviewed": "Look over her visit introduction first. Visits start once you confirm it",
-            "sectionsOutdated": "This list of private sections is from the card before it changed; anything added since is not listed. Please check it yourself"
+            "sectionsOutdated": "The character card changed after the last automatic check. Newly added content may not have been checked, so please review it yourself"
         },
         "preview": {
             "invalid": "That invite code isn't valid",

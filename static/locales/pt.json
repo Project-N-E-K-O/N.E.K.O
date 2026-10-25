@@ -6963,7 +6963,7 @@
             "unavailable": "Não foi possível carregar a apresentação. Tente mais tarde",
             "unknownCatgirl": "Personagem não encontrada",
             "unreviewed": "Confira primeiro a apresentação dela; as visitas liberam depois da confirmação",
-            "sectionsOutdated": "Esta lista de trechos pessoais é da ficha antes da mudança; o que foi adicionado depois não aparece. Confira você mesmo"
+            "sectionsOutdated": "A ficha da personagem mudou após a última verificação automática. O conteúdo novo pode não ter sido verificado; confira você mesmo"
         },
         "preview": {
             "invalid": "Código de convite inválido",

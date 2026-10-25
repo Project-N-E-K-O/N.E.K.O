@@ -6963,7 +6963,7 @@
             "unavailable": "暫時讀不到串門自我介紹，稍後再試",
             "unknownCatgirl": "找不到這個角色",
             "unreviewed": "出門前先看一眼她的串門自我介紹，確認後才能串門",
-            "sectionsOutdated": "這份私人段落清單基於改動之前的角色卡，新加的內容沒有列進來，請自己再看一遍"
+            "sectionsOutdated": "角色卡在上次自動檢查後發生過變化，新加的內容可能還沒檢查，請自己再看一遍"
         },
         "preview": {
             "invalid": "邀請碼無效",

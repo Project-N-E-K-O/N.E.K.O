@@ -6963,7 +6963,7 @@
             "unavailable": "暂时读不到串门自我介绍，稍后再试",
             "unknownCatgirl": "找不到这个角色",
             "unreviewed": "出门前先看一眼她的串门自我介绍，确认后才能串门",
-            "sectionsOutdated": "这份私人段落清单基于改动之前的角色卡，新加的内容没有列进来，请自己再看一遍"
+            "sectionsOutdated": "角色卡在上次自动检查后发生过变化，新加的内容可能还没检查，请自己再看一遍"
         },
         "preview": {
             "invalid": "邀请码无效",
