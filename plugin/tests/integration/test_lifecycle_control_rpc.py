@@ -58,7 +58,11 @@ async def lifecycle_host(lifecycle_router, monkeypatch, tmp_path):
                 await host.shutdown(timeout=1)
 
 
-async def test_config_change_can_query_host_memory(lifecycle_host):
+@pytest.mark.parametrize("queue_timeout", [1.0, 0.0001])
+async def test_config_change_can_query_host_memory(lifecycle_host, monkeypatch, queue_timeout):
+    # Cover both inherited (fork) and re-imported (spawn) child settings.
+    monkeypatch.setattr(host_module, "QUEUE_GET_TIMEOUT", queue_timeout)
+    monkeypatch.setenv("NEKO_QUEUE_GET_TIMEOUT", str(queue_timeout))
     host = await lifecycle_host("config_change")
     result = await host.send_config_update({"example": "updated"}, timeout=2)
     assert result["config_applied"] is True

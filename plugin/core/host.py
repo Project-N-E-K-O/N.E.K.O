@@ -1330,7 +1330,7 @@ def _plugin_process_runner(
                 logger.warning("Unknown plugin RPC response type")
 
         async def _lifecycle_downlink_pump(stop_event: asyncio.Event) -> None:
-            poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+            poll_ms = max(1, int(QUEUE_GET_TIMEOUT * 1000))
             while not stop_event.is_set():
                 result = await child_transport.recv_downlink(timeout_ms=poll_ms)
                 if result is None:
@@ -1633,7 +1633,7 @@ def _plugin_process_runner(
                     logger.exception("Failed to send UI context response for req_id={}", req_id)
 
         async def _async_command_loop():
-            poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+            poll_ms = max(1, int(QUEUE_GET_TIMEOUT * 1000))
             on_command_loop_start = getattr(instance, "_on_command_loop_start", None)
             if callable(on_command_loop_start):
                 try:
