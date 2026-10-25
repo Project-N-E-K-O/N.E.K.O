@@ -562,6 +562,23 @@ const report = {};
     report.idle_active = bound2[0].active;
     report.idle_bar_entry = h2.I.getVisitChatView().bar.actions.map((a) => a.id);
   }
+  // ── 旧的未开始 ending 快照迟到：不能结束读 state 期间已经打开的新场次 ──
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => { await gate; return { status: 200, body: {
+      active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true, room: null, transcript: [],
+    } }; } };
+    const h = createHarness({ routes });
+    const probe = h.chat.afterBind(h.socket, '咪咪');
+    await h.settle();
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 4 });
+    release();
+    await probe;
+    report.stale_unstarted_ending_visit = h.chat._test.state().visit.visitId;
+    report.stale_unstarted_ending_phase = h.chat._test.state().visit.phase;
+    report.stale_unstarted_ending_relay = h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id);
+  }
   // ── 被拒那句之后又提交过：不把旧文字塞回输入框，气泡照样标「未送达」 ──
   {
     const h = createHarness();
@@ -1711,6 +1728,12 @@ def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):
     assert report["reload_relay_crop"] == "full"
     assert report["idle_active"] is False
     assert report["idle_bar_entry"] == ["invite", "go"]
+
+
+def test_stale_unstarted_ending_snapshot_does_not_close_the_newer_visit(report):
+    assert report["stale_unstarted_ending_visit"] == "BBBBBBBBBBBBBBBBBBBBBB"
+    assert report["stale_unstarted_ending_phase"] == "pending"
+    assert report["stale_unstarted_ending_relay"] == ["pending:BBBBBBBBBBBBBBBBBBBBBB"]
 
 
 def test_a_later_submission_keeps_an_old_refused_text_out_of_the_composer(report):

@@ -2412,7 +2412,7 @@
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
         // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
-        if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {
+        if (!stale && snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {
             if (visit.visitId && visit.visitId !== snapshotVisit && inVisit()) {
                 var previousEndingVisit = visit.visitId;
                 var previousEndingSide = visit.side;
