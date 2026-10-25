@@ -1004,7 +1004,14 @@
         if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending' && action !== 'invite_ready') return;
         if (visit.visitId !== visitId) {
             // 漏收了上一场的 ended、新一场的 pending 先到：上一场照样留下结束消息、标掉还在等回显的本地气泡
-            if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            if (visit.visitId && inVisit()) {
+                var previousVisit = visit.visitId;
+                var previousSide = visit.side;
+                onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
+                // invite_ready 也可作为新场次的权威起点；先让显示端回收旧 iframe，
+                // 否则它会按旧 visit_id 丢掉稍后转发的新 invite_ready。
+                relayEndedToDisplay(previousVisit, previousSide);
+            }
             startNewVisit(visitId);
         }
         if (frame.side === 'host' || frame.side === 'guest') {
@@ -2348,7 +2355,7 @@
             ? phase : null;
     }
 
-    function relayEndedSnapshotToDisplay(visitId, side) {
+    function relayEndedToDisplay(visitId, side) {
         if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
         window.nekoRelayVisitStateToDisplay({
             type: 'visit_state_change', action: 'ended', visit_id: visitId, side: side || ''
@@ -2410,7 +2417,7 @@
                 var previousEndingVisit = visit.visitId;
                 var previousEndingSide = visit.side;
                 onEnded({ visit_id: previousEndingVisit, side: previousEndingSide, reason: '' });
-                if (!stale) relayEndedSnapshotToDisplay(previousEndingVisit, previousEndingSide);
+                if (!stale) relayEndedToDisplay(previousEndingVisit, previousEndingSide);
             }
             if (visit.visitId === snapshotVisit) {
                 onEnded({ visit_id: snapshotVisit, side: state.side || state.role, reason: '' });
@@ -2418,7 +2425,7 @@
                 markEnded(snapshotVisit);
             }
             // 不先转发 ending：显示端会为它补建一个永远收不到 ended 的 iframe。
-            if (!stale) relayEndedSnapshotToDisplay(snapshotVisit, state.side || state.role);
+            if (!stale) relayEndedToDisplay(snapshotVisit, state.side || state.role);
             render();
             return;
         }
@@ -2452,7 +2459,7 @@
                     var previousSide = visit.side;
                     onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
                     // 显示端必须先退掉旧 iframe，之后才会接受没有 pending 的新场次快照。
-                    relayEndedSnapshotToDisplay(previousVisit, previousSide);
+                    relayEndedToDisplay(previousVisit, previousSide);
                 }
                 startNewVisit(snapshotVisit);
             }
@@ -2474,10 +2481,10 @@
             var endedVisit = visit.visitId;
             var endedSide = visit.side;
             onEnded({ visit_id: endedVisit, side: endedSide, reason: '' });
-            relayEndedSnapshotToDisplay(endedVisit, endedSide);
+            relayEndedToDisplay(endedVisit, endedSide);
         } else if (state.active !== true && typeof state.visit_id === 'string' && state.visit_id) {
             // 页面本地状态已经空了，Pet 窗仍可能留着重载前的 iframe；权威空闲快照照样负责回收。
-            relayEndedSnapshotToDisplay(state.visit_id, state.side || state.role);
+            relayEndedToDisplay(state.visit_id, state.side || state.role);
         }
         render();
     }

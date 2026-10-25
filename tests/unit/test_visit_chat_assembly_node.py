@@ -1297,6 +1297,7 @@ const report = {};
     report.replay_invite_switched = h.chat._test.state().visit.visitId === VID2;
     report.replay_invite_phase = h.chat._test.state().visit.phase;
     report.replay_invite_old_ended = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.replay_invite_relay = h.relayFrames.slice(-2).map((frame) => frame.action + ':' + frame.visit_id);
   }
   // ── 旧一场还挂着、bind 重放来了新一场的邀请：换到新一场（旧一场先收尾），之后 started 对得上 ──
   {
@@ -1994,6 +1995,9 @@ def test_replayed_invite_ready_switches_to_the_new_visit(report):
     assert report["replay_invite_switched"] is True
     assert report["replay_invite_phase"] == "invite_ready"
     assert report["replay_invite_old_ended"] is True
+    assert report["replay_invite_relay"] == [
+        "ended:AAAAAAAAAAAAAAAAAAAAAA", "invite_ready:BBBBBBBBBBBBBBBBBBBBBB",
+    ]
 
 
 def test_replayed_invite_switches_from_a_retained_visit(report):
