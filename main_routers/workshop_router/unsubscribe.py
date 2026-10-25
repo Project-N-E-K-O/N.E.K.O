@@ -1416,6 +1416,13 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                             "取消订阅同步清理: PetCare 退役 outbox 收口待重试: %r",
                             exc,
                         )
+                    except asyncio.CancelledError:
+                        # _await_thread_call_to_completion preserves caller
+                        # cancellation when the finish thread fails. Keep
+                        # finalizing the remaining prepared UIDs so none of
+                        # their in-process reconciliation fences leak, then
+                        # re-raise cancellation after the whole finally block.
+                        pet_care_finish_cancelled = True
         finally:
             try:
                 if mutation_lock_acquired:

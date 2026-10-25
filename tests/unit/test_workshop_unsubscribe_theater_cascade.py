@@ -176,6 +176,50 @@ async def test_workshop_unsubscribe_cascades_theater_data(tmp_path, monkeypatch)
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_unsubscribe_finishes_every_pet_care_retirement_after_cancellation(
+    tmp_path, monkeypatch,
+):
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character("character_" + "1" * 32),
+            "Mia": _workshop_character("character_" + "2" * 32),
+            "Other": {"_reserved": {"character_id": "character_" + "3" * 32}},
+        },
+    })
+    unsubscribe, _ = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    monkeypatch.setattr(
+        unsubscribe, "_collect_character_names_by_workshop_item_id", lambda *_: ["Lan", "Mia"],
+    )
+    original_await = unsubscribe._await_thread_call_to_completion
+    finished_uids: list[str] = []
+
+    async def controlled_await(func, *args, **kwargs):
+        if func is unsubscribe.prepare_pet_care_role_alias_retirement:
+            return None, False
+        if func is unsubscribe.finish_pet_care_role_alias_retirement:
+            finished_uids.append(args[1])
+            if len(finished_uids) == 1:
+                raise asyncio.CancelledError
+            return None, False
+        return await original_await(func, *args, **kwargs)
+
+    monkeypatch.setattr(unsubscribe, "_await_thread_call_to_completion", controlled_await)
+
+    with pytest.raises(asyncio.CancelledError):
+        await unsubscribe._unsubscribe_workshop_item(
+            _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+        )
+
+    expected_uids = [
+        hashlib.sha256(("character_" + digit * 32).encode("utf-8")).hexdigest()[:32]
+        for digit in ("2", "1")
+    ]
+    assert finished_uids == expected_uids
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_workshop_unsubscribe_aborts_before_commit_when_theater_preflight_fails(
     tmp_path, monkeypatch,
 ):
