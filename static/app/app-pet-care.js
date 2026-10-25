@@ -2357,32 +2357,67 @@
     function positionOverlay() {
         if (!ui) return;
         /* The anchor is a semantic app contract; no model manager is read here. */
-        var current = arguments.length ? { rect: arguments[0] } : anchorState();
+        // resize/scroll listeners pass their Event as the first argument.
+        // Only the internal explicit-rect call form may bypass anchorState().
+        var suppliedRect = arguments.length ? arguments[0] : null;
+        var explicitRect = suppliedRect && typeof suppliedRect === 'object' &&
+            Number.isFinite(Number(suppliedRect.left)) &&
+            Number.isFinite(Number(suppliedRect.top));
+        var current = explicitRect ? { rect: suppliedRect } : anchorState();
         var rect = current && current.visible !== false && current.rect;
         if (!rect) return;
         var anchorWidth = Number(rect.width) || (rect.right - rect.left) || 1;
         var anchorHeight = Number(rect.height) || (rect.bottom - rect.top) || 1;
         var centerX = Number(rect.left) + (anchorWidth / 2);
         var centerY = Number(rect.top) + (anchorHeight / 2);
-        // The desktop Pet window is already a transparent full-work-area
-        // surface. The selected demo has one fixed 760x560 coordinate system:
-        // the cat slot is exactly (380, 280), the center of that surface. The
-        // anchor only translates that system; it never chooses a side,
-        // candidate, bottom drawer, or viewport-clamped replacement.
-        var left = centerX - 380;
-        var top = centerY - 280;
+        // Keep one 760x560 internal coordinate system, but fit its rendered
+        // bounds into the current work area. Cats can be dragged to every
+        // screen edge, and an active exploration cannot be repositioned by
+        // dragging the absent cat, so an unconstrained translation can strand
+        // the close/recall controls outside the viewport. Narrow hosts use a
+        // uniform scale; ordinary desktop hosts retain the original size.
+        var viewportWidth = Number(window.innerWidth);
+        var viewportHeight = Number(window.innerHeight);
+        if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) viewportWidth = 760;
+        if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) viewportHeight = 560;
+        var margin = 8;
+        var scale = Math.min(1,
+            Math.max(1, viewportWidth - (margin * 2)) / 760,
+            Math.max(1, viewportHeight - (margin * 2)) / 560);
+        var renderedWidth = 760 * scale;
+        var renderedHeight = 560 * scale;
+        var rawLeft = centerX - (380 * scale);
+        var rawTop = centerY - (280 * scale);
+        var maxLeft = Math.max(margin, viewportWidth - margin - renderedWidth);
+        var maxTop = Math.max(margin, viewportHeight - margin - renderedHeight);
+        var left = Math.max(margin, Math.min(rawLeft, maxLeft));
+        var top = Math.max(margin, Math.min(rawTop, maxTop));
+        var localAnchorX = Math.max(0, Math.min(760, (centerX - left) / scale));
+        var localAnchorY = Math.max(0, Math.min(560, (centerY - top) / scale));
+        // The four 72px actions plus their gaps need a 162px half-width.
+        // Follow the real cat horizontally until doing so would clip them.
+        var actionCenterX = Math.max(162, Math.min(598, localAnchorX));
         // Real Chromium exposes CSSStyleDeclaration#setProperty.  Keep the
         // geometry path tolerant of the tiny style doubles used by the
         // renderer contract tests; this is only a CSS custom property and
         // must never make the lifecycle fail closed.
+        var sceneCenterX = localAnchorX.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') + 'px';
+        var sceneCenterY = localAnchorY.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') + 'px';
+        var actionCenter = actionCenterX.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') + 'px';
         if (ui.panel.style && typeof ui.panel.style.setProperty === 'function') {
-            ui.panel.style.setProperty('--pet-scene-center', '380px');
+            ui.panel.style.setProperty('--pet-scene-center-x', sceneCenterX);
+            ui.panel.style.setProperty('--pet-scene-center-y', sceneCenterY);
+            ui.panel.style.setProperty('--pet-action-center-x', actionCenter);
         } else if (ui.panel.style) {
-            ui.panel.style['--pet-scene-center'] = '380px';
+            ui.panel.style['--pet-scene-center-x'] = sceneCenterX;
+            ui.panel.style['--pet-scene-center-y'] = sceneCenterY;
+            ui.panel.style['--pet-action-center-x'] = actionCenter;
         }
         ui.root.style.left = Math.round(left) + 'px';
         ui.root.style.right = 'auto';
         ui.root.style.top = Math.round(top) + 'px';
+        ui.root.style.transformOrigin = '0 0';
+        ui.root.style.transform = scale < 1 ? 'scale(' + String(scale) + ')' : 'none';
     }
     function displaySnapshot() {
         return state.optimisticSnapshot || state.snapshot;
@@ -6276,11 +6311,12 @@
         if (ui.actionDetails) {
             if (typeof ui.actionDetails.replaceChildren === 'function') ui.actionDetails.replaceChildren();
             else { ui.actionDetails.children = []; ui.actionDetails.textContent = ''; }
-            // An active exploration always owns the independent right-hand
-            // activity card, even after refresh or a view transition. Do not
-            // require a hidden exploration button click to rediscover it.
+            // The operation card and the selected long-term module share the
+            // same right-hand slot. Keep exploration details discoverable on
+            // overview, but never stack their live controls under another
+            // page where a partly exposed recall button could be misclicked.
             var selected = activeExplorationAvailable ? 'exploration' : state.selectedCategory;
-            var canShowDetails = (activeExplorationAvailable || view === 'overview') && selected && (careContent(selected).length > 0 || selected === 'play' || selected === 'exploration') &&
+            var canShowDetails = view === 'overview' && selected && (careContent(selected).length > 0 || selected === 'play' || selected === 'exploration') &&
                 (selected === 'exploration' ? activeExplorationAvailable || authoritativeSnapshotReady() : isPetCareCompatibilityReady()) && state.snapshot &&
                 (selected === 'exploration' || !explorationActive(state.snapshot.exploration)) &&
                 (selected !== 'play' || playActionEntries().length > 0);

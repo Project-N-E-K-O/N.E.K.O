@@ -65,10 +65,12 @@ test('stage 9.1 uses the shared semantic anchor and does not embed a cat asset',
   assert.doesNotMatch(app, /componentBoxesFor = function/);
   assert.doesNotMatch(app, /var candidates = \[/);
   assert.doesNotMatch(app, /selected\.name/);
-  assert.match(app, /var left = centerX - 380;/);
-  assert.match(app, /var top = centerY - 280;/);
-  assert.match(app, /setProperty\('--pet-scene-center', '380px'\)/);
-  assert.doesNotMatch(app, /var clamp = function/);
+  assert.match(app, /var rawLeft = centerX - \(380 \* scale\);/);
+  assert.match(app, /var rawTop = centerY - \(280 \* scale\);/);
+  assert.match(app, /setProperty\('--pet-scene-center-x', sceneCenterX\)/);
+  assert.match(app, /setProperty\('--pet-scene-center-y', sceneCenterY\)/);
+  assert.match(app, /setProperty\('--pet-action-center-x', actionCenter\)/);
+  assert.match(app, /ui\.root\.style\.transform = scale < 1/);
   assert.match(css, /\.neko-pet-care-surface > \* \{\n    position: absolute/);
   assert.match(css, /#neko-pet-care-entry-overlay \.neko-pet-care-surface > \*,\n#neko-pet-care-entry-overlay \.neko-pet-care-surface \.neko-pet-care-module,[\s\S]*pointer-events: none/);
   const hintStart = app.indexOf('function showFeatureHintOnce');
@@ -105,7 +107,7 @@ test('stage 9.1 overview follows the selected demo block hierarchy', () => {
   assert.match(css, /\.neko-pet-care-rail \{[\s\S]*left: 142px;[\s\S]*width: 78px/);
   assert.match(css, /\.neko-pet-care-panel-footer \{[\s\S]*bottom: 168px;/);
   assert.match(css, /380 - \(42 \+ 78 \/ 2\) = 299px/);
-  assert.match(css, /\.neko-pet-care-actions \{[\s\S]*left: 380px;/);
+  assert.match(css, /\.neko-pet-care-actions \{[\s\S]*left: var\(--pet-action-center-x, 380px\);/);
   assert.match(css, /\.neko-pet-care-content \{[\s\S]*left: auto;[\s\S]*right: 16px;[\s\S]*top: 42px;[\s\S]*width: 252px/);
   assert.match(css, /\.neko-pet-care-action-details \{[\s\S]*left: auto;[\s\S]*right: 16px;[\s\S]*top: 42px;[\s\S]*width: 252px/);
   assert.match(css, /\.neko-pet-care-nav-item \{[\s\S]*font-size: 13px;[\s\S]*line-height: 1\.1/);

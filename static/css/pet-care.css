@@ -169,8 +169,10 @@
 #neko-pet-care-entry-overlay .neko-pet-care-exploration-visual { position: absolute; inset: 0; }
 #neko-pet-care-entry-overlay .neko-pet-care-exploration-nest {
     position: absolute;
-    left: 49%;
-    top: 49%;
+    /* Preserve the original -7px/-3px visual offset while the viewport-fit
+       placement keeps the semantic cat/nest anchor at a dynamic local point. */
+    left: calc(var(--pet-scene-center-x, 380px) - 27px);
+    top: calc(var(--pet-scene-center-y, 280px) - 58px);
     width: 142px;
     height: 83px;
     transform: translate(-50%, -50%);
@@ -508,7 +510,7 @@
 
 /* Immediate operations sit below the cat anchor. */
 #neko-pet-care-entry-overlay .neko-pet-care-actions {
-    left: 380px;
+    left: var(--pet-action-center-x, 380px);
     bottom: 48px;
     display: flex;
     gap: 12px;

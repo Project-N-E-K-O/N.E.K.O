@@ -604,7 +604,9 @@ test('stage 1 only floats beside the visible cat anchor after the hover delay', 
   const entry = entryOf(h);
   assert.equal(entry.dataset.available, 'true');
   assert.equal(entry.dataset.panelSide, undefined);
-  assert.equal(entry.style.left, '-180px');
+  assert.equal(entry.style.left, '8px');
+  assert.equal(entry.style.top, '8px');
+  assert.equal(entry.style.transform, 'none');
 });
 
 test('stage 1 opens the single surface after the semantic cat hover delay', async () => {
@@ -791,6 +793,61 @@ test('active exploration can collapse and reopen from the shared nest anchor wit
   assert.equal(businessPostCount(calls), 0);
 });
 
+test('active exploration details never overlap a selected long-term module', async () => {
+  const active = {
+    exploration_id: 'explore-module-navigation', status: 'active', active: true,
+    started_at: new Date(Date.now() - 1000).toISOString(),
+    ends_at: new Date(Date.now() + 60000).toISOString(),
+  };
+  const snapshot = stage4Snapshot({
+    exploration: active,
+    content_directory: progressContentDirectory(['cat-nest-mailbox']),
+    service_capabilities: { content_directory: 1 },
+  });
+  const h = createHarness(async url => {
+    if (url.includes('/api/card-drop/oauth/status')) {
+      return { ok: true, status: 200,
+        json: async () => ({ logged_in: true, local_user_id: 'account-a' }) };
+    }
+    if (url.includes('/api/pet-care/pets/')) {
+      return { ok: true, status: 200, json: async () => ({
+        account_id: 'account-a', current_character_uid: 'local-role-a', binding_status: 'bound',
+        pet_id: 'pet-a', bound_role_id: 'server-role-a', snapshot,
+      }) };
+    }
+    throw new Error('unexpected request: ' + url);
+  });
+  await waitFor(() => h.window.nekoPetCareEntry.getState().snapshot !== null);
+  await openPanel(h);
+
+  const panel = panelOf(h);
+  const scene = panel.children.find(child => child.className === 'neko-pet-care-scene');
+  const explorationStatus = panel.children.find(child =>
+    child.className === 'neko-pet-care-exploration-status-card');
+  const content = panel.children.find(child => child.className === 'neko-pet-care-content');
+  const profile = content.children.find(child => child.className ===
+    'neko-pet-care-module neko-pet-care-profile-module');
+  assert.equal(detailsOf(h).hidden, false);
+  assert.equal(scene.hidden, false);
+  assert.equal(explorationStatus.hidden, false);
+
+  for (const [view, module] of [
+    ['tasks', taskOf(h)],
+    ['letters', lettersOf(h)],
+    ['inventory', inventoryOf(h)],
+    ['profile', profile],
+  ]) {
+    selectView(h, view);
+    assert.equal(module.hidden, false, view + ' module must be visible');
+    assert.equal(detailsOf(h).hidden, true, view + ' must own the shared card slot');
+    assert.equal(scene.hidden, false, 'the exploration nest remains available');
+    assert.equal(explorationStatus.hidden, false, 'the exploration status remains available');
+  }
+
+  selectView(h, 'overview');
+  assert.equal(detailsOf(h).hidden, false);
+});
+
 test('a stale binding read cannot restore an exploration after a confirmed terminal write', async () => {
   const active = {
     exploration_id: 'explore-binding-race', status: 'active', active: true,
@@ -885,7 +942,7 @@ test('a hidden logged-out pet-care surface can still cancel an in-flight OAuth a
   assert.equal(openedPopup.closed, true);
 });
 
-test('stage 1 translates the fixed 760x560 scene with the semantic anchor without side switching', async () => {
+test('stage 1 keeps the fixed scene controls inside a narrow viewport', async () => {
   const h = await createReadyHarness();
   h.window.innerWidth = 700;
   h.window.nekoCatInteractionAnchor = {
@@ -897,8 +954,55 @@ test('stage 1 translates the fixed 760x560 scene with the semantic anchor withou
   h.document.dispatchEvent({ type: 'pointermove', clientX: 580, clientY: 200, pointerType: 'mouse' });
   await new Promise(resolve => setTimeout(resolve, 430));
   const entry = h.body.children.find(child => child.id === 'neko-pet-care-entry-overlay');
+  const panel = panelOf(h);
   assert.equal(entry.dataset.panelSide, undefined);
+  assert.equal(entry.style.left, '8px');
+  assert.equal(entry.style.top, '8px');
+  assert.equal(entry.style.transform, 'scale(0.9)');
+  assert.equal(panel.style['--pet-scene-center-x'], '646.667px');
+  assert.equal(panel.style['--pet-scene-center-y'], '213.333px');
+  assert.equal(panel.style['--pet-action-center-x'], '598px');
+  assert.ok(8 + (760 * 0.9) <= h.window.innerWidth - 8);
+
+  h.window.innerWidth = 1280;
+  h.window.dispatchEvent({ type: 'resize' });
   assert.equal(entry.style.left, '210px');
+  assert.equal(entry.style.transform, 'none');
+  assert.ok(210 + 760 <= h.window.innerWidth - 8);
+});
+
+test('stage 1 clamps the surface at every viewport edge', async () => {
+  const h = await createReadyHarness();
+  let anchorRect = { left: 0, top: 0, right: 140, bottom: 200, width: 140, height: 200 };
+  h.window.nekoCatInteractionAnchor = {
+    getState: () => ({ visible: true, busy: false, rect: anchorRect }),
+  };
+  enterCatForm(h);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  h.document.dispatchEvent({ type: 'pointermove', clientX: 5, clientY: 5, pointerType: 'mouse' });
+  await new Promise(resolve => setTimeout(resolve, 430));
+  const entry = entryOf(h);
+  const assertSurfaceInsideViewport = () => {
+    const left = Number.parseFloat(entry.style.left);
+    const top = Number.parseFloat(entry.style.top);
+    const scaleMatch = String(entry.style.transform).match(/^scale\(([^)]+)\)$/);
+    const scale = scaleMatch ? Number(scaleMatch[1]) : 1;
+    assert.ok(left >= 8);
+    assert.ok(top >= 8);
+    assert.ok(left + (760 * scale) <= h.window.innerWidth - 8 + 0.001);
+    assert.ok(top + (560 * scale) <= h.window.innerHeight - 8 + 0.001);
+  };
+  assertSurfaceInsideViewport();
+
+  for (const rect of [
+    { left: 1140, top: 0, right: 1280, bottom: 200, width: 140, height: 200 },
+    { left: 0, top: 600, right: 140, bottom: 800, width: 140, height: 200 },
+    { left: 1140, top: 600, right: 1280, bottom: 800, width: 140, height: 200 },
+  ]) {
+    anchorRect = rect;
+    h.window.dispatchEvent({ type: 'resize' });
+    assertSurfaceInsideViewport();
+  }
 });
 
 test('stage 1 tracks current role separately and accepts only a service binding result', async () => {
