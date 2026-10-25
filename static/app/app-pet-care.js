@@ -4250,14 +4250,25 @@
             var cancelledDetail = observation.detail && typeof observation.detail === 'object'
                 ? observation.detail : {};
             var cancelledActivityId = explicitPlayActivityId(cancelledDetail);
-            if (!cancelledActivityId ||
-                !Object.prototype.hasOwnProperty.call(preauthorizedPlayActivities, cancelledActivityId)) return;
+            if (!cancelledActivityId) return;
+            var cancelledPending = !!(state.playPending &&
+                state.playPending.activity_id === cancelledActivityId);
+            var cancelledAuthorization = Object.prototype.hasOwnProperty.call(
+                preauthorizedPlayActivities, cancelledActivityId);
+            var cancelledActive = !!(state.playActivity &&
+                state.playActivity.activity_id === cancelledActivityId);
+            if (!cancelledPending && !cancelledAuthorization && !cancelledActive) return;
+            if (cancelledPending) {
+                state.playPending = null;
+                state.playError = '';
+            }
             delete preauthorizedPlayActivities[cancelledActivityId];
-            if (state.playActivity && state.playActivity.activity_id === cancelledActivityId) {
+            if (cancelledActive) {
                 clearPlayActivity(str(cancelledDetail.terminalStatus) || 'cancelled');
                 return;
             }
             syncCatMindCompatibility('playground-yarn-response-cancelled');
+            render();
             flushDeferredAccountResume('playground-yarn-response-cancelled');
             return;
         }

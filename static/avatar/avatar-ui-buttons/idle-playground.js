@@ -192,8 +192,17 @@ function _clearNekoIdleCat1PlaygroundYarnPendingState(state) {
 }
 
 function _cancelNekoIdleCat1PlaygroundYarnResponse(state, reason) {
-    if (!state || !state.pendingYarnResponseId) return false;
-    const activationId = state.pendingYarnResponseId;
+    if (!state) return false;
+    const responseId = state.pendingYarnResponseId || '';
+    const activationId = responseId || state.pendingYarnAuthorizationId ||
+        state.pendingYarnActivationId || '';
+    if (!activationId) return false;
+    if (state.pendingYarnActivationTimer) clearTimeout(state.pendingYarnActivationTimer);
+    state.pendingYarnActivationId = '';
+    state.pendingYarnActivationTimer = 0;
+    if (state.pendingYarnAuthorizationTimer) clearTimeout(state.pendingYarnAuthorizationTimer);
+    state.pendingYarnAuthorizationId = '';
+    state.pendingYarnAuthorizationTimer = 0;
     if (state.pendingYarnResponseTimer) clearTimeout(state.pendingYarnResponseTimer);
     state.pendingYarnResponseId = '';
     state.pendingYarnResponseTimer = 0;
@@ -209,7 +218,7 @@ function _cancelNekoIdleCat1PlaygroundYarnResponse(state, reason) {
                     userInitiated: true,
                     catResponded: false,
                     terminalStatus: reason || 'cancelled',
-                    petCareAuthorized: true
+                    petCareAuthorized: !!responseId
                 }
             }
         }));
@@ -309,6 +318,11 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     state.draggingBodyId = '';
     state.pointerBodyId = '';
     state.pointerId = null;
+    // A yarn activation can be acquiring or presenting a PetCare play lease.
+    // Lifecycle exits such as cat-click and gravity disable must report one
+    // cancellation terminal before clearing local timers; otherwise a late
+    // authorization can recreate the compatibility gate after the scene left.
+    _cancelNekoIdleCat1PlaygroundYarnResponse(state, state.releaseReason || 'released');
     _clearNekoIdleCat1PlaygroundYarnPendingState(state);
     state.lastPointerSamples = [];
     state.pointerSampleSession = null;

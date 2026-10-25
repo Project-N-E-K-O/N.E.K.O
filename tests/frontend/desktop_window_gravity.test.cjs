@@ -190,10 +190,57 @@ test('releasing playground cancels a delayed reward terminal', async () => {
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(state.pendingYarnResponseTimer);
+  const pendingResponseId = state.pendingYarnResponseId;
+  assert.ok(pendingResponseId);
   assert.equal(r.context._releaseNekoIdleCat1PlaygroundDropLifecycle(r.button, 'test-cancel'), true);
   assert.equal(state.pendingYarnResponseTimer, 0);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_cancelled');
+  assert.equal(responses[0].detail.activityId, `playground-yarn-click:${pendingResponseId}`);
+  assert.equal(responses[0].detail.terminalStatus, 'test-cancel');
   r.runTimers(1000);
-  assert.equal(responses.length, 0);
+  assert.equal(responses.filter(item => item.type === 'playground_yarn_click_responded').length, 0);
+});
+
+test('releasing playground cancels an in-flight yarn authorization', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  let activationId = '';
+  let resolveAuthorization;
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    activationId = event.detail.activationId;
+    event.detail.waitUntil(new Promise(resolve => { resolveAuthorization = resolve; }));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled', token: 1,
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    pendingYarnAuthorizationId: '', pendingYarnResponseId: '',
+    lastPointerSamples: [], pointerSampleSession: null, cleanups: [],
+    disabledCapabilities: new Set(), suppressClickBodyId: '', suppressClickTimer: 0,
+  };
+
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  assert.ok(activationId);
+  assert.equal(state.pendingYarnAuthorizationId, activationId);
+  assert.equal(r.context._releaseNekoIdleCat1PlaygroundDropLifecycle(r.button, 'page-destroy'), true);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_cancelled');
+  assert.equal(responses[0].detail.activityId, `playground-yarn-click:${activationId}`);
+  assert.equal(responses[0].detail.petCareAuthorized, false);
+  assert.equal(responses[0].detail.terminalStatus, 'page-destroy');
+
+  resolveAuthorization({ authorized: true, minimumDurationMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  r.runTimers(1000);
+  assert.equal(responses.filter(item => item.type === 'playground_yarn_click_responded').length, 0);
 });
 
 test('dragging the cat interrupts a delayed reward response instead of reporting success', () => {

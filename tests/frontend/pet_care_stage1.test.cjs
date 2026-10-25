@@ -4426,6 +4426,86 @@ test('a late playground lease response cannot revive play after cat-form exit', 
   assert.equal(current.status_values.progress, 13);
 });
 
+test('a released playground cancels an in-flight yarn lease before authorization can revive it', async () => {
+  const calls = [];
+  let markIssueStarted;
+  let releaseIssue;
+  const issueStarted = new Promise(resolve => { markIssueStarted = resolve; });
+  const issueBarrier = new Promise(resolve => { releaseIssue = resolve; });
+  const snapshot = formalSnapshot({
+    play_actions: { yarn: {
+      content_id: 'yarn', label: '毛线球', inventory_item: null,
+      consume_quantity: null, inventory_quantity: null,
+      daily_count: 0, daily_limit: 3, feedback_action: 'cat1_play_yarn',
+      minimum_duration_seconds: 1,
+    } },
+    activity_counters: { service_day: '2026-10-21', playing: {} },
+  });
+  const h = createHarness(async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET', body: options.body });
+    if (url.includes('/api/card-drop/oauth/status')) {
+      return { ok: true, status: 200,
+        json: async () => ({ logged_in: true, local_user_id: 'account-a' }) };
+    }
+    if (url.endsWith('/play-leases') && options.method === 'POST') {
+      const request = JSON.parse(options.body);
+      markIssueStarted();
+      await issueBarrier;
+      return { ok: true, status: 200, json: async () => ({
+        operation_result: { status: 'confirmed' }, lease: {
+          lease_id: 'lease-after-playground-release', pet_id: 'pet-a',
+          bound_role_id: 'server-role-a', activity_id: request.activity_id,
+          content_id: 'yarn', action_id: 'cat1_play_yarn',
+          source: 'cat-yarn-observation-adapter', issued_state_version: 1,
+          issued_binding_revision: 1, minimum_duration_seconds: 1,
+          issued_at: '2026-10-21T02:00:00Z', expires_at: '2026-10-21T02:00:30Z',
+        },
+      }) };
+    }
+    if (url.includes('/play-leases/') && url.endsWith('/complete')) {
+      throw new Error('released playground must not complete its play lease');
+    }
+    if (url.includes('/api/pet-care/pets/')) {
+      return { ok: true, status: 200, json: async () => ({
+        account_id: 'account-a', current_character_uid: 'local-role-a',
+        binding_status: 'bound', pet_id: 'pet-a', bound_role_id: 'server-role-a', snapshot,
+      }) };
+    }
+    throw new Error('unexpected request: ' + url + ' ' + (options.method || 'GET'));
+  });
+  await waitFor(() => h.window.nekoPetCareEntry.getState().snapshot !== null);
+  enterCatForm(h);
+
+  const waits = [];
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:idle-cat1-playground-yarn-activate', {
+    detail: {
+      activationId: 'released-in-flight', source: 'yarn', trigger: 'yarn-click',
+      timestamp: Date.now(), waitUntil(value) { waits.push(Promise.resolve(value)); },
+    },
+  }));
+  await issueStarted;
+  assert.equal(h.window.nekoPetCareEntry.getState().playPending.phase, 'lease');
+  assert.equal(h.window.nekoPetCareMode.getState().catMindSuppressed, true);
+
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:yarn-click-response', {
+    detail: {
+      type: 'playground_yarn_click_cancelled', source: 'cat-yarn-observation-adapter',
+      timestamp: Date.now(), detail: {
+        activityId: 'playground-yarn-click:released-in-flight', userInitiated: true,
+        catResponded: false, terminalStatus: 'page-destroy', petCareAuthorized: false,
+      },
+    },
+  }));
+  assert.equal(h.window.nekoPetCareEntry.getState().playPending, null);
+  assert.equal(h.window.nekoPetCareMode.getState().catMindSuppressed, false);
+
+  releaseIssue();
+  assert.equal(await waits[0], false);
+  assert.equal(h.window.nekoPetCareEntry.getState().playActivity, null);
+  assert.equal(calls.some(call => call.url.includes('/play-leases/') &&
+    call.url.endsWith('/complete')), false);
+});
+
 test('active exploration resolves its exact location id instead of the first catalogue entry', async () => {
   const locationA = {
     id: 'path-a', name: '地点 A', note: 'A 纸条',
