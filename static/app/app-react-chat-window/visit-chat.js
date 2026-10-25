@@ -2412,12 +2412,14 @@
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
         // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
-        if (!stale && snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {
+        var sameVisitEnding = visit.visitId === snapshotVisit;
+        if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)
+            && (!stale || sameVisitEnding)) {
             if (visit.visitId && visit.visitId !== snapshotVisit && inVisit()) {
                 var previousEndingVisit = visit.visitId;
                 var previousEndingSide = visit.side;
                 onEnded({ visit_id: previousEndingVisit, side: previousEndingSide, reason: '' });
-                if (!stale) relayEndedToDisplay(previousEndingVisit, previousEndingSide);
+                relayEndedToDisplay(previousEndingVisit, previousEndingSide);
             }
             if (visit.visitId === snapshotVisit) {
                 onEnded({ visit_id: snapshotVisit, side: state.side || state.role, reason: '' });
@@ -2425,7 +2427,7 @@
                 markEnded(snapshotVisit);
             }
             // 不先转发 ending：显示端会为它补建一个永远收不到 ended 的 iframe。
-            if (!stale) relayEndedToDisplay(snapshotVisit, state.side || state.role);
+            relayEndedToDisplay(snapshotVisit, state.side || state.role);
             render();
             return;
         }
