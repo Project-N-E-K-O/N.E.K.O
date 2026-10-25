@@ -1,12 +1,12 @@
 <template>
-  <el-card class="selector-card">
+  <el-card class="selector-card" :aria-busy="loading">
     <template #header>
       <div class="card-header card-header--stack">
         <div class="selector-topline">
-          <span>本地插件</span>
+          <span>{{ t('plugins.localPlugins') }}</span>
           <div class="selector-topline__meta">
             <el-tag size="small" type="primary">{{ totalCount }}</el-tag>
-            <el-tag size="small" type="info">已选 {{ selectedCount }}</el-tag>
+            <el-tag size="small" type="info">{{ t('plugins.selectedCount', { count: selectedCount }) }}</el-tag>
           </div>
         </div>
 
@@ -14,36 +14,19 @@
           :model-value="pluginFilter"
           clearable
           :placeholder="t('plugins.filterPlaceholder')"
+          :aria-label="t('common.filter')"
           @update:model-value="$emit('update:pluginFilter', $event)"
         />
-
-        <div class="selector-filter-row">
-          <el-switch
-            :model-value="useRegex"
-            class="selector-filter-switch"
-            active-text="Regex"
-            inactive-text="Text"
-            @update:model-value="$emit('update:useRegex', $event)"
-          />
-          <el-radio-group
-            :model-value="filterMode"
-            size="small"
-            @update:model-value="$emit('update:filterMode', $event)"
-          >
-            <el-radio-button label="whitelist">{{ t('plugins.filterWhitelist') }}</el-radio-button>
-            <el-radio-button label="blacklist">{{ t('plugins.filterBlacklist') }}</el-radio-button>
-          </el-radio-group>
-          <span v-if="regexError" class="selector-filter-error">{{ t('plugins.invalidRegex') }}</span>
-        </div>
 
         <div class="type-filter-bar">
           <el-checkbox-group
             :model-value="selectedTypes"
             class="type-filter-group"
+            :aria-label="t('plugins.pluginType')"
             @update:model-value="$emit('update:selectedTypes', $event)"
           >
-            <el-checkbox-button label="plugin">插件 ({{ pluginCount }})</el-checkbox-button>
-            <el-checkbox-button label="adapter">适配器 ({{ adapterCount }})</el-checkbox-button>
+            <el-checkbox-button label="plugin">{{ t('plugins.pluginsSection') }} ({{ pluginCount }})</el-checkbox-button>
+            <el-checkbox-button label="adapter">{{ t('plugins.adaptersSection') }} ({{ adapterCount }})</el-checkbox-button>
           </el-checkbox-group>
         </div>
 
@@ -51,26 +34,28 @@
           <el-radio-group
             :model-value="layoutMode"
             size="small"
+            :aria-label="t('plugins.layoutLabel')"
             @update:model-value="$emit('update:layoutMode', $event)"
           >
-            <el-radio-button label="list">列表</el-radio-button>
-            <el-radio-button label="single">单排</el-radio-button>
-            <el-radio-button label="double">双排</el-radio-button>
-            <el-radio-button label="compact">小矩阵</el-radio-button>
+            <el-radio-button label="list">{{ t('plugins.layoutList') }}</el-radio-button>
+            <el-radio-button label="single">{{ t('plugins.layoutSingle') }}</el-radio-button>
+            <el-radio-button label="double">{{ t('plugins.layoutDouble') }}</el-radio-button>
+            <el-radio-button label="compact">{{ t('plugins.layoutCompact') }}</el-radio-button>
           </el-radio-group>
 
           <div class="selector-actions">
-            <el-button text @click="$emit('selectAllVisible')">全选</el-button>
-            <el-button text @click="$emit('clearSelection')">清空</el-button>
-            <el-button :loading="loading" text @click="$emit('refresh')">刷新</el-button>
+            <el-button text @click="$emit('selectAllVisible')">{{ t('plugins.selectAllVisible') }}</el-button>
+            <el-button text @click="$emit('clearSelection')">{{ t('plugins.clearSelection') }}</el-button>
+            <el-button :loading="loading" text @click="$emit('refresh')">{{ t('common.refresh') }}</el-button>
           </div>
         </div>
       </div>
     </template>
 
+    <LoadingSpinner v-if="loading && totalFilteredCount === 0" :loading="true" />
     <el-empty
-      v-if="!loading && totalFilteredCount === 0"
-      description="没有匹配的本地插件"
+      v-else-if="totalFilteredCount === 0"
+      :description="t('plugins.noLocalMatches')"
     />
 
     <div v-else class="selector-sections">
@@ -88,27 +73,39 @@
                 'plugin-select-item--list': layoutMode === 'list',
                 'plugin-select-card--active': isSelected(plugin.id),
               }"
-              @click="$emit('togglePlugin', plugin.id)"
+              @click="layoutMode === 'list' && $emit('togglePlugin', plugin.id)"
             >
               <template v-if="layoutMode === 'list'">
                 <div class="plugin-list-row">
                   <el-checkbox
                     :model-value="isSelected(plugin.id)"
+                    :aria-label="`${t('common.toggleSelection')}: ${plugin.displayName || plugin.name}`"
                     @click.stop
                     @change="$emit('togglePlugin', plugin.id)"
                   />
-                  <span class="plugin-list-row__name">{{ plugin.displayName || plugin.name }}</span>
+                  <button
+                    type="button"
+                    class="plugin-list-row__name"
+                    :aria-pressed="isSelected(plugin.id)"
+                    @click.stop="$emit('togglePlugin', plugin.id)"
+                  >{{ plugin.displayName || plugin.name }}</button>
                 </div>
               </template>
               <template v-else>
                 <div class="plugin-select-item__checkbox">
                   <el-checkbox
                     :model-value="isSelected(plugin.id)"
+                    :aria-label="`${t('common.toggleSelection')}: ${plugin.displayName || plugin.name}`"
                     @click.stop
                     @change="$emit('togglePlugin', plugin.id)"
                   />
                 </div>
-                <PluginCard :plugin="plugin" :is-selected="isSelected(plugin.id)" />
+                <PluginCard
+                  :plugin="plugin"
+                  :is-selected="isSelected(plugin.id)"
+                  shared-rows
+                  @click="$emit('togglePlugin', plugin.id)"
+                />
               </template>
             </div>
           </div>
@@ -122,11 +119,11 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PluginCard from '@/components/plugin/PluginCard.vue'
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import type { PluginMeta } from '@/types/api'
 
 type LayoutMode = 'list' | 'single' | 'double' | 'compact'
 type PluginGroupType = 'plugin' | 'adapter'
-type FilterMode = 'whitelist' | 'blacklist'
 
 type SelectablePlugin = PluginMeta & {
   type: PluginGroupType
@@ -140,9 +137,6 @@ const props = defineProps<{
   totalCount: number
   selectedCount: number
   pluginFilter: string
-  useRegex: boolean
-  filterMode: FilterMode
-  regexError: boolean
   selectedTypes: PluginGroupType[]
   layoutMode: LayoutMode
   pluginCount: number
@@ -158,8 +152,6 @@ defineEmits<{
   clearSelection: []
   togglePlugin: [pluginId: string]
   'update:pluginFilter': [value: string]
-  'update:useRegex': [value: boolean]
-  'update:filterMode': [value: FilterMode]
   'update:selectedTypes': [value: PluginGroupType[]]
   'update:layoutMode': [value: LayoutMode]
 }>()
@@ -172,8 +164,8 @@ const totalFilteredCount = computed(
 )
 
 const sections = computed(() => [
-  { key: 'plugin', title: '插件', items: props.filteredPurePlugins, headerClass: '' },
-  { key: 'adapter', title: '适配器', items: props.filteredAdapters, headerClass: 'section-header--adapter' },
+  { key: 'plugin', title: t('plugins.pluginsSection'), items: props.filteredPurePlugins, headerClass: '' },
+  { key: 'adapter', title: t('plugins.adaptersSection'), items: props.filteredAdapters, headerClass: 'section-header--adapter' },
 ])
 
 function isSelected(pluginId: string): boolean {
@@ -183,7 +175,10 @@ function isSelected(pluginId: string): boolean {
 
 <style scoped>
 .selector-card {
-  border-radius: 18px;
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .card-header {
@@ -203,12 +198,14 @@ function isSelected(pluginId: string): boolean {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .selector-topline__meta {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .selector-toolbar {
@@ -219,20 +216,9 @@ function isSelected(pluginId: string): boolean {
   flex-wrap: wrap;
 }
 
-.selector-filter-row {
+.selector-toolbar :deep(.el-radio-group) {
   display: flex;
-  align-items: center;
-  gap: 12px;
   flex-wrap: wrap;
-}
-
-.selector-filter-switch {
-  flex-shrink: 0;
-}
-
-.selector-filter-error {
-  color: var(--el-color-danger);
-  font-size: 12px;
 }
 
 .selector-actions {
@@ -302,28 +288,38 @@ function isSelected(pluginId: string): boolean {
 .plugin-select-item {
   position: relative;
   cursor: pointer;
+  transition:
+    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+@supports (grid-template-rows: subgrid) {
+  .plugin-select-item:not(.plugin-select-item--list) {
+    display: grid;
+    grid-row: span 3;
+    grid-template-rows: subgrid;
+    row-gap: 0;
+  }
 }
 
 .plugin-select-item--list {
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
-  background: var(--el-bg-color);
-  transition: all 0.2s ease;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-control);
+  background: var(--surface-card);
 }
 
-.plugin-select-item:hover {
+.plugin-select-item--list:hover {
   transform: translateY(-2px);
 }
 
 .plugin-select-item__checkbox {
   position: absolute;
-  top: 14px;
-  right: 16px;
+  top: 8px;
+  right: 10px;
   z-index: 2;
-  padding: 4px 6px;
+  padding: 0 6px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--el-bg-color) 88%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--surface-card);
 }
 
 .plugin-select-item :deep(.plugin-card) {
@@ -331,7 +327,7 @@ function isSelected(pluginId: string): boolean {
 }
 
 .plugin-select-item :deep(.plugin-card-header) {
-  padding-right: 26px;
+  padding-right: 56px;
 }
 
 .plugin-list-row {
@@ -343,16 +339,39 @@ function isSelected(pluginId: string): boolean {
 }
 
 .plugin-list-row__name {
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
   font-size: 14px;
   color: var(--el-text-color-primary);
   line-height: 1.4;
   word-break: break-all;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-list-row__name:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
 }
 
 @media (max-width: 980px) {
   .plugin-selector-grid--double,
   .plugin-selector-grid--compact {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-select-item {
+    transition: none;
+  }
+
+  .plugin-select-item:hover {
+    transform: none;
   }
 }
 </style>

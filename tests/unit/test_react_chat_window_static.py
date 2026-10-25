@@ -256,10 +256,12 @@ def test_choice_prompt_sources_have_distinct_accessibility_labels():
             "{choicePrompt.options.slice",
             1,
         )[0]
-        assert "choicePrompt.source === 'mini_game_invite'" in choice_prompt_block
-        assert "chat.miniGameInviteOptionsAriaLabel" in choice_prompt_block
+        assert "<MiniGameInvitePrompt" in source
         assert "choicePrompt.source === 'new_user_icebreaker'" in choice_prompt_block
         assert "chat.newUserIcebreakerOptionsAriaLabel" in choice_prompt_block
+    invitation_source = (REACT_CHAT_APP_PATH.parent / 'MiniGameInvitePrompt.tsx').read_text(encoding='utf-8')
+    assert "chat.miniGameInviteOptionsAriaLabel" in invitation_source
+    assert "chat.newUserIcebreakerOptionsAriaLabel" not in invitation_source
 
 
 def test_react_chat_host_can_clear_only_yui_guide_messages():
@@ -1242,7 +1244,7 @@ def test_compact_tool_fan_tooltips_stay_noninteractive_and_anchored():
     # into rounded/gradient/backdrop-filter glass; earlier assertions for
     # border-radius:0 / background:#ffffff / box-shadow:none / specific dark colors
     # were intentionally obsolete and produced false alarms on visual iterations.
-    assert "pointer-events: none;" in tooltip_block, "tooltip 不能吃掉指针事件"
+    assert re.search(r"\bpointer-events\s*:\s*none(?:\s*!important)?\s*;", tooltip_block), "tooltip 不能吃掉指针事件"
     assert "user-select: none;" in tooltip_block
     assert "left: calc(100% + 5px);" in tooltip_block, "tooltip 锚点定在按钮右侧"
     assert "top: calc(100% - 6px);" in tooltip_block

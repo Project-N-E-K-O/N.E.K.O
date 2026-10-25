@@ -373,6 +373,7 @@ from main_routers.characters_router import router as characters_router  # noqa
 from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
+from main_routers.proactive_feedback_router import router as proactive_feedback_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
 from main_routers.widget_mode_router import router as widget_mode_router  # noqa
 from main_routers.icebreaker_router import router as icebreaker_router  # noqa
@@ -798,6 +799,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 # Mount all routes.
 app.include_router(config_router)
 app.include_router(proactive_router)
+app.include_router(proactive_feedback_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)

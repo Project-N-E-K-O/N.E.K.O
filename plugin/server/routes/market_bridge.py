@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
 
 from plugin.server.application.plugin_cli import get_plugin_cli_service
@@ -42,8 +42,20 @@ from plugin.server.infrastructure.package_download import (
     PackageDownloadWriteError,
     PackageSizeExceeded,
     cleanup_download_file as _cleanup_download_file,
-    download_package_file,
+    warm_package_connections,
 )
+from plugin.server.infrastructure.package_sources import (
+    GITHUB_DOWNLOAD_SOURCES,
+    DownloadPreferences,
+    download_candidates,
+    is_github_release,
+    load_preferences,
+    reset_transfer_history,
+    save_preferences,
+    validate_preferences,
+    warmup_urls,
+)
+from plugin.server.infrastructure.package_transfer import RACE_WIDTH, download_package
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
@@ -115,33 +127,53 @@ _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
 # Download limits.
 _DOWNLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
-_DOWNLOAD_TIMEOUT = 120.0  # Seconds
 # httpx timeouts apply per phase, connection/read/write; servers steadily trickling timely bytes
 # never trigger them, so independently bound total duration. _fetch_market_release already uses
 # asyncio.timeout for the same reason, noting phase timeouts do not bound total
 # response time. At the 500 MiB limit, 1800 s implies about 284 KiB/s minimum sustained throughput;
 # slower downloads are effectively stalled, and callers can retry through direct GitHub fallback.
 _DOWNLOAD_TOTAL_TIMEOUT = 1800.0
-# Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
-# checked every 64 KiB, while a 200 MiB package needs only 50 worker writes.
-_DOWNLOAD_FLUSH_BYTES = 4 * 1024 * 1024
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+# Serializes the read-then-write of PUT /download-preferences.
+_DOWNLOAD_PREFERENCES_LOCK = asyncio.Lock()
 
-# GitHub Release download mirrors exposed by the local plugin-manager UI.
-# Keeping this allowlist server-side means the speed test never accepts an
-# arbitrary URL from a browser request.
-_GITHUB_PROXY_SOURCES = (
-    ("github-direct", "https://github.com/"),
-    ("gh-proxy-com", "https://gh-proxy.com/"),
-    ("gh-proxy-org", "https://gh-proxy.org/"),
-    ("hk-gh-proxy-org", "https://hk.gh-proxy.org/"),
-    ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/"),
-    ("edgeone-gh-proxy-org", "https://edgeone.gh-proxy.org/"),
-)
+# Probe settings for the knowledge market's GitHub Release mirror speed test.
 _GITHUB_PROXY_PROBE_TIMEOUT = 8.0
 _GITHUB_PROXY_PROBE_CONCURRENCY = 3
-_GITHUB_PROXY_MEASURE_LOCK = asyncio.Lock()
-_GITHUB_PROXY_MEASURE_TASK: asyncio.Task[tuple[dict[str, object], ...]] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _DownloadRoute:
+    """How one install fetches a GitHub release: ranked routes, one deadline."""
+
+    candidates: tuple[tuple[str, str], ...]
+    # A specified mirror that fails is retried once straight from GitHub.
+    direct_fallback: bool
+    deadline: float
+
+    def direct_only(self) -> "_DownloadRoute":
+        """The same deadline, fetched as one plain download from GitHub."""
+        return dataclasses.replace(self, candidates=(), direct_fallback=False)
+
+
+async def _warm_package_routes(url: str, preferences: DownloadPreferences) -> None:
+    """Pre-connect every origin the download's opening race will reach.
+
+    That is each route the race opens first and, for a direct route, the
+    asset host GitHub redirects to.
+    """
+    if not is_github_release(url):
+        return
+    candidates = download_candidates(url, preferences)
+    await warm_package_connections(warmup_urls(candidates[:RACE_WIDTH]))
+
+
+async def _cancel_and_wait(task_or_tasks: asyncio.Task[Any] | Iterable[asyncio.Task[Any]]) -> None:
+    """Cancel tasks and await their cleanup before proceeding."""
+    tasks = [task_or_tasks] if isinstance(task_or_tasks, asyncio.Task) else list(task_or_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _normalize_required_sha256(value: str | None) -> str:
@@ -475,6 +507,7 @@ class MarketTaskStatus(BaseModel):
     message: str = ""
     downloaded_bytes: int = 0
     total_bytes: int | None = None
+    active_sources: list[str] = Field(default_factory=list)
     result: dict[str, Any] | None = None
     # v2 R10.1/R10.2 retains error messages for older frontend display, adding error_code
     # for stable upgrade_rollback_completed/package_id_change/etc. recognition.
@@ -846,7 +879,7 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     # Keep completed measurements on budget expiry rather than discard everything; slow usable mirrors still matter.
     tasks = [
         asyncio.ensure_future(probe(source_id, base_url))
-        for source_id, base_url in _GITHUB_PROXY_SOURCES
+        for source_id, base_url in GITHUB_DOWNLOAD_SOURCES
     ]
     done, pending = await asyncio.wait(
         tasks, timeout=_GITHUB_PROXY_PROBE_TOTAL_BUDGET
@@ -862,27 +895,44 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     return tuple(measured)
 
 
-@router.get("/github-proxy/measure")
-async def measure_github_proxy_sources() -> dict[str, object]:
-    """Measure sources once for concurrent callers from the local UI."""
+class MarketDownloadPreferences(BaseModel):
+    mode: Literal["auto", "direct", "specified"] = "auto"
+    specified_source_id: str = "gh-proxy-com"
+    initialize_only: bool = False
 
-    global _GITHUB_PROXY_MEASURE_TASK
-    async with _GITHUB_PROXY_MEASURE_LOCK:
-        if _GITHUB_PROXY_MEASURE_TASK is None or _GITHUB_PROXY_MEASURE_TASK.done():
-            _GITHUB_PROXY_MEASURE_TASK = asyncio.create_task(
-                _measure_github_proxy_sources(),
-                name="market-github-proxy-measure",
+    @model_validator(mode="after")
+    def _validate_preferences(self) -> "MarketDownloadPreferences":
+        validate_preferences(self.mode, self.specified_source_id)
+        return self
+
+
+@router.get("/download-preferences")
+async def market_download_preferences(token: str = Query(...)) -> dict[str, Any]:
+    _verify_token(token)
+    preferences, configured = await asyncio.to_thread(load_preferences)
+    return {**dataclasses.asdict(preferences), "configured": configured}
+
+
+@router.put("/download-preferences")
+async def update_market_download_preferences(
+    payload: MarketDownloadPreferences, token: str = Query(...),
+) -> dict[str, Any]:
+    _verify_token(token)
+    async with _DOWNLOAD_PREFERENCES_LOCK:
+        preferences, configured = await asyncio.to_thread(load_preferences)
+        if not (payload.initialize_only and configured):
+            preferences = DownloadPreferences(
+                mode=payload.mode, specified_source_id=payload.specified_source_id,
             )
-        task = _GITHUB_PROXY_MEASURE_TASK
+            await asyncio.to_thread(save_preferences, preferences)
+    return {**dataclasses.asdict(preferences), "configured": True}
 
-    try:
-        measured = await asyncio.shield(task)
-    finally:
-        if task.done():
-            async with _GITHUB_PROXY_MEASURE_LOCK:
-                if _GITHUB_PROXY_MEASURE_TASK is task:
-                    _GITHUB_PROXY_MEASURE_TASK = None
-    return {"sources": measured}
+
+@router.post("/download-history/reset")
+async def reset_market_download_history(token: str = Query(...)) -> dict[str, bool]:
+    _verify_token(token)
+    await reset_transfer_history()
+    return {"ok": True}
 
 
 class _MarketCatalogError(Exception):
@@ -3523,11 +3573,29 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             task, status="pending", stage="pending", progress=0.0,
             message="正在核对市场发布信息...",
         )
+        preferences, _ = await asyncio.to_thread(load_preferences)
+        warmup = asyncio.create_task(
+            _warm_package_routes(payload.canonical_package_url or payload.package_url, preferences),
+            name=f"market-route-warmup-{task_id}",
+        )
         try:
             payload, market_release = await _bind_market_package_hash(payload)
         except _TaskError:
             _raise_if_task_cancel_requested(task)
             raise
+        finally:
+            # Connections opened while the catalogue answered are pooled;
+            # one still connecting is not worth delaying the download for.
+            await _cancel_and_wait(warmup)
+        # A GitHub release is fetched from its catalogue URL over the routes
+        # the saved download preferences choose; anything else as requested.
+        if is_github_release(payload.canonical_package_url or ""):
+            payload = payload.model_copy(update={"package_url": payload.canonical_package_url})
+            task["_download_route"] = _DownloadRoute(
+                candidates=tuple(download_candidates(payload.package_url, preferences)),
+                direct_fallback=preferences.mode == "specified",
+                deadline=time.monotonic() + _DOWNLOAD_TOTAL_TIMEOUT,
+            )
         _raise_if_task_cancel_requested(task)
         if payload.mode in ("install", "override_builtin"):
             await _do_install(task, payload, log_ctx)
@@ -4448,24 +4516,23 @@ def _download_task_error(exc: Exception) -> _TaskError:
     return _TaskError(code="download_failed", message=str(exc))
 
 
-def _direct_github_download_fallback(url: str) -> str | None:
-    """Return the original GitHub Release asset for an allowlisted proxy URL."""
+def _retry_from_github_direct(task: dict[str, Any], *, after_hash_mismatch: bool) -> bool:
+    """Whether to retry a failed or mismatched download straight from GitHub.
 
-    for source_id, base_url in _GITHUB_PROXY_SOURCES:
-        if source_id == "github-direct" or not url.startswith(base_url):
-            continue
-        candidate = url.removeprefix(base_url)
-        parsed = urlparse(candidate)
-        if (
-            parsed.scheme == "https"
-            and parsed.hostname == "github.com"
-            and parsed.username is None
-            and parsed.password is None
-            and parsed.path.startswith("/")
-            and "/releases/download/" in parsed.path
-        ):
-            return candidate
-    return None
+    A routed download is retried once as a plain GitHub download within the
+    same deadline: after a hash mismatch always, after a failure only when a
+    specified mirror was chosen (auto mode already raced GitHub itself). An
+    unrouted download is not a GitHub release and is never retried, nor is
+    one whose deadline has passed. A retry switches the task's route to
+    GitHub direct.
+    """
+    route: _DownloadRoute | None = task.get("_download_route")
+    if route is None or route.deadline <= time.monotonic():
+        return False
+    retry = bool(route.candidates) if after_hash_mismatch else route.direct_fallback
+    if retry:
+        task["_download_route"] = route.direct_only()
+    return retry
 
 
 def _prepare_direct_github_fallback(task: dict[str, Any], message: str) -> None:
@@ -4483,7 +4550,7 @@ async def _verify_downloaded_package_with_fallback(
     expected_hash: str,
     task: dict[str, Any],
 ) -> tuple[Path, Literal["passed", "mismatch"]]:
-    """Verify a package and retry one allowlisted proxy mismatch via GitHub."""
+    """Verify a package and retry one routed mismatch via GitHub direct."""
 
     expected_hash = _normalize_required_sha256(expected_hash)
     verification_task = asyncio.create_task(
@@ -4500,22 +4567,19 @@ async def _verify_downloaded_package_with_fallback(
         _cleanup_download_file(package_path)
         raise
     except ValueError:
-        fallback_url = _direct_github_download_fallback(url)
-        if not fallback_url:
+        if not _retry_from_github_direct(task, after_hash_mismatch=True):
             raise
         _cleanup_download_file(package_path)
         logger.warning(
-            "[market-download] proxy package hash mismatch; retrying direct GitHub "
-            "origin={} fallback_origin={}",
+            "[market-download] package hash mismatch; retrying direct GitHub origin={}",
             _safe_url_log_origin(url),
-            _safe_url_log_origin(fallback_url),
         )
         _prepare_direct_github_fallback(
             task,
             "镜像下载内容校验失败，正在通过 GitHub 直连重试...",
         )
         try:
-            direct_path = await _download_package_once(fallback_url, task)
+            direct_path = await _download_package_once(url, task)
         except _TaskCancelled:
             raise
         except _DownloadAttemptError:
@@ -4574,27 +4638,24 @@ def _download_package_result(
 
 
 async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
-    """Download a package, retrying a failed allowlisted proxy via GitHub direct."""
+    """Download a package, retrying a failed routed proxy via GitHub direct."""
 
     try:
         return await _download_package_once(url, task), url
     except _DownloadAttemptError as exc:
         if not exc.retryable:
             raise
-        fallback_url = _direct_github_download_fallback(url)
-        if not fallback_url:
+        if not _retry_from_github_direct(task, after_hash_mismatch=False):
             raise
         logger.warning(
-            "[market-download] proxy failed; retrying direct GitHub "
-            "origin={} fallback_origin={}",
+            "[market-download] proxy failed; retrying direct GitHub origin={}",
             _safe_url_log_origin(url),
-            _safe_url_log_origin(fallback_url),
         )
         _prepare_direct_github_fallback(
             task,
             "镜像下载失败，正在通过 GitHub 直连重试...",
         )
-        return await _download_package_once(fallback_url, task), fallback_url
+        return await _download_package_once(url, task), url
 
 
 async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
@@ -4620,14 +4681,20 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             task["message"] = f"正在下载: {_format_bytes(received)}"
 
     try:
-        return await download_package_file(
-            url,
-            directory,
-            maximum_bytes=_DOWNLOAD_MAX_BYTES,
-            phase_timeout=_DOWNLOAD_TIMEOUT,
-            total_timeout=_DOWNLOAD_TOTAL_TIMEOUT,
-            flush_bytes=_DOWNLOAD_FLUSH_BYTES,
-            report_progress=progress,
+        route: _DownloadRoute | None = task.get("_download_route")
+        # An unrouted download (not a GitHub release) gets its own budget.
+        deadline = route.deadline if route is not None else started_at + _DOWNLOAD_TOTAL_TIMEOUT
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise PackageDownloadDeadline("Package download total deadline expired")
+        # A direct retry and an unrouted URL are both fetched as requested.
+        routes = route.candidates if route and route.candidates else download_candidates(
+            url, DownloadPreferences(mode="direct"),
+        )
+        return await download_package(
+            routes, directory, maximum_bytes=_DOWNLOAD_MAX_BYTES,
+            total_timeout=remaining, report_progress=progress,
+            report_route=lambda source_id: task.update(active_sources=[source_id]),
             check_cancelled=lambda: _raise_if_task_cancel_requested(task),
         )
     except httpx.HTTPStatusError as exc:

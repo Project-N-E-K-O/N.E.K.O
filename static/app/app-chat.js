@@ -529,6 +529,11 @@
 
     window.dispatchMusicPlayDetailed = async function (trackInfo, options) {
         options = options || {};
+        var getCancellationReason = function () {
+            return typeof options.getCancellationReason === 'function' ? options.getCancellationReason() : '';
+        };
+        var canceled = getCancellationReason();
+        if (canceled) return musicDispatchResult(false, canceled, false);
 
         // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
         // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。
@@ -604,6 +609,11 @@
 
                 var retryPlay = async function () {
                     if (settled || attempting) return;
+                    var canceled = getCancellationReason();
+                    if (canceled) {
+                        finish(musicDispatchResult(false, canceled, false));
+                        return;
+                    }
                     // 门闩校验：只允许最新的 dispatch 请求执行
                     if (currentDispatchId !== _musicDispatchId) {
                         console.log('[MusicDispatch] \u653E\u5F03\u8FC7\u65F6\u7684\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');

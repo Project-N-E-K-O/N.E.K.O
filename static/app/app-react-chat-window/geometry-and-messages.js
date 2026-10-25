@@ -340,6 +340,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice') {
             var choiceRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-option'))
+                .concat(Array.prototype.slice.call(element.querySelectorAll('.mini-game-invite')))
                 .map(function (child) {
                     var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                     if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;

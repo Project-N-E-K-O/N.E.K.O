@@ -147,6 +147,7 @@ class ProactiveLifecycle:
 class CommittedDelivery:
     """Delivery facts that may be recorded only after a successful commit."""
 
+    turn_id: str
     primary_channel: str
     source_links: list[dict[str, Any]]
     delivered_tag: str
@@ -386,6 +387,9 @@ async def _commit_proactive_delivery(
     return DeliveryCommit(
         result=None,
         delivery=CommittedDelivery(
+            # finish_proactive_delivery validated this identity and published
+            # under it. Later accounting awaits may admit a new user turn.
+            turn_id=proactive_sid,
             primary_channel=primary_channel,
             source_links=source_links,
             delivered_tag=delivered_tag,
@@ -538,6 +542,12 @@ async def _record_committed_delivery(
             source_tag=source_tag or "unknown",
             active_channels=active_channels,
             source_links=source_links,
-            turn_id=mgr.current_speech_id,
+            turn_id=delivery.turn_id,
+            # UI-only content for this committed visual turn. Do not return the
+            # screenshot or infer a screen card from enabled modes alone.
+            **({"screen_observation": {"text": response_text}}
+               if delivery.vision_screenshot_b64 and response_text.strip()
+               and not source_links and primary_channel in {"chat", "vision", "unknown"}
+               else {}),
         )
     )

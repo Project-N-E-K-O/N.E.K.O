@@ -11,7 +11,7 @@
 </template>
 
 <script setup lang="ts">
-import { cancelMotion, pinInPlace, playMotion, releasePin } from './runtime'
+import { cancelMotion, pinInScrollport, playMotion, releasePin } from './runtime'
 import type { MotionPreset } from './policy'
 
 /** In `default` mode the next view enters while the previous one crossfades
@@ -33,7 +33,7 @@ function enter(element: Element, done: () => void) {
 
 function leave(element: Element, done: () => void) {
   const node = element as HTMLElement
-  if (props.mode === 'default') pinInPlace(node)
+  if (props.mode === 'default') pinInScrollport(node)
   node.inert = true
   playMotion(node, { preset: props.preset, leaving: true, done })
 }

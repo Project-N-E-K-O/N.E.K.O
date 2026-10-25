@@ -240,7 +240,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body)" in source
     assert "function _getNekoIdleCat1PlaygroundBodyCollisionRect(body)" in source
     assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
-    assert "function _refreshNekoIdleCat1PlaygroundViewportBottom(button)" in source
+    assert "function _refreshNekoIdleCat1PlaygroundViewportBottom()" in source
     assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)" in source
     assert "function _stepNekoIdleCat1PlaygroundPhysics(button, now)" in source
     assert "disabledCapabilities: new Set(" in source
@@ -309,14 +309,18 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "cat1 playground platform bottom bounds",
     )
     assert "window.electronScreen" in playground_bounds_block
-    assert "getCurrentDisplay" in playground_bounds_block
-    assert "currentDisplay.workArea" in playground_bounds_block
-    assert "Math.min(windowBottom, workAreaHeight)" in playground_bounds_block
+    assert "getDesktopCoordinateSnapshot" in playground_bounds_block
+    assert "snapshot.display.workArea" in playground_bounds_block
+    assert "renderer.screenOrigin" in playground_bounds_block
+    assert "areaY + areaHeight - screenY" in playground_bounds_block
+    assert "top: areaY - screenY" in playground_bounds_block
+    assert "Math.min(windowBottom, workArea.bottom)" in playground_bounds_block
     assert "window.innerHeight - body.height" not in source
     assert "visibleInsetRatios: _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(options.visibleInsetRatios)" in source
     assert "body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);" in source
-    assert "body.wallLeft = -insets.left;" in source
-    assert "body.wallRight = Math.max(body.wallLeft, window.innerWidth - body.width + insets.right);" in source
+    assert "body.ceilingY = _getNekoIdleCat1PlaygroundViewportTopPx() - (Number(insets.top) || 0);" in source
+    assert "body.wallLeft = _getNekoIdleCat1PlaygroundViewportLeftPx() - insets.left;" in source
+    assert "body.wallRight = Math.max(body.wallLeft, _getNekoIdleCat1PlaygroundViewportRightPx() - body.width + insets.right);" in source
     assert "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)" in source
     reclamp_block = _source_slice_between(
         source,
@@ -325,6 +329,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "cat1 playground resize reclamp",
     )
     assert "const wasGrounded = !!body.grounded;" in reclamp_block
+    assert "if (body.y < body.floorY - 0.5) body.grounded = false;" in reclamp_block
+    assert "isDesktopSupported" in reclamp_block
     assert "body.y = body.floorY;" in reclamp_block
     assert "_setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });" in reclamp_block
     assert "getImageData" not in source
@@ -341,6 +347,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "document.createElement('button')" in desktop_mirror_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL" in desktop_mirror_block
     assert "position: 'fixed'" in desktop_mirror_block
+    assert "pointerEvents: 'auto'" in desktop_mirror_block
     assert "_NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL" in source
     question_block_clone_block = _source_slice_between(
         source,
@@ -365,6 +372,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)" in source
     assert "_resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in physics_block
     assert "body.vy += state.gravityPxPerSecond2 * dt;" in physics_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION" in physics_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
     assert "body.vx = 0;" in physics_block
@@ -529,6 +538,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "state.pointerBodyId = body.id;" in pointer_down_block
     assert "state.draggingBodyId = body.id;" not in pointer_down_block
+    assert "state.container.setAttribute('data-neko-cat1-playground-pointer', body.id);" in pointer_down_block
+    assert "body.id === 'question-block'" in pointer_down_block
     assert "event.preventDefault()" not in pointer_down_block
     assert "body.angularVelocity = 0;" in pointer_down_block
     assert "body.rotationSettling = false;" in pointer_down_block
@@ -589,6 +600,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);" in pointer_up_block
     assert "state.suppressClickTimer = setTimeout" in pointer_up_block
     assert "state.pointerId = null;\n    state.pointerId = null;" not in pointer_up_block
+    assert "_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state);" in pointer_up_block
+    assert "_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state, { notify: false });" in pointer_up_block
 
     click_block = _source_slice_between(
         source,

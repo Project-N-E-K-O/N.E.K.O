@@ -91,46 +91,40 @@
 
     <WorkbenchFilterBar
       v-model:filter-text="filterText"
-      v-model:use-regex="useRegex"
-      v-model:filter-mode="filterMode"
-      :regex-error="regexError"
       :rule-groups="filterRuleGroups"
       :placeholder="t('market.searchPlaceholder')"
       :rules-trigger-label="t('market.filterRules')"
       :rules-title="t('market.filterRulesTitle')"
       :rules-hint="t('market.filterRulesHint')"
-      :whitelist-label="t('plugins.filterWhitelist')"
-      :blacklist-label="t('plugins.filterBlacklist')"
-      :invalid-regex-label="t('plugins.invalidRegex')"
-    />
-
-    <WorkbenchToolbar class="market-panel__toolbar">
-      <WorkbenchGroupFilter
-        v-model:selected-ids="selectedGroupIds"
-        :choices="groupChoices"
-        :counts="groupCounts"
-        selection-mode="single"
-      />
-      <div class="market-panel__toolbar-right">
-        <el-select
-          v-model="sortBy"
-          size="small"
-          class="market-panel__sort"
-          @change="onSortChange"
-        >
-          <el-option
-            v-for="opt in sortOptions"
-            :key="opt.value"
-            :value="opt.value"
-            :label="opt.label"
-          />
-        </el-select>
-        <WorkbenchLayoutSwitcher
-          v-model:layout-mode="layoutMode"
-          :choices="layoutChoices"
+    >
+      <template #footer>
+        <WorkbenchGroupFilter
+          v-model:selected-ids="selectedGroupIds"
+          :choices="groupChoices"
+          :counts="groupCounts"
+          selection-mode="single"
         />
-      </div>
-    </WorkbenchToolbar>
+        <div class="market-panel__toolbar-right">
+          <el-select
+            v-model="sortBy"
+            size="small"
+            class="market-panel__sort"
+            @change="onSortChange"
+          >
+            <el-option
+              v-for="opt in sortOptions"
+              :key="opt.value"
+              :value="opt.value"
+              :label="opt.label"
+            />
+          </el-select>
+          <WorkbenchLayoutSwitcher
+            v-model:layout-mode="layoutMode"
+            :choices="layoutChoices"
+          />
+        </div>
+      </template>
+    </WorkbenchFilterBar>
 
     <div class="market-panel__content">
       <EmptyState
@@ -166,7 +160,8 @@
       <template v-else>
         <GridSection
           :title="activeGroupLabel"
-          :items="filteredItems"
+          :items="pagedItems"
+          :count="totalCount"
           :layout-mode="layoutMode"
           :multi-select-enabled="false"
           :selected-ids="[]"
@@ -196,7 +191,6 @@
             :total="totalCount"
             :small="embedded"
             layout="prev, pager, next, total"
-            @current-change="handlePageChange"
           />
         </div>
       </template>
@@ -268,15 +262,13 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
 import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
 import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
-import WorkbenchToolbar from '@/components/common/WorkbenchToolbar.vue'
 import GridSection from '@/components/common/GridSection.vue'
 import {
-  fetchMarketPlugins,
+  fetchMarketCatalog,
   fetchMarketPluginVersions,
   getMarketUrl,
   isMarketAvailable,
   type MarketPlugin,
-  type FetchMarketPluginsParams,
 } from '@/api/market'
 import { useMarketWorkbench, type MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
 import type {
@@ -291,19 +283,15 @@ import {
   type MarketInstallMode,
 } from '@/stores/marketInstallTask'
 import { usePluginStore } from '@/stores/plugin'
+import { useMarketInstalledStore } from '@/stores/marketInstalled'
 import { usePluginUpdatesStore } from '@/stores/pluginUpdates'
 import { useUserPreferenceStore } from '@/stores/userPreference'
-import {
-  isGithubReleaseDownloadUrl,
-  useGithubMirrorSource,
-} from '@/composables/useGithubMirrorSource'
+import { useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 import {
   deriveMarketPluginAction,
-  fetchInstalledProjection,
   inferUnresolvedLocalConflict,
-  type MarketInstalledState,
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
@@ -315,11 +303,9 @@ import {
 } from '@/utils/confirmBuiltinOverride'
 import {
   extractRepoPluginId,
-  indexInstalledPluginIdentities,
   localPluginIdentityKeys,
   marketIdentityKeys,
   marketLocalIdentityKeys,
-  marketRecordIdentityKeys,
 } from '@/utils/marketPluginIdentity'
 
 interface Props {
@@ -337,6 +323,7 @@ defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
 const pluginStore = usePluginStore()
+const marketInstalled = useMarketInstalledStore()
 const userPref = useUserPreferenceStore()
 
 const loading = ref(false)
@@ -350,10 +337,9 @@ const marketBaseUrl = ref<string | null>(null)
 const plugins = ref<MarketPlugin[]>([])
 const currentPage = ref(1)
 const pageSize = props.embedded ? 8 : 12
-const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
-const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
+const { ensureDownloadPreferences } = useGithubMirrorSource()
 // Install requests keep a rejected fetch as an exception: `handleInstall`
 // opens the package URL as the manual fallback from its catch, and a `null`
 // here would be misreported as "pairing required".
@@ -365,11 +351,11 @@ const installTask = useMarketInstallTaskStore()
 const installTaskDialogVisible = ref(false)
 const pluginUpdates = usePluginUpdatesStore()
 
-// The update popup and this page keep separate installed-version snapshots;
-// an upgrade from either side must refresh the other, or it keeps offering
-// the version that was just installed.
-watch(() => pluginUpdates.completedUpgrades, () => {
-  void yankSweep().catch(() => undefined)
+// Registry reconciliation invalidates the shared installed projection, regardless
+// of whether the market drawer is currently visible. Hidden drawers revalidate
+// when reopened; visible ones also refresh their yank warnings here.
+watch(() => pluginStore.registryRevision, () => {
+  if (props.active) void yankSweep().catch(() => undefined)
 })
 
 // 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，关掉它不该让
@@ -519,17 +505,6 @@ function resolveApiErrorMessage(payload: unknown, fallbackKey = 'market.installF
 const sortBy = ref<'created_at' | 'download_count' | 'rating_average' | 'name'>('created_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 
-// 已装插件按 runtime plugin_id 和 Market record id 分开索引，避免两个
-// 身份命名空间（尤其数字 ID）互相覆盖。
-interface InstalledMarketEntry extends MarketInstalledState {
-  market_id?: string
-  installed_version: string
-  channel?: 'stable' | 'beta'
-  package_url?: string
-}
-const installedByPluginId = ref<Map<string, InstalledMarketEntry>>(new Map())
-const installedByMarketId = ref<Map<string, InstalledMarketEntry>>(new Map())
-const installedProjectionLoaded = ref(false)
 // pluginId → 当前装的版本是否已被作者撤回（v2 yank 检测）
 const yankedMap = ref<Record<string, boolean>>({})
 
@@ -552,22 +527,14 @@ function isInstalled(plugin: MarketPlugin): boolean {
   return marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
 }
 
-function getInstalledState(plugin: MarketPlugin): InstalledMarketEntry | undefined {
-  for (const key of marketRecordIdentityKeys(plugin)) {
-    const entry = installedByMarketId.value.get(key)
-    if (entry) return entry
-  }
-  for (const key of marketLocalIdentityKeys(plugin)) {
-    const entry = installedByPluginId.value.get(key)
-    if (entry) return entry
-  }
-  return undefined
+function getInstalledState(plugin: MarketPlugin) {
+  return marketInstalled.getInstalledState(plugin)
 }
 
 function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
   const state = getInstalledState(plugin)
   const unresolvedLocalConflict = inferUnresolvedLocalConflict(
-    installedProjectionLoaded.value,
+    marketInstalled.loaded,
     state,
     marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key)),
   )
@@ -582,11 +549,8 @@ function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
 // ─── 工作台：过滤 + 分组 + 布局 ───────────────────────────────────
 const {
   filterText,
-  useRegex,
-  filterMode,
   selectedGroupIds,
   layoutMode,
-  regexError,
   groupCounts,
   filteredItems,
 } = useMarketWorkbench(plugins, { isInstalled })
@@ -653,55 +617,41 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
   },
 ])
 
+// ─── 分页：先在完整目录上过滤，再对命中结果分页 ──────────────────
+const totalCount = computed(() => filteredItems.value.length)
 const totalPages = computed(() => Math.ceil(totalCount.value / pageSize))
-
-// ─── 后端查询：提取纯关键词，qualifier 和 regex 留给前端 ────────
-/** 从用户输入里抽取可以直传给后端 q= 的"裸 term"。 */
-function extractServerQuery(input: string): string {
-  if (!input.trim()) return ''
-  if (useRegex.value) return ''
-  const tokens = input.match(/"[^"]+"|\S+/g) || []
-  const terms = tokens
-    .map((raw) => {
-      const negated = raw.startsWith('-')
-      const body = negated ? raw.slice(1) : raw
-      const unquoted = body.replace(/^"(.*)"$/, '$1').trim()
-      if (!unquoted || unquoted.includes(':')) return ''
-      if (negated) return ''
-      return unquoted
-    })
-    .filter(Boolean)
-  return terms.join(' ').trim()
-}
+const pagedItems = computed(() =>
+  filteredItems.value.slice((currentPage.value - 1) * pageSize, currentPage.value * pageSize),
+)
 
 let loadSeq = 0
+// 当前 ``plugins`` 对应的查询（channel + 排序）。
+let loadedQuery = ''
 
 async function loadPlugins() {
   if (!marketAvailable.value) return
   const mySeq = ++loadSeq
+  const query = {
+    sort_by: sortBy.value,
+    sort_order: sortOrder.value,
+    // v2 (R7.3): 全局 channel 偏好透传给 Market；切换后 watcher 会触发重载
+    channel: userPref.channel,
+  }
+  const queryKey = `${query.channel}|${query.sort_by}|${query.sort_order}`
+  // 换了 channel 或排序，旧目录就不再对应当前查询：先清空，避免全量目录加载期间
+  // 还能从旧卡片安装旧 channel 的版本，加载失败时也能落到可重试的错误态。
+  if (queryKey !== loadedQuery) plugins.value = []
   loading.value = true
   try {
-    const params: FetchMarketPluginsParams = {
-      page: currentPage.value,
-      page_size: pageSize,
-      sort_by: sortBy.value,
-      sort_order: sortOrder.value,
-      // v2 (R7.3): 全局 channel 偏好透传给 Market；切换后 watcher 会触发重载
-      channel: userPref.channel,
-    }
-    const q = extractServerQuery(filterText.value)
-    if (q) params.search = q
-    if (activeGroupId.value === 'recommended') params.featured_only = true
-
-    const result = await fetchMarketPlugins(params)
+    const result = await fetchMarketCatalog(query)
     // 只接受最新一次请求的返回值，避免乱序覆盖
     if (mySeq !== loadSeq) return
     if (result) {
-      plugins.value = result.items
-      totalCount.value = result.total
+      plugins.value = result
+      loadedQuery = queryKey
       lastLoadFailed.value = false
     } else {
-      // ``fetchMarketPlugins`` returns null on transient API/network error.
+      // ``fetchMarketCatalog`` returns null on transient API/network error.
       // Keep ``marketAvailable`` driven by ``isMarketAvailable()`` only so a
       // hiccup here does not freeze the early-return guard below and lock
       // the user into the "not configured" empty state until remount.
@@ -716,16 +666,6 @@ async function loadPlugins() {
 
 // ─── Installed snapshot + yank detection (R8) ────────────────────────
 
-interface MarketInstalledItem extends MarketInstalledState {
-  path: string
-}
-
-async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null> {
-  return fetchInstalledProjection<MarketInstalledItem>(
-    () => fetchBridge('/market/installed'),
-  )
-}
-
 /**
  * 拉一遍 /market/installed，更新已安装身份索引与 yankedMap。
  *
@@ -737,36 +677,36 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null>
 // Sweeps can overlap (a batch upgrade from the update popup starts one per
 // plugin): a late response must not overwrite a newer snapshot, yet a newer
 // sweep that fails must not discard an older sweep's valid data either.
-const yankSweepGuard = createStaleResponseGuard<'installed' | 'yanked'>()
+const yankSweepGuard = createStaleResponseGuard<'yanked'>()
+let pendingYankSweep: { revision: number; channel: 'stable' | 'beta'; promise: Promise<void> } | null = null
 
-async function yankSweep() {
-  if (!marketAvailable.value) return
+function yankSweep(): Promise<void> {
+  if (!marketAvailable.value) return Promise.resolve()
+  const revision = pluginStore.registryRevision
+  const channel = userPref.channel
+  // A successful install both changes the registry revision and explicitly
+  // awaits reconciliation. They must join the same sweep, including its yank
+  // lookups, rather than starting two identical sets of requests.
+  if (pendingYankSweep && pendingYankSweep.revision === revision && pendingYankSweep.channel === channel) {
+    return pendingYankSweep.promise
+  }
+  const promise = runYankSweep(revision, channel).finally(() => {
+    if (pendingYankSweep?.promise === promise) pendingYankSweep = null
+  })
+  pendingYankSweep = { revision, channel, promise }
+  return promise
+}
+
+async function runYankSweep(revision: number, channel: 'stable' | 'beta'): Promise<void> {
   const ticket = yankSweepGuard.begin()
-  const installed = await fetchInstalledFromBridge()
-  if (installed === null || !yankSweepGuard.accept('installed', ticket)) return
-  const entries: InstalledMarketEntry[] = []
-  const uniqueEntries = new Map<string, InstalledMarketEntry>()
-  for (const item of installed) {
-    const entry: InstalledMarketEntry = {
-      ...item,
-      plugin_id: item.plugin_id,
-      market_id: item.latest_install_source?.plugin_market_id,
-      installed_version: item.effective_version
-        || item.latest_install_source?.version
-        || item.builtin_version
-        || '',
-      channel: item.latest_install_source?.channel,
-      package_url: item.latest_install_source?.package_url,
-    }
-    entries.push(entry)
-    if (item.latest_install_source && entry.channel && entry.package_url) {
-      uniqueEntries.set(item.plugin_id.toLowerCase(), entry)
+  const installed = await marketInstalled.ensureFresh({ force: true })
+  if (installed === null || revision !== pluginStore.registryRevision || channel !== userPref.channel) return
+  const uniqueEntries = new Map<string, typeof installed[number]>()
+  for (const entry of installed) {
+    if (entry.latest_install_source && entry.channel && entry.package_url) {
+      uniqueEntries.set(entry.plugin_id.toLowerCase(), entry)
     }
   }
-  const indexes = indexInstalledPluginIdentities(entries)
-  installedByPluginId.value = indexes.byPluginId
-  installedByMarketId.value = indexes.byMarketId
-  installedProjectionLoaded.value = true
   // Build the next yank map into a local, then atomic-swap below — so a
   // transient `fetchMarketPluginVersions` failure preserves the previous
   // warning (R8.5 "失败静默") instead of clearing every entry's flag until
@@ -818,25 +758,21 @@ async function yankSweep() {
     if (marketKey) nextYanked[marketKey] = yanked
   }
 
+  if (revision !== pluginStore.registryRevision || channel !== userPref.channel) return
   if (!yankSweepGuard.accept('yanked', ticket)) return
   yankedMap.value = nextYanked
 }
 
-// ─── 交互：分页、搜索 debounce、排序、分组切换 ────────────────────
+// ─── 交互：分页、筛选、排序、分组切换 ────────────────────────────
 
-let searchDebounceTimer: number | null = null
-
-watch(filterText, () => {
-  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = window.setTimeout(() => {
-    currentPage.value = 1
-    loadPlugins()
-  }, 400)
+// 筛选和分组都在本地目录上计算，变化后回到第一页即可，无需重新请求。
+watch([filterText, activeGroupId], () => {
+  currentPage.value = 1
 })
 
-watch(useRegex, () => {
-  currentPage.value = 1
-  loadPlugins()
+// 已安装状态等变化可能让命中结果变少，当前页不能停在末页之后。
+watch(totalPages, (pages) => {
+  if (currentPage.value > Math.max(1, pages)) currentPage.value = Math.max(1, pages)
 })
 
 // v2 (R7.5): 切换全局 channel 立即重载列表 + 重新跑 yank sweep
@@ -851,20 +787,10 @@ watch(
   },
 )
 
-watch(activeGroupId, () => {
-  currentPage.value = 1
-  loadPlugins()
-})
-
 function onSortChange() {
   // name 字段默认升序，其他字段默认降序
   sortOrder.value = sortBy.value === 'name' ? 'asc' : 'desc'
   currentPage.value = 1
-  loadPlugins()
-}
-
-function handlePageChange(page: number) {
-  currentPage.value = page
   loadPlugins()
 }
 
@@ -911,7 +837,7 @@ async function resolveInstallPayload(
   let payloadHash: string | null = null
   let version = plugin.version
   let channel: string | null = plugin.latest_channel || null
-  let publishedAt: string | null = plugin.latest_published_at || null
+  const publishedAt: string | null = plugin.latest_published_at || null
 
   try {
     const versions = await fetchMarketPluginVersions(plugin.rawId, {
@@ -973,14 +899,13 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
     }
 
     installingId.value = plugin.id
-    if (isGithubReleaseDownloadUrl(payload.package_url)) {
-      try {
-        await ensureAutoSource()
-      } catch {
-        ElMessage.warning(t('mirrorSource.installFallback'))
-      }
+    try {
+      await ensureDownloadPreferences()
+    } catch {
+      ElMessage.error(t('mirrorSource.saveFailed'))
+      return
     }
-    packageUrl = resolveGithubDownloadUrl(payload.package_url)
+    packageUrl = payload.package_url
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1071,14 +996,13 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     }
 
     upgradingId.value = plugin.id
-    if (isGithubReleaseDownloadUrl(payload.package_url)) {
-      try {
-        await ensureAutoSource()
-      } catch {
-        ElMessage.warning(t('mirrorSource.installFallback'))
-      }
+    try {
+      await ensureDownloadPreferences()
+    } catch {
+      ElMessage.error(t('mirrorSource.saveFailed'))
+      return
     }
-    const packageUrl = resolveGithubDownloadUrl(payload.package_url)
+    const packageUrl = payload.package_url
     const installRequest: Record<string, unknown> = {
       package_url: packageUrl,
       canonical_package_url: payload.package_url,
@@ -1220,10 +1144,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  if (searchDebounceTimer) {
-    clearTimeout(searchDebounceTimer)
-    searchDebounceTimer = null
-  }
   // 让在途 loadPlugins 的 mySeq 全部失效
   loadSeq++
 })
@@ -1231,8 +1151,11 @@ onBeforeUnmount(() => {
 watch(
   () => props.active,
   (active) => {
-    if (active && plugins.value.length === 0 && !loading.value) {
-      initialize()
+    if (!active) return
+    if (plugins.value.length === 0 && !loading.value) {
+      void initialize()
+    } else if (marketInstalled.stale) {
+      void yankSweep().catch(() => undefined)
     }
   },
 )
@@ -1247,20 +1170,13 @@ watch(
   min-width: 0;
 }
 
+/* 高度与滚动由插件管理的抽屉统一给出（.plugin-workbench__rail-inner > *）。 */
 .market-panel--embedded {
-  /*
-    min-height 而不是 height：这张白纸面自带背景、圆角与阴影，这些都是画在元素自己盒子上的。
-    写成 height:100% 会被 .plugin-workbench__rail-inner > * 的 100% 钉死，面板内容一旦高于
-    抽屉，溢出的部分（后续卡片、分页条）就落在页面底色上——实测小窗口下市场列表滚到底时，
-    分页条两侧是 rgb(242,243,245) 而不是白底。min-height 让纸面随内容长高，抽屉自己是
-    滚动容器（插件管理里打开态是 overflow-y:auto），滚动行为不变。
-  */
-  min-height: 100%;
   padding: 18px 18px 24px;
-  background: var(--el-bg-color);
-  border-radius: 16px;
-  border: 1px solid var(--el-border-color-lighter);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.04);
+  background: var(--surface-card);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .market-panel__heading {
@@ -1306,7 +1222,7 @@ watch(
   width: 32px;
   height: 32px;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--el-text-color-secondary);
   cursor: pointer;
@@ -1316,10 +1232,6 @@ watch(
 .market-panel__icon-btn:hover {
   background: color-mix(in srgb, var(--el-color-primary) 8%, transparent);
   color: var(--el-color-primary);
-}
-
-.market-panel__toolbar {
-  margin-top: 0;
 }
 
 .market-panel__toolbar-right {
@@ -1380,7 +1292,7 @@ watch(
   gap: 8px;
   padding: 6px 12px;
   border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 6px;
+  border-radius: var(--radius-chip);
   background: var(--el-color-primary-light-9);
   font-size: 12px;
   color: var(--el-text-color-regular);

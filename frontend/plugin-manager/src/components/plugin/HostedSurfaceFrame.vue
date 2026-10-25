@@ -78,7 +78,7 @@ import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
 import { loadTsxRenderer, loadMarkdownRenderer } from '@/components/plugin/hosted/rendererModules'
 import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
-import { PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
+import { PANEL_FILL_HEIGHT } from '@/utils/constants'
 import type { PluginUiSurface } from '@/types/api'
 import { OptionalModuleError } from '@/utils/retryableModule'
 import { ElMessageBox } from 'element-plus'
@@ -176,7 +176,6 @@ type HostedBridgeError = {
 
 const frameStyle = computed(() => ({
   height: props.height,
-  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const surfaceTitle = computed(() => {
@@ -790,7 +789,10 @@ defineExpose({
 <style scoped>
 .hosted-surface-frame {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  min-height: 0;
   border: 1px solid color-mix(in srgb, var(--el-border-color) 72%, transparent);
   border-radius: 16px;
   background: color-mix(in srgb, var(--el-bg-color) 92%, transparent);
@@ -800,20 +802,23 @@ defineExpose({
 .hosted-surface-frame__locale-notice { position: absolute; bottom: 8px; right: 8px; z-index: 1; max-width: calc(100% - 16px); padding: 8px; border: 1px solid var(--el-border-color); border-radius: 8px; background: var(--el-bg-color-overlay); color: var(--el-text-color-primary); font-size: 12px; }
 
 .hosted-surface-frame__runtime-alert {
+  flex-shrink: 0;
   margin: 12px;
 }
 
 .hosted-surface-frame__iframe {
+  flex: 1;
   width: 100%;
   height: 100%;
-  min-height: inherit;
+  min-height: 0;
   border: none;
   display: block;
 }
 
 .hosted-surface-frame__placeholder {
+  flex: 1;
   height: 100%;
-  min-height: inherit;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;

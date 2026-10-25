@@ -4391,6 +4391,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             leftColumn.appendChild(volumeContainer);
 
             var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
+            var MIC_ACTION_HOVER_BRIDGE_MS = 900;
             var MIC_ACTION_HOVER_KEEP_ZONE_PX = 16;
             var MIC_SCREEN_RETURN_CLOSE_DELAY_MS = 220;
             var MIC_SCREEN_RETURN_RECHECK_MS = 90;
@@ -4470,9 +4471,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return isPointerInMicHoverBridge(point);
             }
 
-            // 收起判定用：菜单会随模型呼吸/鼠标跟随在指针下方持续漂移，布局
-            // 变化会让浏览器补发合成的 mouseleave；指针停在语音菜单本体上、
-            // 贴着面板或仍在过渡走廊里一律视为仍在悬停，移出后才收起。
+            // 收起判定用：指针停在语音菜单本体上、贴着面板或仍在过渡走廊里，
+            // 在离开后的短宽限内视为还在穿越，宽限结束就收起。
             function isPointerInMicHoverKeepZone(point) {
                 if (!point) return false;
                 if (micPopup.isConnected && micHoverPointInRect(point, micPopup.getBoundingClientRect())) {
@@ -4690,18 +4690,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     document.addEventListener('mouseout', forgetMicHoverPointerOnExit, true);
                     window.addEventListener('blur', forgetMicHoverPointerOnExit);
                 }
+                // 行或面板上的 :hover 直接取消收起。菜单本体、面板外扩和过渡
+                // 走廊只再维持一小段，方便从按钮移到小三角面板；停在这些区域
+                // 里超过这段就收起。光标停在按钮或面板上时不靠这段宽限续命。
+                var bridgeStartedAt = Date.now();
                 function attemptCollapse() {
                     micActionHoverCollapseTimer = null;
                     if (isMicActionHoverSurfaceActive()) {
                         stopMicHoverPointerTracking();
                         return;
                     }
-                    // 指针仍贴着行/面板（含过渡缝隙）就不算离开：每次复查都
-                    // 重新取实时指针位置和实时矩形，真正移出的下一个动作会
-                    // 立即关闭。原先按 mouseleave 起算的固定宽限会在用户中途
-                    // 停顿、或菜单随模型呼吸在指针下漂移时把面板收走，表现为
-                    // 「悬停展开后一停就关」。
-                    if (isPointerInMicHoverKeepZone(micHoverPointer)) {
+                    if (isPointerInMicHoverKeepZone(micHoverPointer)
+                        && Date.now() - bridgeStartedAt < MIC_ACTION_HOVER_BRIDGE_MS) {
                         micActionHoverCollapseTimer = setTimeout(attemptCollapse, 90);
                         return;
                     }

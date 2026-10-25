@@ -29,9 +29,17 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.server.routes import market_bridge as module
-from plugin.server.infrastructure import package_download as download_io
+from plugin.server.infrastructure import package_download as download_io, package_sources as sources
+from plugin.server.infrastructure import package_transfer as transfer
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.fixture(autouse=True)
+def fresh_package_client(tmp_path, monkeypatch):
+    """Each test patches httpx itself, so none may reuse another's pooled client."""
+    monkeypatch.setattr(download_io, "_shared_client", None)
+    monkeypatch.setattr(sources, "route_stats_path", lambda: tmp_path / "routes.json")
 
 
 def test_market_and_import_share_the_500_mib_package_limit():
@@ -158,7 +166,7 @@ async def test_download_failure_categories(isolated_download_root, monkeypatch, 
     async def fail(*_args, **_kwargs):
         raise errors[failure]
 
-    monkeypatch.setattr(module, "download_package_file", fail)
+    monkeypatch.setattr(module, "download_package", fail)
     with pytest.raises(module._DownloadAttemptError) as raised:
         await module._download_package_once(str(request.url), {})
     assert raised.value.code == code
@@ -243,7 +251,9 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
     httpx = load_httpx()
     client = httpx.AsyncClient
     direct = "https://github.com/example/demo/releases/download/v1/demo.neko-plugin"
-    proxy_base = next(base for source, base in module._GITHUB_PROXY_SOURCES if source != "github-direct")
+    proxy_id, proxy_base = next(
+        (source, base) for source, base in sources.GITHUB_DOWNLOAD_SOURCES if source != "github-direct"
+    )
     urls = []
 
     def respond(request):
@@ -254,7 +264,12 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
 
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
-    path, source = await module._download_package(proxy_base + direct, {})
+    task = {"_download_route": module._DownloadRoute(
+        candidates=((proxy_id, proxy_base + direct),),
+        direct_fallback=True,
+        deadline=time.monotonic() + 60,
+    )}
+    path, source = await module._download_package(direct, task)
     assert urls == [proxy_base + direct, direct]
     assert source == direct
     assert path.read_bytes() == b"package"
@@ -275,7 +290,7 @@ async def test_file_close_failure_preserves_the_primary_exception(tmp_path, monk
     handle = File()
     monkeypatch.setattr(Path, "open", lambda *args, **kwargs: handle)
     with pytest.raises(type(failure)) as raised:
-        async with download_io._open_download_file(tmp_path / "package"):
+        async with download_io.open_download_file(tmp_path / "package"):
             raise failure
     assert raised.value is failure
     assert handle.closed
@@ -420,7 +435,7 @@ async def test_downloaded_bytes_are_exact_and_progress_is_reported(
     http_server, isolated_download_root
 ) -> None:
     """Batch writes must preserve persisted bytes and progress reporting."""
-    payload = bytes((i * 7 + 13) % 256 for i in range(3 * module._DOWNLOAD_FLUSH_BYTES))
+    payload = bytes((i * 7 + 13) % 256 for i in range(3 * transfer.FLUSH_BYTES))
     srv = http_server(payload, chunk=65536)
     task: dict = {"progress": 0.0, "message": ""}
 
@@ -449,7 +464,7 @@ async def test_every_write_happens_off_the_event_loop(
 
     Assert writes run on another thread, not merely download success, which synchronous writes also satisfy.
     """
-    payload = bytes(range(256)) * (3 * module._DOWNLOAD_FLUSH_BYTES // 256)
+    payload = bytes(range(256)) * (3 * transfer.FLUSH_BYTES // 256)
     srv = http_server(payload, chunk=65536)
 
     loop_thread = threading.current_thread().name
@@ -484,7 +499,7 @@ async def test_every_write_happens_off_the_event_loop(
 async def test_download_preserves_bytes_with_one_file_handle(
     http_server, isolated_download_root, monkeypatch,
 ):
-    payload = b"x" * (3 * module._DOWNLOAD_FLUSH_BYTES + 19)
+    payload = b"x" * (3 * transfer.FLUSH_BYTES + 19)
     srv = http_server(payload)
     handles = []
     open_threads = []
@@ -658,15 +673,14 @@ async def test_slow_file_io_drains_without_blocking_the_loop(
         return real_open(path, mode, *args, **kwargs)
 
     class Response:
+        status_code = 200
+        url = "https://example.invalid/pkg"
         headers = {"content-length": str(1024 * 1024)}
 
         def raise_for_status(self):
             pass
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
+        async def aclose(self):
             pass
 
         async def aiter_bytes(self, chunk_size):
@@ -674,16 +688,15 @@ async def test_slow_file_io_drains_without_blocking_the_loop(
                 yield b"x" * chunk_size
 
     class Client:
+        is_closed = False
+
         def __init__(self, **_kwargs):
             pass
 
-        async def __aenter__(self):
-            return self
+        def build_request(self, *_args, **_kwargs):
+            return None
 
-        async def __aexit__(self, *_args):
-            pass
-
-        def stream(self, *_args):
+        async def send(self, _request, *, stream):
             return Response()
 
     real_cleanup = download_io.cleanup_download_file
@@ -739,7 +752,7 @@ async def test_filesystem_timeout_is_not_classified_as_download_deadline(
                 raise OSError(errno.ETIMEDOUT, "filesystem timed out")
         yield File()
 
-    monkeypatch.setattr(download_io, "_open_download_file", broken_file)
+    monkeypatch.setattr(transfer, "open_download_file", broken_file)
     srv = http_server(b"package")
     with pytest.raises(module._DownloadAttemptError) as excinfo:
         await module._download_package_once(_url(srv), {"progress": 0.0})

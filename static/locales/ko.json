@@ -719,7 +719,52 @@
         "notDetected": "카메라 장치가 감지되지 않았습니다",
         "occupied": "카메라가 다른 앱에 의해 사용 중입니다. QR코드/사진 앱을 닫고 다시 시도하세요"
     },
+    "proactiveCard": {
+        "memeTitle": "이 밈을 너에게 보여 주고 싶어",
+        "interested": "관심 있어요",
+        "interestSaved": "관심을 기록했어요",
+        "view": "보기",
+        "reveal": "펼치기",
+        "acknowledge": "알겠어요",
+        "skip": "건너뛰기",
+        "saving": "선택 저장 중…",
+        "accepted": "선택을 기록했어요",
+        "skipped": "이번에는 건너뛰었어요",
+        "unavailable": "이 추천은 사용할 수 없어요",
+        "saveFailed": "저장하지 못했어요. 다시 시도해 주세요",
+        "openFailed": "열지 못했어요. 콘텐츠 링크로 다시 시도해 주세요",
+        "dismiss": "미리보기 닫기",
+        "categories": {
+            "news": "주요 뉴스",
+            "community": "Neko 커뮤니티",
+            "video": "추천 영상",
+            "personal": "개인 피드",
+            "meme": "밈 공유",
+            "vision": "화면 이야기",
+            "window": "현재 창",
+            "chat": "먼저 꺼내는 이야기",
+            "web": "콘텐츠 공유",
+            "work_break": "휴식 알림",
+            "anti_slack": "집중 알림"
+        },
+        "hints": {
+            "news": "함께 나눌 이야기가 있어요.",
+            "community": "함께 나눌 이야기가 있어요.",
+            "video": "함께 나눌 이야기가 있어요.",
+            "personal": "함께 나눌 이야기가 있어요.",
+            "meme": "함께 나눌 이야기가 있어요.",
+            "vision": "함께 나눌 이야기가 있어요.",
+            "window": "함께 나눌 이야기가 있어요.",
+            "chat": "함께 나눌 이야기가 있어요.",
+            "web": "함께 나눌 이야기가 있어요.",
+            "work_break": "물 마시고 잠깐 쉬어요.",
+            "anti_slack": "잠깐 집중해 볼까요."
+        }
+    },
     "chat": {
+        "miniGameInviteTitle": "미니게임 초대",
+        "miniGameInviteHint": "같이 한 판 할까요?",
+        "miniGameInviteOptionsAriaLabel": "미니게임 초대 옵션",
         "visitBarAriaLabel": "방문",
         "messageReaction": "{{author}}님이 {{emoji}}로 반응했습니다",
         "cardActionFailed": "플러그인 작업 실패",
@@ -5235,6 +5280,24 @@
         }
     },
     "music": {
+        "recommendation": {
+            "title": "음악 추천",
+            "pending": "이 노래를 들어 볼까요?",
+            "autoPlayCountdown": "{{seconds}}초 후 자동 재생",
+            "autoPlayProgress": "자동 재생까지 남은 시간",
+            "saving": "선택 저장 중…",
+            "accepted": "재생 준비 중…",
+            "skipped": "이번에는 건너뛰었어요",
+            "playing": "재생 중",
+            "paused": "일시 정지됨",
+            "ended": "끝까지 들었어요",
+            "stopped": "재생 중지됨",
+            "failed": "재생 실패",
+            "unavailable": "더 이상 이용할 수 없는 추천이에요",
+            "saveFailed": "선택을 저장하지 못했어요. 다시 시도해 주세요.",
+            "accept": "들어 보기",
+            "skip": "지금은 안 들을래요"
+        },
         "unknownTrack": "알 수 없는 곡",
         "unknownArtist": "알 수 없는 아티스트",
         "unknownSource": "알 수 없는 음원",
@@ -6974,5 +7037,25 @@
     "visitFrame": {
         "peerAway": "잠깐 자리를 비웠어요",
         "visitingAway": "놀러 가는 중"
+    },
+    "feedbackDevices": {
+        "title": "추천 기록 기기 관리",
+        "description": "추천 기록 업로드만 관리합니다. 음악 재생과 추천 기능은 계속 사용할 수 있습니다.",
+        "name": "기기 이름(선택)",
+        "chooseReplacement": "5대가 활성화되어 있습니다. 교체할 이전 기기를 선택하세요.",
+        "selectDevice": "기기 선택",
+        "enable": "이 기기 활성화",
+        "refresh": "새로고침",
+        "removalNote": "제거한 기기는 업로드를 중지하며 현재 설정은 유지됩니다. 다시 참여하려면 해당 기기에서 직접 활성화해야 합니다.",
+        "thisDevice": "이 기기",
+        "enabled": "활성화됨",
+        "removed": "제거됨",
+        "remove": "제거",
+        "ready": "기기 목록을 불러왔습니다.",
+        "upgrade": "기록 업로드를 재개하려면 데스크톱 앱을 업데이트하세요. 일반 사용에는 영향이 없습니다.",
+        "update": "업데이트 받기",
+        "conflict": "기기 상태가 변경되었습니다. 새로고침 후 다시 선택하세요.",
+        "notEnabled": "추천 기록 기기 관리가 활성화되지 않았습니다. 일반 사용에는 영향이 없습니다.",
+        "unavailable": "기기를 불러올 수 없습니다. 커뮤니티 로그인과 연결을 확인한 후 새로고침하세요."
     }
 }

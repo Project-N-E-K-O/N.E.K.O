@@ -1452,6 +1452,26 @@ def test_light_subpanel_closes_after_the_pointer_leaves_the_window(
 
 
 @pytest.mark.frontend
+def test_light_subpanel_closes_after_the_gap_grace(page: Page) -> None:
+    install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(window.__voicePopoverTest.popup());
+        }"""
+    )
+    page.locator('[data-neko-mic-main-action="device"]').hover()
+    _wait_for_panel(page, "device")
+    # The pointer is still on the voice menu, but no longer on the row or the
+    # panel. That gap only stays open for the short crossing grace.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_timeout(400)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    page.wait_for_function(
+        "window.__voicePopoverTest.panels() === 0", timeout=3000
+    )
+
+
+@pytest.mark.frontend
 def test_screen_subwindow_is_reused_when_row_hover_returns(page: Page) -> None:
     install_voice_popover_harness(page, deferred_permission=False, desktop_bridge=True)
     page.evaluate(

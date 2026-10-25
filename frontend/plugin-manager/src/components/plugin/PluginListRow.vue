@@ -10,11 +10,16 @@
         <div class="plugin-list-row-card__headline">
           <div class="plugin-list-row-card__heading-main">
             <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
-            <h3 class="plugin-list-row-card__name">{{ displayText.name }}</h3>
+            <h3 class="plugin-list-row-card__name">
+              <button
+                type="button"
+                class="plugin-list-row-card__name-button"
+                data-testid="plugin-details-button"
+                @click.stop="$emit('click')"
+              >{{ displayText.name }}</button>
+            </h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
-            <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
-              {{ t('plugins.manualStart') }}
-            </el-tag>
+            <PluginAutoStartBadge v-if="plugin.autoStart === true" />
             <SourceTag
               :source="plugin.install_source?.source"
               :has-update="hasUpdate"
@@ -23,6 +28,7 @@
           <el-button
             v-if="availableUiAction"
             data-testid="plugin-open-ui"
+            class="plugin-list-row-card__ui-action"
             size="small"
             type="primary"
             plain
@@ -55,12 +61,8 @@
           <span class="plugin-list-row-card__meta-value plugin-list-row-card__meta-value--code">{{ plugin.id }}</span>
         </div>
         <div class="plugin-list-row-card__meta-item">
-          <span class="plugin-list-row-card__meta-label">Version</span>
+          <span class="plugin-list-row-card__meta-label">{{ t('plugins.version') }}</span>
           <span class="plugin-list-row-card__meta-value">v{{ plugin.version }}</span>
-        </div>
-        <div class="plugin-list-row-card__meta-item">
-          <span class="plugin-list-row-card__meta-label">{{ t('plugins.entryPoint') }}</span>
-          <span class="plugin-list-row-card__meta-value">{{ entryCount }}</span>
         </div>
       </div>
     </div>
@@ -71,6 +73,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
+import PluginAutoStartBadge from './PluginAutoStartBadge.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
 import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
@@ -104,7 +107,6 @@ defineEmits<{
 const { t, locale } = useI18n()
 const marketVersions = useMarketVersionsStore()
 
-const entryCount = computed(() => props.plugin.entry_count ?? props.plugin.entries?.length ?? 0)
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 const availableUiAction = computed(() => {
   if (!props.enableUiAction) return null
@@ -143,23 +145,26 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 <style scoped>
 .plugin-list-row-card {
   cursor: pointer;
-  border-radius: var(--plugin-entry-radius, 18px);
+  border-radius: var(--plugin-entry-radius, var(--radius-card));
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
   transition:
-    transform 0.24s ease,
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
+    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
 }
 
 .plugin-list-row-card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--el-box-shadow-light);
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+  box-shadow: var(--surface-shadow-hover);
 }
 
-.plugin-list-row-card--selected {
+.plugin-list-row-card--selected,
+.plugin-list-row-card--selected:hover {
   border-color: var(--el-color-primary);
-  box-shadow:
-    0 14px 28px color-mix(in srgb, var(--el-color-primary) 14%, transparent),
-    0 6px 14px color-mix(in srgb, var(--el-text-color-primary) 8%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent);
 }
 
 .plugin-list-row-card__content {
@@ -211,14 +216,43 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   overflow: hidden;
 }
 
+.plugin-list-row-card__name-button {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-list-row-card__name-button:focus-visible,
+.plugin-list-row-card__ui-action:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
+}
+
+.plugin-list-row-card:focus-within {
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+}
+
+.plugin-list-row-card__ui-action {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
 .plugin-list-row-card__meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 16px;
   padding: 12px 14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 72%, white);
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 8%, var(--el-border-color));
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .plugin-list-row-card__meta-item {
@@ -259,6 +293,16 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 
   .plugin-list-row-card__meta {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-list-row-card {
+    transition: none;
+  }
+
+  .plugin-list-row-card:hover {
+    transform: none;
   }
 }
 </style>

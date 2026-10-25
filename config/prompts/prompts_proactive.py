@@ -3486,14 +3486,14 @@ def get_proactive_format_sections(
 
 
 PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
-    "zh": "\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 或 [CHAT] 标签！）",
-    "zh-TW": "\n（注意：如果你最後決定聊音樂推薦的內容，請務必用 [MUSIC] 標籤當第一行，而不是 [WEB] 或 [CHAT] 標籤！）",
-    "en": "\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB] or [CHAT]!)",
-    "ja": "\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] や [CHAT] ではなく必ず [MUSIC] タグを使用してください！）",
-    "ko": "\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB]이나 [CHAT] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)",
-    "ru": "\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB] или [CHAT]!)",
-    "es": "\n(Nota: si decides hablar sobre la recomendación musical, DEBES usar el tag [MUSIC] como primera línea en lugar de [WEB] o [CHAT].)",
-    "pt": "\n(Nota: se decidir falar sobre a recomendação musical, você DEVE usar a tag [MUSIC] como primeira linha em vez de [WEB] ou [CHAT].)",
+    "zh": "\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 或 [CHAT] 标签！）\n本轮仅展示音乐推荐卡片，用户点击确认后才播放。请邀请用户选择，不得声称已经播放或已获得同意。",
+    "zh-TW": "\n（注意：如果你最後決定聊音樂推薦的內容，請務必用 [MUSIC] 標籤當第一行，而不是 [WEB] 或 [CHAT] 標籤！）\n本輪僅顯示音樂推薦卡片，使用者點擊確認後才播放。請邀請使用者選擇，不得聲稱已經播放或已獲得同意。",
+    "en": "\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB] or [CHAT]!)\nThis turn only shows a music recommendation card. Playback starts after the user confirms. Invite them to choose; do not claim playback has started or consent has been given.",
+    "ja": "\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] や [CHAT] ではなく必ず [MUSIC] タグを使用してください！）\n今回は音楽のおすすめカードを表示するだけです。ユーザーが確認してから再生します。選択を促し、すでに再生した、または同意を得たとは言わないでください。",
+    "ko": "\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB]이나 [CHAT] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)\n이번에는 음악 추천 카드만 표시합니다. 사용자가 확인한 뒤에 재생합니다. 선택을 권하고, 이미 재생했거나 동의를 받았다고 말하지 마세요.",
+    "ru": "\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB] или [CHAT]!)\nВ этом ходе показывается только карточка рекомендации. Воспроизведение начнётся после подтверждения пользователя. Предложите выбор; не утверждайте, что музыка уже играет или согласие уже получено.",
+    "es": "\n(Nota: si decides hablar sobre la recomendación musical, DEBES usar el tag [MUSIC] como primera línea en lugar de [WEB] o [CHAT].)\nEste turno solo muestra una tarjeta de recomendación. La reproducción empieza cuando el usuario confirma. Invítale a elegir; no afirmes que la música ya está sonando ni que ya ha dado su consentimiento.",
+    "pt": "\n(Nota: se decidir falar sobre a recomendação musical, você DEVE usar a tag [MUSIC] como primeira linha em vez de [WEB] ou [CHAT].)\nEste turno apenas mostra um cartão de recomendação. A reprodução começa após a confirmação do usuário. Convide-o a escolher; não afirme que a música já está tocando ou que já houve consentimento.",
 }
 
 

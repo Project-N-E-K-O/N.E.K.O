@@ -1368,6 +1368,8 @@ async def release_storage_startup_barrier(
     # startup is optional and detached; it never delays the normal chat boot.
     from services.chat_sync.runtime import schedule_desktop_chat_sync_start
     schedule_desktop_chat_sync_start(_config_manager)
+    from main_routers.proactive_feedback_router import schedule_start as schedule_proactive_feedback_start
+    schedule_proactive_feedback_start()
     return {
         "ok": True,
         "initialized": bool(initialized),
@@ -1467,6 +1469,8 @@ async def on_startup():
         # selection-required path above. Shutdown cancels the owned bootstrap.
         from services.chat_sync.runtime import schedule_desktop_chat_sync_start
         schedule_desktop_chat_sync_start(_config_manager)
+        from main_routers.proactive_feedback_router import schedule_start as schedule_proactive_feedback_start
+        schedule_proactive_feedback_start()
 
 
 @app.on_event("shutdown")

@@ -210,36 +210,27 @@ def test_exact_http_allowlist_is_carried_without_enabling_http_proxy():
 
 
 def test_proactive_music_reuses_one_card_scope_and_only_shortens_intermediate_attempts():
+    # Proactive delivery now offers consent; the player still owns its normal
+    # media readiness/fallback behavior for explicit user and plugin requests.
     source = PROACTIVE_UI_PATH.read_text(encoding="utf-8")
     player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
-    candidate_loop = source.split("var proactiveMusicFallbackDeadlineAt", 1)[1].split(
-        "// 【重构】统一处理链接", 1
+    controller = (ROOT / "static/app/app-recommendations.js").read_text(encoding="utf-8")
+    assert "nekoMusicRecommendations.offer(result.music_recommendation" in source
+    assert "window.dispatchMusicPlayDetailed" not in source
+    assert "window.dispatchMusicPlay(" not in source
+    # The HTTP consumer must not feed unregistered material back into legacy
+    # attachments when registration or card rendering is unavailable. Runtime
+    # failure/late-response cases live in proactive_registration_failures.test.cjs.
+    trigger = source.split("async function triggerProactiveChat()", 1)[1].split(
+        "mod.triggerProactiveChat = triggerProactiveChat;", 1
     )[0]
-
-    assert "const MUSIC_CANDIDATE_FALLBACK_BUDGET_MS = 10000" in source
-    assert "const MUSIC_CANDIDATE_ATTEMPT_TIMEOUT_MS = 3000" in source
+    for bypass in ("_proactiveAttachmentBuffer", "_showMemeBubbles(", "_showProactiveSourceCards("):
+        assert bypass not in trigger
+    assert "playback_grant" in controller
+    assert "cardScopeId: 'recommendation:' + id" in controller
     assert "const MUSIC_MEDIA_LOAD_TIMEOUT_MS = 10000" in player_source
-    assert "var proactiveMusicCardScopeId = 'proactive:'" in source
-    assert "for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++)" in candidate_loop
-    assert "var hasNextMusicCandidate = musicIndex < musicLinks.length - 1" in candidate_loop
-    assert "dispatchResult = await window.dispatchMusicPlayDetailed(track, {" in candidate_loop
-    assert "cardScopeId: proactiveMusicCardScopeId" in candidate_loop
-    assert "hasNextCandidate: hasNextMusicCandidate" in candidate_loop
-    assert "fallbackDeadlineAt: hasNextMusicCandidate" in candidate_loop
-    assert "? proactiveMusicFallbackDeadlineAt" in candidate_loop
-    assert "candidateTimeoutMs: hasNextMusicCandidate" in candidate_loop
-    assert "? MUSIC_CANDIDATE_ATTEMPT_TIMEOUT_MS" in candidate_loop
-    assert "if (dispatchResult.ok === true)" in candidate_loop
-    assert "if (dispatchResult.canTryNextCandidate !== true)" in candidate_loop
-    assert "音乐派发因非候选错误停止" in candidate_loop
-    assert "音乐候选不可用，尝试下一条" in candidate_loop
-    assert "finally {" in candidate_loop
-    assert "!dispatchedTrackUrl" in candidate_loop
-    assert "window.finalizeMusicCandidateCardFailure(lastAttemptedMusicTrack, {" in candidate_loop
-    assert "cardScopeId: proactiveMusicCardScopeId" in candidate_loop
-    assert "musicLinks = normalizedLinks.filter" in source
-    assert "name: musicLink.title || '未知曲目'" not in source
-    assert "artist: musicLink.artist || '未知艺术家'" not in source
+    for template in MUSIC_PLAYER_TEMPLATES:
+        assert "app/app-recommendations.js?v=" in template.read_text(encoding="utf-8")
 
 
 def test_music_candidate_fallback_preserves_and_finalizes_only_the_matching_card_scope():

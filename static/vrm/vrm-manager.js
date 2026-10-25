@@ -438,15 +438,20 @@ class VRMManager {
             localBodyBox.expandByPoint(localCorner);
         });
 
-        // 获取包围盒尺寸（用于计算阴影大小，使用世界空间的尺寸）
-        const bodySize = new window.THREE.Vector3();
-        bodyBox.getSize(bodySize);
-
-        // 计算阴影大小（使用身体宽度和深度的较大值作为基准）
-        const shadowDiameter = Math.max(
-            Math.max(bodySize.x, bodySize.z) * SHADOW_SCALE_MULT,
-            0.3  // 最小尺寸保底
-        );
+        // 阴影网格会挂到 vrm.scene 上，并跟着 scene.scale 一起缩放。
+        // 直径必须用场景局部尺寸：世界包围盒已经包含用户缩放，再写进子节点
+        // 会把缩放乘第二次。模型管理里放大后保存，主页面阴影就会按缩放的
+        // 平方变大；缩得很小时，原先 0.3 的绝对下限也不会跟着模型变小。
+        const localBodySize = new window.THREE.Vector3();
+        localBodyBox.getSize(localBodySize);
+        const footprint = Math.max(localBodySize.x, localBodySize.z);
+        let shadowDiameter = footprint * SHADOW_SCALE_MULT;
+        if (!(shadowDiameter > 0) && localBodySize.y > 0) {
+            shadowDiameter = localBodySize.y * 0.2;
+        }
+        if (!Number.isFinite(shadowDiameter) || shadowDiameter <= 0) {
+            return;
+        }
 
         // 5. 清理之前的阴影资源（如果存在）
         this._disposeShadowResources();

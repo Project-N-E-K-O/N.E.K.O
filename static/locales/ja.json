@@ -719,7 +719,52 @@
         "notDetected": "カメラデバイスが検出されませんでした",
         "occupied": "カメラが他のアプリに占有されています？QRコード/写真アプリを閉じて再試行してください"
     },
+    "proactiveCard": {
+        "memeTitle": "この画像、見せたくなっちゃった",
+        "interested": "興味あり",
+        "interestSaved": "興味を記録しました",
+        "view": "見る",
+        "reveal": "表示",
+        "acknowledge": "わかりました",
+        "skip": "スキップ",
+        "saving": "選択を保存中…",
+        "accepted": "選択を記録しました",
+        "skipped": "今回はスキップ",
+        "unavailable": "このおすすめは利用できません",
+        "saveFailed": "保存できませんでした。再試行してください",
+        "openFailed": "開けませんでした。リンクから再試行してください",
+        "dismiss": "プレビューを閉じる",
+        "categories": {
+            "news": "話題のニュース",
+            "community": "Nekoコミュニティ",
+            "video": "おすすめ動画",
+            "personal": "あなたのフィード",
+            "meme": "ミームを共有",
+            "vision": "画面について",
+            "window": "現在のウィンドウ",
+            "chat": "話しかけたいこと",
+            "web": "コンテンツを共有",
+            "work_break": "休憩のお知らせ",
+            "anti_slack": "集中のお知らせ"
+        },
+        "hints": {
+            "news": "話したいことがあります。",
+            "community": "話したいことがあります。",
+            "video": "話したいことがあります。",
+            "personal": "話したいことがあります。",
+            "meme": "話したいことがあります。",
+            "vision": "話したいことがあります。",
+            "window": "話したいことがあります。",
+            "chat": "話したいことがあります。",
+            "web": "話したいことがあります。",
+            "work_break": "水を飲んで少し休みましょう。",
+            "anti_slack": "少し集中しましょう。"
+        }
+    },
     "chat": {
+        "miniGameInviteTitle": "ミニゲームのお誘い",
+        "miniGameInviteHint": "一緒に遊びませんか？",
+        "miniGameInviteOptionsAriaLabel": "ミニゲーム招待の選択肢",
         "visitBarAriaLabel": "おでかけ",
         "messageReaction": "{{author}} が {{emoji}} でリアクションしました",
         "cardActionFailed": "プラグインの操作に失敗しました",
@@ -5235,6 +5280,24 @@
         }
     },
     "music": {
+        "recommendation": {
+            "title": "音楽のおすすめ",
+            "pending": "この曲を聴いてみますか？",
+            "autoPlayCountdown": "{{seconds}} 秒後に自動再生",
+            "autoPlayProgress": "自動再生までの時間",
+            "saving": "選択を保存中…",
+            "accepted": "再生を準備中…",
+            "skipped": "今回はスキップしました",
+            "playing": "再生中",
+            "paused": "一時停止中",
+            "ended": "最後まで聴きました",
+            "stopped": "再生を停止しました",
+            "failed": "再生できませんでした",
+            "unavailable": "このおすすめは利用できなくなりました",
+            "saveFailed": "選択を保存できませんでした。もう一度お試しください。",
+            "accept": "聴いてみる",
+            "skip": "今は聴かない"
+        },
         "unknownTrack": "不明な曲",
         "unknownArtist": "不明なアーティスト",
         "unknownSource": "不明な音源",
@@ -6974,5 +7037,25 @@
     "visitFrame": {
         "peerAway": "ちょっと席を外しています",
         "visitingAway": "おでかけ中"
+    },
+    "feedbackDevices": {
+        "title": "おすすめ履歴の端末管理",
+        "description": "履歴のアップロードのみを管理します。音楽再生やおすすめ機能はそのまま使えます。",
+        "name": "端末名（任意）",
+        "chooseReplacement": "5台が有効です。入れ替える古い端末を選んでください。",
+        "selectDevice": "端末を選択",
+        "enable": "この端末を有効にする",
+        "refresh": "更新",
+        "removalNote": "削除した端末はアップロードを停止します。現在の設定は残ります。再参加にはその端末で手動の有効化が必要です。",
+        "thisDevice": "この端末",
+        "enabled": "有効",
+        "removed": "削除済み",
+        "remove": "削除",
+        "ready": "端末一覧を更新しました。",
+        "upgrade": "履歴のアップロードを再開するにはデスクトップアプリを更新してください。通常の利用に影響はありません。",
+        "update": "アップデートを入手",
+        "conflict": "端末の状態が変わりました。更新して選び直してください。",
+        "notEnabled": "推薦履歴の端末管理は有効になっていません。通常の利用に影響はありません。",
+        "unavailable": "端末を読み込めません。コミュニティへのログインと接続を確認して更新してください。"
     }
 }

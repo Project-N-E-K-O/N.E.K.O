@@ -16,7 +16,7 @@ import MessageBlockView from './MessageBlockView';
 import MessageReactions from './MessageReactions';
 import ThinkingDots from './ThinkingDots';
 import { isTopicHintMessage } from './TopicHintBubble';
-import { type ChatMessage, type MessageAction } from './message-schema';
+import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
@@ -123,7 +123,8 @@ export function isCompactExportMessageSelectable(message: ChatMessage) {
   // Frontend-only topic-hint teasers are hidden from the history view and never
   // exported, so they must not count toward selectable/selected totals either —
   // otherwise the header count diverges from what's visible/selectable.
-  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message);
+  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message)
+    && hasVisibleMessageContent(message);
 }
 
 function isSelectionIgnoredTarget(target: EventTarget | null, currentTarget: EventTarget) {
@@ -264,7 +265,7 @@ export default function CompactExportHistoryPanel({
   // render, but they carry no real history — exclude them from the history view,
   // selection, and export so they can't show up as blank rows / empty entries.
   const messages = useMemo(
-    () => allMessages.filter((message) => !isTopicHintMessage(message)),
+    () => allMessages.filter((message) => !isTopicHintMessage(message) && hasVisibleMessageContent(message)),
     [allMessages],
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -771,6 +772,7 @@ export default function CompactExportHistoryPanel({
                     <MessageBlockView
                       key={`${message.id}-preview-${block.type}-${index}`}
                       interactive={false}
+                      presentation="bubble"
                       block={block}
                       message={message}
                       isStreaming={streaming}
@@ -1095,6 +1097,7 @@ export default function CompactExportHistoryPanel({
                             <MessageBlockView
                               key={`${message.id}-${block.type}-${index}`}
                               interactive={!selectionEnabled}
+                              presentation="bubble"
                               block={block}
                               message={message}
                               isStreaming={streaming}

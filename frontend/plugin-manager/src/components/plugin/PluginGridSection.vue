@@ -4,6 +4,7 @@
     :icon="icon"
     :items="items"
     :layout-mode="layoutMode"
+    :item-row-span="3"
     :motion-phase="motionPhase"
     :multi-select-enabled="multiSelectEnabled"
     :selected-ids="selectedPluginIds"
@@ -11,7 +12,7 @@
     guide-prefix="plugin-list"
     @toggle-selection="(id) => $emit('toggle-selection', id)"
   >
-    <template #item="{ item, layoutMode: mode }">
+    <template #item="{ item, layoutMode: mode, sharedRows }">
       <component
         :is="mode === 'list' ? PluginListRow : PluginCard"
         :plugin="item"
@@ -19,7 +20,7 @@
         :show-metrics="showMetrics"
         :show-source-detail="showSourceDetail"
         :enable-ui-action="true"
-        v-bind="mode === 'list' ? {} : { showIdentity: identityPluginIds.includes(item.id) }"
+        v-bind="mode === 'list' ? {} : { showIdentity: identityPluginIds.includes(item.id), sharedRows }"
         @click="$emit('item-click', item.id)"
         @open-ui="$emit('item-open-ui', item, $event)"
         @contextmenu="$emit('item-contextmenu', $event, item)"

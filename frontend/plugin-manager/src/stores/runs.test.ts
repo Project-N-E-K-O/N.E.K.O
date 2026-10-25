@@ -89,7 +89,7 @@ describe('run connection lifecycle', () => {
     const cancel = store.cancelRun('r')
     await flush()
     sockets[0]!.reply('run.cancel', { ...record(), status: 'cancel_requested' })
-    await expect(cancel).resolves.toMatchObject({ status: 'cancel_requested' })
+    await expect(cancel).resolves.toMatchObject({ status: 'succeeded' })
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -223,4 +223,135 @@ describe('run connection lifecycle', () => {
     expect((await pending).code).toBe('cancelled')
     expect(store.runsById.r).toBeUndefined()
   })
+  it('keeps a terminal bus update when an earlier detail read arrives late', async () => {
+    const socket = await openConnection()
+    const pending = store.loadRun('r')
+    await flush()
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: { run_id: 'r', status: 'succeeded', updated_at: 3 } } })
+    socket.reply('run.get', record())
+    await pending
+    expect(store.runsById.r).toMatchObject({ status: 'succeeded', updated_at: 3, entry_id: 'e' })
+  })
+
+  it('keeps records announced after a list refresh started', async () => {
+    const socket = await openConnection()
+    const pending = store.refreshRuns()
+    await flush()
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: record('new') } })
+    socket.reply('runs.list', [])
+    await pending
+    expect(store.runs.map(run => run.run_id)).toEqual(['new'])
+  })
+
+  it('does not roll a completed run back to cancel requested after a late command reply', async () => {
+    const socket = await openConnection()
+    const pending = store.cancelRun('r')
+    await flush()
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: { ...record(), status: 'succeeded', updated_at: 4 } } })
+    socket.reply('run.cancel', { ...record(), status: 'cancel_requested' })
+    await pending
+    expect(store.runsById.r?.status).toBe('succeeded')
+  })
+
+  it('keeps cancellation acknowledgement while preserving progress published during the command', async () => {
+    const socket = await openConnection()
+    const pending = store.cancelRun('r')
+    await flush()
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: {
+      ...record(), status: 'running', progress: 0.8, stage: 'uploading', updated_at: 4,
+      cancel_requested: false, cancel_reason: null, cancel_requested_at: null,
+    } } })
+    socket.reply('run.cancel', {
+      ...record(), status: 'cancel_requested', progress: 0.2, updated_at: 3,
+      cancel_requested: true, cancel_reason: 'user requested', cancel_requested_at: 3,
+    })
+    await expect(pending).resolves.toMatchObject({
+      status: 'cancel_requested', progress: 0.8, stage: 'uploading', updated_at: 4,
+      cancel_requested: true, cancel_reason: 'user requested', cancel_requested_at: 3,
+    })
+  })
+
+  it('retains acknowledged cancellation through later progress, detail and list reads until a terminal event', async () => {
+    const socket = await openConnection()
+    const pending = store.cancelRun('r')
+    await flush()
+    socket.reply('run.cancel', {
+      ...record(), status: 'cancel_requested', cancel_requested: true,
+      cancel_reason: 'user requested', cancel_requested_at: 2,
+    })
+    await pending
+    const laterProgress = { ...record(), progress: 0.8, stage: 'uploading', updated_at: 4,
+      cancel_requested: false, cancel_reason: null, cancel_requested_at: null }
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: laterProgress } })
+    const detail = store.loadRun('r')
+    const list = store.refreshRuns()
+    await flush()
+    socket.reply('run.get', laterProgress)
+    socket.reply('runs.list', [laterProgress])
+    await Promise.all([detail, list])
+    expect(store.runsById.r).toMatchObject({
+      status: 'cancel_requested', progress: 0.8, stage: 'uploading',
+      cancel_requested: true, cancel_reason: 'user requested', cancel_requested_at: 2,
+    })
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: {
+      run_id: 'r', status: 'canceled', finished_at: 5, updated_at: 5,
+    } } })
+    expect(store.runsById.r).toMatchObject({ status: 'canceled', finished_at: 5 })
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: laterProgress } })
+    expect(store.runsById.r).toMatchObject({ status: 'canceled', finished_at: 5, updated_at: 5 })
+  })
+
+  it('revises run freshness only for valid run bus records', async () => {
+    const socket = await openConnection()
+    const read = store.loadRun('r')
+    const list = store.refreshRuns()
+    await flush()
+    socket.reply('run.get', record())
+    socket.reply('runs.list', [record()])
+    await Promise.all([read, list])
+    expect(store.runRevisions.r).toBeUndefined()
+    for (const payload of [{ run_id: '' }, { run_id: 42 }, null]) {
+      socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload } })
+    }
+    expect(Object.keys(store.runRevisions)).toEqual([])
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: { run_id: 'r', progress: 0.5 } } })
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'runs', payload: { run_id: 'r', status: 'succeeded' } } })
+    expect(store.runRevisions.r).toBe(2)
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'export', payload: { run_id: 'r' } } })
+    expect(store.runRevisions.r).toBe(2)
+    expect(store.exportRevisions.r).toBe(1)
+  })
+
+  it('fences reads begun while a cancellation was pending at acknowledgement time', async () => {
+    const socket = await openConnection()
+    const command = store.cancelRun('r')
+    const read = store.loadRun('r')
+    await flush()
+    socket.reply('run.cancel', { ...record(), status: 'cancel_requested' })
+    await command
+    socket.reply('run.get', record())
+    await read
+    expect(store.runsById.r?.status).toBe('cancel_requested')
+  })
+
+  it('invalidates pending output snapshots when an export change is announced', async () => {
+    const socket = await openConnection()
+    const pending = store.loadExports('r')
+    store.selectRun('r')
+    await flush()
+    socket.message({ type: 'event', event: 'bus.change', data: { bus: 'export', payload: { run_id: 'r' } } })
+    socket.reply('export.list', { items: [{ export_item_id: 'stale' }] })
+    await pending
+    expect(store.exportRevisions.r).toBe(1)
+    expect(store.selectedExports).toEqual([])
+  })
+
+  it('does not turn a malformed output response into an empty successful snapshot', async () => {
+    const socket = await openConnection()
+    const pending = store.loadExports('r').catch(error => error)
+    await flush()
+    socket.reply('export.list', {})
+    expect((await pending).code).toBe('request_failed')
+  })
+
 })

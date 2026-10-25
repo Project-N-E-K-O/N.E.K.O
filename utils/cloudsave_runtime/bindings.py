@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from config import CHARACTER_RESERVED_FIELDS, DEFAULT_LIVE2D_MODEL_PATH
+from utils.preferences_audit import JOURNAL_KEY, attach_journal, read_journal
 from utils.conversation_settings_constants import (
     ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS as _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
@@ -49,7 +50,7 @@ from .staging import (
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _CLOUD_RESTORE_ASR_WRITER_ID = "server-cloud-restore"
-def _load_user_preferences_entries(config_manager) -> list[dict[str, Any]]:
+def _load_user_preferences_entries(config_manager, *, strict: bool = False) -> list[dict[str, Any]]:
     preferences_path = Path(config_manager.get_config_path("user_preferences.json"))
     if not preferences_path.exists():
         return []
@@ -57,6 +58,8 @@ def _load_user_preferences_entries(config_manager) -> list[dict[str, Any]]:
         with open(preferences_path, "r", encoding="utf-8") as file_obj:
             payload = json.load(file_obj)
     except Exception:
+        if strict:
+            raise
         return []
     if isinstance(payload, dict):
         return [payload]
@@ -71,13 +74,14 @@ def _extract_conversation_settings(config_manager) -> dict[str, Any]:
             return {
                 key: value
                 for key, value in entry.items()
-                if key != "model_path"
+                if key not in {"model_path", JOURNAL_KEY}
             }
     return {}
 
 
 def _build_runtime_preferences_payload(config_manager, conversation_settings: dict[str, Any]) -> list[dict[str, Any]]:
-    existing_preferences = _load_user_preferences_entries(config_manager)
+    existing_preferences = _load_user_preferences_entries(config_manager, strict=True)
+    local_journal = read_journal(existing_preferences)
     current_global = next(
         (
             entry
@@ -95,7 +99,7 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
     filtered_settings = {
         key: value
         for key, value in (conversation_settings or {}).items()
-        if key != "model_path"
+        if key not in {"model_path", JOURNAL_KEY}
     }
     restored_setting_keys = set(filtered_settings) & _ALLOWED_CONVERSATION_SETTINGS
     if restored_setting_keys == _ALLOWED_CONVERSATION_SETTINGS:
@@ -184,7 +188,9 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
         "model_path": GLOBAL_CONVERSATION_KEY,
         **filtered_settings,
     })
-    return preferences
+    # Audit history belongs to this device and its original owners. Never import
+    # journal entries from an archive or discard pending local handoff on restore.
+    return attach_journal(preferences, local_journal)
 
 
 def _derive_binding_model_reference(character_payload: dict[str, Any]) -> tuple[str, str]:

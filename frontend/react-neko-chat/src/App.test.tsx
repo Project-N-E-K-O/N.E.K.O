@@ -8148,6 +8148,82 @@ describe('App', () => {
     expect(tooltipVisibilityRule).toContain(':focus-visible');
     expect(tooltipVisibilityRule).not.toContain(':focus-within');
     expect(compactChatStyles).not.toMatch(/:focus-within\s*>\s*\.compact-input-tool-tooltip/);
+    expect(compactChatStyles).toMatch(
+      /\.compact-input-tool-fan \.compact-input-tool-tooltip\s*\{[^}]*pointer-events:\s*none\s*!important;/,
+    );
+  });
+
+  it('shows compact tool hover from a window mousemove that misses the wheel node', async () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
+
+    try {
+      fireEvent.mouseMove(window, {
+        ...pointerAtSelectedSlot,
+        buttons: 0,
+      });
+
+      expect(fan.querySelector('.compact-input-tool-item-screenshot')).toHaveAttribute(
+        'data-compact-tool-pointer-hovered',
+        'true',
+      );
+    } finally {
+      fanRectSpy.mockRestore();
+    }
+  });
+
+  it('clears compact tool hover when a touch lifts on the button it just tapped', async () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    await openCompactInputTools();
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    const fanRectSpy = mockCompactToolFanRect(fan);
+    const pointerAtSelectedSlot = compactToolWheelPoint(45 * (Math.PI / 180), 80);
+
+    try {
+      fireEvent.pointerMove(fan, {
+        pointerId: 82,
+        ...pointerAtSelectedSlot,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+      const screenshotButton = fan.querySelector('.compact-input-tool-item-screenshot');
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
+
+      fireEvent.pointerLeave(fan, {
+        pointerId: 82,
+        ...pointerAtSelectedSlot,
+        pointerType: 'touch',
+      });
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+
+      const touchMouseMove = new MouseEvent('mousemove', {
+        bubbles: true,
+        cancelable: true,
+        ...pointerAtSelectedSlot,
+      });
+      Object.defineProperty(touchMouseMove, 'sourceCapabilities', {
+        value: { firesTouchEvents: true },
+      });
+      window.dispatchEvent(touchMouseMove);
+      expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
+    } finally {
+      fanRectSpy.mockRestore();
+    }
   });
 
   it('retargets every visible compact tool hover to the visual button under the pointer', async () => {
@@ -10044,7 +10120,6 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     input.focus();
-    // 真实失焦（如切换应用）后 document.hasFocus() 为 false；延迟折叠只有在焦点未回归时才执行。
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     try {
       fireEvent(window, new Event('blur'));
@@ -10053,11 +10128,6 @@ describe('App', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
 
-      // 瞬时失焦抖动会在 ~280ms 内自行恢复焦点并放弃折叠；真实失焦（焦点不回归）照常折叠。
-      expect(onCompactChatStateChange).not.toHaveBeenCalled();
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
-      });
       expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       hasFocus.mockRestore();

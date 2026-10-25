@@ -209,6 +209,28 @@ const compactToolWheelIndexRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
+const musicRecommendationBlockSchema = z.object({
+  type: z.literal('music_recommendation'),
+  recommendationId: z.string().uuid(),
+  track: z.object({ name: z.string(), artist: z.string(), url: z.string().min(1), cover: z.string() }),
+  state: z.enum(['pending', 'saving', 'accepted', 'skipped', 'playing', 'paused', 'ended', 'stopped', 'failed', 'unavailable']),
+  error: z.boolean().optional(),
+  autoPlayAt: z.number().finite().nonnegative().optional(),
+  expiresAt: z.number().finite().nonnegative().optional(),
+});
+
+const proactiveRecommendationBlockSchema = z.object({
+  type: z.literal('proactive_recommendation'),
+  recommendationId: z.string().uuid(),
+  category: z.enum(['news', 'community', 'video', 'personal', 'meme', 'vision', 'window', 'chat', 'web', 'work_break', 'anti_slack']),
+  dismissed: z.boolean().optional(),
+  directDelivery: z.boolean().optional(),
+  content: z.object({ title: z.string(), source: z.string(), url: z.string() }),
+  state: z.enum(['pending', 'saving', 'accepted', 'skipped', 'unavailable']),
+  error: z.boolean().optional(),
+  expiresAt: z.number().finite().nonnegative().optional(),
+});
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -217,6 +239,8 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   buttonGroupBlockSchema,
   topicHintBlockSchema,
   htmlCardBlockSchema,
+  musicRecommendationBlockSchema,
+  proactiveRecommendationBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -424,6 +448,22 @@ export type MessageReaction = z.infer<typeof messageReactionSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;
 export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;
+
+export function hasProactiveRecommendationContent(block: Extract<MessageBlock, { type: 'proactive_recommendation' }>): boolean {
+  if (block.category === 'chat') return false;
+  if (block.category === 'vision' && !block.content.url && block.content.title.trim()) return true;
+  try {
+    const url = new URL(block.content.url);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+export function hasVisibleMessageContent(message: ChatMessage): boolean {
+  return message.blocks.length === 0 || !!message.actions?.length || message.blocks.some(block =>
+    block.type !== 'proactive_recommendation' || hasProactiveRecommendationContent(block));
+}
 
 export function parseChatMessage(input: unknown): ChatMessage {
   return chatMessageSchema.parse(input);
