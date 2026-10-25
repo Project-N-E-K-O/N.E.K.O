@@ -882,7 +882,10 @@ class ServerLifecycleService:
                 had_errors = True
                 logger.warning("failed to stop message_plane runner: {}", exc)
 
-        # Phase 2: parallel shutdown of all async components
+        # Keep control RPC available until plugin cleanup callbacks have finished.
+        hosts_stopped = asyncio.Event()
+
+        # Phase 2: parallel shutdown of async components; router follows hosts.
         async def _stop_metrics():
             await metrics_collector.stop()
 
@@ -893,10 +896,14 @@ class ServerLifecycleService:
             await bus_subscription_manager.stop()
 
         async def _stop_router():
+            await hosts_stopped.wait()
             await plugin_router.stop()
 
         async def _stop_hosts():
-            return await self._shutdown_hosts()
+            try:
+                return await self._shutdown_hosts()
+            finally:
+                hosts_stopped.set()
 
         parallel_tasks = {
             "metrics": asyncio.create_task(_stop_metrics()),

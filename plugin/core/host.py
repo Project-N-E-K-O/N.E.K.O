@@ -1323,13 +1323,13 @@ def _plugin_process_runner(
         if ui_context_map:
             logger.info("Plugin UI contexts collected: {}", list(ui_context_map.keys()))
 
-        _startup_pending_downlink: list[tuple[str, dict]] = []
+        _pending_downlink: list[tuple[str, dict]] = []
 
         async def _route_response(msg: Any) -> None:
             if not ctx._dispatch_rpc_response(msg):
                 logger.warning("Unknown plugin RPC response type")
 
-        async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
+        async def _lifecycle_downlink_pump(stop_event: asyncio.Event) -> None:
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
             while not stop_event.is_set():
                 result = await child_transport.recv_downlink(timeout_ms=poll_ms)
@@ -1339,17 +1339,17 @@ def _plugin_process_runner(
                 if ch == CH_RESP:
                     await _route_response(msg)
                     continue
-                if ch == CH_CMD and isinstance(msg, dict) and msg.get("type") == "STOP":
-                    stop_event.set()
-                    break
                 if isinstance(msg, dict):
-                    _startup_pending_downlink.append((ch, msg))
+                    _pending_downlink.append((ch, msg))
 
-        async def _run_startup_with_downlink(startup_callable: Any) -> None:
+        async def _run_with_downlink(awaitable: Any) -> Any:
+            # Lifecycle callbacks may await host replies while the ordinary
+            # command reader is paused. Defer commands to preserve their order;
+            # even a queued STOP must not cut off the shutdown callback's replies.
             stop_event = asyncio.Event()
-            pump_task = asyncio.create_task(_startup_downlink_pump(stop_event), name="startup-downlink-pump")
+            pump_task = asyncio.create_task(_lifecycle_downlink_pump(stop_event), name="lifecycle-downlink-pump")
             try:
-                await startup_callable()
+                return await awaitable
             finally:
                 stop_event.set()
                 pump_task.cancel()
@@ -1388,7 +1388,7 @@ def _plugin_process_runner(
         if startup_fn:
             try:
                 with ctx._handler_scope("lifecycle.startup"):
-                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_startup_with_downlink(startup_fn)))
+                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(startup_fn())))
             except (KeyboardInterrupt, SystemExit):
                 # Propagate system-level interruptions directly.
                 raise
@@ -1412,7 +1412,7 @@ def _plugin_process_runner(
             try:
                 logger.info("[Plugin Process] Executing unfreeze lifecycle (restored from frozen state)...")
                 with ctx._handler_scope("lifecycle.unfreeze"):
-                    asyncio.run(_run_with_model_client_cleanup(ctx, unfreeze_fn()))
+                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(unfreeze_fn())))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1662,8 +1662,8 @@ def _plugin_process_runner(
                     pass
 
                 try:
-                    if _startup_pending_downlink:
-                        result = _startup_pending_downlink.pop(0)
+                    if _pending_downlink:
+                        result = _pending_downlink.pop(0)
                     else:
                         result = await child_transport.recv_downlink(timeout_ms=poll_ms)
                 except asyncio.CancelledError:
@@ -1707,7 +1707,7 @@ def _plugin_process_runner(
                         freeze_fn = lifecycle_events.get("freeze")
                         if freeze_fn:
                             with ctx._handler_scope("lifecycle.freeze"):
-                                await freeze_fn()
+                                await _run_with_downlink(freeze_fn())
                         if freezable_keys:
                             await _save_plugin_state("freeze")
                         ret["success"] = True
@@ -1736,24 +1736,16 @@ def _plugin_process_runner(
 
                 # ── CONFIG_UPDATE ──
                 if msg_type == "CONFIG_UPDATE":
-                    # The loop awaits this handler INLINE, so it cannot route
-                    # anyone else's IMAGE_UPLOAD_RESULT until it returns. A
-                    # timer or custom-event upload running concurrently would
-                    # otherwise send into a loop that is not reading and could
-                    # only time out (Codex P2) -- the same failure as the
-                    # startup window, from the same cause.
-                    #
-                    # So the flag means "responses are being routed right now",
-                    # not "the loop started once". Cleared for the duration and
-                    # restored in a finally, so a handler that raises cannot
-                    # leave uploads blocked for the rest of the process.
+                    # Preserve the image-upload gate during config changes.
+                    # Control replies still drain, but business commands wait
+                    # until the update and its callbacks have completed.
                     ctx._downlink_ready.clear()
                     try:
-                        await _handle_config_update_command(
+                        await _run_with_downlink(_handle_config_update_command(
                             msg=msg, ctx=ctx, events_by_type=events_by_type,
                             plugin_id=plugin_id, res_sender=res_sender,
                             logger=logger,
-                        )
+                        ))
                     finally:
                         ctx._downlink_ready.set()
                     continue
@@ -1827,7 +1819,7 @@ def _plugin_process_runner(
                 with ctx._handler_scope("lifecycle.shutdown"):
                     result = shutdown_fn()
                     if asyncio.iscoroutine(result):
-                        asyncio.run(_run_with_model_client_cleanup(ctx, result))
+                        asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1856,7 +1848,7 @@ def _plugin_process_runner(
                 with ctx._handler_scope("lifecycle.shutdown"):
                     result = shutdown_fn()
                     if asyncio.iscoroutine(result):
-                        asyncio.run(_run_with_model_client_cleanup(ctx, result))
+                        asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
         except BaseException:
             pass
         try:
@@ -2200,8 +2192,8 @@ class PluginHost:
         
         Close sequentially:
         1. Send stop.
-        2. Close communication resources.
-        3. Close the process.
+        2. Wait for process cleanup while control communication remains available.
+        3. Close communication resources and transport.
         """
         self.logger.info(f"Shutting down plugin {self.plugin_id}")
         self._revoke_model_gateway_access()
@@ -2216,15 +2208,14 @@ class PluginHost:
         # 1. Send stop.
         await self.comm_manager.send_stop_command()
 
-        # 2. Close communication resources.
-        await self.comm_manager.shutdown(timeout=timeout)
-
-        # 3. Unregister downlink sender & close ZMQ transport
-        state.remove_downlink_sender(self.plugin_id)
-        self.transport.close()
-
-        # 4. Close the process.
-        success = await asyncio.to_thread(self._shutdown_process, timeout)
+        try:
+            success = await asyncio.to_thread(self._shutdown_process, timeout)
+        finally:
+            try:
+                await self.comm_manager.shutdown(timeout=timeout)
+            finally:
+                state.remove_downlink_sender(self.plugin_id)
+                self.transport.close()
         
         if success:
             self.logger.info(f"Plugin {self.plugin_id} shutdown successfully")
