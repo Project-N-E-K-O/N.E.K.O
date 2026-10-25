@@ -80,7 +80,7 @@
 
     function sameOriginGatewayUrl(value) {
         var path = typeof value === 'string' ? value : String(value || '');
-        if (path.indexOf('/api/pet-care/') !== 0 || path.indexOf('#') >= 0 ||
+        if (path.indexOf('/api/pet-care' + '/') !== 0 || path.indexOf('#') >= 0 ||
             path.indexOf('\\') >= 0 || path.indexOf('//') >= 0) {
             return '';
         }
