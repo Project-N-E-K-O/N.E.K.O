@@ -12,10 +12,12 @@ from plugin.core.rpc import (
     MAX_HANDLER_TIMEOUT_SECONDS,
     RpcClosedError,
     RpcDispatcher,
+    RpcDeadlineExceededError,
     RpcPeer,
     RpcRemoteError,
     RpcTransportError,
     owns_deadline,
+    request_scope,
 )
 
 
@@ -44,6 +46,159 @@ async def test_registers_before_send_and_discards_duplicate_reply() -> None:
     peer = RpcPeer(send)
     assert await peer.request("fast", {}, timeout=1) == "first"
     assert peer.pending_count == 0
+
+
+@pytest.mark.parametrize("outcome", ["return", "error", "cancel"])
+@pytest.mark.parametrize("execution", ["task", "thread"])
+async def test_background_request_uses_its_own_budget_after_entry_scope_ends(outcome, execution):
+    sent = []
+    release = asyncio.Event()
+
+    async def send(request, timeout):
+        sent.append((request, timeout))
+        peer.receive(request["request_id"], result="background completed")
+
+    peer = RpcPeer(send)
+
+    async def background():
+        await release.wait()
+        if execution == "thread":
+            return await asyncio.to_thread(lambda: asyncio.run(peer.request("lookup", {}, timeout=1)))
+        return await peer.request("lookup", {}, timeout=1)
+
+    try:
+        with request_scope({
+            "request_id": "finished-entry",
+            "_request_deadline_monotonic": time.monotonic() + 0.01,
+            "_rpc_depth": 4,
+        }):
+            task = asyncio.create_task(background())
+            if outcome == "error":
+                raise ValueError("Entry failed")
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+    except (ValueError, asyncio.CancelledError):
+        if outcome == "return":
+            raise
+    await asyncio.sleep(0.02)
+    release.set()
+    try:
+        assert await task == "background completed"
+        (request, budget), = sent
+        assert request["_rpc_parent_request_id"] is None
+        assert request["_rpc_trace_id"] == request["request_id"]
+        assert request["_rpc_depth"] == 0
+        assert 0.5 < budget <= 1
+    finally:
+        await peer.aclose()
+
+
+@pytest.mark.parametrize("outcome", ["return", "error", "cancel"])
+async def test_dispatcher_background_request_outlives_the_handler_scope(outcome):
+    sent = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    background = None
+
+    async def send(request, timeout):
+        sent.append(request)
+        peer.receive(request["request_id"], result="background completed")
+
+    peer = RpcPeer(send)
+
+    async def work():
+        await release.wait()
+        return await peer.request("lookup", {}, timeout=1)
+
+    async def handler(ctx, request):
+        nonlocal background
+        background = asyncio.create_task(work())
+        entered.set()
+        if outcome == "error":
+            raise RpcRemoteError({"code": "PROBE_FAILED", "message": "expected"})
+        if outcome == "cancel":
+            await asyncio.Event().wait()
+        return "scheduled"
+
+    dispatcher = RpcDispatcher({"launch": handler})
+    task = asyncio.create_task(dispatcher.dispatch({
+        "type": "launch", "from_plugin": "probe", "request_id": "handler",
+        "timeout": 0.05, "_rpc_depth": 4,
+    }))
+    try:
+        await entered.wait()
+        if outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            reply = await task
+            if outcome == "error":
+                assert reply["error"]["code"] == "PROBE_FAILED"
+            else:
+                assert reply["result"] == "scheduled"
+        await asyncio.sleep(0.06)
+        release.set()
+        assert await background == "background completed"
+        (request,) = sent
+        assert request["_rpc_parent_request_id"] is None
+        assert request["_rpc_trace_id"] == request["request_id"]
+        assert request["_rpc_depth"] == 0
+    finally:
+        release.set()
+        if background is not None:
+            await asyncio.gather(background, return_exceptions=True)
+        await dispatcher.close()
+        await peer.aclose()
+
+
+async def test_gather_children_keep_the_active_parent_deadline_and_trace():
+    sent = []
+
+    async def send(request, timeout):
+        sent.append((request, timeout))
+
+    peer = RpcPeer(send)
+    deadline = time.monotonic() + 0.03
+    try:
+        with request_scope({
+            "request_id": "active-entry", "_rpc_trace_id": "trace",
+            "_rpc_depth": 2, "_request_deadline_monotonic": deadline,
+        }):
+            results = await asyncio.gather(
+                peer.request("lookup", {}, timeout=1),
+                peer.request("lookup", {}, timeout=1),
+                return_exceptions=True,
+            )
+        assert all(isinstance(result, RpcDeadlineExceededError) for result in results)
+        assert len(sent) == 2
+        for request, budget in sent:
+            assert request["_request_deadline_monotonic"] == deadline
+            assert request["_rpc_parent_request_id"] == "active-entry"
+            assert request["_rpc_trace_id"] == "trace"
+            assert request["_rpc_depth"] == 3
+            assert 0 < budget <= 0.03
+    finally:
+        await peer.aclose()
+
+
+async def test_request_already_started_keeps_its_budget_when_parent_scope_ends():
+    sent = asyncio.Event()
+
+    async def send(request, timeout):
+        sent.set()
+
+    peer = RpcPeer(send)
+    try:
+        with request_scope({
+            "request_id": "entry", "_request_deadline_monotonic": time.monotonic() + 0.03,
+        }):
+            request = asyncio.create_task(peer.request("lookup", {}, timeout=1))
+            await sent.wait()
+        with pytest.raises(RpcDeadlineExceededError):
+            await request
+    finally:
+        await peer.aclose()
 
 
 async def test_remote_error_is_preserved_and_next_request_succeeds() -> None:

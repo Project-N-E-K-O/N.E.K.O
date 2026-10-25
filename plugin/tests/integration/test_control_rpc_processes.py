@@ -183,3 +183,29 @@ async def test_unserializable_entry_returns_a_fault_over_the_real_transport(rpc_
     )
     assert result["ok"] is False
     assert result["code"] == "SERIALIZATION_FAILED"
+
+
+@pytest.mark.parametrize("invocation", ["direct", "cross_plugin"])
+async def test_background_call_after_entry_deadline_uses_its_own_timeout(rpc_hosts, invocation):
+    if invocation == "direct":
+        background_host = rpc_hosts["rpc_a"]
+        receipt = await background_host.trigger(
+            "start_background", {"target": "rpc_b:ping"}, timeout=0.2
+        )
+        assert receipt == "scheduled"
+    else:
+        background_host = rpc_hosts["rpc_b"]
+        receipt = await rpc_hosts["rpc_a"].trigger(
+            "call", {"target": "rpc_b:start_background", "params": {"target": "rpc_c:ping"}, "timeout": 0.2},
+            timeout=2,
+        )
+        assert receipt == {"ok": True, "value": "scheduled"}
+    await asyncio.sleep(0.25)
+    await background_host.trigger("release_background", {}, timeout=2)
+    async with asyncio.timeout(2):
+        while True:
+            result = await background_host.trigger("background_result", {}, timeout=1)
+            if result["ready"]:
+                break
+            await asyncio.sleep(0.01)
+    assert result["result"] == {"ok": True, "value": {"value": "ok"}}
