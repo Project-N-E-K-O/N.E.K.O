@@ -107,7 +107,7 @@ test('stage 9.1 overview follows the selected demo block hierarchy', () => {
   assert.match(css, /\.neko-pet-care-rail \{[\s\S]*left: 142px;[\s\S]*width: 78px/);
   assert.match(css, /\.neko-pet-care-panel-footer \{[\s\S]*bottom: 168px;/);
   assert.match(css, /380 - \(42 \+ 78 \/ 2\) = 299px/);
-  assert.match(css, /\.neko-pet-care-actions \{[\s\S]*left: var\(--pet-action-center-x, 380px\);/);
+  assert.match(css, /\.neko-pet-care-actions \{[^}]*left: var\(--pet-action-center-x, 380px\);/);
   assert.match(css, /\.neko-pet-care-content \{[\s\S]*left: auto;[\s\S]*right: 16px;[\s\S]*top: 42px;[\s\S]*width: 252px/);
   assert.match(css, /\.neko-pet-care-action-details \{[\s\S]*left: auto;[\s\S]*right: 16px;[\s\S]*top: 42px;[\s\S]*width: 252px/);
   assert.match(css, /\.neko-pet-care-nav-item \{[\s\S]*font-size: 13px;[\s\S]*line-height: 1\.1/);
