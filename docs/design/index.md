@@ -17,6 +17,17 @@ These documents preserve design intent and implementation context. They are grou
 - [User activity tracker](./user-activity-tracker)
 - [Voice design architecture](./voice-design-architecture)
 
+## PetCare
+
+- [宠物养成系统方案（修订稿）](./宠物养成系统方案_修订稿)：锁定的产品目标和行为边界，禁止修改。
+- [猫形态养宠系统首版实施记录](./pet-care-system-v1-implementation)：当前三项目职责、运行拓扑、代码位置、状态机和部署前验收边界。
+- [猫形态养宠首版数值与内容草案](./pet-care-system-v1-values-draft)：可替换的候选配置和模拟结论，不是产品合同。
+
+正式服务的部署决策、数据库边界和发布门禁由 N.E.K.O.Verse 仓库的
+`docs/adr/0002-pet-care-server-preparation.md` 维护；独立服务的运行说明位于该仓库
+`services/pet_care/README.md`。N.E.K.O-PC 只维护桌面宿主和输入契约，不保存第二份
+PetCare 产品设计。
+
 ## Implemented design records
 
 - [ASR client phase record](./asr-client-phase1)

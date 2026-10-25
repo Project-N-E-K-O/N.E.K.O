@@ -1,12 +1,16 @@
 /**
- * Pet-care account, role binding, local snapshot, stage-4 care actions and
- * independent entry surface, plus the stage-3 Cat Mind compatibility boundary.
+ * PetCare renderer composition root for the model-owner surface.
  *
- * The entry surface belongs to the cat form. It is deliberately not a
- * model button, never registers a model floating button, does not read model bounds/managers, and does not observe
- * Cat Mind hover events. Account identity comes from the shared N.E.K.O
- * account session (the current local adapter is the existing OAuth session);
- * role binding comes from the pet-care service.
+ * Transport, endpoint construction, pending-write recovery, role-alias sync
+ * and mode arbitration live in dedicated app-pet-care-* modules. This file
+ * coordinates the authorised service snapshot with the panel, cat actions,
+ * exploration lifecycle and Cat Mind presentation boundary. It does not own
+ * long-term rules, rewards, inventory or settlement.
+ *
+ * The entry surface belongs to the cat form, not a model button. It does not
+ * treat Cat Mind hover observations as PetCare input.
+ * Account identity comes from the shared N.E.K.O OAuth session; role binding
+ * comes from the PetCare service.
  */
 (function () {
     'use strict';
@@ -159,7 +163,7 @@
     // A character/model switch can arrive after the renderer has already
     // started replacing the visible cat. Keep the old exploration identity
     // long enough to issue the same server recall used by the nest/return
-    // entry; the new character must never inherit the old local snapshot.
+    // entry; the new character must never inherit the old renderer snapshot.
     var pendingContextRecall = null;
     var oauthPopup = null, oauthCancelResolver = null, oauthAttemptGeneration = 0;
     var modelExitRecallPromise = null;
@@ -4436,7 +4440,7 @@
         // Exploration is a direct cat interaction. It may be restored while
         // the cat is away, but a new activity can only start from the active
         // cat form; callers cannot bypass this through the panel API.
-        if (!stage5Ready() || !state.catLocalActive || explorationActive(currentExploration()) ||
+        if (!authoritativeSnapshotReady() || !state.catLocalActive || explorationActive(currentExploration()) ||
             state.explorationPending || state.pendingAction || state.playActivity || state.playPending ||
             state.taskLoading || state.taskPendingId || petMutationBlocked() ||
             !state.currentCharacterUid) return null;
@@ -5000,7 +5004,7 @@
                 if (!applyExplorationEnvelope(body, explorationRecoveryReason, {
                     suppressNotice: options.suppressNotice === true,
                 })) throw new Error('care-action-snapshot-incomplete');
-            } else if (!applyConfirmedStage5Envelope(body)) {
+            } else if (!applyConfirmedOperationEnvelope(body)) {
                 throw new Error('care-action-snapshot-incomplete');
             }
             state.pendingWriteError = '';
@@ -5046,7 +5050,7 @@
         }, Math.max(1000, Number(delayMs) || 30000));
         if (timer && typeof timer.unref === 'function') timer.unref();
     }
-    function stage5Ready() {
+    function authoritativeSnapshotReady() {
         return state.authStatus === 'logged-in' && state.bindingStatus === 'bound' &&
             state.serviceStatus === 'ready' && !!state.snapshot && !!state.currentCharacterUid;
     }
@@ -5090,7 +5094,7 @@
             label: playerFacingLabel(label, id, '完成任务'),
         } : null;
     }
-    function applyConfirmedStage5Envelope(body, options) {
+    function applyConfirmedOperationEnvelope(body, options) {
         if (applyInvalidBindingEnvelope(body, state.generation)) return false;
         var confirmed = snapshotFromActionBody(body);
         if (!confirmed || !isCompleteSnapshot(confirmed, state.accountId, state.bindingRoleId)) return false;
@@ -5220,7 +5224,7 @@
         return presentation;
     }
     async function refreshTasks() {
-        if (!stage5Ready() || state.pendingAction || state.playActivity || state.playPending ||
+        if (!authoritativeSnapshotReady() || state.pendingAction || state.playActivity || state.playPending ||
             state.explorationPending || state.taskLoading || state.taskPendingId ||
             petMutationBlocked() || !state.currentCharacterUid) return null;
         var request = ++taskRequestGeneration, expected = state.generation;
@@ -5234,7 +5238,7 @@
             if (request !== taskRequestGeneration || expected !== state.generation) return null;
             if (isAuthExpiredResponse(response, body)) return await recoverFromAuthExpiry();
             if (!response.ok) throw new Error(str(body && (body.code || body.detail || body.reason)) || 'task-load-failed');
-            if (!applyConfirmedStage5Envelope(body, { keepCurrentTaskRead: true })) {
+            if (!applyConfirmedOperationEnvelope(body, { keepCurrentTaskRead: true })) {
                 throw new Error('care-action-snapshot-incomplete');
             }
             return state.tasks;
@@ -5260,7 +5264,7 @@
         var completing = operationKind === 'complete';
         var completionAction = completing ? taskCompletionAction(item) : null;
         var mutationAllowed = completing ? !!completionAction : taskIsReadyToClaim(item);
-        if (!stage5Ready() || state.pendingAction || state.playActivity || state.playPending || state.taskLoading ||
+        if (!authoritativeSnapshotReady() || state.pendingAction || state.playActivity || state.playPending || state.taskLoading ||
             petMutationBlocked() || !taskId || !str(item && item.cycle_key) ||
             !mutationAllowed || state.taskPendingId) return null;
         var request = ++taskRequestGeneration, expected = state.generation;
@@ -5291,7 +5295,7 @@
                 throw new Error(operationFailureCode(body,
                     completing ? 'task-complete-failed' : 'task-claim-failed'));
             }
-            if (!applyConfirmedStage5Envelope(body)) throw new Error('care-action-snapshot-incomplete');
+            if (!applyConfirmedOperationEnvelope(body)) throw new Error('care-action-snapshot-incomplete');
             var confirmedOperation = operationResultFromBody(body) || {};
             emit(completing ? 'neko:pet-care:task-completed' : 'neko:pet-care:task-claimed',
                 completing ? {
@@ -5333,7 +5337,7 @@
         });
         var recoveryTaskId = str(recoveryTask && recoveryTask.task_id);
         var recoveryCycleKey = str(recoveryTask && recoveryTask.cycle_key);
-        if (!stage5Ready() || state.pendingAction || state.playActivity || state.playPending ||
+        if (!authoritativeSnapshotReady() || state.pendingAction || state.playActivity || state.playPending ||
             state.taskLoading || state.recoveryPendingStatus ||
             petMutationBlocked() || !state.currentCharacterUid || statusKey !== 'sick' ||
             !recoveryTaskId || !recoveryCycleKey) return null;
@@ -5360,7 +5364,7 @@
                 }
                 throw new Error(operationFailureCode(body, 'use-recovery-item-failed'));
             }
-            if (!applyConfirmedStage5Envelope(body)) throw new Error('care-action-snapshot-incomplete');
+            if (!applyConfirmedOperationEnvelope(body)) throw new Error('care-action-snapshot-incomplete');
             emit('neko:pet-care:recovery-confirmed', {
                 status: statusKey, idempotency_key: idempotencyKey, snapshot: state.snapshot,
             });
@@ -5647,7 +5651,7 @@
             var start = button(pending && pending.operation === 'start' ? '出发中…' : '开始探索', 'neko-pet-care-exploration-start');
             var sickActive = !!(state.snapshot && state.snapshot.negative_status &&
                 state.snapshot.negative_status.sick && state.snapshot.negative_status.sick.active);
-            start.disabled = !!pending || !stage5Ready() || sickActive || petMutationHardBlocked();
+            start.disabled = !!pending || !authoritativeSnapshotReady() || sickActive || petMutationHardBlocked();
             start.setAttribute('aria-disabled', start.disabled ? 'true' : 'false');
             start.title = start.disabled && sickActive ? '生病期间不能探索' :
                 (start.disabled ? '当前不可用' : '开始探索');
@@ -5954,14 +5958,14 @@
             pendingWrite.quarantined || state.accountResumePending)) ||
             !!degradedSurfaceRecoveryPromise || state.bindingPending;
         ui.logoutButton.hidden = status !== 'logged-in';
-        var stage5Available = stage5Ready();
-        ui.task.hidden = !loggedInSurface || view !== 'tasks' || !stage5Available;
+        var authoritativeAvailable = authoritativeSnapshotReady();
+        ui.task.hidden = !loggedInSurface || view !== 'tasks' || !authoritativeAvailable;
         // Account controls belong to the profile/auth slot. Keeping the
         // footer out of the overview prevents a logout button from appearing
         // next to inventory/task previews and preserves the demo hierarchy.
         ui.footer.hidden = pendingWrite || state.petRefreshRequired
             ? false : (loggedInSurface ? view !== 'profile' : false);
-        if (!stage5Available) {
+        if (!authoritativeAvailable) {
             state.expandedTaskId = '';
             ui.taskList.replaceChildren ? ui.taskList.replaceChildren() : (ui.taskList.children = []);
             ui.taskError.hidden = true; ui.taskError.textContent = '';
@@ -6124,7 +6128,7 @@
             });
         }
         ui.taskError.textContent = state.taskError ? taskErrorText(state.taskError) : '';
-        ui.taskError.hidden = !state.taskError || !stage5Available;
+        ui.taskError.hidden = !state.taskError || !authoritativeAvailable;
         // Tasks are a dedicated rail module. The overview deliberately has no
         // task preview or claim shortcut; this prevents service task data from
         // being duplicated in two different surfaces.
@@ -6228,7 +6232,7 @@
             var sickActive = !!(state.snapshot && state.snapshot.negative_status &&
                 state.snapshot.negative_status.sick && state.snapshot.negative_status.sick.active);
             var enabled = explorationButton
-                ? (stage5Ready() || activeExplorationAvailable) &&
+                ? (authoritativeSnapshotReady() || activeExplorationAvailable) &&
                     (state.catLocalActive || activeExplorationAvailable) && !state.explorationPending &&
                     !sickActive && !petMutationHardBlocked()
                 : ((hasConfiguredCareCategory(category) || category === 'play')) &&
@@ -6247,7 +6251,7 @@
             // require a hidden exploration button click to rediscover it.
             var selected = activeExplorationAvailable ? 'exploration' : state.selectedCategory;
             var canShowDetails = (activeExplorationAvailable || view === 'overview') && selected && (careContent(selected).length > 0 || selected === 'play' || selected === 'exploration') &&
-                (selected === 'exploration' ? activeExplorationAvailable || stage5Ready() : isPetCareCompatibilityReady()) && state.snapshot &&
+                (selected === 'exploration' ? activeExplorationAvailable || authoritativeSnapshotReady() : isPetCareCompatibilityReady()) && state.snapshot &&
                 (selected === 'exploration' || !explorationActive(state.snapshot.exploration)) &&
                 (selected !== 'play' || playActionEntries().length > 0);
             ui.actionDetails.hidden = !canShowDetails;
@@ -6935,7 +6939,7 @@
         // Reopening the surface performs one event-driven authoritative task
         // refresh. Binding and view changes consume the canonical tasks that
         // already travel with their snapshots and do not issue extra reads.
-        if (!state.panelOpen || !stage5Ready() || state.taskLoading) return;
+        if (!state.panelOpen || !authoritativeSnapshotReady() || state.taskLoading) return;
         refreshTasks();
     }
     function markPetCareInputSurface(value) {
@@ -7246,7 +7250,7 @@
         });
         window.addEventListener('neko:cat-return-commit', syncAnchor);
         window.addEventListener('neko:cat-return-complete', syncAnchor);
-        // Stage 6 observes the existing user yarn gesture and the existing
+        // PetCare observes the existing user yarn gesture and the existing
         // cat action terminal events. A terminal event without a recent
         // user-initiated lease is ignored, so Cat Mind/autonomous play can
         // never be counted as user陪玩.

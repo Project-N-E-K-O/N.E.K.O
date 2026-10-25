@@ -1,11 +1,10 @@
 /**
- * app-pet-care-mode.js - stage 0 pet-care mode and context gate.
+ * PetCare renderer mode and cat-entity activity gate.
  *
  * This module owns only the client-side compatibility boundary. It does not
- * fetch pet data, calculate pet values, or settle any pet operation. Later
- * stages can feed an authenticated snapshot into this context; Cat Mind keeps
- * its own short-term runtime and only receives the explicitly allowed adapter
- * input described by the product design.
+ * fetch pet data, calculate pet values or settle any pet operation. The
+ * authorised snapshot feeds this context; Cat Mind keeps its own short-term
+ * runtime and receives only the explicitly allowed read-only adapter input.
  */
 (function () {
     'use strict';
@@ -299,8 +298,8 @@
         }
         // A yarn drag is a user-owned interaction source. Cat Mind still
         // decides whether the cat responds, but the request must pass through
-        // so Stage 6 can wait for that real response. Autonomous play with no
-        // matching user trigger remains suppressed.
+        // so PetCare settlement can wait for that real response. Autonomous
+        // play with no matching user trigger remains suppressed.
         if (request.actionId === 'cat1_play_yarn' && request.detail &&
             Array.isArray(request.detail.triggerTypes) &&
             request.detail.triggerTypes.indexOf('chat_yarn_drag_completed') >= 0) {
