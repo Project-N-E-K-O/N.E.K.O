@@ -309,11 +309,13 @@ watch(activeMatch, () => void focusMatch(), { immediate: true })
   min-height: 1.75em;
   scroll-margin-block: 120px 12px;
 }
+/* Highlight tints stay light enough that every code colour keeps 4.5:1 on the
+ * highlighted row; the active row is told apart by its warning edge. */
 .json-line--match {
-  background: color-mix(in srgb, var(--el-color-warning) 10%, transparent);
+  background: color-mix(in srgb, var(--el-color-warning) 6%, transparent);
 }
 .json-line--active {
-  background: color-mix(in srgb, var(--el-color-warning) 20%, transparent);
+  background: color-mix(in srgb, var(--el-color-warning) 10%, transparent);
   box-shadow: inset 2px 0 var(--el-color-warning);
 }
 .json-line__number {

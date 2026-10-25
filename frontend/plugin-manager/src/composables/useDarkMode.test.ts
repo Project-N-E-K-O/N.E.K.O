@@ -94,6 +94,46 @@ describe('dark palette', () => {
   })
 })
 
+describe('choosing a palette of the mode already shown', () => {
+  it('saves the mode even while the page follows the system', () => {
+    initDarkMode()
+    expect(localStorage.getItem(DARK_MODE_KEY)).toBeNull()
+    const { isDark, setDarkMode, setLightPalette } = mountDarkMode()
+    setLightPalette('paper')
+    setDarkMode(false)
+    expect(isDark.value).toBe(false)
+    expect(localStorage.getItem(DARK_MODE_KEY)).toBe('false')
+  })
+
+  it('sends the mode to the host while its bridge read is pending', async () => {
+    let resolveGet!: (dark: boolean) => void
+    const bridge = {
+      get: () => new Promise<boolean>((resolve) => (resolveGet = resolve)),
+      set: vi.fn(),
+    }
+    ;(window as { nekoDarkMode?: unknown }).nekoDarkMode = bridge
+    localStorage.setItem(DARK_MODE_KEY, 'false')
+    initDarkMode()
+    const { isDark, setDarkMode } = mountDarkMode()
+    setDarkMode(false)
+    expect(bridge.set).toHaveBeenCalledExactlyOnceWith(false)
+    resolveGet(true)
+    await Promise.resolve()
+    expect(isDark.value).toBe(false)
+  })
+
+  it('does not resend the mode once the host has confirmed it', async () => {
+    const bridge = { get: vi.fn().mockResolvedValue(false), set: vi.fn() }
+    ;(window as { nekoDarkMode?: unknown }).nekoDarkMode = bridge
+    localStorage.setItem(DARK_MODE_KEY, 'false')
+    initDarkMode()
+    await Promise.resolve()
+    const { setDarkMode } = mountDarkMode()
+    setDarkMode(false)
+    expect(bridge.set).not.toHaveBeenCalled()
+  })
+})
+
 describe('light palette', () => {
   it('restores the stored paper palette next to an independent dark palette', () => {
     localStorage.setItem(DARK_MODE_KEY, 'true')

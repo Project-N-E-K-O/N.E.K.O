@@ -4,6 +4,8 @@ const DARK_MODE_KEY = 'neko-dark-mode'
 const isDark = ref(false)
 let listenersRegistered = false
 let darkModeInitEpoch = 0
+// The host's mode is unknown until its bridge read settles.
+let hostReadPending = false
 
 // Light/dark is shared with the main N.E.K.O app; each mode's palette is a
 // plugin-manager-only preference and never reaches the host bridge.
@@ -42,7 +44,7 @@ function readStoredDarkMode() {
 function writeStoredDarkMode(dark: boolean) {
   try {
     localStorage.setItem(DARK_MODE_KEY, dark ? 'true' : 'false')
-  } catch (_) {}
+  } catch {}
 }
 
 function paletteKey(slot: PaletteSlot) {
@@ -145,7 +147,7 @@ function setupThemeSyncListeners() {
         applyDarkMode(event.matches, { persist: false })
       }
     })
-  } catch (_) {}
+  } catch {}
 }
 
 export function initDarkMode() {
@@ -159,32 +161,45 @@ export function initDarkMode() {
 
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.get === 'function') {
+    const initEpoch = ++darkModeInitEpoch
+    hostReadPending = true
+    const settle = () => {
+      if (initEpoch === darkModeInitEpoch) {
+        hostReadPending = false
+      }
+    }
     try {
-      const initEpoch = ++darkModeInitEpoch
       Promise.resolve(bridge.get())
         .then((dark) => {
           if (initEpoch === darkModeInitEpoch && typeof dark === 'boolean') {
             applyDarkMode(dark, { persist: false })
           }
+          settle()
         })
-        .catch(() => {})
-    } catch (_) {}
+        .catch(settle)
+    } catch {
+      settle()
+    }
   }
 }
 
 function setDarkMode(dark: boolean) {
-  // An explicit choice wins over a bridge read that is still pending.
+  // An explicit choice wins over a bridge read that is still pending, so it is
+  // saved and sent to the host even when the page already shows that mode.
   darkModeInitEpoch += 1
-  if (dark === isDark.value) {
+  const hostUnconfirmed = hostReadPending
+  hostReadPending = false
+  const changed = dark !== isDark.value
+  applyDarkMode(dark)
+  if (!changed && !hostUnconfirmed) {
     return
   }
-  applyDarkMode(dark)
 
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.set === 'function') {
     try {
       Promise.resolve(bridge.set(dark)).catch(() => {})
-    } catch (_) {}
+    } catch {}
   }
 
   window.dispatchEvent(new CustomEvent('neko-theme-changed', {

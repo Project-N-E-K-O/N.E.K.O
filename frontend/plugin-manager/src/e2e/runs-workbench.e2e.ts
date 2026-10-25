@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test'
-import { PREVIEW_ORIGIN, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
+import { PREVIEW_ORIGIN, contrastFailures, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
 import type { ExportItem, RunRecord } from '../api/runs'
 
 async function fixture(page: Page, dark = false) {
@@ -511,6 +511,38 @@ test('long JSON has compact metadata, searchable folded branches, exact copy and
   expect(await page.locator('.json-line--active').getAttribute('data-json-line')).not.toBe(
     firstMatch
   )
+  // Every palette keeps syntax colours readable on matched and active rows.
+  // The needle lands on string lines, which carry key, string and punctuation.
+  const highlightedTokens = ['--match', '--active'].flatMap((row) =>
+    ['key', 'string', 'punctuation'].map(
+      (token) => `.json-line${row} .json-${token}`
+    )
+  )
+  for (const [dark, slot, palette] of [
+    [false, 'light', 'neko'],
+    [false, 'light', 'paper'],
+    [true, 'dark', 'neko'],
+    [true, 'dark', 'graphite'],
+  ] as const) {
+    await page.evaluate(
+      ({ dark, slot, palette }) => {
+        const html = document.documentElement
+        html.classList.toggle('dark', dark)
+        if (palette === 'neko') html.removeAttribute(`data-${slot}-palette`)
+        else html.setAttribute(`data-${slot}-palette`, palette)
+      },
+      { dark, slot, palette }
+    )
+    await expect
+      .poll(() => contrastFailures(page, highlightedTokens), { message: `${slot}/${palette}` })
+      .toEqual([])
+  }
+  await page.evaluate(() => {
+    const html = document.documentElement
+    html.classList.remove('dark')
+    html.removeAttribute('data-light-palette')
+    html.removeAttribute('data-dark-palette')
+  })
   await page.getByRole('button', { name: 'Collapse all', exact: true }).click()
   await expect(page.locator('.json-line')).toHaveCount(1)
   await page.getByRole('button', { name: 'Copy', exact: true }).click()

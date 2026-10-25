@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { PREVIEW_ORIGIN, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
+import { PREVIEW_ORIGIN, contrastFailures, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
 
 const ADAPTER_ID = 'adapter#appearance'
 const ADAPTER_NAME = 'Boundary adapter'
@@ -669,43 +669,10 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await chooseTheme(page, 'Dark Mode (N.E.K.O)')
   await expect(page.locator('html')).toHaveClass(/dark/)
 
-  // Resolve actual CSS colours (including color-mix and transparent ancestors)
-  // in the browser, so default Element Plus styles cannot silently override the
-  // intended text/selection/solid-button contrast.
-  const contrast = (selectors: string[]) => page.evaluate(selectors => {
-    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!
-    const rgba = (value: string) => {
-      context.clearRect(0, 0, 1, 1)
-      context.fillStyle = value
-      context.fillRect(0, 0, 1, 1)
-      return Array.from(context.getImageData(0, 0, 1, 1).data)
-    }
-    const luminance = (rgb: number[]) => rgb.slice(0, 3).map(value => {
-      const v = value / 255
-      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
-    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index]!, 0)
-    const background = (element: Element | null): number[] => {
-      if (!element) return [0, 0, 0]
-      const color = rgba(getComputedStyle(element).backgroundColor)
-      const alpha = color[3]! / 255
-      if (alpha === 1) return color.slice(0, 3)
-      const parent = background(element.parentElement)
-      return color.slice(0, 3).map((value, index) => value * alpha + parent[index]! * (1 - alpha))
-    }
-    return selectors.map(selector => {
-      const element = document.querySelector(selector)!
-      const fg = luminance(rgba(getComputedStyle(element).color))
-      const bg = luminance(background(element))
-      return {
-        selector, foreground: getComputedStyle(element).color, background: background(element),
-        ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
-      }
-    })
-  }, selectors)
   const readable = async (selectors: string[]) => {
     // Element Plus tags interpolate their foreground/background on a theme
     // change; assert the settled palette rather than sampling the first frame.
-    await expect.poll(async () => (await contrast(selectors)).filter(result => result.ratio < 4.5)).toEqual([])
+    await expect.poll(() => contrastFailures(page, selectors)).toEqual([])
   }
   const cardSelectors = [
     '.plugin-description', '.plugin-start-mode', '.plugin-version-tag', '.status-tag',

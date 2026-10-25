@@ -331,10 +331,11 @@ html:root.dark[data-dark-palette='graphite'] {
   --el-color-danger: #fb828e;
   --el-color-info: #a5a7ae;
 
-  --code-key: #c77dbb;
-  --code-string: #6aab73;
-  --code-number: #2aacb8;
-  --code-keyword: #cf8e6d;
+  /* IDE syntax hues lifted to keep 4.5:1 on search-highlighted output rows. */
+  --code-key: #d194c7;
+  --code-string: #7cb584;
+  --code-number: #47b7c2;
+  --code-keyword: #d59b7e;
 
   --el-mask-color: rgb(0 0 0 / 60%);
   --el-mask-color-extra-light: rgb(0 0 0 / 30%);
