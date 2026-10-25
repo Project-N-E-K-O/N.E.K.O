@@ -4,8 +4,9 @@ const DARK_MODE_KEY = 'neko-dark-mode'
 const isDark = ref(false)
 let listenersRegistered = false
 let darkModeInitEpoch = 0
-// The host's mode is unknown until its bridge read settles.
-let hostReadPending = false
+// The host's mode is unknown while its bridge read is pending or after a bridge
+// write failed; a choice made then is sent to the host even if unchanged here.
+let hostModeUnconfirmed = false
 
 // Light/dark is shared with the main N.E.K.O app; each mode's palette is a
 // plugin-manager-only preference and never reaches the host bridge.
@@ -162,10 +163,10 @@ export function initDarkMode() {
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.get === 'function') {
     const initEpoch = ++darkModeInitEpoch
-    hostReadPending = true
+    hostModeUnconfirmed = true
     const settle = () => {
       if (initEpoch === darkModeInitEpoch) {
-        hostReadPending = false
+        hostModeUnconfirmed = false
       }
     }
     try {
@@ -187,8 +188,8 @@ function setDarkMode(dark: boolean) {
   // An explicit choice wins over a bridge read that is still pending, so it is
   // saved and sent to the host even when the page already shows that mode.
   darkModeInitEpoch += 1
-  const hostUnconfirmed = hostReadPending
-  hostReadPending = false
+  const hostUnconfirmed = hostModeUnconfirmed
+  hostModeUnconfirmed = false
   const changed = dark !== isDark.value
   applyDarkMode(dark)
   if (!changed && !hostUnconfirmed) {
@@ -197,9 +198,18 @@ function setDarkMode(dark: boolean) {
 
   const bridge = getNekoDarkModeBridge()
   if (bridge && typeof bridge.set === 'function') {
+    // A failed write leaves the host on its old mode, so the next pick of this
+    // mode retries it; a later switch to the other mode sends its own write.
+    const markUnconfirmed = () => {
+      if (isDark.value === dark) {
+        hostModeUnconfirmed = true
+      }
+    }
     try {
-      Promise.resolve(bridge.set(dark)).catch(() => {})
-    } catch {}
+      Promise.resolve(bridge.set(dark)).catch(markUnconfirmed)
+    } catch {
+      markUnconfirmed()
+    }
   }
 
   window.dispatchEvent(new CustomEvent('neko-theme-changed', {

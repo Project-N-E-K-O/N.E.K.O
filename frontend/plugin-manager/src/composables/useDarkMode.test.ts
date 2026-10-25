@@ -132,6 +132,37 @@ describe('choosing a palette of the mode already shown', () => {
     setDarkMode(false)
     expect(bridge.set).not.toHaveBeenCalled()
   })
+
+  it('retries the same mode after the host rejected the write', async () => {
+    const bridge = { set: vi.fn().mockRejectedValueOnce(new Error('offline')) }
+    ;(window as { nekoDarkMode?: unknown }).nekoDarkMode = bridge
+    localStorage.setItem(DARK_MODE_KEY, 'false')
+    initDarkMode()
+    const { setDarkMode } = mountDarkMode()
+    setDarkMode(true)
+    await Promise.resolve()
+    await Promise.resolve()
+    setDarkMode(true)
+    expect(bridge.set).toHaveBeenNthCalledWith(2, true)
+    await Promise.resolve()
+    setDarkMode(true)
+    expect(bridge.set).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries the same mode after the host write threw', () => {
+    const bridge = {
+      set: vi.fn().mockImplementationOnce(() => {
+        throw new Error('offline')
+      }),
+    }
+    ;(window as { nekoDarkMode?: unknown }).nekoDarkMode = bridge
+    localStorage.setItem(DARK_MODE_KEY, 'false')
+    initDarkMode()
+    const { setDarkMode } = mountDarkMode()
+    setDarkMode(true)
+    setDarkMode(true)
+    expect(bridge.set).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('light palette', () => {
