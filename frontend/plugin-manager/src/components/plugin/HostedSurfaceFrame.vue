@@ -25,6 +25,7 @@
       :title="surfaceTitle"
       class="hosted-surface-frame__iframe"
       sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
+      allow="fullscreen"
       @load="handleLoad"
       @error="handleError"
     />

@@ -755,6 +755,10 @@ export default {
       surfaceUnavailable: 'Surface は現在利用できません',
       surfaceEntryMissing: 'この Surface が宣言したエントリーファイルが存在しません。plugin.toml の entry パスを確認してください。',
       surfaceWarnings: 'プラグイン UI 宣言に確認が必要な問題があります',
+      focus: 'フォーカス',
+      focusHint: 'サイドバーとページの枠を隠し、パネルをウィンドウいっぱいに表示します',
+      exitFocus: 'フォーカス終了',
+      exitFocusHint: 'フォーカスモードを終了（Esc）',
       controlError: 'プラグイン UI コントロールエラー',
       hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
     }

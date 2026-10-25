@@ -755,6 +755,10 @@ export default {
       surfaceUnavailable: 'Surface недоступен',
       surfaceEntryMissing: 'Файл entry, указанный этим Surface, не найден. Проверьте путь entry в plugin.toml.',
       surfaceWarnings: 'В объявлении UI плагина есть проблемы, требующие внимания',
+      focus: 'Фокус',
+      focusHint: 'Скрыть боковую панель и рамку страницы, чтобы панель заняла всё окно',
+      exitFocus: 'Выйти из фокуса',
+      exitFocusHint: 'Выйти из режима фокуса (Esc)',
       controlError: 'Ошибка элемента управления UI плагина',
       hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
     }

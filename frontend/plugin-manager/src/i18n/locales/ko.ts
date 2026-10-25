@@ -755,6 +755,10 @@ export default {
       surfaceUnavailable: 'Surface를 사용할 수 없습니다',
       surfaceEntryMissing: '이 Surface가 선언한 엔트리 파일이 없습니다. plugin.toml의 entry 경로를 확인해 주세요.',
       surfaceWarnings: '플러그인 UI 선언에 확인이 필요한 문제가 있습니다',
+      focus: '집중',
+      focusHint: '사이드바와 페이지 틀을 숨기고 패널을 창 전체에 표시합니다',
+      exitFocus: '집중 종료',
+      exitFocusHint: '집중 모드 종료 (Esc)',
       controlError: '플러그인 UI 컨트롤 오류',
       hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.'
     }
