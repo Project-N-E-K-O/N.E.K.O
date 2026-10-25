@@ -2358,9 +2358,12 @@
             side: state.side || state.role || '',
             visit_id: visitId
         };
-        if (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full')) {
-            frame.peer_crop = state.peer.crop;
-        }
+        // GET /api/visit/state keeps the media layout on room.peer_crop.  Older
+        // snapshots used peer.crop, so retain that as a compatibility fallback.
+        var peerCrop = state.room && (state.room.peer_crop === 'upper' || state.room.peer_crop === 'full')
+            ? state.room.peer_crop
+            : (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full') ? state.peer.crop : '');
+        if (peerCrop) frame.peer_crop = peerCrop;
         window.nekoRelayVisitStateToDisplay(frame);
     }
 

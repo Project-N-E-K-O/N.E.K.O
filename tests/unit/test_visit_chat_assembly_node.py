@@ -544,7 +544,7 @@ const report = {};
   }
   // ── 页面在串门进行中重载 → active:true；没有串门 → active:false ──
   {
-    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true, peer: { cat_name: '小白' }, transcript: [] } }) };
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true, peer: { cat_name: '小白' }, room: { peer_crop: 'full' }, transcript: [] } }) };
     const h = createHarness({ routes, withPacer: true });
     const bound = [];
     h.win.addEventListener('neko-visit-bound', (ev) => bound.push(ev.detail));
@@ -553,6 +553,7 @@ const report = {};
     report.reload_visit = bound[0].visit_id === VID;
     report.reload_pacer_armed = h.win.nekoVisitPacer.isArmed();
     report.reload_chat_phase = h.chat._test.state().visit.phase;
+    report.reload_relay_crop = h.relayFrames.length ? h.relayFrames[0].peer_crop : null;
     const routes2 = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
     const h2 = createHarness({ routes: routes2, withPacer: true });
     const bound2 = [];
@@ -1703,6 +1704,7 @@ def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):
     assert report["reload_active"] is True and report["reload_visit"] is True
     assert report["reload_pacer_armed"] is True
     assert report["reload_chat_phase"] == "active"
+    assert report["reload_relay_crop"] == "full"
     assert report["idle_active"] is False
     assert report["idle_bar_entry"] == ["invite", "go"]
 
