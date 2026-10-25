@@ -915,13 +915,21 @@ jobs:
             $wakeExecutable = (Resolve-Path 'dist/Xiao8/projectneko_server.exe').Path
             $wakeCheck = Start-Process -FilePath $wakeExecutable -PassThru -WindowStyle Hidden -RedirectStandardOutput build/wake-word-smoke.stdout -RedirectStandardError build/wake-word-smoke.stderr
             if (-not $wakeCheck.WaitForExit(60000)) { $wakeCheck.Kill(); throw 'Frozen wake smoke timed out' }
-            if ($wakeCheck.ExitCode -ne 0) { throw 'Frozen wake runtime/model prepare failed' }
+            if ($wakeCheck.ExitCode -ne 0) { throw "Frozen wake runtime/model prepare failed (exit $($wakeCheck.ExitCode))" }
             if ((Select-String -LiteralPath build/wake-word-smoke.stdout -SimpleMatch 'WAKE_WORD_PREFERENCE_SMOKE_READY').Count -ne 2) { throw 'Frozen preference spawn budget evidence missing' }
             if (-not (Select-String -LiteralPath build/wake-word-smoke.stdout -Quiet -SimpleMatch 'WAKE_WORD_PUBLICATION_SMOKE_READY')) { throw 'Frozen publication spawn budget evidence missing' }
             if (-not (Select-String -LiteralPath build/wake-word-smoke.stdout -Quiet -SimpleMatch 'WAKE_WORD_RELEASE_SMOKE_READY')) { throw 'Frozen wake smoke readiness evidence missing' }
           } finally {
             Remove-Item Env:NEKO_WAKE_WORD_RELEASE_SMOKE -ErrorAction SilentlyContinue
             Remove-Item Env:NEKO_WAKE_WORD_MODEL_DIR -ErrorAction SilentlyContinue
+            # Same as the voice identity smoke above: the gate's markers and any
+            # traceback only live in these redirected files, so echo them.
+            foreach ($wakeLog in 'build/wake-word-smoke.stdout', 'build/wake-word-smoke.stderr') {
+              if (Test-Path -LiteralPath $wakeLog) {
+                Write-Host "----- $wakeLog -----"
+                Get-Content -LiteralPath $wakeLog -Raw | Write-Host
+              }
+            }
           }
 
       # --- Generic dist invariant check ---
