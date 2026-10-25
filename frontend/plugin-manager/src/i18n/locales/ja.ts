@@ -84,8 +84,11 @@ export default {
     noData: 'データなし',
     unknown: '不明',
     nA: 'N/A',
-    darkMode: 'ダークモード',
-    lightMode: 'ライトモード',
+    chooseTheme: 'テーマを選択',
+    lightModeNeko: 'ライトモード（N.E.K.O）',
+    lightModePaper: 'ライトモード（和紙）',
+    darkModeNeko: 'ダークモード（N.E.K.O）',
+    darkModeGraphite: 'ダークモード（グラファイト）',
     logoutConfirmTitle: '確認',
     disconnected: 'サーバーとの接続が切断されました',
     languageAuto: '自動'

@@ -84,8 +84,11 @@ export default {
     noData: 'Sem dados',
     unknown: 'Desconhecido',
     nA: 'N/D',
-    darkMode: 'Modo escuro',
-    lightMode: 'Modo claro',
+    chooseTheme: 'Escolher tema',
+    lightModeNeko: 'Modo claro (N.E.K.O)',
+    lightModePaper: 'Modo claro (papel)',
+    darkModeNeko: 'Modo escuro (N.E.K.O)',
+    darkModeGraphite: 'Modo escuro (grafite)',
     logoutConfirmTitle: 'Aviso',
     disconnected: 'Servidor desconectado',
     languageAuto: 'Automático'

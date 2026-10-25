@@ -21,6 +21,12 @@
   --on-primary: #ffffff;
   --on-danger: #ffffff;
 
+  /* 代码与 JSON 语法高亮 */
+  --code-key: #315f92;
+  --code-string: #28704f;
+  --code-number: #7652a1;
+  --code-keyword: #955b27;
+
   /* 布局：shell 只管理两块白色内容面的外边距、间隔和圆角。
      阅读页自己选择 content-padding 或 spacing-lg；填满型工作台保持零外层 padding，
      由已有卡片/工具栏提供内部留白，避免重新叠加一圈页面内衬。 */
@@ -108,6 +114,91 @@ html:root.dark {
   --el-color-primary-dark-2: color-mix(in srgb, var(--el-color-primary) 80%, black);
 }
 
+/* Paper: warm off-white surfaces with ink-brown text for long reading
+ * sessions. Accents stay in the warm earth family (clay primary, moss, ochre,
+ * crimson), the way Flexoki, Gruvbox and Claude's own cream UI pair paper with
+ * ink; danger leans crimson and darker so it never reads as the clay primary.
+ * Every text and accent colour keeps 4.5:1 on cards, filled controls and their
+ * own tag tints; solid accent buttons keep white ink. Element Plus's own light
+ * tints mix with white, so the status tints are re-mixed with the warm card
+ * colour here. */
+html:root:not(.dark)[data-light-palette='paper'] {
+  --surface-page: #f1ece2;
+  --surface-card: #fffdf8;
+  --surface-inset: #f7f2e8;
+  --surface-border: #e4dccd;
+  --surface-shadow: 0 3px 14px rgb(92 70 40 / 5%);
+  --surface-shadow-hover: 0 7px 22px rgb(92 70 40 / 9%);
+  --shadow-lg: 0 12px 32px rgb(92 70 40 / 13%);
+  --code-key: #2b5f8f;
+  --code-string: #4f7228;
+  --code-number: #7a3e6b;
+  --code-keyword: #8a6100;
+
+  --el-text-color-primary: #2b2620;
+  --el-text-color-regular: #4d453b;
+  --el-text-color-secondary: #695f52;
+  --el-text-color-placeholder: #706658;
+  --el-text-color-disabled: #b3a896;
+
+  --el-border-color: #d6cbb8;
+  --el-border-color-lighter: #ebe4d7;
+  --el-border-color-extra-light: #f1ebe0;
+  --el-border-color-dark: #c5b8a2;
+  --el-border-color-darker: #b3a58d;
+
+  --el-fill-color: #efe8dc;
+  --el-fill-color-lighter: #faf6ef;
+  --el-fill-color-extra-light: #fcf9f3;
+  --el-fill-color-dark: #e7dfd0;
+  --el-fill-color-darker: #ded4c3;
+
+  --el-color-primary: #a94b2a;
+  --el-color-success: #4f7228;
+  --el-color-warning: #8a6100;
+  --el-color-danger: #9b2c45;
+  --el-color-info: #6f665a;
+  --el-color-error: var(--el-color-danger);
+
+  --el-mask-color: rgb(255 253 248 / 90%);
+  --el-mask-color-extra-light: rgb(255 253 248 / 30%);
+
+  --el-color-success-light-3: color-mix(in srgb, var(--el-color-success) 70%, var(--surface-card));
+  --el-color-success-light-5: color-mix(in srgb, var(--el-color-success) 50%, var(--surface-card));
+  --el-color-success-light-7: color-mix(in srgb, var(--el-color-success) 30%, var(--surface-card));
+  --el-color-success-light-8: color-mix(in srgb, var(--el-color-success) 20%, var(--surface-card));
+  --el-color-success-light-9: color-mix(in srgb, var(--el-color-success) 10%, var(--surface-card));
+  --el-color-success-dark-2: color-mix(in srgb, var(--el-color-success) 80%, black);
+
+  --el-color-warning-light-3: color-mix(in srgb, var(--el-color-warning) 70%, var(--surface-card));
+  --el-color-warning-light-5: color-mix(in srgb, var(--el-color-warning) 50%, var(--surface-card));
+  --el-color-warning-light-7: color-mix(in srgb, var(--el-color-warning) 30%, var(--surface-card));
+  --el-color-warning-light-8: color-mix(in srgb, var(--el-color-warning) 20%, var(--surface-card));
+  --el-color-warning-light-9: color-mix(in srgb, var(--el-color-warning) 10%, var(--surface-card));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--el-color-warning) 80%, black);
+
+  --el-color-danger-light-3: color-mix(in srgb, var(--el-color-danger) 70%, var(--surface-card));
+  --el-color-danger-light-5: color-mix(in srgb, var(--el-color-danger) 50%, var(--surface-card));
+  --el-color-danger-light-7: color-mix(in srgb, var(--el-color-danger) 30%, var(--surface-card));
+  --el-color-danger-light-8: color-mix(in srgb, var(--el-color-danger) 20%, var(--surface-card));
+  --el-color-danger-light-9: color-mix(in srgb, var(--el-color-danger) 10%, var(--surface-card));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--el-color-danger) 80%, black);
+
+  --el-color-info-light-3: color-mix(in srgb, var(--el-color-info) 70%, var(--surface-card));
+  --el-color-info-light-5: color-mix(in srgb, var(--el-color-info) 50%, var(--surface-card));
+  --el-color-info-light-7: color-mix(in srgb, var(--el-color-info) 30%, var(--surface-card));
+  --el-color-info-light-8: color-mix(in srgb, var(--el-color-info) 20%, var(--surface-card));
+  --el-color-info-light-9: color-mix(in srgb, var(--el-color-info) 10%, var(--surface-card));
+  --el-color-info-dark-2: color-mix(in srgb, var(--el-color-info) 80%, black);
+
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+}
+
 /* Dark surfaces stay neutral; accent colours are reserved for meaning and
  * interaction. Workspace, cards, inset controls and overlays have distinct
  * luminance instead of sharing the same blue-green tint. */
@@ -124,6 +215,10 @@ html:root.dark {
   --on-primary: #112039;
   --on-danger: #35151e;
   --el-bg-color-overlay: #252e3b;
+  --code-key: #a2c8f1;
+  --code-string: #9bd4b4;
+  --code-number: #cbb5f0;
+  --code-keyword: #e4bc8d;
 
   --el-text-color-primary: #edf2fa;
   --el-text-color-regular: #c5cfdd;
@@ -193,4 +288,55 @@ html:root.dark {
 
   --el-mask-color: rgb(4 8 14 / 68%);
   --el-mask-color-extra-light: rgb(4 8 14 / 35%);
+}
+
+/* Graphite: neutral grey, IDE-style surfaces (frame, editor, tool windows)
+ * with blue/green/amber/red accents lifted just enough to keep 4.5:1 text
+ * contrast on cards, filled controls and their own tag tints. Only base
+ * colours are set; tints and dark-2 shades come from the rules above. */
+html:root.dark[data-dark-palette='graphite'] {
+  --surface-page: #18191b;
+  --surface-workspace: #1e1f22;
+  --surface-card: #2b2d30;
+  --surface-inset: #232427;
+  --surface-border: #393b40;
+  --surface-shadow: 0 3px 12px rgb(0 0 0 / 20%);
+  --surface-shadow-hover: 0 8px 24px rgb(0 0 0 / 30%);
+  --shadow-lg: 0 16px 40px rgb(0 0 0 / 45%);
+  --on-primary: #0b1a3a;
+  --on-danger: #2a0d12;
+  --el-bg-color-overlay: #2f3135;
+
+  --el-text-color-primary: #dfe1e5;
+  --el-text-color-regular: #bcbec4;
+  --el-text-color-secondary: #a5a7ae;
+  --el-text-color-placeholder: #a5a7ad;
+  --el-text-color-disabled: #5a5d63;
+
+  --el-border-color: #43454a;
+  --el-border-color-lighter: #2f3134;
+  --el-border-color-extra-light: #2b2d30;
+  --el-border-color-dark: #4e5157;
+  --el-border-color-darker: #5a5d63;
+
+  --el-fill-color: #393b40;
+  --el-fill-color-lighter: #26282b;
+  --el-fill-color-extra-light: #232427;
+  --el-fill-color-dark: #43454a;
+  --el-fill-color-darker: #4e5157;
+
+  --el-color-primary: #79a6ff;
+  --el-color-success: #7ab482;
+  --el-color-warning: #f2c55c;
+  --el-color-danger: #fb828e;
+  --el-color-info: #a5a7ae;
+
+  /* IDE syntax hues lifted to keep 4.5:1 on search-highlighted output rows. */
+  --code-key: #d194c7;
+  --code-string: #7cb584;
+  --code-number: #47b7c2;
+  --code-keyword: #d59b7e;
+
+  --el-mask-color: rgb(0 0 0 / 60%);
+  --el-mask-color-extra-light: rgb(0 0 0 / 30%);
 }

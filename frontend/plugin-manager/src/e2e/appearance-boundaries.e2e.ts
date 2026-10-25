@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { PREVIEW_ORIGIN, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
+import { PREVIEW_ORIGIN, contrastFailures, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
 
 const ADAPTER_ID = 'adapter#appearance'
 const ADAPTER_NAME = 'Boundary adapter'
@@ -14,6 +14,12 @@ const adapter = {
   runtime_auto_start: false,
   entries: [],
   list_actions: [],
+}
+
+// The titlebar offers every light and dark palette from one theme menu.
+async function chooseTheme(page: Page, name: string) {
+  await page.locator('.window-titlebar').getByTestId('theme-switcher').click()
+  await page.getByRole('menuitem', { name, exact: true }).click()
 }
 
 async function isolateAppearanceApis(page: Page) {
@@ -203,11 +209,11 @@ appearanceTest(
     await expect(page.locator('[data-yui-guide-id="sidebar-plugins"]')).toHaveAccessibleName(
       '插件管理'
     )
-    await header.getByRole('button', { name: '深色模式', exact: true }).click()
+    await chooseTheme(page, '深色模式（N.E.K.O）')
     await expect(page.locator('html')).toHaveClass(/dark/)
     await header.getByTestId('language-switcher').click()
     await page.getByRole('menuitem', { name: /English/ }).click()
-    await expect(header.getByRole('button', { name: 'Light Mode', exact: true })).toBeVisible()
+    await expect(header.getByRole('button', { name: 'Choose theme', exact: true })).toBeVisible()
 
     const statusResponse = page.waitForResponse(
       (response) => new URL(response.url()).pathname === '/plugin/status'
@@ -239,7 +245,7 @@ appearanceTest(
     await page.getByRole('button', { name: 'Dashboard', exact: true }).click()
     await expect(page.locator('.dashboard')).toBeVisible()
     await expect(header.getByTestId('language-switcher')).toBeVisible()
-    await expect(header.getByRole('button', { name: 'Light Mode', exact: true })).toBeVisible()
+    await expect(header.getByRole('button', { name: 'Choose theme', exact: true })).toBeVisible()
     await expect(header.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Expand sidebar', exact: true })).toHaveAttribute(
       'aria-expanded',
@@ -297,7 +303,7 @@ appearanceTest(
     await expect(page.locator('.sidebar')).toHaveClass(/sidebar--collapsed/)
     await expect(page.getByRole('button', { name: /^(Collapse|Expand) sidebar$/ })).toHaveCount(0)
     await expect(page.getByTestId('language-switcher')).toBeInViewport()
-    await expect(page.getByRole('button', { name: 'Dark Mode', exact: true })).toBeInViewport()
+    await expect(page.getByRole('button', { name: 'Choose theme', exact: true })).toBeInViewport()
     await expect(
       page.locator('.header__actions').getByRole('button', { name: 'Refresh', exact: true })
     ).toBeInViewport()
@@ -328,7 +334,7 @@ appearanceTest(
     await page.setViewportSize({ width: 320, height: 800 })
     const titlebar = page.locator('.window-titlebar')
     await expect(titlebar.getByTestId('language-switcher')).toBeInViewport({ ratio: 1 })
-    for (const name of ['Dark Mode', 'Refresh', 'Pin window', 'Minimize', 'Maximize', 'Close']) {
+    for (const name of ['Choose theme', 'Refresh', 'Pin window', 'Minimize', 'Maximize', 'Close']) {
       await expect(titlebar.getByRole('button', { name, exact: true })).toBeInViewport({ ratio: 1 })
     }
   }
@@ -602,7 +608,7 @@ appearanceTest('card extras, themes and layout switches preserve aligned, reacha
   await expect(page.locator('.plugin-card .metrics-bar')).toHaveCount(8)
   await expect(page.locator('.plugin-card').first().locator('.metrics-bar')).toContainText('3.5%')
   await expect(page.locator('.plugin-card .source-detail-bar')).toHaveCount(8)
-  await page.locator('.window-titlebar').getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  await chooseTheme(page, 'Dark Mode (N.E.K.O)')
   await expect(page.locator('html')).toHaveClass(/dark/)
   for (const mode of ['Single', 'Double', 'List', 'Compact']) {
     await page.locator('[data-yui-guide-id="plugin-list-layout-mode"]').getByText(mode, { exact: true }).click()
@@ -655,56 +661,44 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
       return [style.backgroundColor, style.color]
     })
   })
+  // Text colours ease between themes, so palettes are told apart by surfaces.
+  const backgrounds = (colors: string[][]) => colors.map(([background]) => background)
+  const surfaces = async () => backgrounds(await palette())
   const lightPalette = await palette()
   const header = page.locator('.window-titlebar')
-  await header.getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  await chooseTheme(page, 'Dark Mode (N.E.K.O)')
   await expect(page.locator('html')).toHaveClass(/dark/)
 
-  // Resolve actual CSS colours (including color-mix and transparent ancestors)
-  // in the browser, so default Element Plus styles cannot silently override the
-  // intended text/selection/solid-button contrast.
-  const contrast = (selectors: string[]) => page.evaluate(selectors => {
-    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!
-    const rgba = (value: string) => {
-      context.clearRect(0, 0, 1, 1)
-      context.fillStyle = value
-      context.fillRect(0, 0, 1, 1)
-      return Array.from(context.getImageData(0, 0, 1, 1).data)
-    }
-    const luminance = (rgb: number[]) => rgb.slice(0, 3).map(value => {
-      const v = value / 255
-      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
-    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index]!, 0)
-    const background = (element: Element | null): number[] => {
-      if (!element) return [0, 0, 0]
-      const color = rgba(getComputedStyle(element).backgroundColor)
-      const alpha = color[3]! / 255
-      if (alpha === 1) return color.slice(0, 3)
-      const parent = background(element.parentElement)
-      return color.slice(0, 3).map((value, index) => value * alpha + parent[index]! * (1 - alpha))
-    }
-    return selectors.map(selector => {
-      const element = document.querySelector(selector)!
-      const fg = luminance(rgba(getComputedStyle(element).color))
-      const bg = luminance(background(element))
-      return {
-        selector, foreground: getComputedStyle(element).color, background: background(element),
-        ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
-      }
-    })
-  }, selectors)
   const readable = async (selectors: string[]) => {
     // Element Plus tags interpolate their foreground/background on a theme
     // change; assert the settled palette rather than sampling the first frame.
-    await expect.poll(async () => (await contrast(selectors)).filter(result => result.ratio < 4.5)).toEqual([])
+    await expect.poll(() => contrastFailures(page, selectors)).toEqual([])
   }
-  await readable([
+  const cardSelectors = [
     '.plugin-description', '.plugin-start-mode', '.plugin-version-tag', '.status-tag',
     '.plugin-ui-action', '.el-checkbox-button.is-checked .el-checkbox-button__inner',
     '.wb-layout-switcher .el-radio-button.is-active .el-radio-button__inner',
-  ])
+  ]
+  await readable(cardSelectors)
   const darkPalette = await palette()
   expect(new Set(darkPalette.slice(0, 4).map(([background]) => background)).size).toBe(4)
+
+  // Each alternative palette must read differently from its mode's default
+  // and keep the same contrast guarantees.
+  for (const [name, attribute, defaultPalette] of [
+    ['Dark Mode (Graphite)', 'data-dark-palette', darkPalette],
+    ['Light Mode (Paper)', 'data-light-palette', lightPalette],
+  ] as const) {
+    await chooseTheme(page, name)
+    await expect(page.locator('html')).toHaveAttribute(attribute, /./)
+    await page.mouse.move(0, 0)
+    await expect.poll(surfaces).not.toEqual(backgrounds(defaultPalette))
+    await readable(cardSelectors)
+  }
+  await chooseTheme(page, 'Dark Mode (N.E.K.O)')
+  await expect(page.locator('html')).not.toHaveAttribute('data-dark-palette', /./)
+  await page.mouse.move(0, 0)
+  await expect.poll(surfaces).toEqual(backgrounds(darkPalette))
 
   await page.locator('.plugin-card').first().click({ button: 'right' })
   const contextMenu = page.locator('.context-menu')
@@ -728,8 +722,9 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Plugins', exact: true }).click()
   await expect(page.locator('html')).toHaveClass(/dark/)
-  await header.getByRole('button', { name: 'Light Mode', exact: true }).click()
+  await chooseTheme(page, 'Light Mode (N.E.K.O)')
   await expect(page.locator('html')).not.toHaveClass(/dark/)
+  await expect(page.locator('html')).not.toHaveAttribute('data-light-palette', /./)
   await page.mouse.move(0, 0)
   await expect.poll(palette).toEqual(lightPalette)
 })

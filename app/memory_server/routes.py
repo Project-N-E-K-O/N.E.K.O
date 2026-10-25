@@ -7650,7 +7650,26 @@ async def get_settings(lanlan_name: str):
 async def get_persona(lanlan_name: str):
     """Return the full persona JSON (for the UI / memory_browser)."""
     lanlan_name = validate_lanlan_name(lanlan_name)
+    from .long_term_sync import consume_for_name
+    await consume_for_name(lanlan_name)
     return await runtime.persona_manager.aget_persona(lanlan_name)
+
+
+@app.post("/internal/chat-sync/long-term-memory/{uid}")
+async def apply_synced_long_term_memory(uid: str, request: Request):
+    """Wake the native owner to consume its durable, locally authorized inbox."""
+    from ipaddress import ip_address
+    from utils.deployment import has_forwarding_metadata
+    try:
+        local = request.client is not None and ip_address(request.client.host).is_loopback
+    except ValueError:
+        local = False
+    if not local or has_forwarding_metadata(request.headers):
+        raise HTTPException(status_code=403, detail='local_request_required')
+    if not re.fullmatch(r'[0-9a-f]{32}', uid):
+        raise HTTPException(status_code=400, detail='invalid_character_uid')
+    from .long_term_sync import consume
+    return {'applied': await consume(uid)}
 
 
 @app.get("/api/memory/funnel/{lanlan_name}")
@@ -7919,6 +7938,8 @@ async def _new_dialog(
     render_language: str | None = None,
 ):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    from .long_term_sync import consume_for_name
+    await consume_for_name(lanlan_name)
     gates._touch_activity()
     has_explicit_language = is_supported_language_code(language)
     locale_admission_order = None

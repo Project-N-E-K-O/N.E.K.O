@@ -683,3 +683,6 @@ class DesktopProfileSync:
             except (ValueError, OSError) as exc:
                 await asyncio.to_thread(scheduler.failure, state["domain"], "profile", binding["generation"], presence, exc)
                 raise
+            finally:
+                if self.runtime.recent_memory is not None:
+                    self.runtime.wake_scheduler()

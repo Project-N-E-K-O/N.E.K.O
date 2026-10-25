@@ -17,6 +17,20 @@ def queue(**values):
             "pendingDeletions": 0, **values}
 
 
+def test_next_wake_retains_retry_and_origin_deadlines_without_one_second_ticks(tmp_path):
+    clock = [1_000]
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.sqlite3', clock=lambda: clock[0], uniform=lambda *_: 0)
+    assert scheduler.next_wake_at() is None
+    scheduler.claim('role', 'pull', 1, 'session')
+    scheduler.failure('role', 'pull', 1, 'session', ValueError('chat_sync_unavailable'))
+    assert scheduler.next_wake_at() == 4_000
+    with closing(scheduler._connect()) as conn, conn:
+        conn.execute('UPDATE scheduler_device SET origin_retry_at=20000')
+    assert scheduler.next_wake_at() == 20_000
+    clock[0] = 20_000
+    assert scheduler.next_wake_at() is None
+
+
 @pytest.mark.parametrize('channel', ['pull', 'profile'])
 @pytest.mark.parametrize('attempts', [1, 8])
 def test_new_transport_retry_uses_three_second_cap_without_periodic_poll(tmp_path, channel, attempts):

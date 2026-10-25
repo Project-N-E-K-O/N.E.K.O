@@ -178,6 +178,13 @@ async def wake(runtime: Runtime, body: None = Body(default=None)):
     return {"scheduled": True}
 
 
+@router.post("/recent-changed")
+async def recent_changed(runtime: Runtime, body: None = Body(default=None)):
+    """Accept a local write hint without resetting profile or network retry gates."""
+    runtime.wake_scheduler()
+    return {"scheduled": True}
+
+
 @router.post("/characters/{character_uid}/sync-choice")
 async def save_sync_choice(character_uid: str, body: CharacterSyncChoice, runtime: Runtime):
     """Resolve the saved UID and treat this save as the single affirmative choice."""

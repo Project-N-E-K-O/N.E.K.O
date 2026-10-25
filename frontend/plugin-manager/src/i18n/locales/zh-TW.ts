@@ -84,8 +84,11 @@ export default {
     noData: '暫無資料',
     unknown: '未知',
     nA: 'N/A',
-    darkMode: '深色模式',
-    lightMode: '淺色模式',
+    chooseTheme: '選擇主題',
+    lightModeNeko: '淺色模式（N.E.K.O）',
+    lightModePaper: '淺色模式（宣紙）',
+    darkModeNeko: '深色模式（N.E.K.O）',
+    darkModeGraphite: '深色模式（石墨）',
     logoutConfirmTitle: '提示',
     disconnected: '伺服器已斷開連線',
     languageAuto: '自動'

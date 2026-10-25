@@ -33,7 +33,11 @@ def test_uplink_decoder_rejects_pickle_without_executing_it() -> None:
     wire_payload = pickle.dumps((zmq_transport.CH_COMM, _MaliciousPayload()))
 
     with pytest.raises(ValueError, match="invalid uplink payload"):
-        zmq_transport._decode_uplink(wire_payload, expected_token="host-channel-token")
+        zmq_transport._decode_uplink(
+            wire_payload,
+            expected_token="host-channel-token",
+            allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
+        )
 
     assert _PICKLE_EXECUTED is False
 
@@ -58,6 +62,7 @@ def test_uplink_messagepack_round_trip_preserves_channel_and_payload() -> None:
     assert zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     ) == (
         zmq_transport.CH_COMM,
         payload,
@@ -80,6 +85,7 @@ def test_uplink_decoder_rejects_another_plugin_host_channel_token() -> None:
         zmq_transport._decode_uplink(
             encoded,
             expected_token="victim-channel-token",
+            allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
         )
 
 
@@ -306,6 +312,7 @@ def test_uplink_result_normalizes_path_values() -> None:
     _channel, payload = zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     )
 
     assert payload["data"]["path"] == str(Path("artifacts/result.json"))
@@ -335,13 +342,17 @@ def test_uplink_result_rejects_non_json_container_types(container: object) -> No
     _channel, payload = zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     )
 
     assert payload == {
         "req_id": "request-1",
         "success": False,
         "data": None,
-        "error": "Plugin result is not MessagePack-serializable",
+        "error": {
+            "code": "SERIALIZATION_FAILED",
+            "message": "Plugin result is not MessagePack-serializable",
+        },
     }
 
 
@@ -364,14 +375,32 @@ def test_unserializable_uplink_result_returns_an_immediate_error() -> None:
     _channel, payload = zmq_transport._decode_uplink(
         encoded,
         expected_token="host-channel-token",
+        allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS,
     )
 
     assert payload == {
         "req_id": "request-1",
         "success": False,
         "data": None,
-        "error": "Plugin result is not MessagePack-serializable",
+        "error": {
+            "code": "SERIALIZATION_FAILED",
+            "message": "Plugin result is not MessagePack-serializable",
+        },
     }
+
+
+def test_oversized_result_returns_a_correlated_fault(monkeypatch):
+    monkeypatch.setattr(zmq_transport, "_control_uplink_max_bytes", lambda: 1024)
+    raw = zmq_transport._encode_bounded_uplink(
+        "token",
+        zmq_transport.CH_RES,
+        {"req_id": "large", "success": True, "data": "x" * 4096, "error": None},
+    )
+    channel, result = zmq_transport._decode_uplink(raw, expected_token="token", allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS)
+    assert channel == zmq_transport.CH_RES
+    assert len(raw) <= 1024
+    assert result["req_id"] == "large"
+    assert result["error"]["code"] == "RESULT_TOO_LARGE"
 
 
 @pytest.mark.plugin_unit
@@ -451,13 +480,16 @@ async def test_oversized_authenticated_message_never_reaches_the_host(
         # Guard the guard: if a future headroom change made this payload fit
         # under the ceiling, the assertion below would pass for the wrong
         # reason.
-        assert len(
-            zmq_transport._encode_uplink(
-                host.uplink_token,
-                zmq_transport.CH_MSG,
-                oversized,
+        assert (
+            len(
+                zmq_transport._encode_uplink(
+                    host.uplink_token,
+                    zmq_transport.CH_MSG,
+                    oversized,
+                )
             )
-        ) > ceiling
+            > ceiling
+        )
         sender.put_nowait(oversized)
 
         assert await host.recv_message(timeout_ms=1500) is None
@@ -571,9 +603,8 @@ async def test_control_uplink_refuses_message_channels(channel: str) -> None:
 
     The size ceiling bounds what one smuggled frame costs; this closes the
     route itself. Without it a plugin could keep pushing under-ceiling message
-    frames at the control endpoint and have them routed as messages by
-    ``_consume_uplink``'s compatibility branch, sidestepping the message
-    plane's own accounting.
+    frames at the control endpoint, sidestepping the message plane's own
+    accounting.
     """
     host = zmq_transport.HostTransport()
     child = zmq_transport.ChildTransport(
@@ -615,16 +646,12 @@ async def test_control_uplink_refuses_message_channels(channel: str) -> None:
 
 
 @pytest.mark.plugin_unit
-def test_uplink_decoder_still_accepts_both_planes_by_default() -> None:
-    """The refusal lives on the socket, not in the decoder.
+def test_uplink_decoder_accepts_message_channels_on_the_message_plane() -> None:
+    """The refusal is per socket, not a blanket refusal inside the decoder.
 
-    ``ChildTransport`` falls back to sending message channels on the control
-    socket when it is built without a dedicated message endpoint, and
-    ``_consume_uplink`` still routes CH_MSG for host transports that expose no
-    ``recv_message`` at all. Those pair only with each other -- a real
-    ``HostTransport`` always binds both sockets and always advertises the
-    message endpoint -- so refusing message channels on *this* host's control
-    socket must not turn into a blanket refusal inside the decoder.
+    Each host socket passes its own channel allowlist, so refusing message
+    channels on the control uplink must leave them decodable for the message
+    uplink that owns them.
     """
     for channel in (zmq_transport.CH_MSG, zmq_transport.CH_MSG_BATCH):
         encoded = zmq_transport._encode_uplink(
@@ -636,6 +663,7 @@ def test_uplink_decoder_still_accepts_both_planes_by_default() -> None:
         assert zmq_transport._decode_uplink(
             encoded,
             expected_token="host-channel-token",
+            allowed_channels=zmq_transport._MESSAGE_UPLINK_CHANNELS,
         ) == (channel, {"type": "MESSAGE_PUSH"})
 
 
@@ -677,25 +705,30 @@ def test_the_control_ceiling_covers_the_widest_legitimate_control_frame():
     from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
     ceiling = _control_uplink_max_bytes()
-    worst_case_frame = len(ormsgpack.packb([
-        "t" * 43,          # per-host token
-        "res",             # CH_RES
-        {
-            "req_id": "r" * 36,
-            "ok": True,
-            "result": {
-                "output": {"text": "z" * MESSAGE_PLANE_PAYLOAD_MAX_BYTES},
-                "images": [
-                    {
-                        "data_b64": "A" * _MAX_TOOL_IMAGE_B64_BYTES,
-                        "mime": "image/jpeg",
-                        "vision_prompt": "p" * _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS,
-                    }
-                    for _ in range(_MAX_TOOL_IMAGES)
-                ],
-            },
-        },
-    ]))
+    worst_case_frame = len(
+        ormsgpack.packb(
+            [
+                "t" * 43,  # per-host token
+                "res",  # CH_RES
+                {
+                    "req_id": "r" * 36,
+                    "ok": True,
+                    "result": {
+                        "output": {"text": "z" * MESSAGE_PLANE_PAYLOAD_MAX_BYTES},
+                        "images": [
+                            {
+                                "data_b64": "A" * _MAX_TOOL_IMAGE_B64_BYTES,
+                                "mime": "image/jpeg",
+                                "vision_prompt": "p"
+                                * _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS,
+                            }
+                            for _ in range(_MAX_TOOL_IMAGES)
+                        ],
+                    },
+                },
+            ]
+        )
+    )
 
     assert ceiling >= worst_case_frame, (
         f"控制上行上限 {ceiling} 装不下一次合法的带图工具结果 "
@@ -913,9 +946,7 @@ def test_a_held_lock_defers_the_close_to_the_sender(
     except Exception:
         pass
 
-    assert closed == [], (
-        "锁还被别人拿着就把 socket 关了——对面可能正在 send 里，这是 UB"
-    )
+    assert closed == [], "锁还被别人拿着就把 socket 关了——对面可能正在 send 里，这是 UB"
 
     # ...and the sender, once interrupted, is the one that closes it.
     transport._msg_lock = threading.Lock()
@@ -1071,10 +1102,10 @@ def _assert_same_including_key_types(got, expected, path: str = "data") -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        {"by_year": {2024: 3}},          # int keys — a group-by result
-        {"flags": {True: "yes"}},        # bool keys
-        {"buckets": {1.5: "a"}},         # float keys
-        {"nested": {"inner": {7: [1]}}}, # nested, one level down
+        {"by_year": {2024: 3}},  # int keys — a group-by result
+        {"flags": {True: "yes"}},  # bool keys
+        {"buckets": {1.5: "a"}},  # float keys
+        {"nested": {"inner": {7: [1]}}},  # nested, one level down
     ],
 )
 def test_non_string_keys_survive_the_uplink(value: dict) -> None:
@@ -1093,7 +1124,7 @@ def test_non_string_keys_survive_the_uplink(value: dict) -> None:
     payload = {"req_id": "r1", "success": True, "data": value}
 
     raw = zmq_transport._encode_uplink("tok", zmq_transport.CH_RES, payload)
-    channel, decoded = zmq_transport._decode_uplink(raw, expected_token="tok")
+    channel, decoded = zmq_transport._decode_uplink(raw, expected_token="tok", allowed_channels=zmq_transport._CONTROL_UPLINK_CHANNELS)
 
     assert channel == zmq_transport.CH_RES
     _assert_same_including_key_types(decoded["data"], value)
@@ -1117,7 +1148,9 @@ def test_the_unpack_options_are_a_subset_of_the_pack_options() -> None:
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.parametrize(("configured", "expected"), [("0", 1), ("-5", 1), ("256", 256)])
+@pytest.mark.parametrize(
+    ("configured", "expected"), [("0", 1), ("-5", 1), ("256", 256)]
+)
 def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
     configured: str, expected: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1155,14 +1188,18 @@ def test_the_batch_size_setting_is_clamped_where_it_is_loaded(
         reject_ratio=0.9,
         enqueue_timeout_s=0,
     )
-    assert batcher._batch_size <= configured_values["PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE"], (
+    assert (
+        batcher._batch_size <= configured_values["PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE"]
+    ), (
         f"子进程会发出宿主必然拒收的批量大小："
         f"{batcher._batch_size} > {configured_values['PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE']}"
     )
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.parametrize(("configured", "expected"), [("0", 1), ("-1", 1), ("100000", 100000)])
+@pytest.mark.parametrize(
+    ("configured", "expected"), [("0", 1), ("-1", 1), ("100000", 100000)]
+)
 def test_the_batcher_queue_limit_is_clamped_where_it_is_loaded(
     configured: str, expected: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1163,17 +1163,30 @@ function blockNekoShortcutDuringTutorial(actionName) {
     return true;
 }
 
+function getAvatarMicButtons() {
+    const managers = [
+        window.live2dManager,
+        window.vrmManager,
+        window.mmdManager,
+        window.pngtuberManager,
+    ];
+    const buttons = [];
+    for (const manager of managers) {
+        const button = manager && manager._floatingButtons && manager._floatingButtons.mic && manager._floatingButtons.mic.button;
+        if (button) buttons.push(button);
+    }
+    return buttons;
+}
+
 /**
  * 切换语音会话状态（开始/结束）
  * Electron 调用此接口来触发语音按钮的切换
  */
 window.toggleVoiceSession = function () {
     if (blockNekoShortcutDuringTutorial('toggleVoiceSession')) return;
-    // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
-    const micButton = window.live2dManager?._floatingButtons?.mic?.button
-        || window.vrmManager?._floatingButtons?.mic?.button
-        || window.mmdManager?._floatingButtons?.mic?.button;
-    const isActive = micButton?.dataset.active === 'true';
+    // PNGTuber 的麦克风挂在 pngtuberManager 上。任一模型按钮已激活，或会话已在录音，再按都关闭。
+    const isActive = getAvatarMicButtons().some((button) => button.dataset.active === 'true')
+        || window.isRecording === true;
 
     // 派发切换事件
     const event = new CustomEvent('live2d-mic-toggle', {

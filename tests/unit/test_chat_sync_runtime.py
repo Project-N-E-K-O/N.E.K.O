@@ -83,7 +83,7 @@ class SyntheticService:
         })
 
 
-def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
+def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memory_adapter=None, long_term_memory_adapter=None):
     """Inject only synthetic session state and an in-memory HTTP transport."""
     service = service or SyntheticService()
     session = {"logged_in": True, "snapshot": {
@@ -117,6 +117,9 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
         """Select one disposable role without loading production configuration."""
         return UID
 
+    async def recent_character_name(uid):
+        return 'Neko' if uid == UID else None
+
     runtime = DesktopChatSyncRuntime(
         tmp_path / "chat_sync", resolve,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(service.request)),
@@ -124,6 +127,8 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None):
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
         fixed_service_url=fixed_service_url,
+        recent_memory_adapter=recent_memory_adapter, recent_character_name=recent_character_name,
+        long_term_memory_adapter=long_term_memory_adapter,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -463,9 +468,11 @@ async def test_production_history_notifier_routes_only_exact_local_character_uid
         websocket=SimpleNamespace(send_json=send_json))})
     runtime = await module.get_desktop_chat_sync_runtime(config)
     try:
+        assert runtime.chat_history_provider is None
+        assert runtime.recent_memory is not None
         await runtime.history_changed(UID)
         await runtime.history_changed(OTHER_UID)
-        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID}]
+        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID, "memoryEditedName": "Synthetic"}]
         assert await runtime.current_character_uid_provider() == UID
         character_data["当前猫娘"] = "Other"
         assert await runtime.current_character_uid_provider() == OTHER_UID
@@ -2991,6 +2998,27 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
     asyncio.run(scenario())
 
 
+@pytest.mark.asyncio
+async def test_default_memory_adapter_imports_stay_off_the_event_loop(tmp_path, monkeypatch):
+    import builtins
+    from services.chat_sync import runtime as module
+    original = builtins.__import__
+    main_thread = threading.get_ident()
+    imported = set()
+    def checked_import(name, *args, **kwargs):
+        if name in {'memory.recent_sync', 'memory.long_term_sync'}:
+            assert threading.get_ident() != main_thread, 'memory import blocked the event loop'
+            imported.add(name)
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', checked_import)
+    manager = SimpleNamespace(app_docs_dir=tmp_path / 'isolated', local_state_dir=tmp_path / 'installation')
+    try:
+        await module.get_desktop_chat_sync_runtime(manager)
+        assert imported == {'memory.recent_sync', 'memory.long_term_sync'}
+    finally:
+        await module.close_desktop_chat_sync_runtimes()
+
+
 def test_real_loop_exit_leaves_late_default_construction_without_http_or_worker(tmp_path):
     """Exercise genuine asyncio.run teardown without pytest's nested-loop patch."""
     script = r'''
@@ -3001,7 +3029,17 @@ import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
+from tests.real_root_isolation import install
+from utils.config_manager import ConfigManager
+
+install(ConfigManager)
+from utils import logger_config
+logger_config.RobustLoggerConfig._get_documents_directory = lambda self: Path(sys.argv[1]) / 'logs'
 from services.chat_sync import runtime as module
+# Warm imports before timing constructor cancellation; import placement is
+# independently checked by the event-loop regression above.
+from memory.recent_sync import RecentMemoryAdapter
+from memory.long_term_sync import DesktopLongTermAdapter
 
 entered, release = threading.Event(), threading.Event()
 created = []
@@ -3049,8 +3087,8 @@ assert created[0].http is None and created[0]._scheduler_task is None
 assert not created[0]._background and module._runtimes == {}
 assert connections and all(connection.was_closed for connection in connections)
 '''
-    result = subprocess.run([sys.executable, "-c", script, str(tmp_path / "isolated")],
-                            capture_output=True, text=True, timeout=10)
+    result = subprocess.run([sys.executable, "-X", "utf8", "-c", script, str(tmp_path / "isolated")],
+                            capture_output=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
 
 

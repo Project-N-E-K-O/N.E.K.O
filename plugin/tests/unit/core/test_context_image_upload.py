@@ -11,12 +11,16 @@ from PIL import Image
 import pytest
 
 from plugin.core.context import PluginContext
+from plugin.core.rpc import RpcClosedError
 
 
 pytestmark = pytest.mark.plugin_unit
 
 
 class _Logger:
+    def error(self, *args, **kwargs):
+        return None
+
     def debug(self, *_args: object, **_kwargs: object) -> None:
         return None
 
@@ -77,10 +81,9 @@ def test_images_upload_returns_a_push_message_compatible_image_part(tmp_path: Pa
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
-    transport.on_response = ctx._dispatch_direct_response
+    transport.on_response = ctx._dispatch_rpc_response
 
     image_part = asyncio.run(ctx.images.upload(_png_bytes(), mime="image/png"))
 
@@ -98,6 +101,22 @@ def test_images_upload_returns_a_push_message_compatible_image_part(tmp_path: Pa
         assert uploaded_image.size == (4, 3)
 
 
+def test_image_deadline_does_not_assume_the_event_loop_clock_epoch(tmp_path, monkeypatch):
+    async def run():
+        transport = _ImageTransport(asyncio.Queue())
+        ctx = PluginContext(plugin_id="demo", config_path=tmp_path / "plugin.toml", logger=_Logger(),
+                            status_queue=None, _image_transport=transport)
+        transport.on_response = ctx._dispatch_rpc_response
+        loop = asyncio.get_running_loop()
+        original_time = loop.time
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "time", lambda: original_time() - 100000)
+            result = await ctx._upload_image(b"jpeg", mime="image/jpeg", deadline=loop.time() + 0.5, timeout=0.5)
+        assert result["type"] == "image"
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("invalid_url", ["", "   "])
 def test_images_upload_rejects_empty_result_url(
     tmp_path: Path,
@@ -110,10 +129,9 @@ def test_images_upload_rejects_empty_result_url(
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
-    transport.on_response = ctx._dispatch_direct_response
+    transport.on_response = ctx._dispatch_rpc_response
 
     with pytest.raises(RuntimeError, match="valid image part"):
         asyncio.run(ctx.images.upload(_png_bytes(), mime="image/png"))
@@ -139,10 +157,9 @@ def test_images_upload_accepts_common_browser_image_formats(
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
-    transport.on_response = ctx._dispatch_direct_response
+    transport.on_response = ctx._dispatch_rpc_response
 
     asyncio.run(
         ctx.images.upload(
@@ -169,10 +186,9 @@ def test_images_upload_composites_rgb_color_key_transparency_on_white(
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
-    transport.on_response = ctx._dispatch_direct_response
+    transport.on_response = ctx._dispatch_rpc_response
     image = Image.new("RGB", (20, 10), "blue")
     for x in range(10):
         for y in range(10):
@@ -197,10 +213,9 @@ def test_images_upload_scales_large_input_without_blocking_the_event_loop(tmp_pa
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
-    transport.on_response = ctx._dispatch_direct_response
+    transport.on_response = ctx._dispatch_rpc_response
     output = BytesIO()
     Image.new("RGB", (3000, 1000), "blue").save(output, format="PNG")
 
@@ -231,7 +246,6 @@ def test_images_upload_rejects_excessive_pixel_count_before_decode(tmp_path: Pat
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
     output = BytesIO()
@@ -260,13 +274,12 @@ def test_context_close_cancels_an_upload_waiting_for_its_response(tmp_path: Path
             config_path=tmp_path / "plugin.toml",
             logger=_Logger(),  # type: ignore[arg-type]
             status_queue=None,
-            _response_queue=asyncio.Queue(),
             _image_transport=transport,
         )
         upload = asyncio.create_task(ctx.images.upload(_png_bytes(), timeout=10.0))
         await asyncio.wait_for(sent.wait(), timeout=1.0)
         ctx.close()
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(RpcClosedError):
             await upload
 
     asyncio.run(_run())
@@ -282,7 +295,6 @@ def test_images_upload_times_out_when_the_service_does_not_respond(tmp_path: Pat
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=asyncio.Queue(),
         _image_transport=_NoResponseTransport(),
     )
 
@@ -315,7 +327,6 @@ def test_images_upload_fails_fast_in_lifecycle_handlers(
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
     )
 
@@ -339,7 +350,6 @@ def test_images_upload_fails_fast_while_plugin_is_freezing(tmp_path: Path) -> No
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=responses,
         _image_transport=transport,
         _image_uploads_blocked=True,
     )
@@ -462,10 +472,9 @@ def test_upload_total_time_is_bounded_by_the_requested_timeout(tmp_path: Path) -
             config_path=tmp_path / "plugin.toml",
             logger=_Logger(),  # type: ignore[arg-type]
             status_queue=None,
-            _response_queue=responses,
             _image_transport=transport,
         )
-        transport.on_response = ctx._dispatch_direct_response
+        transport.on_response = ctx._dispatch_rpc_response
         with patch.object(images_mod, "normalize_image_to_jpeg", _slow_normalize):
             await ctx.images.upload(_png_bytes(), mime="image/png", timeout=1.0)
 
@@ -507,10 +516,9 @@ def test_upload_bounds_the_wait_for_a_decode_slot(tmp_path: Path) -> None:
             config_path=tmp_path / "plugin.toml",
             logger=_Logger(),  # type: ignore[arg-type]
             status_queue=None,
-            _response_queue=responses,
             _image_transport=transport,
         )
-        transport.on_response = ctx._dispatch_direct_response
+        transport.on_response = ctx._dispatch_rpc_response
         started = time.monotonic()
         with pytest.raises(TimeoutError):
             await ctx.images.upload(_png_bytes(), mime="image/png", timeout=0.3)
@@ -679,7 +687,6 @@ def _ctx_with_downlink(tmp_path, transport, *, ready: bool):
         config_path=tmp_path / "plugin.toml",
         logger=_Logger(),  # type: ignore[arg-type]
         status_queue=None,
-        _response_queue=None,
         _image_transport=transport,
     )
     ctx._downlink_ready = _threading.Event()

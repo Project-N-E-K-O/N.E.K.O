@@ -1896,6 +1896,30 @@ class TimeIndexedMemory:
             logger.warning(f"[TimeIndexedMemory] 回填 FTS 索引失败: {e}")
             return None
 
+    def replace_fact_index(self, lanlan_name: str, rows: list[tuple[object, str]]) -> None:
+        """Replace only derived fact-search rows after an authoritative snapshot.
+
+        Failures propagate to the memory owner's file rollback and event replay.
+        Conversation/archive tables and their ordering remain untouched.
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            raise OSError('fact_search_index_unavailable')
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        seen = set()
+        payload = []
+        for fact_id, content in rows:
+            key = (type(fact_id).__name__, fact_id)
+            if key not in seen:
+                seen.add(key)
+                payload.append({'fid': fact_id, 'content': ' '.join(fts_tokens(content, stop_names))})
+        with self.engines[lanlan_name].begin() as conn:
+            conn.execute(text(f'DELETE FROM {self.FACTS_FTS_TABLE}'))
+            if payload:
+                conn.execute(text(f'INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)'), payload)
+            conn.execute(text(f'INSERT OR REPLACE INTO {self.FACTS_FTS_META_TABLE}(key, value) VALUES(:key, :value)'),
+                         {'key': self._FTS_BACKFILL_META_KEY, 'value': datetime.now().isoformat()})
+
     async def abackfill_fact_index(
         self, lanlan_name: str, rows: list[tuple[object, str]],
     ) -> int | None:

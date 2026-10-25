@@ -84,8 +84,11 @@ export default {
     noData: '데이터 없음',
     unknown: '알 수 없음',
     nA: 'N/A',
-    darkMode: '다크 모드',
-    lightMode: '라이트 모드',
+    chooseTheme: '테마 선택',
+    lightModeNeko: '라이트 모드 (N.E.K.O)',
+    lightModePaper: '라이트 모드 (한지)',
+    darkModeNeko: '다크 모드 (N.E.K.O)',
+    darkModeGraphite: '다크 모드 (그래파이트)',
     logoutConfirmTitle: '알림',
     disconnected: '서버 연결이 끊어졌습니다',
     languageAuto: '자동'

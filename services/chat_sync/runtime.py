@@ -46,6 +46,7 @@ _BUILTIN_SERVICE_URL = "https://sync.nekotech.cn"
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _LOCAL_CA_ENV = "NEKO_CHAT_SYNC_LOCAL_CA_FILE"
 _LOCAL_WAKE_SECONDS = 1
+_RECENT_FALLBACK_SECONDS = 30
 _AUTO_BYTE_BUDGET = MAX_SYNC_ORIGINAL_BYTES
 _AUTO_PULL_PAGES = 10
 _PULL_NETWORK_SECONDS = 3
@@ -251,6 +252,10 @@ class DesktopSyncState:
         with closing(self._connect()) as conn:
             return conn.execute("SELECT 1 FROM sync_new_roles LIMIT 1").fetchone() is not None
 
+    def next_wake_at(self, now):
+        with closing(self._connect()) as conn:
+            return conn.execute("SELECT MIN(next_at) FROM sync_new_roles WHERE next_at>?", (now,)).fetchone()[0]
+
     def new_role_errors(self):
         with closing(self._connect()) as conn:
             return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
@@ -364,6 +369,7 @@ class DesktopChatSyncRuntime:
         session_presence_provider=None, clock=now_ms, uniform=None, witness_path: Path | None = None,
         notification_connect=None, history_changed=None, current_character_uid_provider=None, chat_history_provider=None,
         fixed_service_url: str | None = None,
+        recent_memory_adapter=None, recent_character_name=None, long_term_memory_adapter=None,
     ):
         """Allow synthetic HTTP transports in tests; production verifies HTTPS."""
         from services.chat_sync.writer import ChatSyncWriter
@@ -380,6 +386,15 @@ class DesktopChatSyncRuntime:
             # the first raw producer creates a source object for this role.
             ChatOriginalSource(directory / "sources.sqlite3")
             self.profiles = DesktopProfileSync(self, directory / "profiles.sqlite3")
+            from services.chat_sync.recent import RecentMemorySync
+            self.recent_memory = (RecentMemorySync(directory / "state.sqlite3", recent_memory_adapter)
+                                  if recent_memory_adapter is not None else None)
+            from services.chat_sync.long_term import LongTermMemorySync
+            self.long_term_memory = (LongTermMemorySync(directory / 'state.sqlite3', long_term_memory_adapter)
+                                     if long_term_memory_adapter is not None else None)
+        self.recent_character_name = recent_character_name
+        self._recent_lock = asyncio.Lock()
+        self._long_term_lock = asyncio.Lock()
         self.session_provider = session_provider
         async def synthetic_presence():
             """Injected transports never read the developer's real login files."""
@@ -415,6 +430,7 @@ class DesktopChatSyncRuntime:
         self._scheduler_task: asyncio.Task | None = None
         self._flights: dict[str, asyncio.Task] = {}
         self._wake = asyncio.Event()
+        self._recent_unsubscribe = None
         self._body_eligible_at: int | None = None
         self.history_changed = history_changed
         self.chat_history_provider = chat_history_provider
@@ -541,6 +557,9 @@ class DesktopChatSyncRuntime:
     async def close(self) -> None:
         """Release this adapter's HTTP transport during orderly shutdown."""
         self._closing = True
+        if self._recent_unsubscribe is not None:
+            self._recent_unsubscribe()
+            self._recent_unsubscribe = None
         tasks = list(self._background)
         for task in tasks:
             task.cancel()
@@ -557,6 +576,12 @@ class DesktopChatSyncRuntime:
     def start_scheduler(self) -> None:
         """Start once after storage selection; constructing a runtime is passive."""
         if not self._closing and (self._scheduler_task is None or self._scheduler_task.done()):
+            if self.recent_memory is not None and self._recent_unsubscribe is None:
+                from utils.recent_file import subscribe_recent_changes
+                loop = asyncio.get_running_loop()
+                self._recent_unsubscribe = subscribe_recent_changes(
+                    lambda path: loop.call_soon_threadsafe(self.wake_scheduler),
+                )
             self._scheduler_task = asyncio.create_task(self._run_scheduler())
             self._track(self._scheduler_task)
 
@@ -574,6 +599,10 @@ class DesktopChatSyncRuntime:
         """Wake bounded local workers; slow body I/O never blocks marker/pull flights."""
         armed = False
         while not self._closing:
+            if self.recent_memory is not None:
+                # A burst of saved messages or an append followed by compression
+                # needs one inspection, not one full read per write callback.
+                await asyncio.sleep(0.2)
             self._wake.clear()
             if self._body_eligible_at is not None and self._body_eligible_at <= self.scheduler.clock():
                 self._body_eligible_at = None
@@ -582,11 +611,21 @@ class DesktopChatSyncRuntime:
                     await asyncio.to_thread(self.scheduler.arm_wake)
                     armed = True
                 await self.scheduler_tick()
+                deadline = (await asyncio.to_thread(self.scheduler.next_wake_at)
+                            if self.recent_memory is not None else None)
+                if self.recent_memory is not None:
+                    now = self.scheduler.clock()
+                    role_deadline = await asyncio.to_thread(self.state.next_wake_at, now)
+                    deadline = min((value for value in (deadline, role_deadline, self._notification_retry_at)
+                                    if value is not None and value > now), default=None)
             except (ValueError, OSError, sqlite3.Error):
                 # A local recovery problem does not escape into normal chat or
                 # produce a tight retry loop. No exception text is logged here.
                 await self._stop_notifications()
-            timeout = _LOCAL_WAKE_SECONDS
+                deadline = None
+            timeout = _RECENT_FALLBACK_SECONDS if self.recent_memory is not None else _LOCAL_WAKE_SECONDS
+            if deadline is not None:
+                timeout = min(timeout, max(0, (deadline - self.scheduler.clock()) / 1000))
             if self._body_eligible_at is not None:
                 remaining = (self._body_eligible_at - self.scheduler.clock()) / 1000
                 # Only future eligibility shortens the tick. An eligible queue
@@ -643,7 +682,10 @@ class DesktopChatSyncRuntime:
         await self._manage_notifications(bindings, presence)
         # Each channel has one owned flight. Body admission is shared by every
         # role; downloads and marker retries can progress during a slow upload.
-        for channel in ("deletion", "body", "pull"):
+        channels = ("pull",) if self.recent_memory is not None else ("deletion", "body", "pull")
+        if self.long_term_memory is not None:
+            channels += ('long_term',)
+        for channel in channels:
             previous = self._flights.get(channel)
             if previous is None or previous.done():
                 task = asyncio.create_task(self._automatic_channel(channel, presence))
@@ -705,7 +747,7 @@ class DesktopChatSyncRuntime:
         self._notification_task = asyncio.create_task(self._run_notifications(key, selected, presence, epoch))
         self._track(self._notification_task)
 
-    async def _hint_check(self, binding, presence, epoch, channel, *, login_verified=False):
+    async def _hint_check(self, binding, presence, epoch, channel, *, login_verified=False, wake=True):
         """An update only invalidates poll due time under existing commit fences."""
         await self._guard(binding, presence)
         await asyncio.to_thread(self.writer.require_epoch, epoch)
@@ -713,7 +755,13 @@ class DesktopChatSyncRuntime:
                                 ChatDomain(binding["owner_id"], binding["character_uid"]).key(), channel,
                                 verified_login=(binding["generation"], presence) if login_verified else None,
                                 fingerprint=presence)
-        self.wake_scheduler()
+        if channel == 'pull' and self.long_term_memory is not None:
+            await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
+                                    ChatDomain(binding['owner_id'], binding['character_uid']).key(), 'long_term',
+                                    verified_login=(binding['generation'], presence) if login_verified else None,
+                                    fingerprint=presence)
+        if wake:
+            self.wake_scheduler()
 
     async def request_catchup(self):
         """Wake the selected opted-in role without doing HTTP in the UI call."""
@@ -816,7 +864,7 @@ class DesktopChatSyncRuntime:
                         await self._require_automatic_character(binding["character_uid"])
                     if operation is not None:
                         epoch = await asyncio.to_thread(self.writer.epoch)
-                        await self._hint_check(binding, presence, epoch, "profile")
+                        await self._hint_check(binding, presence, epoch, "profile", wake=self.recent_memory is None)
                     await self.profiles.step(binding["character_uid"], presence=presence, initial_upload_only=initial_upload_only)
                 except (AutomaticRoleInactive, ValueError, OSError, sqlite3.Error):
                     # Approved pending bytes and both conflict versions survive.
@@ -1139,6 +1187,12 @@ class DesktopChatSyncRuntime:
 
     async def _history_status(self, character_uid):
         """Read consent/progress only when a dedicated source database exists."""
+        if self.recent_memory is not None:
+            binding = await asyncio.to_thread(self.state.binding, character_uid)
+            if not binding:
+                return None
+            state = await asyncio.to_thread(self.recent_memory.state, ChatDomain(binding['owner_id'], character_uid).key())
+            return state['preview']['metadata'] if state['preview'] else None
         from services.chat_sync.source import ChatOriginalSource
         path = self.state.path.parent / "sources.sqlite3"
         if not await asyncio.to_thread(path.exists):
@@ -1172,6 +1226,17 @@ class DesktopChatSyncRuntime:
             names = {role["characterSyncId"]: role["displayName"] for role in roles["characters"]}
             if character_uid not in names:
                 raise ValueError("chat_sync_character_not_found")
+            if self.recent_memory is not None:
+                domain = ChatDomain(binding['owner_id'], character_uid).key()
+                if await self.recent_character_name(character_uid) != local_name:
+                    raise ValueError('chat_sync_character_not_found')
+                local = await commit(self.recent_memory.adapter.read, local_name)
+                metadata = {"taskId": uuid4().hex, "characterSyncId": character_uid, "localName": local_name,
+                            "cloudName": names[character_uid], "count": len(local['entries']), "unverifiedCount": 0,
+                            "status": "preview", "registeredCount": 0, "cancelledCount": 0}
+                await commit(self.recent_memory.preview, domain, {"metadata": metadata, "binding": binding,
+                             "fingerprint": authenticated[1], "ids": [row['id'] for row in local['entries']]})
+                return metadata
             settings = await asyncio.to_thread(self._service_settings)
             source = await asyncio.to_thread(ChatOriginalSource, self.state.path.parent / "sources.sqlite3")
             epoch = await asyncio.to_thread(self.writer.epoch) if not supersede_preview else None
@@ -1213,6 +1278,21 @@ class DesktopChatSyncRuntime:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
             authenticated = await self._session()
             _, _, commit = await self._bound_transport(character_uid, authenticated=authenticated, expected_binding=binding)
+            if self.recent_memory is not None:
+                domain = ChatDomain(binding['owner_id'], character_uid).key()
+                def approve_recent():
+                    state = self.recent_memory.state(domain)
+                    preview = state['preview']
+                    if (not preview or preview['metadata']['taskId'] != task_id or preview['binding'] != binding
+                            or preview['fingerprint'] != authenticated[1]):
+                        raise ValueError('chat_sync_history_changed')
+                    self.recent_memory.exclude(domain, set(state['excluded']) - set(preview['ids']))
+                    preview['metadata'].update(status='registered', registeredCount=preview['metadata']['count'])
+                    self.recent_memory.preview(domain, preview)
+                    return preview['metadata']
+                result = await commit(approve_recent)
+                self.wake_scheduler()
+                return result
             source = await asyncio.to_thread(ChatOriginalSource, self.state.path.parent / "sources.sqlite3")
             settings = await asyncio.to_thread(self._service_settings)
             task = await asyncio.to_thread(source.task, character_uid, task_id)
@@ -1279,6 +1359,12 @@ class DesktopChatSyncRuntime:
 
     def _remaining(self, domain: ChatDomain) -> dict:
         """Count pending identities in both durable stores without reading raw text."""
+        if self.recent_memory is not None:
+            state = self.recent_memory.state(domain.key())
+            pending = state["pending"]
+            return {"pendingOriginals": len(pending["body"]["upserts"]) if pending else 0,
+                    "pendingDeletions": len(pending["body"]["removedIds"]) if pending else 0,
+                    "cursor": state["revision"], "hasSealedBatch": bool(pending), "localOnlyOriginals": 0}
         stats = self.ledger.stats(domain)
         source_path = self.state.path.parent / "sources.sqlite3"
         if not source_path.exists():
@@ -1313,6 +1399,13 @@ class DesktopChatSyncRuntime:
                    "canonical": encode_character_profile(profile).decode("utf-8")}
         if replace and binding:
             request["resumeGeneration"] = binding["generation"]
+        if self.recent_memory is not None:
+            previous = self.state.new_role(uid)
+            request['recentExcludedIds'] = ([] if include_history else
+                (previous.get('recentExcludedIds', []) if previous and tuple(previous['epoch']) == epoch else
+                 [row['id'] for row in self.recent_memory.adapter.read(name)['entries']]))
+            self.state.queue_new_role(uid, request, replace=replace)
+            return
         with closing(store_connection(self.state.path.parent / "sources.sqlite3")) as conn:
             row = conn.execute("SELECT next_seq FROM source_origin_streams WHERE uid=?", (uid,)).fetchone()
         cutoff = row[0] - 1 if row else 0
@@ -1507,10 +1600,15 @@ class DesktopChatSyncRuntime:
             current = await asyncio.to_thread(self.state.binding, uid)
             if not self.state.choice_matches_binding(request, current):
                 raise ValueError("chat_sync_binding_changed")
-            preview = await self.preview_history(uid, request["displayName"], after_origin_seq=request.get("afterSeq", 0),
-                                                 through_origin_seq=request.get("throughSeq"), supersede_preview=False)
-            await active()
-            await self.approve_history(uid, preview["taskId"], expected_request_id=request["requestId"])
+            if self.recent_memory is not None:
+                _, _, commit_recent = await self._bound_transport(uid, expected_binding=current)
+                await commit_recent(self.recent_memory.exclude, ChatDomain(current['owner_id'], uid).key(),
+                                    request.get('recentExcludedIds', []))
+            else:
+                preview = await self.preview_history(uid, request["displayName"], after_origin_seq=request.get("afterSeq", 0),
+                                                     through_origin_seq=request.get("throughSeq"), supersede_preview=False)
+                await active()
+                await self.approve_history(uid, preview["taskId"], expected_request_id=request["requestId"])
             await active()
             def finish():
                 with self.writer.locked():
@@ -1709,7 +1807,8 @@ class DesktopChatSyncRuntime:
         """Request eligible work now while respecting device intervals and retries."""
         result = {"deletions": 0, "uploaded": 0, "pullPages": 0, "hasMore": False}
         failure = None
-        for channel in ("deletion", "body", "pull"):
+        channels = ('deletion', 'body', 'pull') + (('long_term',) if self.long_term_memory is not None else ())
+        for channel in channels:
             # A failed marker attempt leaves body delivery for a later pass;
             # independent download can still merge already-published changes.
             if failure is not None and channel == "body":
@@ -1757,6 +1856,10 @@ class DesktopChatSyncRuntime:
         manual: bool = False, byte_budget: int = _AUTO_BYTE_BUDGET, max_pull_pages: int = _AUTO_PULL_PAGES,
     ) -> dict | None:
         """Admit one independently retried channel before sealing or sending data."""
+        if channel == 'long_term' and self.long_term_memory is not None:
+            return await self._long_term_memory_pass(character_uid, presence=presence, manual=manual)
+        if self.recent_memory is not None:
+            return await self._recent_memory_pass(character_uid, channel, presence=presence, manual=manual)
         if type(byte_budget) is not int or byte_budget <= 0:
             raise ValueError("invalid_batch_byte_budget")
         if type(max_pull_pages) is not int or max_pull_pages <= 0:
@@ -1836,9 +1939,127 @@ class DesktopChatSyncRuntime:
                 # source cleanup without recapturing a downloaded original.
                 await self._recover_originals()
 
+    async def _recent_memory_pass(self, uid, channel, *, presence=None, manual=False):
+        """Use the established pull admission for the bounded recent projection."""
+        if channel in {"deletion", "body"}:
+            return None
+        from services.chat_sync.recent_protocol import changes
+        async with self._recent_lock:
+            if not manual:
+                await self._require_automatic_character(uid)
+            binding = await asyncio.to_thread(self.state.binding, uid)
+            if not binding or not binding["enabled"] or not binding["binding_id"]:
+                raise ValueError("chat_sync_not_enabled")
+            name = await self.recent_character_name(uid)
+            if name is None:
+                raise ValueError("chat_sync_character_not_found")
+            domain = ChatDomain(binding["owner_id"], uid)
+
+            def inspect():
+                with self._commit_lock, self.writer.locked():
+                    self.writer.check()
+                    if self.state.binding(uid) != binding:
+                        raise ValueError("chat_sync_binding_changed")
+                    local = self.recent_memory.adapter.read(name)
+                    state = self.recent_memory.state(domain.key())
+                    excluded = set(state['excluded'])
+                    change = changes(state["base"], [row for row in local["entries"] if row['id'] not in excluded])
+                    return bool(state["pending"] or change["upserts"] or change["removedIds"])
+
+            dirty = await asyncio.to_thread(inspect)
+            if not dirty and self.profiles.adapter is not None and self.profiles.adapter.busy(name):
+                return None
+            if dirty:
+                await asyncio.to_thread(self.scheduler.request_check, domain.key(), "pull")
+            if not await asyncio.to_thread(self.scheduler.origin_ready):
+                return None
+            authenticated = await self._session()
+            presence = presence or authenticated[1]
+            if presence != authenticated[1]:
+                raise ValueError("chat_sync_session_changed")
+            if not await asyncio.to_thread(self.scheduler.claim, domain.key(), "pull", binding["generation"], presence, manual=manual):
+                return None
+            try:
+                _, request, commit = await self._bound_transport(uid, authenticated=authenticated,
+                    expected_binding=binding, automatic_only=not manual)
+                can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
+                result = await self.recent_memory.sync(domain, name, request, commit, can_apply=can_apply)
+                await asyncio.to_thread(self.scheduler.success, domain.key(), "pull")
+                if result['hasMore']:
+                    await commit(self.scheduler.request_check, domain.key(), 'pull')
+                    self.wake_scheduler()
+                if result["changed"] and self.history_changed:
+                    await self._notify_history_changed(binding, authenticated[1])
+                return result
+            except (ValueError, OSError, sqlite3.Error) as error:
+                await asyncio.to_thread(self.scheduler.failure, domain.key(), "pull", binding["generation"], presence, error)
+                raise
+            finally:
+                # Recompute the persisted retry/poll deadline after this flight;
+                # declined admissions do not wake again and cannot form a loop.
+                self.wake_scheduler()
+
+    async def _long_term_memory_pass(self, uid, *, presence=None, manual=False):
+        async with self._long_term_lock:
+            if not manual:
+                await self._require_automatic_character(uid)
+            binding = await asyncio.to_thread(self.state.binding, uid)
+            if not binding or not binding['enabled'] or not binding['binding_id']:
+                raise ValueError('chat_sync_not_enabled')
+            name = await self.recent_character_name(uid)
+            if name is None:
+                raise ValueError('chat_sync_character_not_found')
+            epoch = await asyncio.to_thread(self.writer.epoch)
+            settings = await asyncio.to_thread(self._service_settings)
+            grant = {**binding, 'service_url': settings['service_url']}
+            domain = ChatDomain(binding['owner_id'], uid)
+            local = await asyncio.to_thread(self.long_term_memory.adapter.read_local, grant, epoch)
+            state = await asyncio.to_thread(self.long_term_memory.state, domain.key())
+            dirty = bool(local and not local['operationId'].startswith('download:') and local['operationId'] != state['acknowledged'])
+            can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
+            if can_apply():
+                applied = await self.long_term_memory.adapter.flush(uid)
+                if applied and self.history_changed and presence:
+                    await self._notify_history_changed(binding, presence)
+            if not dirty and not can_apply():
+                return None
+            if dirty:
+                await asyncio.to_thread(self.scheduler.request_check, domain.key(), 'long_term')
+            if not await asyncio.to_thread(self.scheduler.origin_ready):
+                return None
+            if presence and not await asyncio.to_thread(self.scheduler.ready, domain.key(), 'long_term',
+                                                        binding['generation'], presence, manual=manual):
+                return None
+            authenticated = await self._session()
+            presence = presence or authenticated[1]
+            if presence != authenticated[1]:
+                raise ValueError('chat_sync_session_changed')
+            if not await asyncio.to_thread(self.scheduler.claim, domain.key(), 'long_term', binding['generation'], presence, manual=manual):
+                return None
+            try:
+                _, request, commit = await self._bound_transport(uid, authenticated=authenticated,
+                    expected_binding=binding, automatic_only=not manual)
+                result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply,
+                                                          session_fingerprint=presence)
+                await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term')
+                if result['changed'] and can_apply():
+                    applied = await self.long_term_memory.adapter.flush(uid)
+                    if applied and self.history_changed:
+                        await self._notify_history_changed(binding, presence)
+                if result['hasMore']:
+                    await commit(self.scheduler.request_check, domain.key(), 'long_term')
+                return {'uploaded': 0, 'deletions': 0, 'pullPages': 0, 'hasMore': result['hasMore']}
+            except (ValueError, OSError, sqlite3.Error) as error:
+                await asyncio.to_thread(self.scheduler.failure, domain.key(), 'long_term', binding['generation'], presence, error)
+                raise
+            finally:
+                self.wake_scheduler()
+
     async def _recover_originals(self) -> None:
         """Recover raw WAL gaps and repeat tombstone cleanup after interrupted deletes."""
         await asyncio.to_thread(self.writer.check)
+        if self.recent_memory is not None:
+            return
         from services.chat_sync.source import recover_sources
         await recover_sources(self)
         for binding in await asyncio.to_thread(self.state.bindings):
@@ -1954,6 +2175,8 @@ class DesktopChatSyncRuntime:
 
     async def _refresh_chat_history(self, uid):
         """Refresh optional display history and report whether a grant can pin its range."""
+        if self.recent_memory is not None:
+            return True
         if self.chat_history_provider is None:
             return True
         from services.chat_sync.source import ChatOriginalSource, pending_original_ids
@@ -2007,6 +2230,19 @@ class DesktopChatSyncRuntime:
 
     async def history(self, character_uid: str) -> list[dict]:
         """Read stored originals without feeding cache, models or reactions."""
+        if self.recent_memory is not None:
+            name = await self.recent_character_name(character_uid)
+            if name is None:
+                return []
+            def read_recent_history():
+                with self._commit_lock, self.writer.locked():
+                    self.writer.check()
+                    return self.recent_memory.adapter.read(name)
+            local = await asyncio.to_thread(read_recent_history)
+            return [{"messageId": row["id"], "characterSyncId": character_uid, "role": row["role"], "text": row["text"],
+                     "originalTime": row["originalTime"], "originSeq": None, "originStreamId": None,
+                     "conversationId": None, "replyToMessageId": None}
+                    for row in local["entries"] if row["role"] != "memo"]
         from services.chat_sync.writer import WriterQuarantined
         try:
             await self._refresh_chat_history(character_uid)
@@ -2190,7 +2426,8 @@ async def get_desktop_chat_sync_runtime(config_manager=None) -> DesktopChatSyncR
                         manager = _host.get_session_manager().get(name)
                         socket = getattr(manager, "websocket", None)
                         if socket is not None:
-                            await socket.send_json({"type": "chat_sync_history_changed", "characterSyncId": character_uid})
+                            await socket.send_json({"type": "chat_sync_history_changed", "characterSyncId": character_uid,
+                                                    **({"memoryEditedName": name} if runtime.recent_memory is not None else {})})
                         return
 
             async def current_character_uid():
@@ -2203,28 +2440,31 @@ async def get_desktop_chat_sync_runtime(config_manager=None) -> DesktopChatSyncR
                 profile = entries.get(data.get("当前猫娘")) if isinstance(entries, dict) else None
                 return get_character_uid(profile) if isinstance(profile, dict) else None
 
-            async def chat_history_provider(uid):
-                """Resolve the same complete local archive used by Memory Browser."""
-                from memory.chat_history import read_chat_history
+            async def recent_character_name(uid):
+                """Resolve saved identity without reading the complete chat archive."""
                 from utils.config_manager.reserved_schema import get_character_uid
                 data = await config_manager.aload_characters()
-                root = Path(config_manager.memory_dir).resolve()
                 for name, profile in data.get("猫娘", {}).items():
                     if isinstance(profile, dict) and get_character_uid(profile) == uid:
-                        path = (root / name / "time_indexed.db").resolve()
-                        if path.parent.parent == root:
-                            return await asyncio.to_thread(read_chat_history, path, uid)
-                return []
+                        return name
+                return None
 
             epoch = _runtime_epoch
+            def construct():
+                from memory.recent_sync import RecentMemoryAdapter
+                from memory.long_term_sync import DesktopLongTermAdapter
+
+                return DesktopChatSyncRuntime(directory, session_provider,
+                    witness_path=Path(config_manager.local_state_dir) / "chat_sync_writer.json",
+                    fixed_service_url=_BUILTIN_SERVICE_URL,
+                    history_changed=history_changed, current_character_uid_provider=current_character_uid,
+                    recent_memory_adapter=RecentMemoryAdapter(config_manager),
+                    long_term_memory_adapter=DesktopLongTermAdapter(config_manager),
+                    recent_character_name=recent_character_name)
             # Constructor SQLite handles close synchronously and default HTTP is
             # lazy. A cancelled thread result owns no pool, task or open database
             # handle, so shutdown need not wait for optional local construction.
-            runtime = await asyncio.to_thread(DesktopChatSyncRuntime, directory, session_provider,
-                                              witness_path=Path(config_manager.local_state_dir) / "chat_sync_writer.json",
-                                              fixed_service_url=_BUILTIN_SERVICE_URL,
-                                              history_changed=history_changed, current_character_uid_provider=current_character_uid,
-                                              chat_history_provider=chat_history_provider)
+            runtime = await asyncio.to_thread(construct)
             if epoch != _runtime_epoch:
                 await runtime.close()
                 raise ValueError("chat_sync_closing")

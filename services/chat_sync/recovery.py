@@ -178,6 +178,8 @@ def stage_authority(runtime):
         if ledger.execute("SELECT 1 FROM sqlite_master WHERE name='chat_oversized'").fetchone():
             ledger.execute('DELETE FROM chat_oversized')
     with closing(store_connection(directory / 'state.sqlite3')) as state, state:
+        if state.execute("SELECT 1 FROM sqlite_master WHERE name='long_term_memory_state'").fetchone():
+            state.execute('DELETE FROM long_term_memory_state')
         state.execute('UPDATE sync_settings SET device_id=?', (uuid4().hex,))
         for row in state.execute('SELECT character_uid FROM sync_bindings').fetchall():
             state.execute('UPDATE sync_bindings SET enabled=0,generation=generation+1,request_id=?,binding_id=NULL WHERE character_uid=?', (uuid4().hex, row[0]))

@@ -628,9 +628,6 @@
                     window._isProcessingRealisticQueue = false;
                     if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
                         processRealisticQueue(window._realisticGeminiVersion || 0);
-                    } else {
-                        // Announce actual owner release, never a superseded queue.
-                        window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
                     }
                 }
             }
@@ -702,10 +699,7 @@
         window._isProcessingRealisticQueue = false;
         window._realisticProcessingOwner = null;
         var queue = window._realisticGeminiQueue;
-        if (!Array.isArray(queue) || queue.length === 0) {
-            window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
-            return;
-        }
+        if (!Array.isArray(queue) || queue.length === 0) return;
         // 同步创建所有待排队的 bubble
         for (var i = 0; i < queue.length; i++) {
             try {
@@ -716,7 +710,6 @@
         }
         window._realisticGeminiQueue = [];
         if (window.nekoReplyTail) window.nekoReplyTail.changed();
-        window.dispatchEvent(new CustomEvent('neko-realistic-queue-idle'));
     }
 
     // ======================== appendMessage（覆盖核心） ========================

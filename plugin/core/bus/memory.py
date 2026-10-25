@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union, Coroutine
-
-from plugin.core.state import state
-from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
+from typing import TYPE_CHECKING, Any, Coroutine, Dict, Optional, Sequence, Union
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -118,222 +114,34 @@ class MemoryClient:
         except RuntimeError:
             return False
 
-    def get_sync(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
-        """Synchronous version: retrieve memory data."""
-        if hasattr(self.ctx, "_enforce_sync_call_policy"):
-            self.ctx._enforce_sync_call_policy("bus.memory.get")
-
-        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
-        if plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
-                "This method can only be called from within a plugin process."
-            )
-
+    def _params(self, bucket_id: str, limit: int) -> dict:
         if not isinstance(bucket_id, str) or not bucket_id:
             raise ValueError("bucket_id is required")
+        return {"bucket_id": bucket_id, "limit": limit}
 
-        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+    @staticmethod
+    def _records(result: Any, bucket_id: str) -> MemoryList:
+        history = result.get("history", []) if isinstance(result, dict) else result
+        history = history if isinstance(history, list) else []
+        return MemoryList([
+            MemoryRecord.from_raw(item if isinstance(item, dict) else {"event": item}, bucket_id=bucket_id)
+            for item in history
+        ], bucket_id=bucket_id)
 
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "USER_CONTEXT_GET",
-            "from_plugin": getattr(self.ctx, "plugin_id", ""),
-            "request_id": request_id,
-            "bucket_id": bucket_id,
-            "limit": int(limit),
-            "timeout": float(timeout),
-        }
-        history: List[Any] = []
-
-        if zmq_client is not None:
-            try:
-                resp = zmq_client.request(request, timeout=float(timeout))
-            except Exception:
-                resp = None
-            if not isinstance(resp, dict):
-                if hasattr(self.ctx, "logger"):
-                    try:
-                        self.ctx.logger.warning("[bus.memory.get] ZeroMQ IPC failed; raising exception (no fallback)")
-                    except Exception:
-                        pass
-                raise TimeoutError(f"USER_CONTEXT_GET over ZeroMQ timed out or failed after {timeout}s")
-
-            if resp.get("error"):
-                raise RuntimeError(str(resp.get("error")))
-
-            result = resp.get("result")
-            if isinstance(result, dict):
-                items = result.get("history")
-                if isinstance(items, list):
-                    history = items
-                else:
-                    history = []
-            elif isinstance(result, list):
-                history = result
-            else:
-                history = []
-        else:
-            try:
-                plugin_comm_queue.put(request, timeout=timeout)
-            except Exception as e:
-                raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
-
-            # Use state's event-driven wait (per-request Event) instead of busy-wait polling.
-            response = state.wait_for_plugin_response(request_id, timeout)
-
-            if response is None:
-                # Check once more after timeout: wait_for_plugin_response already checks several fast paths,
-                # but a very late response may still arrive after return; pop here to clean up orphan responses.
-                orphan_response = None
-                try:
-                    orphan_response = state.get_plugin_response(request_id)
-                except Exception:
-                    orphan_response = None
-                if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
-                    try:
-                        self.ctx.logger.warning(
-                            f"[PluginContext] Timeout reached, but response was found (likely delayed). "
-                            f"Cleaned up orphan response for req_id={request_id}"
-                        )
-                    except Exception:
-                        pass
-                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
-
-            if not isinstance(response, dict):
-                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
-
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
-
-            result = response.get("result")
-            if isinstance(result, dict):
-                items = result.get("history")
-                if isinstance(items, list):
-                    history = items
-                else:
-                    history = []
-            elif isinstance(result, list):
-                history = result
-            else:
-                history = []
-
-        records: List[MemoryRecord] = []
-        for item in history:
-            if isinstance(item, dict):
-                records.append(MemoryRecord.from_raw(item, bucket_id=bucket_id))
-            else:
-                records.append(MemoryRecord.from_raw({"event": item}, bucket_id=bucket_id))
-
-        return MemoryList(records, bucket_id=bucket_id)
+    def get_sync(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
+        result = self.ctx._send_request_and_wait(
+            method_name="bus.memory.get", request_type="USER_CONTEXT_GET",
+            request_data=self._params(bucket_id, limit), timeout=timeout, wrap_result=False,
+        )
+        return self._records(result, bucket_id)
 
     async def get_async(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
-        """Asynchronous version: retrieve memory data."""
-        if hasattr(self.ctx, "_enforce_sync_call_policy"):
-            self.ctx._enforce_sync_call_policy("bus.memory.get")
+        result = await self.ctx._send_request_and_wait_async(
+            method_name="bus.memory.get", request_type="USER_CONTEXT_GET",
+            request_data=self._params(bucket_id, limit), timeout=timeout, wrap_result=False,
+        )
+        return self._records(result, bucket_id)
 
-        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
-        if plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        if not isinstance(bucket_id, str) or not bucket_id:
-            raise ValueError("bucket_id is required")
-
-        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "USER_CONTEXT_GET",
-            "from_plugin": getattr(self.ctx, "plugin_id", ""),
-            "request_id": request_id,
-            "bucket_id": bucket_id,
-            "limit": int(limit),
-            "timeout": float(timeout),
-        }
-        history: List[Any] = []
-
-        if zmq_client is not None:
-            try:
-                resp = zmq_client.request(request, timeout=float(timeout))
-            except Exception:
-                resp = None
-            if not isinstance(resp, dict):
-                if hasattr(self.ctx, "logger"):
-                    try:
-                        self.ctx.logger.warning("[bus.memory.get] ZeroMQ IPC failed; raising exception (no fallback)")
-                    except Exception:
-                        pass
-                raise TimeoutError(f"USER_CONTEXT_GET over ZeroMQ timed out or failed after {timeout}s")
-
-            if resp.get("error"):
-                raise RuntimeError(str(resp.get("error")))
-
-            result = resp.get("result")
-            if isinstance(result, dict):
-                items = result.get("history")
-                if isinstance(items, list):
-                    history = items
-                else:
-                    history = []
-            elif isinstance(result, list):
-                history = result
-            else:
-                history = []
-        else:
-            try:
-                plugin_comm_queue.put(request, timeout=timeout)
-            except Exception as e:
-                raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
-
-            # Use state's asynchronous event-driven wait to avoid busy-waiting on the event loop.
-            response = await state.wait_for_plugin_response_async(request_id, timeout)
-
-            if response is None:
-                orphan_response = None
-                try:
-                    orphan_response = state.get_plugin_response(request_id)
-                except Exception:
-                    orphan_response = None
-                if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
-                    try:
-                        self.ctx.logger.warning(
-                            f"[PluginContext] Timeout reached, but response was found (likely delayed). "
-                            f"Cleaned up orphan response for req_id={request_id}"
-                        )
-                    except Exception:
-                        pass
-                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
-
-            if not isinstance(response, dict):
-                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
-
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
-
-            result = response.get("result")
-            if isinstance(result, dict):
-                items = result.get("history")
-                if isinstance(items, list):
-                    history = items
-                else:
-                    history = []
-            elif isinstance(result, list):
-                history = result
-            else:
-                history = []
-
-        records: List[MemoryRecord] = []
-        for item in history:
-            if isinstance(item, dict):
-                records.append(MemoryRecord.from_raw(item, bucket_id=bucket_id))
-            else:
-                records.append(MemoryRecord.from_raw({"event": item}, bucket_id=bucket_id))
-
-        return MemoryList(records, bucket_id=bucket_id)
-    
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Union[MemoryList, Coroutine[Any, Any, MemoryList]]:
         """Adaptive version: detect the execution environment and choose synchronous or asynchronous execution.
         

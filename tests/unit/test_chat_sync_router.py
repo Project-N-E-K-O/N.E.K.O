@@ -39,6 +39,9 @@ class SyntheticRuntime:
         """Represent a local-only wake across all opted-in roles."""
         self.calls.append(("wake",))
 
+    def wake_scheduler(self):
+        self.calls.append(("recent-changed",))
+
     async def enable(self, uid, name):
         """Return a synthetic service-authoritative owner for the real local UID."""
         self.calls.append(("enable", uid, name))
@@ -172,6 +175,16 @@ def test_history_keeps_local_only_replies_outside_canonical_originals(local_clie
     runtime.calls.clear()
     assert client.get(f"/api/chat-sync/characters/{'f' * 32}/history").status_code == 404
     assert runtime.calls == []
+
+
+def test_recent_write_hint_is_local_only_content_free_and_does_not_force_catchup(local_client):
+    client, runtime = local_client
+    path = '/api/chat-sync/recent-changed'
+    assert client.post(path).json() == {'scheduled': True}
+    assert runtime.calls == [('recent-changed',)]
+    assert client.post(path, headers={'Origin': 'https://foreign.test'}).status_code == 403
+    assert client.post(path, json={'text': 'private chat'}).status_code == 422
+    assert runtime.calls == [('recent-changed',)]
 
 
 def test_foreground_wake_is_local_only_and_retains_origin_gate(local_client):

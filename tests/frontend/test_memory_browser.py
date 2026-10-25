@@ -11,6 +11,28 @@ from utils.file_utils import atomic_write_json
 from utils.storage_policy import save_storage_policy
 
 
+def test_recent_sync_notification_refreshes_saved_view_and_preserves_dirty_draft(mock_page, running_server, seed_memory_file):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f'{running_server}/memory_browser')
+    rows = mock_page.locator('#memory-chat-edit .chat-item')
+    expect(rows).to_have_count(3)
+    current = json.loads(seed_memory_file.read_text())
+    current.append({'type': 'human', 'data': {'content': 'remote visible chat'}})
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    notify = """() => { const channel = new BroadcastChannel('neko_page_channel');
+        channel.postMessage({action:'recent_memory_changed',catgirl_name:'测试猫娘'}); channel.close(); }"""
+    mock_page.evaluate(notify)
+    expect(rows).to_have_count(4)
+    memo = mock_page.locator('#memory-chat-edit .memo-textarea').first
+    memo.fill('unsaved local draft')
+    current.append({'type': 'ai', 'data': {'content': 'another remote chat'}})
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    mock_page.evaluate(notify)
+    mock_page.wait_for_timeout(150)
+    expect(rows).to_have_count(4)
+    expect(memo).to_have_value('unsaved local draft')
+
+
 def _request_json(route):
     post_data_json = route.request.post_data_json
     return post_data_json() if callable(post_data_json) else post_data_json
@@ -423,7 +445,7 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     # Navigate to the memory browser page
     mock_page.goto(f"{running_server}/memory_browser")
     expect(mock_page.locator(".memory-tip-scope")).to_have_text(
-        "展示聊天原文与近期记忆；长期记忆已融入猫娘内核，无法浏览。"
+        "仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。"
     )
 
     # Wait for the file list to populate (the JS fetches /api/memory/recent_files on load)
@@ -6146,16 +6168,21 @@ def test_memory_browser_keeps_theater_capsule_read_only_on_save(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize("operation", ["single", "clear", "discard"])
-def test_memory_browser_chat_original_deletion_waits_for_save(
+def test_memory_browser_edits_local_memory_without_chat_sync(
     mock_page, running_server, seed_memory_file, operation,
 ):
-    """Use the existing UI, with exact IDs separate from editable memory rows."""
+    """Ignore sync history and keep delete, clear and discard on local memory."""
     _install_ready_memory_browser_routes(mock_page, seed_memory_file,
         recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"])
     uid, first, second, local = (char * 32 for char in "abcd")
     posts = []
+    loads = []
+    sync_requests = []
+    mock_page.on("request", lambda request: sync_requests.append(request.url)
+        if "/api/chat-sync/" in request.url else None)
 
     def load(route):
+        loads.append(route.request.url)
         route.fulfill(json={"content": seed_memory_file.read_text(encoding="utf-8"),
             "fingerprint": "fp", "identity_token": "token", "chat_sync": {
                 "characterSyncId": uid, "binding": None,
@@ -6173,37 +6200,37 @@ def test_memory_browser_chat_original_deletion_waits_for_save(
     confirms = []
     mock_page.on("dialog", lambda dialog: (confirms.append(dialog.message), dialog.accept()))
     mock_page.goto(f"{running_server}/memory_browser")
-    originals = mock_page.locator('[data-chat-sync-kind="original"]')
-    expect(originals).to_have_count(2)
-    expect(mock_page.locator('[data-chat-sync-kind="local"]')).to_have_count(1)
-    expect(mock_page.locator('.memory-chat-section-label')).to_have_text([
-        "本机近期记忆", "双端聊天原文", "仅本机的工具回复"])
+    rows = mock_page.locator('#memory-chat-edit .chat-item')
+    expect(rows).to_have_count(3)
+    expect(mock_page.locator('[data-chat-sync-kind]')).to_have_count(0)
+    expect(mock_page.locator('.memory-chat-section-label')).to_have_count(0)
+    expect(mock_page.locator('#memory-chat-edit')).not_to_contain_text('same exact text')
+    expect(mock_page.locator('#memory-chat-edit')).not_to_contain_text('local tool reply')
     if operation == "clear":
         mock_page.locator('#clear-memory-btn').click()
-        expect(mock_page.locator('#memory-chat-edit .chat-item')).to_have_count(1)
+        expect(rows).to_have_count(1)
     else:
-        originals.first.locator('.delete-btn').click()
-        expect(originals).to_have_count(1)
+        mock_page.locator('.chat-item[data-role="human"] .delete-btn').click()
+        expect(rows).to_have_count(2)
     assert posts == []
     expect(mock_page.locator('#memory-unsaved-status')).to_be_visible()
     if operation == "discard":
         mock_page.locator('.cat-btn', has_text='备用猫娘').click()
         mock_page.locator('#memory-unsaved-switch-discard').click()
-        expect(originals).to_have_count(2)
-        mock_page.locator('#save-memory-btn').click()
+        expect(rows).to_have_count(3)
         expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
-        # Discarded deletions leave no exact-ID edit, so the save carries no sync request.
-        assert 'chat_sync' not in posts[0]
-        assert confirms == []
+        assert posts == []
     else:
         mock_page.locator('#save-memory-btn').click()
         expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
-        assert posts[0]['chat_sync']['messageIds'] == ([first, second] if operation == "clear" else [first])
-        assert posts[0]['chat_sync']['localMessageIds'] == ([local] if operation == "clear" else [])
-        # Deleting exact originals on both ends always asks first.
-        assert len(confirms) == 1
-    assert all('chat_sync_kind' not in item and 'messageId' not in item for item in posts[0]['chat'])
-    assert posts[0]['chat'][0]['role'] == 'system'
+        assert 'chat_sync' not in posts[0]
+        assert 'chat_history_only' not in posts[0]
+        assert len(posts[0]['chat']) == (1 if operation == "clear" else 2)
+        assert posts[0]['chat'][0]['role'] == 'system'
+        assert all('chat_sync_kind' not in item and 'messageId' not in item for item in posts[0]['chat'])
+    assert confirms == []
+    assert loads and all('include_chat_sync' not in url for url in loads)
+    assert sync_requests == []
 
 
 @pytest.mark.frontend
