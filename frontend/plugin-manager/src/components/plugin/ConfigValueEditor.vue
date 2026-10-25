@@ -921,7 +921,7 @@ function confirmAddKey() {
 
 .obj,
 .arr {
-  border-left: 2px solid rgba(0, 0, 0, 0.08);
+  border-left: 2px solid var(--el-border-color-lighter);
   padding-left: 14px;
   margin: 6px 0 12px;
 }
@@ -935,7 +935,7 @@ function confirmAddKey() {
 }
 
 .row + .row {
-  border-top: 1px dashed rgba(0, 0, 0, 0.08);
+  border-top: 1px dashed var(--el-border-color-lighter);
 }
 
 .k {
@@ -994,15 +994,15 @@ function confirmAddKey() {
 }
 
 .diff-added {
-  background: rgba(46, 160, 67, 0.12);
+  background: color-mix(in srgb, var(--el-color-success) 12%, transparent);
 }
 
 .diff-modified {
-  background: rgba(210, 153, 34, 0.14);
+  background: color-mix(in srgb, var(--el-color-warning) 14%, transparent);
 }
 
 .diff-deleted {
-  background: rgba(248, 81, 73, 0.1);
+  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
 }
 
 .input-wrap {

@@ -48,19 +48,7 @@ class PluginCliPathPolicy:
             state_root=self.plugin_state_root,
         )
         ensure_plugin_exec_state_roots_separated(
-            exec_root=self.package_profiles_root,
-            state_root=self.plugin_state_root,
-        )
-        ensure_plugin_exec_state_roots_separated(
             exec_root=self.user_plugins_root,
-            state_root=self.package_profiles_root,
-        )
-        ensure_plugin_exec_state_roots_separated(
-            exec_root=self.user_plugins_root,
-            state_root=self.builtin_plugins_root,
-        )
-        ensure_plugin_exec_state_roots_separated(
-            exec_root=self.package_profiles_root,
             state_root=self.builtin_plugins_root,
         )
 

@@ -244,7 +244,7 @@ def _capture_logger(name: str):
 
 
 def _persistent_store(tmp_path, flush_delay=1.0):
-    # atexit.register 在这里会把 store 挂到解释器退出钩子上、污染整个测试进程。
+    # atexit.register would attach the store to interpreter-exit hooks here, polluting the whole test process.
     with patch("main_logic.topic.signals.atexit.register"):
         return TopicSignalStore(
             min_user_turns_for_topic=1,
@@ -273,7 +273,7 @@ def test_flush_retry_chain_is_bounded_with_exponential_backoff(tmp_path):
     with _fake_timers() as created, _write_gate():
         store = _persistent_store(tmp_path)
         store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
-        # 第一个 timer 来自 _request_persist（delay=base），不是重试。
+        # The first timer comes from _request_persist (delay=base), not a retry.
         assert len(created) == 1 and created[0].delay == 1.0
 
         _drive(created)
@@ -318,7 +318,7 @@ def test_zero_flush_delay_still_bounds_the_retry_chain(tmp_path):
         _drive(created)
 
     assert [t.delay for t in created] == [0.0] * (1 + _PERSIST_MAX_RETRIES)
-    # 每个 timer 都真的试过写一次，不是空转。
+    # Every timer actually attempted one write, rather than spinning without work.
     assert gate["writes"] == 1 + _PERSIST_MAX_RETRIES
 
 
@@ -351,7 +351,7 @@ def test_atexit_flush_does_not_schedule_a_timer_it_cannot_run(tmp_path):
 
         with _capture_logger(_SIGNALS_LOGGER) as sink:
             store._atexit_flush()
-            # 退出中到来的 turn 也不该再排一个跑不了的 timer。
+            # A turn arriving during shutdown must not schedule another timer that cannot run.
             store.note_turn("neko", actor="user", text="退出途中还在说话")
 
     assert len(created) == 1, [t.delay for t in created]
@@ -370,7 +370,7 @@ def test_atexit_registers_the_shutdown_wrapper_not_flush(tmp_path):
         )
 
     assert len(registered) == 1
-    # 盯调用点本身：只测被调函数的行为，把注册改回 flush 的回归照样绿。
+    # Check the call site itself: testing only the callee would still pass if registration regressed to flush.
     assert registered[0].__func__ is TopicSignalStore._atexit_flush
 
 

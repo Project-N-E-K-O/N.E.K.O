@@ -635,6 +635,7 @@
         document.querySelectorAll([
             '[data-neko-sidepanel-type="chat-settings"]',
             '[data-neko-sidepanel-type="animation-settings"]',
+            '[data-neko-sidepanel-type="cat-settings"]',
             '[data-neko-sidepanel-type="character-settings"]',
             '[data-neko-sidepanel-type="interval-proactive-chat"]',
             '[data-neko-sidepanel-type="interval-proactive-vision"]'

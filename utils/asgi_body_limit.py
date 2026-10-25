@@ -21,7 +21,10 @@ validation (e.g. ``memory_router.validate_chat_payload``).
 
 Design (see issue #1586, raised from the PR #1585 discussion):
 
-- Non-multipart requests are capped globally. ``multipart/form-data`` is the file
+- Non-multipart requests are capped globally; ``json_path_limits`` can raise
+  the cap for an exact POST path whose JSON body legitimately carries a large
+  payload (still a bounded ``Content-Length`` check, never unlimited).
+  ``multipart/form-data`` is the file
   upload path (Live2D/VRM/MMD models, jukebox music, character-card zips, ...)
   whose legitimate bodies routinely run to hundreds of MB or GB, so multipart
   remains exempt unless the application explicitly configures a bounded route.
@@ -68,9 +71,14 @@ class InboundBodySizeLimitMiddleware:
         multipart_methods: tuple[str, ...] = (),
         max_multipart_body_bytes: int | None = None,
         multipart_preflight=None,
+        json_path_limits: dict[str, int] | None = None,
     ):
         self.app = app
         self.max_body_bytes = int(max_body_bytes)
+        self.json_path_limits = {
+            str(path).rstrip("/"): int(limit)
+            for path, limit in (json_path_limits or {}).items()
+        }
         self.multipart_path_prefix = (multipart_path_prefix or "").rstrip("/")
         self.multipart_methods = frozenset(method.upper() for method in multipart_methods)
         self.max_multipart_body_bytes = (
@@ -97,18 +105,22 @@ class InboundBodySizeLimitMiddleware:
 
         configured_route = self._matches_configured_route(scope)
         bounded_multipart = configured_route and self._is_bounded_multipart(content_type)
-        # preflight 按路由触发，不按 content-type：这些路由的 handler 声明了
-        # Form/File 参数，FastAPI 会在进入 handler（也就是路由内部那套同样的
-        # 本地访问 / CSRF 校验）之前就把 body 解析掉。只对 multipart 跑 preflight
-        # 的话，跨域客户端换个 content-type 就能反复让服务器解析大 body 再被拒。
+        # Trigger preflight by route, not content-type: these route handlers declare
+        # Form/File parameters, so FastAPI parses the body before entering the handler and its
+        # equivalent local-access/CSRF checks. Running preflight only for multipart lets cross-origin
+        # clients change content-type and repeatedly force large-body parsing before rejection.
         if configured_route and self.multipart_preflight is not None:
             rejected = self.multipart_preflight(scope)
             if rejected is not None:
                 await rejected(scope, receive, send)
                 return
 
-        maximum = self.max_multipart_body_bytes if bounded_multipart else self.max_body_bytes
-        if self._exceeds_limit(content_length, content_type, bounded_multipart=bounded_multipart):
+        maximum = (
+            self.max_multipart_body_bytes if bounded_multipart else self._non_multipart_limit(scope)
+        )
+        if self._exceeds_limit(
+            content_length, content_type, bounded_multipart=bounded_multipart, maximum=maximum,
+        ):
             await self._reject(send, maximum)
             return
 
@@ -152,6 +164,15 @@ class InboundBodySizeLimitMiddleware:
             f"{self.multipart_path_prefix}/"
         )
 
+    def _non_multipart_limit(self, scope) -> int:
+        """Global cap, or the exact-path POST override from ``json_path_limits``."""
+        if self.json_path_limits and scope.get("method", "").upper() == "POST":
+            path = str(scope.get("path") or "").rstrip("/")
+            override = self.json_path_limits.get(path)
+            if override is not None:
+                return override
+        return self.max_body_bytes
+
     def _is_bounded_multipart(self, content_type: bytes) -> bool:
         """Whether the multipart-specific size policy applies to this body."""
         return (
@@ -165,6 +186,7 @@ class InboundBodySizeLimitMiddleware:
         content_type: bytes,
         *,
         bounded_multipart: bool = False,
+        maximum: int | None = None,
     ) -> bool:
         if content_length is None:
             # No Content-Length (chunked / unknown): pass through rather than
@@ -180,7 +202,8 @@ class InboundBodySizeLimitMiddleware:
             # Malformed Content-Length: let the server / downstream handle it
             # instead of guessing here.
             return False
-        maximum = self.max_multipart_body_bytes if bounded_multipart else self.max_body_bytes
+        if maximum is None:
+            maximum = self.max_multipart_body_bytes if bounded_multipart else self.max_body_bytes
         return length > maximum
 
     async def _reject(self, send, maximum: int) -> None:

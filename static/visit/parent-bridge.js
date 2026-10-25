@@ -46,6 +46,7 @@
                                         // 适配器 15 s 后兜底退房 / 断开、本身再最多 8 s，
                                         // 正常由传输页清理做完后报 cleanup_done 提前移除
   var PEER_AWAY_OPACITY = '0.6';
+  var HOST_SAFE_MARGIN_PX = 12;
   var CROP_ASPECT = { upper: 320 / 448, full: 256 / 560 };   // 与传输页 CROP_GEOMETRY 同一构图
   var HOST_FRAME_STYLE = 'position:fixed;z-index:4;border:0;background:transparent;pointer-events:none;' +
     'left:0;top:0;width:1px;height:1px;';
@@ -860,18 +861,56 @@
       var type = modelType();
       var b = modelBounds(type);
       if (!b) return;
-      var vw = win.innerWidth || 0;
-      var vh = win.innerHeight || 0;
+      var viewport = win.visualViewport;
+      var viewLeft = viewport && isFinite(viewport.offsetLeft) ? viewport.offsetLeft : 0;
+      var viewTop = viewport && isFinite(viewport.offsetTop) ? viewport.offsetTop : 0;
+      var vw = viewport && viewport.width > 0 ? viewport.width : (win.innerWidth || 0);
+      var vh = viewport && viewport.height > 0 ? viewport.height : (win.innerHeight || 0);
+      var viewRight = viewLeft + vw;
+      var viewBottom = viewTop + vh;
+      var desktopRuntime = win.__NEKO_DESKTOP_RUNTIME__;
+      var screen = win.screen;
+      if (desktopRuntime && screen) {
+        // macOS may move the frameless Pet window below the menu bar without reducing its
+        // height (for example y=1 -> y=30 while keeping 1439 px). innerHeight / visualViewport
+        // still include the pixels now below the physical work area, so clamp the host layer
+        // to the part of the client area that is actually visible on screen.
+        var screenX = Number(win.screenX);
+        var screenY = Number(win.screenY);
+        var availLeft = Number(screen.availLeft);
+        var availTop = Number(screen.availTop);
+        var availWidth = Number(screen.availWidth);
+        var availHeight = Number(screen.availHeight);
+        if ([screenX, screenY, availLeft, availTop, availWidth, availHeight].every(isFinite) &&
+            availWidth > 0 && availHeight > 0) {
+          viewLeft = Math.max(viewLeft, availLeft - screenX);
+          viewTop = Math.max(viewTop, availTop - screenY);
+          viewRight = Math.min(viewRight, availLeft + availWidth - screenX);
+          viewBottom = Math.min(viewBottom, availTop + availHeight - screenY);
+        }
+      }
       var aspect = CROP_ASPECT[state.peerCrop] || CROP_ASPECT.upper;
-      // 竖屏 / 窄视口：宽度不能超出视口（否则右侧摆放算出负的 left，访客被裁掉一截）
-      var h = Math.min(Math.max(200, Math.min(900, b.height * 0.9)), vw / aspect, vh || Infinity);
+      // 浏览器缩放 / Electron 可见视口可能小于 layout viewport。所有边都留安全距并最终
+      // clamp 到 visualViewport 与桌面工作区的交集，避免头饰、鞋底或右侧身体落到窗口外。
+      var visibleW = Math.max(1, viewRight - viewLeft);
+      var visibleH = Math.max(1, viewBottom - viewTop);
+      var margin = Math.min(HOST_SAFE_MARGIN_PX, Math.max(0, visibleW / 4), Math.max(0, visibleH / 4));
+      var safeLeft = viewLeft + margin;
+      var safeTop = viewTop + margin;
+      var safeRight = viewRight - margin;
+      var safeBottom = viewBottom - margin;
+      var availableW = Math.max(1, safeRight - safeLeft);
+      var availableH = Math.max(1, safeBottom - safeTop);
+      var desiredH = Math.max(200, Math.min(900, b.height * 0.9));
+      var h = Math.min(desiredH, availableW / aspect, availableH);
       var w = h * aspect;
-      var spaceLeft = b.x;
-      var spaceRight = vw - (b.x + b.width);
+      var spaceLeft = b.x - safeLeft;
+      var spaceRight = safeRight - (b.x + b.width);
       var left = spaceRight >= spaceLeft
-        ? Math.min(vw - w, b.x + b.width)
-        : Math.max(0, b.x - w);
-      var top = Math.max(0, Math.min(vh - h, b.y + b.height - h));
+        ? Math.min(safeRight - w, b.x + b.width)
+        : Math.max(safeLeft, b.x - w);
+      left = Math.max(safeLeft, Math.min(safeRight - w, left));
+      var top = Math.max(safeTop, Math.min(safeBottom - h, b.y + b.height - h));
       var p = { left: Math.round(left), top: Math.round(top), width: Math.round(w), height: Math.round(h) };
       var old = state.place;
       if (old && old.left === p.left && old.top === p.top && old.width === p.width && old.height === p.height) return;

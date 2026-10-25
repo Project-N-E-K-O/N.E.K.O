@@ -40,7 +40,7 @@ async def test_a_stalled_close_does_not_outlive_the_call_timeout(hanging_client)
     loop = asyncio.get_running_loop()
     started = loop.time()
     with pytest.raises(asyncio.TimeoutError):
-        # 调用超时被取消后，卡住的 aclose 也要在限时内放手（外层 2 s 只是防测试挂死）
+        # After timeout cancels the call, a stuck aclose must also release within the deadline (the outer 2 s only prevents a hung test).
         await asyncio.wait_for(asyncio.wait_for(call, 0.05), 2.0)
     assert loop.time() - started < 1.0
 

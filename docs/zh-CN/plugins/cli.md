@@ -1,5 +1,9 @@
 # 把插件发布到 N.E.K.O 插件市场
 
+::: info 包级 profile 与运行时配置
+插件中心安装会部署插件代码，包括插件自身的 `profiles.toml` 和 `profiles/` 文件；不再将 `payload/profiles/` 部署到 `.neko-package-profiles`。已有包配置目录不会阻止安装或重装，安装、升级、卸载均保留这些历史目录原样。实际运行时配置、数据和缓存仍保存在独立的插件状态目录。Python `unpack_package()` API 仍可完整解包，包括导出包级 profile。
+:::
+
 这篇教程接着[快速开始](/zh-CN/plugins/quick-start)往下走：把已经能在源码版 N.E.K.O 中运行的插件上传到 GitHub，提交第一次审核，发布第一个可安装版本，然后继续发布后续版本。
 
 下面使用快速开始中创建的 `hello_world` 作为示例。它的源码一直放在：

@@ -61,8 +61,12 @@ export interface MarketInstallTask {
   message?: string
   downloaded_bytes?: number
   total_bytes?: number | null
+  /** The download route currently streaming the package, e.g. ``github-direct``. */
+  active_sources?: string[]
   error?: string | null
   error_code?: string | null
+  error_details?: Record<string, unknown> | null
+  retryable?: boolean | null
   cancel_requested?: boolean
   install_source_warning?: string | null
   result?: { rollback_status?: string | null } | null
@@ -141,9 +145,9 @@ function orderOf(step: InstallStepId): number {
 }
 
 function formatByteCount(value: number): string {
-  if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`
   return `${value} B`
 }
 

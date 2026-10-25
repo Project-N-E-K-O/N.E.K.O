@@ -44,10 +44,14 @@ def test_reusable_release_workflow_publishes_package_digest_evidence() -> None:
         "        default: Project-N-E-K-O/N.E.K.O"
     ) in workflow
     assert "NEKO_REPOSITORY: ${{ inputs.neko-repository }}" in workflow
-    assert "check -r --market-release" in workflow
+    # The workflow checks the actual selected manifest/tag, replacing the CLI's
+    # legacy root-directory/repository-name convention checks.
+    assert 'check -r "${PLUGIN_ID}"' in workflow
+    assert "Release tag must match" in workflow
+    assert "Actual package identity/version" in workflow
     assert "market-evidence.json" in workflow
-    assert '"ref_type": os.environ["GITHUB_REF_TYPE"]' in workflow
-    assert '"ref_name": os.environ["GITHUB_REF_NAME"]' in workflow
+    assert 'ref_type=os.environ["GITHUB_REF_TYPE"]' in workflow
+    assert 'ref_name=os.environ["GITHUB_REF_NAME"]' in workflow
     assert (
         '"workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])'
         in workflow

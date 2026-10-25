@@ -209,7 +209,7 @@ def test_offscreen_half_of_the_model_is_not_framed():
         """,
         files=BRIDGE_FILES,
     )
-    # 只按视口内可见的 420×480 构框：框的底边不会落到屏幕下方几百像素
+    # Frame only the visible 420x480 viewport area, keeping its bottom from falling hundreds of pixels below the screen.
     assert out["y"] + out["height"] <= 1080 + 400
     assert abs(out["x"] + out["width"] / 2 - (1500 + 210)) < 1e-6
 
@@ -248,8 +248,8 @@ def test_visitor_layer_fits_a_narrow_viewport():
         """,
         files=BRIDGE_FILES,
     )
-    assert out["left"] >= 0
-    assert out["left"] + out["width"] <= 360 + 1
+    assert out["left"] >= 12
+    assert out["left"] + out["width"] <= 348 + 1
     assert abs(out["width"] / out["height"] - 320 / 448) < 0.01
 
 
@@ -307,7 +307,7 @@ def test_mirrored_css_rect_maps_from_the_right_edge():
         files=BRIDGE_FILES,
     )
     assert out["plain"] == {"x": 40, "y": 20, "w": 200, "h": 100}
-    # 屏幕上 120..220（容器 100..500）镜像后对应源图 (500-220)*2 .. (500-120)*2
+    # Screen 120..220 (container 100..500) mirrors to source (500-220)*2 .. (500-120)*2.
     assert out["mirrored"] == {"x": 560, "y": 20, "w": 200, "h": 100, "flipX": True}
 
 
@@ -352,11 +352,11 @@ def test_png_capture_follows_mirror_and_viewport():
     )
     assert out["mirrored"]["frames"] > 0 and out["mirrored"]["last"]["flipX"] is True
     assert out["offscreen"]["frames"] == 0 and out["offscreen"]["hidden"] == [True]
-    # 一半挂在屏幕外（视口宽 1920）：取景框以可见的 1700..1920 为准，中心在 1810 附近（不裁剪会在 1900）
+    # Half offscreen (viewport width 1920): use visible 1700..1920, centered near 1810 (1900 without clipping).
     edge = out["edge"]["last"]
     center_css = 1700 + (edge["x"] + edge["w"] / 2) / 2.5
     assert out["edge"]["frames"] > 0 and abs(center_css - 1810) < 15
-    # 取景框可以伸到屏幕外，但交给打包器的可见源图区域只到视口右边缘：(1920-1700)*2.5 = 550
+    # The frame may extend offscreen, but the packer's visible source region ends at the viewport's right edge: (1920-1700)*2.5 = 550.
     assert edge["visible"] == {"x": 0, "y": 0, "w": 550, "h": 2000}
 
 
@@ -537,6 +537,42 @@ def test_auxiliary_state_events_do_not_void_the_reload_snapshot():
     assert out == {"result": True, "frame": True}
 
 
+def test_chat_snapshot_relay_ahead_of_reload_recovery_keeps_away_and_peer_hidden():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        for (const side of ['guest', 'host']) {
+          const h = makeBridge();
+          const box = h.ctx.document.createElement('div');
+          box.id = 'live2d-container';
+          h.ctx.document.body.appendChild(box);
+          let respond;
+          h.ctx.fetch = () => new Promise((r) => { respond = r; });
+          let result;
+          h.bridge.recoverAfterReload('Neko').then((r) => { result = r; });   // Pet 窗自己的重载恢复还在路上
+          await settle();
+          h.side = side;
+          // chat 窗读到快照后的中继顺序：阶段帧（建 iframe、恢复作废）→ 出门 → 对端显隐
+          change(h, 'started', { peer_crop: 'full' });
+          if (side === 'guest') change(h, 'departed');
+          change(h, 'peer_hidden');
+          respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side, phase: 'active',
+                                                             room: { peer_crop: 'full' }, peer: { hidden: true } }) });
+          await settle();
+          await settle();
+          const f = h.ctx.document.getElementById('visit-frame');
+          runs[side] = { result, frame: !!f, away: box.classList.contains('visiting-away'),
+                         hidden: h.bridge._state.peerHidden === true, dim: f ? (f.style.opacity || '') : null };
+          change(h, 'ended'); await advance(15100);
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["guest"] == {"result": False, "frame": True, "away": True, "hidden": True, "dim": ""}
+    assert out["host"] == {"result": False, "frame": True, "away": False, "hidden": True, "dim": "0.6"}
+
+
 def test_recovery_waits_for_page_config_within_the_overall_deadline():
     out = run_visit_js(
         _BRIDGE_JS + """
@@ -567,7 +603,7 @@ def test_recovery_waits_for_page_config_within_the_overall_deadline():
         """,
         files=BRIDGE_FILES,
     )
-    # 只等首屏结果、不自己拉：一直没落定或过了截止时间才落定就放弃
+    # Wait only for the initial screen result; do not fetch independently. Abandon if unresolved or resolved after the deadline.
     assert out == {"hang": {"early": 0, "total": 0}, "fail": {"early": 1, "total": 1}, "ok": {"early": 1, "total": 1},
                    "late": {"early": 0, "total": 1}, "tooLate": {"early": 0, "total": 0}}
 
@@ -647,7 +683,7 @@ def test_reload_recovery_shares_one_overall_deadline():
         """,
         files=BRIDGE_FILES,
     )
-    # 各步各算窗口时会拖到 ~22 s（超过 20 s 页面宽限）；共用总截止时间后 10 s 内收尾，给重建 iframe 与入房留出另一半
+    # Separate per-step windows take about 22 s, beyond the page's 20 s grace; a shared deadline finishes within 10 s, leaving half for iframe reconstruction and room entry.
     assert out["tokenTries"] is True
     assert out["elapsed"] is not None and out["elapsed"] <= 10000
 
@@ -1055,7 +1091,7 @@ def test_recovery_deadline_counts_from_navigation_start():
         """,
         files=BRIDGE_FILES,
     )
-    # 已过 6 s：只剩 4 s 预算；已过 20 s：按下限 3 s
+    # After 6 s, 4 s remain; after 20 s, use the 3 s lower bound.
     assert out == {"slow6s_ready5s": 0, "slow6s_ready3s": 1, "slow20s_ready2s": 1, "slow20s_ready4s": 0}
 
 

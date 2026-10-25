@@ -11,14 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""统一 User-Agent 管理，防止自定义 API 端点的 Cloudflare Bot Management 拦截。
+"""Centralized User-Agent management prevents Cloudflare Bot Management blocking custom API endpoints.
 
-背景：OpenAI / Anthropic 官方 SDK 会自带形如 ``AsyncOpenAI/Python 2.8.1`` 的
-User-Agent。Cloudflare 的 "Manage AI bots" 规则会精准识别这些已知 AI SDK 的 UA
-并直接 block，导致部分自建 / 反代的自定义 API 端点返回拦截页而非正常响应。
+Background: official OpenAI / Anthropic SDKs send User-Agents such as ``AsyncOpenAI/Python 2.8.1``.
+Cloudflare's \"Manage AI bots\" rules recognize known AI SDK UAs
+and block them, causing some self-hosted / reverse-proxied custom endpoints to return block pages.
 
-解决办法：给 SDK 客户端注入 ``User-Agent: neko/<版本号>`` 覆盖内置 UA。SDK 的
-``default_headers`` 在请求头合并顺序里优先级最高，可以稳定覆盖内置 User-Agent。
+Inject ``User-Agent: neko/<version>`` into SDK clients to override their built-in UA. SDK
+default_headers have highest header-merge priority, reliably replacing the built-in User-Agent.
 """
 
 from __future__ import annotations
@@ -28,52 +28,52 @@ from config.application import APP_VERSION
 
 
 def get_default_user_agent() -> str:
-    """返回统一 User-Agent，格式 ``neko/<版本号>``（例如 ``neko/0.9.0``）。"""
+    """Return the shared User-Agent, ``neko/<version>`` (e.g. ``neko/0.9.0``)."""
     return f"neko/{APP_VERSION}"
 
 
 def ensure_user_agent(headers: dict[str, Any] | None) -> dict[str, Any]:
-    """确保 headers 字典里带有默认 User-Agent，返回新字典。
+    """Return a new headers dictionary containing a default User-Agent.
 
-    若调用方已显式提供了 User-Agent（任意大小写），则尊重调用方的值不覆盖；
-    否则注入 ``neko/<版本号>``。用于 OpenAI / Anthropic SDK 的 ``default_headers``。
+    Preserve an explicitly supplied User-Agent in any case;
+    otherwise inject ``neko/<version>``. Used for OpenAI / Anthropic SDK default_headers.
 
     Args:
-        headers: 原始请求头（可为 None）
+        headers: Original headers, possibly None.
 
     Returns:
-        合并后的新 headers 字典（至少包含 User-Agent）
+        New merged headers dictionary containing at least User-Agent.
     """
     merged: dict[str, Any] = dict(headers) if headers else {}
 
-    # 遍历所有大小写变体，选取首个非空的显式值（跳过 None / 空字符串）
+    # Try all case variants and select the first explicit nonempty value, skipping None / empty strings.
     ua_value: Any | None = None
     for k, value in merged.items():
         if str(k).lower() == "user-agent" and value not in (None, ""):
             ua_value = value
             break
 
-    # 删除所有大小写变体的 user-agent，避免重复请求头
+    # Remove all user-agent case variants to avoid duplicate headers.
     keys_to_remove = [k for k in merged if str(k).lower() == "user-agent"]
     for k in keys_to_remove:
         del merged[k]
 
-    # 仅写入一个规范的 User-Agent 键
+    # Write one canonical User-Agent key only.
     if ua_value is not None:
-        # 调用方显式提供了非空值，保留
+        # Preserve an explicit nonempty caller value.
         merged["User-Agent"] = ua_value
     else:
-        # 调用方未提供或值为空，注入默认值
+        # Inject the default when absent or empty.
         merged["User-Agent"] = get_default_user_agent()
 
     return merged
 
 
 def patch_requests_default_user_agent() -> None:
-    """全局覆盖 requests 库的默认 User-Agent（防止插件用 requests 时被 CF 拦截）。
+    """Globally override requests' default User-Agent to prevent Cloudflare blocking plugins using requests.
 
-    仅覆盖 requests 的默认 UA（原本是 ``python-requests/x.y.z``）。显式传入
-    ``headers={"User-Agent": ...}`` 的调用方不受影响。启动时调用一次即可。
+    Override only the default UA (originally ``python-requests/x.y.z``); callers explicitly passing
+    ``headers={\"User-Agent\": ...}`` remain unaffected. Call once at startup.
     """
     import requests.utils
 
@@ -81,7 +81,7 @@ def patch_requests_default_user_agent() -> None:
     _original_default_user_agent = requests.utils.default_user_agent
 
     def _neko_default_user_agent(name: str = "python-requests") -> str:
-        # name 为默认值时返回 neko UA，否则调用原始函数保留调用方名称
+        # Return neko UA for the default name; otherwise call the original function to preserve the caller's name.
         if name == "python-requests":
             return _default_ua
         return _original_default_user_agent(name)

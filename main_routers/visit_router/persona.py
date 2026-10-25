@@ -111,21 +111,21 @@ _TOKEN_MIN_CHARS = 2
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-# ── 规则敏感词与私人段落 ───────────────────────────────────────────────
+# -- Rule-sensitive terms and private passages --
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s，。、！？；：,;:()（）\[\]【】<>「」『』\"']+", re.IGNORECASE)
-# 句末标点不算网址的一部分（「见 https://a.example/x.」→「https://a.example/x」）
+# Sentence-final punctuation is not part of URLs: see https://a.example/x. -> https://a.example/x.
 _URL_TRAILING = ".,!?'\"…"
-# 裸域名（「private-family.example」）：只认小写写法，免得把「Mr.Smith」之类当成主机名
+# Bare domains such as private-family.example match lowercase only, avoiding names like Mr.Smith being treated as hosts.
 _HOST_RE = re.compile(r"(?<![A-Za-z0-9@._\-])(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?![A-Za-z0-9_\-])")
 _DIGITS_RE = re.compile(r"[0-9]{5,}")
-# 关键词后面跟的值：到标点或行尾为止，中间可以有空格（「住在桂花路」→「桂花路」，
+# Values after keywords extend to punctuation or line end and may contain spaces: 住在桂花路 -> 桂花路.
 # 「address: 12 Main Street」→「12 Main Street」）
 _KEYWORD_VALUE = r"(?P<value>[^\n，。、！？；：,;:!?()（）\[\]【】<>「」『』\"']{2,40})"
-# 中文地址关键词本来就常不带分隔（「住在桂花路」）；明说是「号」的联系方式关键词（微信号、手机号）
-# 同样可以不带分隔（「微信号小雨」）；只说「微信 / 手机 / 电话 / 邮箱」时要有分隔（冒号 / 是 / 为），
-# 或值像号码 / 账号（以数字、字母、+、# 开头）：「手机游戏」「电话会议」「微信群」不收
+# Chinese address keywords commonly lack separators, e.g. 住在桂花路; explicit account/number keywords 微信号/手机号
+# also allow none, e.g. 微信号小雨. Generic 微信 / 手机 / 电话 / 邮箱 require colon / 是 / 为 separators,
+# or number/account-like values starting with digits, letters, +, or #; exclude 手机游戏 / 电话会议 / 微信群.
 _CJK_KEYWORD_VALUE_RE = re.compile(
     r"(?:(?P<kw>住址|地址|家住|住在|位于|位於)\s*(?P<sep>[:：是为為在])?[ \t]*"
     r"|(?P<kw5>微信号|微訊號|qq号|手机号|手機號|电话号码?|電話號碼?)\s*[:：是为為]?[ \t]*"
@@ -133,11 +133,11 @@ _CJK_KEYWORD_VALUE_RE = re.compile(
     r"(?:\s*[:：]\s*|\s*[是为為]\s*|\s*(?=[A-Za-z0-9+#@])))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
-# 拉丁关键词要整词出现（「smartphone」里的 phone 不算），后面要有真正的分隔：冒号 / 等号；
-# 或值以数字 / # / + / @ 开头（「phone 138 0013 8000」「wechat @alicefoo」）；或空格后的
-# 第一个词像账号（带数字 / 下划线：「wechat mimi_cat」，或驼峰：「wechat AliceFoo」）；显式带 id 的
-# 关键词（「line id alicefoo」）后接任意词；「address」后接大写开头的词
-# （「address Maple Grove」）；「lives in」本身就是分隔。「phone games」这种普通名词不算
+# Latin keywords match whole words (phone inside smartphone does not count), followed by real colon/equals separators,
+# values starting with digits/#/+/ @ (phone 138 0013 8000 / wechat @alicefoo), or a space followed
+# by an account-like first token containing digits/underscores (wechat mimi_cat) or camel case (wechat AliceFoo). Explicit ID
+# keywords (line id alicefoo) accept any following word; address accepts capitalized words
+# (address Maple Grove), and lives in supplies its own separator. Exclude ordinary nouns like phone games.
 _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:"
     r"(?P<kw>(?:wechat|weixin|vx|qq)(?:\s*id)?|e-?mail|phone(?:\s*number)?|address|line\s*id)(?![A-Za-z0-9])"
@@ -148,8 +148,8 @@ _LATIN_KEYWORD_VALUE_RE = re.compile(
     r"|(?P<kw3>address)\s+(?:is\s+|at\s+|(?=(?-i:[A-Z]))))" + _KEYWORD_VALUE,
     re.IGNORECASE,
 )
-# 中文地址关键词不带分隔时（「住在一起」「地址保密」「家住得离公司很近」），值要有地址形态才收：路名 /
-# 小区等后缀、行政区划后缀、门牌号或数字。带冒号或「是 / 为 / 在」分隔时整段收
+# Unseparated Chinese address values such as 住在一起/地址保密/家住得离公司很近 require address shapes:
+# street/estate/admin suffixes, house numbers, or digits. Colon / 是 / 为 / 在 separators allow the whole value.
 _CJK_ADDRESS_KEYWORDS = frozenset({"住址", "地址", "家住", "住在", "位于", "位於"})
 _CJK_REGION_RE = re.compile("[" + chr(0x4E00) + "-" + chr(0x9FFF) + "]{2}(?:省|市|区|區|县|縣|镇|鎮|村|乡|鄉)")
 
@@ -159,22 +159,22 @@ def _cjk_address_form(value: str) -> bool:
                 or _CJK_REGION_RE.search(value) or any(ch.isdigit() for ch in value))
 
 
-# 地址类关键词：值在逗号处停下，同一行逗号后面的片段（「address: Apt 4, 12 Main Street」）也要找街名
+# Address values stop at commas, but inspect later same-line fragments for streets too, e.g. address: Apt 4, 12 Main Street.
 _ADDRESS_KEYWORDS = frozenset({"住址", "地址", "家住", "住在", "位于", "位於", "address"})
-# 像账号的词：带 @ 或 _、字母与数字混写、驼峰、或连字符连着的词（「@alicefoo」「mimi_cat」「cat2024」
+# Account-like tokens contain @, underscores, mixed letters/digits, camel case, or hyphenated words, e.g. @alicefoo/mimi_cat/cat2024.
 # 「AliceFoo」「alice-foo」）
 _ACCOUNT_WORD_RE = re.compile(r"[@_]|[A-Za-z][0-9]|[0-9][A-Za-z]|[a-z][A-Z]|[A-Za-z0-9]-[A-Za-z0-9]")
 _ADDRESS_SEGMENT_SPLIT_RE = re.compile(r"[,，;；、]")
 _LINE_END_RE = re.compile(r"[\n。！？!?]")
-# 带分隔符的电话号码（「138 0013 8000」「+1 (555) 010-0199」）：按纯数字比对
+# Compare separated phone numbers such as 138 0013 8000 / +1 (555) 010-0199 as digits only.
 _PHONE_RE = re.compile(r"\+?[0-9][0-9 \-().]{5,}[0-9]")
 _PHONE_MIN_DIGITS = 7
-# 拉丁值里取「全是大写开头的词或数字」的连续两词以上片段（「Main Street」），小写虚词不算
+# In Latin values, collect runs of at least two capitalized words or numbers (Main Street), excluding lowercase function words.
 _LATIN_WORD_RE = re.compile(r"[0-9]+|[A-Z][A-Za-z'\-]*|[a-z][A-Za-z'\-]*")
 _ROAD_SUFFIXES = "路|街|大道|巷|胡同|弄"
 _ESTATE_SUFFIXES = "小区|小區|公寓|大厦|大廈|新村|社区|社區"
-# 地址样式片段只取后缀前两个字作核心（「我们住在桂花路」→「桂花路」）。「X路 / X街」这类后缀也是
-# 常用词（走路、一路），只在地址关键词后的值里与门牌号前取；「小区 / 公寓」等全卡都取
+# Chinese address fragments keep two characters before the suffix as core: 我们住在桂花路 -> 桂花路. X路/X街 suffixes
+# are also common words (走路/一路), so accept them only after address keywords or before house numbers; estate/apartment suffixes match card-wide.
 _CJK = "[" + chr(0x4E00) + "-" + chr(0x9FFF) + "]"
 _ROAD_CORE_RE = re.compile(rf"{_CJK}{{2}}(?:{_ROAD_SUFFIXES}|{_ESTATE_SUFFIXES})")
 _ESTATE_CORE_RE = re.compile(rf"{_CJK}{{2}}(?:{_ESTATE_SUFFIXES})")
@@ -192,22 +192,22 @@ def _place_cores(value: str, pattern: re.Pattern[str]) -> list[str]:
     return [m.group(0) for m in pattern.finditer(value)]
 
 
-# 以门牌号开头的值里，门牌号后面的街名（「12 main street」→「main street」）：小写写法也算。
-# 数字在值中间（「a flat with 2 cats playing」）不是门牌号
+# House-number-leading values also accept lowercase street names: 12 main street -> main street.
+# Numbers inside values, e.g. a flat with 2 cats playing, are not house numbers.
 _STREET_AFTER_NUMBER_RE = re.compile(
     r"\s*(?:#|no\.?\s*)?[0-9]+[A-Za-z]?\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3})",
     re.IGNORECASE,
 )
 
 
-# 街名到第一个虚词为止：「2 cats and a dog」不是地址，不能把「cats and」收成敏感词
+# Street names stop at the first function word: 2 cats and a dog is not an address; never collect cats and.
 _STREET_STOPWORDS = frozenset({
     "a", "an", "the", "and", "or", "with", "of", "in", "on", "at", "to", "for", "from", "by", "her", "his",
     "their", "my", "our", "your", "is", "are", "was", "who", "that", "which",
 })
 
 
-# 数字后接 0~2 个词再接街道类词尾：门牌号不在值开头也认（「the house is at 42 main street」）
+# Digits followed by zero to two words then street suffixes match even away from value start, e.g. the house is at 42 main street.
 _STREET_TYPES = (
     "street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|way|court|ct|place|pl|terrace|"
     "crescent|close|square|sq|highway|hwy|alley|row|parkway|pkwy"
@@ -218,7 +218,7 @@ _NUMBERED_STREET_RE = re.compile(
 )
 
 
-# 住所类通用名词：地址值以它们开头（「Apartment is on the top floor」）不是地名
+# Generic dwelling nouns at the start of values (Apartment is on the top floor) are not place names.
 _GENERIC_DWELLING_WORDS = frozenset({
     "apartment", "apt", "flat", "house", "home", "room", "building", "unit", "floor", "suite", "studio",
     "dorm", "dormitory", "condo", "villa", "cottage", "place", "here", "there", "near", "next", "behind",
@@ -228,14 +228,14 @@ _GENERIC_DWELLING_WORDS = frozenset({
 _STREET_TYPE_WORD_RE = re.compile(rf"(?:{_STREET_TYPES})\.?", re.IGNORECASE)
 
 
-# 地址关键词那一行里没写门牌号的街名（「Apt 4, Main Street」）：一两个词再接街道类词尾。
-# way / place / close / court 这类词尾也是普通词（「the long way around」）：前面的词须大写开头；
-# street / avenue / boulevard 等不会是普通词的词尾，小写写法（「main street」）也收
+# Street names without house numbers on address lines (Apt 4, Main Street): one or two words followed by street suffixes.
+# way/place/close/court are ordinary words too (the long way around), requiring preceding capitalization;
+# unambiguous street/avenue/boulevard suffixes accept lowercase main street too.
 _UNNUMBERED_STREET_RE = re.compile(
     rf"(?<![A-Za-z0-9])((?:(?-i:[A-Z])[A-Za-z'\-]*\s+){{1,2}}(?:{_STREET_TYPES}))\b\.?",
     re.IGNORECASE,
 )
-# 地址行逗号后整段只有一个大写开头的词：街名 / 地名本身
+# One capitalized word making up the entire post-comma address fragment is itself a street/place name.
 _PROPER_PLACE_RE = re.compile(r"(?-i:[A-Z])[A-Za-z'\-]+")
 _UNAMBIGUOUS_STREET_TYPES = "street|avenue|ave|boulevard|blvd|lane|highway|hwy|parkway|pkwy|road|rd"
 _LOWERCASE_STREET_RE = re.compile(
@@ -253,18 +253,18 @@ def _unnumbered_streets(segment: str) -> list[str]:
         if len(kept) >= 2:
             out.append(" ".join(kept))
             if len(kept) > 2:
-                # 前面多带的词可能只是介词 / 方位词（「near main street」）：街名核心（最后一个名字词
-                # + 词尾）另记一个，人设只写「main street」也能命中
+                # Extra prefixes may be prepositions/directions (near main street); also collect the street-name core,
+                # final name word plus suffix, to match personas mentioning main street alone.
                 out.append(" ".join(kept[-2:]))
     return out
 
 
-# 表示位置的介词：其后的单个大写词是地名（「Apartment near Broadway」）。「with」「and」之类不算
-# （「House with Garden」的 Garden 是描述，不是地名）
+# Locative prepositions make a following single capitalized word a place (Apartment near Broadway); with/and do not
+# (Garden in House with Garden is descriptive, not a place name).
 _PLACE_PREPOSITIONS = frozenset({
     "in", "on", "at", "near", "by", "off", "behind", "beside", "opposite", "along", "across", "next",
 })
-# 两词介词的末词（「next to」「close to」「across from」「away from」「far from」）：与前一个词一起才算
+# Final words of two-word prepositions (next to/close to/across from/away from/far from) count only with their preceding word.
 _PLACE_PREPOSITION_TAILS = {"to": frozenset({"next", "close"}), "from": frozenset({"across", "away", "far"})}
 
 
@@ -309,9 +309,9 @@ def _street_names(value: str) -> list[str]:
         single = len(words) == 1 or (
             len(words) > 1 and words[1][:1].islower() and not _STREET_TYPE_WORD_RE.fullmatch(words[1]))
         if words and single and words[0][:1].isupper():
-            # 门牌号后的街名只有一个大写开头的词（「12 Broadway」「12 Broadway likes cats」，后面是小写的
-            # 叙述）：这个词就是街名。下一个词是街道类词尾或也大写开头时（「12 Main Street」「12 Maple
-            # Grove」）街名是多个词，不拆出单个词；小写的单个词多半是普通名词（「lives in 2 cities」），不收
+            # One capitalized word after a house number is the street name (12 Broadway / 12 Broadway likes cats, followed by lowercase
+            # narration). A following street suffix or capitalized word (12 Main Street / 12 Maple
+            # Grove) makes a multiword street, not separate single names; lowercase single nouns like lives in 2 cities are excluded.
             out.append(words[0])
         out.extend(" ".join(words[:k]) for k in range(2, len(words) + 1))
     for m in _NUMBERED_STREET_RE.finditer(value):
@@ -382,7 +382,7 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
         found.extend(_place_cores(m.group(0), _ROAD_CORE_RE))
     for pattern in (_CJK_KEYWORD_VALUE_RE, _LATIN_KEYWORD_VALUE_RE):
         for m in pattern.finditer(text):
-            # 值末尾的句读不属于值本身（「LINE: alicefoo.」）：留着人设句中复述的 alicefoo 就对不上
+            # Value-final punctuation is not content (LINE: alicefoo.); retaining it prevents matching alicefoo repeated in persona prose.
             value = m.group("value").strip().rstrip(".,!?;:").rstrip()
             if not value:
                 continue
@@ -395,20 +395,20 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
             found.extend(_street_names(value))
             is_address = keyword in _ADDRESS_KEYWORDS or m.groupdict().get("kw2") or m.groupdict().get("kw3")
             if not is_address:
-                # 联系方式的值会把前后的叙述一起吞进来（「wechat @alicefoo likes cats」「wechat: usually
-                # online as @alicefoo」）：值里像账号的词另记一个，人设只复述账号也能命中。普通词
-                # （usually）与号码片段（「+1」，另有数字 / 电话规则）不单独记
+                # Contact values can swallow surrounding prose (wechat @alicefoo likes cats / wechat: usually
+                # online as @alicefoo). Also collect account-like words independently so account-only persona mentions match. Exclude ordinary
+                # words such as usually and number fragments such as +1, handled by separate digit/phone rules.
                 words = value.split()
                 if len(words) > 1:
                     found.extend(w.strip(".,!?;:") for w in words if _ACCOUNT_WORD_RE.search(w))
                     if keyword.endswith("id") or m.groupdict().get("kw5") or m.groupdict().get("kw6"):
-                        # 明说是账号的关键词（line id / wechat id / 微信号）：后面第一个词就是账号本身
+                        # Explicit account keywords (line id/wechat id/微信号) identify their first following word as the account itself.
                         found.append(words[0].strip(".,!?;:"))
             if is_address:
                 words = value.split()
                 if len(words) > 1 and words[0][:1].isupper() and words[1][:1].islower() \
                         and words[0].lower().strip(".,!?;:") not in _STREET_STOPWORDS | _GENERIC_DWELLING_WORDS:
-                    # 地址值以单个大写词开头、后面是小写叙述（「Broadway likes cats」）：这个词就是地名
+                    # A single capitalized word starting an address value before lowercase narration (Broadway likes cats) is the place name.
                     found.append(words[0].strip(".,!?;:"))
                 found.extend(_qualified_places(words))
                 end = _LINE_END_RE.search(text, m.start("value"))
@@ -416,13 +416,13 @@ def extract_sensitive_tokens(card: str | None, family_names: Iterable[str]) -> l
                 for segment in _ADDRESS_SEGMENT_SPLIT_RE.split(rest):
                     segment = segment.strip()
                     if segment:
-                        # 只认有地址形态的片段（路名核心、门牌号 + 街名、以街道类词尾结尾的街名）：同一行
-                        # 后面的爱好等普通大写词组（「enjoys Star Wars」）不收
+                        # Collect only address-shaped fragments (street cores, house-number+street, street-suffix names), never ordinary
+                        # capitalized hobby phrases later on the same line such as enjoys Star Wars.
                         found.extend(_place_cores(segment, _ROAD_CORE_RE))
                         found.extend(_street_names(segment))
                         found.extend(_unnumbered_streets(segment))
                         if _PROPER_PLACE_RE.fullmatch(segment):
-                            # 整段只有一个大写开头的词（「Apt 4, Broadway」）：在地址行里就是地名本身
+                            # An entire fragment of one capitalized word (Apt 4, Broadway) is the place name on an address line.
                             found.append(segment)
     found.extend(_place_cores(text, _ESTATE_CORE_RE))
     out: list[str] = []
@@ -553,11 +553,11 @@ def card_hash(card: str | None) -> str:
     return hashlib.sha256((card or "").encode("utf-8", "surrogatepass")).hexdigest()
 
 
-# ── 存储 ───────────────────────────────────────────────────────────────
+# -- Storage --
 
 
 def _utf8_ok(text: str) -> bool:
-    # JSON 里转义的孤立代理字符（"\ud800"）解析得出字符串，却编不成 UTF-8：返回给面板时整个响应 500
+    # Escaped lone JSON surrogates ("\ud800") parse as strings but cannot encode to UTF-8, causing whole-panel responses to return 500.
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
@@ -603,7 +603,7 @@ class VisitPersonaStore:
         except FileNotFoundError:
             return None
         except OSError as exc:
-            # 一时读不了（被占用 / 权限）不是没有：报成不可用，别让面板显示「未生成」、引人重新生成覆盖它
+            # Temporarily unreadable (busy/permissions) does not mean absent: report unavailable, not ungenerated, which invites overwrite through regeneration.
             logger.warning("visit persona %s unreadable: %s", path.name, type(exc).__name__)
             raise PersonaUnavailable(path.name) from None
         except (ValueError, RecursionError) as exc:
@@ -631,7 +631,7 @@ class VisitPersonaStore:
             try:
                 os.chmod(path, 0o600)
             except OSError as exc:
-                # 与其它串门文件同一立场：权限位尽力而为（Windows 上本就无效）
+                # Like other visit files, permissions are best effort and ineffective on Windows anyway.
                 logger.debug("visit persona: chmod 0600 failed for %s: %s", path.name, exc)
 
     async def save(self, character_uid: str, doc: dict) -> None:
@@ -656,7 +656,7 @@ class VisitPersonaStore:
         return await asyncio.to_thread(self._retire_sync, character_uid)
 
 
-# ── 生成 ───────────────────────────────────────────────────────────────
+# -- Generation --
 
 PersonaLLM = Callable[[str], Awaitable[str]]
 
@@ -672,7 +672,7 @@ class PersonaResult:
 
 def _clean_persona_text(raw: str, family_names: Sequence[str], lang: str | None) -> str:
     text = strip_control_chars(str(raw or "")).strip()
-    # 先整段脱敏再截 token：先截会把名字截成半截认不出；替换成的中性称呼可能比名字长，截在最后才守得住上限
+    # Redact before token truncation: truncation can split names beyond recognition, and neutral replacements may be longer, so enforce the cap last.
     text = redact_outbound(text, family_names=family_names, replacement=get_family_neutral_term(lang))
     return truncate_to_tokens(text, VISIT_PERSONA_MAX_TOKENS).strip()
 
@@ -689,7 +689,7 @@ def _parse_scan(raw: str, card: str | None = None) -> tuple[list[str], bool]:
     paraphrased or made it up, so the real passage may be missing.
     """
     text = str(raw or "").strip()
-    # 模型偶尔给 JSON 包一层 ``` 代码块：只取第一个 [ 到最后一个 ] 之间
+    # Models sometimes wrap JSON in ``` fences; take content from first [ through final ] only.
     start, end = text.find("["), text.rfind("]")
     if start < 0 or end < start:
         raise ValueError("scan reply is not a JSON list")
@@ -700,13 +700,13 @@ def _parse_scan(raw: str, card: str | None = None) -> tuple[list[str], bool]:
     complete = True
     for item in items:
         if not isinstance(item, str):
-            # 不是约定的字符串（如 {"section": ...}）：认不出它列的是哪段，如实标成检查不完整；
-            # 同一回复里认得出的段落照样留着参与比对
+            # Noncontract strings such as {"section":...} cannot identify listed passages: honestly mark scanning incomplete,
+            # while retaining recognized passages from the same response for comparison.
             complete = False
             continue
         if item.strip():
             if card is not None and _squash(item) not in _squash(card):
-                # 不是卡片原文（改写 / 编造）：照样留着比对，但原文那段可能没列出来，如实标成不完整
+                # Rewritten/fabricated text is not card-verbatim: still compare it but mark incomplete because the actual passage may be omitted.
                 complete = False
             out.extend(_section_chunks(item.strip()))
     return out, complete
@@ -716,7 +716,7 @@ def _section_chunks(section: str) -> list[str]:
     """A passage cut into ``_SECTION_MAX_CHARS`` pieces that overlap, so no part of it is dropped."""
     if len(section) <= _SECTION_MAX_CHARS:
         return [section]
-    # 相邻两块重叠一段：跨块边界的 8-gram 仍完整落在某一块里
+    # Overlap adjacent chunks so every cross-boundary 8-gram remains complete within at least one chunk.
     step = _SECTION_MAX_CHARS - _SECTION_CHUNK_OVERLAP
     return [section[i:i + _SECTION_MAX_CHARS] for i in range(0, len(section) - _SECTION_CHUNK_OVERLAP, step)]
 
@@ -767,9 +767,9 @@ async def generate_visit_persona(
         scanned, entries_ok = _parse_scan(await asyncio.wait_for(
             scan_llm(build_visit_persona_private_scan_prompt(card_in, lang)), VISIT_LLM_TIMEOUT_S,
         ), card_in)
-        # 卡片超出输入预算被截过：截掉的尾巴没被扫描，如实标成检查不完整
+        # Input-budget truncation leaves the tail unscanned: report incomplete honestly.
         scan_complete = entries_ok and len(card_in) >= len(card or "")
-    except Exception as exc:  # noqa: BLE001 - 扫描失败只退回规则段落，并如实落盘「不完整」
+    except Exception as exc:  # noqa: BLE001 - Scan failure falls back to rule passages and persists incomplete status honestly.
         logger.warning("visit persona: private-section scan failed: %s", type(exc).__name__)
         scanned, scan_complete = [], False
     hits: list[PrivacyHit] = []
@@ -782,13 +782,13 @@ async def generate_visit_persona(
         text = _clean_persona_text(raw, names, lang)
         if not text:
             return PersonaResult(error="llm_unavailable")
-        # 整张卡跑几十个正则，长卡一次几十毫秒：不能在事件循环上算
+        # Dozens of regexes on long cards take tens of milliseconds; never calculate on the event loop.
         hits = await asyncio.to_thread(persona_privacy_check, card, text, names, scanned)
         if not hits:
             digest = card_hash(card)
             sections, cut = await asyncio.to_thread(_private_section_list, card, names, scanned)
             if cut:
-                # 清单放不下：面板上看不全「不会带出门」的段落，如实标成检查不完整
+                # An oversized list hides excluded passages from the panel; report incomplete honestly.
                 logger.warning("visit persona: private-section list capped at %d", _PRIVATE_SECTIONS_MAX)
             return PersonaResult(doc={
                 "text": text,
@@ -804,7 +804,7 @@ async def generate_visit_persona(
     return PersonaResult(error="persona_sensitive_overlap", hits=tuple(hits))
 
 
-# ── 运行时钩子与后台生成 ───────────────────────────────────────────────
+# -- Runtime hooks and background generation --
 
 
 def _default_config_dir() -> Path:
@@ -889,8 +889,8 @@ def _note_write(character_uid: str) -> None:
 
 async def _regenerate(name: str, character_uid: str, started_version: int) -> None:
     try:
-        # 按 uid 找角色此刻的名字再读卡：发起之后改了名、又新建了同名角色时，不能拿新角色的卡写进旧角色的人设。
-        # 先读卡片快照、后查名字：两步之间又改了名时，新名字在旧快照里找不到，按角色不在处理，不会读到别人的卡
+        # Resolve the character's current name by UID before reading its card; rename plus same-name creation must not put the new character's card into the original persona.
+        # Read the card snapshot before resolving names: an intervening rename makes the new name absent from the old snapshot, yielding missing rather than another character's card.
         ctx = await _hooks.load_context()
         current = await _hooks.resolve_char_name(character_uid)
         card = ctx.card(current) if current is not None else None
@@ -905,14 +905,14 @@ async def _regenerate(name: str, character_uid: str, started_version: int) -> No
             return
         async with persona_lock(character_uid):
             if await _hooks.resolve_char_name(character_uid) is None:
-                # 生成期间角色被删除：不再给它写人设，否则删除角色时清掉的人设文件又被建回来。
-                # 按 uid 判断：只是改名时人设照存（文件按 uid 存，改名不影响）
+                # Character deleted during generation: do not recreate its persona file after deletion.
+                # Check by UID: renames still allow saving because UID-keyed files are unaffected.
                 _errors[character_uid] = "unknown_catgirl"
                 logger.info("visit persona: character gone during regeneration, result dropped")
                 return
             if _write_versions.get(character_uid, 0) != started_version:
-                # 开始生成之后人设被写过（另一个窗口的手写确认，哪怕它在开始前就已拿着锁）：
-                # 不拿生成结果覆盖它
+                # Persona written since generation began, including another window's confirmation that already held the lock:
+                # never overwrite it with generated output.
                 logger.info("visit persona: regeneration superseded by an edit, result dropped")
                 return
             await store().save(character_uid, result.doc)
@@ -920,7 +920,7 @@ async def _regenerate(name: str, character_uid: str, started_version: int) -> No
         _errors.pop(character_uid, None)
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 - 后台任务：失败记进状态，GET 可见
+    except Exception as exc:  # noqa: BLE001 - Background task: record failures in state for GET visibility.
         logger.warning("visit persona: regeneration failed: %s", type(exc).__name__)
         _errors[character_uid] = "llm_unavailable"
 
@@ -945,7 +945,7 @@ def start_regeneration(name: str, character_uid: str) -> asyncio.Task | None:
     if is_generating(character_uid):
         return None
     _errors.pop(character_uid, None)
-    # 在启动的同一步（同步、无 await）记下写入版本：之后任何写入都会让这次结果作废
+    # Capture write version synchronously at startup, without await; any later write invalidates this result.
     started_version = _write_versions.get(character_uid, 0)
     task = asyncio.create_task(_regenerate(name, character_uid, started_version),
                                name=f"visit-persona-{character_uid[:6]}")
@@ -991,7 +991,7 @@ async def persona_gate(name: str) -> PersonaGate:
     """
     character_uid: str | None = None
     for _attempt in range(_GATE_ATTEMPTS):
-        # 每一轮重新按名字找角色：读的过程中原角色改了名、名字被新角色占了，不能拿原角色的人设放行
+        # Resolve characters by name anew each round: if the original renamed and another took its name during reads, never authorize using the original persona.
         character_uid = await _hooks.resolve_char_uid(name)
         if not character_uid:
             return PersonaGate(ok=False, state="missing")
@@ -1001,7 +1001,7 @@ async def persona_gate(name: str) -> PersonaGate:
         try:
             doc = await store().load(character_uid)
         except PersonaUnavailable:
-            # 文件在、一时读不了：既不能当没有（state=missing 引人重新生成），也不能放行
+            # Existing but temporarily unreadable files are neither absent (which invites regeneration) nor acceptable.
             return PersonaGate(ok=False, state="unavailable", character_uid=character_uid)
         if doc is None or not doc["reviewed"]:
             return PersonaGate(ok=False, state=persona_state(doc, character_uid), character_uid=character_uid)
@@ -1011,26 +1011,26 @@ async def persona_gate(name: str) -> PersonaGate:
                 if is_generating(character_uid):
                     return PersonaGate(ok=False, state="generating", character_uid=character_uid)
                 if _write_versions.get(character_uid, 0) != version:
-                    # 读卡期间人设被写过（手写确认）：手里这份已过时，按新的那份再判，别拿它触发重生成
+                    # Persona changed during card read by manual confirmation: re-evaluate the new version, never trigger regeneration from the stale copy.
                     continue
                 if await _hooks.resolve_char_uid(name) != character_uid:
                     continue
                 start_regeneration(name, character_uid)
                 return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         if is_generating(character_uid):
-            # 读盘 / 读卡期间另一个窗口点了重新生成：手里这份已不作数
+            # Another window requested regeneration during disk/card reads: this copy is obsolete.
             return PersonaGate(ok=False, state="generating", character_uid=character_uid)
         if _write_versions.get(character_uid, 0) == version and await _hooks.resolve_char_uid(name) == character_uid:
-            # 确认之后亲人的档案名 / 昵称可能改过：出门前按此刻的名单再替换一遍，旧确认挡不住新名字。
-            # 与生成路径同一顺序：替换成的中性称呼可能比名字长，替换后再守一次 token 上限
+            # Family profile names/nicknames may change after confirmation; redact against the current roster before departure, since old confirmation cannot cover new names.
+            # Match generation order: neutral replacements may be longer, so enforce the token limit after replacement again.
             text = _clean_persona_text(doc["text"], ctx.family_names, _hooks.lang())
             return PersonaGate(ok=True, state="ready", character_uid=character_uid, text=text)
-        # 读的过程中人设被写过（手写确认 / 重生成落盘）：按新的那份再判一次
-    # 连着几次都碰上写入：并没有在生成，按「待确认」拒，引导去面板看最新的那份（「generating」会让前端一直等）
+        # Persona written during read by manual confirmation / regenerated persistence: evaluate the new copy again.
+    # Repeated concurrent writes do not mean generating; reject as pending confirmation and direct users to the latest panel version, avoiding endless frontend generating waits.
     return PersonaGate(ok=False, state="unreviewed", character_uid=character_uid)
 
 
-# ── 路由 ───────────────────────────────────────────────────────────────
+# -- Routes --
 
 
 def _error(status: int, code: str, **extra: Any) -> JSONResponse:
@@ -1045,7 +1045,7 @@ async def _view(name: str, character_uid: str, ctx: CharacterContext) -> dict:
         "character_uid": character_uid,
         "state": persona_state(doc, character_uid),
         "text": doc["text"] if doc else None,
-        # 只确认（PUT 不带 text）时回传：确认的必须是用户看到的这一份（正文与私人段落清单）
+        # Confirmation-only PUT without text returns this: users must confirm the exact body and private-passage list they viewed.
         "persona_version": persona_version(doc) if doc else None,
         "edited": bool(doc and doc["edited"]),
         "reviewed": bool(doc and doc["reviewed"]),
@@ -1053,7 +1053,7 @@ async def _view(name: str, character_uid: str, ctx: CharacterContext) -> dict:
         "card_changed": bool(doc) and doc["source_card_hash"] != current_hash,
         "scan_complete": bool(doc and doc["scan_complete"]),
         "private_sections": list(doc["private_sections"]) if doc else [],
-        # 私人段落清单基于哪张卡：与当前卡不一致时面板提示「清单基于旧卡片」
+        # Card basis for the private-passage list: the panel warns when it differs from the current card.
         "sections_outdated": bool(doc) and doc["scan_card_hash"] != current_hash,
     }
     error = _errors.get(character_uid)
@@ -1070,7 +1070,7 @@ async def _resolve(name: str) -> tuple[str, CharacterContext] | JSONResponse:
     if not character_uid or ctx.card(name) is None:
         return _error(404, "unknown_catgirl")
     if await _hooks.resolve_char_uid(name) != character_uid:
-        # 两步之间原角色改名、名字被新角色占了：不能拿原角色的人设配新角色的卡
+        # Rename and same-name replacement between steps: never pair the original persona with the new character's card.
         return _error(409, "catgirl_changed")
     return character_uid, ctx
 
@@ -1094,8 +1094,8 @@ def _scanned_sections(doc: dict | None, card: str | None) -> Sequence[str]:
         return ()
     if doc["scan_card_hash"] == card_hash(card):
         return doc["private_sections"]
-    # 卡片改过：扫描清单基于旧卡，其中仍原样在当前卡里的段落照样比对（手写常发生在刚改完卡之后）。
-    # 与扫描结果同一口径比对：只改了大小写 / 全半角 / 空白的段落仍算在卡里
+    # Changed cards leave scans based on old text; still compare passages retained verbatim in the current card, common when hand-editing after card changes.
+    # Match scan normalization: case / fullwidth-halfwidth / whitespace-only changes still count as present.
     current = _squash(card or "")
     return [section for section in doc["private_sections"] if _squash(section) in current]
 
@@ -1104,7 +1104,7 @@ async def _view_response(name: str, character_uid: str, ctx: CharacterContext) -
     try:
         return JSONResponse(await _view(name, character_uid, ctx))
     except PersonaUnavailable:
-        # 人设文件一时读不了（被占用）：报不可用，面板稍后重试，不显示成「未生成」
+        # Temporarily busy persona files report unavailable for later panel retry, never ungenerated.
         return _error(503, "persona_unavailable")
 
 
@@ -1124,7 +1124,7 @@ async def put_persona(request: Request, catgirl: str = ""):
     if isinstance(resolved, JSONResponse):
         return resolved
     character_uid, ctx = resolved
-    # 与后台重生成的落盘互斥：检查「没在生成」到写盘之间不能被重生成插进来
+    # Exclude background regeneration persistence: it cannot enter between checking not-generating and writing.
     async with persona_lock(character_uid):
         if is_generating(character_uid):
             return _error(409, "persona_generating")
@@ -1132,19 +1132,19 @@ async def put_persona(request: Request, catgirl: str = ""):
         try:
             doc = await persona_store.load(character_uid)
         except PersonaUnavailable:
-            # 读不了就不知道盘上是哪一份：既不能按「从没生成过」新建，也不能确认，稍后再试
+            # Unreadability means unknown disk identity: neither create as never-generated nor confirm; retry later.
             return _error(503, "persona_unavailable")
         previous = doc
         if await _hooks.resolve_char_name(character_uid) is None:
-            # 请求进来之后角色被删除：不再写，否则删除角色时清掉的人设文件又被建回来
+            # Character deleted since request arrival: do not recreate its deleted persona file.
             return _error(404, "unknown_catgirl")
         if await _hooks.resolve_char_uid(catgirl) != character_uid:
-            # 请求进来之后这个名字换了角色（原角色改名、又新建了同名角色）：卡片按名字读会读到新角色的，
-            # 写进原角色的人设就错了。面板重新拉取
+            # The name now identifies another character after rename/recreation; name-based card reads return the new card,
+            # which must not enter the original persona. Make the panel refetch.
             return _error(409, "catgirl_changed")
         if text is not None:
-            # 锁内重读卡片：等锁期间卡片改过（新加了私人内容）时按新卡检查。手写的人设 edited=True，
-            # 门槛不会因卡片变更再重生成，拿旧卡检查就会放过新加的内容
+            # Reread cards under lock: if private content was added while waiting, check the new card. Edited personas have edited=True,
+            # preventing automatic regeneration on card changes, so old-card validation would permit new private content.
             ctx = await _hooks.load_context()
             if ctx.card(catgirl) is None:
                 return _error(404, "unknown_catgirl")
@@ -1155,11 +1155,11 @@ async def put_persona(request: Request, catgirl: str = ""):
             if not isinstance(seen, str):
                 return _error(400, "persona_version_required")
             if seen != persona_version(doc):
-                # 面板打开后人设被换过（另一个窗口重新生成 / 卡片变更触发的重生成）：用户没看过这一份
+                # Persona replaced since panel opening by another window's regeneration / card-triggered regeneration: the user has not viewed this version.
                 return _error(409, "persona_changed")
             if doc["edited"]:
-                # 手改的正文确认前按此刻的卡片再查一遍：它可能是写盘中途被打断留下的待确认手写，只按旧卡查过；
-                # 手改的人设门槛不再随卡片变更重生成，这里放过就会一直用下去
+                # Recheck edited text against the current card before confirmation: it may be pending manual text from interrupted persistence, validated only against an old card;
+                # edited personas no longer regenerate on card changes, so accepting here would keep it indefinitely.
                 ctx = await _hooks.load_context()
                 card = ctx.card(catgirl)
                 if card is None:
@@ -1171,7 +1171,7 @@ async def put_persona(request: Request, catgirl: str = ""):
                 if card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
                     return _error(409, "persona_card_changed")
                 if await _hooks.resolve_char_uid(catgirl) != character_uid:
-                    # 检查期间名字换成了另一个角色（卡片一字不差也算）：不替原角色确认
+                    # Character identity changed during checking, even with identical card text: do not confirm for the original character.
                     return _error(409, "catgirl_changed")
             doc = {**doc, "reviewed": True}
         else:
@@ -1185,16 +1185,16 @@ async def put_persona(request: Request, catgirl: str = ""):
             if count_tokens(cleaned) > VISIT_PERSONA_MAX_TOKENS:
                 return _error(400, "persona_too_long")
             card = ctx.card(catgirl)
-            # 与生成路径同一套检查：规则敏感词 + 与私人段落（规则段落 + 同一张卡扫描出的段落）的 8-gram
+            # Same generation checks: sensitive-rule terms plus 8-grams against private passages from rules and the same card's scan.
             hits = await asyncio.to_thread(
                 persona_privacy_check, card, cleaned, ctx.family_names, _scanned_sections(doc, card))
             if hits:
                 return _error(400, "persona_sensitive_overlap", hits=[hit.value for hit in hits])
             if card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card):
-                # 检查期间卡片又改了（改卡不走人设锁）：按旧卡查过的手写不能存，面板重新提交即按新卡查
+                # Cards can change outside persona locks; do not save manual text checked against an old card. Panel resubmission checks the new one.
                 return _error(409, "persona_card_changed")
             if doc is None:
-                # 从没生成过就手写：清单只有规则段落，没有独立扫描
+                # Manual creation before any generation: list contains rule passages only, without independent scanning.
                 digest = card_hash(card)
                 doc = {
                     "text": cleaned, "source_card_hash": digest, "generated_at": None,
@@ -1204,23 +1204,23 @@ async def put_persona(request: Request, catgirl: str = ""):
                     "scan_card_hash": digest, "scan_complete": False,
                 }
             else:
-                # 手写不动私人段落清单与它依据的卡片哈希
+                # Manual edits leave private-passage lists and their basis-card hashes unchanged.
                 doc = {**doc, "text": cleaned, "edited": True, "reviewed": True}
         if text is not None:
-            # 手写分两步落盘：先以「待确认」写下，再核对写盘期间卡片没变（改卡不走人设锁），才标成已确认。
-            # 中途门槛读到的只是待确认（不放行）；核对 / 撤回出错或进程退出，留下的也只是待确认
+            # Persist manual edits in two steps: pending confirmation first, then confirm only after verifying cards remained unchanged during writing outside persona locks.
+            # Intermediate gates see only pending confirmation and reject; failed verification/withdrawal or process exit likewise leaves only pending state.
             await persona_store.save(character_uid, {**doc, "reviewed": False})
             _note_write(character_uid)
             try:
                 changed = card_hash((await _hooks.load_context()).card(catgirl)) != card_hash(card)
-                # 名字在检查期间换成了另一个角色（卡片一字不差也算）：这份手写不是给原角色的
+                # Character identity changed during validation, even with identical card text: this manual edit is not for the original character.
                 changed = changed or await _hooks.resolve_char_uid(catgirl) != character_uid
-            except Exception as exc:  # noqa: BLE001 - 核对不了就当变了：宁可不存
+            except Exception as exc:  # noqa: BLE001 - Unverifiable means changed: prefer refusing persistence.
                 logger.warning("visit persona: cannot recheck the card: %s", type(exc).__name__)
                 changed = True
             if changed:
-                # 这份手写只按旧卡查过：撤回、恢复成原来那份（写盘之后才改的卡属于「手改过的人设不随卡片
-                # 变化」，不在此列）
+                # Manual text checked only against the old card: withdraw and restore the original. Card edits after persistence instead count as
+                # edited personas remaining stable across card changes, outside this case.
                 if previous is None:
                     await persona_store.retire(character_uid)
                 else:

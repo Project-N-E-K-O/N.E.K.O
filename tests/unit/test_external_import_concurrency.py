@@ -23,7 +23,7 @@ from memory.facts import FactStore
 from utils.language_utils import get_global_language_full
 
 
-# ── routes 层 harness ────────────────────────────────────────────────
+# -- Routes-layer harness --
 
 
 def _persona_cand(entity: str, text: str) -> dict:
@@ -64,7 +64,7 @@ class _FakeFactStore:
     async def _apersist_new_facts(self, name, extracted, *, default_source, semantic_dedup):
         return []
 
-    async def aimport_external_daily(self, name, candidates, source_format, imported_at):
+    async def aimport_external_daily(self, name, candidates, source_format, imported_at, on_progress=None):
         if isinstance(self.daily_outcome, Exception):
             raise self.daily_outcome
         return self.daily_outcome
@@ -133,8 +133,8 @@ def _body(response) -> dict:
 
 @pytest.mark.asyncio
 async def test_persona_entities_fuse_concurrently(wire):
-    # 交叉握手：master 的融合要等 neko 已启动（反之亦然）才返回。串行实现里
-    # 第一个 entity 永远等不到第二个启动 → 超时；gather 并发则双双通过。
+    # Cross-handshake: master merging waits for neko to start, and vice versa. Serial execution leaves
+    # the first entity waiting forever for the second and times out; concurrent gather lets both pass.
     started = {"master": asyncio.Event(), "neko": asyncio.Event()}
 
     async def fuse(entity):
@@ -162,6 +162,7 @@ async def test_daily_extraction_keeps_request_locale(wire):
             candidates,
             source_format,
             imported_at,
+            on_progress=None,
         ):
             self.language = get_global_language_full()
             return await super().aimport_external_daily(
@@ -253,6 +254,7 @@ async def test_external_import_prefers_durable_then_render_without_persisting_fa
             candidates,
             source_format,
             imported_at,
+            on_progress=None,
         ):
             observed_languages["daily"] = get_global_language_full()
             return await super().aimport_external_daily(
@@ -325,9 +327,9 @@ async def test_persona_all_too_large_returns_413(wire):
 
 @pytest.mark.asyncio
 async def test_persona_success_plus_too_large_returns_413_with_partial_counts(wire):
-    # 一个 entity 成功、另一个确定性太大：剩余的唯一问题就是 too_large（重试
-    # 无用，成功侧已有指纹幂等）→ 413「拆分」是正确引导；partial_import 里带上
-    # 已落盘计数，前端 too_large 分支据此广播 memory_edited。
+    # One entity succeeds while another is deterministically too large: only too_large remains, with retries
+    # useless and fingerprint idempotence protecting the successful side. Return 413 with splitting guidance and include
+    # persisted counts in partial_import so the frontend's too_large branch broadcasts memory_edited.
     wire(_FakePersonaManager({
         "master": {"added": 3, "skipped": 0, "fused": True},
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
@@ -343,8 +345,8 @@ async def test_persona_success_plus_too_large_returns_413_with_partial_counts(wi
 
 @pytest.mark.asyncio
 async def test_persona_too_large_mixed_with_retryable_failure_returns_partial(wire):
-    # too_large 与「可重试失败」并存：先返回 partial（500）让可重试侧收敛，
-    # 收敛后只剩 too_large 自然浮出 413。
+    # When too_large coexists with retryable failure, return partial (500) first so the retryable side converges;
+    # once resolved, only too_large remains and naturally surfaces as 413.
     wire(_FakePersonaManager({
         "master": ExternalMemoryFusionError("transient fusion failure"),
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
@@ -375,8 +377,8 @@ async def test_persona_one_retryable_failure_still_counts_successful_entity(wire
 
 @pytest.mark.asyncio
 async def test_daily_failed_days_returns_retryable_partial(wire):
-    # daily 有失败天时不能回 success（用户无重试信号，Greptile P1）：返回
-    # partial，且 added_facts 带上 MEMORY.md + 成功 daily 已落盘的数量。
+    # Failed daily days must not return success, depriving users of retry signals (Greptile P1); return
+    # partial with added_facts counting persisted MEMORY.md and successful daily entries.
     wire(
         _FakePersonaManager({
             "master": {"added": 1, "skipped": 0, "fused": True},
@@ -399,8 +401,59 @@ async def test_daily_failed_days_returns_retryable_partial(wire):
 
 
 @pytest.mark.asyncio
+async def test_daily_deferred_days_return_retryable_partial_with_remaining_count(wire):
+    """Days deferred by the per-import cap come back as a retryable partial carrying the remaining day count."""
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 0, "skipped": 1, "fused": False},
+        }),
+        fact_store=_FakeFactStore(
+            {"added": 6, "days": 9, "failed_days": 0, "skipped_days": 0, "deferred_days": 4, "oversized_days": 0}
+        ),
+    )
+
+    response = await routes_mod.import_external_markdown(
+        _request([_daily_cand("memories/2026-07-12.md", "2026-07-12")])
+    )
+
+    assert response.status_code == 500
+    body = _body(response)
+    assert body["error_code"] == "external_import_partial"
+    assert body["partial_import"]["remaining_days"] == 4
+    assert body["partial_import"]["failed_days"] == 0
+    assert body["partial_import"]["added_facts"] == 6
+    assert "deferred" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_daily_only_oversized_days_left_returns_413_with_progress(wire):
+    """When everything else imported and only days that alone exceed the cap remain, the result is too_large with saved counts."""
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 0, "skipped": 1, "fused": False},
+        }),
+        fact_store=_FakeFactStore(
+            {"added": 3, "days": 4, "failed_days": 0, "skipped_days": 0,
+             "deferred_days": 0, "oversized_days": 1}
+        ),
+    )
+
+    response = await routes_mod.import_external_markdown(
+        _request([_daily_cand("memories/2026-07-12.md", "2026-07-12")])
+    )
+
+    assert response.status_code == 413
+    body = _body(response)
+    assert body["error_code"] == "external_import_too_large"
+    assert body["partial_import"]["added_facts"] == 3
+    assert body["partial_import"]["oversized_days"] == 1
+
+
+@pytest.mark.asyncio
 async def test_daily_over_cap_returns_413_too_large(wire):
-    # aimport_external_daily 抛「天数超 cap」→ 413 too_large（前端引导拆分）。
+    # aimport_external_daily raising a day-count-cap error -> 413 too_large, prompting frontend splitting guidance.
     wire(
         _FakePersonaManager({
             "master": {"added": 1, "skipped": 0, "fused": True},
@@ -421,7 +474,7 @@ async def test_daily_over_cap_returns_413_too_large(wire):
     assert body["partial_import"]["added_persona"] == 2
 
 
-# ── daily 有界并发 ───────────────────────────────────────────────────
+# -- Bounded daily concurrency --
 
 
 class _DailyConcurrencyHarness(FactStore):
@@ -436,10 +489,10 @@ class _DailyConcurrencyHarness(FactStore):
         return []
 
     async def aload_facts_full(self, lanlan_name):
-        # 隔离真实盘：读路径（_acollect_day_fp_sources）现取 active+archive。
+        # Isolate real disk state: _acollect_day_fp_sources now reads active and archive sources.
         return []
 
-    # 隔离 sidecar 文件 IO：否则无 fact 载体天会读写真实 memory_dir。
+    # Isolate sidecar file IO, or days without fact carriers access real memory_dir.
     def _load_external_import_state(self, name):
         return {}
 
@@ -447,12 +500,15 @@ class _DailyConcurrencyHarness(FactStore):
         return None
 
     async def _aclear_day_fps(self, lanlan_name, fingerprints):
-        # 成功/persist 失败天的清理同样要隔离：真实 _clear_day_fps_locked 在
-        # exists 早退**之前**就 ensure_character_dir，会在真实 memory_dir 里
-        # mkdir 幽灵角色目录。
+        # Isolate cleanup for successful/persist-failed days too: real _clear_day_fps_locked calls
+        # ensure_character_dir before its exists early return, creating phantom
+        # character directories in real memory_dir.
         return None
 
-    async def _allm_extract_facts(self, lanlan_name, messages, **_kwargs):
+    async def _allm_extract_facts(self, lanlan_name, messages, *, before_attempt=None, **_kwargs):
+        # Faithful to the real path: the courtesy interval runs before every actual request
+        if before_attempt is not None:
+            await before_attempt()
         text = "\n".join(getattr(m, "content", "") for m in messages)
         return await self._extract(text)
 
@@ -470,8 +526,8 @@ def _daily(source_file, event_date, text):
 
 @pytest.mark.asyncio
 async def test_daily_days_extract_concurrently():
-    # 与 persona 同款交叉握手：两天互相等待对方的 LLM 调用已启动。串行实现
-    # 会在第一天上超时；有界并发（上限≥2）双双通过。
+    # Cross-handshake as with persona: each day waits for the other's LLM call to start. Serial execution
+    # times out on day one; bounded concurrency with a limit >=2 lets both pass.
     started = {"a": asyncio.Event(), "b": asyncio.Event()}
 
     async def extract(text):
@@ -492,15 +548,20 @@ async def test_daily_days_extract_concurrently():
         timeout=5,
     )
 
-    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0}
+    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0, "deferred_days": 0, "oversized_days": 0}
 
 
 @pytest.mark.asyncio
-async def test_daily_concurrency_is_bounded_by_semaphore():
-    # 交叉握手只证明「能并行」；无界 gather 同样能过。这里用活跃计数器证明
-    # 峰值并发被 Semaphore 钉在 EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY 以内
-    # （误删限流时本测试变红），同时峰值 ≥2 佐证确实在并发（CodeRabbit）。
+async def test_daily_concurrency_is_bounded_by_semaphore(monkeypatch):
+    # Cross-handshaking proves only parallelism; unbounded gather also passes. An active counter proves
+    # Semaphore caps peak concurrency at EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
+    # (removing throttling fails this test), while a peak >=2 confirms actual concurrency (CodeRabbit).
     from config import EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
+    import memory.facts as facts_module
+
+    # This test targets the Semaphore peak; the courtesy interval spreads call starts evenly and is unrelated to the semaphore,
+    # so set it to 0 to isolate the variable.
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0.0)
 
     active = 0
     peak = 0
@@ -509,7 +570,7 @@ async def test_daily_concurrency_is_bounded_by_semaphore():
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        await asyncio.sleep(0.05)  # 让所有并发槽真正重叠
+        await asyncio.sleep(0.05)  # Make all concurrent slots genuinely overlap.
         active -= 1
         return [{"text": f"fact for {text[:12]}", "importance": 5}]
 
@@ -529,8 +590,8 @@ async def test_daily_concurrency_is_bounded_by_semaphore():
 
 @pytest.mark.asyncio
 async def test_daily_crashing_day_is_counted_failed_and_others_survive():
-    # 单日抽取崩溃（异常而非 None）也必须 best-effort：计入 failed_days，
-    # 不拖垮其他天（gather return_exceptions 语义）。
+    # A day's extraction exception, rather than None, must also remain best-effort: count failed_days
+    # without breaking other days, following gather return_exceptions semantics.
     async def extract(text):
         if "bad" in text:
             raise RuntimeError("provider exploded")
@@ -544,5 +605,32 @@ async def test_daily_crashing_day_is_counted_failed_and_others_survive():
         "hermes", "t",
     )
 
-    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0}
+    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0, "deferred_days": 0, "oversized_days": 0}
     assert len(harness.persisted) == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_polite_gap_spaces_call_starts(monkeypatch):
+    # Courtesy interval: any two extraction call starts are at least `interval` apart, turning bursts into a steady pace
+    # (friendly to free-tier WAF quotas). When the interval far exceeds one batch's duration, concurrency naturally collapses, by design.
+    import memory.facts as facts_module
+
+    monkeypatch.setattr(facts_module, "EXTERNAL_IMPORT_DAILY_CALL_INTERVAL", 0.2)
+    starts = []
+
+    async def extract(text):
+        starts.append(asyncio.get_running_loop().time())
+        return [{"text": "ok", "importance": 5}]
+
+    harness = _DailyConcurrencyHarness(extract)
+    days = [
+        _daily("memories/2026-07-%02d.md" % (10 + i), "2026-07-%02d" % (10 + i), f"day-{i}")
+        for i in range(6)
+    ]
+    await asyncio.wait_for(
+        harness.aimport_external_daily("Neko", days, "hermes", "t"), timeout=10,
+    )
+
+    assert len(starts) == 6
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(g >= 0.15 for g in gaps)

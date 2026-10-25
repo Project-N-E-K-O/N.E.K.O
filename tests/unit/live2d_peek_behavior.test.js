@@ -37,7 +37,7 @@ function createHarness({
     const context = {
         Live2DManager,
         console,
-        setTimeout,
+        setTimeout, AbortController,
         clearTimeout,
         performance: {
             now: () => 0
@@ -322,7 +322,7 @@ function createCoreHarness({
 } = {}) {
     const context = {
         console,
-        setTimeout,
+        setTimeout, AbortController,
         clearTimeout,
         PIXI: {
             live2d: {
@@ -1688,6 +1688,67 @@ test('side head visibility wins when the waist cannot be pushed outside simultan
     assert.equal(manager._live2DPeekState.waistAnchored, false);
 });
 
+test('very small models stay flush with the contacted screen edge', async () => {
+    const cases = [
+        { edge: 'left', x: 0, y: 360, scaleX: 1 },
+        { edge: 'right', x: 1000, y: 360, scaleX: -1 },
+        { edge: 'top-left', x: 0, y: 0, scaleX: 1 },
+        { edge: 'bottom-right', x: 1000, y: 784, scaleX: -1 }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({
+            x: item.x,
+            y: item.y,
+            scaleX: item.scaleX,
+            width: 8,
+            height: 16
+        });
+        const drawableInset = 2;
+        manager.getModelDrawableScreenRects = () => {
+            const bounds = model.getBounds();
+            return [{
+                left: bounds.left + drawableInset,
+                top: bounds.top + drawableInset,
+                width: bounds.width - drawableInset * 2,
+                height: bounds.height - drawableInset * 2
+            }];
+        };
+        manager.getHeadScreenAnchor = () => model.transformPoint(4, 3);
+        manager.getHeadDetectionGeometryInfo = () => {
+            const anchor = model.transformPoint(4, 3);
+            return { reliableHeadRect: true, headAnchor: anchor, rawHeadAnchor: anchor };
+        };
+        manager.getBodyScreenRectInfo = () => {
+            const waist = model.transformPoint(4, 10);
+            return { rect: { centerX: waist.x, bottom: waist.y } };
+        };
+
+        const enterPromise = manager._tryApplyLive2DPeek(model);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true, `${item.edge} should enter`);
+        assert.equal(manager._live2DPeekState.edge, item.edge);
+
+        const drawable = manager.getModelDrawableScreenRects({ padding: 0 }, model)[0];
+        const drawableRight = drawable.left + drawable.width;
+        const drawableBottom = drawable.top + drawable.height;
+        if (item.edge === 'left' || item.edge.endsWith('-left')) {
+            assert.ok(Math.abs(drawable.left) <= 0.5, `${item.edge} drawable should touch the left edge, left=${drawable.left}`);
+        }
+        if (item.edge === 'right' || item.edge.endsWith('-right')) {
+            assert.ok(Math.abs(drawableRight - 1000) <= 0.5, `${item.edge} drawable should touch the right edge, right=${drawableRight}`);
+        }
+        if (item.edge.startsWith('top')) {
+            assert.ok(Math.abs(drawable.top) <= 0.5, `${item.edge} drawable should touch the top edge, top=${drawable.top}`);
+        }
+        if (item.edge.startsWith('bottom')) {
+            assert.ok(Math.abs(drawableBottom - 800) <= 0.5, `${item.edge} drawable should touch the bottom edge, bottom=${drawableBottom}`);
+        }
+    }
+});
+
 test('side head ratio is relative to a non-zero work-area top', async () => {
     const harness = createHarness({ innerHeight: 800 });
     const manager = new harness.Live2DManager();
@@ -1882,6 +1943,39 @@ test('macOS top corners trigger at the current display work-area top', async () 
         assert.equal(manager._live2DPeekState.edge, item.edge);
         assert.equal(model.rotation, item.rotation * Math.PI / 180);
     }
+});
+
+test('macOS panel origin below the menu bar still maps the work-area edge into renderer space', async () => {
+    const harness = createHarness({
+        platform: 'darwin',
+        currentDisplay: {
+            screenX: 0,
+            screenY: 25,
+            width: 1000,
+            height: 800,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 25, width: 1000, height: 744 }
+        }
+    });
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 0, scaleX: 1 });
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    await waitForQueuedFrame(harness);
+    flushNextFrame(harness);
+
+    assert.equal(await enterPromise, true);
+    assert.equal(manager._live2DPeekState.edge, 'top-left');
+    assertClose(model.rotation * 180 / Math.PI, 135, 'top-left rotation');
+    // 工作区顶部 (y=25) 减去窗口原点 (screenY=25) 应映射到本地 y=0；
+    // 如果忽略窗口原点，头部会整体下移 25px。
+    const head = model.transformPoint(150, 110);
+    assert.ok(head.y >= 36 && head.y <= 64, `head should sit at local top, got ${head.y}`);
 });
 
 test('Windows bottom corners trigger at the current display work-area bottom', async () => {
@@ -2520,7 +2614,7 @@ test('performance frame session markers clear on restore and remain for committe
     };
     let currentContainer = container;
     const context = {
-        console,
+        console, AbortController,
         document: {
             getElementById: (id) => id === 'live2d-container' ? container : null
         },
@@ -2529,7 +2623,7 @@ test('performance frame session markers clear on restore and remain for committe
             matchMedia: () => ({ matches: false }),
             requestAnimationFrame: () => 1,
             cancelAnimationFrame: () => {},
-            setTimeout
+            setTimeout, AbortController
         }
     };
     context.globalThis = context;

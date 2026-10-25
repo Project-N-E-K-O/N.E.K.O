@@ -1,21 +1,21 @@
 """
-Proactive Controller (主动搭话控制器)
+Proactive Controller
 
-系统级插件。集中管理主动搭话（proactive chat）的"模式"和"频率"——
-对外暴露一组稳定的入口，其他插件不需要直接知道 conversation-settings
-里那一堆 ``proactive*Enabled`` / ``proactive*Interval`` 字段，只需要
-``ctx.plugins.call_entry("proactive_controller:set_mode", {...})`` 之类的
-调用即可。
+System-level plugin centralizing proactive-chat modes and frequencies.
+Expose stable entry points so other plugins need not know the many
+``proactive*Enabled`` / ``proactive*Interval`` fields in conversation-settings;
+simply call something like
+``ctx.plugins.call_entry("proactive_controller:set_mode", {...})``.
 
-API 形态：
+API:
 
-* ``set_mode(mode)``         — 套用预设：``off`` / ``normal`` / ``focus`` / ``frequent``
-* ``set_settings(settings)`` — 细粒度更新若干字段（白名单内）
-* ``get_state()``            — 读取当前模式与字段
-* ``command(action, ...)``   — 单一聚合入口，方便"发消息式"调用
+* ``set_mode(mode)``         — Apply ``off`` / ``normal`` / ``focus`` / ``frequent`` presets.
+* ``set_settings(settings)`` — Update selected allowlisted fields.
+* ``get_state()``            — Read the current mode and fields.
+* ``command(action, ...)``   — Aggregated entry point for message-style calls.
 
-默认行为：首次启动且 ``user_preferences.json`` 中没有 ``proactiveChatEnabled``
-字段时，自动套用 ``off`` 预设（默认关闭所有主动搭话）；已有用户偏好则原样保留。
+Default: on first startup without ``proactiveChatEnabled`` in ``user_preferences.json``,
+apply ``off`` automatically, disabling all proactive chat; preserve existing user preferences unchanged.
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ from plugin.sdk.plugin import (
 
 _VALID_MODES = ("off", "normal", "focus", "frequent")
 
-# 用户绝对控制权字段：服务端 ``main_routers/proactive_router._USER_OWNED_FIELDS``
-# 的 client-side 镜像。``proactiveVisionEnabled`` 是前端"隐私模式"开关，
-# 必须由用户自己在 UI 决定，插件不能越权写入。
+# Fields under absolute user control: client-side mirror of server-side ``main_routers/proactive_router._USER_OWNED_FIELDS``.
+# ``proactiveVisionEnabled`` is the frontend privacy-mode switch,
+# which only the user may decide in UI; plugins must not override it.
 _USER_OWNED_FIELDS = frozenset({
     "proactiveVisionEnabled",
     "visitEnabled",
@@ -61,7 +61,7 @@ _PROACTIVE_INT_FIELDS = frozenset({
     "proactiveChatInterval",
     "proactiveVisionInterval",
 })
-# 写路径白名单：不含 ``_USER_OWNED_FIELDS``，让 set_settings 提前拒绝。
+# Write allowlist excludes ``_USER_OWNED_FIELDS``, allowing set_settings to reject early.
 _PROACTIVE_FIELDS = _PROACTIVE_BOOL_FIELDS | _PROACTIVE_INT_FIELDS
 
 
@@ -83,7 +83,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
         cfg = cfg if isinstance(cfg, dict) else {}
         section = cfg.get("proactive_controller") if isinstance(cfg.get("proactive_controller"), dict) else {}
 
-        # 主程序端口：优先读取主程序 config，回退到 toml 配置/默认值。
+        # Main-program port: prefer main config, then TOML config/defaults.
         try:
             from config import MAIN_SERVER_PORT
             self._api_port = int(MAIN_SERVER_PORT)
@@ -104,9 +104,9 @@ class ProactiveControllerPlugin(NekoPluginBase):
         if default_mode not in _VALID_MODES:
             default_mode = "off"
 
-        # 首次运行判定：以 user_preferences.json 中是否已有 proactiveChatEnabled
-        # 为准——存在即视为用户已经配置过，原样保留；缺失才套用 default。
-        # 这样不需要额外的"已初始化"持久化标志，且重装/迁移时行为正确。
+        # Detect first use by proactiveChatEnabled's presence in user_preferences.json:
+        # preserve it when present as already configured; apply default only when absent.
+        # This avoids another persistent initialized flag and behaves correctly after reinstall/migration.
         current = await self._fetch_settings()
         if "proactiveChatEnabled" not in current:
             result = await self._apply_mode(default_mode)
@@ -192,7 +192,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
         out: dict[str, Any] = {"applied": result.get("applied", {})}
         if rejected_user_owned:
             out["rejected_user_owned"] = rejected_user_owned
-        # 服务端可能也独立报告类型/范围被丢弃的字段，原样透传。
+        # The server may independently report fields discarded for type/range errors; pass through unchanged.
         if "rejected" in result:
             out["rejected"] = result["rejected"]
         if "rejected_user_owned" in result:

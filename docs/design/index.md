@@ -34,6 +34,7 @@ PetCare 产品设计。
 - [Compact chat mode](./compact-chat-mode-design)
 - [Memory event journal](./memory-event-log-rfc)
 - [User-driven memory evidence](./memory-evidence-rfc)
+- [Plugin control requests and entry execution](./plugin-control-rpc)
 - [PNGTuber lightweight avatar](./pngtuber-lightweight-avatar-plan)
 - [Translation subtitle panel](./translation-subtitle-panel-design)
 - [TTS provider and voice-source unification](./tts-voice-source-unification)

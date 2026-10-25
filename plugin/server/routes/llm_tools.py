@@ -88,6 +88,17 @@ async def llm_tool_callback(
         # JSON array or string; coerce or reject explicitly so the
         # plugin never receives a non-dict.
         arguments = {}
+    host_reply = body.get("host_reply")
+    if isinstance(host_reply, dict) and host_reply.get("source") == "plugin:" + plugin_id:
+        arguments = dict(arguments)
+        # This reserved context comes from the host, never from model arguments.
+        arguments["_ctx"] = {
+            "host_reply": dict(host_reply), "lanlan_name": host_reply.get("role"),
+        }
+    elif isinstance(arguments.get("_ctx"), dict) and "host_reply" in arguments["_ctx"]:
+        arguments = dict(arguments)
+        arguments["_ctx"] = dict(arguments["_ctx"])
+        arguments["_ctx"].pop("host_reply", None)
     call_id = body.get("call_id") or ""
 
     # First sanity check: do we even know about this tool? Without this,
@@ -189,10 +200,10 @@ async def llm_tool_callback(
     # remain inside the model-visible output. A bare dict carrying only
     # ``output`` also stays data for backward compatibility.
     #
-    # 刻意和 main_routers/tool_router.py 的 looks_like_tool_envelope 不同，别
-    # 顺手合并：那条路的 wire shape 文档写死了 {"output": ..., "is_error": ...}，
-    # 单独一个 ``output`` 就是信封；这里收的是插件 handler 的返回值，
-    # ``output`` 单独出现是普通数据。
+    # Deliberately differs from looks_like_tool_envelope in main_routers/tool_router.py; do not
+    # merge them. That path's documented wire shape is {"output": ..., "is_error": ...},
+    # and output alone is an envelope. Here values come from plugin handlers,
+    # where output alone is ordinary data.
     if isinstance(result, dict) and (
         "is_error" in result or ("output" in result and "images" in result)
     ):

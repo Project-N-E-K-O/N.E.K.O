@@ -332,7 +332,7 @@ async def test_voices_endpoint_maps_vllm_default_to_custom_api_catalog(monkeypat
     result = await voice_preview_module.get_voices()
 
     # The catalog source is Custom API, but the runtime owner stays vllm_omni.
-    # 目录显示“自定义 API”，实际保存与调度仍归属 vllm_omni。
+    # The catalog displays Custom API; persistence and dispatch still belong to vllm_omni.
     assert result["native_voices"]["default"] == {
         "prefix": "default",
         "provider": "vllm_omni",
@@ -428,7 +428,7 @@ def test_vllm_resolve_keeps_selection_snapshot_when_disk_changes(monkeypatch):
         "voice": "snapshot-voice",
     }
     # Sensitive credentials are intentionally resolved from raw storage only.
-    # 敏感 API Key 不进会话快照，仍只从原始配置解析。
+    # Exclude sensitive API keys from session snapshots; resolve them only from the original config.
     assert api_key == "new-disk-key"
     assert provider_key == "vllm_omni"
 
@@ -517,7 +517,7 @@ def test_custom_config_read_failure_stays_owned_until_supervised_fallback(monkey
     worker(request_queue, response_queue, api_key, "vendor-voice")
 
     # Keep ownership until core strips the failed preset identity and credentials.
-    # 读取失败不能直接误入 CosyVoice；先保留 custom 身份，再由监管层安全回退。
+    # A read failure must not accidentally select CosyVoice; retain custom identity, then let supervision fall back safely.
     assert provider_key == "custom"
     assert api_key == ""
     assert response_queue.get_nowait() == ("__ready__", False)
@@ -624,7 +624,7 @@ def test_supervised_fallback_uses_qwen_credentials_from_real_config(
     assert LLMSessionManager._activate_configured_tts_fallback(mgr, "test") is True
 
     # The replacement sees neither the failed Voice ID nor the custom credential.
-    # 替代 worker 只能收到默认路由的空音色和默认凭证，不能复用失败配置。
+    # Replacement workers receive only the default route's empty voice and default credentials, never the failed config.
     assert old_request_queue.get_nowait() == ("__shutdown__", None)
     assert mgr._tts_excluded_provider_keys == frozenset({"custom"})
     assert mgr._tts_fallback_uses_default_voice is True

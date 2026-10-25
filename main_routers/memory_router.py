@@ -22,7 +22,7 @@ Handles memory-related endpoints including:
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -49,8 +50,8 @@ from utils.character_memory import (
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
-# merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
-# 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
+# In merged single-process mode (release default), this module and memory_server writers share a process
+# and utils.recent_file's per-path lock; bare atomic_write_json_async bypasses it.
 from utils.recent_file import (
     RecentFileDeletedError,
     capture_recent_generation,
@@ -68,15 +69,20 @@ from memory.external_markdown_import import (
     build_import_candidates,
     collect_markdown_files,
 )
+from memory.external_molili_import import (
+    MAX_ZIP_BYTES,
+    build_molili_candidates,
+    detect_molili_archive,
+)
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
-# 记忆开关的「请求级」串行化，和文件级的 core_config.json 写锁不是一回事：
-# - 文件一致性（读→改→写不被别的写入方用旧快照覆盖）由 config_manager 的
-#   aupdate_json_config 统一保证，/core_api 保存、启动迁移走的也是那一把；
-# - 这把锁额外罩住强力记忆关闭时那次最长 10 秒的 memory_server 迁移，让开关
-#   请求之间、以及前端恢复用的 GET 回读，都等进行中的开关操作出最终结果。
-# 慢迁移放在文件锁之外，所以这 10 秒里 /core_api 等其它写入方照常落盘不受阻。
+# Request-level serialization for memory switches differs from core_config.json's file-write lock:
+# - config_manager.aupdate_json_config guarantees file consistency, preventing stale-snapshot overwrite
+#   across read-modify-write. /core_api saves and startup migration use the same lock.
+# - This additional lock covers the up-to-10-second memory_server migration when disabling strong memory, making
+#   switch requests and frontend-recovery GET reads wait for the in-flight operation's final result.
+# Slow migration runs outside the file lock, leaving /core_api and other writers unblocked during those ten seconds.
 _memory_toggle_write_lock = asyncio.Lock()
 
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
@@ -460,20 +466,20 @@ def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserve
     return True, ""
 
 
-# 单条消息文本上限(字符)。现场触发的内存尖峰复盘:用户从外部
-# 复制一坨长文本粘贴进 recent → 整段以单条 message 形式落盘 → 后续
-# memory pipeline 把这条当成「stale entry」喂给 embedder → batch 内
-# pad-to-longest 把激活内存顶到多 GB(虽然 embedder 侧已加 token 预算
-# 兜底,这里仍在边界堵住「单条 megablob」的入口,避免把异常大对象
-# 漫到 ndjson / db / recall 等所有下游)。32K 字符 ≈ 32K token(中文)
-# 对正常对话足够宽松(单条 5K 中文 = 一篇较长文章),又把 worst-case
-# 入站体积钉住。
+# Per-message text limit in characters. Incident: a user pasted a large external text
+# into recent, persisted as one message. The memory pipeline later fed it
+# to the embedder as a stale entry; pad-to-longest across the batch pushed
+# activation memory into multiple gigabytes. Even with embedder token-budget
+# safeguards, block single huge blobs at this boundary so oversized objects cannot
+# spread through NDJSON / database / recall. 32K characters is about 32K Chinese tokens,
+# generous for normal chats (5K Chinese characters is already a long article) while bounding
+# worst-case inbound size.
 _RECENT_MESSAGE_TEXT_MAX_CHARS = 32 * 1024
-# 整个 chat payload 的累计文本上限。控制「一次粘贴 1000 条 30K 文本」
-# 这种总量攻击/误操作。2 MB 对真实长会话仍宽裕,异常体积会被打回。
+# Cumulative chat-payload text limit prevents accidents/attacks such as pasting 1000 messages of 30K characters.
+# 2MB still accommodates real long chats while rejecting abnormal volume.
 _RECENT_CHAT_TOTAL_CHARS_MAX = 2 * 1024 * 1024
-# 消息条数上限。冗余防御:即使每条都很短,几十万条也能把后续
-# scan/embed/render 全拖死。
+# Message-count limit provides redundant protection: hundreds of thousands of short messages
+# can still overwhelm downstream scan/embed/render work.
 _RECENT_CHAT_MAX_MESSAGES = 10000
 
 
@@ -906,7 +912,7 @@ def _merge_browser_payload_with_theater(
             and not isinstance(source, bool)
             and cursor <= source < len(current)
         ):
-            # 旧客户端只回传 {role, text}：按类型 + 原文向前对齐，编辑过的条目对不上。
+            # Legacy clients return only {role, text}: align forward by type and original text; edited entries will not match.
             source = None
             item_key = _recent_payload_type_and_content(item)
             for index in range(cursor, len(current)):
@@ -915,7 +921,7 @@ def _merge_browser_payload_with_theater(
                     break
         if source is None:
             if chat_item.get("theater"):
-                # 浏览器标成剧场的条目绝不能以普通文本写回；原件会从快照补回。
+                # Browser-labeled theater entries must never be saved as ordinary text; restore originals from snapshots.
                 continue
             has_unresolved_item = True
             merged.append(item)
@@ -935,8 +941,8 @@ def _merge_browser_payload_with_theater(
         merged.append(item)
     merged.extend(current[index] for index in theater_indexes[next_theater:])
     if has_unresolved_item and len(matched_theater) < len(theater_indexes):
-        # 有剧场胶囊没被对上，同时又有对不上原文的条目：它可能正是被旧页面改过的
-        # 胶囊，写回就会把剧场虚构当成日常记忆。宁可拒绝，让用户重新加载。
+        # Unmatched theater capsules alongside entries differing from original text may be capsules edited by old pages;
+        # writing them back turns theater fiction into everyday memory. Reject and require reload instead.
         raise _RecentBrowserTheaterEditRejected()
     return merged
 
@@ -965,7 +971,21 @@ def _write_recent_browser_payload(
             and expected_fingerprint != current_fingerprint
         ):
             return False, current_fingerprint, current_identity_token
-        # 剧场胶囊只能经 /cache 与 /theater/forget 维护；浏览器保存原样保留。
+        # Retain projection identity through edits without accepting IDs supplied by the browser.
+        from memory.recent_sync import ID_KEY, TIME_KEY
+        from utils.llm_client import message_metadata
+        current_rows = json.loads(current_text)
+        if not isinstance(current_rows, list):
+            current_rows = []
+        for item, edit in zip(payload, browser_chat or []):
+            source = edit.get("source_index") if isinstance(edit, dict) else None
+            if type(source) is int and 0 <= source < len(current_rows):
+                key = message_metadata(current_rows[source]).get(ID_KEY)
+                source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
+                if key and item.get("type") == source_type:
+                    item["data"].setdefault("metadata", {})[ID_KEY] = key
+                    item["data"]["metadata"][TIME_KEY] = message_metadata(current_rows[source]).get(TIME_KEY)
+        # Maintain theater capsules only through /cache and /theater/forget; browser saves preserve them unchanged.
         payload = _merge_browser_payload_with_theater(
             current_text, payload, browser_chat,
         )
@@ -1261,8 +1281,8 @@ async def get_recent_file(filename: str):
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
-    # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
+    # Offload synchronous reads: recent.json can reach several megabytes.
+    # Hold the file lock: on Windows even a bare open() can make concurrent os.replace raise PermissionError.
     try:
         content, identity_token = await asyncio.to_thread(
             _read_recent_browser_snapshot, resolved_path,
@@ -1321,8 +1341,8 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
-    # 保存到读取时会解析到的同一布局；旧版 flat/project 文件不能被悄悄
-    # 改写到一个尚不存在的 runtime nested 路径，否则 CAS 比较失去对象。
+    # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
+    # runtime nested paths, or CAS comparisons lose their target.
     resolved_path, _path_error, path_error_code, _ = resolve_recent_file_path(
         cm, filename,
     )
@@ -1393,10 +1413,10 @@ async def save_recent_file(request: Request):
             )
         
         if catgirl_name:
-            # 中断 memory_server 的 review 任务
+            # Interrupt memory_server review tasks.
             import httpx
             from config import MEMORY_SERVER_PORT
-            # per-call AsyncClient: 用户手动保存最近对话触发，冷路径
+            # Per-call AsyncClient: cold path triggered by manually saving recent conversations.
             try:
                 async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                     await client.post(
@@ -1407,7 +1427,7 @@ async def save_recent_file(request: Request):
             except Exception as e:
                 logger.warning(f"Failed to cancel correction task: {e}")
         
-        # 返回成功并提示需要刷新上下文
+        # Return success with a context-refresh hint.
         return {
             "success": True,
             "need_refresh": True,
@@ -1462,7 +1482,7 @@ async def update_catgirl_name(request: Request):
         characters = await cm.aload_characters()
         catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
 
-        # 兼容旧客户端在 canonical rename 成功后重复调用本端点的幂等路径。
+        # Idempotent compatibility for old clients calling this endpoint after canonical rename succeeds.
         if old_name not in catgirls and new_name in catgirls:
             if character_memory_exists(cm, old_name):
                 return JSONResponse(
@@ -1479,8 +1499,8 @@ async def update_catgirl_name(request: Request):
                 "already_renamed": True,
             }
 
-        # 单独移动 memory 会绕过角色改名事务的 task drain、配置发布和回滚。
-        # 统一委托 canonical route，避免旧派生任务沿 recent redirect 写进新角色。
+        # Moving memory separately bypasses rename-transaction task draining, configuration publication, and rollback.
+        # Delegate to the canonical route so old derived tasks cannot follow recent redirects into a new character.
         from .characters_router.crud import rename_catgirl
 
         return await rename_catgirl(old_name, request)
@@ -1605,16 +1625,16 @@ async def update_powerful_memory_config(request: Request):
 
             prev_enabled = config_data.get('powerful_memory_enabled', True)
 
-            # 开→关切换：先跑 migration（重置所有角色 confirmed reflection 的
-            # confirmed_at 到 now，让 time-driven fallback 走完整 14 天计时），
-            # **成功后**再 save config。否则 migration 失败后 config 已经
-            # `False`，下一次用户点关也不会再进 prev_enabled and not enabled 分
-            # 支，旧 confirmed_at 锚点永久漏迁移，旧 confirmed 可能立刻被 time-
-            # driven 抓走 promote。必须原子：要么两者都成功，要么都失败。
-            # 必须走 HTTP 调 memory_server——本 router 在 main_server 进程，直接
-            # `from memory_server import ...` 拿到的是 fresh 副本，reflection_engine
-            # 是 None，migration 会静默 no-op。memory_server 跑在独立进程
-            # (MEMORY_SERVER_PORT)，那里 reflection_engine 由 startup hook 初始化。
+            # ON -> OFF: migrate first, resetting every character's confirmed-reflection confirmed_at
+            # to now so time-driven fallback gets a full 14-day countdown;
+            # save configuration only after success. Otherwise failed migration leaves configuration
+            # False, and later disable clicks never enter prev_enabled and not enabled again,
+            # permanently missing old confirmed_at anchors; old confirmed reflections may immediately
+            # promote through time-driven fallback. Require atomic success or failure of both.
+            # Call memory_server via HTTP: this router lives in main_server; directly importing
+            # memory_server gets a fresh copy with reflection_engine None, making migration
+            # silently noop. memory_server runs separately at MEMORY_SERVER_PORT,
+            # where startup hooks initialize reflection_engine.
             # Only a confirmed false may skip migration; legacy values are unknown.
             if prev_enabled is not False and not enabled:
                 try:
@@ -1647,12 +1667,12 @@ async def update_powerful_memory_config(request: Request):
                     logger.warning(f"强力记忆切换 migration 异常，配置未保存: {e}")
                     return {"success": False, "error": str(e)}
 
-            # Migration 成功（或非 ON→OFF 切换）才落盘配置——保证用户从前端
-            # 视角看到的 toggle 状态与 reflection_engine 实际状态一致。
-            # 上面的 config_data 只用来判 prev_enabled；真正落盘对迁移结束后**重新
-            # 读到的**文件做改写，迁移那几秒里别人保存的字段不会被这份旧快照顶掉。
-            # 这个键只有本路由写，且本路由被 _memory_toggle_write_lock 串行化，
-            # 所以 prev_enabled 在落盘时仍然成立。
+            # Persist configuration only after successful migration or a non-ON->OFF change, keeping
+            # frontend toggle state consistent with actual reflection_engine state.
+            # config_data above determines prev_enabled only. Reread the file after migration before
+            # writing, preserving fields others saved during the migration seconds.
+            # Only this route writes the key and _memory_toggle_write_lock serializes it,
+            # so prev_enabled remains valid at persistence time.
             def _set_powerful(fresh_config):
                 fresh_config['powerful_memory_enabled'] = enabled
 
@@ -1668,14 +1688,14 @@ async def update_powerful_memory_config(request: Request):
 
 
 # ---------------------------------------------------------------
-# Legacy memory 扫描 / 手动清理（对应前端"清理遗留记忆"按钮）
+# Legacy memory scanning / manual cleanup for the frontend's clean-legacy-memory button.
 # ---------------------------------------------------------------
 #
-# 设计目标：列出不在当前 runtime ``memory_dir`` 下、但可能有历史遗留角色
-# 记忆的根目录（Documents / CFA 回退原路径 / 历史可读 Documents 候选），让
-# 用户主动勾选清理。默认不自动删，任何删除必须由 POST /legacy/purge 带
-# 明确路径列表触发，且路径必须落在 scan 返回的 ``legacy_roots[].root``
-# 白名单下（防路径逃逸）。
+# List roots outside current runtime memory_dir that may hold historical character memories
+# (Documents / former CFA fallback path / historical readable Documents candidates), letting
+# users explicitly select cleanup. Never delete automatically: POST /legacy/purge must
+# supply explicit paths under scan's legacy_roots[].root whitelist
+# to prevent path escape.
 
 
 def _collect_legacy_memory_roots(config_manager) -> list[tuple[Path, str]]:
@@ -1779,7 +1799,7 @@ def _external_import_error(message: str, status_code: int = 400) -> JSONResponse
     return JSONResponse({"success": False, "error": message}, status_code=status_code)
 
 
-def _decode_external_archive(raw: object) -> bytes | None:
+def _decode_external_archive(raw: object, *, max_bytes: int = MAX_TOTAL_BYTES) -> bytes | None:
     if raw in (None, ""):
         return None
     if not isinstance(raw, str):
@@ -1787,7 +1807,7 @@ def _decode_external_archive(raw: object) -> bytes | None:
     value = raw.strip()
     if value.startswith("data:") and "," in value:
         value = value.split(",", 1)[1]
-    max_base64_chars = 4 * ((MAX_TOTAL_BYTES + 2) // 3)
+    max_base64_chars = 4 * ((max_bytes + 2) // 3)
     if len(value) > max_base64_chars:
         raise ExternalMemoryImportError("Archive upload is too large")
     try:
@@ -1805,18 +1825,38 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     )
     if not validation.ok:
         raise ExternalMemoryImportError("Invalid target character name")
-    archive_bytes = _decode_external_archive(payload.get("archive_b64"))
+    requested_format = str(payload.get("source_format") or "auto").strip().lower()
+    # Image attachments dominate Molili archives (~8.6 MB of a ~9 MB sample is attachments/), so the decode
+    # cap is widened per format; the 8 MiB text budget is still enforced by each parser on the text it actually parses.
+    # auto also decodes up to the Molili cap first: before sniffing we cannot know whether it is Molili; archives that
+    # fail the sniff get an extra 8 MiB check, so OpenClaw/Hermes caps are unchanged.
+    archive_cap = MAX_ZIP_BYTES if requested_format in {"molili", "auto"} else MAX_TOTAL_BYTES
+    archive_bytes = _decode_external_archive(payload.get("archive_b64"), max_bytes=archive_cap)
     direct_files = payload.get("files")
     if archive_bytes is not None and direct_files:
         raise ExternalMemoryImportError("Choose either a ZIP archive or Markdown files, not both")
-    sources = collect_markdown_files(
-        direct_files if isinstance(direct_files, list) else None,
-        archive_bytes=archive_bytes,
+    is_molili = requested_format == "molili" or (
+        requested_format == "auto"
+        and archive_bytes is not None
+        and detect_molili_archive(archive_bytes)
     )
-    analysis = build_import_candidates(
-        sources,
-        source_format=str(payload.get("source_format") or "auto"),
-    )
+    if not is_molili and archive_bytes is not None and len(archive_bytes) > MAX_TOTAL_BYTES:
+        raise ExternalMemoryImportError("Archive upload is too large")
+    if is_molili:
+        analysis = build_molili_candidates(
+            archive_bytes=archive_bytes,
+            files=direct_files if isinstance(direct_files, list) else None,
+            source_format=requested_format,
+        )
+    else:
+        sources = collect_markdown_files(
+            direct_files if isinstance(direct_files, list) else None,
+            archive_bytes=archive_bytes,
+        )
+        analysis = build_import_candidates(
+            sources,
+            source_format=str(payload.get("source_format") or "auto"),
+        )
     return validation.normalized, analysis
 
 
@@ -1831,23 +1871,23 @@ async def preview_external_memory_import(request: Request):
         counts = {
             "persona": len(persona_cands),
             "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
-            # daily 日记走 commit 阶段 LLM 抽取，preview 显示的是解析出的片段数（近似）。
+            # Daily diaries use commit-stage LLM extraction; preview shows an approximate parsed-fragment count.
             "daily": sum(1 for item in analysis["candidates"] if item.get("kind") == "daily"),
         }
-        # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
-        # (neko / master) 分组，每组一次 LLM 往返；daily 日记按天（=source_file）
-        # 各一次 LLM 抽取；MEMORY.md facts 走纯写盘、不调 LLM。0 次调用 → 前端
-        # 回退到无预估文案。
+        # ETA inputs (frontend estimates time and labels the 240s limit): persona fusion groups by entity
+        # (neko/master), with one LLM roundtrip each; diaries get one extraction per day/source_file;
+        # MEMORY.md facts are disk writes without LLM calls. Zero calls makes the frontend
+        # use text without an estimate.
         persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
         daily_cands = [item for item in analysis["candidates"] if item.get("kind") == "daily"]
         daily_by_file: dict[str, list[str]] = {}
         for item in daily_cands:
             daily_by_file.setdefault(str(item.get("source_file") or ""), []).append(item["text"])
 
-        # count_tokens / 分批逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件
-        # 循环，与上面 _prepare_external_import 一致 offload 到线程池。daily 调用
-        # 次数用与 commit 侧同一个 batch_daily_fragments 算（超长天会拆多批），
-        # 保证 ETA 的调用计数与实际执行永不漂移。
+        # count_tokens encodes items in batches; imports near 8MiB / 1000 entries block the event
+        # loop, so offload like _prepare_external_import above. Count diary calls with the same
+        # batch_daily_fragments used at commit (long days split into multiple batches),
+        # ensuring estimated call counts never drift from execution.
         def _eta_inputs():
             from config import EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS
             persona_tokens = sum(count_tokens(item["text"]) for item in persona_cands)
@@ -1861,7 +1901,7 @@ async def preview_external_memory_import(request: Request):
         persona_candidate_tokens, daily_candidate_tokens, daily_extraction_calls = (
             await asyncio.to_thread(_eta_inputs)
         )
-        return {
+        response = {
             "success": True,
             "character_name": character_name,
             "source_format": analysis["source_format"],
@@ -1877,6 +1917,13 @@ async def preview_external_memory_import(request: Request):
             "candidates": analysis["candidates"][:100],
             "truncated_preview": len(analysis["candidates"]) > 100,
         }
+        if "character_card" in analysis:
+            # Molili only: card prefill material and the skip report; the frontend creates the character first, then imports memories
+            response["character_card"] = analysis["character_card"]
+            response["master_profile"] = analysis.get("master_profile") or {}
+            response["skipped"] = analysis["skipped"]
+            response["snapshot_time"] = analysis.get("snapshot_time", "")
+        return response
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
     except Exception as exc:
@@ -1924,10 +1971,13 @@ async def commit_external_memory_import(request: Request):
             # a durable preference. ``render_language`` is a validated, render-only
             # fallback; the memory server still resolves durable state at execution.
             json=memory_payload,
-            # persona 导入现在按 entity 同步跑 LLM 融合（每 entity 可数十秒），
-            # 30s 不够；放宽到 240s 覆盖 master+neko 两段融合。前端 commit 超时
-            # (memory_browser.js, 270s) 再略大于此，保证后端先返回而非前端先断。
-            timeout=240.0,
+            # Persona import runs synchronous LLM fusion per entity (tens of seconds each), and full
+            # first imports such as Molili (30+ days × fragment-capped extraction batches) were
+            # measured past 240s: a brand-new character's first import hit ReadTimeout at exactly
+            # 240s (the server kept running, but the browser only saw a 500). Allow 480s for fusion
+            # plus full daily extraction; the frontend commit timeout (540s) stays slightly higher
+            # so backend responses arrive before frontend disconnect.
+            timeout=480.0,
         )
         if response.status_code != 200:
             try:
@@ -1938,9 +1988,9 @@ async def commit_external_memory_import(request: Request):
                 detail = None
             error_code = upstream_error.get("error_code")
             if error_code in ("external_import_partial", "external_import_too_large"):
-                # 透传上游错误码 + partial 元数据（含已落盘的 added_persona）+ 状态码
-                # （partial=500 / too_large=413），否则前端拿不到对应分支的引导与
-                # memory_edited 广播（Codex P2）。
+                # Forward upstream error codes, partial metadata including persisted added_persona, and status
+                # (partial=500 / too_large=413), or the frontend loses branch-specific guidance
+                # and memory_edited broadcasts (Codex P2).
                 return JSONResponse(
                     {
                         "success": False,
@@ -1976,9 +2026,57 @@ async def commit_external_memory_import(request: Request):
         raise
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
+    except httpx.TimeoutException:
+        # The forwarding window running out is not an import failure: the memory server keeps running and daily fingerprints are
+        # idempotent, so a later re-import finishes it. Give the frontend a stable error code: httpx timeout exceptions may str() to
+        # an empty string, which the frontend's message regex cannot recognise and would show as a generic failure.
+        logger.warning("External memory import forward timed out; memory server keeps running")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "External memory import timed out; the memory server may still be finishing it",
+                "error_code": "external_import_timeout",
+            },
+            status_code=504,
+        )
     except Exception as exc:
         logger.exception("External memory import failed")
         return _external_import_error(f"External memory import failed: {exc}", 500)
+
+
+@router.get('/external_import/progress')
+async def get_external_import_progress(request: Request):
+    """Forward per-character external-import progress counters from memory_server.
+
+    Polled by the Molili import progress modal; same forwarding convention as
+    preview/commit."""
+    character_name = request.query_params.get('character_name') or ''
+    validation = validate_character_name(
+        character_name, allow_dots=True, max_length=50,
+    )
+    if not validation.ok:
+        return _external_import_error('Invalid target character name')
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
+
+    client = get_internal_http_client()
+    try:
+        response = await client.get(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/import_progress/"
+            + quote(validation.normalized, safe=''),
+            timeout=10.0,
+        )
+    except Exception as exc:
+        logger.warning(f"External import progress forward failed: {exc}")
+        return JSONResponse(
+            {'success': False, 'error': f'progress forward failed: {exc}'},
+            status_code=502,
+        )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {'success': False, 'error': f'HTTP {response.status_code}'}
+    return JSONResponse(payload, status_code=response.status_code)
 
 
 @router.get('/legacy/scan')
@@ -2223,7 +2321,7 @@ async def purge_legacy_memory(request: Request):
             })
             continue
 
-        # 通过所有校验，执行删除（PermissionError 重试一次）
+        # All checks passed: delete, retrying PermissionError once.
         async def _rmtree_once(p: Path) -> None:
             if p.is_dir():
                 await asyncio.to_thread(shutil.rmtree, p, ignore_errors=False)
@@ -2242,7 +2340,7 @@ async def purge_legacy_memory(request: Request):
             removed.append(str(target_resolved))
             logger.info(f"purge_legacy_memory: 已删除 {target_resolved}")
         except FileNotFoundError:
-            # 已经不存在，视为成功（幂等）
+            # Already absent counts as success, idempotently.
             removed.append(str(target_resolved))
             logger.debug(f"purge_legacy_memory: {target_resolved} 不存在，跳过（视为已删）")
         except Exception as exc:

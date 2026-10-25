@@ -1,12 +1,12 @@
-"""废弃免费 YUI 预设音色的自动平移（PR: voice-tone-R6NtLH3Hk0 → 现役国内 yui_cn）。
+"""Automatic remapping of deprecated free YUI preset voices (PR: voice-tone-R6NtLH3Hk0 → active domestic yui_cn).
 
-回归点：YUI 默认音色 ID 更替后，存量用户 characters.json 里残留的旧 tone ID
-已不在 free_voices 白名单，cleanup_invalid_voice_ids 会判 invalid 清空 → 空
-voice 落到 free/step 的 default_voice（qingchunshaonv），导致默认 YUI 用户无声
-掉档到通用女声。cleanup 在判 invalid 前先迁移：仅国内 free（lanlan.tech）平移到
-现役 yui_cn；海外 free（lanlan.app→free_intl）与非 free 路由不迁移，原样交既有
-validate 清空 → 落服务端默认（free_intl 的 "未知 ID 交服务端默认" 契约，PR #1643：
-客户端不得把 StepFun magic id 或 alias 注入 free_intl catalog）。
+Regression target: after the default YUI voice ID changed, old tone IDs left in existing users' characters.json
+no longer appear in the free_voices allowlist; cleanup_invalid_voice_ids marks them invalid and clears them → an empty
+voice falls back to the default_voice for free/step (qingchunshaonv), silently downgrading default YUI users
+to a generic female voice. Migrate before cleanup checks validity: only domestic free (lanlan.tech) moves to
+active yui_cn; overseas free (lanlan.app→free_intl) and non-free routes are not migrated, and are passed unchanged to existing
+validation for clearing → server default (free_intl contract: \"unknown ID falls back to server default\", PR #1643:
+clients must not inject StepFun magic IDs or aliases into the free_intl catalog).
 """
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ def _make_manager(character_data: dict, core_config: dict | None = None,
     mgr.save_characters = _save
     mgr.get_core_config = lambda: dict(core_config if core_config is not None else _DOMESTIC_FREE)
     mgr._check_non_mainland = lambda: non_mainland
-    # 这些用例考的是清理/迁移逻辑本身，前提是区域判定已落定——未落定时
-    # cleanup_invalid_voice_ids 会整体跳过（避免在猜测的区域上删掉海外音色，
-    # 见 test_geoip_region_gate.py 的 provisional 用例）。这里把该前提写明。
+    # These cases test cleanup/migration logic itself, assuming the region has already been determined — if it has not,
+    # cleanup_invalid_voice_ids skips everything (to avoid deleting overseas voices based on a guessed region;
+    # see the provisional case in test_geoip_region_gate.py). State that prerequisite here.
     mgr._region_verdict_is_provisional = lambda *_a: False
     return mgr
 
@@ -58,12 +58,12 @@ def test_cleanup_migrates_deprecated_yui_voice(monkeypatch):
     assert cleaned == 0
     assert legacy == []
     assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == NEW_YUI_VOICE_ID
-    # 迁移命中应触发存盘
+    # A migration hit should trigger persistence
     assert mgr._saved.get("data") is character_data
 
 
 def test_cleanup_migrates_whitespace_padded_deprecated_voice(monkeypatch):
-    """带前后空白的废弃值也应被识别并平移到干净的现役 yui_cn。"""
+    """Deprecated values with leading/trailing whitespace should also be recognized and remapped to clean active yui_cn."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     character_data = _yui(f"  {OLD_YUI_VOICE_ID}  ")
     mgr = _make_manager(character_data)
@@ -72,13 +72,13 @@ def test_cleanup_migrates_whitespace_padded_deprecated_voice(monkeypatch):
 
     assert cleaned == 0
     assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == NEW_YUI_VOICE_ID
-    # 迁移命中应触发存盘（与 test_cleanup_migrates_deprecated_yui_voice 对偶）
+    # A migration hit should trigger persistence (paired with test_cleanup_migrates_deprecated_yui_voice)
     assert mgr._saved.get("data") is character_data
 
 
 def test_remap_overseas_free_keeps_value_for_server_default(monkeypatch):
-    """海外 free（lanlan.app→free_intl）：废弃 StepFun tone 不迁移，原样返回，交既有
-    validate 清空 → 落服务端默认。客户端绝不注入 "yui"/native alias（PR #1643）。"""
+    """Overseas free (lanlan.app→free_intl): do not migrate deprecated StepFun tones; return them unchanged for existing
+    validation to clear → server default. The client must never inject a \"yui\"/native alias (PR #1643)."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     mgr = _make_manager({}, core_config=_OVERSEAS_FREE)
 
@@ -86,7 +86,7 @@ def test_remap_overseas_free_keeps_value_for_server_default(monkeypatch):
 
 
 def test_remap_overseas_by_geo_keeps_value(monkeypatch):
-    """URL 仍是 lanlan.tech 但地理判海外时，靠 _check_non_mainland 兜底也不迁移。"""
+    """Even if the URL is still lanlan.tech, do not migrate when geo detection says overseas; _check_non_mainland is the fallback."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     mgr = _make_manager({}, core_config=_DOMESTIC_FREE, non_mainland=True)
 
@@ -94,11 +94,11 @@ def test_remap_overseas_by_geo_keeps_value(monkeypatch):
 
 
 def test_cleanup_overseas_clears_stale_yui_for_server_default(monkeypatch):
-    """端到端：海外 free 下废弃 tone 不被迁移、由 validate 判 invalid 清空 → 落服务端默认。"""
+    """End to end: under overseas free, a deprecated tone is not migrated; validation marks it invalid and clears it → server default."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     character_data = _yui(OLD_YUI_VOICE_ID)
     mgr = _make_manager(character_data, core_config=_OVERSEAS_FREE)
-    mgr.validate_voice_id = lambda voice_id: False  # 海外线路下 stale StepFun tone invalid
+    mgr.validate_voice_id = lambda voice_id: False  # A stale StepFun tone is invalid on the overseas route
 
     cleaned, legacy = mgr.cleanup_invalid_voice_ids()
 
@@ -107,7 +107,7 @@ def test_cleanup_overseas_clears_stale_yui_for_server_default(monkeypatch):
 
 
 def test_remap_non_free_route_keeps_value(monkeypatch):
-    """非 free 路由（如 qwen）下废弃 StepFun preset 用不上，不迁移、交清空兜底。"""
+    """On a non-free route such as qwen, a deprecated StepFun preset is not applicable; do not migrate, leave it to the clearing fallback."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     mgr = _make_manager({}, core_config=_NON_FREE)
 
@@ -118,18 +118,18 @@ def test_cleanup_keeps_current_yui_voice_untouched(monkeypatch):
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     character_data = _yui(NEW_YUI_VOICE_ID)
     mgr = _make_manager(character_data)
-    mgr.validate_voice_id = lambda voice_id: True  # 现役 preset 合法
+    mgr.validate_voice_id = lambda voice_id: True  # An active preset is valid
 
     cleaned, legacy = mgr.cleanup_invalid_voice_ids()
 
     assert cleaned == 0
     assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == NEW_YUI_VOICE_ID
-    # 无改动不应存盘
+    # No changes should not trigger persistence
     assert "data" not in mgr._saved
 
 
 def test_cleanup_still_clears_unrelated_invalid_voice(monkeypatch):
-    """回归：平移逻辑不能放过真正无效的、与 YUI 无关的存量 voice_id。"""
+    """Regression: remapping must not let truly invalid, YUI-unrelated existing voice_id values through."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     character_data = {"猫娘": {"A": {"_reserved": {"voice_id": "some-stale-clone"}}}}
     mgr = _make_manager(character_data)
@@ -142,8 +142,8 @@ def test_cleanup_still_clears_unrelated_invalid_voice(monkeypatch):
 
 
 def test_cleanup_clears_whitespace_padded_invalid_voice(monkeypatch):
-    """回归（CodeRabbit / Codex）：带前后空白的非废弃无效 voice_id 不能被 remap
-    的归一化误当成「已迁移」而漏清，必须照常走 invalid 清空。"""
+    """Regression (CodeRabbit / Codex): normalization during remapping must not mistake a non-deprecated invalid voice_id with surrounding whitespace as \"already migrated\" and skip clearing it;
+it must still follow the usual invalid-value cleanup."""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     character_data = {"猫娘": {"A": {"_reserved": {"voice_id": "  some-stale-clone  "}}}}
     mgr = _make_manager(character_data)
@@ -156,8 +156,8 @@ def test_cleanup_clears_whitespace_padded_invalid_voice(monkeypatch):
 
 
 def test_remap_requires_yui_cn_not_other_preset(monkeypatch):
-    """回归（Codex）：国内 free 但 free_voices 缺 yui_cn、只有别的 preset 时不得
-    借 cuteGirl 等当替身把废弃 YUI 串成别的音色——原样返回，交清空兜底。"""
+    """Regression (Codex): on domestic free, if free_voices lacks yui_cn and contains only other presets, do not use a substitute such as cuteGirl to turn the deprecated YUI string into another voice —
+return it unchanged for the clearing fallback."""
     _patch_free_voices(monkeypatch, {"cuteGirl": "voice-tone-PGLiyZt65w"})
     mgr = _make_manager({})
 
@@ -165,7 +165,7 @@ def test_remap_requires_yui_cn_not_other_preset(monkeypatch):
 
 
 def test_remap_keeps_deprecated_when_current_unresolvable(monkeypatch):
-    """国内 free 但现役 yui_cn 解析不出（free_voices 为空）时不乱换。"""
+    """Do not substitute a voice when domestic free cannot resolve active yui_cn (free_voices is empty)."""
     _patch_free_voices(monkeypatch, {})
     mgr = _make_manager({})
 

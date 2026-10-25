@@ -514,10 +514,10 @@ async def test_galgame_missing_model_base_url_returns_fallback(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_galgame_options_skipped_when_session_takeover_active(monkeypatch):
-    """game route 接管会话期间（语音输入被改路由进游戏逻辑），React composer
-    的 galgame 面板不是当前活动界面。此时生成选项只会白烧 summary 档 token，
-    所以端点必须短路到 fallback 且**不调用 LLM** —— 与 core.py 里 voice-proactive
-    的 `_takeover_active` 守卫对称。"""
+    """While the game route owns the session (voice input is routed into game logic), the React composer's
+    galgame panel is not active. Generating options merely wastes summary-tier tokens,
+    so the endpoint must short-circuit to fallback without calling the LLM, symmetrically with the voice-proactive
+    `_takeover_active` guard in core.py."""
     config_manager = FakeConfigManager(
         {
             "model": "local-summary",
@@ -553,16 +553,16 @@ async def test_galgame_options_skipped_when_session_takeover_active(monkeypatch)
     assert data["fallback"] is True
     assert data["reason"] == "session_takeover"
     assert _option_texts(data) == list(get_galgame_fallback_options("zh"))
-    # 守卫必须在解析 summary 模型配置之前短路，summary 档配置不应被读取。
+    # The guard must short-circuit before resolving summary model config; do not read that tier's config.
     assert "summary" not in config_manager.calls
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_galgame_options_generated_when_session_not_taken_over(monkeypatch):
-    """守卫只在接管期间短路 —— mgr 存在但未接管时必须照常生成选项。不能因为
-    「有活跃（语音）会话」就一刀切拦掉：用户开着聊天窗口用文字选项插话是合法
-    用法。"""
+    """Short-circuit only during takeover; when mgr exists without takeover, generate options normally. An active
+    voice session alone must not block this: users may legitimately interject with text options
+    from the chat window."""
     config_manager = FakeConfigManager(
         {
             "model": "local-summary",

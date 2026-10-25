@@ -49,6 +49,461 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     assert "centerPreview ? 0" not in normalize_block
 
 
+def test_pngtuber_transition_guard_predicate_covers_known_transitions():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    block = source[
+        source.index("isTransitionBlockingPlacementSave() {"):
+        source.index("async resetModelPosition()")
+    ]
+
+    # The predicate must cover all known transition signals; add new signals here rather than scattering additional guards
+    assert "window.appState.isSwitchingCatgirl" in block
+    assert "window._modelReloadInFlight" in block
+    assert "isMainUIHiddenByModelManager" in block
+
+
+def test_pngtuber_reset_model_position_restores_default_placement():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    block = source[
+        source.index("async resetModelPosition()"):
+        source.index("async checkAndSwitchDisplayAfterDrag(state)")
+    ]
+
+    assert "if (this._dragState || this._touchZoomState) return;" in block
+    # Consolidate transition guards into one shared predicate for reset entry and pre-save requests
+    # (character switching / same-character reload / model-manager UI ownership; card dialogs do not set reload)
+    assert "if (this.isTransitionBlockingPlacementSave()) return;" in block
+    assert block.index("if (this.isTransitionBlockingPlacementSave()) return;") < block.index(
+        "if (this._dragState || this._touchZoomState) return;"
+    )
+    assert "this._dragSequence += 1;" in block
+    assert "this.cancelEdgeSnapAnimation();" in block
+    assert "this.setActiveOffsets(0, 0);" in block
+    assert "this.setActiveScale(1);" in block
+    assert "this.applyTransform();" in block
+    assert "this.syncGlobalConfig();" in block
+    # Reset must persist even when its default key matches the last completed save; deduplication must not skip it
+    assert "this._lastSavedPositionKey = '';" in block
+    assert block.index("this._lastSavedPositionKey = '';") < block.index(
+        "await this.saveOrStageCurrentConfig();"
+    )
+    assert "await this.saveOrStageCurrentConfig();" in block
+    # position_anchor is a placement preference (center/bottom-right), not a dragged position, so reset leaves it unchanged
+    assert "position_anchor" not in block
+
+
+def test_pngtuber_load_invalidates_save_dedup_key_for_new_model():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    load_head = source[
+        source.index("        async load(config, options = {}) {"):
+        source.index("pngtuber-model-loading")
+    ]
+
+    # Dedup keys contain placement but no character identity; the manager singleton spans characters, so clear keys on model change,
+    # or the previous character's final key suppresses identical placement saves for the next (reset uses canonical placement)
+    assert "this._lastSavedPositionKey = '';" in load_head
+    assert load_head.index("this._lastSavedPositionKey = '';") < load_head.index(
+        "this.config = normalizedConfig;"
+    )
+
+
+def test_pngtuber_save_dedup_key_write_binds_to_load_generation():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    save_block = source[
+        source.index("        async saveCurrentConfig()"):
+        source.index("        scheduleSaveCurrentConfig")
+    ]
+
+    # A save spanning load() completion must not restore a cleared key (Codex P2 / CodeRabbit
+    # Data Integrity): guard key writeback by the load generation
+    assert "const saveGeneration = this._loadGeneration;" in save_block
+    assert "if (this._loadGeneration === saveGeneration) {" in save_block
+    assert save_block.index("const saveGeneration = this._loadGeneration;") < save_block.index(
+        "if (this._loadGeneration === saveGeneration) {"
+    )
+    # Reject stale tasks by generation before fetch (Codex P1): after same-character reload, replacing the full object from an old snapshot
+    # restores superseded configuration, so guarding only key writeback is insufficient
+    assert "if (this._loadGeneration !== saveGeneration) {" in save_block
+    assert save_block.index("if (this._loadGeneration !== saveGeneration) {") < save_block.index(
+        "const response = await fetch("
+    )
+
+
+def test_pngtuber_save_binds_identity_and_payload_at_enqueue():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    save_block = source[
+        source.index("        async saveCurrentConfig()"):
+        source.index("        scheduleSaveCurrentConfig")
+    ]
+
+    # Capture identity/payload at enqueue and recheck at execution (Codex P1): cross-type hot switches call only
+    # hide(), retaining the save chain; lazy name reads would PUT A's pngtuber configuration into the current character's
+    # record (the backend still writes fields preserved by model_type)
+    assert "const queuedName = this.resolveDirectLanlanName();" in save_block
+    assert "const queuedPayload = {" in save_block
+    # Capture identity/payload synchronously and reserve the chain slot synchronously (append before any await):
+    # enqueueing after awaited fallback-name resolution can reverse save order when resolutions complete out of order
+    assert save_block.index("const queuedPayload = {") < save_block.index(
+        "const queuedName = this.resolveDirectLanlanName();"
+    )
+    assert save_block.index("const queuedName = this.resolveDirectLanlanName();") < save_block.index(
+        "const runSave = async () => {"
+    )
+    assert save_block.index("const runSave = async () => {") < save_block.index(
+        "if (this.resolveDirectLanlanName() !== queuedName)"
+    )
+    # Reject configurations lacking a directly readable name before enqueue (rather than using /api/config fallback): without safely bound identity,
+    # send nothing (CodeRabbit Major)
+    assert "if (!queuedName) {" in save_block
+    assert save_block.index("if (!queuedName) {") < save_block.index(
+        "const runSave = async () => {"
+    )
+    run_save_block = save_block[save_block.index("const runSave = async () => {"):]
+    # runSave is synchronous from checks through PUT, without fallback-resolution awaits: no reordering window or post-check
+    # drift window; identity binds at enqueue, and PUT uses that captured name
+    assert "resolveCurrentLanlanName" not in run_save_block
+    pre_fetch = run_save_block[:run_save_block.index("const response = await fetch(")]
+    assert "await " not in pre_fetch
+    assert "encodeURIComponent(queuedName)" in run_save_block
+    assert "JSON.stringify(queuedPayload)" in run_save_block
+    assert "(window.lanlan_config?.model_type || '').toLowerCase() !== 'pngtuber'" in run_save_block
+    assert "this.resolveDirectLanlanName() !== queuedName" in run_save_block
+    # Recheck transition state before sending: transitions starting after enqueue (such as opening model management
+    # and saving a new package while reset is queued) must also cancel the save
+    assert "this.isTransitionBlockingPlacementSave()" in run_save_block
+    assert run_save_block.index("this.isTransitionBlockingPlacementSave()") < run_save_block.index(
+        "const response = await fetch("
+    )
+    # Execution must not lazily reread config or use a re-resolved name as PUT identity
+    assert "Object.assign({}, this.config)" not in run_save_block
+
+
+def test_pngtuber_save_pipeline_timing_guards():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber save timing tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const source = __SOURCE_JSON__;
+
+// 完成哨兵：未完成的 Promise 不 удерж node 事件循环，进程会以退出码 0
+// 提前退出，让尾部场景的断言静默变成死代码（Codex P2 / CodeRabbit）。
+// 场景全部跑完后才置位，提前退出在此大声失败。
+let finished = false;
+process.on('beforeExit', () => {
+  if (!finished) {
+    console.error('COMPLETION_SENTINEL: script exited before all scenarios finished');
+    process.exitCode = 1;
+  }
+});
+
+class StubElement {
+  constructor(tag) {
+    this.tagName = tag;
+    this.style = {};
+    this.dataset = {};
+    this.classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
+    this.children = [];
+  }
+  appendChild(child) { this.children.push(child); return child; }
+  remove() {}
+  addEventListener() {}
+  removeEventListener() {}
+  setAttribute() {}
+  removeAttribute() {}
+  getAttribute() { return null; }
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
+  contains() { return false; }
+  getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; }
+}
+
+function makeContext() {
+  const state = { fetches: [], configApiName: 'neko' };
+  let releaseGate;
+  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  let fetchCallCount = 0;
+  const window = {
+    location: { pathname: '/' },
+    innerWidth: 1000,
+    innerHeight: 800,
+    appState: { isSwitchingCatgirl: false },
+    lanlan_config: { model_type: 'pngtuber', lanlan_name: 'neko' },
+  };
+  const document = {
+    body: Object.assign(new StubElement('body'), { classList: { contains() { return false; }, toggle() {}, add() {}, remove() {} } }),
+    head: new StubElement('head'),
+    documentElement: new StubElement('html'),
+    getElementById() { return null; },
+    querySelectorAll() { return []; },
+    createElement: (tag) => new StubElement(tag),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const context = {
+    console,
+    performance: { now: () => 0 },
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame: () => {},
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    Image: class { constructor() { this.style = {}; } },
+    Audio: class { constructor() {} addEventListener() {} },
+    CustomEvent: class { constructor(type, opts) { this.type = type; this.detail = opts && opts.detail; } },
+    fetch: async (url, options) => {
+      if (String(url) === '/api/config') {
+        // 名字兜底解析：受同一计数门控制（首笔 fetch 仍被拦），不计入 PUT 记录
+        fetchCallCount += 1;
+        if (fetchCallCount === 1) {
+          await gate;
+        }
+        return { ok: true, json: async () => ({ lanlan_name: state.configApiName }) };
+      }
+      fetchCallCount += 1;
+      if (fetchCallCount === 1) {
+        await gate;
+      }
+      state.fetches.push({ url, body: options ? JSON.parse(options.body) : null });
+      return { ok: true, json: async () => ({ success: true }) };
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() { return true; },
+    window,
+    document,
+  };
+  window.addEventListener = context.addEventListener;
+  window.removeEventListener = context.removeEventListener;
+  window.dispatchEvent = context.dispatchEvent;
+  window.CustomEvent = context.CustomEvent;
+  window.Image = context.Image;
+  window.setTimeout = context.setTimeout;
+  window.clearTimeout = context.clearTimeout;
+  document.addEventListener = context.addEventListener;
+  vm.createContext(context);
+  vm.runInContext(source, context, { filename: 'pngtuber-core.js' });
+  return { context, state, releaseGate, window };
+}
+
+const placement = (offsetX) => ({
+  offset_x: offsetX,
+  offset_y: 0,
+  scale: 1,
+  mobile_scale: 1,
+  mobile_offset_x: 0,
+  mobile_offset_y: 0,
+  position_anchor: 'center',
+  mirror: false,
+});
+
+(async () => {
+  // 跨类型热切换：排队的保存不得落到切换后的 Live2D 角色记录上
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    window.lanlan_config.model_type = 'live2d';
+    window.lanlan_config.lanlan_name = 'miku';
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 1, 'only the in-flight A save PUTs');
+    assert.ok(state.fetches[0].url.includes('/l2d/neko'), 'in-flight save goes to A');
+    assert.ok(!state.fetches.some((f) => f.url.includes('miku')),
+      'queued save must not reach the switched-to live2d character');
+  }
+
+  // 同类型换角色：排队的保存同样中止
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    window.lanlan_config.lanlan_name = 'bocchi';
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 1, 'only the in-flight A save PUTs');
+    assert.ok(!state.fetches.some((f) => f.url.includes('bocchi')),
+      'queued save must not reach the switched-to pngtuber character');
+  }
+
+  // 同角色重载推进世代：排队保存的旧快照不得整对象替换还原新配置
+  {
+    const { context, state, releaseGate } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    // 模型管理页保存新包后 handleModelReload → load()：世代推进、配置换新
+    const loaded = await manager.load(Object.assign(placement(0), {
+      idle_image: 'assets/neko-new-package.png',
+      talking_image: 'assets/neko-new-package.png',
+    }), {});
+    assert.equal(loaded, true, 'same-character reload succeeded');
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 1, 'stale queued save must not PUT after reload');
+    assert.equal(manager._lastSavedPositionKey, '',
+      'stale completion must not record its pre-reload key');
+    console.log('timing guards: cross-type / cross-character / stale-generation OK');
+  }
+
+  // 无切换的正常排队：两笔快照都按入队时刻落盘
+  {
+    const { context, state, releaseGate } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const save1 = manager.saveCurrentConfig();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    manager.config = placement(-5);
+    const save2 = manager.saveCurrentConfig();
+    releaseGate();
+    await save1;
+    await save2;
+    assert.equal(state.fetches.length, 2, 'both queued saves persist for the same character');
+    assert.equal(state.fetches[0].body.pngtuber.offset_x, 0, 'first save snapshot');
+    assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'second save snapshot');
+  }
+
+  // 摆放相同的两个角色包：load 清键 + 复位后仍要持久化（去重键不得跨 load 泄漏）
+  {
+    const { context, state, releaseGate } = makeContext();
+    releaseGate(); // 本场景首笔 fetch 即受门控制，先放行再等待
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    await manager.saveCurrentConfig();
+    assert.equal(state.fetches.length, 1, 'A save issued');
+    const loaded = await manager.load(Object.assign(placement(0), {
+      idle_image: 'assets/character-b.png',
+      talking_image: 'assets/character-b-talk.png',
+    }), {});
+    assert.equal(loaded, true, 'B loaded');
+    await manager.resetModelPosition();
+    assert.equal(state.fetches.length, 2,
+      'B reset must persist even though saveKey matches the previous package');
+    assert.equal(state.fetches[1].body.pngtuber.idle_image, 'assets/character-b.png',
+      'B reset payload carries the loaded package');
+  }
+
+  // 切换进行中（isSwitchingCatgirl）：托盘复位整体跳过，不改动配置也不出请求
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    releaseGate(); // 场景末段的复位会发首笔 fetch，先放行
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(-3200);
+    window.appState.isSwitchingCatgirl = true;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, -3200, 'switching: config untouched');
+    assert.equal(state.fetches.length, 0, 'switching: no save issued');
+    window.appState.isSwitchingCatgirl = false;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, 0, 'after switch completes: reset works');
+    assert.equal(state.fetches.length, 1, 'after switch completes: save issued');
+  }
+
+  // 同角色重载进行中（_modelReloadInFlight）：托盘复位跳过，不改配置不出请求
+  {
+    const { context, state, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(-3200);
+    window._modelReloadInFlight = true;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, -3200, 'reload window: config untouched');
+    assert.equal(state.fetches.length, 0, 'reload window: no save issued');
+  }
+
+  // 复位遇在途拖拽保存：默认键与上次完成保存相同时不得被去重早退吞掉
+  {
+    const { context, state, releaseGate } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const resetBaseline = manager.saveCurrentConfig();
+    releaseGate(); // 基线保存的首笔 fetch 放行，得到 key = 默认摆放
+    await resetBaseline;
+    manager.config = placement(-5);
+    const dragSave = manager.saveCurrentConfig(); // 拖拽保存排队/在途
+    await manager.resetModelPosition();           // 同步段内完成去重判定
+    await dragSave;
+    assert.equal(state.fetches.length, 3, 'reset must persist despite matching dedup key');
+    assert.equal(state.fetches[1].body.pngtuber.offset_x, -5, 'drag placement was queued');
+    assert.equal(state.fetches[2].body.pngtuber.offset_x, 0, 'reset placement persisted last');
+    assert.equal(manager.config.offset_x, 0, 'ui stays reset');
+  }
+
+  // 兜底配置（无直读名）：身份无法安全绑定，保存不入队（CodeRabbit Major）
+  {
+    const { context, state, window } = makeContext();
+    window.lanlan_config = { model_type: 'pngtuber' }; // 无直读名 → 旧实现走 /api/config 兜底解析
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(0);
+    const refused = await manager.saveCurrentConfig();
+    assert.equal(refused, false, 'fallback-mode save refuses to enqueue');
+    assert.equal(state.fetches.length, 0, 'unbindable identity must not reach any endpoint');
+  }
+
+  // 模型管理页持有 UI（保存后卡面决定弹窗期间，重载未置位）：托盘复位跳过
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    releaseGate(); // 场景末段管理页关闭后的复位会发首笔 fetch，先放行
+    const manager = new context.window.PNGTuberManager();
+    manager.config = placement(-3200);
+    window.isMainUIHiddenByModelManager = () => true;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, -3200, 'manager owns ui: config untouched');
+    assert.equal(state.fetches.length, 0, 'manager owns ui: no save issued');
+    window.isMainUIHiddenByModelManager = () => false;
+    await manager.resetModelPosition();
+    assert.equal(manager.config.offset_x, 0, 'after manager closes: reset works');
+    assert.equal(state.fetches.length, 1, 'after manager closes: save issued');
+  }
+
+  // 复位入队后、执行前模型管理页取得界面并保存新包：出请求前复核转场，取消排队保存
+  {
+    const { context, state, releaseGate, window } = makeContext();
+    const manager = new context.window.PNGTuberManager();
+    manager.config = Object.assign(placement(-5), { idle_image: 'assets/old-package.png' });
+    const priorSave = manager.saveCurrentConfig(); // 在途保存（首笔 fetch 被门拦住）
+    manager.config = Object.assign(placement(-5), { idle_image: 'assets/old-package.png' });
+    const queuedReset = manager.resetModelPosition(); // 复位保存入队，排在在途保存后
+    // 让出事件循环：在途保存已通过全部检查、挂到首笔 fetch 上——真实场景里
+    // 转场发生在它发起之后
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // 复位入队与执行之间：模型管理页取得界面并保存了新包（持有 UI，
+    // 卡面弹窗期间 _modelReloadInFlight 未置位）
+    window.isMainUIHiddenByModelManager = () => true;
+    releaseGate();
+    await priorSave;
+    await queuedReset;
+    assert.equal(state.fetches.length, 1, 'queued reset must not PUT once the manager owns the ui');
+    assert.ok(state.fetches[0].body.pngtuber.idle_image === 'assets/old-package.png',
+      'only the pre-reset drag save reaches the endpoint');
+    finished = true;
+    console.log('timing guards: queued-reset transition recheck OK — all scenarios finished');
+  }
+})().catch((error) => {
+  console.error('RUNTIME_CHECK_FAILED', error);
+  process.exit(1);
+});
+"""
+    script = script.replace("__SOURCE_JSON__", json.dumps(source))
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
+
+
 def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     transform_block = source[
@@ -137,10 +592,16 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert "this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);" in drag_block
     assert "helper.markDisplaySwitchSuccess('pngtuber');" in drag_block
     assert "await this.snapModelIntoScreen({ animate: true });" in drag_block
-    assert drag_block.index("await this.recordDragHintPointerEdgeRelease(state);") < drag_block.index(
+    # Anchor endDrag's ordering contract in its own slice to avoid same-named calls in other methods within the block
+    end_drag_block = source[
+        source.index("        async endDrag(event) {"):
+        source.index("        handleClick(event) {")
+    ]
+    assert "await this.recordDragHintPointerEdgeRelease(state);" in end_drag_block
+    assert end_drag_block.index("await this.recordDragHintPointerEdgeRelease(state);") < end_drag_block.index(
         "await this.snapModelIntoScreen({ animate: true });"
     )
-    assert drag_block.index("await this.snapModelIntoScreen({ animate: true });") < drag_block.index(
+    assert end_drag_block.index("await this.snapModelIntoScreen({ animate: true });") < end_drag_block.index(
         "await this.saveOrStageCurrentConfig();"
     )
     touch_end_block = source[
@@ -747,6 +1208,7 @@ let saves = 0;
 let snapshotCalls = 0;
 let deferredFrames = null;
 const markedSwitches = [];
+const dragUiCalls = {{ disabled: 0, restored: 0 }};
 
 const requestAnimationFrame = (callback) => {{
   if (deferredFrames) {{
@@ -791,6 +1253,10 @@ const window = {{
     async recordPointerEdgeApproach() {{ return false; }},
     async recordPointerEdgeRelease() {{ return false; }},
     markDisplaySwitchSuccess(source) {{ markedSwitches.push(source); }},
+  }},
+  DragHelpers: {{
+    disableButtonPointerEvents() {{ dragUiCalls.disabled += 1; }},
+    restoreButtonPointerEvents() {{ dragUiCalls.restored += 1; }},
   }},
 }};
 
@@ -867,6 +1333,7 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   manager.startDrag(pointer('pointerdown', 154, 534, 155, 535));
   assert.equal(manager._isDraggingModel, true);
   assert.equal(attributes.get('data-dragging'), 'pending');
+  assert.equal(dragUiCalls.disabled, 1);
 
   manager.moveDrag(pointer('pointermove', -201, 534, -200, 535));
   assert.equal(attributes.get('data-dragging'), 'true');
@@ -889,6 +1356,7 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   assert.equal(manager._isDraggingModel, false);
   assert.equal(attributes.has('data-dragging'), false);
   assert.equal(bodyClasses.has('neko-model-dragging'), false);
+  assert.equal(dragUiCalls.restored, 1);
 
   currentDisplay = primary;
   currentWindowBounds = {{ ...primaryWindowBounds }};
@@ -1741,13 +2209,13 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     assert "'live2d-lock-icon'" not in setup_block
     assert "'vrm-lock-icon'" not in setup_block
     assert "'mmd-lock-icon'" not in setup_block
-    # document 级 capture 事件必须过滤为窗口边界事件，否则相邻按钮边缘
-    # 移动会反复触发隐藏/显示（闪烁）
+    # Filter document-level capture events to window-boundary events, or moving between adjacent button edges
+    # repeatedly hides/shows controls, causing flicker
     assert "const isWindowBoundaryMouseEvent = (event) => {" in setup_block
     assert "return isDocTarget && !event.relatedTarget;" in setup_block
     assert "if (!isWindowBoundaryMouseEvent(event)) return;" in setup_block
     assert "if (isWindowBoundaryMouseEvent(event)) {" in setup_block
-    # unmarkControlsHover 必须校验 relatedTarget 仍在控件区域内再取消悬停标记
+    # unmarkControlsHover must check whether relatedTarget remains inside the controls before removing the hover marker
     assert "const related = event && event.relatedTarget;" in setup_block
     assert "buttonsContainer.contains(related)" in setup_block
 

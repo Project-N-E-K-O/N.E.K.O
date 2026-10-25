@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type Route } from '@playwright/test'
 import { PREVIEW_ORIGIN, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
 
 /**
@@ -152,6 +152,97 @@ test('日志 tab 的内层滚动条仍然可用', async ({ page }) => {
   expect(m.panelScrollable, '日志列表不再可滚（固定高度被 flex 吃掉？）').toBe(true)
 })
 
+test('断连横幅出现后，多 surface 与长日志仍贴合剩余容器', async ({ page }) => {
+  await page.clock.install()
+  await page.setViewportSize({ width: 1000, height: 768 })
+  await stubLayoutPluginApis(page)
+  await page.route('**/health', (route) => route.fulfill({ status: 503, json: { status: 'offline' } }))
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+  await expect(page.locator('[data-yui-guide-id="plugin-detail-tabs"]')).toBeVisible()
+  // Successful initial API reads reset the health failure count. Allow three
+  // subsequent failed checks, letting each fetch settle before the next one.
+  for (let check = 0; check < 3; check += 1) {
+    const healthResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/health')
+    await page.clock.runFor(10_100)
+    await (await healthResponse).finished()
+  }
+  await expect(page.locator('.connection-banner')).toBeVisible()
+
+  for (const tab of ['panel', 'guide', 'logs']) {
+    await page.locator(`#tab-${tab}`).click()
+    await page.clock.runFor(400)
+    const m = await measure(page)
+    expect(m.outerOverflow, `${tab}: banner introduced an outer scrollbar`).toBe(0)
+    expect(m.panel).not.toBeNull()
+    expect(m.panel!.bottom).toBeLessThanOrEqual(m.main.bottom)
+    expect(m.panelHost!.bottom - m.panel!.bottom, `${tab}: frame stopped filling its host`).toBeLessThanOrEqual(1)
+    if (tab === 'logs') expect(m.panelScrollable).toBe(true)
+  }
+})
+
+test('surface 运行时告警占用自己的高度，iframe 底部不会被裁切', async ({ page }) => {
+  await openDetail(page, 768)
+  await openTab(page, 'panel')
+  const frame = page.locator('#pane-panel .hosted-surface-frame').first()
+  await frame.locator('iframe').contentFrame().locator('body').evaluate(() => {
+    parent.postMessage({
+      type: 'neko-hosted-surface-error',
+      payload: { message: 'A recoverable control error; the surface remains usable.', fatal: false },
+    }, location.origin)
+  })
+  const alert = frame.locator('.hosted-surface-frame__runtime-alert')
+  await expect(alert).toBeVisible()
+  const geometry = await frame.evaluate((element) => {
+    const host = element.getBoundingClientRect()
+    const iframe = element.querySelector('iframe')!.getBoundingClientRect()
+    const alert = element.querySelector('.hosted-surface-frame__runtime-alert')!.getBoundingClientRect()
+    return { bottomGap: host.bottom - iframe.bottom, overlaps: alert.bottom > iframe.top, height: iframe.height }
+  })
+  expect(geometry.bottomGap, 'alert pushed the iframe below the clipped surface').toBeGreaterThanOrEqual(0)
+  expect(geometry.bottomGap).toBeLessThanOrEqual(2)
+  expect(geometry.overlaps).toBe(false)
+  expect(geometry.height).toBeGreaterThan(200)
+
+  await alert.locator('.el-alert__close-btn').click()
+  await expect(alert).toHaveCount(0)
+  const gap = await frame.evaluate((element) => element.getBoundingClientRect().bottom - element.querySelector('iframe')!.getBoundingClientRect().bottom)
+  expect(gap).toBeLessThanOrEqual(2)
+})
+
+// ── surfaces 加载提示：出现和消失都不能让标签页上下跳 ─────────────────────────
+// 提示以前是标签页上方的一行文字，surfaces 返回前把整个标签区推低一行，返回后又弹回去。
+// 用相对卡片的偏移量比较：.app-main 自身的滚动不属于这里的布局。
+for (const width of [1000, 375]) {
+  test(`[w=${width}] surfaces 加载提示不改变标签页位置，也不盖住操作按钮`, async ({ page }) => {
+    let release = () => {}
+    const surfaces = new Promise<void>((resolve) => { release = resolve })
+    await stubLayoutPluginApis(page)
+    await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, async (route) => {
+      await surfaces
+      await route.fulfill({ json: { surfaces: SURFACES, warnings: [] } })
+    })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setViewportSize({ width, height: 800 })
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`)
+    const hint = page.getByTestId('surfaces-loading')
+    await expect(hint).toBeAttached()
+    const tabsOffset = () =>
+      page.evaluate(() => {
+        const top = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().top
+        return top('[data-yui-guide-id="plugin-detail-tabs"]') - top('.plugin-detail')
+      })
+    const loadingOffset = await tabsOffset()
+    const gap = (await page.locator('.header-status').boundingBox())!
+    const actions = (await page.locator('[data-yui-guide-id="plugin-detail-actions"]').boundingBox())!
+    expect(gap.x + gap.width, '提示区伸进了操作按钮').toBeLessThanOrEqual(actions.x)
+
+    release()
+    await expect(hint).toHaveCount(0)
+    await expect(page.locator('#tab-panel')).toBeVisible()
+    expect(await tabsOffset(), '提示消失后标签页移动了').toBe(loadingOffset)
+  })
+}
+
 // ── 长内容 tab：必须继续由 .app-main 滚动，不能被压到一屏后被裁 ──────────────
 test('长内容 tab（入口点）仍由外层滚动，内容没有被裁', async ({ page }) => {
   await openDetail(page, 1340)
@@ -228,4 +319,205 @@ test('超长单行日志不撑破布局（无横向溢出、无外层滚动）',
 
   expect(horizontal, `超长单行把页面撑出了横向滚动 ${horizontal}px`).toBeLessThanOrEqual(1)
   expect(m.outerOverflow, '超长单行产生了纵向外层滚动').toBe(0)
+})
+
+for (const sample of [
+  { locale: 'pt', phase: 'resources', width: 280 },
+  { locale: 'ru', phase: 'context', width: 320 },
+] as const) {
+  test(`[slow narrow] ${sample.locale} ${sample.phase} 短面板提示不重叠，顶部和日志按钮可滚动到达`, async ({ page }) => {
+    await page.setViewportSize({ width: 640, height: 620 })
+    await page.addInitScript((locale) => window.localStorage.setItem('locale', locale), sample.locale)
+    await page.clock.install()
+    await stubLayoutPluginApis(page)
+    await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, (route) => route.fulfill({ json: {
+      surfaces: [{ id: 'panel_main', kind: 'panel', mode: 'hosted-tsx', entry: 'ui/panel.tsx', available: true }],
+      warnings: [],
+    } }))
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    let waiting!: () => void
+    const requestWaiting = new Promise<void>((resolve) => { waiting = resolve })
+    const heldHandlers: Array<Promise<void>> = []
+    const fulfill = async (route: Route, phase: typeof sample.phase, payload: unknown) => {
+      let finished!: () => void
+      const completion = new Promise<void>((resolve) => { finished = resolve })
+      if (sample.phase === phase) { heldHandlers.push(completion); waiting() }
+      try {
+        if (sample.phase === phase) await pending
+        await route.fulfill({ json: payload })
+      } finally { finished() }
+    }
+    await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/source*`, (route) => fulfill(route, 'resources', {
+      source: 'export default function Panel() { return <div>ready</div> }', dependencies: [],
+    }))
+    await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/context*`, (route) => fulfill(route, 'context', {
+      state: {}, actions: [], entries: [],
+    }))
+    try {
+      await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+      await page.waitForSelector('[data-yui-guide-id="plugin-detail-tabs"]', { timeout: 15_000 })
+      await page.evaluate(() => document.getElementById('plugin-manager-boot-shell')?.remove())
+      await page.locator('#tab-panel').click()
+      await expect(page.locator('#tab-panel')).toHaveAttribute('aria-selected', 'true')
+      // Constrain the real PluginDetail host, rather than mounting a standalone
+      // copy of HostedSurfaceFrame. Short embedded hosts need inner scrolling.
+      await page.addStyleTag({ content: `[data-yui-guide-id="plugin-detail-panel"] { width: ${sample.width}px; height: 300px !important; flex: 0 0 300px !important; min-height: 0 !important; }` })
+      await requestWaiting
+      await page.clock.runFor(3000)
+      const placeholder = page.getByTestId('surface-placeholder')
+      await expect(page.getByTestId('surface-load-slow')).toBeVisible()
+      await expect(placeholder).toHaveAttribute('data-load-phase', sample.phase)
+      const boxes = await placeholder.evaluate((element) => {
+        const slow = element.querySelector('[data-testid="surface-load-slow"]')!.getBoundingClientRect()
+        const actions = element.querySelector('.hosted-surface-frame__load-actions')!.getBoundingClientRect()
+        return { slowBottom: slow.bottom, actionsTop: actions.top }
+      })
+      expect(boxes.slowBottom, '换行后的慢加载文案与按钮区域重叠').toBeLessThanOrEqual(boxes.actionsTop + 1)
+      const titleReachable = await placeholder.evaluate((element) => {
+        element.scrollTop = 0
+        const box = element.getBoundingClientRect()
+        const title = element.querySelector('h3')!.getBoundingClientRect()
+        return title.top >= box.top && title.bottom <= box.bottom
+      })
+      expect(titleReachable, '滚动到顶部仍看不到阶段标题').toBe(true)
+      await placeholder.evaluate((element) => { element.scrollTop = element.scrollHeight })
+      const logsReachable = await page.getByTestId('surface-open-logs').evaluate((button) => {
+        const box = button.closest('[data-testid="surface-placeholder"]')!.getBoundingClientRect()
+        const target = button.getBoundingClientRect()
+        return target.top >= box.top && target.bottom <= box.bottom && target.left >= box.left && target.right <= box.right
+      })
+      expect(logsReachable, '滚动到底仍无法到达日志按钮').toBe(true)
+      await page.getByTestId('surface-open-logs').click()
+      await expect(page.locator('#tab-logs')).toHaveAttribute('aria-selected', 'true')
+      await expect(page.locator('.log-viewer')).toBeVisible()
+    } finally {
+      release()
+      await Promise.all(heldHandlers)
+    }
+  })
+}
+
+test('[phase actions] 阶段切换保留已出现按钮、焦点和日志入口', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 768 })
+  await page.clock.install()
+  await stubLayoutPluginApis(page)
+  await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, (route) => route.fulfill({ json: {
+    surfaces: [{ id: 'panel_main', kind: 'panel', mode: 'hosted-tsx', entry: 'ui/panel.tsx', available: true }],
+    warnings: [],
+  } }))
+  let releaseSource!: () => void
+  let releaseContext!: () => void
+  const source = new Promise<void>((resolve) => { releaseSource = resolve })
+  const context = new Promise<void>((resolve) => { releaseContext = resolve })
+  let sourceWaiting!: () => void
+  let contextWaiting!: () => void
+  const sourceRequested = new Promise<void>((resolve) => { sourceWaiting = resolve })
+  const contextRequested = new Promise<void>((resolve) => { contextWaiting = resolve })
+  const handlers: Array<Promise<void>> = []
+  const hold = async (route: Route, wait: Promise<void>, ready: () => void, payload: unknown) => {
+    let finished!: () => void
+    handlers.push(new Promise<void>((resolve) => { finished = resolve }))
+    ready()
+    try { await wait; await route.fulfill({ json: payload }) } finally { finished() }
+  }
+  await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/source*`, (route) => hold(route, source, sourceWaiting, {
+    source: 'export default function Panel() { return <div>ready</div> }', dependencies: [],
+  }))
+  await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/context*`, (route) => hold(route, context, contextWaiting, {
+    state: {}, actions: [], entries: [],
+  }))
+  try {
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+    await page.locator('#tab-panel').click()
+    await sourceRequested
+    await page.clock.runFor(5000)
+    const retry = page.getByTestId('surface-retry')
+    await expect(retry).toBeVisible()
+    const originalButton = await retry.elementHandle()
+    await retry.focus()
+    releaseSource()
+    await contextRequested
+    await expect(page.getByTestId('surface-placeholder')).toHaveAttribute('data-load-phase', 'context')
+    await expect(page.getByTestId('surface-load-slow')).toHaveCount(0)
+    expect(await originalButton!.evaluate((button) => button.isConnected)).toBe(true)
+    await expect(retry).toBeFocused()
+    await page.getByTestId('surface-open-logs').click()
+    await expect(page.locator('#tab-logs')).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.log-viewer')).toBeVisible()
+  } finally {
+    releaseSource()
+    releaseContext()
+    await Promise.all(handlers)
+  }
+})
+
+test('[retry narrow] ru 短面板从错误页重试时重置滚动位置，阶段标题保持可见', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 620 })
+  await page.addInitScript(() => window.localStorage.setItem('locale', 'ru'))
+  await page.clock.install()
+  await stubLayoutPluginApis(page)
+  await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, (route) => route.fulfill({ json: {
+    surfaces: [{ id: 'panel_main', kind: 'panel', mode: 'hosted-tsx', entry: 'ui/panel.tsx', available: true }],
+    warnings: [],
+  } }))
+  let sourceRequests = 0
+  let contextRequests = 0
+  await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/source*`, (route) => {
+    sourceRequests += 1
+    return route.fulfill({ json: { source: 'export default function Panel() { return <div>ready</div> }', dependencies: [] } })
+  })
+  let release!: () => void
+  const pending = new Promise<void>((resolve) => { release = resolve })
+  let waiting!: () => void
+  const retryWaiting = new Promise<void>((resolve) => { waiting = resolve })
+  const heldHandlers: Array<Promise<void>> = []
+  await page.route(`**/plugin/${PLUGIN_ID}/hosted-ui/context*`, async (route) => {
+    contextRequests += 1
+    if (contextRequests === 1) {
+      await route.fulfill({ status: 500, json: { detail: 'Request failed for https://api.example.test/v1/chat/completions?deployment=independent-research-agent-local-build' } })
+      return
+    }
+    let finished!: () => void
+    heldHandlers.push(new Promise<void>((resolve) => { finished = resolve }))
+    waiting()
+    try {
+      await pending
+      await route.fulfill({ json: { state: {}, actions: [], entries: [] } })
+    } finally { finished() }
+  })
+  try {
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+    await page.waitForSelector('[data-yui-guide-id="plugin-detail-tabs"]', { timeout: 15_000 })
+    await page.evaluate(() => document.getElementById('plugin-manager-boot-shell')?.remove())
+    await page.locator('#tab-panel').click()
+    await page.addStyleTag({ content: '[data-yui-guide-id="plugin-detail-panel"] { width: 280px; height: 300px !important; flex: 0 0 300px !important; min-height: 0 !important; }' })
+    await expect(page.getByTestId('surface-reload-page')).toBeVisible()
+    const oldPlaceholder = await page.getByTestId('surface-placeholder').elementHandle()
+    expect(oldPlaceholder).not.toBeNull()
+    await oldPlaceholder!.evaluate((element) => { element.scrollTop = element.scrollHeight })
+    expect(await oldPlaceholder!.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    await page.getByTestId('surface-retry').click()
+    await retryWaiting
+    expect(sourceRequests).toBe(2)
+    expect(contextRequests).toBe(2)
+    const placeholder = page.getByTestId('surface-placeholder')
+    await expect(placeholder).toHaveAttribute('data-load-phase', 'context')
+    const titleState = () => placeholder.evaluate((element) => {
+      const box = element.getBoundingClientRect()
+      const title = element.querySelector('h3')!.getBoundingClientRect()
+      return { scrollTop: element.scrollTop, visible: title.top >= box.top && title.bottom <= box.bottom }
+    })
+    // Do not scroll after retry: this guards the position the user actually sees.
+    expect(await titleState()).toEqual({ scrollTop: 0, visible: true })
+    expect(await oldPlaceholder!.evaluate((element) => element.isConnected), '重试应替换旧占位 DOM，避免继承错误页的滚动位置').toBe(false)
+    const retryPlaceholder = await placeholder.elementHandle()
+    await page.clock.runFor(3000)
+    await expect(page.getByTestId('surface-load-slow')).toBeVisible()
+    expect(await retryPlaceholder!.evaluate((element) => element.isConnected), '同一加载过程切换到慢提示无需替换占位 DOM').toBe(true)
+    expect(await titleState()).toEqual({ scrollTop: 0, visible: true })
+  } finally {
+    release()
+    await Promise.all(heldHandlers)
+  }
 })

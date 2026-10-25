@@ -81,42 +81,42 @@ class MiniGameInviteShortCircuit:
     options_payload: dict[str, Any] | None = None
 
 
-# --- Mini-game 邀请短路状态（每角色独立）---
+# --- Per-character mini-game invitation shortcut state ---
 # {lanlan_name: {'delivered_at': float|None,
 #                'responded_at': float|None,
 #                'chats_since_response': int,
 #                'last_game_type': str|None,
 #                'last_response_choice': 'accept'|'decline'|None}}
-# - delivered_at: 上次成功投递邀请的时间戳。None=从未发过。
-# - responded_at: 投递后被用户回应（任何用户消息时间戳 > delivered_at）的时间。
-#   pending（delivered_at!=None and responded_at=None）期间一律抑制掷骰，避免
-#   邀请挂着不响应又再发第二次。
-# - chats_since_response: responded_at 设上后成功投递的"普通主动搭话"次数。
-#   两条件（time-by-choice 且 >= COOLDOWN_CHATS）都跨过才允许下次掷骰。
-#   冷却跨 game_type 共享——每角色一个全局冷却，一次邀请 → 冷却窗内全部 mini-game
-#   静默；spec 没说邀请要密集，多游戏只是丰富选项不是加密。
-# - last_game_type: 上次邀请发的是哪个游戏（从 MINI_GAME_INVITE_AVAILABLE_GAMES
-#   里 random.choice 出来的）；用于 PR-B 按钮判断"打开哪个游戏"。
-# - last_response_choice: 上次回应是 accept 还是 decline；用于 cooldown 函数按
-#   choice 取不同 SECONDS 阈值（accept=2h、decline=5h）。later/隐式 dismiss 走
-#   reset 路径不会落到这里。None = 从未回应过（pending or 全新）。
-# 进程内 dict，重启清零——时间+10 chats 是软冷却，重启后多发一次邀请的代价远小
-# 于持久化存储引依赖的代价；与 _proactive_chat_history 同样是内存。
+# - delivered_at: last successful invitation timestamp; None means never delivered.
+# - responded_at: time the user responds after delivery (any message timestamp >delivered_at).
+#   Always suppress rolls while pending (delivered_at!=None and responded_at=None),
+#   avoiding a second invite while the first remains unanswered.
+# - chats_since_response: ordinary proactive chats successfully delivered after responded_at is set.
+#   Require both choice-based time and >=COOLDOWN_CHATS before rolling again.
+#   Share cooldown across game_type: one global cooldown per character; one invitation silences every mini-game
+#   for the window. Specs do not require dense invitations; multiple games enrich options, not frequency.
+# - last_game_type: previous invited game, randomly chosen from MINI_GAME_INVITE_AVAILABLE_GAMES;
+#   PR-B buttons use it to choose which game to open.
+# - last_response_choice: accept or decline, selecting cooldown
+#   SECONDS thresholds (accept=2h, decline=5h). later/implicit dismiss takes reset
+#   paths and never reaches this. None means no response (pending or new).
+# Process-local dict resets on restart: time +10 chats is a soft cooldown; one extra invitation after restart costs far less
+# than persistence dependencies. Like _proactive_chat_history, it stays in memory.
 _mini_game_invite_state: dict[str, dict[str, Any]] = {}
 
 
-# ---------- Mini-game 邀请短路状态管理 ----------
-# 入口在 proactive_chat 内部、过完 propensity / skip_probability /
-# restricted_screen_only 几道门之后调 _maybe_deliver_mini_game_invite。命中
-# 即静态 i18n 模板 → feed_tts_chunk + finish_proactive_delivery 直投递；不走
-# Phase 1/2 LLM。冷却语义：一次邀请被回应后，必须同时跨过
+# ---------- Mini-game invitation shortcut state management ----------
+# proactive_chat calls _maybe_deliver_mini_game_invite after propensity / skip_probability /
+# restricted_screen_only gates. Hits use static
+# i18n templates -> feed_tts_chunk + finish_proactive_delivery directly, bypassing
+# Phase 1/2 LLM. After an invitation response, require both:
 #   ``time.time() - responded_at >= threshold_by_choice``
-#     其中 threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS (2h) 若
-#     last_response_choice='accept'，否则 ..._AFTER_DECLINE_SECONDS (5h)；
-# 与
+#     threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS (2h) when
+#     last_response_choice='accept', otherwise ..._AFTER_DECLINE_SECONDS (5h);
+# and
 #   ``chats_since_response >= MINI_GAME_INVITE_COOLDOWN_CHATS``
-# 才允许下次掷骰。pending（投递了但还没被回应）期间一律抑制，避免邀请挂着
-# 不响应又再发第二次。
+# before rolling again. Always suppress while pending (delivered but unanswered),
+# avoiding a second invitation while the first waits.
 
 def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
     """Lazy-init per-character state。"""
@@ -128,15 +128,15 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             'chats_since_response': 0,
             'last_game_type': None,
             'response_cooldowns': {},
-            # 当前 pending 邀请的 session_id；endpoint 收到回应时校验匹配，避免
-            # 用户点击过期邀请被错算成响应当前 pending。一旦投递新邀请会被刷新。
+            # Current pending invite session_id; endpoints verify responses match, preventing stale
+            # clicks from answering the current pending invite. Refreshed on each new delivery.
             'pending_session_id': None,
-            # D2「回头再说」短期抑制：reset 后不允许下一次 proactive 立刻又掷骰。
-            # _in_cooldown 多查一道这个 gate。秒级 epoch；None = 不抑制。
+            # D2 later suppression: do not roll immediately on the next proactive chat after reset.
+            # _in_cooldown checks this extra gate. Epoch seconds; None means unsuppressed.
             'suppressed_until': None,
-            # accept/decline 走不同 cooldown 阈值。later/隐式 dismiss reset 时
-            # 清回 None。pending 期间也是 None；cooldown 函数只在 responded_at
-            # !=None 时读它。
+            # accept/decline use different cooldown thresholds. later/implicit-dismiss resets clear
+            # this to None, as does pending state; cooldown reads it only when responded_at
+            # !=None.
             'last_response_choice': None,
         }
         _mini_game_invite_state[lanlan_name] = state
@@ -188,9 +188,9 @@ def _mini_game_invite_advance_response(
         return None
     if last_user_msg_at <= state['delivered_at']:
         return None
-    # 任意消息 = 隐式 dismiss → 等同 'later' choice 的 reset+短抑制语义。
-    # 复用 _apply_mini_game_invite_choice 保持单一事实源；source 标 'implicit_dismiss'
-    # 让日志能区分按钮路径与隐式路径。
+    # Any message implicitly dismisses, matching later's reset + short suppression.
+    # Reuse _apply_mini_game_invite_choice as one source of truth; source='implicit_dismiss'
+    # distinguishes implicit and button paths in logs.
     return _apply_mini_game_invite_choice(
         lanlan_name, 'later', source='implicit_dismiss',
     )
@@ -294,8 +294,8 @@ def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> Non
     state['chats_since_response'] = 0
     state['pending_session_id'] = session_id
     state['last_response_choice'] = None
-    # 新邀请投递清掉 D2 的 short-suppression：本来是「上次回头再说」的窗口，
-    # 既然现在又投了新邀请说明那个窗口已过期，没必要保留。
+    # New invitation delivery clears D2 short suppression: it belonged to the previous later choice,
+    # and new delivery proves that window expired.
     state['suppressed_until'] = None
 
 
@@ -386,6 +386,7 @@ async def _attempt_mini_game_invite_delivery(
     user_toggle_enabled: bool = True,
     push_options_compat: bool,
     memory_dir: str | Path | None = None,
+    round_id: str | None = None,
 ) -> dict | None:
     """Deliver an eligible invite for either the legacy or staged caller.
 
@@ -431,13 +432,13 @@ async def _attempt_mini_game_invite_delivery(
         {"memory_dir": memory_dir} if memory_dir is not None else {}
     )
 
-    # 调试旗标短路：非 None 时跳过所有 snapshot/cooldown/概率 gate，把 game_type
-    # 钉到旗标值上。仍然要求该 game_type 有对应文案；非法值 warn + 退出而不 raise，
-    # 避免在配置抖动时把整个 proactive 流水线带挂。Force-first 标记成 True 让 caller
-    # 路径与正常 first-time 邀请等价（不影响 ever_delivered 持久化）。
+    # Debug shortcut: non-None skips snapshot/cooldown/probability gates and fixes game_type
+    # to the flag. Still require corresponding text; invalid values warn and exit without raising,
+    # avoiding broken proactive pipelines during config changes. Set force-first True to match normal
+    # first-time caller behavior (without affecting persisted ever_delivered).
     #
-    # 但用户级 toggle (proactiveMiniGameInviteEnabled) 仍要尊重——开发者本机
-    # 调试用旗标不应该绕过普通用户在前端关掉 mini-game source 的明确意图。
+    # Still respect user toggle proactiveMiniGameInviteEnabled: developer-local debugging
+    # flags must not bypass users explicitly disabling mini-game sources in the frontend.
     force_game = MINI_GAME_INVITE_FORCE_GAME_TYPE
     debug_force = bool(force_game)
     if debug_force and not user_toggle_enabled:
@@ -453,8 +454,8 @@ async def _attempt_mini_game_invite_delivery(
             return None
         await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
         game_type = force_game
-        # 让下面 success-log 共用同一字段；调试旗标语义上等同于 "强制走 first-time
-        # 路径"，print 出来好认。
+        # Share this field with success logs below; debug semantics force the first-time
+        # path, making printed diagnostics recognizable.
         force_first = True
     else:
         if not user_toggle_enabled:
@@ -467,20 +468,20 @@ async def _attempt_mini_game_invite_delivery(
             return None
         if state_label == 'away':
             return None
-        # AI 上一轮抛了问题（含 ?/吗/呢/么 等）用户还没接 → 跟进 thread 优先。
-        # skip_probability 在 system_router.py 同一文件的 propensity 段也是这条
-        # 优先级，统一不让 mini-game 邀请把 promised follow-up 抢走。
+        # AI asked a question last turn (?/吗/呢/么, etc.) without user response: prioritize thread follow-up.
+        # skip_probability uses the same priority in system_router.py's propensity section;
+        # mini-game invites must not steal promised follow-ups.
         if getattr(activity_snapshot, 'unfinished_thread', None) is not None:
             return None
-        # Force-first：从未发过邀请 + 累计已成功投递 N-1 条主动搭话 → 本条强制变邀请。
-        # proactive_chat_total 在 _record_proactive_chat 之后才 +1，所以"第 N 次"的
-        # 当下值是 N-1。计数走持久化文件，跨重启保留——否则用户每次重启都再"第 N 次"
-        # 一回，邀请密度抖。
+        # Force-first: never invited +N-1 successful proactive chats -> force this delivery to an invite.
+        # proactive_chat_total increments after _record_proactive_chat, so the Nth delivery sees
+        # N-1. Persist counts across restarts, or every restart produces another Nth invitation
+        # and unstable invitation frequency.
         #
-        # "is new user" 必须查持久化的 ever_delivered，不能查 in-memory 的
-        # ``state.delivered_at is None``——后者会被 PR-B「回头再说」reset，且重启清零；
-        # codex review (P1) 指出，没这条 force-first 在每次重启后都会把已邀请过的
-        # 用户当新用户重新强制邀请。
+        # New-user checks use persisted ever_delivered, never in-memory
+        # ``state.delivered_at is None``, reset by PR-B later choices and process restarts.
+        # Codex P1 review: without this, force-first treats previously invited users as new
+        # and forces another invitation after every restart.
         await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
         never_delivered = not _was_invite_ever_delivered(lanlan_name)
         total_so_far = _get_proactive_chat_total(lanlan_name)
@@ -508,7 +509,11 @@ async def _attempt_mini_game_invite_delivery(
     if not invite_text:
         return None
 
-    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+    # Same round ownership as the main Phase 2 path: a retired HTTP task must
+    # not claim or advance a replacement round.
+    round_payload = {"round_id": round_id} if round_id is not None else {}
+    delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
+    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0, **round_payload):
         return _proactive_pass_body(
             PROACTIVE_REASON_PASS_DELIVERY_BUSY,
             message="mini-game invite skipped: prepare_proactive_delivery refused",
@@ -518,6 +523,7 @@ async def _attempt_mini_game_invite_delivery(
         mgr,
         proactive_sid,
         log=logger,
+        **round_payload,
     ):
         return _proactive_pass_body(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
@@ -536,6 +542,7 @@ async def _attempt_mini_game_invite_delivery(
                 invite_text,
                 expected_speech_id=proactive_sid,
                 expected_user_engagement_time=expected_user_engagement_time,
+                **delivery_round,
             )
     except Exception as exc:
         logger.warning(
@@ -561,6 +568,7 @@ async def _attempt_mini_game_invite_delivery(
         invite_text,
         expected_speech_id=proactive_sid,
         expected_user_engagement_time=expected_user_engagement_time,
+        **delivery_round,
     )
     if not committed:
         if _proactive_turn_still_owned(mgr, proactive_sid):
@@ -569,24 +577,24 @@ async def _attempt_mini_game_invite_delivery(
             PROACTIVE_REASON_DELIVERY_PREEMPTED,
             message="mini-game invite skipped: user took over before delivery",
         )
-    # 给本次邀请生成独立 session_id，前端按钮点击 / 文本关键词命中走 endpoint 时
-    # 必须带回这个 id 给后端校验：避免 stale 邀请的延迟回应被错算成响应当前 pending。
+    # Give each invitation its own session_id; button / keyword endpoint responses must
+    # return it for backend validation, avoiding delayed stale responses answering current pending invites.
     invite_session_id = str(uuid4())
 
     _record_proactive_chat(lanlan_name, invite_text, channel='mini_game')
     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
     _mini_game_invite_get_state(lanlan_name)['last_game_type'] = game_type
-    # counter +1 + ever_delivered=True 一把锁内原子写盘。两份持久化数据必须
-    # 一起落盘，否则 partial-state（totals 已 +1 但 ever_delivered 还是旧 false）
-    # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
+    # Atomically persist counter+1 and ever_delivered=True under one lock; both must
+    # persist together. Partial totals increment with stale ever_delivered=False
+    # repeats force-first after restart (CodeRabbit Major).
     await _record_invite_delivery_persistent(lanlan_name, **state_storage_kwargs)
 
     try:
         from utils.instrument import counter as _instr_counter
-        # channel 维度区分两条邀请投递通道：proactive（本函数）与 work_break
-        # （水分提醒组合路径，见 _deliver_break_reminder_via_llm 下游）。两条都
-        # 共享同一 invite state/cooldown，邀请总数需把两通道相加。force_first 仅
-        # proactive 通道有意义。
+        # Channel distinguishes proactive (this function) from work_break
+        # (hydration-reminder combination downstream of _deliver_break_reminder_via_llm). Both
+        # share invitation state/cooldown; totals sum both channels. force_first matters only
+        # for proactive.
         _instr_counter(
             "mini_game_invited",
             game_type=str(game_type)[:24],
@@ -594,7 +602,7 @@ async def _attempt_mini_game_invite_delivery(
             force_first=bool(force_first),
         )
     except Exception:
-        # 埋点失败不能影响邀请投递
+        # Telemetry failures must not affect invitation delivery.
         pass
 
     if push_options_compat:
@@ -662,6 +670,7 @@ async def _run_mini_game_invite_short_circuit(
     master_name: str,
     user_toggle_enabled: bool = True,
     memory_dir: str | Path | None = None,
+    round_id: str | None = None,
 ) -> MiniGameInviteShortCircuit | None:
     """Run the invite attempt and expose framework-neutral short-circuit data."""
     state_storage_kwargs = (
@@ -675,6 +684,7 @@ async def _run_mini_game_invite_short_circuit(
         master_name=master_name,
         user_toggle_enabled=user_toggle_enabled,
         push_options_compat=False,
+        round_id=round_id,
         **state_storage_kwargs,
     )
     if body is None:
@@ -782,10 +792,10 @@ def _apply_mini_game_invite_choice(
         state['responded_at'] = now
         state['chats_since_response'] = 0
         state['last_response_choice'] = 'accept'
-        # session_id 既进 game_url query，又作为 result 顶层字段返回——keyword 路径
-        # core.py 要把它放进 mini_game_launch WS payload，前端 dedupe 才能跨路径
-        # 共享 key（codex P2 review 指出：缺这个 dedupe 就失效，同 invite 多路径
-        # 触发会双开窗口）。
+        # session_id enters both game_url query and top-level result; keyword-path core.py
+        # must include it in mini_game_launch WS payload so frontend dedupe shares keys
+        # across paths (Codex P2: without it, one invitation triggered through multiple paths
+        # opens duplicate windows).
         invite_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
         launch_game_type = game_type
@@ -810,8 +820,8 @@ def _apply_mini_game_invite_choice(
             'session_id': invite_session_id,
         }
     if choice == 'decline':
-        # 留 session_id 给 caller 推 mini_game_invite_resolved 用——所有
-        # outcome 都需要前端 dismiss prompt（codex P2）。
+        # Retain session_id so callers push mini_game_invite_resolved; every
+        # outcome needs frontend prompt dismissal (Codex P2).
         decline_session_id = state.get('pending_session_id') or ''
         game_type = state.get('last_game_type') or 'soccer'
         state['responded_at'] = now
@@ -824,9 +834,9 @@ def _apply_mini_game_invite_choice(
         )
         return {'action': 'cooldown', 'session_id': decline_session_id}
     if choice == 'later':
-        # D2：完全 reset 但加短期 suppression。reset 之后 force-first 仍受
-        # ever_delivered（持久化）压制——已经被邀请过的用户即便 state 清掉也
-        # 不会被当成新用户重邀。
+        # D2: fully reset with short suppression. Persisted ever_delivered still suppresses
+        # force-first after reset; previously invited users never become new again merely
+        # because state cleared.
         later_session_id = state.get('pending_session_id') or ''
         state['delivered_at'] = None
         state['responded_at'] = None
@@ -885,11 +895,11 @@ async def _push_mini_game_invite_resolved(
         )
 
 
-# ASCII / Cyrillic keyword 用 word-boundary regex 匹配；其它（CJK / Hiragana /
-# Katakana / Hangul）走 substring。Python `\b` 在 \w 边界判定，但中日韩字符也
-# 算 \w——同一脚本的字符之间没有 \b，硬套 word-boundary 会把"我好啊"漏掉。
-# Cyrillic 同 Latin 都是 letter-only，\b 工作良好。codex P1 指出，避免 'yes'
-# 命中 'yesterday'、'no' 命中 'no idea' 等英文误命中。
+# Match ASCII / Cyrillic keywords with word-boundary regex; other scripts (CJK / Hiragana /
+# Katakana / Hangul) use substrings. Python `\b` tests \w boundaries, but East Asian characters
+# are also \w, lacking internal boundaries; word-boundary matching misses 我好啊.
+# Cyrillic and Latin are letter-based, so \b works. Codex P1: prevent English false matches
+# such as yes in yesterday and no in no idea.
 _LETTER_ONLY_KW_RE = re.compile(r"^[A-Za-z0-9\s'\-Ѐ-ӿ]+$")
 
 

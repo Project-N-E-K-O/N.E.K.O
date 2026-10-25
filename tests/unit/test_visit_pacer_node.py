@@ -475,13 +475,13 @@ def report() -> dict:
 
 
 def test_start_time_is_clamped_to_now_when_previous_end_lags(report):
-    # 上一块终点落后 5 s：按 max(prevScheduledEnd, audioContextTime) 换算，不把 5 s 空档算成已播
-    # 回报按 ≈250 ms 采样，最后一条最多落后一拍
+    # The previous chunk ended 5 s ago: use max(prevScheduledEnd, audioContextTime), without counting the 5 s gap as played
+    # Reports are sampled about every 250 ms; the final report can lag by at most one tick
     assert 250 <= report["clamp_last_played"] <= 600
 
 
 def test_lookahead_chunk_does_not_run_played_ms_ahead(report):
-    # 第一块真开播之前一条都不报（后端收到首条回报就起停滞计时，Codex P1）
+    # Report nothing before the first chunk actually starts (the backend starts its stall timer on the first report, Codex P1)
     assert report["lookahead_sent_before_start"] == 0
     assert 250 <= report["lookahead_after_start"] <= 600
 
@@ -502,7 +502,7 @@ def test_stream_close_after_playback_reports_final_once(report):
 
 
 def test_tail_chunk_still_decoding_holds_the_final(report):
-    # 结束标记到达时尾块在解码：先只报一次排空（final:false），尾块播完才 final:true
+    # The final chunk is decoding when the end marker arrives: first report drain once with final:false, then final:true only after playback finishes
     assert report["tail_before"] == [False]
     assert report["tail_mid"] == 0
     assert report["tail_final_count"] == 1
@@ -547,7 +547,7 @@ def test_post_visit_segments_report_and_socket_swap_needs_rebind(report):
 
 
 def test_frozen_audio_clock_pauses_reporting_and_resumes_to_the_final(report):
-    # 时钟停住的 180 s 里零回报（不暂停则约 720 条）；记录不删，恢复后照常报出唯一的 final
+    # No reports during 180 s of stopped clock (about 720 without pausing); retain records and issue the unique final normally after resuming
     assert report["frozen_progress_total"] == 0
     assert report["frozen_resumed_finals"] == 1
     assert 1900 <= report["frozen_final_played"] <= 2100
@@ -583,5 +583,5 @@ def test_pending_audio_count_for_speech_is_a_read_only_query():
               .replace("__STATE_PATH__", json.dumps(str(STATE_PATH)))
               .replace("__PLAYBACK_PATH__", json.dumps(str(PLAYBACK_PATH))))
     out = _run(script)
-    # a：一条 meta（跳过的不算）+ 一个待解码 blob + 待 flush 尾段的 audio_done + 一个已解码 buffer；旧世代不算
+    # a: one meta (excluding skipped entries) + a blob awaiting decoding + audio_done for the unflushed tail + one decoded buffer; exclude old generations
     assert out == {"a": 4, "b": 2, "none": 0, "empty": 0, "readonly": True}

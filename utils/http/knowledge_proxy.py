@@ -31,7 +31,15 @@ JSON_BODY_MAX_BYTES = 64 * 1024
 PACK_BODY_MAX_BYTES = 10 * 1024 * 1024 + 64 * 1024
 
 READ_PATHS = frozenset(
-    {"status", "entries", "entry", "packs", "packs/jobs", "diagnostics/recent"}
+    {
+        "status",
+        "entries",
+        "entry",
+        "packs",
+        "packs/jobs",
+        "subscriptions",
+        "diagnostics/recent",
+    }
 )
 WRITE_PATHS: dict[str, int] = {
     "settings": JSON_BODY_MAX_BYTES,
@@ -43,6 +51,15 @@ WRITE_PATHS: dict[str, int] = {
     "packs/index-policy": JSON_BODY_MAX_BYTES,
     "packs/material-type": JSON_BODY_MAX_BYTES,
     "packs/remove": JSON_BODY_MAX_BYTES,
+}
+# Writes Main forwards but the plugin server's browser-facing bridge does not:
+# only the plugin server's own subscription routes install and remove market
+# artifacts (they call Main directly, with Main's CSRF token). A page holding
+# the bridge token, including a paired remote Market page, cannot push a pack
+# labelled as a market subscription.
+SERVICE_WRITE_PATHS: dict[str, int] = {
+    "subscriptions/apply": PACK_BODY_MAX_BYTES,
+    "subscriptions/remove": JSON_BODY_MAX_BYTES,
 }
 
 

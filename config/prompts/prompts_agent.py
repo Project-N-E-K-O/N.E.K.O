@@ -21,7 +21,7 @@ lang_code: zh / en / ja / ko / ru / es / pt
 """
 
 # =====================================================================
-# ======= 统一渠道评估 (Unified Channel Assessment) =======
+# ======= Unified Channel Assessment =======
 # =====================================================================
 
 UNIFIED_CHANNEL_SYSTEM_PROMPT = {
@@ -203,7 +203,7 @@ Retorne SOMENTE o objeto JSON, sem blocos markdown nem texto extra.""",
 }
 
 
-# ── 渠道特点描述 ────────────────────────────────────────────────
+# -- Channel characteristics --
 
 CHANNEL_DESC_QWENPAW = {
     'zh': ("- **qwenpaw**: 远程 Agent 系统 + 云端虚拟机。"
@@ -322,7 +322,7 @@ CHANNEL_DESC_COMPUTER_USE = {
 
 
 # =====================================================================
-# ======= User Plugin 评估 =======
+# ======= User Plugin assessment =======
 # =====================================================================
 
 USER_PLUGIN_SYSTEM_PROMPT = {
@@ -681,7 +681,7 @@ Retorne apenas o objeto JSON, nada mais.""",
 
 
 # =====================================================================
-# ======= User Plugin 粗筛 (Stage 1 Coarse Screening) =======
+# ======= User Plugin Stage 1 Coarse Screening =======
 # =====================================================================
 
 USER_PLUGIN_COARSE_SCREEN_PROMPT = {

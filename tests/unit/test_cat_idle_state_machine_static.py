@@ -33,10 +33,10 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     if not node_path:
         raise AssertionError("node is required to run cat mind harness tests")
 
-    # 走临时文件而不是 `node -e <script>`：这些仿真脚本会随被测行为一起变长，
-    # 最长的一条已经 34067 字符，超过 Windows CreateProcess 命令行 32767 上限，
-    # 于是 subprocess 在 node 起来之前就抛 WinError 206——断言一条都跑不到，
-    # 表现成一个与状态机无关的红。脚本内的路径都是绝对路径，cwd 仍保留。
+    # Use temporary files instead of `node -e <script>`: these simulations grow with the behavior under test,
+    # and the longest already has 34067 characters, exceeding the Windows CreateProcess command-line limit of 32767.
+    # subprocess therefore raises WinError 206 before node starts, so no assertion runs,
+    # producing a failure unrelated to the state machine. Script paths are absolute; retain cwd.
     return run_node_script(
         node_path,
         script,

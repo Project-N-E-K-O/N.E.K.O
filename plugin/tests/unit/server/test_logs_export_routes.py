@@ -1,4 +1,4 @@
-"""测试日志导出路由的安全性"""
+"""Test log-export route security"""
 from __future__ import annotations
 
 import pytest
@@ -12,20 +12,20 @@ pytestmark = pytest.mark.plugin_unit
 
 @pytest.mark.asyncio
 async def test_export_rejects_newline_in_plugin_id():
-    """拒绝包含换行符的 plugin_id，防止 HTTP 响应头注入"""
-    # 测试 \n
+    """Reject plugin_id values containing newlines to prevent HTTP response-header injection"""
+    # Test \n
     with pytest.raises(HTTPException) as exc_info:
         await export_plugin_log_endpoint("foo\n", _="test-admin")
     assert exc_info.value.status_code == 400
     assert "newline" in str(exc_info.value.detail).lower()
 
-    # 测试 \r
+    # Test \r
     with pytest.raises(HTTPException) as exc_info:
         await export_plugin_log_endpoint("foo\r", _="test-admin")
     assert exc_info.value.status_code == 400
     assert "newline" in str(exc_info.value.detail).lower()
 
-    # 测试 \r\n
+    # Test \r\n
     with pytest.raises(HTTPException) as exc_info:
         await export_plugin_log_endpoint("foo\r\n", _="test-admin")
     assert exc_info.value.status_code == 400

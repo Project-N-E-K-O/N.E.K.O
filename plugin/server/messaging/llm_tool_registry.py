@@ -147,6 +147,7 @@ async def register_remote_tool(
     parameters: Dict[str, Any],
     timeout_seconds: float,
     role: Optional[str] = None,
+    reply_tail: bool = False,
 ) -> Dict[str, Any]:
     """Register a plugin-owned LLM tool with ``main_server``.
 
@@ -169,6 +170,7 @@ async def register_remote_tool(
         "role": role,
         "source": _source_tag(plugin_id),
         "timeout_seconds": float(timeout_seconds),
+        **({"reply_tail": True} if reply_tail else {}),
     }
 
     client = _get_http_client()
@@ -269,8 +271,8 @@ async def unregister_remote_tool(
     body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
     refused_roles = body.get("refused_roles") if isinstance(body, dict) else None
     if refused_roles:
-        # 名字归属其它 source：我们的注册从未在 main_server 生效（跨 source
-        # 守卫拒绝、缓存竞态等）。本地跟踪作废即可，绝不能触碰别人的工具。
+        # Another source owns the name: our registration never took effect on main_server (cross-source
+        # guard rejection, cache races, etc.). Discard local tracking without touching others' tools.
         logger.warning(
             "unregister_remote_tool refused foreign-owned name: plugin_id={}, name={}, refused_roles={}",
             plugin_id, name, refused_roles,
@@ -297,8 +299,8 @@ async def unregister_remote_tool(
     return body if isinstance(body, dict) else {"ok": True}
 
 
-# 停止插件时清理远端工具的超时。比默认的 2.0s connect 短得多：这一步是尽力而为
-# 的收尾，而它在跨进程锁里面，慢一秒就是所有插件操作排队慢一秒。
+# Remote-tool cleanup timeout on plugin stop: much shorter than the default 2.0s connect timeout,
+# because this is best-effort cleanup under the cross-process lock; every extra second delays all plugin operations.
 # The default timeout is constructed with the backend on first cleanup.
 
 
@@ -319,22 +321,22 @@ async def clear_plugin_tools(
     payload = {"source": _source_tag(plugin_id), "role": role}
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/clear"
-    # 这次 await 在 stop_plugin 的跨进程锁里面。main_server 没在监听时，本机
-    # loopback 的拒连要吃满 connect 超时（默认 2.0s），reload-all 八个插件就是
-    # 锁链上十几秒纯死时间。
+    # This await holds stop_plugin's cross-process lock. If main_server is not listening, local
+    # loopback refusal consumes the full default 2.0s connect timeout; reloading eight plugins creates
+    # over ten seconds of pure dead time in the lock chain.
     #
-    # 曾经想过「本地没记录就不发」，但那是错的：进程重启后 _plugin_tools 是空的，
-    # 而 main_server 那边可能还挂着这个插件注册的工具，跳过就会留下模型仍然能调
-    # 用的幽灵工具。本地记录不是远端状态的权威。所以照发，只是给这次尽力而为的
-    # 清理一个更短的超时。
+    # Skipping when no local record exists is wrong: after process restart _plugin_tools is empty,
+    # but main_server may still hold tools registered by this plugin. Skipping leaves ghost tools
+    # callable by the model. Local records are not authoritative for remote state, so send cleanup
+    # anyway, with a shorter best-effort timeout.
     try:
-        # 调用方给了预算就用它：这一步跑在插件停止的关键路径上、操作锁还握着，
-        # 一个独立的超时会让关停在整轮预算之外再多花一截（codex）。
+        # Honor caller budgets: plugin stop is on the critical path and still holds the operation lock;
+        # a separate timeout would extend shutdown beyond the overall budget (Codex).
         #
-        # httpx.Timeout 是**分阶段**的（connect/read/write/pool），不是总时长：一个
-        # 一直挤牙膏的 chunked 响应可以让每个阶段都不超时，而整通调用远超预算
-        # （CodeRabbit 用一个真实的分块服务端验过）。所以既保留分阶段上限，又在
-        # 外面套一层 asyncio.wait_for 来兜总时长。
+        # httpx.Timeout limits individual connect/read/write/pool phases, not total duration: a slowly
+        # trickling chunked response can avoid every phase timeout while exceeding the overall budget
+        # (CodeRabbit verified this with a real chunked server). Retain phase limits and wrap
+        # the call in asyncio.wait_for for a total-duration limit.
         request = client.post(
             url,
             json=payload,

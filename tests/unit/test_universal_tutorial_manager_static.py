@@ -584,7 +584,7 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
     assert lifecycle_started_block.index(
         "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
     ) < lifecycle_started_block.index("const startedMessage = {")
-    # 没有原生 overlay 的浏览器独立聊天页也必须收到带稳定 runId 的 lifecycle-start。
+    # Standalone browser chat pages without native overlays must also receive lifecycle-start with a stable runId.
     overlay_start_block = source.split(
         "    ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started') {",
         1,
@@ -917,11 +917,11 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         1,
     )[0]
 
-    # 重启教程时聊天桥仍是 closed；只提前打开本轮 lifecycle，用户可见 started 仍等准备成功。
+    # On tutorial restart, the chat bridge remains closed; open only this run's lifecycle early, while user-visible started waits for successful preparation.
     assert start_round_block.index("this.relayYuiGuideTutorialLifecycleStarted('home', source)") < start_round_block.index(
         "await this.prepareYuiGuideCompactChatForTutorial()"
     )
-    # prepare 等待期间允许 skip/远程结束；回执回来后只能恢复形态，不能复活已拆除的教程。
+    # Allow skip/remote ending while prepare waits; after acknowledgment, restore form only and never revive a torn-down tutorial.
     prepare_ready_index = start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()")
     cancellation_index = start_round_block.index("this._tutorialEndHandled", prepare_ready_index)
     fixed_layout_index = start_round_block.index(
@@ -952,21 +952,21 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         "    clearPcTutorialGlobalOverlay(reason = 'destroy') {",
         1,
     )[0]
-    # 主页无法判断 BroadcastChannel 是否有独立 /chat 接收端：先广播，再立即走本地 host，
-    # 既不能漏掉外部 prepare，也不能让单窗口浏览器等待不存在的回执。
+    # The main page cannot know whether BroadcastChannel has a separate /chat receiver: broadcast, then immediately use the local host,
+    # ensuring external prepare is sent without making single-window browsers wait for nonexistent acknowledgments.
     assert "const hasNativeChatRelay" in prepare_block
     assert prepare_block.index("channel.postMessage(message)") < prepare_block.index("if (!hasNativeChatRelay")
     assert "localHostPrepared: true" in prepare_block
     assert "restoreFromPrepareSnapshot: posted" in prepare_block
-    # BroadcastChannel 与本地 host 同时准备时，两边都必须按各自快照恢复启动前形态。
+    # When BroadcastChannel and local host prepare together, both must restore their own pre-start snapshots.
     assert "localHostPrepared: response.localHostPrepared === true" in prepare_block
     assert "snapshot.localHostPrepared === true || !posted" in restore_block
-    # 原生请求超时后不能猜用户原本是毛球；交给聊天窗按同 request 的 prepare 快照恢复。
+    # After native-request timeout, do not assume the user began as a furball; let the chat window restore its prepare snapshot for the same request.
     assert "finish(false, { restoreFromPrepareSnapshot: posted })" in prepare_block
     assert "restoreFromPrepareSnapshot: response.restoreFromPrepareSnapshot === true" in prepare_block
     assert "snapshot.restoreFromPrepareSnapshot !== true" in restore_block
     assert "restoreFromPrepareSnapshot: snapshot.restoreFromPrepareSnapshot === true" in restore_block
-    # 所有结束方式都经过 clearAllTutorialLifecycles，因此形态恢复不能只挂在 skip 或 complete 分支。
+    # Every ending path uses clearAllTutorialLifecycles, so form restoration cannot exist only in skip/complete branches.
     assert lifecycle_block.index("this.clearYuiGuideCompactChatFixedLayout(rawReason)") < lifecycle_block.index(
         "this.restoreYuiGuideCompactChatSurface(rawReason)"
     )
@@ -986,29 +986,29 @@ def test_avatar_floating_guide_restores_goodbye_business_state_after_model_reloa
         1,
     )[0]
 
-    # 用户模型先恢复，随后才重新进入教程前的猫咪形态，避免点击穿透状态套到普通模型上。
+    # Restore the user's model before restoring the pre-tutorial cat form, avoiding click-through state on a normal model.
     assert teardown_block.index("this.restoreTutorialAvatarOverride()") < teardown_block.index(
         "this.restoreAvatarFloatingModelStateAfterTutorial()"
     )
     assert "snapshot.goodbyeActive !== true" in restore_state_block
-    # 直启教程没有用户模型可供读取，待执行的 PC 默认猫咪请求也必须成为恢复目标。
+    # Direct tutorial launch has no user model to read; a pending PC default-cat request must also become a restoration target.
     assert "autoGoodbyeState.startupDefaultCatRequested === true" in source
     assert "startupDefaultCatPending ? 'startup-default-cat'" in source
     assert "new CustomEvent('live2d-goodbye-click'" in restore_state_block
-    # pending 启动猫咪快照的 visualTier 可能是 none；只允许回放真实猫咪层级。
+    # A pending startup-cat snapshot may have visualTier none; replay only genuine cat tiers.
     assert "['cat1', 'cat2', 'cat3'].includes(goodbyeMeta.visualTier)" in restore_state_block
     consume_block = source.split("    consumePendingStartupDefaultCatRestoreRequest() {", 1)[1].split(
         "    applyTutorialChatIdentityOverride(detail) {",
         1,
     )[0]
-    # 默认猫咪事件可能晚于首个快照；teardown 必须在解锁前按实时状态升级原始快照。
+    # The default-cat event may follow the first snapshot; teardown must upgrade the original snapshot from live state before unlocking.
     assert "currentState.startupDefaultCatRequested === true" in consume_block
     assert "startupDefaultCatPending && snapshot.goodbyeActive !== true" in consume_block
     assert consume_block.index("snapshot.goodbyeActive = true") < consume_block.index(
         "snapshot.goodbyeMeta.reason !== 'startup-default-cat'"
     )
     assert "reason: 'startup-default-cat'" in consume_block
-    # 原快照已是猫咪态时保留其层级，但实时 pending 仍必须进入消费链。
+    # Preserve the original snapshot's cat tier when already in cat form, but live pending state must still enter consumption.
     assert "!startupDefaultCatPending" in consume_block
     assert "snapshot.goodbyeMeta.reason !== 'startup-default-cat'" in consume_block
     assert "autoGoodbye.consumeStartupDefaultCatRequest()" in consume_block
@@ -1038,13 +1038,13 @@ def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state(
         1,
     )[1].split("Promise.resolve(nativePreparation)", 1)[0]
 
-    # 两种跨窗口传输路径必须落到同一实现，重复 relay 也只能启动一次原生展开动画。
+    # Both cross-window transports must reach one implementation, and duplicate relays must start the native expansion animation only once.
     assert "case 'yui_guide_prepare_compact_chat':" in source
     assert "case 'yui_guide_prepare_compact_chat':" in native_relay_source
     assert "I.yuiGuideCompactChatPrepareRequestId === requestId" in source
     assert "I.yuiGuideCompactChatPrepareRequestId !== requestId" in source
     assert "I.yuiGuideCompactChatPrepareWasCollapsed = wasCollapsed" in source
-    # /chat 的 relay 早于 React host 加载；无原生 prepare 时必须等待 host 方法，不能误报 ready。
+    # /chat relay precedes React host loading; without native prepare, wait for host methods instead of incorrectly reporting ready.
     assert "YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_LIMIT = 80" in source
     assert "typeof host.openWindow === 'function'" in source
     assert "typeof host.getChatSurfaceMode === 'function'" in source
@@ -1054,9 +1054,9 @@ def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state(
     assert "ready: false" in host_expand_failure_block
     assert "nativeBridge.prepareExpandedForTutorial()" in source
     assert "I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready'" in source
-    # 新旧原生桥同步抛错时都必须回执失败，不能让 null 被当成准备成功。
+    # Synchronous failures from either native bridge must acknowledge failure; null must not count as successful preparation.
     assert source.count("nativePreparation = { ready: false };") == 2
-    # 明确回执或同 request 的本地 prepare 快照确认是毛球时才折叠，原本胶囊保持不变。
+    # Collapse only when explicit acknowledgment or the same request's local prepare snapshot confirms furball form; retain an original capsule form.
     assert "if (!shouldRestoreCollapsed) return false" in source
     assert "message.restoreFromPrepareSnapshot === true" in source
     assert "I.yuiGuideCompactChatPrepareWasCollapsed === true" in source

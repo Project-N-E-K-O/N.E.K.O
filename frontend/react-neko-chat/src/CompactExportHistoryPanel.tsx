@@ -16,7 +16,7 @@ import MessageBlockView from './MessageBlockView';
 import MessageReactions from './MessageReactions';
 import ThinkingDots from './ThinkingDots';
 import { isTopicHintMessage } from './TopicHintBubble';
-import { type ChatMessage, type MessageAction } from './message-schema';
+import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
@@ -123,7 +123,8 @@ export function isCompactExportMessageSelectable(message: ChatMessage) {
   // Frontend-only topic-hint teasers are hidden from the history view and never
   // exported, so they must not count toward selectable/selected totals either —
   // otherwise the header count diverges from what's visible/selectable.
-  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message);
+  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message)
+    && hasVisibleMessageContent(message);
 }
 
 function isSelectionIgnoredTarget(target: EventTarget | null, currentTarget: EventTarget) {
@@ -162,6 +163,7 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
   return clsx('compact-export-history-message', {
     'is-user': message.role === 'user',
     'is-assistant': message.role === 'assistant' || message.role === 'tool',
+    'is-visit-peer': message.role === 'tool',
     'is-system': message.role === 'system',
     'is-selected': selected,
     'is-unselected': hasSelection && selectable && !selected,
@@ -174,7 +176,8 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
 function getCompactHistoryRoleGroup(message?: ChatMessage) {
   if (!message) return 'none';
   if (message.role === 'user') return 'user';
-  if (message.role === 'assistant' || message.role === 'tool') return 'assistant';
+  if (message.role === 'tool') return 'visit-peer';
+  if (message.role === 'assistant') return 'assistant';
   return 'system';
 }
 
@@ -262,7 +265,7 @@ export default function CompactExportHistoryPanel({
   // render, but they carry no real history — exclude them from the history view,
   // selection, and export so they can't show up as blank rows / empty entries.
   const messages = useMemo(
-    () => allMessages.filter((message) => !isTopicHintMessage(message)),
+    () => allMessages.filter((message) => !isTopicHintMessage(message) && hasVisibleMessageContent(message)),
     [allMessages],
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -752,6 +755,7 @@ export default function CompactExportHistoryPanel({
               className={clsx('compact-export-preview-message', {
                 'is-user': message.role === 'user',
                 'is-assistant': message.role === 'assistant' || message.role === 'tool',
+                'is-visit-peer': message.role === 'tool',
                 'is-system': message.role === 'system',
               })}
               role="listitem"
@@ -760,14 +764,15 @@ export default function CompactExportHistoryPanel({
             >
               <div className="compact-export-preview-bubble">
                 <div className="compact-export-preview-meta">
-                  <span>{message.author}</span>
-                  <span>{message.time}</span>
+                  <span className="compact-export-preview-author">{message.author}</span>
+                  <span className="compact-export-preview-time">{message.time}</span>
                 </div>
                 <div className="compact-export-preview-content">
                   {message.blocks.map((block, index) => (
                     <MessageBlockView
                       key={`${message.id}-preview-${block.type}-${index}`}
                       interactive={false}
+                      presentation="bubble"
                       block={block}
                       message={message}
                       isStreaming={streaming}
@@ -1092,6 +1097,7 @@ export default function CompactExportHistoryPanel({
                             <MessageBlockView
                               key={`${message.id}-${block.type}-${index}`}
                               interactive={!selectionEnabled}
+                              presentation="bubble"
                               block={block}
                               message={message}
                               isStreaming={streaming}

@@ -1,4 +1,4 @@
-"""验证小剧场迁入 N.E.K.O 胶囊后的静态前端合同。"""  # noqa: DOCSTRING_CJK
+"""Verify static frontend contracts after theater moved into N.E.K.O capsules."""  # noqa: DOCSTRING_CJK
 
 import json
 from pathlib import Path
@@ -54,7 +54,7 @@ def test_selector_uses_two_stage_handoff_and_start_replacement():
 
 
 def test_selector_targets_launch_to_opener_and_covers_host_wait_window():
-    """有 opener 时启动请求不能广播给其他本体，等待时间必须覆盖宿主挂载窗口。"""  # noqa: DOCSTRING_CJK
+    """With an opener, startup requests must not broadcast to other hosts; the wait must cover host mounting."""  # noqa: DOCSTRING_CJK
 
     script = _source("static/js/theater_selector.js")
     post_start = script.index("function postMessage(message, preferOpener)")
@@ -69,7 +69,7 @@ def test_selector_targets_launch_to_opener_and_covers_host_wait_window():
 
 
 def test_selector_binds_delayed_confirmations_to_original_selection():
-    """排队确认框只能操作弹出时对应的剧本和 Session。"""  # noqa: DOCSTRING_CJK
+    """Queued confirmation dialogs may act only on the script and Session shown when opened."""  # noqa: DOCSTRING_CJK
 
     script = _source("static/js/theater_selector.js")
     end_block = script[
@@ -128,7 +128,7 @@ def test_capsule_runtime_separates_narration_and_dialogue_tts():
 
 
 def test_capsule_runtime_restores_the_pre_theater_chat_surface():
-    """小剧场退出时必须恢复进入前的聊天界面形态。"""  # noqa: DOCSTRING_CJK
+    """Exiting theater must restore the prior chat-interface layout."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
 
@@ -150,7 +150,7 @@ def test_capsule_runtime_restores_the_pre_theater_chat_surface():
 
 
 def test_capsule_runtime_pointer_only_survives_current_app_lifecycle():
-    """演绎指针使用会话存储，完整退出程序后不得自动恢复小剧场。"""  # noqa: DOCSTRING_CJK
+    """Use session storage for playback pointers; a complete application exit must not automatically restore theater."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
 
@@ -162,7 +162,7 @@ def test_capsule_runtime_pointer_only_survives_current_app_lifecycle():
 
 
 def test_desktop_pet_runtime_routes_theater_to_the_compact_chat_host():
-    """桌面 Pet 不得在不可见宿主播放正文，启动只能交给紧凑胶囊。"""  # noqa: DOCSTRING_CJK
+    """Desktop Pets must not play narrative in invisible hosts; start only through compact capsules."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
 
@@ -176,7 +176,7 @@ def test_desktop_pet_runtime_routes_theater_to_the_compact_chat_host():
 
 
 def test_selector_does_not_publish_stale_story_after_archive_load():
-    """异步归档返回后必须再次复验当前选择，再更新详情和地址栏。"""  # noqa: DOCSTRING_CJK
+    """After asynchronous archive responses, revalidate the current selection before updating details or the address bar."""  # noqa: DOCSTRING_CJK
 
     script = _source("static/js/theater_selector.js")
     selection = script.index("async function selectStory(")
@@ -200,7 +200,7 @@ def test_selector_does_not_publish_stale_story_after_archive_load():
 
 
 def test_capsule_runtime_projects_narration_display_kind_from_performance_phase():
-    """动作或场景由 performance 位置确定，前端不能读取正文关键词猜测。"""  # noqa: DOCSTRING_CJK
+    """performance positions determine actions/scenes; the frontend must not infer them from narrative keywords."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     assert "if (sceneNarration) blocks.push" in runtime
@@ -218,7 +218,7 @@ def test_capsule_runtime_projects_narration_display_kind_from_performance_phase(
 
 
 def test_capsule_runtime_streams_ordinary_performance_into_one_history_bubble():
-    """普通微动作与对白共用猫娘消息，场景旁白仍使用独立气泡。"""  # noqa: DOCSTRING_CJK
+    """Ordinary micro-actions and dialogue share catgirl messages; scene narration retains separate bubbles."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     schema = _source("frontend/react-neko-chat/src/message-schema.ts")
@@ -241,7 +241,7 @@ def test_capsule_runtime_streams_ordinary_performance_into_one_history_bubble():
 
 
 def test_capsule_runtime_shows_player_action_before_waiting_for_actor():
-    """推荐输入和手动输入都应先进入历史，再等待模型返回。"""  # noqa: DOCSTRING_CJK
+    """Recommended and manual input both enter history before awaiting model responses."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     submit_start = runtime.index("async function submit(text, inputSource)")
@@ -260,7 +260,7 @@ def test_capsule_runtime_shows_player_action_before_waiting_for_actor():
 
 
 def test_capsule_runtime_discards_turn_response_after_session_switch():
-    """旧 Session 的迟到响应不能覆盖新剧本的胶囊状态。"""  # noqa: DOCSTRING_CJK
+    """Late old-Session responses must not overwrite new-script capsule state."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     submit_start = runtime.index("async function submit(text, inputSource)")
@@ -274,7 +274,7 @@ def test_capsule_runtime_discards_turn_response_after_session_switch():
 
 
 def test_capsule_runtime_invalidates_pending_launch_when_turn_advances():
-    """成功回合必须让此前发起的同 Session 启动快照失效。"""  # noqa: DOCSTRING_CJK
+    """Successful turns invalidate earlier startup snapshots for the same Session."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     submit_start = runtime.index("async function submit(text, inputSource)")
@@ -286,7 +286,7 @@ def test_capsule_runtime_invalidates_pending_launch_when_turn_advances():
 
 
 def test_theater_character_switch_invalidates_restore_and_selector_requests():
-    """切换猫娘时，尚未完成的本体恢复和选剧页请求都不能发布旧角色状态。"""  # noqa: DOCSTRING_CJK
+    """On catgirl changes, pending host restoration and script-selection requests must not publish old-character state."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     selector = _source("static/js/theater_selector.js")
@@ -313,7 +313,7 @@ def test_theater_character_switch_invalidates_restore_and_selector_requests():
 
 
 def test_capsule_runtime_revalidates_conflict_refresh_ownership():
-    """revision 冲突刷新不能用旧 Session 快照覆盖较新的启动。"""  # noqa: DOCSTRING_CJK
+    """Revision-conflict refreshes must not overwrite newer startups with old Session snapshots."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     submit_start = runtime.index("async function submit(text, inputSource)")
@@ -338,7 +338,7 @@ def test_capsule_runtime_revalidates_conflict_refresh_ownership():
 
 
 def test_selector_binds_session_start_to_displayed_character():
-    """开始和重新开始都必须携带确认时展示角色的稳定 ID。"""  # noqa: DOCSTRING_CJK
+    """Start and restart must carry the stable ID of the character displayed at confirmation."""  # noqa: DOCSTRING_CJK
 
     selector = _source("static/js/theater_selector.js")
     start = selector[
@@ -381,7 +381,7 @@ def test_selector_hands_owned_window_start_to_runtime_before_model_wait():
 
 
 def test_selector_reads_saved_performance_through_archive_detail_api():
-    """选剧页只能通过身份校验后的详情接口展示完整演绎。"""  # noqa: DOCSTRING_CJK
+    """Script-selection pages may show full performances only through identity-validated detail APIs."""  # noqa: DOCSTRING_CJK
 
     selector = _source("static/js/theater_selector.js")
 
@@ -399,7 +399,7 @@ def test_selector_reads_saved_performance_through_archive_detail_api():
 
 
 def test_capsule_runtime_reasserts_composer_visibility_without_overwriting_restore_state():
-    """剧场每次渲染都保持输入区可见，但只采集一次退出恢复快照。"""  # noqa: DOCSTRING_CJK
+    """Keep the input area visible on every theater render, but capture exit-restoration state only once."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     start = runtime.index("function claimComposerVisibility(chatHost)")
@@ -414,7 +414,7 @@ def test_capsule_runtime_reasserts_composer_visibility_without_overwriting_resto
 
 
 def test_selector_preserves_newer_end_receipt_during_memory_prompt():
-    """旧回执归档完成时只能清除自身，并在串行闸门释放后继续处理新回执。"""  # noqa: DOCSTRING_CJK
+    """Completed old-receipt archival may clear only itself; process newer receipts after releasing the serial gate."""  # noqa: DOCSTRING_CJK
 
     selector = _source("static/js/theater_selector.js")
     prompt_start = selector.index("async function maybePromptMemory()")
@@ -433,7 +433,7 @@ def test_selector_preserves_newer_end_receipt_during_memory_prompt():
 
 
 def test_end_receipt_uses_single_transport_and_stable_deduplication():
-    """已知选剧页只接收一次结束事实，重复 ready 也不能替换正在处理的回执对象。"""  # noqa: DOCSTRING_CJK
+    """Known script-selection pages receive the completion fact once; duplicate ready events cannot replace an in-progress receipt object."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     selector = _source("static/js/theater_selector.js")
@@ -454,7 +454,7 @@ def test_end_receipt_uses_single_transport_and_stable_deduplication():
 
 
 def test_capsule_runtime_requires_chat_host_before_launch_ready():
-    """React 胶囊未挂载时不能发送启动成功回执或保留不可见运行态。"""  # noqa: DOCSTRING_CJK
+    """Unmounted React capsules must not acknowledge successful startup or retain invisible running state."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken, boundCatgirlName)")
@@ -468,7 +468,7 @@ def test_capsule_runtime_requires_chat_host_before_launch_ready():
 
 
 def test_capsule_runtime_clears_pointer_restore_when_chat_host_is_unavailable():
-    """启动指针恢复也必须在 React 胶囊真实可用后才能保留 active 状态。"""  # noqa: DOCSTRING_CJK
+    """Startup-pointer restoration may retain active state only once the React capsule is truly available."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     restore_start = runtime.index("async function restorePointer()")
@@ -481,7 +481,7 @@ def test_capsule_runtime_clears_pointer_restore_when_chat_host_is_unavailable():
 
 
 def test_story_deletion_clears_matching_capsule_runtime():
-    """删除剧本成功后，仍在本体展示该剧本的运行态必须同步释放。"""  # noqa: DOCSTRING_CJK
+    """Successful script deletion must release matching running state still displayed in the host."""  # noqa: DOCSTRING_CJK
 
     selector = _source("static/js/theater_selector.js")
     runtime = _source("static/app/app-theater-runtime.js")
@@ -497,7 +497,7 @@ def test_story_deletion_clears_matching_capsule_runtime():
 
 
 def test_capsule_runtime_stops_old_audio_before_every_launch():
-    """同一 Session 再次启动也必须先停止旧播放协程与语音。"""  # noqa: DOCSTRING_CJK
+    """Restarting even the same Session must stop old playback coroutines and speech first."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     prepare_start = runtime.index("async function prepareLaunchSurface(message, launchToken, boundCatgirlName)")
@@ -529,7 +529,7 @@ def test_capsule_runtime_confirms_end_without_clearing_on_cancel():
     assert "t('theater.endConnectionFailed'" in runtime
     assert "t('theater.endStateFailed'" in runtime
     assert "return returnToSelector(state.pendingEnd, 'natural-ending-return')" in runtime
-    # 旧证据迁移接口已删除；结束动作只提交生命周期状态。
+    # The legacy evidence-migration API is removed; completion actions submit lifecycle state only.
     assert "migrateEvidence" not in runtime
     assert "migrate-evidence" not in runtime
     natural_return = runtime.index("return returnToSelector(state.pendingEnd, 'natural-ending-return')")
@@ -554,14 +554,14 @@ def test_theater_assets_are_scoped_to_selector_and_main_chat_hosts():
     assert "/static/app/app-theater-runtime.js" in chat
     assert "/static/js/theater_selector.js" not in index
     assert "/static/js/theater_selector.js" not in chat
-    # 三个宿主都必须先加载共享协议，避免业务脚本因依赖缺失而在页面初始化阶段退出。
+    # All three hosts must load the shared protocol first, preventing initialization exit from missing dependencies.
     assert selector.index(transport_path) < selector.index("/static/js/theater_selector.js")
     assert index.index(transport_path) < index.index("/static/app/app-theater-runtime.js")
     assert chat.index(transport_path) < chat.index("/static/app/app-theater-runtime.js")
 
 
 def test_theater_transport_owns_shared_request_and_message_protocol():
-    """协议号、CSRF 重试和请求 ID 只能在共享层实现一次。"""  # noqa: DOCSTRING_CJK
+    """Implement protocol numbers, CSRF retries, and request IDs once in the shared layer."""  # noqa: DOCSTRING_CJK
 
     transport = _source("static/js/theater_transport.js")
     selector = _source("static/js/theater_selector.js")

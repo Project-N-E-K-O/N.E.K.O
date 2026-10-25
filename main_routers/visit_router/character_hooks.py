@@ -54,9 +54,9 @@ def names_loader(config_manager: Any) -> char_lifecycle.LoadNames:
     async def load() -> tuple[set[str], dict[str, str] | None]:
         config_path = getattr(config_manager, "get_runtime_config_path", None)
         if callable(config_path):
-            # 普通读取在文件坏了 / 不在时静默退回缓存 / 默认角色：拿它对账会把还在的角色当成已删除，
-            # 清掉标记却不迁移。读不出就抛出，调用方按「对不完账」处理。有标记要对账说明这台机器
-            # 有过角色，运行时文件不在不能当成全新安装
+            # Ordinary reads silently fall back to cache/default characters for missing or corrupt files. Reconciliation would
+            # misidentify surviving characters as deleted, clear markers without migration. Raise on unreadability so callers
+            # treat reconciliation as incomplete. Markers prove prior characters; missing runtime data is not a fresh install.
             await local_chars.ensure_characters_file_readable(config_path("characters.json"), missing_ok=False)
         return char_lifecycle.names_of(await config_manager.aload_characters())
 
@@ -106,7 +106,7 @@ async def settle_retire(config_manager: Any, item: dict) -> bool:
         return await char_lifecycle.settle_retire(
             config_dir, item, names=names, uid_of=uid_of, retire_persona=retire_persona,
         )
-    except Exception as exc:  # noqa: BLE001 - 调用方在删除事务收尾处调：标记留给启动对账，不盖掉删除结果
+    except Exception as exc:  # noqa: BLE001 - Called at deletion-transaction cleanup; leave marker for startup reconciliation without masking deletion outcome.
         logger.warning("visit retire: pending_retire item not settled: %r", exc)
         return False
 
@@ -148,39 +148,39 @@ async def name_block_reason(config_manager: Any, name: str) -> tuple[str, frozen
     if state == char_lifecycle.NAME_RETIRING:
         try:
             await char_lifecycle.replay_retires(config_dir, names_loader(config_manager), retire_persona=retire_persona)
-        except Exception as exc:  # noqa: BLE001 - 重试失败按「仍在退役」处理：409 / 跳过这张卡，不能变成 500
+        except Exception as exc:  # noqa: BLE001 - Retry failure means still retiring: 409 / skip this card, never 500.
             logger.warning("visit retire: retry before reusing name %r failed: %r", name, exc)
             return NAME_BUSY, frozenset()
         state = await char_lifecycle.name_marker_state(config_dir, name)
         if state == char_lifecycle.NAME_RETIRING and await char_lifecycle.is_name_renaming(config_dir, name):
-            # 退役还没补完、名字又挂在一笔改名上：照样挡住，但先按改名对账一次，永久歧义时
-            # 要答「请先删除其中一个」（已清完名册的退役不会让它解开，一直答「稍后再试」解不开）
+            # Retirement incomplete and name also belongs to a pending rename: still block, but reconcile the rename first.
+            # Permanent ambiguity must say "delete one first"; completed roster retirement cannot resolve it, so "retry later" never helps.
             state = char_lifecycle.NAME_RENAMING
         retried = True
     else:
         retried = False
     if state == char_lifecycle.NAME_RENAMING:
         try:
-            # 改名迁移会等目标名下的退役补完：先补一次，能补完就不用等下次启动（上面刚补过就不再补）
+            # Rename migration waits for target-name retirement: retry once now to avoid waiting until startup (unless already retried above).
             if not retried:
                 await char_lifecycle.replay_retires(
                     config_dir, names_loader(config_manager), retire_persona=retire_persona)
-        except Exception as exc:  # noqa: BLE001 - 补不完照样对账，改名会继续等着
+        except Exception as exc:  # noqa: BLE001 - Reconcile even when retirement remains incomplete; rename keeps waiting.
             logger.warning("visit retire: retry before reconciling the rename holding %r failed: %r", name, exc)
         try:
             names, uid_of = await names_loader(config_manager)()
             groups: list[frozenset[str]] = []
             unsettled = await char_lifecycle.reconcile_renames(config_dir, names, uid_of, pending_groups=groups)
-        except Exception as exc:  # noqa: BLE001 - 对不完账就挡住这个名字，标记留给启动对账
+        except Exception as exc:  # noqa: BLE001 - Incomplete reconciliation blocks this name; leave marker for startup reconciliation.
             logger.warning("visit rename: pending_rename not reconciled before reusing %r: %r", name, exc)
         else:
-            # 显式判断：ALL_NAMES（读不出）是另一个哨兵，不能被当成「请删除角色」；名字只在队列里时，
-            # 挡住它的是前面那笔歧义改名，并非它自己，答「稍后再试」
-            # 改名在等某个名字的退役补完时同样留着标记：那只是还没轮到，不能让用户去删角色
-            # 只看挂着这个名字的那一笔：几笔互不相干的改名同时挂着时，别的那笔的名字和退役都与它无关
+            # Explicit check: ALL_NAMES (unreadable) is a different sentinel, not "delete a character". For a name only in the queue,
+            # the preceding ambiguous rename is the blocker, not the name itself; answer "retry later".
+            # Keep markers when rename waits for another name's retirement: its turn has not come, so do not ask users to delete characters.
+            # Inspect only the transaction involving this name: other independent pending renames and retirements are unrelated.
             held = next((group for group in groups if name in group), None) if isinstance(unsettled, frozenset) else None
             if held is not None and not await char_lifecycle.names_retiring(config_dir, held):
-                # 永久 ambiguous（另一个名字已被别的角色占着）：重试也解不开，只有删掉其中一个角色才行
+                # Permanent ambiguity (another character occupies the other name): retries cannot resolve it; one character must be deleted.
                 logger.warning("visit rename: ambiguous pending_rename holds %r", name)
                 return NAME_AMBIGUOUS, held
         state = await char_lifecycle.name_marker_state(config_dir, name)

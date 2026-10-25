@@ -240,7 +240,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body)" in source
     assert "function _getNekoIdleCat1PlaygroundBodyCollisionRect(body)" in source
     assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
-    assert "function _refreshNekoIdleCat1PlaygroundViewportBottom(button)" in source
+    assert "function _refreshNekoIdleCat1PlaygroundViewportBottom()" in source
     assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)" in source
     assert "function _stepNekoIdleCat1PlaygroundPhysics(button, now)" in source
     assert "disabledCapabilities: new Set(" in source
@@ -309,14 +309,18 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "cat1 playground platform bottom bounds",
     )
     assert "window.electronScreen" in playground_bounds_block
-    assert "getCurrentDisplay" in playground_bounds_block
-    assert "currentDisplay.workArea" in playground_bounds_block
-    assert "Math.min(windowBottom, workAreaHeight)" in playground_bounds_block
+    assert "getDesktopCoordinateSnapshot" in playground_bounds_block
+    assert "snapshot.display.workArea" in playground_bounds_block
+    assert "renderer.screenOrigin" in playground_bounds_block
+    assert "areaY + areaHeight - screenY" in playground_bounds_block
+    assert "top: areaY - screenY" in playground_bounds_block
+    assert "Math.min(windowBottom, workArea.bottom)" in playground_bounds_block
     assert "window.innerHeight - body.height" not in source
     assert "visibleInsetRatios: _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(options.visibleInsetRatios)" in source
     assert "body.floorY = Math.max(0, _getNekoIdleCat1PlaygroundViewportBottomPx() - body.height + insets.bottom);" in source
-    assert "body.wallLeft = -insets.left;" in source
-    assert "body.wallRight = Math.max(body.wallLeft, window.innerWidth - body.width + insets.right);" in source
+    assert "body.ceilingY = _getNekoIdleCat1PlaygroundViewportTopPx() - (Number(insets.top) || 0);" in source
+    assert "body.wallLeft = _getNekoIdleCat1PlaygroundViewportLeftPx() - insets.left;" in source
+    assert "body.wallRight = Math.max(body.wallLeft, _getNekoIdleCat1PlaygroundViewportRightPx() - body.width + insets.right);" in source
     assert "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)" in source
     reclamp_block = _source_slice_between(
         source,
@@ -325,6 +329,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "cat1 playground resize reclamp",
     )
     assert "const wasGrounded = !!body.grounded;" in reclamp_block
+    assert "if (body.y < body.floorY - 0.5) body.grounded = false;" in reclamp_block
+    assert "isDesktopSupported" in reclamp_block
     assert "body.y = body.floorY;" in reclamp_block
     assert "_setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: body.desktop });" in reclamp_block
     assert "getImageData" not in source
@@ -341,6 +347,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "document.createElement('button')" in desktop_mirror_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL" in desktop_mirror_block
     assert "position: 'fixed'" in desktop_mirror_block
+    assert "pointerEvents: 'auto'" in desktop_mirror_block
     assert "_NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL" in source
     question_block_clone_block = _source_slice_between(
         source,
@@ -365,6 +372,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)" in source
     assert "_resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in physics_block
     assert "body.vy += state.gravityPxPerSecond2 * dt;" in physics_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION" in physics_block
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
     assert "body.vx = 0;" in physics_block
@@ -529,6 +538,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     )
     assert "state.pointerBodyId = body.id;" in pointer_down_block
     assert "state.draggingBodyId = body.id;" not in pointer_down_block
+    assert "state.container.setAttribute('data-neko-cat1-playground-pointer', body.id);" in pointer_down_block
+    assert "body.id === 'question-block'" in pointer_down_block
     assert "event.preventDefault()" not in pointer_down_block
     assert "body.angularVelocity = 0;" in pointer_down_block
     assert "body.rotationSettling = false;" in pointer_down_block
@@ -562,7 +573,7 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "pointer.x - state.pointerOffsetX" in pointer_move_block
     assert "pointer.y - state.pointerOffsetY" in pointer_move_block
     assert "const clampedX = Math.max(body.wallLeft, Math.min(nextX, body.wallRight));" in pointer_move_block
-    assert "const clampedY = Math.min(nextY, body.floorY);" in pointer_move_block
+    assert "const clampedY = Math.max(body.ceilingY, Math.min(nextY, body.floorY));" in pointer_move_block
     assert "x: clampedX + state.pointerOffsetX" in pointer_move_block
     assert "y: clampedY + state.pointerOffsetY" in pointer_move_block
 
@@ -600,6 +611,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "body.angularVelocity = _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state);" in pointer_up_block
     assert "state.suppressClickTimer = setTimeout" in pointer_up_block
     assert "state.pointerId = null;\n    state.pointerId = null;" not in pointer_up_block
+    assert "_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state);" in pointer_up_block
+    assert "_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state, { notify: false });" in pointer_up_block
 
     click_block = _source_slice_between(
         source,
@@ -2087,8 +2100,8 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     assert "movedDistancePx: 0" in source
     assert "dispatchReturnBallClick();" in source
     assert "window.nekoPetDrag.stop(stopScreenX, stopScreenY)" in source
-    # 已经移动过的拖拽被中断（截图/blur/超时）时也要传播取消标记，
-    # 否则 moved 分支照常派发 drag-end，app-auto-goodbye 会当成真实释放降级猫档
+    # Propagate cancellation when an already-moved drag is interrupted by a screenshot, blur, or timeout;
+    # otherwise the moved branch emits drag-end and app-auto-goodbye treats it as a real release, lowering the cat tier.
     assert "dragCancelled: suppressClick" in source
 
 
@@ -4419,16 +4432,16 @@ def test_cat1_minimized_ball_inside_cat_finishes_without_side_retarget_jitter():
         "function _getNekoIdleCat1CompactTopEdgeBounds",
         1,
     )[0]
-    # #1758 把“按朝向算侧位点”的计算抽到了 _computeNekoIdleCat1SideTargetForLook /
-    # _pickNekoIdleCat1ForwardSideTarget，_getNekoIdleCat1SideTarget 里只剩“提交侧 + 滞回”选向，
-    # 再对最终 target（无论来自首帧 forward-pick 还是提交侧）套用本贴球护栏——避免贴球时倒退取侧抽搐。
+    # #1758 extracted orientation-based side-point calculation into _computeNekoIdleCat1SideTargetForLook /
+    # _pickNekoIdleCat1ForwardSideTarget; _getNekoIdleCat1SideTarget now only chooses the committed side with hysteresis.
+    # Apply this ball-contact guard to the final target, whether from the first-frame forward pick or committed side, avoiding backward side-picking jitter near the ball.
     assert "_pickNekoIdleCat1ForwardSideTarget(rect, chatRect)" in side_target_block
     assert "_computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight)" in side_target_block
     assert "_isNekoIdleRectCenterInsideRect(chatRect, rect)" in side_target_block
     assert "target.moveFacingRight !== target.lookFacingRight" in side_target_block
     assert "_makeNekoIdleCat1CurrentSideTarget(rect, chatRect" in side_target_block
     assert "contactDistance <= profile.target.exitDistancePx" not in side_target_block
-    # 护栏必须在解析出 target 之后、提交/返回之前生效，且 inside 判定先于取“原地侧目标”。
+    # Apply the guard after resolving target but before committing/returning; check inside before selecting the stationary side target.
     assert side_target_block.index("const target = lookFacingRight === null") < side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)")
     assert side_target_block.index("_isNekoIdleRectCenterInsideRect(chatRect, rect)") < side_target_block.index("_makeNekoIdleCat1CurrentSideTarget(rect, chatRect")
 

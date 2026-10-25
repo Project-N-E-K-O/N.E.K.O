@@ -638,6 +638,8 @@
     <!-- 跳过：Live2D/VRM/Three.js、common_ui.js(DOM拖拽不兼容)、touch-config、tutorial -->
     <script src="/static/libs/ogg-opus-decoder.min.js?v={{ static_asset_version }}"></script>
     <script src="/static/jukebox/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-recommendations.js?v={{ static_asset_version }}"></script>
+    <script src="/static/feedback-upgrade-notice.js?v={{ static_asset_version }}" defer></script>
     <!-- 点歌台门面：这一页也会收到 jukebox_control。多窗口分发下它会让位给主窗口，
          但网页端单独开 /chat 时它就是唯一的收件人，没有门面就只能把 AI 发来的
          点播指令整条丢掉（聊天窗自己的点歌台按钮同样是死的）。加载顺序与
@@ -708,7 +710,9 @@
     <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
     <!-- Match index.html: install the adapter before app.js opens the WebSocket. -->
     <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-reply-tail.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/display-relay.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/bridge.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-telemetry.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-buttons.js?v={{ react_chat_asset_version }}"></script>
@@ -729,11 +733,17 @@
     <script src="/static/app/app-react-chat-window/minimize-and-idle-dock.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat-lexicon.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/cat-local-chat.js?v={{ react_chat_asset_version }}"></script>
+    <!-- 串门聊天面（必须在 resize-drag-and-api.js 之前：它最后会删掉 __appReactChatWindowParts）与串门人设面板 -->
+    <script src="/static/app/app-react-chat-window/visit-chat.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/visit-persona-panel.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-react-chat-window/resize-drag-and-api.js?v={{ react_chat_asset_version }}"></script>
     <!-- 小剧场本体与选择页共用同一份消息和请求协议。 -->
     <script src="/static/js/theater_transport.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-theater-runtime.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-sync.js?v={{ static_asset_version }}"></script>
+    <!-- Independent chat windows surface the same retained persona choices. -->
+    <script src="/static/app/app-character-profile-sync.js?v={{ static_asset_version }}"></script>
 
     <script>
     // =====================================================================

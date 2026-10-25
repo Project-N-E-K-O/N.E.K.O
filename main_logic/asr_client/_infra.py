@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _READY_TIMEOUT_SECONDS = 10.0
 _CALLBACK_DRAIN_TIMEOUT_SECONDS = 5.0
 _WORKER_CLOSE_TIMEOUT_SECONDS = 5.0
-# 活跃音频队列按时长限额；chunk 数量只保留为兼容常量，不参与容量判断。
+# Limit the active audio queue by duration; keep the chunk count only as a compatibility constant, not a capacity check.
 _REQUEST_QUEUE_SIZE = 64
 _ACTIVE_QUEUE_MAX_AUDIO_MS = 2_000
 _ACTIVE_QUEUE_MAX_AUDIO_BYTES = _ACTIVE_QUEUE_MAX_AUDIO_MS * 16_000 * 2 // 1_000
@@ -1818,8 +1818,8 @@ class _RealtimeAsrSessionImpl:
             return 0
         if isinstance(queue, _AsrRequestQueue):
             return queue.waiting_audio_bytes
-        # asyncio.Queue 没有公开快照接口；这里仅在 session 自己的 operation
-        # lock 内读取其 deque，不修改内部结构。
+        # asyncio.Queue has no public snapshot API; read its deque only under the session's own operation
+        # lock, without modifying its internal structure.
         queued = getattr(queue, "_queue", ())
         return sum(
             len(item.audio)

@@ -53,7 +53,7 @@ def extract_device_change_source() -> str:
 
 
 def install_voice_popover_harness(
-    page: Page, *, deferred_permission: bool
+    page: Page, *, deferred_permission: bool, desktop_bridge: bool = False
 ) -> None:
     permission_source, render_expression = extract_voice_popover_sources()
     page.set_content(
@@ -225,6 +225,21 @@ def install_voice_popover_harness(
     }
     let deferScreenSources = false;
     const screenSourceResolvers = [];
+    // 可选的桌面来源桥（desktop_bridge=True）：复用缓存的屏幕面板前会用它
+    // 核对来源 id。__desktopSources 是「当前存在的来源」，改它模拟窗口被关掉。
+    // 默认不装：浏览器分享面板的用例依赖「没有桌面桥」。
+    window.__desktopSources = [{ id: 'screen:0:0', name: 'test-screen' }];
+    window.__desktopGetSourcesCalls = 0;
+    window.__desktopGetSourcesFails = false;
+    if (__DESKTOP_BRIDGE__) window.electronDesktopCapturer = {
+        sourceEnumerationMayPrompt: false,
+        async getSources() {
+            window.__desktopGetSourcesCalls += 1;
+            if (window.__desktopGetSourcesGate) await window.__desktopGetSourcesGate;
+            if (window.__desktopGetSourcesFails) throw new Error('getSources failed');
+            return window.__desktopSources.map((source) => ({ ...source }));
+        },
+    };
     window.__screenRenderOptions = [];
     window.renderFloatingScreenSourceList = async (container, options = {}) => {
         window.__screenRenderOptions.push({
@@ -250,19 +265,57 @@ def install_voice_popover_harness(
                 screenSourceResolvers.push(resolve);
             });
         }
-        const source = document.createElement('button');
-        source.type = 'button';
-        source.textContent = 'test-screen';
-        container.appendChild(source);
+        // 生产渲染在枚举失败 / 空列表时（retryOnFailure）留下当前来源摘要和
+        // 重试按钮并返回 false；__screenRenderFailures 计数控制接下来几次失败。
+        if (window.__screenRenderFailures > 0) {
+            window.__screenRenderFailures -= 1;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.dataset.nekoScreenSourceDeferredLoad = '';
+            container.appendChild(retry);
+            return false;
+        }
+        // 装了桌面桥时按 __desktopSources 生成卡片（与核对用的来源一致），
+        // 否则固定一张 test-screen。
+        const listed = window.electronDesktopCapturer
+            ? window.__desktopSources
+            : [{ id: 'screen:0:0', name: 'test-screen' }];
+        listed.forEach((listedSource) => {
+            const source = document.createElement('button');
+            source.type = 'button';
+            source.className = 'screen-source-option';
+            source.textContent = listedSource.name;
+            source.dataset.sourceId = listedSource.id;
+            source.dataset.sourceName = listedSource.name;
+            // 生产渲染的第二阶段先放 loading 占位再补缩略图；__screenThumbnailsComplete
+            // 为 false 时停在 loading，模拟面板在第二阶段期间被拆走（填充放弃）。
+            const thumbnail = document.createElement('div');
+            thumbnail.className = window.__screenThumbnailsComplete === false
+                ? 'screen-source-thumbnail screen-source-thumbnail-loading'
+                : 'screen-source-thumbnail screen-source-thumbnail-ready';
+            source.appendChild(thumbnail);
+            container.appendChild(source);
+        });
         const filter = document.createElement('input');
         filter.type = 'search';
         filter.className = 'screen-source-title-filter';
         container.appendChild(filter);
         return true;
     };
+    window.__screenThumbnailsComplete = true;
+    window.__screenRenderFailures = 0;
+    window.__settleScreenThumbnails = () => {
+        document.querySelectorAll('.screen-source-thumbnail-loading').forEach((el) => {
+            el.className = 'screen-source-thumbnail screen-source-thumbnail-ready';
+        });
+    };
     let rememberWindowEnabled = true;
     window.__rememberWindowSetCalls = [];
     window.isScreenSourceTitleMatchEnabled = () => rememberWindowEnabled;
+    // 模拟另一个窗口改了开关：只改状态，不派发 neko:screen-source-changed。
+    window.__setRememberWindowFromOtherWindow = (enabled) => {
+        rememberWindowEnabled = enabled;
+    };
     window.setScreenSourceTitleMatchEnabled = (enabled) => {
         rememberWindowEnabled = enabled;
         window.__rememberWindowSetCalls.push(enabled);
@@ -356,6 +409,9 @@ def install_voice_popover_harness(
     )
     harness = harness.replace(
         "__DEFERRED_PERMISSION__", "true" if deferred_permission else "false"
+    )
+    harness = harness.replace(
+        "__DESKTOP_BRIDGE__", "true" if desktop_bridge else "false"
     )
     harness = harness.replace("__PERMISSION_SOURCE__", permission_source)
     harness = harness.replace("__RENDER_EXPRESSION__", render_expression)

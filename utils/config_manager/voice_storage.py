@@ -103,15 +103,15 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         if (core_cfg.get("CORE_API_TYPE") or core_cfg.get("coreApi")) != "free":
             return voice_id
 
-        # get_core_config() 已按非大陆把 CORE_URL 改写成 lanlan.app，URL 即可判海外；
-        # _check_non_mainland 兜底地理判定。与 ensure_default 同源。海外不迁移（见上）。
+        # get_core_config() already rewrites CORE_URL to lanlan.app for non-mainland users; the URL identifies overseas routing.
+        # _check_non_mainland supplies geographic fallback, sharing ensure_default logic. Do not migrate overseas (see above).
         core_url = str(core_cfg.get("CORE_URL") or "")
         overseas = is_free_lanlan_app_route("free", core_url)
         if not overseas:
-            # 兜底问地理前先过 needs_region 门：livestream 已把全部免费端点派生掉
-            # 时线路是确定的，而 _check_non_mainland 内部会起探测——不该为迁移一个
-            # 音色把这类用户的 IP 发给 ip-api.com（不变量 #2）。与 ensure_default
-            # 的门同源；ADJUSTED 因为这里读的是组装后快照。
+            # Check needs_region before geographic fallback: livestream may already derive every free endpoint,
+            # making routing definitive, while _check_non_mainland starts probes; migrating one voice must not
+            # send these users' IP to ip-api.com (invariant #2). Share ensure_default's
+            # gate; use ADJUSTED because this reads an assembled snapshot.
             from utils.config_manager import ConfigManager
             if ConfigManager._config_needs_region(core_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
                 try:
@@ -315,7 +315,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         intl_storage_key = intl_runtime.get('storage_key', '')
         _add(intl_storage_key, 'cosyvoice_intl')
 
-        # 旧版国际版曾按原始 API Key 入库，存在时纳入当前视图以免音色丢失。
+        # Legacy international versions stored voices by raw API key; include that partition if present to retain voices.
         intl_raw_key = (intl_runtime.get('api_key') or '').strip()
         if intl_raw_key and intl_raw_key != intl_storage_key:
             _add(intl_raw_key, 'cosyvoice_intl')
@@ -331,7 +331,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         voice_storage = self.load_voice_storage()
         result = []
 
-        # 国服 key → __MINIMAX__{suffix}
+        # Domestic key -> __MINIMAX__{suffix}.
         cn_key = self.get_tts_api_key('minimax')
         if cn_key:
             suffix = cn_key[-8:] if len(cn_key) >= 8 else cn_key
@@ -339,7 +339,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
             if bucket in voice_storage:
                 result.append(bucket)
 
-        # 国际服 key → __MINIMAX_INTL__{suffix}
+        # International key -> __MINIMAX_INTL__{suffix}.
         intl_key = self.get_tts_api_key('minimax_intl')
         if intl_key:
             suffix = intl_key[-8:] if len(intl_key) >= 8 else intl_key
@@ -485,7 +485,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
-            # 本地 WebSocket TTS：免费版仍可用，列表必须可见
+            # Local WebSocket TTS remains free; its list must stay visible.
             storage_key = '__LOCAL_TTS__'
             all_voices = voice_storage.get(storage_key, {})
             result = dict(all_voices)
@@ -504,7 +504,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
 
         cosyvoice_storage_keys = self._get_cosyvoice_storage_keys(voice_storage)
 
-        # 确保主分区音色有 provider 字段
+        # Ensure primary-partition voices contain provider.
         default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
         for cosy_key, cosy_provider in cosyvoice_storage_keys:
             if cosy_key == storage_key:
@@ -517,7 +517,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                 elif default_provider == 'cosyvoice_intl' and vdata.get('provider') == 'cosyvoice':
                     vdata['provider'] = 'cosyvoice_intl'
 
-        # 合并阿里国际版音色，并确保 provider 字段与分区一致
+        # Merge Alibaba international voices, ensuring provider matches their partition.
         for ck, cosy_provider in cosyvoice_storage_keys:
             if ck == storage_key:
                 continue
@@ -530,7 +530,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                         vdata['provider'] = cosy_provider
                     result[vid] = vdata
 
-        # 合并 MiniMax 音色，并确保 provider 字段
+        # Merge MiniMax voices and ensure provider.
         for mk in self._get_minimax_storage_keys():
             mm_provider = self._infer_provider_from_storage_key(mk)
             minimax_voices = voice_storage.get(mk, {})
@@ -540,7 +540,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                         vdata['provider'] = mm_provider
                     result[vid] = vdata
 
-        # 合并 ElevenLabs 音色，并确保 provider 字段
+        # Merge ElevenLabs voices and ensure provider.
         for ek in self._get_elevenlabs_storage_keys():
             eleven_voices = voice_storage.get(ek, {})
             for vid, vdata in eleven_voices.items():
@@ -549,8 +549,8 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                         vdata['provider'] = 'elevenlabs'
                     result[vid] = vdata
 
-        # 合并 MiMo 克隆音色，并确保 provider 字段（dual to ElevenLabs/MiniMax；MiMo 克隆走
-        # 独立 __MIMO__ 桶 + voice_meta 选中，与当前 core/TTS provider 无关）
+        # Merge MiMo cloned voices and ensure provider (symmetric with ElevenLabs/MiniMax; MiMo clones use
+        # a separate __MIMO__ bucket + voice_meta selection, independent of the current core/TTS provider).
         for mimo_key in self._get_mimo_storage_keys():
             mimo_voices = voice_storage.get(mimo_key, {})
             for vid, vdata in mimo_voices.items():
@@ -567,7 +567,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                         vdata['provider'] = 'doubao_tts'
                     result[vid] = vdata
 
-        # 合并 GLM 克隆音色（dual to doubao_tts；__GLM_TTS__{suffix} 桶 + voice_meta 选中）
+        # Merge GLM clones (symmetric with doubao_tts; __GLM_TTS__{suffix} bucket + voice_meta selection).
         for glm_key in self._get_glm_tts_storage_keys():
             glm_voices = voice_storage.get(glm_key, {})
             for vid, vdata in glm_voices.items():
@@ -576,8 +576,8 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                         vdata['provider'] = 'glm_tts'
                     result[vid] = vdata
 
-        # 合并 vLLM-Omni 克隆音色（dual to MiMo；vLLM-Omni 克隆走固定 __VLLM_OMNI__ 桶
-        # + voice_meta 选中，与 MiMo 同构。差异：vLLM-Omni 是本地服务无 API key，桶名固定）
+        # Merge vLLM-Omni clones (symmetric with MiMo; fixed __VLLM_OMNI__ bucket
+        # + voice_meta selection, same structure as MiMo; difference: vLLM-Omni is local without API keys, so its bucket name is fixed).
         for vllm_key in self._get_vllm_omni_storage_keys():
             vllm_voices = voice_storage.get(vllm_key, {})
             for vid, vdata in vllm_voices.items():
@@ -591,8 +591,8 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         ))
 
         if for_listing:
-            # UI 试听列表不需要 MiMo 克隆的参考样本 base64（可达 MB）——剥掉，避免把大 blob
-            # 推给前端。dispatch / preview 走 for_listing=False，仍拿到完整 voice_meta。
+            # UI preview lists do not need MiMo clone reference base64 (potential megabytes); strip it to avoid large frontend
+            # blobs. Dispatch / preview uses for_listing=False and still receives full voice_meta.
             result = {
                 vid: ({k: v for k, v in vdata.items() if k != 'clone_sample_b64'}
                       if isinstance(vdata, dict) and 'clone_sample_b64' in vdata else vdata)
@@ -702,7 +702,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
 
         _add(runtime.get('storage_key', ''))
         if runtime.get('provider') == 'cosyvoice_intl':
-            # 旧版国际版曾按原始 API Key 入库，MD5 去重也必须兼容该分区。
+            # Legacy international versions used raw-key partitions; MD5 deduplication must support them too.
             _add(runtime.get('api_key', ''))
 
         for storage_key in storage_keys:
@@ -718,7 +718,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
             return True
         voice_storage = self._load_voice_storage_for_write()
 
-        # 先检查带前缀的独立服务商存储（含 vLLM-Omni 固定桶 __VLLM_OMNI__）
+        # First check prefixed independent-provider storage (including vLLM-Omni's fixed __VLLM_OMNI__ bucket).
         for storage_key in list(voice_storage.keys()):
             if (
                 storage_key.startswith('__MINIMAX__')
@@ -730,13 +730,13 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                 or storage_key.startswith('__COSYVOICE_INTL__')
                 or storage_key.startswith('__VLLM_OMNI__')
             ) and voice_id in voice_storage.get(storage_key, {}):
-                # 克隆身份（含 MiMo 的样本 base64）都在 voice_data 里，删除 entry 随之消失，
-                # 无旁路本地文件需清理（对偶 MiniMax/ElevenLabs）。
+                # Clone identity (including MiMo sample base64) lives in voice_data; deleting the entry removes it,
+                # without auxiliary local files to clean (symmetric with MiniMax/ElevenLabs).
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
 
-        # 再检查当前阿里国内/国际 API Key 的原始分区
+        # Then check the raw partition for current domestic/international Alibaba API keys.
         for storage_key, _provider in self._get_cosyvoice_storage_keys():
             if voice_id in voice_storage.get(storage_key, {}):
                 del voice_storage[storage_key][voice_id]
@@ -835,12 +835,12 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         if is_saveable_native_voice(self, voice_id):
             return True
 
-        # hosted/local provider 的内置预制音色（如选中 MiMo 时的预制声线），由
-        # tts_provider_registry 收口，仅在该 provider 被选中时算合法
+        # Hosted/local provider builtin voices (e.g. MiMo presets when selected) are centralized by
+        # tts_provider_registry and valid only while that provider is selected.
         if self._is_selected_hosted_preset_voice(voice_id):
             return True
 
-        # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
+        # Free preset voices may bypass save validation; core.py determines availability dynamically for the current route.
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if voice_id in free_voices.values():
@@ -939,7 +939,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
             """Return an exact configured preset owner before clone lookup."""
             # Explicit configuration wins only for dynamic configured presets;
             # static hosted catalogs keep their existing clone-first behavior.
-            # 仅动态配置音色优先于同名克隆；静态厂商目录仍保持原有优先级。
+            # Only dynamically configured voices override same-name clones; static vendor catalogs retain existing precedence.
             provider_key = _hosted_preset_provider(ref)
             if not provider_key:
                 return None
@@ -1014,35 +1014,35 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         from utils.config_manager import ConfigManager, core_config as _core_config_mod
 
         try:
-            # 调试开关强制区域 = 结论确定非猜测（_check_non_mainland 恒返回强制
-            # 值），不认它会让 override 下的免费路由永久禁用清理与默认音色绑定。
-            # 经模块属性读取而非 from-import，保证测试对 core_config 的 monkeypatch
-            # 在这里同样可见。
+            # Debug-forced region is definitive, not guessed (_check_non_mainland always returns the forced
+            # value); ignoring it permanently disables free-route cleanup and default binding under overrides.
+            # Access through module attributes, not from-imports, so tests' core_config monkeypatches
+            # remain visible here.
             if _core_config_mod.GEOIP_FORCE_NON_MAINLAND is not None:
                 return False
             if ConfigManager._region_cache is not None:
                 return False
             if cfg is None:
                 cfg = self.get_core_config() or {}
-            # 判「是不是免费路由」必须用**不受区域改写影响**的路由选择字段：
-            # get_core_config() 返回的是已改写快照，Steam 临时判海外时 URL 已经变成
-            # lanlan.app，按 URL host 判会得出「这是自配线路」而放行清理——恰好在这个
-            # 守卫最该生效的场景下失效。
+            # Identify free routes through selection fields **unaffected by region rewriting**:
+            # get_core_config() returns rewritten snapshots; temporary Steam overseas results already change URLs to
+            # lanlan.app, so host-based checks classify them as custom routes and allow cleanup,
+            # failing precisely when this guard is most needed.
             if not (cfg.get('CORE_API_TYPE') or cfg.get('coreApi') or cfg.get('assistApi')):
-                # 读不到任何路由选择（配置残缺）：这是要删用户数据的路径，宁可不删。
-                # 正常 get_core_config() 一定带这些字段，所以不会平白推迟清理。
+                # Missing all route selections (incomplete config): this deletes user data, so prefer not deleting.
+                # Normal get_core_config() always includes these fields, so cleanup is not unnecessarily delayed.
                 return True
-            # 两个条件都要：选了免费路由，**且**确实还有 URL 依赖区域判定。
-            # 只看前者会把「livestream 已把所有免费端点派生掉」的用户永远判成未落定
-            # ——那种配置根本不起探测，_region_cache 永不落定，于是清理与默认音色
-            # 绑定被永久禁用。后者（用 ADJUSTED，认得改写后的 .app）正好排除这种。
+            # Both conditions required: selected free route **and** URLs genuinely still depend on regional detection.
+            # Checking only the former leaves users whose livestream config derives every free endpoint permanently unresolved:
+            # such configs start no probe, _region_cache never settles, and cleanup/default voice binding
+            # stay disabled forever. ADJUSTED recognizes rewritten .app and excludes precisely this case.
             return (
                 ConfigManager._any_free_provider(cfg)
                 and self._config_needs_region(cfg, ConfigManager._REGION_HOSTS_ADJUSTED)
             )
         except Exception:
             logger.debug("[GeoIP] 区域落定状态判断失败，保守视为未落定", exc_info=True)
-            return True         # 判断不了就别删——保守方向是不动用户数据
+            return True         # If uncertain, do not delete: conservatively preserve user data.
 
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
@@ -1078,8 +1078,8 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
-            # 容忍扁平串 / 结构对象两形态，统一按 legacy 字符串做 remap / validate；
-            # cleanup 不在此把有效条目压成对象（守住「不 bulk sweep」，迁移只在用户设音色时发生）。
+            # Accept flat strings and structured objects, remapping/validating both as legacy strings;
+            # cleanup does not convert valid entries to objects here (no bulk sweep; migrate only when users set voices).
             voice_id = read_legacy_voice_id(get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',)))
             if not voice_id:
                 continue
@@ -1087,8 +1087,8 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
             # the binding until the user explicitly deletes or replaces it.
             if is_imported_voice_ref(voice_id):
                 continue
-            # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
-            # invalid 判定（新值在 free_voices 白名单内本就合法），保住默认 YUI 音色
+            # Deprecated free YUI preset: move to active yui_cn, then continue past subsequent invalid
+            # checks (the new value is valid in free_voices), preserving default YUI voices.
             remapped = self.remap_deprecated_free_yui_voice_id(voice_id)
             if remapped and remapped != voice_id:
                 set_reserved(config, 'voice_id', remapped)
@@ -1100,11 +1100,11 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                     remapped,
                 )
                 continue
-            # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
+            # Legacy CosyVoice voices: retain voice_id and record for notification only.
             if self.is_legacy_cosyvoice_id(voice_id):
                 legacy_cosyvoice_names.append(name)
                 continue
-            # 其他无效 voice_id（storage 中已不存在）：清空
+            # Clear other invalid voice_ids no longer present in storage.
             if not self.validate_voice_id(voice_id):
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",

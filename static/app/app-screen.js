@@ -28,10 +28,42 @@
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
     var screenSourceSelectionGeneration = 0;
     var explicitScreenSourceSelectionGeneration = null;
+    // 来源列表里最近一次点击的令牌：所有列表（宠物窗口菜单、设置面板等）共用，
+    // 后点的那次让更早、还在确认来源是否存在的点击作废。
+    var latestScreenSourceClickToken = null;
+    // 选择被改成某个来源（不含清空）的次数。进行中的点选据此判断期间有没有
+    // 出现更新的选择；后台只是清空选择时不推进，不会作废用户的点击。
+    var screenSourceChoiceGeneration = 0;
+    // 来源列表里还在确认来源是否存在的点选：开始分享前等它们结束，免得先拿
+    // 上一个来源（或默认的整块屏幕）开播，再被晚到的选择切走。
+    var pendingScreenSourceValidations = new Set();
+    // 最近一次点选（latestScreenSourceClickToken 对应的那次）的确认结果。
+    var latestScreenSourceClickOutcome = null;
+
+    // 返回的 release(outcome)：'committed' 这次点击选中了来源；'rejected' 来源
+    // 不在或需要用户再确认一次；'superseded' 被更新的点击或选择取代。
+    function holdScreenShareStartForSourceValidation(clickToken) {
+        var resolveValidation = null;
+        var validation = new Promise(function (resolve) { resolveValidation = resolve; });
+        pendingScreenSourceValidations.add(validation);
+        var released = false;
+        return function (outcome) {
+            if (released) return;
+            released = true;
+            outcome = outcome || 'superseded';
+            if (latestScreenSourceClickToken === clickToken) {
+                latestScreenSourceClickOutcome = outcome;
+            }
+            pendingScreenSourceValidations.delete(validation);
+            resolveValidation(outcome);
+        };
+    }
     var explicitScreenSourceSelectionTitle = null;
 
+    // 调用方先写好 S.selectedScreenSourceId 再调用。
     function markScreenSourceSelectionChanged() {
         screenSourceSelectionGeneration += 1;
+        if (S.selectedScreenSourceId) screenSourceChoiceGeneration += 1;
         explicitScreenSourceSelectionGeneration = null;
         explicitScreenSourceSelectionTitle = null;
     }
@@ -2106,6 +2138,20 @@
     }
 
     async function startScreenSharingOnce(attempt) {
+        // 等待期间用户可能又点了别的来源，新的确认会在等待中加进来：一直等到
+        // 没有进行中的确认为止。最后一次点选被拒（来源已关闭，或标题变了要
+        // 再确认）时停止这次启动，不拿上一个来源（或默认整块屏幕）开播；更早
+        // 被拒、之后又点选成功的，按最后那次选择照常开播。
+        var waitedForSourceChoice = false;
+        while (pendingScreenSourceValidations.size > 0) {
+            waitedForSourceChoice = true;
+            await Promise.all(Array.from(pendingScreenSourceValidations));
+            if (discardCancelledScreenSharingStart(attempt)) return;
+        }
+        if (waitedForSourceChoice && latestScreenSourceClickOutcome === 'rejected') {
+            console.warn('[屏幕源] 用户选的来源未通过确认，停止本次屏幕分享启动');
+            return;
+        }
         // 检查是否在录音状态
         if (!S.isRecording) {
             window.showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风录音！', 3000);
@@ -2987,6 +3033,60 @@
     }
     mod.selectScreenSource = selectScreenSource;
 
+    // ======================== 来源卡片名称刷新 ========================
+    // 把卡片上的名称换成当前标题（窗口的显示名就是标题；屏幕显示序号不变）。
+    function applyScreenSourceOptionName(option, name) {
+        option.dataset.sourceName = name;
+        option.dataset.sourceSearchText = normalizeScreenSourceTitle(name);
+        option.title = name;
+        var optionLabel = option.querySelector('.screen-source-option-label');
+        if (optionLabel) {
+            if (String(option.dataset.sourceId || '').startsWith('window:')) {
+                optionLabel.textContent = name;
+            }
+            optionLabel.title = name;
+        }
+    }
+
+    // 复用已渲染的来源列表时，用新取到的来源元数据就地刷新卡片名称，
+    // 不必整块重建；有改动就按当前筛选重算一次可见窗口。
+    window.refreshScreenSourceOptionNames = function (container, sources) {
+        if (!container) return;
+        var names = new Map();
+        (sources || []).forEach(function (source) {
+            if (!source || !source.id) return;
+            var id = String(source.id);
+            var name = String(source.name || '');
+            // 窗口的空标题也要同步（可能是 id 被复用了）；屏幕的空名称忽略。
+            if (name || id.startsWith('window:')) names.set(id, name);
+        });
+        var changed = false;
+        container.querySelectorAll('.screen-source-option').forEach(function (option) {
+            var name = names.get(option.dataset.sourceId);
+            if (name !== undefined && name !== (option.dataset.sourceName || '')) {
+                applyScreenSourceOptionName(option, name);
+                // 窗口卡片的缩略图还是旧的（id 可能已换成另一个窗口），点选时
+                // 先请用户确认；之前确认过的也要重新确认。
+                if (String(option.dataset.sourceId || '').startsWith('window:')) {
+                    option._nekoRenameNeedsConfirm = true;
+                    option._nekoRenameAcknowledged = false;
+                }
+                changed = true;
+            }
+        });
+        var titleFilter = changed ? container.querySelector('.screen-source-title-filter') : null;
+        if (titleFilter) titleFilter.dispatchEvent(new Event('input'));
+        // 和完整渲染一样：开着「记住窗口」时按标题重新解析当前选中的窗口（id
+        // 可能已换成别的窗口），再刷新当前选中来源的名称（设置行摘要）。选中
+        // 来源因此变化时，调用方的缓存戳会对不上，面板随之重建。
+        var listed = (sources || []).filter(function (source) { return source && source.id; });
+        reconcileRememberedWindowSource(listed);
+        refreshSelectedScreenSourceLabelFromSources(
+            listed.filter(function (source) { return String(source.id).startsWith('screen:'); }),
+            listed.filter(function (source) { return String(source.id).startsWith('window:'); })
+        );
+    };
+
     // ======================== updateScreenSourceListSelection ========================
     function updateScreenSourceListSelection() {
         var popupIds = ['live2d-popup-screen', 'vrm-popup-screen', 'mmd-popup-screen'];
@@ -3107,6 +3207,61 @@
             if (renderOptions.retryOnFailure === true) {
                 appendCurrentSourceSummary(screenPopup);
                 appendDeferredLoadButton(screenPopup, renderOptions);
+            }
+        }
+
+        // 点选列表里的来源前确认它仍然存在。会弹系统对话框的桌面端（Linux
+        // 门户）不能为了确认再枚举一次，列表本身就是用户刚在对话框里选的；
+        // 枚举失败也放行，开始分享时还有原有的校验。
+        async function checkListedScreenSourceAvailable(sourceId) {
+            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+                return { available: true, currentIds: null, source: null };
+            }
+            try {
+                var currentSources = await window.invokeDesktopCaptureWithTimeout(
+                    desktopProvider,
+                    'getSources',
+                    [{ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } }]
+                );
+                var currentIds = new Set((currentSources || []).map(function (s) {
+                    return s && s.id;
+                }));
+                var currentSource = (currentSources || []).find(function (s) {
+                    return s && s.id === sourceId;
+                }) || null;
+                return {
+                    available: !!currentSource,
+                    currentIds: currentIds,
+                    source: currentSource
+                };
+            } catch (error) {
+                console.warn('[屏幕源] 确认来源是否存在失败，按原选择继续:', error);
+                return { available: true, currentIds: null, source: null };
+            }
+        }
+
+        // 把列表里已经不存在的来源去掉，避免用户再点到它们。
+        function dropUnavailableScreenSourceOptions(targetPopup, currentIds) {
+            if (!currentIds) return;
+            targetPopup.querySelectorAll('.screen-source-option').forEach(function (option) {
+                if (!currentIds.has(option.dataset.sourceId)) option.remove();
+            });
+            // 分组被移空就连标题一起隐藏，不留一块空网格。
+            targetPopup.querySelectorAll('.screen-source-group-label').forEach(function (groupLabel) {
+                var grid = groupLabel.nextElementSibling;
+                if (grid && !grid.querySelector('.screen-source-option')) {
+                    groupLabel.style.display = 'none';
+                    grid.style.display = 'none';
+                }
+            });
+            // 还有窗口时按当前筛选重算可见数；窗口全没了就把筛选框也收起。
+            var titleFilter = targetPopup.querySelector('.screen-source-title-filter');
+            if (titleFilter) {
+                if (targetPopup.querySelector('.screen-source-option[data-source-id^="window:"]')) {
+                    titleFilter.dispatchEvent(new Event('input'));
+                } else if (titleFilter.parentElement) {
+                    titleFilter.parentElement.style.display = 'none';
+                }
             }
         }
 
@@ -3360,6 +3515,7 @@
 
                 // 名称（在缩略图下方，允许多行）
                 var label = document.createElement('span');
+                label.className = 'screen-source-option-label';
                 label.textContent = displayName || source.name || '';
                 if (source.name) {
                     label.title = source.name;
@@ -3382,13 +3538,123 @@
 
                 option.addEventListener('click', async function (e) {
                     e.stopPropagation();
-                    // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
-                    await selectScreenSource(
-                        source.id,
-                        source.name,
-                        displayName,
-                        isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
-                    );
+                    var clickToken = {};
+                    latestScreenSourceClickToken = clickToken;
+                    var clickChoiceGeneration = screenSourceChoiceGeneration;
+                    var clickRenderToken = screenPopup._screenSourceRenderToken;
+                    // 列表是枚举那一刻的快照：期间关掉的窗口还列在这里。选中
+                    // 一个已不存在的来源，开始分享时会退回到分享整块屏幕，所
+                    // 以点下时先确认它还在，不在就提示重新选，不改动当前选择。
+                    // 确认期间开始分享要等这次确认结束，不能先拿上一个来源开播。
+                    var releaseValidation = holdScreenShareStartForSourceValidation(clickToken);
+                    var availability;
+                    try {
+                        availability = await checkListedScreenSourceAvailable(source.id);
+                    } catch (error) {
+                        releaseValidation('superseded');
+                        throw error;
+                    }
+                    try {
+                        // 下面的判断都是同步的；每条出口都带上结果放行等待中的启动。
+                        // 选中时在 selectScreenSource 同步写入选择之前放行，等待的
+                        // 启动在之后的微任务里才继续，读到的已是新选择。
+                        // 确认期间又点了别的项（任一列表），或者出现过更新的选择（例
+                        // 如另一个窗口选了别的来源，哪怕之后又改回来）：这次点击作
+                        // 废，不能覆盖更新的选择。后台只是清空选择时不算。
+                        if (latestScreenSourceClickToken !== clickToken
+                            || clickChoiceGeneration !== screenSourceChoiceGeneration) {
+                            releaseValidation('superseded');
+                            return;
+                        }
+                        // 列表在确认期间重新渲染过（关掉又打开）：不拿旧快照去改新
+                        // 列表，但来源确认存在时选择照常生效。
+                        var renderIsCurrent = screenPopup._screenSourceRenderToken === clickRenderToken;
+                        // 列表已换成新一轮渲染：选中前和新列表里这张卡片的标题对一下，
+                        // 对不上（或新列表里没有它）就不选，请用户在新列表里重新点。
+                        if (!renderIsCurrent && availability.available) {
+                            var freshCard = null;
+                            screenPopup.querySelectorAll('.screen-source-option').forEach(function (card) {
+                                if (card.dataset.sourceId === source.id) freshCard = card;
+                            });
+                            // 确认失败（拿不到最新标题）时用旧卡片上的标题去对。
+                            var expectedName = availability.source
+                                ? String(availability.source.name || '')
+                                : (option.dataset.sourceName || '');
+                            if (!freshCard || expectedName !== (freshCard.dataset.sourceName || '')) {
+                                releaseValidation('rejected');
+                                return;
+                            }
+                        }
+                        if (!availability.available) {
+                            releaseValidation('rejected');
+                            if (renderIsCurrent) {
+                                dropUnavailableScreenSourceOptions(screenPopup, availability.currentIds);
+                            }
+                            window.showStatusToast(
+                                safeT(
+                                    'app.screenSource.sourceClosed',
+                                    '所选来源已不存在（窗口可能已关闭），请重新选择'
+                                ),
+                                4000
+                            );
+                            return;
+                        }
+                        // 标题和卡片上的不一样：可能只是窗口改了标题，也可能这个 id
+                        // 已经换成了另一个窗口。先把卡片刷新成当前标题、请用户确认
+                        // 后再点一次，不直接选中，免得分享出用户没看到的窗口。卡片
+                        // 上记的名称一并更新，之后打开「记住窗口」读到的是当前标题。
+                        // 复用缓存时就地改过名的卡片（缩略图还是旧的）同样要确认。
+                        // 只拦一次：标题一直在变的窗口（下载进度、闪烁的未读提示）
+                        // 每次确认都会不同，用户看过新标题后再点就直接选中。
+                        var current = availability.source;
+                        // 窗口的空标题也算变化：卡片上留着非空的旧标题时，空标题
+                        // 可能就是 id 被别的（没有标题的）窗口复用了。
+                        var currentName = current ? String(current.name || '') : '';
+                        var renamed = !!current
+                            && (currentName !== '' || source.id.startsWith('window:'))
+                            && currentName !== (option.dataset.sourceName || '');
+                        // 只对窗口确认：显示器卡片显示的是序号，名称变了也不会误导。
+                        var needsConfirm = source.id.startsWith('window:')
+                            && (renamed || option._nekoRenameNeedsConfirm === true);
+                        if (needsConfirm && !option._nekoRenameAcknowledged) {
+                            releaseValidation('rejected');
+                            // 旧列表的卡片已不在屏幕上，没法让用户在它上面确认。
+                            if (!renderIsCurrent) return;
+                            if (renamed) applyScreenSourceOptionName(option, currentName);
+                            option._nekoRenameAcknowledged = true;
+                            option._nekoRenameNeedsConfirm = false;
+                            // 已确认的标题可能就是空串，照实显示，不退回旧标题。
+                            var shownName = option.dataset.sourceName !== undefined
+                                ? option.dataset.sourceName : (source.name || '');
+                            window.showStatusToast(
+                                window.t
+                                    ? window.t('app.screenSource.sourceRenamed', { source: shownName })
+                                    : '这个窗口的标题已变为「' + shownName + '」，确认是它后请再点一次',
+                                4000
+                            );
+                            return;
+                        }
+                        if (renamed && renderIsCurrent) {
+                            applyScreenSourceOptionName(option, currentName);
+                        }
+                        option._nekoRenameAcknowledged = false;
+                        option._nekoRenameNeedsConfirm = false;
+                        // 用卡片上已确认的标题，空串也照用（窗口标题可能确实变成了空）。
+                        var selectedName = renamed ? currentName
+                            : (option.dataset.sourceName !== undefined
+                                ? option.dataset.sourceName : source.name);
+                        releaseValidation('committed');
+                        // 系统对话框只返回一块屏幕时，它的列表位置不是显示器序号。
+                        await selectScreenSource(
+                            source.id,
+                            selectedName,
+                            source.id.startsWith('window:') ? selectedName : displayName,
+                            isPortalPick && source.id.startsWith('screen:') ? null : screenIndex
+                        );
+                    } finally {
+                        // 兜底：任何意外出口都放行等待中的启动（已放行过则无效）。
+                        releaseValidation('superseded');
+                    }
                 });
 
                 option.addEventListener('mouseenter', function () {

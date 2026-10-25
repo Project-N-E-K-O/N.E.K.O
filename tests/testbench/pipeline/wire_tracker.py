@@ -1,13 +1,13 @@
 """Single-writer chokepoint for ``Session.last_llm_wire``.
 
-Background (P25 Day 2 polish r4 / LESSONS_LEARNED §7.25 第五次同族证据)
+Background (P25 Day 2 polish r4 / LESSONS_LEARNED §7.25 fifth related occurrence)
 -----------------------------------------------------------------------
-The Prompt Preview panel promises the tester "this is exactly what the
-LLM sees". Early implementation built the preview by **re-deriving** the
+The Prompt Preview panel promises the tester \"this is exactly what the
+LLM sees\". Early implementation built the preview by **re-deriving** the
 wire from ``session.messages`` every time ``GET /api/chat/prompt_preview``
 was called. That works for ``POST /api/chat/send`` (where the real wire
 and ``session.messages`` are by design in lock-step), but silently breaks
-for every "ephemeral instruction" path:
+for every \"ephemeral instruction\" path:
 
 * External events (``/api/session/external-event``) build an avatar /
   callback / proactive instruction as a one-shot ``HumanMessage`` tail,
@@ -16,12 +16,12 @@ for every "ephemeral instruction" path:
   actually saw the full instruction.
 * Auto-dialog nudge / simulated_user likewise craft transient wires
   that never land in ``session.messages``.
-* Any future "prompt_ephemeral"-style path (main program has several)
+* Any future \"prompt_ephemeral\"-style path (main program has several)
   has the same shape.
 
-Root cause: the **preview answered the wrong question** — "what will the
-next ``/send`` wire look like?" instead of "what did the last LLM
-actually see?". For a testing platform the second question is the
+Root cause: the **preview answered the wrong question** — \"what will the
+next ``/send`` wire look like?\" instead of \"what did the last LLM
+actually see?\". For a testing platform the second question is the
 primary one.
 
 Fix (structural, not procedural)
@@ -33,19 +33,19 @@ preview panel reads from this field directly — no more re-derivation.
 This module is the **only** writer. Call sites wrap the pre-invocation
 stamping in :func:`record_last_llm_wire`; the bundle consumer reads via
 :func:`get_last_llm_wire`. A ``cursor rule`` + smoke audit the matrix
-"LLM call sites × call to record_last_llm_wire" so adding a new
+\"LLM call sites × call to record_last_llm_wire\" so adding a new
 ephemeral path without updating the preview invariant fails loudly.
 
 Shape of the stored dict (see also ``session_store.Session.last_llm_wire``
 docstring — the two are the authoritative reference)::
 
     {
-      "wire_messages": list[{"role": str, "content": Any}],
-      "source": str,         # "chat.send" / "avatar_event" / ...
-      "recorded_at_real": iso_str,
-      "recorded_at_virtual": iso_str,
-      "reply_chars": int,    # -1 while in-flight, set by update_last_llm_wire_reply
-      "note": str | None,
+      \"wire_messages\": list[{\"role\": str, \"content\": Any}],
+      \"source\": str,         # \"chat.send\" / \"avatar_event\" / ...
+      \"recorded_at_real\": iso_str,
+      \"recorded_at_virtual\": iso_str,
+      \"reply_chars\": int,    # -1 while in-flight, set by update_last_llm_wire_reply
+      \"note\": str | None,
     }
 
 Notes

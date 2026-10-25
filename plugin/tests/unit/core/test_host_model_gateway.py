@@ -31,6 +31,7 @@ def host_factory(monkeypatch, tmp_path):
         host_module, "HostTransport",
         lambda: SimpleNamespace(
             downlink_endpoint="ipc://down", uplink_endpoint="ipc://up",
+            message_uplink_endpoint="ipc://msg",
             close=lambda: None,
         ),
     )
@@ -38,8 +39,6 @@ def host_factory(monkeypatch, tmp_path):
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda _logger: None)
     monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args: None)
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda *_args: None)
-    for name in ("plugin_response_map", "plugin_response_notify_event"):
-        monkeypatch.setattr(type(host_module.state), name, property(lambda _self: None))
 
     class Process:
         pid = 321

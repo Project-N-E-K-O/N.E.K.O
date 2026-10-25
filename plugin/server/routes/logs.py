@@ -1,5 +1,5 @@
 """
-日志路由
+Log routes
 """
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ log_query_service = LogQueryService()
 
 
 def file_iterator(file_path: Path, chunk_size: int = 65536):
-    """流式读取文件，避免一次性加载到内存"""
+    """Stream the file rather than loading it all into memory."""
     with open(file_path, 'rb') as f:
         while chunk := f.read(chunk_size):
             yield chunk
 
 
 def cleanup_temp_path(path: str):
-    """清理临时文件或目录"""
+    """Clean up a temporary file or directory."""
     try:
         p = Path(path)
         if p.is_file():
@@ -87,7 +87,7 @@ async def get_plugin_log_directory_endpoint(plugin_id: str, _: str = require_adm
 @router.get("/plugin/{plugin_id}/logs/export")
 async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> StreamingResponse:
     try:
-        # 拒绝包含换行符的 plugin_id，防止 HTTP 响应头注入
+        # Reject plugin_id containing newlines to prevent HTTP response-header injection.
         if '\n' in plugin_id or '\r' in plugin_id:
             raise ServerDomainError(
                 code="INVALID_PLUGIN_ID",
@@ -96,21 +96,21 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                 details={"plugin_id": plugin_id}
             )
 
-        # 获取日志目录
+        # Get the log directory.
         result = log_query_service.get_plugin_log_directory(plugin_id)
         log_dir = Path(result["directory"])
 
-        # 创建临时目录用于打包
+        # Create a temporary packaging directory.
         temp_dir = Path(tempfile.mkdtemp())
         temp_log_dir = temp_dir / "logs"
         temp_log_dir.mkdir()
 
-        # 确保异常路径也会清理临时目录
+        # Ensure exception paths also clean up the temporary directory.
         temp_needs_cleanup = True
 
         try:
-            # 只收集当前插件自己的日志文件：logs/plugin/ 是所有插件共享的，
-            # 直接打包整个目录会把别的插件日志一起泄漏出去。
+            # Collect only this plugin's own logs: logs/plugin/ is shared by all plugins,
+            # so packaging the whole directory would leak other plugins' logs too.
             log_files = list_plugin_log_files_for_export(log_dir, plugin_id)
 
             if not log_files:
@@ -121,19 +121,19 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                     details={"plugin_id": plugin_id}
                 )
 
-            # 在线程池中执行文件复制和打包，避免阻塞事件循环
+            # Copy and package files in the thread pool to avoid blocking the event loop.
             import asyncio
             loop = asyncio.get_event_loop()
 
             def _copy_and_archive():
-                """在线程池中执行同步文件操作"""
+                """Run synchronous file operations in the thread pool."""
                 copied_count = 0
                 for log_file in log_files:
                     shutil.copy2(log_file, temp_log_dir / log_file.name)
                     copied_count += 1
 
-                # 打包临时日志目录
-                # 使用固定文件名避免超长 plugin_id 导致超过文件系统 NAME_MAX 限制
+                # Package the temporary log directory.
+                # Use a fixed filename so very long plugin_id values cannot exceed filesystem NAME_MAX.
                 zip_path = temp_dir / "export"
                 archive_path = shutil.make_archive(
                     str(zip_path),
@@ -144,10 +144,10 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
 
             archive_path = await loop.run_in_executor(None, _copy_and_archive)
 
-            # 成功创建响应，清理责任移交给 BackgroundTask
+            # Response created successfully; transfer cleanup responsibility to BackgroundTask.
             temp_needs_cleanup = False
 
-            # 使用流式响应 + 后台清理任务（复用主程序模式）
+            # Use a streaming response plus background cleanup, reusing the main program's pattern.
             return StreamingResponse(
                 file_iterator(Path(archive_path)),
                 media_type="application/zip",
@@ -155,7 +155,7 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                 background=BackgroundTask(cleanup_temp_path, str(temp_dir))
             )
         finally:
-            # 如果在复制、打包或构造响应时失败，立即清理临时目录
+            # Immediately clean up the temporary directory if copying, packaging, or response construction fails.
             if temp_needs_cleanup:
                 cleanup_temp_path(str(temp_dir))
     except ServerDomainError as error:

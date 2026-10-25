@@ -657,12 +657,12 @@ async def test_offline_client_is_born_knowing_which_session_it_is():
 
 
 # ---------------------------------------------------------------------------
-# 投递上限与内置压缩
+# Delivery limits and built-in compression.
 # ---------------------------------------------------------------------------
 #
-# 工具可以交回 2 MiB base64，而 message plane 拒收超过 512 KiB 的整条记录。
-# 中间那一段以前是「模型收到、总线收不到」；现在宿主按模型画面的同一套 profile
-# 重新编码，让两边看到的是同一张、且都到得了。
+# Tools may return 2 MiB of base64, but the message plane rejects whole records over 512 KiB.
+# Previously the intermediate range reached the model but not the bus; now the host re-encodes
+# using the model-image profile so both receive the same image successfully.
 
 
 def _oversized_jpeg_b64(side: int = 1000) -> str:
@@ -791,7 +791,7 @@ def test_an_image_inside_the_profile_is_still_compressed_when_oversized():
 
     big = _inside_profile_but_oversized_b64()
     assert len(big) > _TOOL_IMAGE_DELIVER_MAX_B64_BYTES, "前提没成立：没超字节上限"
-    # 前提的另一半：它确实已经在 profile 之内，所以归一化对它是个空操作。
+    # The other prerequisite: it already meets the profile, so normalization is a no-op.
     assert normalize_image_for_model(big) is big, (
         "前提没成立：这张图不在 profile 之内，测不到本用例要测的东西"
     )
@@ -804,7 +804,7 @@ def test_an_image_inside_the_profile_is_still_compressed_when_oversized():
     assert len(images[0].data_b64) <= _TOOL_IMAGE_DELIVER_MAX_B64_BYTES
     assert images[0].mime == "image/jpeg"
 
-    # 压完的图仍然在 profile 的像素范围内，不是靠把它缩成缩略图换来的。
+    # The compressed image still meets the profile's pixel bounds; it was not merely reduced to a thumbnail.
     import base64
     import io as _io
 

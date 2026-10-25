@@ -42,10 +42,10 @@ logger = get_module_logger(__name__, "Main")
 
 _QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime"
 _DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
-# Qwen TTS 家族的型号 id（qwen3-tts-flash-realtime、qwen3-tts-instruct-…、
-# 以后换代的 qwen3.x-tts-…）。TTS_MODEL 里也可能是全模态模型名（默认抄
-# REALTIME_MODEL），或者本 worker 作回落时其它厂商留下的型号（tts-1、
-# cosyvoice-v3-plus），这些都不能送进 DashScope 的 realtime TTS 端点。
+# Qwen TTS-family model IDs (qwen3-tts-flash-realtime, qwen3-tts-instruct-…,
+# and future qwen3.x-tts-… generations). TTS_MODEL may instead contain an omnimodal name copied by default from
+# REALTIME_MODEL, or another provider's model when this worker is a fallback (tts-1,
+# cosyvoice-v3-plus); none can be sent to DashScope's realtime TTS endpoint.
 _QWEN_TTS_MODEL_PATTERN = re.compile(r"^qwen[0-9.]*-tts", re.IGNORECASE)
 
 
@@ -91,22 +91,22 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         current_speech_id = None
         receive_task = None
         session_ready = asyncio.Event()
-        response_done = asyncio.Event()  # 用于标记当前响应是否完成
-        buffer_committed = False  # 防止同一轮次重复提交缓冲区
-        session_configured = False  # 当前连接是否已发出 session.update（延迟到首批文本到达）
-        pending_text_buffer = ""  # 延迟发送的文本缓冲，用于首 N 字语言检测
-        # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
+        response_done = asyncio.Event()  # Mark whether the current response has completed
+        buffer_committed = False  # Prevent duplicate buffer submission in one turn
+        session_configured = False  # Whether session.update was sent on this connection, deferred until initial text arrives
+        pending_text_buffer = ""  # Deferred text buffer for language detection on the first N characters
+        # Streaming resampler (24kHz→48kHz), preserving state across chunk boundaries
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         # Qwen realtime can produce 1-2s inter-chunk gaps. A small jitter buffer
         # gives the client enough queued PCM to ride over short upstream stalls.
-        # 共享 AudioJitterBuffer，旧的 NEKO_QWEN_TTS_* 覆盖仍兼容（见 make_audio_jitter_buffer）。
+        # Shared AudioJitterBuffer, retaining legacy NEKO_QWEN_TTS_* overrides; see make_audio_jitter_buffer.
         qwen_audio_jitter = make_audio_jitter_buffer(response_queue, legacy_env_prefix="NEKO_QWEN_TTS")
-        # 上游 done 事件 = 本轮音频流关闭。两个 receive task 共用同一个 emitter，
-        # bound_speech_id 在建任务时钉死本轮 sid：sid 切换路径会先推进
-        # current_speech_id 再 await 关旧连接，此刻旧 receive 任务若读到迟到的
-        # done 事件，会把上一轮的收尾错标到新一轮。
-        # 再压一道 buffer_committed 闸：只有本轮已经 commit 过缓冲区，done 事件
-        # 才可能是整轮收尾；上游若按句发 done，没这道闸就是早发。
+        # Upstream done closes this turn's audio stream. Both receive tasks share one emitter,
+        # and bound_speech_id captures this turn's sid at task creation: sid switching advances
+        # current_speech_id before awaiting old-connection closure, so an old receive task observing a late
+        # done would otherwise misattribute the preceding turn's completion to the new turn.
+        # Also require buffer_committed: only after this turn's buffer is committed can done
+        # indicate whole-turn completion; sentence-level upstream done would otherwise emit prematurely.
         audio_done = AudioDoneEmitter(response_queue)
 
         def _emit_audio_done(bound_speech_id) -> None:
@@ -114,8 +114,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             if buffer_committed:
                 audio_done.emit(bound_speech_id)
 
-        # 同一个关闭帧会被发送方与接收任务各观察到一次；先报的那个把该轮标成被拒，
-        # 后到的只分类，core 因此把一次拒绝算成一次失败（与 _step_protocol 同构）。
+        # Sender and receiver can each observe the same close frame; the first marks this turn rejected,
+        # while the later observation only classifies it, making core count one rejection as one failure, symmetric with _step_protocol.
         rejected_speech_id = None
 
         def _report_server_rejection(exc, bound_speech_id) -> bool:
@@ -132,14 +132,14 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 return False
             sid = str(bound_speech_id or "")
             if not sid:
-                # 预热连接（还没有轮次）的拒绝交给 __ready__ 失败路径：没有归属
-                # 轮次也入队的话，core 会把这笔错记到此刻活着的那一轮上。
+                # Rejected prewarm connections have no turn and use the __ready__ failure path; enqueueing them without
+                # turn ownership would make core charge the error to whichever turn is currently active.
                 return False
             if sid == rejected_speech_id:
                 return True
             rejected_speech_id = sid
-            # marker 必须紧邻 __error__ 之前入队：core 靠它把错误钉到被拒的这一轮，
-            # 而不是此刻可能已切到下一轮的 current_speech_id。
+            # Queue marker immediately before __error__: core uses it to bind errors to this rejected turn,
+            # rather than current_speech_id, which may already identify the next turn.
             response_queue.put(("__tts_sentence_failed__", sid, ""))
             _enqueue_error(response_queue, payload)
             return True
@@ -196,8 +196,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     }))
                     _record_tts_telemetry("qwen", len(pending_text_buffer))
                 except Exception as e:
-                    # append 发失败时连接多半已断，调用方不能继续发 commit；
-                    # 返回 False 让 sid=None/文本路径走 continue 触发重连。
+                    # Failed append usually means disconnection; callers must not send commit afterward.
+                    # Return False so sid=None/text paths continue and trigger reconnection.
                     logger.error(f"发送缓冲文本失败: {e}")
                     _report_server_rejection(e, current_speech_id)
                     return False
@@ -205,12 +205,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             return True
 
         try:
-            # 连接WebSocket
+            # Connect WebSocket
             headers = {"Authorization": f"Bearer {audio_api_key}"}
 
             ws = await websockets.connect(tts_url, additional_headers=headers)
             
-            # 等待并处理初始消息
+            # Await and handle initial messages
             async def wait_for_session_ready():
                 """Wait for session-creation confirmation"""
                 try:
@@ -218,7 +218,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         event = json.loads(message)
                         event_type = event.get("type")
                         
-                        # Qwen TTS API 返回 session.updated 而不是 session.created
+                        # Qwen TTS API returns session.updated rather than session.created
                         if event_type in ["session.created", "session.updated"]:
                             session_ready.set()
                             break
@@ -228,12 +228,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception as e:
                     _enqueue_error(response_queue, e)
             
-            # 发送预热配置（pre-warm），真正的 session.update 会在首批文本到达后
-            # 通过 _flush_deferred_config 重新发送（携带语言提示）。
+            # Send prewarm configuration; after initial text arrives, _flush_deferred_config resends
+            # the actual session.update with language hints.
             await ws.send(json.dumps(build_config_message(None)))
             session_configured = True
 
-            # 等待会话就绪（超时5秒）
+            # Wait for session readiness, with a 5-second timeout
             try:
                 await asyncio.wait_for(wait_for_session_ready(), timeout=5.0)
             except asyncio.TimeoutError:
@@ -246,11 +246,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 response_queue.put(("__ready__", False))
                 return
 
-            # 发送就绪信号
+            # Send readiness signal
             logger.info("Qwen TTS 已就绪，发送就绪信号")
             response_queue.put(("__ready__", True))
 
-            # 初始接收任务（会在每次新 speech_id 时重新创建）
+            # Initial receive task, recreated for every new speech_id
             async def receive_messages_initial(bound_speech_id):
                 """Initial receive task"""
                 nonlocal ws
@@ -261,7 +261,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         event_type = event.get("type")
 
                         if event_type == "error":
-                            # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
+                            # Idle timeout/session expiration: do not report errors; mark disconnected and reconnect on demand
                             err_msg = event.get("error", {}).get("message", "")
                             if "request timeout" in err_msg or "session_expired" in err_msg:
                                 logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
@@ -271,16 +271,16 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             try:
                                 audio_bytes = base64.b64decode(event.get("delta", ""))
                                 audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                                # 使用流式重采样器 24000Hz -> 48000Hz
+                                # Use streaming resampling from 24000Hz to 48000Hz
                                 qwen_audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                             except Exception as e:
                                 logger.error(f"处理音频数据时出错: {e}")
                         elif event_type in ["response.done", "response.audio.done", "output.done"]:
-                            # 服务器明确表示音频生成完成，设置完成标志
+                            # The server explicitly finished audio generation; set the completion flag
                             logger.debug(f"收到响应完成事件: {event_type}")
                             qwen_audio_jitter.flush()
-                            # 预热连接绑的是 None（首个真实 sid 一定先走重连分支），
-                            # emit(None) 静默跳过；带参保持两个 receive task 同形。
+                            # Prewarm connections bind None; the first real sid necessarily reconnects,
+                            # so emit(None) silently skips. Retain the argument to keep both receive tasks symmetric.
                             _emit_audio_done(bound_speech_id)
                             response_done.set()
                 except websockets.exceptions.ConnectionClosed as exc:
@@ -293,7 +293,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 finally:
                     if not cancelled:
                         qwen_audio_jitter.flush()
-                    # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
+                    # Receive loop exited on timeout/disconnection; clear connection state for on-demand main-loop reconnection
                     if ws:
                         try:
                             await ws.close()
@@ -304,11 +304,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
             receive_task = asyncio.create_task(receive_messages_initial(current_speech_id))
 
-            # 主循环：处理请求队列
+            # Main loop: process the request queue
             loop = asyncio.get_running_loop()
-            pending = None  # 断线重试时暂存当前片段，保证顺序（不回共享队列）
+            pending = None  # Retain the current segment locally during disconnected retries to preserve order, without returning it to the shared queue
             while True:
-                # 优先处理断线暂存的片段，再从队列取新请求
+                # Process retained disconnected segments before taking new requests
                 if pending:
                     sid, tts_text = pending
                     pending = None
@@ -322,9 +322,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     break
 
                 if sid == "__interrupt__":
-                    # 打断：立即关闭连接，不发 commit、不等服务器确认
+                    # Interrupt: close immediately without commit or server acknowledgment
                     qwen_audio_jitter.begin_interrupt()
-                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                    audio_done.begin_interrupt()  # Interrupted turns emit no audio_done; they use the separate cancellation channel
                     try:
                         if receive_task and not receive_task.done():
                             receive_task.cancel()
@@ -355,19 +355,19 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     continue
 
                 if sid is None:
-                    # 正常结束（非阻塞）：提交缓冲区，但不等待服务器确认、不关闭连接
-                    # 音频继续通过 receive_task 流入 response_queue，
-                    # 连接由下次 speech_id 切换 / __interrupt__ 关闭
+                    # Normal nonblocking finish: commit the buffer without awaiting acknowledgment or closing the connection
+                    # Audio continues from receive_task into response_queue;
+                    # the next speech_id switch or __interrupt__ closes the connection
                     if ws and current_speech_id is not None:
-                        # 若此轮文本不足 MIN_CHARS 还没发出 session.update，force 一次
+                        # If this turn has fewer than MIN_CHARS and session.update was not sent, force it once
                         if not session_configured:
                             if not await _flush_deferred_config(force=True):
-                                # flush 失败（session.update 或 append 发失败），连接已死，
-                                # 跳过 commit，等待下一个 speech_id 触发重连
+                                # Failed flush (session.update/append send failure) means a dead connection;
+                                # skip commit and await reconnection on the next speech_id
                                 continue
-                        # 短句场景下 session.updated 可能比 _flush 内的 2s 等待更晚到达；
-                        # 不再依赖 session_ready，直接发 commit（服务端会在 session.updated
-                        # 就绪后按顺序处理 append + commit）。漏 commit 会导致短句静默丢失。
+                        # For short sentences, session.updated may arrive after _flush's 2s wait;
+                        # send commit without depending on session_ready, since the server processes append + commit in order
+                        # after session.updated is ready. Missing commit silently loses short sentences.
                         if not buffer_committed:
                             try:
                                 await ws.send(json.dumps({
@@ -380,8 +380,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 _report_server_rejection(e, current_speech_id)
                     continue
                 
-                # 新的语音ID，重新建立连接（类似 speech_synthesis_worker 的逻辑）
-                # 直接关闭旧连接，打断旧语音
+                # New speech ID: reconnect, matching speech_synthesis_worker logic
+                # Close the old connection directly, interrupting old speech
                 if current_speech_id != sid:
                     current_speech_id = sid
                     buffer_committed = False
@@ -400,18 +400,18 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             await receive_task
                         except asyncio.CancelledError:
                             pass
-                    # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
-                    # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
-                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
+                    # Reset streaming state only after the old receive task fully stops: await ws.close() yields,
+                    # letting old receive_task write late audio.delta; early reset would contaminate the next turn
+                    resampler.clear()  # Reset resampler state; new-turn audio must not continue the previous turn
                     qwen_audio_jitter.reset()
-                    audio_done.reset()  # 新轮次重置 audio_done 去重标记
+                    audio_done.reset()  # Reset audio_done deduplication for the new turn.
 
-                    # 建立新连接（延迟 session.update 至首批文本到达后发送，携带语言提示）
+                    # Open a connection, deferring session.update with language hints until initial text arrives
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers)
                         session_ready.clear()
 
-                        # 启动新的接收任务（合并 session.updated 监听）
+                        # Start a new receive task that also observes session.updated
                         async def receive_messages(bound_speech_id):
                             nonlocal ws
                             cancelled = False
@@ -423,7 +423,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     if event_type in ["session.created", "session.updated"]:
                                         session_ready.set()
                                     elif event_type == "error":
-                                        # 空闲超时 / 会话过期：不报 error，标记连接丢失，按需重连
+                                        # Idle timeout/session expiration: do not report errors; mark disconnected and reconnect on demand
                                         err_msg = event.get("error", {}).get("message", "")
                                         if "request timeout" in err_msg or "session_expired" in err_msg:
                                             logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
@@ -433,15 +433,15 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         try:
                                             audio_bytes = base64.b64decode(event.get("delta", ""))
                                             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                                            # 使用流式重采样器 24000Hz -> 48000Hz
+                                            # Use streaming resampling from 24000Hz to 48000Hz
                                             qwen_audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["response.done", "response.audio.done", "output.done"]:
-                                        # 服务器明确表示音频生成完成，设置完成标志
+                                        # The server explicitly finished audio generation; set the completion flag
                                         logger.debug(f"收到响应完成事件: {event_type}")
                                         qwen_audio_jitter.flush()
-                                        # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                                        # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
                             except websockets.exceptions.ConnectionClosed as exc:
@@ -454,7 +454,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             finally:
                                 if not cancelled:
                                     qwen_audio_jitter.flush()
-                                # 接收循环退出（超时/断开），清理连接状态以便主循环按需重连
+                                # Receive loop exited on timeout/disconnection; clear connection state for on-demand main-loop reconnection
                                 if ws:
                                     try:
                                         await ws.close()
@@ -473,35 +473,35 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         await asyncio.sleep(1.0)
                         continue
 
-                # 检查文本有效性
+                # Validate text
                 if not tts_text or not tts_text.strip():
                     continue
 
                 if not ws:
-                    # 连接已因空闲超时断开，暂存当前片段并重置 speech_id 以触发重连
-                    # 断线前先冲刷抖动缓冲残留 PCM：重连会走 speech_id 切换分支并 reset()，
-                    # 未达阈值的当前轮尾音否则会被清掉；此处仍是同一 speech_id，顺序连续
+                    # Idle timeout disconnected the connection; retain the segment and reset speech_id to trigger reconnection
+                    # Flush residual jitter-buffer PCM before disconnecting: reconnect takes the speech_id-switch path and reset(),
+                    # which otherwise discards this turn's below-threshold trailing audio; speech_id still matches here, preserving continuity
                     qwen_audio_jitter.flush()
                     current_speech_id = None
                     pending = (sid, tts_text)
                     continue
 
-                # 尚未发送 session.update 时，先缓冲 MIN_CHARS 个字符用于语言检测
+                # Before session.update, buffer MIN_CHARS for language detection
                 if not session_configured:
                     pending_text_buffer += tts_text
                     ready = await _flush_deferred_config(force=False)
                     if not ready:
                         continue
-                    # 已在 _flush_deferred_config 内把 pending_text_buffer 随 append 一起发出
+                    # _flush_deferred_config already sent pending_text_buffer with append
                     continue
 
                 if not session_ready.is_set():
-                    # session.update 已发但会话还未就绪（超时/断开），触发重连
+                    # session.update sent but session unready due to timeout/disconnection; trigger reconnect
                     current_speech_id = None
                     pending = (sid, tts_text)
                     continue
 
-                # 追加文本到缓冲区（不立即提交，等待响应完成时的终止信号再 commit）
+                # Append text without immediate commit; wait for the response-completion termination signal
                 try:
                     await ws.send(json.dumps({
                         "type": "input_text_buffer.append",
@@ -511,12 +511,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     _record_tts_telemetry("qwen", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
-                    # 必须在下面清空 ws/current_speech_id 之前报：这是现场日志里
-                    # 那条 1007 实际走到的分支（发送侧先看见关闭）。
+                    # Report before clearing ws/current_speech_id below: this is the actual branch taken by
+                    # the observed 1007 in incident logs, when the sender saw closure first.
                     _report_server_rejection(e, sid)
-                    # 连接已关闭，标记为无效以便下次重连
+                    # Connection closed; mark invalid for the next reconnect
                     ws = None
-                    current_speech_id = None  # 清空ID以强制下次重连
+                    current_speech_id = None  # Clear ID to force reconnection next time
                     session_ready.clear()
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
@@ -527,7 +527,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
-            # 清理资源
+            # Clean up resources
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
@@ -541,7 +541,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception:
                     pass
     
-    # 运行异步worker
+    # Run the asynchronous worker
     try:
         asyncio.run(async_worker())
     except Exception as e:

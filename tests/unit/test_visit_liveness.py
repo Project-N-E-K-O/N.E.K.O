@@ -256,7 +256,7 @@ def test_heartbeat_resumes_without_burst_after_a_pause():
 
 
 def test_verification_clears_a_departure_left_over_from_the_wait():
-    # 等待期对端进房又走（刷新后换了 vendor 身份重进，不会调 rejoined），之后 hello 才核验通过
+    # Peer enters and leaves while waiting (refresh rejoins with a different vendor identity, without rejoined); hello verifies afterward.
     lv = VisitLiveness("host", 0.0)
     lv.on_peer_entered(100.0)
     lv.on_peer_vendor_left(110.0)
@@ -268,7 +268,7 @@ def test_verification_clears_a_departure_left_over_from_the_wait():
 
 
 def test_late_hello_ack_after_ready_does_not_rearm_the_wait():
-    # 首个 hello 的 ack 丢了、ready 先到；之后重传 hello 触发的累计 ack 不能再开 85 s 期限
+    # First hello's ack lost, ready arrives first; cumulative ack from later hello retry must not reopen the 85s deadline.
     lv = VisitLiveness("guest", 0.0)
     lv.on_peer_verified(1.0)
     lv.on_ready(5.0)
@@ -279,7 +279,7 @@ def test_late_hello_ack_after_ready_does_not_rearm_the_wait():
 
 
 def test_rejoin_after_a_timeout_disconnect_restarts_the_heartbeat_clock():
-    # 超时类断开（没有暂定离开）后对端重进：心跳时钟从重进起算，不在下一次 tick 立刻判死
+    # Peer rejoins after timeout disconnect (no provisional departure): heartbeat starts on rejoin, not immediate death next tick.
     lv = verified("host", 0.0)
     feed(lv, 0.0, 20.0)
     lv.on_peer_vendor_timeout(21.0)
@@ -294,10 +294,10 @@ def test_rejoin_after_a_timeout_disconnect_restarts_the_heartbeat_clock():
 
 def test_page_reload_absolute_deadline_takes_the_earlier_term():
     lv = verified("guest", 0.0)
-    feed(lv, 0.0, 200.0)  # 对端一直在线：只看本侧页面期限
+    feed(lv, 0.0, 200.0)  # Peer stays online: use only this side's page deadline.
     lv.on_message_sent(100.0)
     lv.on_page_lost(110.0)
-    # 离开 + 35 − 5 = 140；最后发出 + 30 − 3 = 127：取较早的 127，WS 阶段 min(130, 127)
+    # Departure + 35 − 5 = 140; last send + 30 − 3 = 127: choose earlier 127; WS phase min(130, 127).
     assert lv.page_reload_deadline() == 127.0
     assert lv.page_deadline == 127.0
     lv.on_page_socket_back(115.0)
@@ -312,7 +312,7 @@ def test_page_second_drop_counts_its_own_socket_budget():
     lv.on_page_socket_back(5.0)
     assert lv.page_deadline == 30.0
     lv.on_page_lost(8.0)
-    # 本次断线 + 20 = 28，没超过绝对期限 30
+    # This disconnect + 20 = 28, within absolute deadline 30.
     assert lv.page_deadline == 28.0
     assert lv.page_departed_at == 0.0
 
@@ -320,7 +320,7 @@ def test_page_second_drop_counts_its_own_socket_budget():
 def test_page_lost_is_idempotent_within_the_socket_stage():
     lv = verified("guest", 0.0)
     lv.on_page_lost(0.0)
-    lv.on_page_lost(15.0)  # 没有连回就再报一次：不能把 20 推到 35
+    lv.on_page_lost(15.0)  # Repeat report without reconnecting: must not extend 20 to 35.
     assert lv.page_deadline == 20.0
     assert lv.tick(20.0) == "local_page_lost"
 
@@ -346,7 +346,7 @@ def test_page_back_clears_the_reload():
 
 
 def test_last_send_term_waits_for_the_peer_to_ack_our_hello():
-    # host 发过一条消息后仍在等对端：对端还没核验本侧、没在计时，旧的发出时刻不能让期限一设下就过期
+    # Host sent a message but still awaits peer: peer has not verified this side or started timing; old send time must not expire a newly established deadline.
     lv = VisitLiveness("host", 0.0)
     lv.on_message_sent(0.0)
     lv.on_page_lost(60.0)
@@ -354,10 +354,10 @@ def test_last_send_term_waits_for_the_peer_to_ack_our_hello():
     assert lv.tick(60.0) is None
     lv.on_self_disconnected(70.0)
     assert lv.self_deadline() == 95.0
-    # 本侧核验了对端也不算：对端是否在计时，看的是它有没有 ack 本侧的 hello
+    # Local verification of peer is insufficient: peer timing depends on its ack of our hello.
     lv.on_peer_verified(72.0)
     assert lv.self_deadline() == 95.0
-    # 对端 ack 了本侧 hello（hello 是刚重发出去的）：按真实的最后发出时刻算，不虚增
+    # Peer acked our newly retransmitted hello: use the actual latest send time without inflation.
     lv.on_message_sent(74.0)
     lv.on_hello_acked(75.0)
     assert lv.self_deadline() == 95.0  # min(70 + 25, 74 + 27)
@@ -374,13 +374,13 @@ def test_page_rejoin_safety_margin_is_injectable():
 
 
 def test_guest_last_send_term_starts_with_the_host_ack():
-    # guest 发出 hello 后 host 还没核验它：host 没在计时，掉页期限只按离开 + 30
+    # Guest sent hello but host has not verified it: host is not timing; page-loss deadline uses departure + 30 only.
     lv = VisitLiveness("guest", 0.0)
     lv.on_message_sent(0.0)
     lv.on_page_lost(1.0)
     lv.on_page_socket_back(19.0)
     assert lv.page_deadline == 31.0
-    # host ack 了 guest 的 hello：同一个式子收紧到最后发出 + 27
+    # Host acked guest hello: same formula tightens to last send + 27.
     lv.on_message_sent(20.0)
     lv.on_hello_acked(21.0)
     assert lv.page_deadline == 31.0  # min(31, 20 + 27)
@@ -397,7 +397,7 @@ def test_repeated_ack_does_not_move_anything():
     lv.on_message_sent(10.0)
     lv.on_page_lost(12.0)
     deadline = lv.page_deadline
-    lv.on_hello_acked(13.0)  # 重传 hello 触发的累计 ack
+    lv.on_hello_acked(13.0)  # Cumulative ack triggered by retransmitted hello.
     assert lv.page_deadline == deadline and lv.last_sent_at == 10.0
 
 
@@ -407,19 +407,19 @@ def test_injected_durations_must_keep_the_invariants():
     with pytest.raises(ValueError, match="positive"):
         VisitLiveness("guest", 0.0, page_rejoin_safety_s=0.0)
     with pytest.raises(ValueError, match="outlast"):
-        VisitLiveness("guest", 0.0, rejoin_grace_s=24.0)  # 24 − 5 不比 20 长
+        VisitLiveness("guest", 0.0, rejoin_grace_s=24.0)  # 24 − 5 is no longer than 20.
 
 
 
 def test_host_bounds_a_reload_by_the_waiting_guests_own_clock():
-    # 访客入房后自己只等 30 s：host 在对端 ack 之前，以第一次看到它入房的时刻为基准
+    # Guest waits only 30s after room entry: before peer ack, host uses the first observed entry time as its baseline.
     lv = VisitLiveness("host", 0.0)
     lv.on_message_sent(100.0)
     lv.on_peer_entered(500.0)
     lv.on_page_lost(502.0)
     lv.on_page_socket_back(504.0)
     lv.on_peer_verified(506.0)
-    assert lv.page_deadline == 527.0  # min(502 + 30, 500 + 27)，不是 532
+    assert lv.page_deadline == 527.0  # min(502 + 30, 500 + 27), not 532.
 
 
 def test_guest_side_ignores_peer_entered_for_the_death_term():
@@ -437,14 +437,14 @@ def test_host_ack_tightens_a_reload_already_running():
     lv.on_message_sent(100.0)
     lv.on_page_lost(102.0)
     lv.on_page_socket_back(104.0)
-    assert lv.page_deadline == 132.0  # 还没被 ack：只有离开 + 30
+    assert lv.page_deadline == 132.0  # Not acked yet: only departure + 30.
     lv.on_hello_acked(105.0)
     assert lv.page_deadline == 127.0  # min(132, 100 + 27)
 
 
 
 def test_host_entry_bound_only_while_that_guest_is_still_waiting():
-    # 回归（wehos 第十二轮）：访客 t=10 进过房、早已不在等，host t=100 掉页 / 断线不能当场判死
+    # Regression (wehos round 12): guest entered at t=10 and is no longer waiting; host page loss / disconnect at t=100 must not mean immediate death.
     h = VisitLiveness("host", 0.0)
     h.on_peer_entered(10.0)
     h.on_page_lost(100.0)
@@ -460,14 +460,14 @@ def test_host_entry_bound_only_while_that_guest_is_still_waiting():
 def test_host_entry_bound_uses_the_latest_entry_and_is_cleared_by_a_leave():
     h = VisitLiveness("host", 0.0)
     h.on_peer_entered(10.0)
-    h.on_peer_entered(90.0)  # 新的一次入房：访客重新开始等
+    h.on_peer_entered(90.0)  # New room entry: guest starts waiting again.
     h.on_page_lost(100.0)
     assert h.page_deadline == 117.0  # min(120, 90 + 27)
     h2 = VisitLiveness("host", 0.0)
     h2.on_peer_entered(10.0)
-    h2.on_peer_vendor_left(20.0)  # 访客走了：不再等本侧 hello
+    h2.on_peer_vendor_left(20.0)  # Guest left: no longer waiting for this side's hello.
     h2.on_page_lost(25.0)
-    assert h2.page_deadline == 45.0  # 不是 37
+    assert h2.page_deadline == 45.0  # Not 37.
 
 
 def test_host_entry_bound_applies_to_the_own_reconnect_too():
@@ -479,7 +479,7 @@ def test_host_entry_bound_applies_to_the_own_reconnect_too():
 
 
 def test_ack_recomputes_the_reload_deadline_instead_of_only_tightening():
-    # host 用访客入房时刻设的上限比真实时钟严：ack 之后按真实的最后发出时刻重算（Greptile）
+    # Host's entry-time bound is stricter than the actual clock: after ack, recalculate from the actual last send time (Greptile).
     lv = VisitLiveness("host", 0.0)
     lv.on_peer_entered(500.0)
     lv.on_page_lost(502.0)
@@ -498,18 +498,18 @@ def test_ack_during_the_socket_stage_keeps_this_drops_budget():
     assert lv.page_deadline == 522.0  # min(502 + 20, 527)
     lv.on_message_sent(501.0)
     lv.on_hello_acked(503.0)
-    assert lv.page_deadline == 522.0  # 仍是本次断线 + 20（min(522, 532, 528)）
+    assert lv.page_deadline == 522.0  # Still this disconnect + 20 (min(522, 532, 528)).
 
 
 
 def test_entry_bound_judges_the_guest_wait_without_the_margin():
-    # 访客 t=10 入房、要等到 t=40；host 在 t=38 断线：访客还在等，不能当成「已不在等」放宽到 63
+    # Guest entered t=10, waits until t=40; host disconnects t=38: guest still waits, so do not relax to 63 as if waiting ended.
     h = VisitLiveness("host", 0.0)
     h.on_peer_entered(10.0)
     h.on_self_disconnected(38.0)
-    assert h.self_deadline() == 37.0  # 落在过去：当场判死，保守的一侧
+    assert h.self_deadline() == 37.0  # In the past: immediate death, the conservative side.
     assert h.tick(38.0) == "relay_lost"
     h2 = VisitLiveness("host", 0.0)
     h2.on_peer_entered(10.0)
-    h2.on_self_disconnected(40.0)  # 访客的等待已经过了
+    h2.on_self_disconnected(40.0)  # Guest's waiting period elapsed.
     assert h2.self_deadline() == 65.0

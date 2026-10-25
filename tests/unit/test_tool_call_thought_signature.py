@@ -819,10 +819,10 @@ async def test_switch_model_treats_empty_and_none_credentials_as_same_route(monk
 
     client = _bare_offline_client()
     client.model = "gemini-3-pro"
-    client.base_url = ""        # 空串
+    client.base_url = ""        # Empty string.
     client.api_key = ""
     client.vision_model = "gemini-3-pro-vision"
-    client.vision_base_url = None   # 同一个"默认端点"，另一种写法
+    client.vision_base_url = None   # Another spelling of the same default endpoint.
     client.vision_api_key = None
     client.max_response_length = 300
     client._genai_client = None

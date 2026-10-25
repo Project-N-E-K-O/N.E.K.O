@@ -110,7 +110,7 @@ class VRMInteraction {
         this._dragHintPanLastPointer = null;
         this._dragHintApproachShown = false;
 
-        // F 目标模式：F 只负责进入/退出选点模式，已选目标在释放 F 后继续执行。
+        // 目标快捷键只负责进入/退出选点模式，释放后仍继续执行已确认的移动。
         this.targetMode = false;
         this.moveTarget = null;
         this.isMoving = false;
@@ -132,6 +132,9 @@ class VRMInteraction {
         this._movementKeyDownHandler = null;
         this._movementKeyUpHandler = null;
         this._movementBlurHandler = null;
+        this._movementShortcutChangedHandler = null;
+        this._movementHeldCode = null;
+        this._movementHeldModifiers = null;
     }
 
 
@@ -325,7 +328,21 @@ class VRMInteraction {
     _isEditableTarget(target) {
         if (target?.isContentEditable) return true;
         if (!target || typeof target.closest !== 'function') return false;
-        return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]');
+        if (target.closest('textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) return true;
+        const input = target.closest('input');
+        // Use the normalized DOM type: missing/invalid types remain text, while
+        // numeric and date/time editors keep their editing keys as well.
+        return !!input && !['button', 'checkbox', 'color', 'file', 'hidden', 'image',
+            'radio', 'range', 'reset', 'submit'].includes(input.type);
+    }
+
+    _isKeyboardInteractiveTarget(target) {
+        if (this._isEditableTarget(target)) return true;
+        if (!target || typeof target.closest !== 'function') return false;
+        return !!target.closest('input, button, a[href], summary, audio[controls], video[controls], '
+            + '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], '
+            + '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], '
+            + '[role="tab"], [role="slider"], [role="spinbutton"], [tabindex]:not([tabindex="-1"]):not(canvas)');
     }
 
     _screenPointToMovementTarget(clientX, clientY) {
@@ -784,29 +801,56 @@ class VRMInteraction {
         // 先清理旧的事件监听器
         this.cleanupDragAndZoom();
 
+        const exitMovementTargetMode = () => {
+            this._movementHeldCode = null;
+            this._movementHeldModifiers = null;
+            this.targetMode = false;
+            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
+        };
         this._movementKeyDownHandler = (e) => {
-            if (e.isComposing || e.keyCode === 229) return;
-            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229) return;
             if (this._isEditableTarget(e.target)) return;
-            if (e.code !== 'KeyF') return;
+            const hasCommandModifier = e.ctrlKey || e.altKey || e.metaKey;
+            // Keep native forward/backward focus traversal, even on the canvas.
+            // Tab with Ctrl/Alt/Meta can still be explicitly configured.
+            if (e.code === 'Tab' && !hasCommandModifier) return;
+            // Controls own their activation/navigation keys, not ordinary F/G
+            // bindings merely because a preceding click left them focused.
+            if (!hasCommandModifier && ['Enter', 'NumpadEnter', 'Space', 'Escape', 'ArrowUp',
+                'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.code)
+                && this._isKeyboardInteractiveTarget(e.target)) return;
+            const shortcut = window.nekoVrmGuidedMovementShortcut;
+            if (shortcut === undefined) {
+                // 旧页面/浏览器保留物理 F 的行为，包括 Shift+F。
+                if (e.code !== 'KeyF' || e.ctrlKey || e.metaKey || e.altKey) return;
+            } else {
+                if (!shortcut || e.code !== shortcut.code) return;
+                if (['ctrlKey', 'altKey', 'shiftKey', 'metaKey'].some(key => !!e[key] !== !!shortcut[key])) return;
+            }
             if (this.checkLocked() || isYuiGuideDragLocked()) return;
+            this._movementHeldCode = e.code;
+            this._movementHeldModifiers = shortcut === undefined ? null : { ...shortcut };
             this.targetMode = true;
             canvas.style.cursor = 'crosshair';
             e.preventDefault();
         };
         this._movementKeyUpHandler = (e) => {
-            if (e.code !== 'KeyF') return;
-            this.targetMode = false;
-            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
+            if (!this._movementHeldCode) return;
+            const modifiers = this._movementHeldModifiers;
+            const modifierReleased = modifiers && [
+                ['ctrlKey', 'Control'], ['altKey', 'Alt'], ['shiftKey', 'Shift'], ['metaKey', 'Meta']
+            ].some(([key, code]) => modifiers[key]
+                && (e.code === code + 'Left' || e.code === code + 'Right') && !e[key]);
+            if (e.code !== this._movementHeldCode && !modifierReleased) return;
+            exitMovementTargetMode();
         };
-        this._movementBlurHandler = () => {
-            // 失焦只退出选点模式；已确认的目标仍继续执行。
-            this.targetMode = false;
-            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
-        };
+        // 失焦和改键只退出选点模式；已确认的目标仍继续执行。
+        this._movementBlurHandler = exitMovementTargetMode;
+        this._movementShortcutChangedHandler = exitMovementTargetMode;
         window.addEventListener('keydown', this._movementKeyDownHandler);
         window.addEventListener('keyup', this._movementKeyUpHandler);
         window.addEventListener('blur', this._movementBlurHandler);
+        window.addEventListener('neko:vrm-guided-movement-shortcut-changed', this._movementShortcutChangedHandler);
 
         // 1. 鼠标按下
         this.mouseDownHandler = (e) => {
@@ -1321,7 +1365,13 @@ class VRMInteraction {
             window.removeEventListener('blur', this._movementBlurHandler);
             this._movementBlurHandler = null;
         }
+        if (this._movementShortcutChangedHandler) {
+            window.removeEventListener('neko:vrm-guided-movement-shortcut-changed', this._movementShortcutChangedHandler);
+            this._movementShortcutChangedHandler = null;
+        }
         this.targetMode = false;
+        this._movementHeldCode = null;
+        this._movementHeldModifiers = null;
 
         if (this._touchGestures) {
             this._touchGestures.dispose();

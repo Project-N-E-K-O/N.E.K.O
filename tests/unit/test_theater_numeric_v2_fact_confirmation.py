@@ -81,7 +81,7 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
         if scenario in {"timeout", "formal_timeout"}:
             raise evaluator.NumericV2EvaluatorError("numeric_v2_transition_judge_timeout")
         first_rewrite = scenario in {"rewrite", "budget_skip"} and calls["review"] == 1
-        # 末稿兜底：两稿都被判正文违规，事实审批只看玩家原话，与正文违规分别判断。
+        # Final-draft fallback: both drafts violate body rules; approve facts using only the player's words, independently of body violations.
         needs_rewrite = first_rewrite or scenario in {"fallback", "fallback_veto"}
         return evaluator.NumericV2TransitionOfferReview(
             False, False, ("author_boundary",) if needs_rewrite else (), (),

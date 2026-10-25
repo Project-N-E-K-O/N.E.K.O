@@ -1,7 +1,7 @@
 """
 User Plugin Server
 
-HTTP 服务器主入口文件。
+Main entry point for the HTTP server.
 """
 from __future__ import annotations
 
@@ -35,84 +35,14 @@ def _prepend_sys_path(path: Path, index: int) -> None:
 _prepend_sys_path(_PROJECT_ROOT, 0)
 _prepend_sys_path(_PLUGIN_PACKAGE_ROOT, 1)
 
-
-def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
-    if not isinstance(endpoint, str) or not endpoint.startswith("tcp://"):
-        return None
-    host_port = endpoint[6:]
-    if ":" not in host_port:
-        return None
-    host, port_text = host_port.rsplit(":", 1)
-    if not host:
-        return None
-    try:
-        port = int(port_text)
-    except (TypeError, ValueError):
-        return None
-    if port <= 0 or port > 65535:
-        return None
-    return host, port
-
-
-def _is_tcp_port_available(host: str, port: int) -> bool:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind((host, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        try:
-            probe.close()
-        except OSError:
-            pass
-
-
-def _find_next_available_port(host: str, start_port: int, max_tries: int = 50) -> int | None:
-    for port in range(start_port, start_port + max_tries):
-        if _is_tcp_port_available(host, port):
-            return port
-    return None
-
-
-def _ensure_plugin_zmq_endpoint_available() -> None:
-    endpoint = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", "tcp://127.0.0.1:38765")
-    parsed = _parse_tcp_endpoint(endpoint)
-    if parsed is None:
-        return
-    host, base_port = parsed
-    if _is_tcp_port_available(host, base_port):
-        return
-
-    fallback_port = _find_next_available_port(host, base_port + 1, max_tries=100)
-    if fallback_port is None:
-        return
-
-    fallback_endpoint = f"tcp://{host}:{fallback_port}"
-    os.environ["NEKO_PLUGIN_ZMQ_IPC_ENDPOINT"] = fallback_endpoint
-    try:
-        print(
-            (
-                "[user_plugin_server] NEKO_PLUGIN_ZMQ_IPC_ENDPOINT occupied, "
-                f"fallback to {fallback_endpoint}"
-            ),
-            file=sys.stderr,
-        )
-    except (OSError, ValueError, RuntimeError):
-        pass
-
-
-_ensure_plugin_zmq_endpoint_available()
-
 from config import USER_PLUGIN_SERVER_PORT
 
 # ──────────────────────────────────────────────────────────────────────────
-#  ⚠ 严禁再引入 loguru。所有 plugin/* 已统一走 plugin.logging_config →
-#  utils.logger_config.RobustLoggerConfig。曾经的 brace-compat 与
-#  loguru→stdlib bridge 已迁入 plugin/logging_config.py。
-#  规则：再有人在本仓库 import loguru —— 就把谁杀了。
-#  lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
+#  ⚠ Never reintroduce loguru. All plugin/* modules now use plugin.logging_config →
+#  utils.logger_config.RobustLoggerConfig. The former brace-compat and
+#  loguru-to-stdlib bridge have been moved into plugin/logging_config.py.
+#  Rule: if anyone imports loguru in this repository again, kill them.
+#  Lint guard: scripts/check_no_loguru.py (CI: .github/workflows/analyze.yml)
 # ──────────────────────────────────────────────────────────────────────────
 
 # -- Unified stdlib logger, same as agent_server / memory_server --
@@ -130,22 +60,22 @@ except ModuleNotFoundError:
     _spec.loader.exec_module(_module)
     setup_logging = getattr(_module, "setup_logging")
 
-# 提前固定主 PluginServer 进程的 service_name —— plugin.logging_config.get_logger()
-# 通过 NEKO_PLUGIN_SERVICE_NAME 决定 logger 父节点（N.E.K.O.<service>.<comp>）。
-# 不设的话会 fallback 到 "Plugin"，导致 message_plane / runs / config 等模块的日志
-# 跑去 N.E.K.O_Plugin_*.log，与 PluginServer 自身的 N.E.K.O_PluginServer_*.log 分裂。
+# Set the service_name for the main PluginServer process early — plugin.logging_config.get_logger()
+# uses NEKO_PLUGIN_SERVICE_NAME to determine the logger parent (N.E.K.O.<service>.<comp>).
+# Without it, the fallback is "Plugin", causing logs from message_plane / runs / config and other modules
+# to go to N.E.K.O_Plugin_*.log, separate from PluginServer's N.E.K.O_PluginServer_*.log.
 #
-# 用 ``=`` 而不是 ``setdefault``：父进程（Electron / launcher 脚本）若意外携带
-# 旧的 ``Plugin_<id>`` 环境（比如复用了一个调试 shell），setdefault 会保留旧值，
-# 然后下面的 ``setup_logging("PluginServer")`` 和 ``get_logger()`` 会路由到两个
-# 不同的 namespace，再次造成日志分裂。这里强制覆盖。
+# Use ``=`` instead of ``setdefault``: if the parent process (Electron / launcher script) accidentally carries
+# an old ``Plugin_<id>`` environment (for example, by reusing a debug shell), setdefault would preserve the old value,
+# and then ``setup_logging("PluginServer")`` and ``get_logger()`` below would route to two
+# different namespaces, splitting logs again. Force the value here.
 os.environ["NEKO_PLUGIN_SERVICE_NAME"] = "PluginServer"
 
 logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
 
-# Side-effect import：触发 plugin/logging_config.py 顶层的
-# _install_logging_brace_compat()，让所有 plugin/* 子模块共享 brace-format
-# 兼容（logger.info("msg {}", x) 不抛 TypeError）。模块本身不需要 alias。
+# Side-effect import: triggers the top-level
+# _install_logging_brace_compat() in plugin/logging_config.py, so all plugin/* submodules share brace-format
+# compatibility (logger.info("msg {}", x) does not raise TypeError). This module itself does not need an alias.
 import plugin.logging_config  # noqa: E402,F401  -- side-effect only
 
 # -- uvicorn logging bridge --
@@ -174,32 +104,13 @@ def _configure_windows_event_loop_policy() -> None:
             pass
 
 
-def _disable_windows_plugin_zmq_when_tornado_missing() -> None:
-    if sys.platform != "win32":
-        return
-    try:
-        import tornado  # type: ignore  # noqa: F401
-        return
-    except Exception:
-        pass
-    os.environ["NEKO_PLUGIN_ZMQ_IPC_ENABLED"] = "false"
-    try:
-        print(
-            "[user_plugin_server] tornado not found on Windows; disable plugin ZeroMQ IPC",
-            file=sys.stderr,
-        )
-    except (OSError, RuntimeError, ValueError):
-        pass
-
-
 _configure_windows_event_loop_policy()
-_disable_windows_plugin_zmq_when_tornado_missing()
 
 from plugin.server.http_app import build_plugin_server_app  # noqa: E402
 
 
-# 独立跑的时候没有别人管生命周期，所以这里显式认领。内嵌进 agent_server 的那条
-# 路径（app/agent_server/plugin_host.py）不认领，由 user_plugin_enabled 开关驱动。
+# When run standalone, no one else manages its lifecycle, so explicitly claim it here. The embedded path
+# in agent_server (app/agent_server/plugin_host.py) does not claim it; the user_plugin_enabled switch controls it.
 app = build_plugin_server_app(manage_lifecycle=True)
 
 
@@ -208,8 +119,8 @@ def _can_register_faulthandler_signal() -> bool:
 
 
 def _enable_fault_handler_dump_file() -> IO[str] | None:
-    # 路径来自本体 RobustLoggerConfig（5 级可写目录回退，AppImage squashfs 安全）。
-    # 严禁再用 Path(__file__).parent / "log" —— 那是只读 squashfs，会直接崩。
+    # The path comes from the main app's RobustLoggerConfig (five levels of writable-directory fallback, safe with AppImage squashfs).
+    # Never use Path(__file__).parent / "log" again — that is a read-only squashfs path and will crash.
     try:
         from utils.logger_config import RobustLoggerConfig
         dump_dir = Path(RobustLoggerConfig(service_name="PluginServer").get_log_directory_path())

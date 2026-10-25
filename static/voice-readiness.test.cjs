@@ -430,6 +430,38 @@ function isolationHarness(stopFailure = false) {
     return {controller,receive:request=>receive(request),sent,timers,ack,S,root,document};
 }
 
+test('waiting feedback uses all eight locales and cannot override newer activation states', () => {
+    const reasons = ['speech_too_short', 'owner_not_confirmed', 'verification_insufficient'];
+    for (const language of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
+        const locale = JSON.parse(fs.readFileSync(path.join(__dirname, 'locales', language + '.json'), 'utf8'));
+        const h = isolationHarness();
+        h.S.isRecording = true;
+        h.root.t = key => key.split('.').reduce((value, part) => value?.[part], locale) ?? key;
+        const identity = { session_id: 'feedback', microphone_generation: 1, route_generation: 1, profile_revision: 1, permission_revision: 1 };
+        const panel = h.document.body.children[0];
+        let revision = 0;
+        for (const reason of reasons) {
+            const expected = locale.voiceIdentity['activationHint_' + reason];
+            assert.equal(typeof expected, 'string', language + ': ' + reason);
+            assert.ok(expected.length > 0);
+            assert.equal(h.controller.activationStatus({ ...identity, revision: ++revision, state: 'waiting', reason }, h.S.socket), true);
+            assert.equal(panel.children[0].textContent, expected);
+            assert.equal(panel.children[1].hidden, true);
+            assert.equal(h.controller.blocked(), false);
+        }
+        for (const reason of ['frame_buffered', 'unrecognized_server_reason', '__proto__']) {
+            h.controller.activationStatus({ ...identity, revision: ++revision, state: 'waiting', reason }, h.S.socket);
+            assert.equal(panel.children[0].textContent, locale.voiceIdentity.activation_waiting);
+        }
+        h.controller.activationStatus({ ...identity, revision: ++revision, state: 'active', reason: 'owner_confirmed' }, h.S.socket);
+        assert.equal(panel.children[0].textContent, locale.voiceIdentity.activation_active);
+        assert.equal(h.controller.activationStatus({ ...identity, revision: revision - 1, state: 'waiting', reason: reasons[0] }, h.S.socket), false);
+        assert.equal(panel.children[0].textContent, locale.voiceIdentity.activation_active);
+        h.controller.stopped();
+        assert.equal(panel.hidden, true);
+    }
+});
+
 test('lost resource start receipt still cancels its reserved ID without adopting another window operation', async () => {
     let state = 'reserved'; let accepted = false;
     const h = harness({ requestRouter: async url => {

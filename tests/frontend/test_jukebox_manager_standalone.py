@@ -183,7 +183,7 @@ def test_jukebox_manager_standalone_uses_native_drag_regions():
     # Interactive elements must be no-drag or native dragging can consume clicks.
     assert re.search(r"\.jukebox-sam-panel\s+button\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
     assert re.search(r"\.jukebox-sam-panel\s+\.sam-close-btn\b[\s\S]*?\{[\s\S]*?-webkit-app-region:\s*no-drag\s*!important", MANAGER_TEMPLATE)
-    # 不应再注册 JS mousedown 拖动（旧实现的标志函数）——模板和外部 JS 文件都要拦
+    # JS mousedown dragging must no longer be registered (legacy marker function); guard both templates and external JS.
     for source in (MANAGER_TEMPLATE, JUKEBOX_STANDALONE_SCRIPT, JUKEBOX_SCRIPT):
         assert "_bindManagerStandaloneDrag" not in source
         assert "neko-jukebox-manager-standalone-dragging" not in source
@@ -1269,15 +1269,15 @@ def test_jukebox_manager_long_song_name_scrolls_without_pushing_actions(mock_pag
     long_item = metrics["long"]
     short_item = metrics["short"]
 
-    # 操作按钮排在名字列右边，并且整列留在条目的内容盒里
+    # Action buttons sit to the right of the name column, entirely within the item's content box.
     assert long_item["actionsLeft"] >= long_item["headerRight"] - 1
     assert long_item["actionsRight"] <= long_item["itemContentRight"] + 1
-    # 条目不产生横向溢出：名字不会溢出去盖在按钮上
+    # No horizontal overflow: names cannot cover the buttons.
     assert long_item["itemScrollWidth"] <= long_item["itemClientWidth"] + 1
-    # 名字长度不改变列边界：长歌名没有把按钮挤走
+    # Name length must not move column boundaries: long song names cannot displace buttons.
     assert abs(long_item["actionsRight"] - short_item["actionsRight"]) < 1
     assert abs(long_item["headerRight"] - short_item["headerRight"]) < 1
-    # 长歌名在自己那一列里滚动，且聚焦不改变它的宽度
+    # Long song names scroll within their column without changing width on focus.
     assert long_item["nameScrollWidth"] > long_item["nameClientWidth"]
     assert abs(metrics["beforeWidth"] - metrics["afterWidth"]) < 1
 

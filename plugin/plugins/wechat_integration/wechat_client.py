@@ -9,7 +9,7 @@ import httpx
 
 
 class WechatClient:
-    """微信 OpenClaw API 客户端"""
+    """WeChat OpenClaw API client."""
 
     def __init__(
         self,
@@ -86,7 +86,7 @@ class WechatClient:
         return cast(dict[str, Any], json.loads(text))
 
     async def get_qrcode(self, bot_type: str = "3") -> dict[str, Any]:
-        """获取登录二维码"""
+        """Get a login QR code."""
         return await self.request_json(
             "GET",
             "ilink/bot/get_bot_qrcode",
@@ -96,7 +96,7 @@ class WechatClient:
         )
 
     async def poll_qrcode_status(self, qrcode: str) -> dict[str, Any]:
-        """轮询扫码状态"""
+        """Poll QR-code scan status."""
         return await self.request_json(
             "GET",
             "ilink/bot/get_qrcode_status",
@@ -107,7 +107,7 @@ class WechatClient:
         )
 
     async def get_updates(self, sync_buf: str = "") -> dict[str, Any]:
-        """长轮询拉取新消息"""
+        """Long-poll for new messages."""
         return await self.request_json(
             "POST",
             "ilink/bot/getupdates",
@@ -120,7 +120,7 @@ class WechatClient:
         )
 
     async def send_message_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """发送消息"""
+        """Send a message."""
         return await self.request_json(
             "POST",
             "ilink/bot/sendmessage",

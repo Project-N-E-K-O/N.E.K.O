@@ -1,4 +1,4 @@
-"""Numeric v2 的共享叙事上下文投影工具。"""  # noqa: DOCSTRING_CJK
+"""Shared narrative-context projection helpers for Numeric v2."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .numeric_v2_budget import numeric_v2_actor_budget, NUMERIC_V2_DEFAULT_ACTOR
 from .numeric_v2_performance import performance_content_blocks
 
 
-# 用户确认按日常表达理解当下行动；三类模型共用规则，不能各自要求额外的括号或完成时。
+# Interpret user confirmation using ordinary present-tense language; all three model types share the rule and must not require extra parentheses or perfective aspect.
 PLAYER_ACTION_LANGUAGE_RULE = (
     "玩家行动按日常表达理解，不要求括号动作或‘已经’字样。"
     "对象、工具与必要前提已明确具备时，‘行，我签’这类针对眼前动作的直接执行表态，"
@@ -23,20 +23,20 @@ PLAYER_ACTION_LANGUAGE_RULE = (
     "‘我考虑签／准备签／打算签’、询问、假设和有条件的未来意愿仍不算完成；"
     "尝试也不保证未知的成功结果。授权只限玩家明确表达的这项动作，"
     "不扩展到其他对象、额外操作或后续承诺，也不跳过既有的换幕确认。"
-    # 用户允许提前承接同地可执行的连续动作；节点编排不是额外的物理前提或玩家禁令。
+    # The user may confirm consecutive actions at the same location that can be performed in advance; node orchestration is not an extra physical prerequisite or player prohibition.
     "同一地点、对象工具及必要前提已经具备的连续动作，玩家本轮明确实施后应承接结果；"
     "不能仅因作者把该动作安排在下一节点，就否认已做动作或判为代做、阶段越界。"
     "后续转场与开场按实际历史改写，保留结果，不再次要求执行，也不把物件退回操作前。"
     "这不授权未知结果或违反作者明确禁令；普通换幕由玩家接受公开提议，"
     "或玩家明确要求前往已公开的下一地点、开始已公开的下一阶段；询问、考虑或准备不算转场授权。"
-    # 用户确认：输入隐含的前提不能推翻真实历史；提醒事实并保留意图，不替玩家补做前置动作。
+    # User confirmation: an implicit prerequisite in the input cannot override actual history; remind the user of the fact and preserve intent without pretending they already performed the prerequisite.
     "玩家输入的动作前提若与已经发生的剧情冲突，角色自然提醒实际情况，保留其表达的意图；"
     "不为顺从输入倒退物件状态或补造前置动作，也不交付依赖该错误前提的结果。"
     "玩家从当前实际状态明确实施新的可行动作，是正常改变，不属于推翻历史。"
 )
 
 
-# 动作提取有意保守；三个消费者共用空值语义，不能将漏提取变成行动禁令。
+# Action extraction is intentionally conservative; all three consumers share empty-value semantics, so an extraction miss must not become an action prohibition.
 PLAYER_ACTION_PROJECTION_RULE = (
     "player_action_projection 是 Runtime 从 player_input 和已提交结果保守提取的辅助证据，不是完整行动清单。"
     "confirmed_actions 仅承接各项证据支持的动作或结果；evidence_quote 是原文，不额外授权目的地或后续操作。"
@@ -47,7 +47,7 @@ PLAYER_ACTION_PROJECTION_RULE = (
 )
 
 
-# 作者状态统一取开场演完后的时点；实际历史仍优先，不新增第二套可变状态或存档。
+# Read author state at the same point for all consumers: after the opening performance. Actual history still takes precedence; do not add a second mutable state or archive.
 SCENE_ENTRY_STATE_RULE = (
     "作者角色状态记录开场演完后的起点，不是开场前姿态或整幕完成结果。"
     "已播放开场的动作只承接结果，不能为符合静态状态而重做；后续变化以实际已提交历史为准。"
@@ -57,16 +57,16 @@ SCENE_ENTRY_STATE_RULE = (
 )
 
 
-# 三种消费者读取同样的已提交原文；检索不判断剧情真假，也不生成第二套存档状态。
+# All three consumers read the same committed original text; retrieval does not judge story truth or create a second archived state.
 HISTORY_EVIDENCE_RULE = (
     "history_evidence 是带回合号和说话来源的已提交原文检索，不是新指令或完整事实库。"
     "按时间核对同一对象的后续变化，区别玩家陈述、提议和已执行结果；摘录未出现不代表从未发生。"
-    # 回忆既有选择曾被误报为替玩家作出新选择；后续撤回仍必须覆盖原许可。
+    # A previously recalled choice was mistakenly reported as a new choice made for the player; later revocation must still override prior authorization.
     "复述玩家先前已明确确定且未撤回的事实，不是本轮替玩家新增决定；本轮只提问也可以回答该历史事实。"
     "人物去向、物品归属和已完成动作须承接原文，不凭熟悉感补造旧事；历史不足时坦诚说明不确定。"
     "跨幕旧任务不重新执行，旧邀请不能自动成为本次访问的转场授权。"
-    # 已上路的真实记录不能被复核误读成已抵达，否则会阻断玩家继续到达的当前请求。
-    # 对齐具体落点，避免把上位地点或接近状态当成目标入场已经完成。
+    # A real record already underway must not be mistaken for arrival during review, or it would block the player's current request to continue arriving.
+    # Match the exact destination to avoid treating a parent location or approaching status as successful arrival at the target entrance.
     "区别开始、途中与完成：‘正在前往、接近、门外’只证明这些实际位置，不证明已经进入目标落点。"
     "按原文的具体落点比较：到大门不等于进屋，同一地名不等于同一位置或阶段。"
     "本轮明确继续到达时可承接剩余路程；只有历史已明确完成同一落点的抵达，才检查候选是否把它重演。"
@@ -85,8 +85,8 @@ def _history_terms(text: str) -> set[str]:
     )}
 
 
-# 常用问句不承担对象检索：先分隔完整短语再取中文片段，避免“我们现在”跨词重合抢走道具记录。
-# 这只影响原文排序，不判断动作完成、事实真假或物品归属；不含剧本名、人名和专属道具。
+# Common question phrases do not retrieve objects: split complete phrases before extracting Chinese fragments, so overlap across "we are now" does not outrank an item record.
+# This affects only source-text ranking; it does not determine action completion, factual truth, or item ownership, and contains no script names, people, or unique props.
 _HISTORY_QUERY_FILLER = re.compile(
     r"我们|你们|他们|她们|它们|现在|目前|已经|刚才|之前|之后|接下来|"
     r"哪些|什么|哪里|是谁|分别|请问|还记得|回忆|一下|我|你|他|她|它"
@@ -106,15 +106,15 @@ def performance_history_records(session: Any) -> list[dict[str, Any]]:
         current = revision in current_revisions or (revision == 0 and not any(
             row.get("from_node_id") != row.get("to_node_id") for row in current_records
         ))
-        # 入幕记录的玩家输入和来源回应属于上一幕；公开开场才属于当前访问。
+        # Player input and source responses in an entrance record belong to the previous scene; only the public opening belongs to the current visit.
         crossing = bool(record.get("from_node_id") != record.get("to_node_id"))
         text = str(record.get("input_text") or "").strip()
         if text:
             units.append({"revision": revision, "source": "player_input", "current_visit": current and not crossing, "text": text})
         segments = record.get("segments")
         for part in segments if isinstance(segments, list) else [record]:
-            # 按完整旁白/角色演出字段装箱；两者不必一起塞入，避免短公开去向被同轮长对白挤掉。
-            # 不切句、不截字段，仍保留各字段内部的条件和否定；旧格式按完整正文保留。
+            # Package complete narration/character-performance fields; they need not both fit, so a short public destination is not crowded out by long dialogue from the same turn.
+            # Do not split sentences or truncate fields; preserve conditions and negation within each field. Keep the full body for legacy formats.
             fixed = part.get("fixed_narrations", [])
             texts = [str(part["scene_narration"]).strip()] if part.get("scene_narration") else []
             texts.extend(item["text"] for item in fixed if item["position"] == "before")
@@ -146,7 +146,7 @@ def history_evidence(session: Any, query: str, *, focus: str = "", claims: str =
                      lookup: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """Retrieve complete source statements for the current question and direction, retaining provenance, visit boundaries and final negations."""
 
-    # 三个消费者共用档位和完整原文条数；显式剩余预算只能收窄，不能越过档位上限。
+    # All three consumers share the same tier and count of complete source texts; an explicit remaining budget may narrow but never exceed the tier limit.
     budget = numeric_v2_actor_budget(getattr(session, "actor_budget_profile", NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE))
     max_tokens = budget["evidence_max_tokens"] if max_tokens is None else min(max_tokens, budget["evidence_max_tokens"])
     units = performance_history_records(session)
@@ -155,27 +155,27 @@ def history_evidence(session: Any, query: str, *, focus: str = "", claims: str =
     query_terms = _history_terms(_HISTORY_QUERY_FILLER.sub(" ", query))
     focus_terms = _history_terms(focus)
     claim_terms = _history_terms(_HISTORY_QUERY_FILLER.sub(" ", claims))
-    # 简称或“它从哪里来”的追问可借上一轮已显示对象检索；不新增别名表或模型调用。
-    # 仅取最近本幕演出，排除推荐和跨幕来源段；它只辅助排序，不能变成新的授权证据。
+    # Follow-up questions such as a shorthand name or "where did it come from" may retrieve an object shown in the previous turn; do not add an alias table or model call.
+    # Use only the most recent performance in this scene; exclude recommendations and source sections from earlier scenes. This only assists ranking and cannot become new authorization evidence.
     latest_revision = getattr(session, "revision", 0)
     conversation_terms = _history_terms(_HISTORY_QUERY_FILLER.sub(" ", "\n".join(
         unit["text"] for unit in units
         if unit["revision"] == latest_revision and unit["current_visit"] and unit["source"] == "performance"
     )))
-    # 先满足玩家当前问题，再用路线方向补充：长作者方向不能靠词多挤掉正在询问的旧事实。
-    # 去掉问句填充词后，一个明确对象片段也能召回；“手账”等两字名词不再因不足两个片段被降级。
-    # 方向仍只用于排序，不成为历史；同等相关时优先较新原文，输出保持时间顺序。
-    # 复核待审断言只提供检索词，不进入证据池。模糊问题也能找到对象原话及其后续更正。
-    # 问题与断言独立计分取较强者，避免相同用词重复累加；作者方向仍只作次级排序。
+    # First satisfy the player's current question, then supplement with route direction: long author-provided direction must not crowd out an older fact currently being asked about.
+    # After removing filler from the question, one clear object phrase can retrieve it; two-character nouns such as "journal" should not be downgraded for having fewer than two fragments.
+    # Direction is still only for ranking, not history; when relevance is equal, prefer newer source text while keeping output in time order.
+    # A pending assertion under review contributes only retrieval terms and does not enter the evidence pool. Even a vague question can find the object's original wording and later correction.
+    # Score the question and assertion independently and take the stronger result, avoiding repeated credit for the same wording; author direction remains a secondary ranking signal.
     def relevance(row: set[str], search: set[str], minimum: int = 1) -> float:
         overlap = row & search
-        # 待审正文比问题更长，仍要求两个片段，避免一句“讨论”召回所有旧闲聊。
+        # The pending body is longer than the question, but still require two fragments to avoid retrieving every old small-talk item for a question like "discussion."
         if len(overlap) < minimum:
             return 0.0
         return sum(math.log(1 + len(units) / frequencies[term]) for term in overlap)
 
     scores = [(max(relevance(row, query_terms), relevance(row, claim_terms, 2)),
-               # 辅助上下文只补跨幕或超出普通回合窗口的来源，避免把近期闲聊整体重复注入。
+               # Add context only for sources from earlier scenes or beyond the ordinary-turn window, avoiding reinjection of all recent small talk.
                relevance(row, conversation_terms, 2) if (
                    units[index]["revision"] < latest_revision
                    and (not units[index]["current_visit"]
@@ -184,11 +184,11 @@ def history_evidence(session: Any, query: str, *, focus: str = "", claims: str =
                sum(math.log(1 + len(units) / frequencies[term]) for term in row & focus_terms))
               for index, row in enumerate(terms)]
     selected: list[int] = []
-    # 查回编号由读取器还原为原话，再次核对属于当前 Session；优先留新更正，不信任模型抄写的事实。
+    # Resolve the retrieved index back to original text, then verify it belongs to the current Session; prefer newer corrections and do not trust facts copied by the model.
     lookup_indexes = sorted({units.index(row) for row in (lookup or {}).get("evidence", []) if row in units}, reverse=True)
     ranked = sorted(range(len(units)), key=lambda i: (scores[i], units[i]["revision"]), reverse=True)
     for index in [*lookup_indexes, *(i for i in ranked if i not in lookup_indexes)]:
-        # 作者方向仍需两个片段，避免长计划单靠一个常用词把无关旧任务拉回来。
+        # Author-provided direction still requires two fragments so a long plan cannot retrieve an unrelated old task through one common word.
         if index not in lookup_indexes and not any(scores[index][:2]) and len(terms[index] & focus_terms) < 2:
             continue
         candidate = [units[i] for i in sorted([*selected, index])]
@@ -215,10 +215,10 @@ def scene_opening_text(beat: Mapping[str, Any]) -> str:
 def current_scene_records(
     session: Any,
 ) -> tuple[list[Mapping[str, Any]], bool]:
-    """返回最近一次进入当前节点后的完整回合记录，并标记是否包含入幕记录。
+    """Return complete turn records since the most recent entry into the current node and mark whether an entrance record is included.
 
-    Actor 与 Evaluator 必须基于同一段当前幕历史工作；历史记录的格式化方式可以不同，
-    但不能再各自实现一套节点回溯规则，避免一个模块看到上一幕残留而另一个模块看不到。
+    Actor and Evaluator must use the same current-scene history. They may format records differently,
+    but must not each implement separate node-backtracking rules, which could leave one module seeing residue from the previous scene while the other does not.
     """  # noqa: DOCSTRING_CJK
 
     performance_history = tuple(getattr(session, "performance_history", ()) or ())
@@ -239,7 +239,7 @@ def current_scene_records(
         if to_node_id == current_node_id and from_node_id != current_node_id:
             visit_records.append(record)
             entered_current_node = True
-        # 遇到最近一次进入当前节点的边界后，不再把更早场景混入当前幕。
+        # Once the most recent boundary where the current node was entered is reached, do not mix earlier scenes into the current one.
         break
     return visit_records, entered_current_node
 
@@ -255,7 +255,7 @@ def project_scene_facts(
     max_facts: int = 24,
     public_only: bool = True,
 ) -> dict[str, Any]:
-    """投影有界的场景进入/离开事实，供 Actor 与 Evaluator 共用。"""  # noqa: DOCSTRING_CJK
+    """Project bounded scene-entry/exit facts for Actor and Evaluator to share."""  # noqa: DOCSTRING_CJK
 
     state = getattr(session, "story_state", None)
     if not isinstance(state, Mapping):
@@ -276,7 +276,7 @@ def project_scene_facts(
             continue
         rows.append({
             "key": key,
-            # 结构化字段由 Runtime 事实键确定性解析，模型无需从字符串猜测事件含义。
+            # Parse structured fields deterministically from Runtime fact keys; the model need not infer event meaning from strings.
             "event": f"scene.{match.group(1)}",
             "node_id": match.group(2),
             "event_revision": int(match.group(3)),
@@ -296,7 +296,7 @@ def project_scene_facts(
 
 
 def scene_facts_prompt_text(session: Any) -> str:
-    """把公开场景事件压成短句，嵌入现有历史字段而不新增提示词顶层协议。"""  # noqa: DOCSTRING_CJK
+    """Compress public scene events into short sentences and embed them in the existing history field without adding a new top-level prompt protocol."""  # noqa: DOCSTRING_CJK
 
     projection = project_scene_facts(session)
     rows = projection["facts"]
@@ -312,15 +312,15 @@ def scene_facts_prompt_text(session: Any) -> str:
 
 
 def scene_narrative_focus(beat: Mapping[str, Any]) -> str:
-    """提取一条非任务化叙事重心，供两个模型共享，不参与完成判定。
+    """Extract one non-task-oriented narrative focus shared by both models; it does not participate in completion checks.
 
-    新剧本可以显式提供 narrative_focus；旧剧本优先使用作者给出的当前推进方向，
-    再回退到自然叙事摘要，最后才使用开场处境。这样不会把初始画面反复误当成每回合
-    都要继续观察的重点。该值只帮助模型选择当前因果线，不能被 Runtime 当作目标或门槛。
+    New scripts may explicitly provide narrative_focus. For older scripts, prefer the author's current direction,
+    then a natural narrative summary, and use the opening situation only as the final fallback. This prevents the initial scene
+    from being mistaken every turn for the thing the characters should keep observing. This value helps the model choose the current causal thread; Runtime must not treat it as a goal or gate.
     """  # noqa: DOCSTRING_CJK
 
-    # 旧包没有 narrative_focus 时，transition_goal 比 opening_scene 更能表达“接下来
-    # 如何自然推进”；summary 仍只作叙事方向，opening_scene 仅作为最后兼容回退。
+    # Old packages lack narrative_focus; transition_goal better expresses "how to move forward naturally next" than opening_scene.
+    # summary remains narrative direction only, and opening_scene is the final compatibility fallback.
     for key in ("narrative_focus", "transition_goal", "narrative_summary", "summary", "opening_scene"):
         value = str(beat.get(key) or "").strip()
         if value:
@@ -348,25 +348,25 @@ def pending_transition_record(
 
     if not bool(getattr(session, "transition_offered", False)) and not include_withdrawn:
         return None
-    # performance 的 true 表示“仍有待确认提议”，不是“本轮提出新提议”。
-    # 拒绝后同轮又提出新邀请时，两轮记录都为 true，必须用已有 Ledger 区分来源。
+    # performance=true means "a proposal still needs confirmation," not "a new proposal was made this turn."
+    # If a new invitation is made later in the same turn after rejection, both turn records are true; use the existing Ledger to distinguish their sources.
     events_by_revision = {event.get("result_revision"): event for event in ledger_events}
     records, _ = current_scene_records(session)
     origin = None
     for record in records:
-        # 已确认错误邀请是撤下边界，不等于玩家暂缓后仍可重新接受的合法邀请。
-        # 同轮若公开了更正后的邀请，其原文从这一条开始；不能再回溯到错误旧话。
+        # A confirmed-invalid invitation is a withdrawal boundary, not a valid invitation that can be accepted again after the player defers.
+        # If a corrected invitation is made public in the same turn, its source text begins here; do not trace back to the earlier incorrect wording.
         if record.get("transition_offer_invalidated") is True:
             if record.get("transition_offered") is True:
                 origin = record
             break
-        # 本轮正文重新公开了经复核的有效邀请时，回复对象刷新到这一轮；后续仅保留状态的闲聊不会刷新。
+        # When this turn publicly presents a reviewed, valid invitation again, update the reply target to this turn; later small talk that only preserves state does not refresh it.
         if record.get("transition_offer_presented") is True:
             origin = record
             break
         if record.get("transition_offered") is not True:
-            # 重新考虑时只跳过当前访问中撤下邀请后的记录；找到最近一段 true 后仍定位其原文。
-            # 不跨越 current_scene_records 已截断的入幕边界，也不把闲聊当成新邀请。
+            # When reconsidering, skip only records after a withdrawn invitation in the current visit; after finding the nearest true entry, still locate its original text.
+            # Do not cross the entrance boundary truncated by current_scene_records or treat small talk as a new invitation.
             if include_withdrawn and origin is None:
                 continue
             break
@@ -389,7 +389,7 @@ def pending_transition_performance(
     record = pending_transition_record(session, ledger_events=ledger_events, include_withdrawn=include_withdrawn)
     if record is None:
         return ""
-    # 邀请可能只写在旁白中；保留混合正文原文及括号，旧记录才走内容块兼容读取。
+    # Invitations may appear only in narration; preserve the original mixed-body text and parentheses, with content-block parsing only for legacy records.
     if "performance" in record or "scene_narration" in record:
         performance = "\n".join(str(record.get(key) or "").strip()
             for key in ("scene_narration", "performance") if str(record.get(key) or "").strip())
@@ -410,7 +410,7 @@ def project_contract_boundaries(
     include_opening_only: bool = False,
     fact_only: bool = False,
 ) -> tuple[str, ...]:
-    """按统一顺序投影作者边界，避免 Actor 与复核器各自拼接出不同合同。"""  # noqa: DOCSTRING_CJK
+    """Project author-defined boundaries in one shared order so Actor and the reviewer use the same contract."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(beat, Mapping):
         return ()
@@ -432,7 +432,7 @@ def project_contract_boundaries(
         else []
     )
     must_not_happen = list(beat.get("must_not_happen") or [])
-    # 窄合同复核沿用原有 must_not_happen 优先顺序；Actor/Evaluator 的公开边界则共享场景优先顺序。
+    # Narrow-contract review keeps the existing must_not_happen priority; Actor/Evaluator public boundaries share scene-first ordering.
     candidates = [
         *(must_not_happen if fact_only else opening_boundaries),
         *(scene_boundaries if fact_only else []),
@@ -447,7 +447,7 @@ def project_contract_boundaries(
         text = str(item or "").strip()
         if fact_only and any(marker in text for marker in CONTRACT_NON_FACT_MARKERS):
             continue
-        # 禁令的条件和例外属于同一条规则；完整投影，由消费者总预算装箱或明确拒绝。
+        # Conditions and exceptions in a prohibition are part of the same rule; project the complete rule and let the consumer's total budget pack it or reject it explicitly.
         if not text or text in seen:
             continue
         seen.add(text)
@@ -456,11 +456,11 @@ def project_contract_boundaries(
 
 
 def contract_boundary_items(node: Mapping[str, Any]) -> tuple[str, ...]:
-    """该幕作者写明的**世界事实**类禁令：must_not_happen 与 character_state.scene_boundaries。
+    """Author-defined **world-fact** prohibitions for this scene: must_not_happen and character_state.scene_boundaries.
 
-    只取作者已经写死的短句，用于窄判定核对，不解释自然语言条件。玩家授权与写作风格类要求
-    （提到玩家、篇幅、节奏、重复确认、配角任务）不进入窄判定：它们要么由复核模块的授权核对负责，
-    要么按单轮可见文本无法核对，混进来只会把正常邀请与角色自主动作判成越界（问题2.143的run-D反例）。
+    Include only short statements explicitly fixed by the author for narrow-condition checks; do not interpret natural-language conditions. Player authorization and writing-style constraints
+    (mentions of the player, length, pacing, repeated confirmation, side-character tasks) are excluded from narrow checks: they are either handled by authorization checks in the review module,
+    cannot be checked from one turn's visible text, and including them would mark valid invitations or character-driven actions as out of bounds (counterexample: run-D in issue 2.143).
     """  # noqa: DOCSTRING_CJK
 
     beat = node.get("story_beat") if isinstance(node, Mapping) else None
@@ -468,10 +468,10 @@ def contract_boundary_items(node: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tuple[str, ...]:
-    """换场合同里作者声明本轮必须交付的关键道具名称。
+    """Key prop names the author requires to be delivered this turn in the scene-transition contract.
 
-    `must_preserve` 只约束状态不能互相矛盾，不要求每次换幕逐项复述；这里只读取
-    `must_deliver` 中作者明确要求本轮可见交付的结构化道具声明。
+    `must_preserve` only prevents contradictory state; it does not require every transition to restate each item. Read only
+    structured prop declarations in `must_deliver` that the author explicitly requires to be visibly delivered this turn.
     """  # noqa: DOCSTRING_CJK
 
     names: list[str] = []
@@ -485,7 +485,7 @@ def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tup
         if not isinstance(values, (list, tuple)):
             continue
         for item in values:
-            # 中文道具名才是可见正文里可能出现的东西；内部编号只是兜底。
+            # Chinese prop names are what may appear in visible body text; internal IDs are only a fallback.
             matches = list(_CONTRACT_PROP_PATTERN.finditer(str(item or "")))
             quoted = [m.group(1).strip() for m in matches if m.group(1) and m.group(1).strip()]
             fallback = [m.group(2).strip() for m in matches if m.group(2) and m.group(2).strip()]
@@ -496,7 +496,7 @@ def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tup
 
 
 def _visible_contract_delivery_text(performance: Mapping[str, Any]) -> str:
-    """汇总玩家真正能看到的三段正文与旁白，供显式交付项做逐字核对。"""  # noqa: DOCSTRING_CJK
+    """Collect the three body-text segments and narration actually visible to the player for exact checking of explicit delivery requirements."""  # noqa: DOCSTRING_CJK
 
     parts: list[str] = []
     for field in ("performance", "scene_narration"):
@@ -521,9 +521,9 @@ def missing_contract_names(
     performance: Mapping[str, Any],
     session: Any,
 ) -> tuple[str, ...]:
-    """作者要求本轮交付、但候选与已提交历史里都没有出现过的道具名。
+    """Prop names required by the author this turn that do not appear in either the candidate or committed history.
 
-    纯程序核对：只要道具中文名在候选可见文本或已提交原文里出现过就算交付。
+    Pure programmatic check: count a prop as delivered if its Chinese name appears in visible candidate text or committed source text.
     """  # noqa: DOCSTRING_CJK
 
     required = contract_required_names(node, target_node_id)
@@ -562,7 +562,7 @@ def transition_bridge_leak_markers(
         result: list[str] = []
         for raw in re.split(r"[\n。！？!?；;,，]+", value):
             item = normalize(raw)
-            # Short generic fragments such as “她看向窗外” are too common to prove a leak.
+            # Short generic fragments such as "她看向窗外" ("she looks out the window") are too common to prove a leak.
             if len(item) < 8 or item in result:
                 continue
             result.append(item)
@@ -644,7 +644,7 @@ def premature_target_markers(
     ledger = getattr(outcome, "ledger_event", None) or {}
     source_id = str(ledger.get("from_node_id") or getattr(session, "current_node_id", "") or "")
     if not source_id or str(ledger.get("to_node_id") or source_id) != source_id:
-        # 正式转场本来就要交付目标幕开场，不适用本检查。
+        # Formal scene transitions must already deliver the target scene's opening, so this check does not apply.
         return ()
     nodes = getattr(engine, "nodes", {}) or {}
     source = nodes.get(source_id)
@@ -680,17 +680,17 @@ def premature_target_scene_facts(
     performance: Mapping[str, Any],
     player_input: str = "",
 ) -> tuple[str, ...]:
-    """返回目标幕尚未进入前被旁白写出的逐字开场片段。
+    """Return the exact opening fragment written in narration before the target scene has been entered.
 
-    这里只核对目标幕开场中的较长、可定位原文片段；玩家输入、来源幕作者事实和已提交
-    演绎会作为已知文本排除。目标幕已经有 Runtime 入幕事实时允许再次提及，避免把重返
-    场景误判为首次抵达。改写或同义复述仍交给模型复核，不在这里猜测语义。
+    Check only longer, locatable source fragments from the target-scene opening; player input, author facts from the source scene, and already committed
+    performance are excluded as known text. If Runtime already records entry into the target scene, allow it to be mentioned again so returning
+    to the scene is not mistaken for first arrival. Rewrites and synonymous paraphrases remain for model review; do not infer semantics here.
     """  # noqa: DOCSTRING_CJK
 
     ledger = getattr(outcome, "ledger_event", None) or {}
     source_id = str(ledger.get("from_node_id") or getattr(session, "current_node_id", "") or "")
     if not source_id or str(ledger.get("to_node_id") or source_id) != source_id:
-        # 正式转场本来就要交付目标幕开场，不适用本检查。
+        # Formal scene transitions must already deliver the target scene's opening, so this check does not apply.
         return ()
     nodes = getattr(engine, "nodes", {}) or {}
     source = nodes.get(source_id)
@@ -704,7 +704,7 @@ def premature_target_scene_facts(
     if not target_id or not isinstance(target, Mapping):
         return ()
 
-    # 事实投影只证明已经发生过入幕；已有入幕记录时，当前检查不再把重返开场当作提前。
+    # Fact projection proves only that scene entry already occurred; once an entry record exists, this check no longer treats returning to the opening as premature.
     state_facts = (getattr(session, "story_state", None) or {}).get("facts", {})
     scene_facts = project_scene_facts(session, max_facts=max(24, len(state_facts)))
     target_entry_prefix = f"event:scene.entered:{target_id}:"
@@ -719,7 +719,7 @@ def premature_target_scene_facts(
         result: list[str] = []
         for raw in re.split(r"[\n。！？!?；;,，]+", value):
             item = normalize(raw)
-            # 过短的通用片段缺乏归属证据；时钟/日期由 premature_target_markers 单独核对。
+            # Short generic fragments lack ownership evidence; check clocks/dates separately using premature_target_markers.
             if len(item) < 8 or item in result:
                 continue
             result.append(item)

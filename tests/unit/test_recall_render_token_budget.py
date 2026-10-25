@@ -425,8 +425,8 @@ def test_entry_point_header_counts_what_survived():
     listed = [ln for ln in lines[1:] if ln.strip()]
     assert listed, "夹具失效：一条都没渲染出来"
     assert len(listed) < 10, "夹具失效：没触发丢弃，这条用例什么都没测到"
-    # 整行相等，不是子串包含：`str(4) in "找到 41 条相关记忆"` 会放过任何
-    # 以正确数字开头的错误计数。
+    # Compare the entire line, not substrings: `str(4) in "找到 41 条相关记忆"` would accept any
+    # incorrect count starting with the correct digit.
     assert lines[0] == template.format(n=len(listed)), (
         f"首行总览与实际条数不符：{lines[0]!r} vs {len(listed)} 条"
     )

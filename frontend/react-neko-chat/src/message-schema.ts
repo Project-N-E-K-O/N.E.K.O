@@ -27,6 +27,9 @@ const messageActionSchema = z.object({
 const textBlockSchema = z.object({
   type: z.literal('text'),
   text: z.string(),
+  // 纯文本渲染（串门台词等不可信来源）：不进 SmartTextBlock / ReactMarkdown，链接 / 图片语法原样显示、
+  // 不加载远程图片。必须在 schema 里声明——z.object 默认剥掉未声明的键，不声明就到不了渲染层
+  plain_text: z.boolean().optional(),
 });
 
 const imageBlockSchema = z.object({
@@ -155,6 +158,22 @@ const choicePromptSchema = z.object({
   gameType: z.string().optional(),
 }).nullable();
 
+// 串门工具条（compact 输入框上方）：宿主给状态文字与按钮，点按钮回传 id；不含任何业务逻辑
+const visitBarActionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  variant: z.enum(['primary', 'secondary', 'danger']).optional(),
+  disabled: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+});
+
+const visitBarSchema = z.object({
+  badge: z.string().optional(),
+  tone: z.enum(['idle', 'waiting', 'active', 'warning']).optional(),
+  detail: z.string().optional(),
+  actions: z.array(visitBarActionSchema).max(6),
+}).nullable();
+
 const avatarToolMenuOpenRequestSchema = z.object({
   id: z.string().min(1),
   open: z.boolean(),
@@ -190,6 +209,28 @@ const compactToolWheelIndexRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
+const musicRecommendationBlockSchema = z.object({
+  type: z.literal('music_recommendation'),
+  recommendationId: z.string().uuid(),
+  track: z.object({ name: z.string(), artist: z.string(), url: z.string().min(1), cover: z.string() }),
+  state: z.enum(['pending', 'saving', 'accepted', 'skipped', 'playing', 'paused', 'ended', 'stopped', 'failed', 'unavailable']),
+  error: z.boolean().optional(),
+  autoPlayAt: z.number().finite().nonnegative().optional(),
+  expiresAt: z.number().finite().nonnegative().optional(),
+});
+
+const proactiveRecommendationBlockSchema = z.object({
+  type: z.literal('proactive_recommendation'),
+  recommendationId: z.string().uuid(),
+  category: z.enum(['news', 'community', 'video', 'personal', 'meme', 'vision', 'window', 'chat', 'web', 'work_break', 'anti_slack']),
+  dismissed: z.boolean().optional(),
+  directDelivery: z.boolean().optional(),
+  content: z.object({ title: z.string(), source: z.string(), url: z.string() }),
+  state: z.enum(['pending', 'saving', 'accepted', 'skipped', 'unavailable']),
+  error: z.boolean().optional(),
+  expiresAt: z.number().finite().nonnegative().optional(),
+});
+
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
   imageBlockSchema,
@@ -198,6 +239,8 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   buttonGroupBlockSchema,
   topicHintBlockSchema,
   htmlCardBlockSchema,
+  musicRecommendationBlockSchema,
+  proactiveRecommendationBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -367,6 +410,11 @@ export const chatWindowPropsSchema = z.object({
     .args()
     .returns(z.void())
     .optional(),
+  visitBar: visitBarSchema.optional(),
+  onVisitBarAction: z.function()
+    .args(z.string())
+    .returns(z.void())
+    .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
@@ -393,11 +441,29 @@ export type TheaterPresentation = z.infer<typeof theaterPresentationSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
+export type VisitBar = NonNullable<z.infer<typeof visitBarSchema>>;
+export type VisitBarAction = z.infer<typeof visitBarActionSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type MessageReaction = z.infer<typeof messageReactionSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;
 export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;
+
+export function hasProactiveRecommendationContent(block: Extract<MessageBlock, { type: 'proactive_recommendation' }>): boolean {
+  if (block.category === 'chat') return false;
+  if (block.category === 'vision' && !block.content.url && block.content.title.trim()) return true;
+  try {
+    const url = new URL(block.content.url);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+export function hasVisibleMessageContent(message: ChatMessage): boolean {
+  return message.blocks.length === 0 || !!message.actions?.length || message.blocks.some(block =>
+    block.type !== 'proactive_recommendation' || hasProactiveRecommendationContent(block));
+}
 
 export function parseChatMessage(input: unknown): ChatMessage {
   return chatMessageSchema.parse(input);

@@ -1,16 +1,16 @@
 """Per-session model configuration for the four testbench LLM roles.
 
-PLAN §关键技术点 + §Settings workspace 要求:
+Requirements from PLAN §Key technical points + §Settings workspace:
 
-- **chat**     目标 AI (被测对象) — 发消息给 ChatCompletion, 消费 wire_messages
-- **simuser**  假想用户 AI — 在 SimUser 模式下替测试人员生成 user 消息
-- **judge**    评分 AI — 根据 ScoringSchema 出评分 JSON
-- **memory**   记忆合成 AI — 跑压缩/反思/persona 更新的 LLM 调用
+- **chat**     Target AI (system under test) — sends ChatCompletion messages and consumes wire_messages
+- **simuser**  Simulated user AI — generates user messages for testers in SimUser mode
+- **judge**    Scoring AI — produces scoring JSON according to ScoringSchema
+- **memory**   Memory-synthesis AI — runs LLM calls for compression/reflection/persona updates
 
-每组都是一份 ``ModelGroupConfig`` (provider 预设 + OpenAI 兼容端点细节).
-``api_key`` 字段保留明文以便直接发请求; 持久化路径 (saved_sessions/autosave/
-export) 里会由 persistence 层 (P21) 自动脱敏成 ``"<redacted>"``. 本文件只关心
-**会话内内存副本**, 不做任何持久化.
+Each group is a ``ModelGroupConfig`` (provider presets + OpenAI-compatible endpoint details).
+``api_key`` remains plaintext for direct requests; persistence paths (saved_sessions/autosave/
+export) automatically redact it to ``\"<redacted>\"`` through the persistence layer (P21). This file handles
+only **in-session memory copies**, without persistence.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-# 受支持的 4 个角色. 顺序影响 UI 左→右渲染顺序.
+# Four supported roles. Order determines left-to-right UI rendering.
 GroupKey = Literal["chat", "simuser", "judge", "memory"]
 GROUP_KEYS: tuple[GroupKey, ...] = ("chat", "simuser", "judge", "memory")
 

@@ -74,14 +74,14 @@ class PersonaManager(
         # (pure-Python block, no await inside).
         self._alocks: dict[str, asyncio.Lock] = {}
         self._alocks_guard = threading.Lock()
-        # 独立的 resolve_corrections 串行锁——只为防多入口（IdleMaint subtask 2
-        # 与 _run_post_turn_signals）并发触发同名角色的 LLM 重叠
-        # 应用导致重复处理同一批 corrections。本锁与 _alocks (data lock)
-        # 完全分开，所以 LLM 期间 aadd_fact / arecord_mentions / aapply_signal
-        # 仍能正常拿 _alocks 推进（不再卡 /process 路径）。
+        # Separate resolve_corrections serialization lock: prevents multiple entry points (IdleMaint subtask 2
+        # and _run_post_turn_signals) from overlapping same-character LLM calls and applications,
+        # processing the same corrections twice. Entirely separate from _alocks (data lock),
+        # so aadd_fact / arecord_mentions / aapply_signal can still acquire _alocks
+        # during LLM work without blocking the /process path.
         self._resolve_alocks: dict[str, asyncio.Lock] = {}
-        # memory-evidence-rfc §3.3.3：evidence 写路径必须走 record_and_save，
-        # 保证 event↔view 合约。event_log 注入；None 时 aapply_signal 不可用。
+        # memory-evidence-rfc §3.3.3: evidence writes must use record_and_save,
+        # preserving the event↔view contract. event_log is injected; None disables aapply_signal.
         self._event_log = event_log
 
     def _get_alock(self, name: str) -> asyncio.Lock:

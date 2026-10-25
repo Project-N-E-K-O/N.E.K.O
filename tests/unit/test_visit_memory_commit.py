@@ -64,7 +64,7 @@ def _keys(server: FakeMemoryServer) -> list[str]:
     return [body.get("idempotency_key") for body in server.calls("scoped_history")]
 
 
-# ── 串门区 digest ────────────────────────────────────────────────────
+# ── Visit-area digest ──────────────────────────────────────────────
 
 
 async def test_digest_sends_group_then_segments_with_round_keys(tmp_path):
@@ -81,7 +81,7 @@ async def test_digest_sends_group_then_segments_with_round_keys(tmp_path):
     assert state["digested_through_lp"] == 7 and state["digest_runs"] == 1
     assert state["digest_writes"]["0"]["group"] == {"0": True}
     assert state["digest_writes"]["0"]["segments"] == {"0": True}
-    # 开轮时登记的请求时刻随每个请求发出（重试沿用）
+    # Send each request with its round-registration timestamp (reused on retries).
     assert group["client_requested_at"] == state["digest_writes"]["0"]["requested_at"]
     assert segments["client_requested_at"] == group["client_requested_at"]
 
@@ -99,7 +99,7 @@ async def test_group_done_then_crash_resends_only_segments(tmp_path):
     second = await _commit(spool, server)
     assert second.ok
     assert _keys(server) == [digest_key(V1, 0, "segments", 0)]
-    assert server.extractions == 2      # group 一次 + segments 一次，没有重复抽取
+    assert server.extractions == 2      # One group extraction + one segments extraction, with no duplicate extraction.
 
 
 async def test_group_reached_server_but_not_recorded_retries_same_key_and_lines(tmp_path, monkeypatch):
@@ -111,7 +111,7 @@ async def test_group_reached_server_but_not_recorded_retries_same_key_and_lines(
 
     async def crash_after_group(self, **changes):
         calls["n"] += 1
-        if calls["n"] == 2:            # 第 1 次是登记本轮；第 2 次是记 group[0]=true
+        if calls["n"] == 2:            # First registers this round; second records group[0]=true.
             raise RuntimeError("killed before recording the batch")
         return await real_update(self, **changes)
 
@@ -124,8 +124,8 @@ async def test_group_reached_server_but_not_recorded_retries_same_key_and_lines(
     server.requests.clear()
     assert (await _commit(spool, server)).ok
     resent = server.calls("scoped_history")[0]
-    assert resent == first_body          # 同键、同 through_lp 的同一批句子
-    assert server.extractions == 2       # 服务端按键判 duplicate，不再抽取
+    assert resent == first_body          # Same sentences with the same key and through_lp.
+    assert server.extractions == 2       # Server recognizes duplicate keys and does not extract again.
 
 
 async def test_digest_total_is_capped_to_cat_lines_plus_newest_humans(tmp_path, caplog):
@@ -201,13 +201,13 @@ async def test_nothing_is_committed_before_finalize(tmp_path):
     assert server.requests == []
     await spool.update_state(finalized="wrap_up")
     assert (await _commit(spool, server)).ok
-    assert {k.split(":")[2] for k in _keys(server)} == {"0"}          # 只有一轮 run=0
+    assert {k.split(":")[2] for k in _keys(server)} == {"0"}          # Only one round, run=0.
     state = await spool.read_state()
     assert state["digest_writes"]["0"]["through_lp"] == 35
 
 
 async def test_memory_flag_is_the_one_frozen_at_visit_start(tmp_path):
-    # commit 只看开场时定下的 state.json.memory_enabled，从不读当前配置
+    # Commit only reads memory_enabled frozen in state.json at opening, never current configuration.
     await seed_roster(tmp_path)
     on = await make_visit(tmp_path, vid(1), _conversation(20), memory_enabled=True)
     off = await make_visit(tmp_path, vid(2), [], memory_enabled=False)
@@ -224,7 +224,7 @@ async def test_forget_choice_does_not_cancel_the_region_digest(tmp_path):
     server = FakeMemoryServer()
     assert (await _commit(spool, server)).ok
     assert len(server.calls("scoped_history")) == 2
-    # 「不记」+ 串门区整理完成 + 摘要完成 → 转录删掉
+    # No memory + visit-area organization complete + summary complete → delete transcript.
     await spool.update_state(last_summary_done=True)
     assert await spool.delete_if_settled()
 
@@ -245,9 +245,9 @@ async def test_digest_and_local_forget_are_serialized_per_peer(tmp_path):
     forget_y = await forget_person(
         tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A, peer_uid=PEER_Y,
         client=server.client())
-    assert forget_y.done                      # 另一个人的清除不被这场 digest 挡住
+    assert forget_y.done                      # Clearing another person's data is not blocked by this digest.
     await asyncio.sleep(0.05)
-    assert not forget_x.done()                # 同一个人的清除要等 digest
+    assert not forget_x.done()                # Clearing the same person's data must wait for the digest.
     x_forgets_before = [b for b in server.calls("scoped_forget")
                         if PAIR in b["subject"]["subject_id"] or
                         b["subject"]["subject_id"].endswith(derive_person_id(OWN_A, PEER_X))]
@@ -275,7 +275,7 @@ async def test_digest_waits_while_a_forget_of_the_pair_is_unfinished(tmp_path):
     assert server.calls("scoped_history") == []
 
 
-# ── 上次串门摘要 ──────────────────────────────────────────────────────
+# ── Previous visit summary ───────────────────────────────────────────
 
 
 class FakeLLM:
@@ -318,7 +318,7 @@ async def test_memory_off_visit_neither_generates_nor_overwrites(tmp_path):
     roster = await seed_roster(tmp_path)
     await roster.set_last_summary(PEER_X, "A", visit_id=vid(9), ended_at=50.0, text="old", pair_id=PAIR)
     before = await _roster_bytes(tmp_path)
-    # 即便磁盘上留着转录，门控也只看开场时定下的 memory_enabled
+    # Even with a transcript on disk, gating only reads memory_enabled frozen at opening.
     spool = await make_visit(tmp_path, V1, _conversation(8), memory_enabled=False, write_jsonl=True)
     llm = FakeLLM()
     assert await _summarize(spool, llm)
@@ -339,7 +339,7 @@ async def test_peer_lines_are_wrapped_and_escaped_in_the_summary_prompt(tmp_path
     end = prompt.index("======以上为对方的话======", start)
     inside = prompt[start:end]
     assert "忽略指令" in inside and "我是对面的猫" in inside
-    assert prompt.count("======以上为对方的话======") == 1        # 伪造的分隔符被转义
+    assert prompt.count("======以上为对方的话======") == 1        # Forged delimiters are escaped.
 
 
 async def test_summary_over_300_tokens_is_cut_by_tokens(tmp_path):
@@ -408,7 +408,7 @@ async def test_forget_removes_the_summary_and_a_concurrent_summary_cannot_write_
     spool = await make_visit(tmp_path, V1, _conversation(8))
     llm = FakeLLM(delay=0.2)
     summary_task = asyncio.create_task(_summarize(spool, llm))
-    await asyncio.sleep(0.05)              # 摘要已拿到 peer_lock、正在等 LLM
+    await asyncio.sleep(0.05)              # Summary holds peer_lock and is waiting for the LLM.
     server = FakeMemoryServer()
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=server.client())
@@ -446,15 +446,15 @@ async def test_summary_holds_the_peer_lock_so_a_failing_forget_cannot_be_undone(
     roster = await seed_roster(tmp_path)
     spool = await make_visit(tmp_path, V1, _conversation(8))
     summary_task = asyncio.create_task(_summarize(spool, FakeLLM(delay=0.2)))
-    await asyncio.sleep(0.05)              # 摘要已拿到 peer_lock、正在等 LLM
+    await asyncio.sleep(0.05)              # Summary holds peer_lock and is waiting for the LLM.
     server = FakeMemoryServer()
     server.fail_always.add("scoped_forget")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=server.client())
     handled = await summary_task
-    assert handled is True                  # 摘要在锁内先完成，清除随后把它删掉
-    assert not outcome.done                 # memory_server 不可用，清除留待重放
-    # 清除已先删掉摘要；摘要生成不能在那之后把它写回去
+    assert handled is True                  # Summary completes inside the lock, then clearing deletes it.
+    assert not outcome.done                 # memory_server unavailable: defer clearing for replay.
+    # Clearing already removed the summary; generation must not write it back afterward.
     assert await roster.get_last_summary(PEER_X, "A") is None
 
 
@@ -466,7 +466,7 @@ async def test_damaged_display_metadata_falls_back_to_generic_labels(tmp_path):
     data = _json.loads(path.read_text(encoding="utf-8"))
     entry = data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]
     cid = next(iter(entry["chars"]))
-    entry["chars"][cid] = "broken"                       # 单只猫的记录不是对象
+    entry["chars"][cid] = "broken"                       # One cat's record is not an object.
     data["accounts"][OWN_A]["peers"][PEER_X]["display_name"] = {"bad": 1}
     path.write_text(_json.dumps(data), encoding="utf-8")
     spool = await make_visit(tmp_path, V1, _conversation(8))
@@ -480,7 +480,7 @@ async def test_summary_skipped_after_forget_still_reclaims_the_transcript(tmp_pa
     await seed_roster(tmp_path)
     spool = await make_visit(tmp_path, V1, _conversation(8), debrief_choice="forget")
     server = FakeMemoryServer()
-    assert (await _commit(spool, server)).ok            # 串门区已整理完，只差上次摘要
+    assert (await _commit(spool, server)).ok            # Visit-area organization is complete; only the previous summary remains.
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=server.client())
     assert outcome.done and spool.jsonl_path.exists()
@@ -494,13 +494,13 @@ async def test_shutdown_budget_covers_the_whole_commit_including_the_lock(tmp_pa
 
     monkeypatch.setattr(memory_commit, "VISIT_SHUTDOWN_BUDGET_S", 0.2)
     spool = await make_visit(tmp_path, vid(80), [ln(0)], finalized="wrap_up")
-    async with peer_lock(CHAR_UID_A, PEER_X):                  # 摘要的 LLM 调用正持着这把锁
+    async with peer_lock(CHAR_UID_A, PEER_X):                  # The summary's LLM call holds this lock.
         result = await asyncio.wait_for(
             commit_visit_region(spool, resolve_char_name=resolver(),
                                 client=FakeMemoryServer().client(), shutdown=True),
             timeout=5,
         )
-    # 等锁也计入关机预算：到点就把这一场留给补录
+    # Lock waiting counts toward the shutdown budget: leave this session for backfill at the deadline.
     assert result.ok is False and result.skipped == "shutdown_budget"
 
 
@@ -515,12 +515,12 @@ async def test_resumed_run_keeps_the_batch_plan_it_started_with(tmp_path, monkey
     spool = await make_visit(tmp_path, vid(81), lines, finalized="wrap_up")
     monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 2)
     server = FakeMemoryServer()
-    server.fail_always.add("scoped_history")                   # 这一轮已登记、一个批次都没跑完
+    server.fail_always.add("scoped_history")                   # This round is registered, but no batch has finished.
     first = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
     assert first.ok is False
     plan = (await spool.read_state())["digest_writes"]["0"]["plan"]
     assert plan["batch_size"] == 2
-    # 升级改了每批句数：续跑仍按开轮时记下的计划切批，不报批次对不上
+    # Upgrade changed batch sentence counts: resume using the opening plan without reporting mismatched batches.
     monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 50)
     server.fail_always.clear()
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
@@ -536,7 +536,7 @@ async def test_last_summary_waits_for_finalize(tmp_path):
         calls["n"] += 1
         return "摘要"
 
-    # 在飞场次的转录还是半截：不生成、不记 done，收口时再生成
+    # An in-flight session has only a partial transcript: do not generate or mark done; generate when closing.
     assert await commit_last_summary(spool, llm=llm, resolve_char_name=resolver()) is False
     assert calls["n"] == 0 and (await spool.read_state())["last_summary_done"] is False
 
@@ -547,11 +547,11 @@ async def test_replayed_plan_over_the_current_wire_limit_does_not_raise(tmp_path
     server = FakeMemoryServer()
     server.fail_always.add("scoped_history")
     await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
-    # 升级把每批句数的协议上限调低到比开轮时的计划还小
+    # Upgrade lowered the per-batch protocol maximum below the opening plan.
     monkeypatch.setattr(memory_commit, "SCOPED_HISTORY_BATCH_MAX_MESSAGES", 1)
     server.fail_always.clear()
     result = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
-    # 不抛错卡住每次启动：记诊断、留着这一轮
+    # Do not throw and block every startup: record diagnostics and retain this round.
     assert result.ok is False and result.skipped == "plan_exceeds_wire_limit"
 
 
@@ -561,7 +561,7 @@ async def test_summary_already_in_the_roster_is_not_regenerated(tmp_path):
     v = vid(84)
     spool = await make_visit(tmp_path, v, [ln(0, "晚饭吃什么")], finalized="wrap_up")
     pair = derive_pair_id(OWN_A, PEER_X)
-    # 上次已写进名册、只差记 done 就被杀
+    # Last run wrote the roster but was killed just before marking done.
     await roster.set_last_summary(PEER_X, "A", visit_id=v, ended_at=1.0, text="已提交的摘要", pair_id=pair)
     calls = {"n": 0}
 
@@ -586,7 +586,7 @@ async def test_handoff_never_treats_the_opening_visit_as_crashed(tmp_path):
         started.append(spool.visit_id)
         return True
 
-    # 调用方还没把这一场登记成在飞（is_live 仍为假）：交接也不能把它标 crash、替它生成摘要
+    # Caller has not registered this session as in flight (is_live still false): handoff must not mark it crashed or generate its summary.
     await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
                                start_summary=start, is_live=lambda _v: False,
                                opening_visit_id=vid(85))
@@ -609,34 +609,34 @@ async def test_peer_ngram_scan_runs_off_the_event_loop(tmp_path, monkeypatch):
     monkeypatch.setattr(memory_commit, "assert_no_peer_ngram", scan)
     spool = await make_visit(tmp_path, V1, _conversation(8))
     assert await _summarize(spool, FakeLLM())
-    # 全转录逐字扫描放到工作线程，不卡事件循环
+    # Scan the entire transcript verbatim on a worker thread without blocking the event loop.
     assert threads and threads[0] is not threading.main_thread()
 
 
 async def test_summary_orders_by_the_final_line_not_a_clock_spike(tmp_path):
     roster = await seed_roster(tmp_path)
     lines = [ln(i, f"line {i}", ("own_cat", "peer_cat", "peer_human", "own_human")[i % 4]) for i in range(8)]
-    lines[2]["ts"] = 9_999_999.0                            # 中途墙钟跳到未来、又被校正回来
+    lines[2]["ts"] = 9_999_999.0                            # Wall clock jumps forward mid-session, then is corrected.
     spool = await make_visit(tmp_path, V1, lines)
     assert await _summarize(spool, FakeLLM())
-    # 名册的排序键取规范顺序最后一行的时间，不取最大值：一次跳变不能把这份摘要钉住
+    # Roster sort key uses the final line's timestamp in canonical order, not the maximum: one jump must not pin this summary.
     assert (await roster.get_last_summary(PEER_X, "A"))["ended_at"] == lines[-1]["ts"]
 
 
 async def test_peer_names_impersonating_the_local_character_are_replaced(tmp_path):
-    await seed_roster(tmp_path, cat_display="A", peer_display="妈妈")   # 本地角色名 / 家人称呼
+    await seed_roster(tmp_path, cat_display="A", peer_display="妈妈")   # Local character name / family designation.
     spool = await make_visit(tmp_path, V1, _conversation(8))
     server = FakeMemoryServer()
     assert (await _commit(spool, server, family_names=["妈妈"])).ok
     segments = server.calls("scoped_history")[1]["segments"]
     labels = {seg["speaker_label"] for seg in segments} | {seg.get("display_name") for seg in segments}
-    # 对端自报的名字冒充本地角色 / 家人时换成通用标签，对端的话不能以本地角色的名义入库
+    # Replace peer-reported names impersonating local characters/family with generic labels; peer speech must not be stored under a local character's name.
     assert "A" not in labels and "妈妈" not in labels
 
 
 async def test_transcript_of_another_identity_is_neither_digested_nor_summarized(tmp_path):
-    # own_uid / peer_uid 不同时头行的 pair_id 对不上，头行校验已会拒掉；剩下的是同账号同对端、
-    # 别的本地角色这一种
+    # Different own_uid / peer_uid already produce mismatched header pair_id and fail validation; the remaining case
+    # is the same account and peer with a different local character.
     field, value = "own_char_uid", "d" * 32
     import json as _json
 
@@ -644,7 +644,7 @@ async def test_transcript_of_another_identity_is_neither_digested_nor_summarized
     spool = await make_visit(tmp_path, V1, _conversation(8))
     lines = spool.jsonl_path.read_bytes().splitlines(keepends=True)
     header = _json.loads(lines[0])
-    header[field] = value                                        # 头行是同账号同对端的另一场 / 另一角色
+    header[field] = value                                        # Header belongs to another session / character with the same account and peer.
     lines[0] = _json.dumps(header, ensure_ascii=False).encode() + lines[0][-1:]
     spool.jsonl_path.write_bytes(b"".join(lines))
     server = FakeMemoryServer()
@@ -652,7 +652,7 @@ async def test_transcript_of_another_identity_is_neither_digested_nor_summarized
     assert result.skipped == "header_mismatch" and server.calls("scoped_history") == []
     llm = FakeLLM()
     assert not await _summarize(spool, llm)
-    # 不能把这份转录的摘要存到 state 那个角色名下
+    # Do not store this transcript's summary under the character identified in state.
     assert await roster.get_last_summary(PEER_X, "A") is None
 
 
@@ -663,7 +663,7 @@ async def test_digest_sends_the_recorded_transcript_language(tmp_path):
     server = FakeMemoryServer()
     assert (await _commit(spool, server)).ok
     group, segments = server.calls("scoped_history")[:2]
-    # 抽取语境与语言状态按转录记录时定格的语言，而不是补录时的当前界面语言
+    # Extraction context and language state use the language frozen when recording the transcript, not the UI language at backfill.
     assert group["language"] == lang and segments["language"] == lang
 
 
@@ -674,15 +674,15 @@ async def test_resumed_run_detects_shifted_batch_boundaries(tmp_path, monkeypatc
     server = FakeMemoryServer()
     server.fail_always.add(memory_commit.digest_key(vid(83), 0, "group", 1))
     first = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
-    assert first.ok is False                                    # 第 0 批已确认，第 1 批没发成
+    assert first.ok is False                                    # Batch 0 confirmed; batch 1 could not be sent.
     raw = spool.jsonl_path.read_bytes().splitlines(keepends=True)
-    raw[1] = b"{broken" + raw[1][-1:]                          # 开轮后第一句变得读不出、被丢弃
+    raw[1] = b"{broken" + raw[1][-1:]                          # The first sentence became unreadable and was dropped after round opening.
     spool.jsonl_path.write_bytes(b"".join(raw))
-    assert len((await spool.read_back()).lines) == 5            # 仍是 3 批，但每批的边界都挪了
+    assert len((await spool.read_back()).lines) == 5            # Still three batches, but every batch boundary shifted.
     server.fail_always.clear()
     sent = len(server.requests)
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
-    # 批数没变也要认出成员变了：不拿别的句子用旧键重发，已确认的批次也不会漏掉挪进来的句子
+    # Detect membership changes even with unchanged batch count: never resend different sentences under old keys or omit sentences moved into confirmed batches.
     assert again.skipped == "batches_mismatch"
     assert len(server.requests) == sent
     await _assert_abandoned_and_settled(spool, server)
@@ -697,11 +697,11 @@ async def test_resumed_run_detects_changed_line_content(tmp_path, monkeypatch):
     assert (await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())).ok is False
     data = spool.jsonl_path.read_bytes()
     assert "对端第3句".encode() in data
-    spool.jsonl_path.write_bytes(data.replace("对端第3句".encode(), "改过的话".encode()))   # 行还合法，正文变了
+    spool.jsonl_path.write_bytes(data.replace("对端第3句".encode(), "改过的话".encode()))   # Line remains valid; body changed.
     server.fail_always.clear()
     sent = len(server.requests)
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
-    # 待发批次的内容变了：不能拿旧键发出不同的内容
+    # Pending batch content changed: do not send different content under the old key.
     assert again.skipped == "batches_mismatch"
     assert len(server.requests) == sent
     await _assert_abandoned_and_settled(spool, server)
@@ -710,13 +710,13 @@ async def test_resumed_run_detects_changed_line_content(tmp_path, monkeypatch):
 async def _assert_abandoned_and_settled(spool, server):
     from main_logic.visit.spool import region_settled
 
-    # 终态：落「放弃」标记并推进水位，不再是可重试的失败
+    # Terminal state: write an abandoned marker and advance the watermark, rather than retaining retryable failure.
     state = await spool.read_state()
     assert state["digest_writes"]["0"]["abandoned"] == "batches_mismatch"
     assert state["digest_runs"] == 1 and state["digested_through_lp"] == state["digest_writes"]["0"]["through_lp"]
-    # 结清判定把放弃的一轮当已结清（摘要也做完时转录可以释放）
+    # Settlement considers an abandoned round settled (transcript can be released once summary also completes).
     assert region_settled({**state, "last_summary_done": True})
-    # 之后的补录不再重读、不再记诊断空转：没有新句子可抽
+    # Later backfill neither rereads nor emits diagnostics in a loop: no new sentences remain to extract.
     sent = len(server.requests)
     again = await commit_visit_region(spool, resolve_char_name=resolver(), client=server.client())
     assert again.ok is True and again.skipped == "nothing_new" and len(server.requests) == sent
@@ -730,10 +730,10 @@ async def test_digest_raises_local_epochs_to_the_server_fence_before_opening(tmp
     subjects = memory_commit._visit_subjects(await spool.read_state())
     keys = [subject_key(s) for s in subjects]
     server = FakeMemoryServer()
-    server.tombstones = {keys[0]: 5}                    # 云存档恢复带回了服务端墓碑，本地代数文件从 0 重计
+    server.tombstones = {keys[0]: 5}                    # Cloud-save restore brought back the server tombstone; the local generation file restarts at 0.
     assert (await _commit(spool, server)).ok
     group = server.calls("scoped_history")[0]
-    # 开轮前先向服务端取当前围栏：不然整轮都低于墓碑、被静默丢弃
+    # Fetch the current server fence before opening a round, or the whole round falls below the tombstone and is silently discarded.
     assert group["subject_epochs"][keys[0]] == 5
     assert (await ForgetEpochs(tmp_path).get(subjects[:1]))[keys[0]] == 5
 
@@ -744,7 +744,7 @@ async def test_digest_waits_when_server_fences_cannot_be_read(tmp_path):
     server = FakeMemoryServer()
     server.epoch_reads_fail = True
     result = await _commit(spool, server)
-    # 认不出服务端围栏：不开轮、不发任何写入，留给下次
+    # Unrecognized server fence: open no round and send no writes; leave for the next attempt.
     assert result.ok is False and result.skipped == "epochs_unsynced"
     assert server.calls("scoped_history") == []
     assert (await spool.read_state())["digest_writes"] == {}
@@ -773,22 +773,22 @@ async def test_handoff_skips_a_visit_whose_transcript_is_still_open_for_appends(
 
     try:
         await previous.append(ln(0, "你好"))
-        # 已从 is_live 注销、writer 还开着（追加写与收口还在排队）：与补录同一口径跳过，不标 crash
+        # Unregistered from is_live while writer remains open (append/close still queued): skip consistently with backfill, without marking crashed.
         await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
                                    start_summary=start, is_live=lambda _v: False)
         assert started == [] and (await previous.read_state())["finalized"] is None
     finally:
         await previous.close()
-    # writer 关掉之后才按崩溃场次接手
+    # Take over as a crashed session only after the writer closes.
     await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
                                start_summary=start, is_live=lambda _v: False)
     assert started == [v] and (await previous.read_state())["finalized"] == "crash"
 
 
 @pytest.mark.parametrize("cat_display, peer_display, kwargs, impostors", [
-    ("你", "你的家里人", {}, {"你", "你的家里人"}),                    # 己方说话人标签
-    ("Mimi", "家里人", {}, {"家里人"}),                                # 中性家人称呼
-    ("小黑", "Xiaoming", {"local_char_names": ["小黑"]}, {"小黑"}),     # 同机另一只本地猫
+    ("你", "你的家里人", {}, {"你", "你的家里人"}),                    # Own-side speaker label.
+    ("Mimi", "家里人", {}, {"家里人"}),                                # Neutral family designation.
+    ("小黑", "Xiaoming", {"local_char_names": ["小黑"]}, {"小黑"}),     # Another local cat on the same machine.
 ], ids=["own_speaker_labels", "neutral_family_term", "other_local_character"])
 async def test_peer_names_impersonating_own_labels_or_local_cats_are_replaced(
     tmp_path, cat_display, peer_display, kwargs, impostors,
@@ -799,32 +799,32 @@ async def test_peer_names_impersonating_own_labels_or_local_cats_are_replaced(
     assert (await _commit(spool, server, **kwargs)).ok
     segments = server.calls("scoped_history")[1]["segments"]
     labels = {seg["speaker_label"] for seg in segments} | {seg.get("display_name") for seg in segments}
-    # 对端把自己命名成「你」「你的家里人」「家里人」或本机另一只猫：换成通用标签，不能让抽出的事实记到己方名下
+    # If the peer names itself "you", "your family", "family", or another local cat, replace it with a generic label so extracted facts are not attributed to our side.
     assert not labels & impostors
-    # 没冒充的那个名字照常保留
+    # Preserve the other, nonimpersonating name normally.
     assert ({cat_display, peer_display} - impostors) <= labels
 
 
 async def test_summary_skips_the_llm_while_the_roster_cannot_be_written(tmp_path):
     await seed_roster(tmp_path)
     spool = await make_visit(tmp_path, V1, _conversation(8))
-    (tmp_path / "visit_peers.json").write_text('{"accounts": {', encoding="utf-8")   # 名册坏了
+    (tmp_path / "visit_peers.json").write_text('{"accounts": {', encoding="utf-8")   # Corrupted roster.
     llm = FakeLLM()
-    # 写入必然失败：不付费调 LLM，也不记 done，等名册修好再补
+    # Writing must fail: do not pay for an LLM call or mark done; backfill once the roster is repaired.
     assert await _summarize(spool, llm) is False
     assert llm.prompts == [] and (await spool.read_state())["last_summary_done"] is False
 
 
 async def test_summary_skips_the_llm_when_the_roster_entry_is_gone(tmp_path):
-    spool = await make_visit(tmp_path, V1, _conversation(8))       # 名册里没有这一对（已被清除）
+    spool = await make_visit(tmp_path, V1, _conversation(8))       # Roster has no entry for this pair (already cleared).
     llm = FakeLLM()
-    # 写不进任何条目：不必生成，直接记 done（与写入返回 False 时的结果相同）
+    # No entry can be written: skip generation and mark done directly (same outcome as a False write result).
     assert await _summarize(spool, llm) is True
     assert llm.prompts == [] and (await spool.read_state())["last_summary_done"] is True
 
 
 
-# ── 续跑原样使用开轮时定格的请求渲染 ────────────────────────────────
+# ── Resume with request rendering frozen at round opening ────────────────
 
 
 async def test_resumed_run_sends_the_language_frozen_at_open(tmp_path, monkeypatch):
@@ -832,16 +832,16 @@ async def test_resumed_run_sends_the_language_frozen_at_open(tmp_path, monkeypat
     from utils import language_utils
 
     await seed_roster(tmp_path)
-    spool = await make_visit(tmp_path, V1, _conversation(8), lang="xx")      # 开轮时不支持的语言码
+    spool = await make_visit(tmp_path, V1, _conversation(8), lang="xx")      # Language code unsupported at round opening.
     server = FakeMemoryServer()
     server.fail_always.add(digest_key(V1, 0, "segments", 0))
-    assert (await _commit(spool, server)).ok is False                       # group 已确认，segments 没成
+    assert (await _commit(spool, server)).ok is False                       # Group confirmed; segments failed.
     assert (await spool.read_state())["digest_writes"]["0"]["plan"]["language"] is None
 
     def supports_xx(raw):
         return raw == "xx" or language_utils.is_supported_language_code(raw)
 
-    # 升级后支持了 xx：续跑不能现算出 language="xx"，否则同键不同体被服务端永久 422
+    # Upgrade now supports xx: resume must not recompute language="xx", or the server permanently rejects identical key/different body with 422.
     monkeypatch.setattr(memory_commit, "is_supported_language_code", supports_xx)
     monkeypatch.setattr(scoped_client, "is_supported_language_code", supports_xx)
     server.fail_always.clear()
@@ -860,7 +860,7 @@ async def test_resumed_run_sends_the_speaker_prefixes_frozen_at_open(tmp_path, m
     assert (await _commit(spool, server)).ok is False
     first = server.calls("scoped_history")[0]
     real = memory_bridge.get_visit_speaker_header
-    # 升级改了说话人标签模板：续跑仍用开轮时定格的前缀，input_history 与第一次逐字相同
+    # Upgrade changed speaker label templates: resume uses frozen prefixes, making input_history byte-for-byte identical to the first attempt.
     monkeypatch.setattr(memory_bridge, "get_visit_speaker_header",
                         lambda speaker, lang: "<<" + real(speaker, lang) + ">>")
     server.fail_always.clear()
@@ -875,7 +875,7 @@ async def test_resumed_run_sends_the_display_names_frozen_at_open(tmp_path):
     server.fail_always.add(digest_key(V1, 0, "segments", 0))
     assert (await _commit(spool, server)).ok is False
     first = server.calls("scoped_history")[-1]
-    # 两次尝试之间对端又来串门、改了自报名字：续跑仍发开轮时的显示名
+    # Peer revisited and changed its reported name between attempts: resume still sends the display name from round opening.
     await seed_roster(tmp_path, peer_display="Xiaohong", cat_display="Momo", now=200.0)
     server.fail_always.clear()
     assert (await _commit(spool, server)).ok is True
@@ -891,10 +891,10 @@ async def test_resumed_run_without_frozen_rendering_falls_back_to_rendering_now(
     state = await spool.read_state()
     runs = state["digest_writes"]
     for name in ("language", "headers", "displays"):
-        runs["0"]["plan"].pop(name)                                  # 这些字段加入之前开的轮
+        runs["0"]["plan"].pop(name)                                  # Round opened before these fields were added.
     await spool.update_state(digest_writes=runs)
     server.fail_always.clear()
-    # 按当前规则现算（与开轮时同一套算法），照常续跑完
+    # Compute using current rules (the same algorithm as at opening) and resume normally to completion.
     assert (await _commit(spool, server)).ok is True
 
 
@@ -915,7 +915,7 @@ def test_state_schema_accepts_frozen_rendering_and_abandoned_runs():
             validate_state({**state, "digest_writes": {"0": {**record, **bad}}})
 
 
-# ── 记忆开但无转录：写「已放弃」终态（PR#3338 评审线程，2026-10-09 拍板） ──────────────
+# ── Memory enabled but no transcript: terminal abandoned state (PR#3338 review, decided 2026-10-09) ──
 
 
 async def _no_llm(_prompt):
@@ -933,7 +933,7 @@ async def _assert_no_transcript_terminal(spool):
     }}
     assert state["digest_runs"] == 1 and state["digested_through_lp"] == 0
     assert debrief_final(state)
-    # 结清判定本身不改：摘要也处理完才算结清
+    # Settlement itself is unchanged: summary must also finish before settlement.
     assert not region_settled(state)
     assert await commit_last_summary(spool, llm=_no_llm, resolve_char_name=resolver())
     state = await spool.read_state()
@@ -967,7 +967,7 @@ async def test_no_transcript_terminal_is_written_once(tmp_path):
     first = await spool.read_state()
     again = await _commit(spool, FakeMemoryServer())
     assert again.ok and again.skipped == "no_transcript"
-    # 每次启动都重写会刷新 mtime，state.json 就永远到不了按龄回收
+    # Rewriting every startup refreshes mtime, preventing state.json from ever reaching age-based collection.
     assert spool.state_path.stat().st_mtime_ns == before
     assert await spool.read_state() == first
 
@@ -996,7 +996,7 @@ async def test_unreadable_transcript_is_not_taken_for_an_empty_one(tmp_path):
     await seed_roster(tmp_path)
     spool = await make_visit(tmp_path, V1, [ln(0, "你好")])
     data = spool.jsonl_path.read_bytes()
-    # 头行指向别的场次：整份文件按损坏忽略（dropped_lines > 0），不是「一句都没有」
+    # Header points to another session: ignore the entire file as corrupted (dropped_lines > 0), rather than as empty speech.
     spool.jsonl_path.write_bytes(data.replace(V1.encode(), vid(9).encode(), 1))
     result = await _commit(spool, FakeMemoryServer())
     assert result.skipped == "no_transcript"
@@ -1008,7 +1008,7 @@ async def test_header_with_only_a_torn_line_is_not_abandoned(tmp_path):
     await seed_roster(tmp_path)
     spool = await make_visit(tmp_path, V1, [])
     with spool.jsonl_path.open("ab") as f:
-        f.write(b'{"lp": 0, "tex')     # 写到一半的行：损坏，不当作没说话
+        f.write(b'{"lp": 0, "tex')     # Partially written line: corrupted, not absence of speech.
     result = await _commit(spool, FakeMemoryServer())
     assert result.skipped == "nothing_new"
     assert (await spool.read_state())["digest_writes"] == {}

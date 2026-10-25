@@ -142,7 +142,7 @@ def test_cross_platform_workflow_runs_the_gate_before_upload() -> None:
     assert "scripts/check_dist_arch.py" in gate["run"]
     assert "${{ matrix.expect_arch }}" in gate["run"]
     assert "${{ matrix.expect_platform }}" in gate["run"]
-    # 闸门必须在产物上传之前跑，否则坏包照样发出去。
+    # Run the gate before uploading artifacts, or invalid packages will still be published.
     assert names.index(GATE_STEP_NAME) < names.index("Upload Python backend artifact")
 
 

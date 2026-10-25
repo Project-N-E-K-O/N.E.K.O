@@ -652,10 +652,10 @@ def _require_avatar_interaction_facts(tool_id: str, action_id: str, payload: dic
     return intensity
 
 
-# Memory-note 模板里对人的称呼一律用 {master} 占位符，由 _build_avatar_interaction_memory_meta
-# 在格式化时展开成调用方传入的 master_name。禁止在模板里出现 "主人 / Your master /
-# ご主人さま / 주인 / Хозяин" 等附属称呼字面量；这是项目核心价值观，反 AI 物化。
-# 已有 tests/unit/test_avatar_interaction_memory_contract.py 的禁词测试做护栏。
+# In memory-note templates, refer to people only with the {master} placeholder; _build_avatar_interaction_memory_meta
+# expands it during formatting to the caller-provided master_name. Do not put literal forms such as "主人 / Your master /
+# ご主人さま / 주인 / Хозяин" in templates; this is a core project value that opposes objectifying AI.
+# tests/unit/test_avatar_interaction_memory_contract.py already guards against forbidden terms.
 _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
     "zh": {
         "lollipop": {
@@ -742,9 +742,9 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
         },
     },
     "ko": {
-        # 韩语主格助词 이/가 与名字最后一个音节的韵尾相关；master_name 是任意字符串
-        # （可能是中/英/数字），无法静态判断，本文件统一用 "이"。memory_note 是给
-        # LLM 读的事件日志，不是 user-facing 字符串，小幅语法瑕疵 LLM 能正确理解。
+        # The Korean subject particle 이/가 depends on the final syllable of a name; master_name is arbitrary
+        # text (it may be Chinese, English, or digits), so gender/coda cannot be determined statically. Use "이" consistently in this file. memory_note is
+        # an event log read by an LLM, not user-facing text; the LLM can understand minor grammatical flaws.
         "lollipop": {
             "offer": "[{master}이 너에게 막대사탕을 한입 먹여 줬다]",
             "tease": "[{master}이 너에게 막대사탕을 한입 더 먹여 줬다]",
@@ -766,8 +766,8 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
         },
     },
     "ru": {
-        # 俄语过去时随主语性别变（дал / дала）。master_name 是任意字符串，无法静态
-        # 判断性别，本文件统一用阳性默认形式。同上：LLM-facing 事件日志容忍语法瑕疵。
+        # Russian past tense varies by the subject's gender (дал / дала). master_name is arbitrary, so gender cannot be determined
+        # statically; use the masculine default throughout this file. As above, minor grammar flaws are acceptable in an LLM-facing event log.
         "lollipop": {
             "offer": "[{master} дал тебе кусочек леденца]",
             "tease": "[{master} дал тебе ещё кусочек леденца]",
@@ -832,8 +832,8 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
     },
 }
 
-# master_name 缺失/空时按本地化中性词回退；禁止回落到"主人 / master / ご主人さま /
-# 주인 / Хозяин"等物化称呼。
+# When master_name is missing or empty, fall back to a localized neutral term; never fall back to "主人 / master / ご主人さま /
+# 주인 / Хозяин" or other objectifying forms.
 _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
     "zh": "对方",
     "zh-TW": "對方",
@@ -875,7 +875,7 @@ def _avatar_interaction_korean_subject_actor(name: str) -> str:
 
     Hangul names can choose 이/가 exactly by final consonant. For latin names,
     use a small readability heuristic; other scripts stay unchanged.
-    """
+    """  # noqa: DOCSTRING_CJK
     stripped = str(name or "").strip()
     if not stripped:
         return _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK["ko"]
@@ -910,8 +910,8 @@ def _sanitize_avatar_interaction_text_context(
     # truncate_to_tokens forwarded via config._runtime (DI; see top of file)
     # — config (L0) must not import utils (L1) directly.
     if max_tokens is None:
-        # Lazy import 避免 config 包加载顺序问题（本文件被 config/__init__.py
-        # 末尾的 re-export 路径间接导入）。
+        # Lazy import avoids config package load-order issues (this file is imported indirectly through the re-export at the end of config/__init__.py).
+        #
         from config import AVATAR_INTERACTION_CONTEXT_MAX_TOKENS
 
         max_tokens = AVATAR_INTERACTION_CONTEXT_MAX_TOKENS

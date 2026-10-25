@@ -56,18 +56,18 @@ class _CrossLoopLock:
                     except ValueError:
                         pass
                 elif waiter.state == "granted":
-                    # 已经轮到我们了但我们不要了——必须把这一手交给下一个，
-                    # 否则锁就悬在这里没人释放。
+                    # Our turn arrived but we no longer want it; pass ownership to the next waiter,
+                    # or the lock remains stranded with nobody to release it.
                     waiter.state = "cancelled"
                     wake = self._handoff_locked()
             self._schedule_wake(wake)
 
-        # 同进程争用走的是这里，而且它排在文件锁**前面**——两个 HTTP 请求打到
-        # 同一个服务器就卡在这一步。只给文件锁加截止期等于管住了较罕见的那一半。
+        # Same-process contention occurs here before the file lock; two HTTP requests to one server
+        # block at this step. A file-lock-only deadline covers only the rarer half.
         #
-        # 截止期由调用方算好一次、两层锁共用。各算各的话，同时存在同进程和跨进程
-        # 争用时预算会被花两遍：先在这里等满一份，再在文件锁那边重新起算一份，
-        # 名义上 20s 的请求可以在前端 30s 早已放弃之后才真的改状态（codex）。
+        # Calculate the deadline once at the caller and share it across both locks. Separate budgets are spent twice
+        # under both local and cross-process contention: wait a full budget here, then restart it at the file lock.
+        # A nominal 20-second request may mutate state after the frontend has given up at 30 seconds (codex).
         if deadline is None:
             deadline = _wait_deadline()
         try:
@@ -147,12 +147,12 @@ class PluginOperationBusy(Exception):
     """The cross-process plugin lock was held past the caller's deadline."""
 
 
-# 调用方愿意为抢锁等多久。默认 None = 无限等，也就是既有行为——后台的自启动
-# 对账、安装事务这些没人盯着的调用方不该因为"等太久"而失败。
+# How long the caller will wait for the lock. None means unbounded, preserving existing behavior; unattended background
+# callers such as autostart reconciliation and install transactions should not fail merely for waiting too long.
 #
-# HTTP 路由会设一个截止期：那边有个人在等，而前端 30s 就放弃了。更糟的是放弃
-# 之后那次操作仍会落地（mutation 被 asyncio.shield 保着），于是用户看到"失败"
-# 而插件其实被启停了。宁可立刻告诉他"另一个插件操作正在进行"。
+# HTTP routes set deadlines because a person is waiting and the frontend gives up at 30 seconds. Worse, the operation
+# still completes afterward under asyncio.shield, making users see failure while the plugin actually starts/stops.
+# Prefer telling them immediately that another plugin operation is in progress.
 _OPERATION_WAIT_BUDGET: ContextVar[float | None] = ContextVar(
     "plugin_operation_wait_budget", default=None
 )
@@ -161,11 +161,11 @@ _OPERATION_WAIT_BUDGET: ContextVar[float | None] = ContextVar(
 def _wait_deadline() -> float | None:
     """Deadline for a lock wait starting now, or None when unbounded.
 
-    存的是**预算秒数**而不是绝对截止期，而且每次抢锁各自起算。原来存绝对截止期
-    是错的：reload-all 在抢第一把锁之前还要先跑一次注册表刷新，那一步本身可以吃
-    满自己的预算，于是锁还没开始等就已经过期，在完全没有争用的情况下也回 409
-    （codex）。预算要表达的是"用户愿意为**等锁**等多久"，不是"这个请求总共能花
-    多久"。
+    Store budget seconds rather than an absolute deadline, starting afresh for each acquisition. An absolute deadline
+    was incorrect: reload-all refreshes the registry before acquiring its first lock, potentially consuming
+    that refresh's entire budget and expiring the lock deadline before waiting, producing 409
+    without any contention (codex). The budget expresses how long the user will wait for the lock,
+    not the total duration allowed for the request.
     """
     budget = _OPERATION_WAIT_BUDGET.get()
     return None if budget is None else time.monotonic() + budget
@@ -306,12 +306,12 @@ def _acquire_file_lock_sync(
             handle.write(b"\0")
             handle.flush()
             os.fsync(handle.fileno())
-        # 截止期显式传入，只有没传时才回落到上下文变量。
+        # Accept deadlines explicitly, falling back to the context variable only when omitted.
         #
-        # 不能只靠上下文变量：这个函数是通过 loop.run_in_executor 跑的，而
-        # run_in_executor **不传播 contextvars**（asyncio.to_thread 才传播）。
-        # 实测同一个 ContextVar，to_thread 里看得到、run_in_executor 里是 None
-        # ——也就是说光设上下文变量的话，这个截止期永远到不了这里。
+        # Context variables alone are insufficient: this function runs through loop.run_in_executor,
+        # which does not propagate contextvars, unlike asyncio.to_thread.
+        # In practice the same ContextVar is visible in to_thread but None in run_in_executor,
+        # so setting only context cannot deliver this deadline here.
         if deadline is None:
             deadline = _wait_deadline()
         while True:
@@ -325,10 +325,10 @@ def _acquire_file_lock_sync(
             except OSError as exc:
                 if not _is_file_lock_contention(exc):
                     raise
-                # 过期判定放在**争用之后**：预算表达的是"愿意等多久"，等零秒也是
-                # 一个合法答案。放在尝试之前的话，一个已经花光预算但完全没人争用
-                # 的调用方会拿到 409，而那把锁当时就是空的。_CrossLoopLock 那边
-                # 同样先走无争用的快路径，两边对称。
+                # Check expiration after contention: the budget means willingness to wait, and zero seconds is valid.
+                # Checking before trying would return 409 to a caller with exhausted budget even when nobody
+                # holds the lock. _CrossLoopLock likewise takes the uncontended fast path
+                # first, keeping both layers symmetric.
                 if deadline is not None and time.monotonic() >= deadline:
                     raise PluginOperationBusy(
                         "another plugin operation is holding the lock"
@@ -373,7 +373,7 @@ def _release_file_lock_sync(handle: Any) -> None:
 async def _acquire_file_lock_cancellation_safe(deadline: float | None = None) -> Any:
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
-    # 在这里读——这行还在调用方的上下文里；到了 executor 线程就读不到了。
+    # Read here while still in the caller's context; the executor thread cannot see it.
     if deadline is None:
         deadline = _wait_deadline()
     operation = asyncio.ensure_future(
@@ -431,7 +431,7 @@ class _HeldPluginOperationLock:
             self._depth_token = _OPERATION_DEPTH.set(depth + 1)
             return self
 
-        # 一次逻辑加锁只算一个截止期，两层锁共用（见 _CrossLoopLock.acquire）。
+        # Calculate one deadline per logical acquisition, shared by both locks (see _CrossLoopLock.acquire).
         deadline = _wait_deadline()
         await _PROCESS_LOCK.acquire(deadline)
         self._acquired = True

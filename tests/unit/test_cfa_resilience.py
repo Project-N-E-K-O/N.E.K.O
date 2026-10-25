@@ -1,5 +1,5 @@
 """
-Tests for Windows Controlled Folder Access (CFA / 反勒索防护) resilience.
+Tests for Windows Controlled Folder Access (CFA / ransomware protection) resilience.
 
 CFA blocks WRITES to protected folders (Documents, Desktop, etc.) but allows READS.
 When CFA is active, the app should:

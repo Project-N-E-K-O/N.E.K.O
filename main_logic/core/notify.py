@@ -126,7 +126,7 @@ class NotifyMixin:
                     interrupted_speech_id = self.current_speech_id
                 message = {
                     "type": "user_activity",
-                    "interrupted_speech_id": interrupted_speech_id,  # 告诉前端应丢弃哪个 speech_id
+                    "interrupted_speech_id": interrupted_speech_id,  # Tell frontend which speech_id to discard.
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
@@ -268,18 +268,18 @@ class NotifyMixin:
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
 
-        # 记录 / 查询 key：lanlan_name 为空时落到 "default" 与 sink 端对齐
-        # （sink 在 lanlan 字段空 / "default" 时把 directive 写到 "default"
-        # bucket；这里读取也得用同一 key，否则用户的 ban-topic 永远进不来
+        # Record/query key: empty lanlan_name uses default, matching sinks
+        # that write directives to default buckets for empty/default lanlan;
+        # readers need the same key or user bans never arrive.
         # system prompt，codex P2）。
         _directives_key = self.lanlan_name or "default"
 
-        # ── 用户显式 ban-topic 注入 ─────────────────────────────────
-        # 用户在过去 3 天里说过的 "别再提 X / stop saying X" 类指令，本轮 LLM
-        # 在 context 里已经看过；下一次 session 重启时原话已被 compress_history
-        # 抹掉，需要把活跃 term 拼成 system prompt 一段重新提醒模型避开。
-        # 抽取与落盘走 ``memory.user_directives`` 的 user_utterance sink；
-        # 这里只读。空时 render_prompt_block 返回 ""，对 prompt 长度无影响。
+        # ── Explicit user topic-ban injection ──
+        # Users' past-three-day 别再提 X / stop saying X instructions are already visible
+        # this turn, but next session restart loses originals through compress_history;
+        # assemble active terms into system prompts to remind models.
+        # Extraction/persistence use memory.user_directives' user_utterance sink;
+        # read-only here. Empty render_prompt_block returns "", adding no prompt length.
         try:
             from memory.user_directives import get_user_directives_manager
 
@@ -293,12 +293,12 @@ class NotifyMixin:
                 _exc,
             )
 
-        # ── 防复读 soft hint 注入 ──────────────────────────────────
-        # 把最近高 BM25 rank 的 topic 词列出来，提示模型"已经聊过这些"。这是
-        # 对**所有路径**生效的软约束（与 user ban list 不同：那个是用户明确
-        # 说过别提，必须强约束）。proactive 还会在 system_router Phase 2 出口
-        # 被 BM25 总分阈值二次拦截（regen / drop），常规 reply 只靠这段 prompt
-        # 软约束。空 corpus / 新角色第一轮 → render 返回 ""，无副作用。
+        # ── Anti-repeat soft-hint injection ──
+        # List recent high-BM25 topics to remind models they already discussed them. Soft
+        # constraints apply to **all paths**, unlike explicit user bans requiring strong
+        # constraints. Proactive Phase-2 exits in system_router also enforce
+        # BM25 total thresholds with regeneration/drop, while regular replies rely only on prompts.
+        # Empty corpora/new characters' first turns render "" without side effects.
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
@@ -342,17 +342,17 @@ class NotifyMixin:
         Called from both user-utterance entry points (text and voice), right
         after the plugin-bus publish that drives the recording sink.
         """
-        # 分层：``memory``（L3）不能向上 import ``main_logic``（L4），所以
-        # sink 只负责落盘 + 置一个待办标记，真正的注入在这里（L4）完成。
-        # 与 app/runtime_bindings.py 挂 sink 是同一个理由的两半。
+        # Layering: memory L3 cannot import main_logic L4,
+        # so sinks persist/set pending markers, while L4 injects here.
+        # Same reason as sink registration in app/runtime_bindings.py, complementary halves.
         try:
             from memory.user_directives import get_user_directives_manager
             manager = get_user_directives_manager()
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[UserDirectives] manager unavailable: %s", exc)
             return
-        # 与 _build_initial_prompt 的读取 key 对齐（sink 在 lanlan 为空 /
-        # "default" 时落到 "default" bucket）。
+        # Match _build_initial_prompt keys: sinks map empty/default lanlan
+        # to default buckets.
         key = self.lanlan_name or "default"
         try:
             if not manager.take_pending_injection(key):
@@ -362,10 +362,10 @@ class NotifyMixin:
             return
         try:
             _lang = normalize_language_code(self.user_language, format='short')
-            # ⚠️ 渲染的是**全量活跃列表**，不是本轮新抽到的那几个 term——与
-            # _build_initial_prompt 注入的是同一段文本。只注入增量的话，模型
-            # 在本会话里看到的禁令集合会取决于"哪几条恰好是这一轮说的"，跟
-            # 会话重建后看到的集合不一致。
+            # Render the **entire active list**, not newly extracted terms only, matching
+            # _build_initial_prompt injection. Incremental-only injection makes session bans depend on
+            # which were just uttered, differing from
+            # rebuilt-session ban sets.
             active_terms = manager.get_active_terms(key)
             block = manager.render_prompt_block(key, _lang)
         except Exception as exc:  # pragma: no cover - defensive
@@ -374,53 +374,53 @@ class NotifyMixin:
         block = block.strip()
         if not block:
             return
-        # ⚠️ lifetime='next_session'：**只**写 next-session 缓存，不进当前会话。
-        # 两条路径（文字 / 语音）在这里收敛到同一个值，不按会话类型分叉。
+        # lifetime='next_session' writes **only** next-session caches, never the current session.
+        # Text/audio paths converge to one value without session-type branches.
         #
-        # 当前会话不需要它。``_conversation_history`` 在会话生命周期内是
-        # append-only（唯一会砍它的是复读恢复，见 omni_offline_client/
-        # _streaming.py 那处 reset），所以用户那句"别再提 X"的原话一直待在
-        # 上下文里，模型每一轮都看得见；而会话开头 ``_build_initial_prompt``
-        # 已经注入过**全量**活跃列表，本轮的真实增量只有刚抽到的那一条 ——
-        # 恰恰是模型从原话里已经知道的那条。跨会话才是真缺口（新会话不继承
-        # 旧 history），而那正是这份缓存管的事。
+        # Current sessions do not need it. _conversation_history is append-only during sessions,
+        # except repetition recovery in omni_offline_client/
+        # _streaming.py resets, leaving original 别再提 X messages
+        # visible every turn. Initial _build_initial_prompt already injected
+        # the **complete** active list; true increments are newly extracted instructions,
+        # already known from originals. Cross-session missing history is the real
+        # gap this cache addresses.
         #
-        # 而写进当前会话是有代价的：``append_context`` 把 role='system' 渲染成
-        # ``HumanMessage("system: ...")``，**以用户消息的形态**落进 history。
-        # 别的 source（游戏结果 / 主动搭话素材）带的是模型不知道的新信息，这条
-        # 带的却是模型刚看过的用户原话的复述 —— 模型很容易顺着回一句"好的我
-        # 不会再提了"，而用户这一轮真正想聊的往往是后半句。
+        # Current-session writes have costs: append_context renders role='system' as
+        # HumanMessage("system: ..."), persisting **user-shaped messages** in history.
+        # Other sources, game results/proactive material, supply new information; this repeats
+        # user wording just seen, inviting acknowledgment such as 好的我
+        # 不会再提了 while users often want to discuss their sentence's latter half.
         #
-        # 语音（realtime）侧本来就收不了：``append_context`` 对没有
-        # ``_conversation_history`` 的会话回落到 ``prime_context``，而 Gemini
-        # 那条路会 ``send_client_content(turn_complete=True)`` 另开一个 user
-        # turn 并置 ``_skip_until_next_response`` —— 本轮所有
-        # output_transcription 与 audio delta 被整段吞掉，用户刚说完禁令句、
-        # 角色一个音都不发，恰好坏在这功能最该起作用的那一刻。
+        # Realtime audio cannot accept it anyway: sessions without
+        # _conversation_history fall back from append_context to prime_context, while Gemini
+        # send_client_content(turn_complete=True) creates another user
+        # turn and sets _skip_until_next_response, swallowing all current
+        # output_transcription/audio deltas. Characters go silent immediately after users state bans,
+        # failing exactly when this feature matters most.
         lifetime = "next_session"
         try:
-            # request_id 让 append_context 的去重生效：用户**重复说**同一条指令
-            # （E 那半按 hit_count 递增 TTL，整个设计就预期他会重复）同样会置待
-            # 注入标记。不给 id 的话每次都原样再追加一份到 next-session 缓存，
-            # 下个会话开头就会连着看到同一段禁令块好几遍。
+            # request_id enables append_context deduplication: **repeated** instructions
+            # extend TTL by hit_count in design part E and also mark injection pending.
+            # Without IDs every repetition appends another identical next-session block,
+            # duplicating bans repeatedly at the next session start.
             #
-            # ⚠️ 去重窗口是 **120 秒**（`_CONTEXT_APPEND_DEDUP_TTL_SECONDS`，
-            # append_context 的既有契约），不是永久 —— 别把这里读成"同一组 term
-            # 一辈子只注入一次"（codex 指出我原先的注释就是这么写的，过强了）。
-            # 而这个窗口恰好是对的：用户连着说两遍属于同一次表态，去噪；隔了半小时
-            # 再说一遍，往往说明模型期间又踩了雷，那时**重新注入一次强化**才是想要
-            # 的行为。所以这里不自己另造一层永久去重。
+            # Dedup window is **120 seconds**, _CONTEXT_APPEND_DEDUP_TTL_SECONDS,
+            # append_context's existing contract, never permanent. Do not read this as once per term
+            # set forever, an overstrong earlier comment flagged by codex.
+            # This window fits: consecutive repetition is one statement and should deduplicate; repetition half an hour
+            # later often signals another model misstep, where **reinjection reinforces** the ban appropriately.
+            # Do not invent permanent deduplication here.
             #
-            # ⚠️ 指纹取的是**规范化后的 term 集合**，不是渲染出来的块。块里的
-            # term 按 ``last_seen_at`` 降序排，于是「重复说较旧的那一条」会把它
-            # 顶到最前 —— 集合没变、字节变了 → 新 id → 又追加一份完整拷贝。而
-            # 那恰恰是延长 TTL 的常规路径，等于去重在最该生效的场景下被绕过
-            # （codex P2）。排序 + casefold 之后，只有集合真的变了才拿到新 id。
-            # ⚠️ 用 JSON 数组序列化，**不能**拿分隔符 join：``_normalize_term``
-            # 只做 strip + 长度校验，term 里什么字符都可能有。拿 " | " 拼的话
-            # ``["aa | bb", "cc"]`` 与 ``["aa", "bb | cc"]`` 得到同一个指纹 →
-            # 同一个 request_id → 新的禁令集合被 append_context 当成重复跳过、
-            # 本会话不生效（coderabbit）。JSON 自带引号与转义，天然无歧义。
+            # Fingerprint **normalized term sets**, never rendered blocks. Terms sort by last_seen_at
+            # descending, so repeating older entries moves them first,
+            # changing bytes without changing sets, giving new IDs and duplicate whole blocks.
+            # Ordinary TTL extension therefore bypasses deduplication where most needed
+            # (codex P2). Sorting + casefold creates new IDs only for actual set changes.
+            # Serialize JSON arrays, **never delimiter joins**: _normalize_term
+            # only strips/checks length, permitting arbitrary characters. Joining with " | " makes
+            # ["aa | bb", "cc"] and ["aa", "bb | cc"] share fingerprints,
+            # hence request_id, skipping new ban sets as duplicates in append_context,
+            # preventing this session's update (coderabbit). JSON quotes/escaping remove ambiguity.
             fingerprint = json.dumps(
                 sorted(t.casefold() for t in active_terms if t),
                 ensure_ascii=False,
@@ -429,7 +429,7 @@ class NotifyMixin:
                 f"user_directives:{key}:"
                 f"{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}"
             )
-            # timing='when_ready'：会话还没建好时排队，不丢。
+            # timing='when_ready' queues unfinished-session updates instead of dropping them.
             result = await self.append_context(
                 source="user_directives",
                 role="system",
@@ -496,15 +496,15 @@ class NotifyMixin:
         #         else:
         #             return count_tmpl.format(count=len(plugins))
         # except Exception as e:
-        #     logger.debug(f"获取插件摘要失败，已忽略: {e}")
+        #     logger.debug(f"Plugin summary retrieval failed; ignored: {e}")
         return ""
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:
         """Query agent server for active tasks and return a prompt snippet."""
         if not self._is_agent_enabled():
             return ""
-        # 复用 internal_http_client 单例：agent mode session init 走此路径，
-        # TOOL_SERVER_PORT 也是 127.0.0.1 内部服务
+        # Reuse internal_http_client singleton: agent-mode session initialization uses this path,
+        # and TOOL_SERVER_PORT is another internal 127.0.0.1 service.
         try:
             from utils.internal_http_client import get_internal_http_client
 
@@ -569,17 +569,17 @@ class NotifyMixin:
             logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
             return
 
-        # 校验原始输入：``normalize_language_code`` 对未识别值会默认回退 ``'en'``，
-        # 外部来源（ws ``message['language']`` 携带的 corrupted ``localStorage``、
-        # 第三方客户端发的 ``'undefined'`` / ``'null'`` / ``'estonian'`` 等 garbage）
-        # 会被静默归一成 ``'en'``，覆盖正确的 session locale。先用公共白名单挡掉。
+        # Validate raw input: normalize_language_code defaults unknown values to en,
+        # so external ws message['language'] from corrupt localStorage or
+        # third-party garbage undefined / null / estonian
+        # silently becomes en, overriding correct session locales. Filter through shared allowlists first.
         if not is_supported_language_code(language):
             logger.warning(
                 f"语言参数不支持: {language!r}，保持当前语言: {self.user_language}"
             )
             return
 
-        # 使用公共函数进行语言代码归一化
+        # Normalize language codes with shared functions.
         normalized_lang = normalize_language_code(language, format="full")
 
         self.user_language = normalized_lang
@@ -591,13 +591,13 @@ class NotifyMixin:
         else:
             logger.info(f"用户语言已设置为: {normalized_lang}")
 
-        # 文本模式下无需额外同步改写提示语言（已移除 rewrite 逻辑）
+        # Text mode needs no extra rewrite-prompt language synchronization; rewrite logic removed.
 
-        # 内置工具的 description / 参数说明是按 user_language 渲染的，
-        # 这里换语言后重新注册一份覆盖 registry 旧描述，并 fire-and-forget
-        # 推到当前 active / pending session 的 wire 上（OmniRealtimeClient
-        # 支持 session.update 携带新 tools；OmniOfflineClient 下次 stream_text
-        # 自动用最新 _tool_definitions）。
+        # Built-in tool descriptions/parameter documentation render by user_language;
+        # reregister on language changes, replacing old registry descriptions, then fire-and-forget
+        # to active/pending session wires. OmniRealtimeClient supports
+        # session.update with new tools; OmniOfflineClient's next stream_text
+        # automatically uses latest _tool_definitions.
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
 
@@ -724,7 +724,7 @@ class NotifyMixin:
                 await self.websocket.send_text(data)
                 delivered = True
 
-                # 同步到同步服务器
+                # Synchronize to the synchronization server.
                 try:
                     check_start()
                 except asyncio.CancelledError:
@@ -822,7 +822,7 @@ class NotifyMixin:
 
     async def send_session_preparing(
         self, input_mode: str, *, request_id=None, also_notify=None
-    ):  # 通知前端session正在准备（静默期）
+    ):  # Notify frontend of session preparation/silent period.
         payload = {"type": "session_preparing", "input_mode": input_mode}
         request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
         if request_id:
@@ -876,7 +876,7 @@ class NotifyMixin:
         request_id: str | None = None,
         also_notify=None,
         microphone_route_override: str | None = None,
-    ):  # 通知前端session已启动
+    ):  # Notify frontend session started.
         request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
@@ -1069,7 +1069,7 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Addressed Ack Error: {e}")
 
-    async def send_session_failed(self, input_mode: str, *, request_id=None, also_notify=None, allow_retired_operation=False):  # 通知前端session启动失败
+    async def send_session_failed(self, input_mode: str, *, request_id=None, also_notify=None, allow_retired_operation=False):  # Notify frontend session startup failed.
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}
         request_id, also_notify, check = self._start_notification_context(
@@ -1149,7 +1149,7 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Avatar Interaction Ack Error: {e}")
 
-    async def send_session_ended_by_server(self):  # 通知前端session已被服务器终止
+    async def send_session_ended_by_server(self):  # Notify frontend server terminated session.
         """Notify the frontend that the session was terminated server-side (e.g. API disconnect), so it resets the session state"""
         payload = {"type": "session_ended_by_server", "input_mode": self.input_mode}
         try:

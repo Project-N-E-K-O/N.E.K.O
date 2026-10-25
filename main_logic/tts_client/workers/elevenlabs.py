@@ -158,11 +158,11 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         resampler = None
         pending_text: list[str] = []
         pending_text_sid: str | None = None
-        # 与 step/qwen 对偶：ElevenLabs 流式音频首包后第一个 inter-chunk gap 偏大，
-        # 用共享 jitter buffer 攒首包领先量盖过开头几个字的 jitter。
+        # Symmetric with step/qwen: ElevenLabs has a larger first inter-chunk gap after its first streaming packet;
+        # use the shared jitter buffer to accumulate initial lead covering jitter over the first few words.
         audio_jitter = make_audio_jitter_buffer(response_queue)
-        # isFinal / audio.done = 本轮音频流关闭。_receive_ws_messages 已经把 speech_id
-        # 钉在任务参数上，直接复用它做归属，避免错标到下一轮。
+        # isFinal / audio.done closes this round's stream. _receive_ws_messages pins speech_id
+        # in task arguments; reuse that ownership to avoid labeling it as the next round.
         audio_done = AudioDoneEmitter(response_queue)
 
         def _reset_session_metrics() -> None:
@@ -174,10 +174,10 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 if pcm_sample_rate != 48000
                 else None
             )
-            # 在新会话开 ws、建 receive_task 之前重置（_open_ws 已先 _close_ws 停掉旧
-            # receive_task），避免上一轮残留音频串入新轮次首包。
+            # Reset before opening the new session's websocket and receive_task (_open_ws first calls _close_ws to stop
+            # the old receive_task), preventing old audio from leaking into the new round's first packet.
             audio_jitter.reset()
-            audio_done.reset()  # 新会话重置 audio_done 去重标记
+            audio_done.reset()  # Reset audio_done deduplication on a new session.
 
         def _flush_resampler_tail() -> None:
             nonlocal resampler
@@ -323,8 +323,8 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         audio_jitter.flush()
                     if is_final:
                         _flush_resampler_tail()
-                        audio_jitter.flush()  # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
-                        # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                        audio_jitter.flush()  # This round's audio ended: release tails below the steady buffer threshold.
+                        # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                         audio_done.emit(speech_id)
                         response_finished.set()
                         break
@@ -405,13 +405,13 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
 
                 if sid == "__interrupt__":
                     audio_jitter.begin_interrupt()
-                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                    audio_done.begin_interrupt()  # Interrupted rounds send no audio_done; they use the independent cancellation channel.
                     try:
                         await _close_ws(send_final_empty=False, wait_for_final=False, interrupt=True)
                         current_speech_id = None
                         pending_text.clear()
                         pending_text_sid = None
-                        audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
+                        audio_jitter.reset()  # Interruption: discard buffered audio not yet released.
                         audio_done.reset()
                     finally:
                         audio_jitter.end_interrupt()
@@ -441,9 +441,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                             continue
                         pending_text.clear()
                         pending_text_sid = None
-                    # close_socket 刷新服务端缓冲，让 receive_task 在后台抽完尾音；
-                    # 真正的 close 由下一个 sid 切换 / __interrupt__ / shutdown 触发，
-                    # 避免主循环在这里阻塞最长 30s 拖慢下一句 utterance 首音延迟喵。
+                    # close_socket flushes server buffers while receive_task drains tail audio in the background;
+                    # actual closure waits for the next sid change / __interrupt__ / shutdown,
+                    # avoiding up to 30 seconds of blocking here and delaying the next utterance's first audio.
                     if ws is not None and not text_done_sent:
                         try:
                             await ws.send(json.dumps({"close_socket": True}))

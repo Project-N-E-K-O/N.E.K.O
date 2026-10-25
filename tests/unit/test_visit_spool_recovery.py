@@ -83,7 +83,7 @@ class LLM:
 
 @pytest.fixture(autouse=True)
 def _characters_config_readable(monkeypatch):
-    # 补录总会先严格检查角色配置；测试里不碰真实运行时根目录的 characters.json
+    # Backfill strictly checks character configuration first; tests never touch runtime-root characters.json.
     from main_logic.visit import local_chars
 
     async def readable():
@@ -136,7 +136,7 @@ def _header(visit_id, role="host"):
             "started_at": 1000.0, "own_char_uid": CHAR_UID_A, "app_version": "0.8", "transport": "livekit"}
 
 
-# ── 启动清理与上传 ────────────────────────────────────────────────────
+# ── Startup cleanup and upload ──
 
 
 async def test_startup_cleanup_only_deletes_outboxes(tmp_path):
@@ -234,7 +234,7 @@ async def test_reports_follow_their_upload_and_are_also_scanned_alone(tmp_path):
         (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "reason": "spam"}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    assert [v for v, _ in reports.calls] == [uploaded]       # 转录还没传上去的那场先不提交举报
+    assert [v for v, _ in reports.calls] == [uploaded]       # Do not submit reports before that visit's transcript is uploaded.
     assert (reports_dir / f"{pending}.json").exists() and not (reports_dir / f"{uploaded}.json").exists()
     reports.calls.clear()
     await _recover(tmp_path, upload_transcript=Uploads(ok=True), submit_report=reports)
@@ -252,7 +252,7 @@ async def test_size_sweep_keeps_pending_uploads(tmp_path):
     assert big.exists()
 
 
-# ── 崩溃、关机兜底与芯片 ──────────────────────────────────────────────
+# ── Crash/shutdown fallback and chips ──
 
 
 async def test_crash_marks_finalized_shows_chip_and_writes_no_private_memory(tmp_path):
@@ -266,7 +266,7 @@ async def test_crash_marks_finalized_shows_chip_and_writes_no_private_memory(tmp
     assert state["finalized"] == "crash" and report.crashed == [v]
     assert state["debrief_chip_pending"] is True and state["debrief_choice"] is None
     assert chips.calls == [(v, "A", "interrupted")]
-    assert {name for name, _ in server.requests} == {"scoped_history"}   # 只有串门区 digest
+    assert {name for name, _ in server.requests} == {"scoped_history"}   # Visit-section digest only.
     assert state["digested_through_lp"] == 1
     assert state["last_summary_done"] is True
 
@@ -330,7 +330,7 @@ async def test_committing_diary_is_resumed_through_the_injected_writer(tmp_path)
     chips = Chips(delivered=False)
     await _recover(tmp_path, resume_diary_commit=resume, render_chips=chips)
     assert resumed == [(vid(17), False)]
-    # 两步写入可能还在退避等待：照常经 bind 重放预览块（显示「写入中」），新连接看得到进度
+    # Two-step writes may still be backing off: replay preview blocks via bind, showing writing progress to new connections.
     assert (await spool.read_state())["debrief_chip_pending"] is True
     assert chips.calls == [(vid(17), "A", None)]
 
@@ -386,7 +386,7 @@ async def test_background_entry_runs_the_commits(tmp_path):
     assert spawned == [CHAR_UID_A, CHAR_UID_A]
 
 
-# ── 撤销日志重放与改名对账 ────────────────────────────────────────────
+# ── Revocation-journal replay and rename reconciliation ──
 
 
 async def test_revocation_log_merges_new_subjects_and_replays_after_outage(tmp_path):
@@ -398,7 +398,7 @@ async def test_revocation_log_merges_new_subjects_and_replays_after_outage(tmp_p
     assert not first.done
     (log,) = await RevocationLog.list_all_open(tmp_path)
     assert not any(step.startswith("forget:") for step in log["done_steps"])
-    # 期间同一个人又带另一只猫来串门：名册多了一只对方猫娘
+    # Meanwhile the same person visits with another cat, adding another peer character to the roster.
     await seed_roster(tmp_path, tag=TAG_Y)
     second = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                  peer_uid=PEER_X, client=server.client())
@@ -459,7 +459,7 @@ async def test_rename_that_never_took_effect_is_rolled_back(tmp_path):
     assert "pending_rename" not in json.loads(peers_path.read_text(encoding="utf-8"))
 
 
-# ── 不在启动链路上 ────────────────────────────────────────────────────
+# ── Outside the startup chain ──
 
 
 def test_recovery_is_only_ever_started_as_a_background_task():
@@ -481,7 +481,7 @@ async def test_spool_is_untouched_for_live_visits(tmp_path):
     assert (_spool_dir(tmp_path) / f"{v}.outbox.jsonl").exists()
 
 
-# ── 评审第一轮 ────────────────────────────────────────────────────────
+# ── Review round 1 ──
 
 
 async def test_sentinel_survives_when_its_scope_cannot_be_expanded(tmp_path):
@@ -503,7 +503,7 @@ async def test_pending_rename_is_reconciled_before_forget_replay(tmp_path):
     server.fail_always.add("scoped_forget")
     await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                         peer_uid=PEER_X, client=server.client())
-    # 清除日志卡住期间角色 A 改名为 C，改名迁移还没做完就崩溃
+    # While clearing journals hangs, character A renames to C and crashes before migration completes.
     await roster.set_last_summary(PEER_X, "A", visit_id=vid(31), ended_at=2.0, text="又写回", pair_id=PAIR)
     peers_path = tmp_path / "visit_peers.json"
     data = json.loads(peers_path.read_text(encoding="utf-8"))
@@ -602,7 +602,7 @@ async def test_corrupt_sealed_upload_is_resealed_from_its_stream(tmp_path):
     assert not list(d.glob(f"{v}.upload*"))
 
 
-# ── 评审第三轮 ────────────────────────────────────────────────────────
+# ── Review round 3 ──
 
 
 async def test_crash_marked_visit_without_chip_flag_gets_its_chip(tmp_path):
@@ -651,7 +651,7 @@ async def test_failing_cleanup_after_upload_does_not_block_the_rest(tmp_path, mo
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
     assert sorted(v for v, _ in uploads.calls) == [stuck, other]
     assert not (d / f"{other}.upload.json").exists()
-    # 转录已被受理：本地删不掉上传文件也不挡它排队的举报
+    # Transcript accepted: failure to delete local upload files does not block queued reports.
     assert [v for v, _ in reports.calls] == [stuck]
 
 
@@ -667,7 +667,7 @@ async def test_forget_rechecks_visit_activity_under_the_admission_lock(tmp_path)
 
     @contextlib.asynccontextmanager
     async def admission(_uid):
-        started["A"] = True              # 锁外检查之后、拿到锁之前开场的一场
+        started["A"] = True              # A visit starts after the unlocked check but before lock acquisition.
         yield
 
     with pytest.raises(VisitActive):
@@ -684,7 +684,7 @@ async def test_partially_acquired_admission_locks_are_released(tmp_path):
     events: list[str] = []
 
     class Admission:
-        # 普通类而非生成器：只有显式 __aexit__ 才算放锁，垃圾回收不会替我们放
+        # Ordinary class, not generator: only explicit __aexit__ releases locks; garbage collection cannot release them for us.
         def __init__(self, uid):
             self.uid = uid
 
@@ -780,7 +780,7 @@ async def test_lifecycle_guard_is_held_for_the_whole_forget(tmp_path):
     assert "request" in events[1:-1]
 
 
-# ── 评审第九轮 ────────────────────────────────────────────────────────
+# ── Review round 9 ──
 
 
 async def test_undeletable_stale_stream_does_not_block_upload_or_reports(tmp_path, monkeypatch):
@@ -801,7 +801,7 @@ async def test_undeletable_stale_stream_does_not_block_upload_or_reports(tmp_pat
     monkeypatch.setattr(Path, "unlink", unlink)
     uploads, reports = Uploads(), Reports()
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
-    # Servers 按 visit_id + role 幂等：照常上传，举报也照常提交
+    # Servers are idempotent by visit_id + role: upload and submit reports normally.
     assert [visit_id for visit_id, _ in uploads.calls] == [v]
     assert [visit_id for visit_id, _ in reports.calls] == [v]
 
@@ -863,10 +863,10 @@ async def test_report_retry_is_not_stuck_behind_an_undeletable_stream(tmp_path, 
     monkeypatch.setattr(Path, "unlink", unlink)
     failing = Reports(ok=False)
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=failing)
-    assert [visit_id for visit_id, _ in failing.calls] == [v]          # 第一轮举报提交失败
+    assert [visit_id for visit_id, _ in failing.calls] == [v]          # First report submission fails.
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
-    assert [visit_id for visit_id, _ in reports.calls] == [v]           # 下一轮照样能重试
+    assert [visit_id for visit_id, _ in reports.calls] == [v]           # Next pass still retries.
     assert not (reports_dir / f"{v}.json").exists()
 
 
@@ -874,18 +874,18 @@ async def test_report_retry_is_not_stuck_behind_an_undeletable_stream(tmp_path, 
 async def test_stream_header_without_owner_takes_the_visits_own_account(tmp_path, source):
     v = vid(52)
     other = "c" * 24
-    # 两种来源各自单独出现：state 那组不写转录，转录头行那组删掉 state.json
+    # Sources occur independently: state-based cases omit transcripts; transcript-header cases remove state.json.
     await make_visit(tmp_path, v, [ln(0)], own_uid=other, last_summary_done=True,
                      write_jsonl=source == "spool_header")
     if source == "spool_header":
         (_spool_dir(tmp_path) / f"{v}.state.json").unlink()
     header = _header(v)
-    header.pop("own_visit_uid")          # 设计稿较早的上传头定义没有这个字段
+    header.pop("own_visit_uid")          # Earlier upload-header designs lacked this field.
     _write_stream(tmp_path, v, [header])
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, doc), = uploads.calls
-    # 补回占房账号，上传回调才能在该账号登录时传上去
+    # Restore occupying-account identity so upload callbacks send when that account logs in.
     assert visit_id == v and doc["own_visit_uid"] == other
 
 
@@ -897,7 +897,7 @@ async def test_spool_header_of_another_visit_is_not_used_as_owner(tmp_path):
     jsonl = spool_dir / f"{v}.jsonl"
     lines = jsonl.read_text(encoding="utf-8").splitlines(keepends=True)
     misplaced = json.loads(lines[0])
-    misplaced["visit_id"] = vid(54)                  # 错放 / 复制来的别的场次的转录
+    misplaced["visit_id"] = vid(54)                  # Transcript misplaced/copied from another visit.
     lines[0] = json.dumps(misplaced) + chr(10)
     jsonl.write_text("".join(lines), encoding="utf-8", newline="")
     header = _header(v)
@@ -912,7 +912,7 @@ async def test_spool_header_of_another_visit_is_not_used_as_owner(tmp_path):
 async def test_stream_header_without_owner_is_still_sealed_not_deleted(tmp_path):
     v = vid(50)
     header = _header(v)
-    header.pop("own_visit_uid")          # 设计稿较早的上传头定义没有这个字段
+    header.pop("own_visit_uid")          # Earlier upload-header designs lacked this field.
     _write_stream(tmp_path, v, [header, {"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
                                          "ts": 1001.0, "text": "a", "truncated": False}])
     uploads = Uploads(ok=False)
@@ -920,7 +920,7 @@ async def test_stream_header_without_owner_is_still_sealed_not_deleted(tmp_path)
     (visit_id, doc), = uploads.calls
     assert visit_id == v and doc["own_visit_uid"] is None
     assert [line["text"] for line in doc["request"]["lines"]] == ["a"]
-    assert (_spool_dir(tmp_path) / f"{v}.upload.json").exists()     # 唯一副本保留着
+    assert (_spool_dir(tmp_path) / f"{v}.upload.json").exists()     # Preserve the only copy.
 
 
 async def test_unresolved_rename_defers_forget_replay_and_visit_recovery(tmp_path):
@@ -936,14 +936,14 @@ async def test_unresolved_rename_defers_forget_replay_and_visit_recovery(tmp_pat
     peers_path.write_text(json.dumps(data), encoding="utf-8")
     server.fail_always.clear()
     server.requests.clear()
-    # 新旧名字都在配置里：改名无法判定，清除与逐场补录都要等
+    # Both old/new names exist in configuration: rename is indeterminate, so clearing and per-visit backfill must wait.
     report = await _recover(tmp_path, server, list_char_names=_names("A", "C"))
     assert not report.forgets_clean and server.calls("scoped_forget") == []
     assert len(await RevocationLog.list_all_open(tmp_path)) == 1
     assert (await spool.read_state())["finalized"] is None
 
 
-# ── 评审第十一轮 ──────────────────────────────────────────────────────
+# ── Review round 11 ──
 
 
 async def test_forget_replay_holds_the_lifecycle_guard_around_resolve_and_execute(tmp_path):
@@ -978,7 +978,7 @@ async def test_forget_replay_holds_the_lifecycle_guard_around_resolve_and_execut
     server.handler = handler
     report = await _recover(tmp_path, server, resolve_char_name=resolve, lifecycle_guard=guard)
     assert report.forgets_clean
-    # 哨兵展开与日志重放：每次按 uid 解析名字、每次清除请求都在守卫里（改名迁移插不进来）
+    # Sentinel expansion/journal replay resolve names by uid each time, with every clear guarded against intervening rename migration.
     depth = 0
     for event in events:
         if isinstance(event, tuple):
@@ -1002,7 +1002,7 @@ async def test_sealed_upload_of_another_visit_is_resealed_from_the_stream(tmp_pa
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, doc), = uploads.calls
-    # 别场的上传文件不算数：从流水重新封存，流水不会被当成「已封存的残留」删掉
+    # Other visits' uploads are invalid: reseal from streams, never deleting those streams as already-sealed remnants.
     assert visit_id == v and doc["request"]["visit_id"] == v
     assert [line["text"] for line in doc["request"]["lines"]] == ["a"]
 
@@ -1018,11 +1018,11 @@ async def test_sealed_upload_with_broken_lines_is_resealed_from_the_stream(tmp_p
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, doc), = uploads.calls
-    # 转录行坏了的上传文件不算数：从完整的流水重新封存
+    # Uploads with corrupt transcript rows are invalid: reseal from complete streams.
     assert visit_id == v and [line["text"] for line in doc["request"]["lines"]] == ["a"]
 
 
-# ── 评审第十二轮 ──────────────────────────────────────────────────────
+# ── Review round 12 ──
 
 
 async def test_sentinel_with_unresolvable_character_is_kept(tmp_path):
@@ -1034,18 +1034,18 @@ async def test_sentinel_with_unresolvable_character_is_kept(tmp_path):
                                                        own_char_uids=[CHAR_UID_A])
 
     async def unresolved(_uid):
-        return None        # 角色配置一时读不出：被替换成默认值，uid 解析不出名字
+        return None        # Character configuration temporarily unreadable and replaced with defaults; uid cannot resolve names.
 
     clean = await replay_forgets(tmp_path, resolve_char_name=unresolved,
                                  client=FakeMemoryServer().client())
     assert clean is False
-    # 范围没展开就不能当作「没人要清」删掉哨兵
+    # Unexpanded scope cannot mean nobody needs clearing and justify sentinel deletion.
     assert [d["op_id"] for d in await ClearingSentinels(tmp_path).list_open()] == [sentinel["op_id"]]
 
 
 async def test_invalid_sealed_upload_is_not_uploaded_when_resealing_fails(tmp_path):
     v = vid(58)
-    # 流水没有头行：重封得到 None（按损坏处理）
+    # Stream lacks a header: resealing returns None, treated as corrupt.
     _write_stream(tmp_path, v, [{"kind": "line", "lp": 0, "side": "host", "from": "own_cat",
                                  "ts": 1001.0, "text": "a", "truncated": False}])
     foreign = {"v": 1, "own_visit_uid": OWN_A, "request": {"visit_id": vid(59), "role": "host",
@@ -1054,8 +1054,8 @@ async def test_invalid_sealed_upload_is_not_uploaded_when_resealing_fails(tmp_pa
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(foreign), encoding="utf-8")
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 已知是别场的文件不能交给上传回调；流水也坏了（转录无法恢复）就同损坏流水一样删掉它，
-    # 不留到下一轮再交上去
+    # Never give known-other-visit files to upload callbacks. If streams are corrupt too and transcripts unrecoverable, delete the files like corrupt streams,
+    # never retaining them for next-pass upload.
     assert uploads.calls == []
     assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
 
@@ -1085,11 +1085,11 @@ async def test_invalid_sealed_upload_never_reaches_upload_and_reports_follow_the
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
     assert uploads.calls == []
     if stream != "unsealable":
-        # 没有流水可重封：转录已无法恢复，删掉坏文件，举报照常提交
+        # No stream to reseal: transcript unrecoverable, delete corrupt files and submit reports normally.
         assert not (d / f"{v}.upload.json").exists()
         assert [visit_id for visit_id, _ in reports.calls] == [v]
     else:
-        # 流水还在、只是这轮重封失败：坏文件留着等下次重封，举报不能先交
+        # Stream remains but resealing failed this pass: retain corrupt files for retry and hold reports.
         assert reports.calls == []
 
 
@@ -1103,7 +1103,7 @@ async def test_forget_all_retry_resumes_logs_of_people_already_removed_from_the_
     async def flaky_void(_record):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise OSError("spool busy")     # remove_char 已做完，之后的 void_pending 失败
+            raise OSError("spool busy")     # remove_char completed, then void_pending failed.
 
     first = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
                              client=server.client(), void_pending=flaky_void)
@@ -1111,7 +1111,7 @@ async def test_forget_all_retry_resumes_logs_of_people_already_removed_from_the_
     assert await PeerRoster(tmp_path, own_uid=OWN_A).peers_of_char("A") == []
     retry = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
                              client=server.client(), void_pending=flaky_void)
-    # 名册里已经没有这个人：重试照样续跑他那份开着的日志，跑完才算完成
+    # Person already absent from roster: retry still resumes their open journal; completion requires finishing it.
     assert retry.done is True and calls["n"] == 2
     assert await RevocationLog.list_all_open(tmp_path) == []
 
@@ -1129,7 +1129,7 @@ async def test_forget_in_progress_is_scoped_to_the_account(tmp_path, record):
         await open_person_log(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                               peer_uid=PEER_X)
     assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
-    # 名册与记忆按账号分区：A 账号的清除不挡 B 账号同一角色下的同一对端
+    # Rosters/memory are account-partitioned: account A clearing must not block account B's same peer under the same character.
     assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_B)
 
 
@@ -1140,12 +1140,12 @@ async def test_forget_all_with_an_unresolvable_character_is_not_reported_done(tm
     await seed_roster(tmp_path)
 
     async def unreadable_config(_uid):
-        return None          # 角色配置一时读不出：uid 解析不出名字
+        return None          # Character configuration temporarily unreadable; uid cannot resolve names.
 
     with pytest.raises(CharacterUnresolved):
         await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
                          client=FakeMemoryServer().client(), resolve_char_name=unreadable_config)
-    # 什么都没写，也没有报「清除成功」：调用方回可重试的错误
+    # Nothing written and no false success: caller receives a retryable error.
     assert await ClearingSentinels(tmp_path).list_open() == []
     assert await PeerRoster(tmp_path, own_uid=OWN_A).peers_of_char("A") == [PEER_X]
 
@@ -1156,7 +1156,7 @@ async def test_forget_uses_the_name_resolved_under_the_lifecycle_guard(tmp_path,
 
     from main_logic.visit.forget_runner import forget_all
 
-    await seed_roster(tmp_path, own_char="B")          # 拿到守卫之前角色已从 A 改名为 B
+    await seed_roster(tmp_path, own_char="B")          # Character renamed A->B before acquiring the guard.
     held = {"in": False}
 
     @contextlib.asynccontextmanager
@@ -1166,7 +1166,7 @@ async def test_forget_uses_the_name_resolved_under_the_lifecycle_guard(tmp_path,
         held["in"] = False
 
     async def current_name(uid):
-        assert held["in"]                              # 在守卫里重新解析
+        assert held["in"]                              # Resolve again under the guard.
         return "B" if uid == CHAR_UID_A else None
 
     server = FakeMemoryServer()
@@ -1188,7 +1188,7 @@ async def test_forget_uses_the_name_resolved_under_the_lifecycle_guard(tmp_path,
                                    client=server.client(), lifecycle_guard=guard,
                                    resolve_char_name=current_name)
     assert outcome.done
-    # 清的是改名后 B 名下的条目，而不是旧名 A 下的空条目
+    # Clear renamed B's entries, not empty entries under old A.
     assert await PeerRoster(tmp_path, own_uid=OWN_A).get_char_entry(PEER_X, "B") is None
     assert names and set(names) == {"B"}
 
@@ -1213,7 +1213,7 @@ async def test_sealed_upload_missing_required_fields_is_resealed(tmp_path, break
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 结构不完整的上传文件不能顶替完整的流水：从流水重封
+    # Structurally incomplete uploads cannot replace complete streams: reseal from streams.
     assert visit_id == v and [line["text"] for line in uploaded["request"]["lines"]] == ["a"]
 
 
@@ -1244,7 +1244,7 @@ async def test_replay_removes_sentinels_only_under_their_lifecycle_guard(tmp_pat
     clean = await replay_forgets(tmp_path, resolve_char_name=resolver(), client=FakeMemoryServer().client(),
                                  lifecycle_guard=guard)
     assert clean is True
-    # 复查剩余日志与删除哨兵都在该哨兵的守卫里：端点复用哨兵插不进这段
+    # Rechecking remaining journals and deleting sentinels both hold the sentinel guard, preventing endpoint sentinel reuse from intervening.
     assert removed == [1]
 
 
@@ -1264,7 +1264,7 @@ async def test_sealed_upload_with_a_damaged_envelope_is_resealed(tmp_path, envel
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 信封与流水对不上：从流水重封，信封以流水为准
+    # Envelope/stream mismatch: reseal from streams, whose envelope is authoritative.
     assert visit_id == v and uploaded["own_visit_uid"] == OWN_A
     assert [line["text"] for line in uploaded["request"]["lines"]] == ["a"]
 
@@ -1276,7 +1276,7 @@ async def test_sealed_upload_with_a_malformed_owner_and_no_stream_is_not_uploade
     (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_visit_uid": 7}), encoding="utf-8")
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 占房账号坏了：任何账号都传不出去，没有流水可重封就按损坏处理
+    # Corrupt occupying-account identity means no account can upload; without streams for resealing, treat as corrupt.
     assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
 
 
@@ -1290,7 +1290,7 @@ async def test_rename_is_not_reconciled_from_a_partially_readable_character_conf
     peers_path.write_text(json.dumps(data), encoding="utf-8")
 
     async def partial():
-        return {"A": CHAR_UID_A}            # 新名字 C 的条目坏了，被常规加载静默滤掉
+        return {"A": CHAR_UID_A}            # New C entry is corrupt and silently filtered by normal loading.
 
     async def damaged():
         raise local_chars.CharactersUnreadable("character entry 'C' cannot be enumerated")
@@ -1301,7 +1301,7 @@ async def test_rename_is_not_reconciled_from_a_partially_readable_character_conf
         Chips(), None, config_dir=tmp_path, resolve_char_name=resolver(),
         client=FakeMemoryServer().client(), is_live=lambda _visit_id: False,
     )
-    # 配置有坏条目就不对账：不把数据迁回旧名、标记留着等下次
+    # Corrupt configuration entries prevent reconciliation: do not migrate data to old names; retain markers for retry.
     assert report.renamed is False
     assert json.loads(peers_path.read_text(encoding="utf-8"))["pending_rename"] == {"old": "A", "new": "C"}
 
@@ -1316,11 +1316,11 @@ async def test_forget_all_retry_with_a_new_character_removes_the_earlier_sentine
     first = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A}, client=server.client())
     assert first.done is False and len(await ClearingSentinels(tmp_path).list_open()) == 1
     server.fail_always.clear()
-    # 两次尝试之间新建了角色 B：哨兵的角色集合变了，没能复用上一次的那个
+    # Character B created between attempts changes sentinel character sets, preventing reuse of the previous sentinel.
     retry = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A, "B": CHAR_UID_B},
                              client=server.client())
     assert retry.done is True
-    # 上一次留下的、范围被这次完全覆盖的旧哨兵一并删掉，不再挡准入
+    # Delete prior sentinels fully covered by this scope too, removing admission blocks.
     assert await ClearingSentinels(tmp_path).list_open() == []
 
 
@@ -1336,11 +1336,11 @@ async def test_replay_defers_logs_while_a_rename_is_pending(tmp_path):
     server.requests.clear()
     peers_path = tmp_path / "visit_peers.json"
     data = json.loads(peers_path.read_text(encoding="utf-8"))
-    data["pending_rename"] = {"old": "A", "new": "C"}     # 补录对账之后又有改名崩在半路
+    data["pending_rename"] = {"old": "A", "new": "C"}     # Another rename crashes midway after backfill reconciliation.
     peers_path.write_text(json.dumps(data), encoding="utf-8")
     clean = await replay_forgets(tmp_path, resolve_char_name=resolver({CHAR_UID_A: "C"}),
                                  client=server.client())
-    # 守卫内看到未对账的改名：不按新名重放、不关日志，留到下次
+    # Guarded detection of unreconciled rename: do not replay under new names or close journals; defer to next pass.
     assert clean is False and server.calls("scoped_forget") == []
     assert len(await RevocationLog.list_all_open(tmp_path)) == 1
 
@@ -1349,7 +1349,7 @@ async def test_person_forget_keeps_an_unexpanded_chars_sentinel_of_the_same_char
     from main_logic.visit.forget import ClearingSentinels
 
     await seed_roster(tmp_path)
-    # 同角色的「清除全部」崩在展开之前：还没有任何日志，它的范围比单人清除大
+    # Same-character clear-all crashes before expansion: no journals exist yet, and scope exceeds single-person clearing.
     pending_all = await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="chars",
                                                           own_char_uids=[CHAR_UID_A])
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
@@ -1364,14 +1364,14 @@ async def test_forget_all_executes_a_pending_person_sentinel_for_someone_not_in_
     from main_logic.visit.subjects import derive_person_id, participant_subject
 
     await seed_roster(tmp_path)
-    # 那个人已不在名册里：单人清除还没展开，或已做完却没来得及删哨兵，两种情况分不清
+    # Person absent from roster: cannot distinguish unexpanded single-person clearing from completed clearing before sentinel deletion.
     await ClearingSentinels(tmp_path).create(own_uid=OWN_A, scope="person",
                                              own_char_uids=[CHAR_UID_A], peer_uid=PEER_Y)
     server = FakeMemoryServer()
     outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A}, client=server.client())
     assert outcome.done
-    # 「清除全部」替它开日志一并执行（没清过的清掉、清过的幂等再清），之后哨兵随之删除，
-    # 不再挡着这个角色的新串门
+    # Clear-all opens and executes their journal too, clearing unprocessed cases and idempotently repeating completed ones, then deleting sentinels,
+    # unblocking new visits for this character.
     person = participant_subject(derive_person_id(OWN_A, PEER_Y))
     assert person in [call["subject"] for call in server.calls("scoped_forget")]
     assert await ClearingSentinels(tmp_path).list_open() == []
@@ -1386,7 +1386,7 @@ async def test_forget_all_removes_a_person_sentinel_it_actually_executed(tmp_pat
                                              own_char_uids=[CHAR_UID_A], peer_uid=PEER_X)
     outcome = await forget_all(tmp_path, own_uid=OWN_A, chars={"A": CHAR_UID_A},
                                client=FakeMemoryServer().client())
-    # 这个人在名册里、这次已一并清掉：他的旧单人哨兵随之删除
+    # Person still rostered and cleared in this pass: delete their old single-person sentinel too.
     assert outcome.done and await ClearingSentinels(tmp_path).list_open() == []
 
 
@@ -1403,8 +1403,8 @@ async def test_person_sentinel_appearing_after_execution_is_not_removed(tmp_path
         docs = await real_list(self)
         calls["n"] += 1
         if calls["n"] == 2:
-            # 第 1 次是复用哨兵时的列举、第 2 次是接手范围内单人哨兵时的列举；这之后才出现的
-            # 单人清除（并发发起）这次「清除全部」没执行它
+            # First listing reuses sentinels; second takes over in-scope single-person sentinels. Concurrent single-person
+            # clearing appearing afterward was not executed by this clear-all.
             created["doc"] = await ClearingSentinels(tmp_path).create(
                 own_uid=OWN_A, scope="person", own_char_uids=[CHAR_UID_A], peer_uid=PEER_Y,
             )
@@ -1419,14 +1419,14 @@ async def test_person_sentinel_appearing_after_execution_is_not_removed(tmp_path
 
 
 
-# ── 用户评审（10-04）──────────────────────────────────────────────────
+# ── User review (10-04) ──
 
 
 async def test_rename_marker_of_a_deleted_character_is_dropped(tmp_path):
     await seed_roster(tmp_path)
     peers_path = tmp_path / "visit_peers.json"
     data = json.loads(peers_path.read_text(encoding="utf-8"))
-    data["pending_rename"] = {"old": "Q0", "new": "Q1"}       # 两个名字都不在：角色已被删除
+    data["pending_rename"] = {"old": "Q0", "new": "Q1"}       # Both names absent: character deleted.
     peers_path.write_text(json.dumps(data), encoding="utf-8")
     report = await _recover(tmp_path)
     assert report.renamed is True
@@ -1455,7 +1455,7 @@ def _set_rename_marker(tmp_path, marker):
 
 
 async def test_rename_marker_with_uid_moves_forward_by_the_uid(tmp_path, monkeypatch):
-    await seed_roster(tmp_path)                                # 名册条目还在旧名 A 下
+    await seed_roster(tmp_path)                                # Roster entries remain under old A.
     peers_path = _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
     report = await _recover_with_chars(tmp_path, monkeypatch, {"C": CHAR_UID_A, "B": CHAR_UID_B},
                                        {CHAR_UID_A: "C", CHAR_UID_B: "B"})
@@ -1471,13 +1471,13 @@ async def test_rename_whose_old_name_was_reused_is_kept_and_only_blocks_those_na
     peers_path = _set_rename_marker(tmp_path, {"old": "A", "new": "C", "uid": CHAR_UID_A})
     other = await make_visit(tmp_path, vid(75), [ln(0)], own_char="B", own_char_uid=CHAR_UID_B,
                              finalized=None, last_summary_done=True)
-    # 改名生效后又新建了一个叫 A 的角色：名册条目只按名字存，迁移会把两个角色的记录混到一起
+    # After rename, a new character A is created: name-only roster storage would mix two characters' records during migration.
     report = await _recover_with_chars(tmp_path, monkeypatch, {"A": CHAR_UID_B, "C": CHAR_UID_A},
                                        {CHAR_UID_A: "C", CHAR_UID_B: "A"})
     after = json.loads(peers_path.read_text(encoding="utf-8"))
     assert report.renamed is False and after["pending_rename"]["old"] == "A"
-    assert "A" in after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]   # 不迁、不混
-    # 只挡这两个名字：别的角色（这里的场次属于新名 A，被跳过）之外的照常补录
+    assert "A" in after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]   # Neither migrate nor mix.
+    # Block only those two names; backfill other characters normally, skipping this visit under newly created A.
     assert (await other.read_state())["finalized"] is None
 
 
@@ -1490,7 +1490,7 @@ async def test_ambiguous_rename_does_not_defer_other_characters(tmp_path, monkey
                              finalized=None, last_summary_done=True)
     await _recover_with_chars(tmp_path, monkeypatch, {"Q0": "8" * 32, "Q1": "9" * 32, "B": CHAR_UID_B},
                               {CHAR_UID_B: "B", "8" * 32: "Q0", "9" * 32: "Q1"})
-    # Q0 → Q1 对不上账（旧名被占用），但与角色 B 无关：B 的崩溃场次照常补录
+    # Q0->Q1 cannot reconcile because the old name is occupied, unrelated to B; backfill B's crashed visit normally.
     assert (await spool.read_state())["finalized"] == "crash"
 
 
@@ -1506,11 +1506,11 @@ async def test_forget_halfway_then_character_deleted_does_not_wedge_the_others(t
                              client=server.client())
     assert first.done is False
     server.fail_always.clear()
-    # 之后角色 B 被删除（配置读得出、B 已不在）：重放不再让同一哨兵里的 A 永远「清除中」
+    # B is later deleted, confirmed by readable configuration: replay must not leave A in the same sentinel clearing forever.
     await _recover(tmp_path, server, resolve_char_name=resolver({CHAR_UID_A: "A"}),
                    list_char_names=_names("A"))
     assert await ClearingSentinels(tmp_path).list_open() == []
-    # A 的日志跑完关掉；已删角色 B 的日志原样留给退役对账（不丢清除意图），也不再挡哨兵
+    # Finish/close A's journal; preserve deleted B's for retirement reconciliation without losing clear intent or blocking sentinels.
     remaining = await RevocationLog.list_all_open(tmp_path)
     assert [log["own_char_uid"] for log in remaining] == [CHAR_UID_B]
     from main_logic.visit import memory_bridge
@@ -1520,7 +1520,7 @@ async def test_forget_halfway_then_character_deleted_does_not_wedge_the_others(t
 async def test_unrelated_corrupt_state_does_not_block_a_forget(tmp_path):
     await seed_roster(tmp_path)
     other = await make_visit(tmp_path, vid(70), [ln(0)], own_char="B", own_char_uid=CHAR_UID_B)
-    other.state_path.write_text("{torn", encoding="utf-8")   # 别的角色一场的 state 坏了，转录头行还在
+    other.state_path.write_text("{torn", encoding="utf-8")   # Another character's state is corrupt but transcript headers remain.
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
     assert outcome.done
@@ -1530,7 +1530,7 @@ async def test_forget_does_not_void_wiped_visits_of_another_account(tmp_path):
     await seed_roster(tmp_path)
     other = await make_visit(tmp_path, vid(71), [ln(0)], own_uid=OWN_B, finalized="wrap_up",
                              debrief_choice="ask_later")
-    await other.delete_peer_fields()                           # 别的账号下一场身份已抹的场次
+    await other.delete_peer_fields()                           # Another account's later identity-erased visit.
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
     assert outcome.done
@@ -1543,7 +1543,7 @@ async def test_crash_chip_is_replayed_on_every_start(tmp_path):
                      last_summary_done=True)
     chips = Chips(delivered=False)
     await _recover(tmp_path, render_chips=chips)
-    # 第二次（及以后）启动仍弹，且带「意外中断」
+    # Show again on second/subsequent startups, labeled unexpectedly interrupted.
     assert chips.calls == [(v, "A", "interrupted")]
 
 
@@ -1552,7 +1552,7 @@ async def test_any_finalized_visit_without_a_choice_gets_its_chip(tmp_path):
     spool = await make_visit(tmp_path, v, [ln(0)], finalized="peer_left", last_summary_done=True)
     chips = Chips(delivered=False)
     await _recover(tmp_path, render_chips=chips)
-    # 正常收口后、还没来得及记芯片就被杀：补记并弹出
+    # Killed after normal finalization but before recording chips: backfill and display.
     assert chips.calls == [(v, "A", None)]
     assert (await spool.read_state())["debrief_chip_pending"] is True
 
@@ -1563,10 +1563,10 @@ async def test_state_only_corrupt_visit_is_dropped_by_the_wipe_not_blocking(tmp_
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True, exist_ok=True)
     corrupt = d / f"{vid(74)}.state.json"
-    corrupt.write_text("{torn", encoding="utf-8")              # 只剩 state、且坏了：认不出是谁的
+    corrupt.write_text("{torn", encoding="utf-8")              # Only corrupt state remains, with unknown ownership.
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 不再挡住清除；它若正属于被清的人，删掉本就是清除要做的事
+    # Stop blocking clearing; deleting it is appropriate if it belongs to the cleared person.
     assert outcome.done is True and not corrupt.exists()
 
 
@@ -1576,14 +1576,14 @@ async def test_one_lock_held_state_does_not_hide_the_previous_visit_from_the_han
 
     await seed_roster(tmp_path)
     previous = await make_visit(tmp_path, vid(81), [ln(0)], finalized="wrap_up")
-    # 只剩 state.json 的一场（认不出是谁的），一时被占用读不出
+    # Visit with only state.json, unknown owner, temporarily locked/unreadable.
     other = await make_visit(tmp_path, vid(82), [], own_char="B", own_char_uid=CHAR_UID_B,
                              memory_enabled=False)
     real_read = spool_module._read_state_file
 
     def flaky(path):
         if path == other.state_path:
-            raise PermissionError("locked")                    # 一场无关的 state 一时读不出
+            raise PermissionError("locked")                    # Unrelated visit's state temporarily unreadable.
         return real_read(path)
 
     monkeypatch.setattr(spool_module, "_read_state_file", flaky)
@@ -1595,7 +1595,7 @@ async def test_one_lock_held_state_does_not_hide_the_previous_visit_from_the_han
 
     await last_summary_handoff(tmp_path, own_uid=OWN_A, own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
                                start_summary=start, is_live=lambda _v: False)
-    # 交接是宽松查找：读不出的跳过，这一对的上一场照常等
+    # Handoff uses permissive lookup: skip unreadable entries and still wait for this pair's previous visit.
     assert started == [previous.visit_id]
 
 
@@ -1614,14 +1614,14 @@ async def test_injected_names_still_get_the_strict_character_check(tmp_path, mon
         raise local_chars.CharactersUnreadable("character entry cannot be enumerated")
 
     monkeypatch.setattr(local_chars, "ensure_characters_readable", damaged)
-    # 名单由调用方注入也照样先做严格检查：否则下面会把「解析不出名字」当成「角色已删」
+    # Even caller-injected lists require strict checks first, or unresolved names below would be mistaken for deleted characters.
     report = await _recover(tmp_path, server, resolve_char_name=resolver({}), list_char_names=_names())
     assert report.renamed is False and server.calls("scoped_forget") == []
     assert len(await RevocationLog.list_all_open(tmp_path)) == 1
 
 
 async def test_is_live_must_be_given(tmp_path):
-    # 补录在后台跑，漏接 is_live 会把在飞场次的流水提前封存、outbox 删掉：必须显式传入
+    # Background backfill must explicitly receive is_live; omission prematurely seals in-flight streams and deletes outboxes.
     with pytest.raises(TypeError):
         await visit_spool_recovery(Chips(), None, config_dir=tmp_path)
 
@@ -1640,7 +1640,7 @@ async def test_sealed_upload_with_out_of_order_lines_is_resealed(tmp_path):
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (_, uploaded), = uploads.calls
-    # 乱序的封存文件不能替掉流水：从流水重封，按 (lp, side) 排好
+    # Unordered sealed files cannot replace streams: reseal from streams sorted by (lp, side).
     assert [entry["text"] for entry in uploaded["request"]["lines"]] == ["a", "b"]
 
 
@@ -1660,7 +1660,7 @@ async def test_rename_reconciliation_holds_the_lifecycle_guard(tmp_path, monkeyp
         held["depth"] -= 1
 
     async def rename(self, old, new):
-        assert held["depth"] == 1                              # 迁移发生在守卫里
+        assert held["depth"] == 1                              # Migration occurs under the guard.
         return await real_rename(self, old, new)
 
     monkeypatch.setattr(PeerRoster, "rename_char", rename)
@@ -1672,11 +1672,11 @@ async def test_rename_reconciliation_holds_the_lifecycle_guard(tmp_path, monkeyp
 async def test_corrupt_state_of_a_wiped_visit_of_this_character_is_dropped(tmp_path):
     await seed_roster(tmp_path)
     wiped = await make_visit(tmp_path, vid(78), [ln(0)], finalized="wrap_up")
-    await wiped.delete_peer_fields()                           # 已抹身份的一场（同一角色）
-    wiped.state_path.write_text("{torn", encoding="utf-8")     # 之后 state.json 又坏了
+    await wiped.delete_peer_fields()                           # Identity-erased visit for this character.
+    wiped.state_path.write_text("{torn", encoding="utf-8")     # state.json becomes corrupt afterward.
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 谁都用不了的坏 state 不再让这个角色的清除永远卡住，并由抹身份步骤删掉（不留残余身份）
+    # Unusable corrupt state no longer blocks character clearing forever; identity erasure deletes it, leaving no residual identity.
     assert outcome.done and not wiped.state_path.exists()
 
 
@@ -1689,7 +1689,7 @@ async def test_lookup_alone_never_deletes_a_corrupt_state(tmp_path):
     await wiped.delete_peer_fields()
     wiped.state_path.write_text("{torn", encoding="utf-8")
     found = await VisitSpool.find_visits_for_pairs(tmp_path, CHAR_UID_A, [_pair(OWN_A, PEER_Y)])
-    # 查找（开场交接也调用）只跳过、不删
+    # Lookup, also used by opening handoff, skips without deleting.
     assert found == [] and wiped.state_path.exists()
 
 
@@ -1697,7 +1697,7 @@ async def test_malformed_rename_marker_is_dropped(tmp_path):
     await seed_roster(tmp_path)
     peers_path = _set_rename_marker(tmp_path, "garbled")
     report = await _recover(tmp_path)
-    # 没有可对账的信息：记诊断后清掉，不再永久挡住补录与清除
+    # No reconcilable information: record diagnostics and clear, no longer blocking backfill/clearing permanently.
     assert report.renamed is True
     assert "pending_rename" not in json.loads(peers_path.read_text(encoding="utf-8"))
 
@@ -1709,7 +1709,7 @@ async def test_corrupt_wiped_state_of_another_account_is_left_alone(tmp_path):
     other.state_path.write_text("{torn", encoding="utf-8")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 别的账号下的坏 state 不在这次清除范围内：不挡、也不删
+    # Another account's corrupt state is outside scope: neither block nor delete.
     assert outcome.done and other.state_path.exists()
 
 
@@ -1727,7 +1727,7 @@ async def test_rename_reconciliation_reloads_names_under_the_guard(tmp_path, mon
 
     @contextlib.asynccontextmanager
     async def guard(_uids):
-        table.clear()                                          # 等守卫期间角色被删除
+        table.clear()                                          # Character deleted while awaiting guard.
         yield
 
     monkeypatch.setattr(local_chars, "load_local_characters", load)
@@ -1735,7 +1735,7 @@ async def test_rename_reconciliation_reloads_names_under_the_guard(tmp_path, mon
         Chips(), None, config_dir=tmp_path, resolve_char_name=resolver({}),
         client=FakeMemoryServer().client(), is_live=lambda _v: False, lifecycle_guard=guard,
     )
-    # 守卫内重读到「角色已删」：按删除处理（丢标记、不迁名册），而不是按旧快照正向迁移
+    # Guarded reread finds deletion: discard markers without roster migration, never migrate forward from stale snapshots.
     assert report.renamed is True
     after = json.loads((tmp_path / "visit_peers.json").read_text(encoding="utf-8"))
     assert "A" in after["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
@@ -1753,7 +1753,7 @@ async def test_rename_guard_is_retaken_when_the_marker_changes_meanwhile(tmp_pat
     async def guard(uids):
         taken.append(list(uids))
         if len(taken) == 1:
-            # 等守卫期间，标记被另一个角色（B → D）的改名换掉
+            # While awaiting guard, another character's B->D rename replaces the marker.
             data = json.loads(peers_path.read_text(encoding="utf-8"))
             data["pending_rename"] = {"old": "B", "new": "D", "uid": CHAR_UID_B}
             peers_path.write_text(json.dumps(data), encoding="utf-8")
@@ -1761,7 +1761,7 @@ async def test_rename_guard_is_retaken_when_the_marker_changes_meanwhile(tmp_pat
 
     report = await _recover_with_chars(tmp_path, monkeypatch, {"C": CHAR_UID_A, "D": CHAR_UID_B},
                                        {CHAR_UID_A: "C", CHAR_UID_B: "D"}, lifecycle_guard=guard)
-    # 按新标记重新拿了 B 的守卫再对账（不是拿着 A 的守卫去迁 B）
+    # Reacquire B's guard for the new marker before reconciliation, never migrate B while holding A's guard.
     assert taken == [[CHAR_UID_A], [CHAR_UID_B]] and report.renamed is True
     by_char = json.loads(peers_path.read_text(encoding="utf-8"))["accounts"][OWN_A]["peers"][PEER_X]["by_char"]
     assert "D" in by_char and "B" not in by_char
@@ -1769,29 +1769,29 @@ async def test_rename_guard_is_retaken_when_the_marker_changes_meanwhile(tmp_pat
 
 def _schema_invalid_state(spool):
     data = json.loads(spool.state_path.read_text(encoding="utf-8"))
-    data["field_from_a_newer_version"] = 1                      # 能解析、只是不合当前 schema
+    data["field_from_a_newer_version"] = 1                      # Parseable but incompatible with current schema.
     spool.state_path.write_text(json.dumps(data), encoding="utf-8")
 
 
 async def test_schema_invalid_state_of_another_character_is_skipped_not_deleted(tmp_path):
     await seed_roster(tmp_path)
     other = await make_visit(tmp_path, vid(83), [], own_char="B", own_char_uid=CHAR_UID_B,
-                             memory_enabled=False)               # 只剩 state.json
+                             memory_enabled=False)               # Only state.json remains.
     _schema_invalid_state(other)
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 原始字段明确属于别的角色：不挡这次清除，也绝不删（别的版本还读得了它）
+    # Raw fields explicitly identify another character: neither block clearing nor delete; other versions can still read it.
     assert outcome.done and other.state_path.exists()
 
 
 async def test_schema_invalid_state_that_may_be_ours_blocks_and_is_kept(tmp_path):
     await seed_roster(tmp_path)
-    mine = await make_visit(tmp_path, vid(84), [], memory_enabled=False)   # 角色 A、这一对，只剩 state
+    mine = await make_visit(tmp_path, vid(84), [], memory_enabled=False)   # Character A, this pair, state only.
     _schema_invalid_state(mine)
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 可能正是这个人的场次：身份按原始对象抹掉（新版本字段原样保留、不删文件）；debrief 还可作废、
-    # 这个版本又作废不了它，清除不记完成，留着等下次
+    # Potentially this person's visit: erase identity in raw objects, preserving new-version fields/files. Debrief still needs invalidation,
+    # unsupported by this version, so do not mark clearing complete; retain for retry.
     raw = json.loads(mine.state_path.read_text(encoding="utf-8"))
     assert outcome.done is False and raw["pair_id"] is None and raw["peer_uid"] is None
     assert raw["field_from_a_newer_version"] == 1
@@ -1811,7 +1811,7 @@ async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp
     async def load():
         loads["n"] += 1
         if loads["n"] == 3:
-            # 守卫内重读名单期间（第 1 次是启动读名单，第 2 次是退役重放之后的重读），标记被另一个角色（B → D）的改名换掉
+            # During guarded roster reread (first startup read, then second after retirement replay), another B->D rename replaces the marker.
             data = json.loads(peers_path.read_text(encoding="utf-8"))
             data["pending_rename"] = {"old": "B", "new": "D", "uid": CHAR_UID_B}
             peers_path.write_text(json.dumps(data), encoding="utf-8")
@@ -1827,21 +1827,21 @@ async def test_rename_marker_swapped_while_reloading_names_retakes_the_guard(tmp
         Chips(), None, config_dir=tmp_path, resolve_char_name=resolver({CHAR_UID_A: "C", CHAR_UID_B: "D"}),
         client=FakeMemoryServer().client(), is_live=lambda _v: False, lifecycle_guard=guard,
     )
-    # 对账前按拿守卫时的标记再核一次：换了就按新标记重新拿 B 的守卫
+    # Recheck the acquisition-time marker before reconciliation; changed markers require reacquiring B's guard.
     assert taken[:2] == [[CHAR_UID_A], [CHAR_UID_B]] and report.renamed is True
 
 
 async def test_schema_invalid_state_does_not_hide_a_header_that_names_this_pair(tmp_path):
     await seed_roster(tmp_path)
-    mine = await make_visit(tmp_path, vid(85), [ln(0)], finalized="wrap_up")   # 头行指认这一对
+    mine = await make_visit(tmp_path, vid(85), [ln(0)], finalized="wrap_up")   # Header identifies this pair.
     data = json.loads(mine.state_path.read_text(encoding="utf-8"))
-    data["pair_id"] = derive_pair_id(OWN_A, PEER_Y)            # 不合 schema 的 state 指向别的一对
+    data["pair_id"] = derive_pair_id(OWN_A, PEER_Y)            # Schema-incompatible state points to another pair.
     data["field_from_a_newer_version"] = 1
     mine.state_path.write_text(json.dumps(data), encoding="utf-8")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 头行仍指认这一对：不能只凭 state 的原始字段跳过——身份照样按原始对象抹掉（新版本字段保留），
-    # 但这个版本作废不了它的 debrief，清除留着等下次
+    # Header still identifies this pair; raw state alone cannot justify skipping. Erase identity in raw objects, preserving new-version fields,
+    # but defer clearing because this version cannot invalidate its debrief.
     raw = json.loads(mine.state_path.read_text(encoding="utf-8"))
     assert outcome.done is False and raw["pair_id"] is None and raw["field_from_a_newer_version"] == 1
 
@@ -1849,13 +1849,13 @@ async def test_schema_invalid_state_does_not_hide_a_header_that_names_this_pair(
 async def test_schema_invalid_wiped_state_of_another_account_does_not_block(tmp_path):
     await seed_roster(tmp_path)
     other = await make_visit(tmp_path, vid(86), [], own_uid=OWN_B, memory_enabled=False)
-    await other.delete_peer_fields()                            # 身份已抹（pair_id 为空）
+    await other.delete_peer_fields()                            # Identity erased, pair_id empty.
     data = json.loads(other.state_path.read_text(encoding="utf-8"))
     data["field_from_a_newer_version"] = 1
     other.state_path.write_text(json.dumps(data), encoding="utf-8")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 原始字段里的账号是别的账号：不挡这次清除，也不删
+    # Raw account belongs elsewhere: neither block clearing nor delete.
     assert outcome.done and other.state_path.exists()
 
 
@@ -1864,18 +1864,18 @@ async def test_schema_invalid_state_naming_this_pair_is_not_excluded_by_another_
     mine = await make_visit(tmp_path, vid(87), [ln(0)], finalized="wrap_up")
     lines = mine.jsonl_path.read_bytes().splitlines(keepends=True)
     header = json.loads(lines[0])
-    # 头行被换成指向别的一对（自洽的合法头行）
+    # Header replaced with a self-consistent valid header for another pair.
     header.update(peer_uid=PEER_Y, pair_id=derive_pair_id(OWN_A, PEER_Y),
                   peer_char_id=derive_peer_char_id(PEER_Y, header["peer_char_tag"]))
     lines[0] = json.dumps(header, ensure_ascii=False).encode() + b"\n"
     mine.jsonl_path.write_bytes(b"".join(lines))
     data = json.loads(mine.state_path.read_text(encoding="utf-8"))
-    assert data["pair_id"] == derive_pair_id(OWN_A, PEER_X)    # state 原始字段仍指认这一对
+    assert data["pair_id"] == derive_pair_id(OWN_A, PEER_X)    # Raw state still identifies this pair.
     data["field_from_a_newer_version"] = 1
     mine.state_path.write_text(json.dumps(data), encoding="utf-8")
     outcome = await forget_person(tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A,
                                   peer_uid=PEER_X, client=FakeMemoryServer().client())
-    # 对端字段还在 state 里：不能凭头行把它排除掉记完成
+    # Peer fields remain in state: header alone cannot exclude it and finalize clearing.
     assert outcome.done is False
 
 
@@ -1894,13 +1894,13 @@ async def test_sealed_upload_missing_content_is_resealed_from_the_stream(tmp_pat
     records = _stream_records(v)
     _write_stream(tmp_path, v, records)
     doc = build_upload_doc(records, visit_id=v, finalized_reason=None)
-    doc["request"]["lines"] = doc["request"]["lines"][:1]       # 信封一致、结构合法，但少了一行
+    doc["request"]["lines"] = doc["request"]["lines"][:1]       # Matching envelope and valid structure, but missing one row.
     doc["request"]["usage"]["llm_input_tokens"] = 0
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 与流水重封出来的不一致：以完整的流水为准重封，不删流水换上缺行的文件
+    # Differs from resealed streams: complete streams are authoritative; never delete them in favor of incomplete files.
     assert [line["text"] for line in uploaded["request"]["lines"]] == ["t0", "t1"]
     assert uploaded["request"]["usage"]["llm_input_tokens"] == 5
 
@@ -1916,7 +1916,7 @@ async def test_matching_sealed_upload_keeps_its_reason_when_state_is_gone(tmp_pa
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 与流水一致的封存文件就是正本：删流水、原样上传；state 不在时不把结束原因改成 crash
+    # Matching sealed files are canonical: delete streams and upload unchanged; absent state must not change ending reasons to crash.
     assert uploaded == doc and not stream.exists()
 
 
@@ -1934,7 +1934,7 @@ async def test_report_without_transcript_is_not_held_by_a_pending_upload(tmp_pat
     (reports_dir / f"{v}.json").write_text(json.dumps(queued), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 转录上传失败：明确不附转录的举报照常提交，附转录（或没写明）的等转录
+    # Transcript upload fails: submit explicitly transcript-free reports normally; attached/unspecified reports await transcripts.
     assert [visit_id for visit_id, _ in reports.calls] == ([v] if include_transcript is False else [])
 
 
@@ -1943,16 +1943,16 @@ async def test_sealed_normal_end_is_not_resealed_as_crash(tmp_path):
 
     await seed_roster(tmp_path)
     v = vid(91)
-    await make_visit(tmp_path, v, [ln(0)], finalized=None)      # state 还没写 finalized
+    await make_visit(tmp_path, v, [ln(0)], finalized=None)      # State has not recorded finalized.
     records = _stream_records(v)
     stream = _write_stream(tmp_path, v, records)
-    # 正常收口已写出上传文件，删流水、写 state.finalized 之前崩溃
+    # Normal finalization wrote uploads, then crashed before stream deletion/state.finalized.
     doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 补录把 state 标成 crash，但上传文件里正常结束的原因原样上传，流水按残留删掉
+    # Backfill marks state crash, but upload the file's original normal ending and remove residual streams.
     assert uploaded == doc and uploaded["request"]["finalized_reason"] == "wrap_up"
     assert not stream.exists()
 
@@ -1965,12 +1965,12 @@ async def test_sealed_reason_must_match_a_definitive_state_reason(tmp_path):
     await make_visit(tmp_path, v, [ln(0)], finalized="peer_left")
     records = _stream_records(v)
     _write_stream(tmp_path, v, records)
-    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")   # 与 state 记的不一致
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")   # Inconsistent with state.
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # state 已记确定的结束原因：以它为准从流水重封
+    # State records a definite ending reason: use it to reseal streams.
     assert uploaded["request"]["finalized_reason"] == "peer_left"
 
 
@@ -1994,7 +1994,7 @@ async def test_upload_progress_survives_an_undeletable_stale_stream(tmp_path, mo
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 上传回调写进文件的分片进度不算「与流水不一致」：不重封、不清零
+    # Upload callback's persisted chunk progress does not mismatch streams: never reseal/reset progress.
     assert uploaded["chunk_progress"] == {"next": 3}
     assert json.loads(sealed.read_text(encoding="utf-8"))["chunk_progress"] == {"next": 3}
 
@@ -2008,7 +2008,7 @@ async def test_unreadable_stream_next_to_a_sealed_upload_keeps_both(tmp_path, mo
     stream = _write_stream(tmp_path, v, records)
     sealed = _spool_dir(tmp_path) / f"{v}.upload.json"
     doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
-    doc["request"]["lines"] = doc["request"]["lines"][:1]      # 封存文件缺行
+    doc["request"]["lines"] = doc["request"]["lines"][:1]      # Sealed file lacks rows.
     sealed.write_text(json.dumps(doc), encoding="utf-8")
 
     def locked(path):
@@ -2017,7 +2017,7 @@ async def test_unreadable_stream_next_to_a_sealed_upload_keeps_both(tmp_path, mo
     monkeypatch.setattr(recovery, "_read_stream", locked)
     uploads = Uploads()
     await _recover(tmp_path, upload_transcript=uploads)
-    # 流水在却读不出：比对做不了，两份都留着、这轮不上传，不能把缺行的文件当正本传上去
+    # Existing stream unreadable: comparison impossible; preserve both and defer upload rather than send incomplete files as canonical.
     assert uploads.calls == [] and stream.exists() and sealed.exists()
 
 
@@ -2031,7 +2031,7 @@ async def test_sealed_upload_with_a_bad_envelope_and_no_stream_is_not_uploaded(t
     (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), **envelope}), encoding="utf-8")
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 只剩上传文件、没有流水可比：角色 id / 传输方式坏了同样按损坏处理，不交给上传回调
+    # Upload file only, no comparison stream: corrupt character ID/transport also means corruption, never pass to callbacks.
     assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
 
 
@@ -2043,14 +2043,14 @@ async def test_expired_upload_marks_its_queued_report_transcript_unavailable(tmp
     sealed = d / f"{v}.upload.json"
     sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
     old = time.time() - 8 * 86400
-    os.utime(sealed, (old, old))                                 # 待传转录已过 7 天
+    os.utime(sealed, (old, old))                                 # Pending transcript older than seven days.
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
     reports = Reports()
-    # 放弃前本次启动再补传一次，仍失败
+    # Retry once this startup before abandonment; still fails.
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 转录到期被放弃：举报照常提交，并在举报里记下转录不可用的原因
+    # Transcript expires/abandoned: submit reports normally with transcript-unavailability reasons.
     (visit_id, doc), = reports.calls
     assert not sealed.exists() and doc["transcript_unavailable"] == "expired"
     assert doc["include_transcript"] is True
@@ -2063,7 +2063,7 @@ async def test_recovery_digest_protects_family_names_in_peer_labels(tmp_path):
     server = FakeMemoryServer()
     await _recover(tmp_path, server, family_names=["妈妈"])
     segments = server.calls("scoped_history")[1]["segments"]
-    # 补录的 digest 同样拿到家人称呼：对端自称「妈妈」换成通用标签
+    # Backfilled digests also receive family addresses: replace peer self-description 妈妈 with generic labels.
     assert "妈妈" not in {seg["speaker_label"] for seg in segments}
 
 
@@ -2076,13 +2076,13 @@ async def test_report_is_not_marked_unavailable_while_another_upload_copy_remain
     sealed = _spool_dir(tmp_path) / f"{v}.upload.json"
     sealed.write_text(json.dumps(build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")), encoding="utf-8")
     old = time.time() - 8 * 86400
-    os.utime(stream, (old, old))                                 # 只有流水过期被删，封存文件还新
+    os.utime(stream, (old, old))                                 # Only streams expired/deleted; sealed files are fresh.
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
-    # 封存文件本轮照常传上去：举报不能带着「转录不可用」的诊断
+    # Upload sealed files normally this pass; reports must not include transcript-unavailable diagnostics.
     (visit_id, doc), = reports.calls
     assert not stream.exists() and "transcript_unavailable" not in doc
 
@@ -2093,15 +2093,15 @@ async def test_corrupt_upload_marks_its_queued_report_transcript_unavailable(tmp
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
     if damage == "sealed_only":
-        (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")       # 只剩坏掉的封存文件
+        (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")       # Only corrupt sealed files remain.
     else:
-        _write_stream(tmp_path, v, [{"kind": "line"}])                       # 流水没有头行：损坏
+        _write_stream(tmp_path, v, [{"kind": "line"}])                       # Stream lacks headers: corrupt.
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
-    # 转录损坏、再也传不上去：举报照常提交，并记下转录不可用的原因
+    # Transcript corrupt and permanently unuploadable: submit reports normally with reasons.
     (visit_id, doc), = reports.calls
     assert doc["transcript_unavailable"] == "corrupt" and not list(d.glob(f"{v}.upload*"))
 
@@ -2115,11 +2115,11 @@ async def test_queued_report_of_another_visit_is_moved_aside_not_submitted(tmp_p
     path.write_text(body, encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, submit_report=reports)
-    # 内容是别的场次：交上去会举报错的人，受理后还会删掉原本要交的这份。不交也不删，改名隔离，
-    # 让这场的位置空出来（留在原位会一直挡住这场之后的举报）
+    # Content belongs to another visit: uploading reports the wrong person, then acceptance deletes the intended report. Neither submit nor delete; quarantine by rename,
+    # freeing this visit's slot, which otherwise blocks later reports indefinitely.
     assert reports.calls == [] and not path.exists()
     assert (reports_dir / f"{v}.json.mismatch").read_text(encoding="utf-8") == body
-    # 位置空出来之后，这场新排队的举报照常提交；更早隔离的那份不被覆盖
+    # Newly queued reports submit after the slot opens; preserve earlier quarantined copies without overwriting.
     path.write_text(json.dumps({"visit_id": other}), encoding="utf-8")
     await _recover(tmp_path, submit_report=reports)
     assert (reports_dir / f"{v}.json.mismatch").read_text(encoding="utf-8") == body
@@ -2140,7 +2140,7 @@ async def test_terminal_upload_rejection_marks_the_queued_report(tmp_path):
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
 
     async def reject(_visit_id, _doc):
-        return "parts_out_of_range"                              # 终态拒收：文件可以删，但转录到不了 Servers
+        return "parts_out_of_range"                              # Terminal rejection allows file deletion, but transcripts never reach Servers.
 
     reports = Reports()
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
@@ -2156,10 +2156,10 @@ async def test_oversized_state_number_does_not_abort_upload_recovery(tmp_path):
     state_path = _spool_dir(tmp_path) / f"{bad}.state.json"
     data = json.loads(state_path.read_text(encoding="utf-8"))
     data["digest_writes"] = {"0": {"requested_at": 10 ** 400, "through_lp": 0, "group": {}, "segments": {}}}
-    state_path.write_text(json.dumps(data), encoding="utf-8")     # 超出浮点范围的整数
+    state_path.write_text(json.dumps(data), encoding="utf-8")     # Integer exceeds floating-point range.
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 坏 state 那场按读不出处理；不能让 OverflowError 中断整轮，其余场次照常补传
+    # Treat corrupt visit state as unreadable; OverflowError must not abort the pass, and other visits upload normally.
     assert {visit_id for visit_id, _ in uploads.calls} >= {good}
 
 
@@ -2168,12 +2168,12 @@ def test_discarded_records_do_not_move_the_upload_end_time():
 
     v = vid(106)
     records = _stream_records(v) + [
-        {"kind": "line", "lp": 9, "ts": 99999.0},                     # 坏行：会被丢弃
-        {"kind": "mystery", "ts": 88888.0},                           # 不认识的记录
-        {"kind": "usage", "ts": 77777.0, "d": {"llm_input_tokens": "bad"}},   # 用量记录里没有一项有效
+        {"kind": "line", "lp": 9, "ts": 99999.0},                     # Corrupt row, discarded.
+        {"kind": "mystery", "ts": 88888.0},                           # Unrecognized record.
+        {"kind": "usage", "ts": 77777.0, "d": {"llm_input_tokens": "bad"}},   # No valid usage records.
     ]
     doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
-    # 被丢弃的记录带的时间戳不能挪动结束时间与时长
+    # Discarded records' timestamps cannot shift ending times/durations.
     assert doc["request"]["ended_at"] == 1002.0
     assert doc["request"]["usage"]["duration_s"] == 2
 
@@ -2202,7 +2202,7 @@ async def test_report_carries_the_unavailable_marker_even_when_the_file_cannot_b
 
     reports = Reports()
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
-    # 举报文件写不进标记：提交的那份照样带上，Servers 才知道要求附带的转录已经没了
+    # Cannot persist report markers: submitted payload still includes them so Servers knows requested transcripts are gone.
     (visit_id, doc), = reports.calls
     assert doc["transcript_unavailable"] == "parts_out_of_range" and doc["include_transcript"] is True
 
@@ -2217,16 +2217,16 @@ async def test_failed_upload_progress_rewrite_does_not_extend_the_retention(tmp_
     os.utime(sealed, (old, old))
 
     async def multipart(_visit_id, doc):
-        # 分片上传把进度写回文件再回 False（回调契约允许）
+        # Chunk uploads persist progress then return False, permitted by callback contracts.
         sealed.write_text(json.dumps({**doc, "parts_done": 2}), encoding="utf-8")
         return False
 
     await _recover(tmp_path, upload_transcript=multipart)
-    # 保留期按 mtime 算：重试不能把 7 天期限往后推，否则失败的上传永远不过期
+    # Retention uses mtime: retries cannot extend seven-day deadlines, or failed uploads never expire.
     assert abs(sealed.stat().st_mtime - old) < 2 and json.loads(sealed.read_text(encoding="utf-8"))["parts_done"] == 2
 
 
-# ── 评审：在飞口径 / 摘要登记 / 上传信封 / 举报隔离 ──────────────────────────
+# ── Review: in-flight criteria / summary registration / upload envelopes / report quarantine ──
 
 
 def _queue_report(tmp_path, visit_id, **fields):
@@ -2250,12 +2250,12 @@ async def test_spool_still_open_for_appends_counts_as_in_flight(tmp_path):
         spool_mod._OPEN_SPOOLS.add(key)
     try:
         uploads, reports = Uploads(), Reports()
-        # runtime 已从 is_live 注销，但记忆 spool 的 writer 还开着：流水还在追加写
+        # Runtime unregistered is_live, but memory-spool writer remains open and streams still append.
         await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
     finally:
         with spool_mod._OPEN_SPOOLS_LOCK:
             spool_mod._OPEN_SPOOLS.discard(key)
-    # 与逐场补录同一口径：不封存流水、不删 outbox，排队的举报也等它
+    # Match per-visit backfill: do not seal streams or delete outbox; queued reports wait too.
     assert uploads.calls == [] and reports.calls == []
     assert stream.exists() and outbox.exists() and report_path.exists()
     assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
@@ -2270,7 +2270,7 @@ async def test_recovery_summary_is_registered_for_the_opening_handoff(tmp_path):
     seen = []
 
     async def llm(_prompt):
-        # 摘要生成期间同一对新开场：交接要能在登记表里看到这个任务，等它而不是另起一次
+        # Same pair opens another visit during digest generation: handoff must find/wait for the registered task, not start another.
         seen.append(v in memory_commit._SUMMARY_TASKS)
         return "上次聊了天气。"
 
@@ -2289,7 +2289,7 @@ def test_overflowing_upload_duration_is_recorded_as_zero():
     header = {**_header(v), "started_at": -1.7e308}
     records = [header, {"kind": "line", "lp": 0, "side": "host", "from": "own_cat", "ts": 1.7e308,
                         "text": "a", "truncated": False}]
-    # 两个时间戳各自有限，差值溢出成 inf：时长记 0，不能抛 OverflowError
+    # Individually finite timestamps subtract to inf: record zero duration without OverflowError.
     doc = build_upload_doc(records, visit_id=v, finalized_reason=None)
     assert doc["request"]["usage"]["duration_s"] == 0
 
@@ -2315,7 +2315,7 @@ async def test_stream_comparison_errors_only_defer_that_visit(tmp_path, monkeypa
     monkeypatch.setattr(recovery, "_stream_doc_sync", broken)
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 比对出错不能冒出去中断整轮：只推迟这一场（两份都留着），其余场次照常上传
+    # Comparison failures defer only this visit with both copies retained, never abort the whole pass or other uploads.
     assert [visit_id for visit_id, _ in uploads.calls] == [good]
     assert (_spool_dir(tmp_path) / f"{bad}.upload.jsonl").exists()
     assert (_spool_dir(tmp_path) / f"{bad}.upload.json").exists()
@@ -2326,16 +2326,16 @@ async def test_resealing_a_mismatched_normal_end_keeps_its_reason(tmp_path):
 
     await seed_roster(tmp_path)
     v = vid(115)
-    await make_visit(tmp_path, v, [ln(0)], finalized=None)      # state 还没写 finalized，补录标成 crash
+    await make_visit(tmp_path, v, [ln(0)], finalized=None)      # State not finalized; backfill marks crash.
     records = _stream_records(v)
     _write_stream(tmp_path, v, records)
     doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
-    doc["request"]["lines"] = doc["request"]["lines"][:1]         # 格式合法，但与流水不一致
+    doc["request"]["lines"] = doc["request"]["lines"][:1]         # Valid format but inconsistent with streams.
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, uploaded), = uploads.calls
-    # 从流水重封：转录以流水为准，结束原因沿用文件里正常收口记的，不退回 crash
+    # Reseal using streams for transcripts while retaining file-recorded normal ending reasons, never reverting to crash.
     assert [line["text"] for line in uploaded["request"]["lines"]] == ["t0", "t1"]
     assert uploaded["request"]["finalized_reason"] == "wrap_up"
 
@@ -2348,12 +2348,12 @@ async def test_stream_header_without_char_uid_takes_the_visits_own(tmp_path, sou
     if source == "spool_header":
         (_spool_dir(tmp_path) / f"{v}.state.json").unlink()
     header = _header(v)
-    header.pop("own_char_uid")           # 较早的上传头布局没有这个字段
+    header.pop("own_char_uid")           # Earlier upload-header layouts lacked this field.
     _write_stream(tmp_path, v, [header])
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, doc), = uploads.calls
-    # 补回角色 id：不能封出一份随即被当成坏文件删掉的上传文件
+    # Restore character IDs so freshly sealed uploads are not immediately classified corrupt and deleted.
     assert visit_id == v and doc["own_char_uid"] == CHAR_UID_B
     assert (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
 
@@ -2375,7 +2375,7 @@ async def test_stream_header_without_char_uid_anywhere_keeps_the_stream(tmp_path
     monkeypatch.setattr(recovery, "_write_private_json", record)
     uploads = Uploads()
     await _recover(tmp_path, upload_transcript=uploads)
-    # 角色 id 哪儿都补不回来：写文件前就挡下，流水留着下次再封（不是封了再删）
+    # Character ID unavailable everywhere: reject before writing, retaining streams for future resealing, never seal then delete.
     assert uploads.calls == [] and written == [] and stream.exists()
     assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
 
@@ -2397,7 +2397,7 @@ async def test_stream_header_with_a_broken_transport_is_corrupt_before_sealing(t
     monkeypatch.setattr(recovery, "_write_private_json", record)
     uploads, reports = Uploads(), Reports()
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
-    # 传输方式没有别处可补：按流水损坏处理，在写上传文件之前判定，不封了再删
+    # Transport unrecoverable elsewhere: classify stream corruption before writing uploads, never seal then delete.
     assert uploads.calls == [] and not stream.exists()
     assert f"{v}.upload.json" not in written
     (visit_id, doc), = reports.calls
@@ -2406,12 +2406,12 @@ async def test_stream_header_with_a_broken_transport_is_corrupt_before_sealing(t
 
 async def test_sealed_upload_of_another_character_is_not_uploaded(tmp_path):
     v = vid(119)
-    await make_visit(tmp_path, v, [], memory_enabled=False, last_summary_done=True)   # state 记 CHAR_UID_A
+    await make_visit(tmp_path, v, [], memory_enabled=False, last_summary_done=True)   # State records CHAR_UID_A.
     d = _spool_dir(tmp_path)
     (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_char_uid": CHAR_UID_B}), encoding="utf-8")
     uploads = Uploads()
     await _recover(tmp_path, upload_transcript=uploads)
-    # 只剩上传文件：角色 id 与本场 state.json 不一致，不能拿错的角色身份上传
+    # Upload file only: character ID mismatches this visit's state.json, so never upload as the wrong character.
     assert uploads.calls == [] and not (d / f"{v}.upload.json").exists()
 
 
@@ -2425,7 +2425,7 @@ async def test_sealed_upload_of_another_version_is_kept_not_deleted(tmp_path, ch
     report_path = _queue_report(tmp_path, v, include_transcript=True)
     uploads, reports = Uploads(), Reports()
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
-    # 新版本写的完好文件（降级后）：不当损坏删，留着待处理；附转录的举报继续等它
+    # Intact newer-version files after downgrade are pending, not corrupt/deletable; attached-transcript reports keep waiting.
     assert uploads.calls == [] and sealed.exists()
     assert reports.calls == [] and "transcript_unavailable" not in json.loads(report_path.read_text(encoding="utf-8"))
 
@@ -2444,13 +2444,13 @@ async def test_report_marker_is_written_under_the_report_lock(tmp_path):
         task = asyncio.create_task(recovery._mark_report_transcript_unavailable(
             tmp_path, v, "expired", recovery.RecoveryReport()))
         await asyncio.sleep(0.3)
-        # 运行时的举报处理拿着同一把锁：标记要等它
+        # Runtime report processing holds the same lock; markers must wait.
         assert not task.done() and "transcript_unavailable" not in json.loads(path.read_text(encoding="utf-8"))
-        path.unlink()                    # 锁内：实时重试受理后删掉 / 用户放弃
+        path.unlink()                    # Under lock: realtime retry accepts/deletes or user abandons.
     finally:
         lock.release()
     await task
-    # 已受理 / 放弃的举报不能被标记写回来、随后再交一次
+    # Accepted/abandoned reports must not be recreated by marker writes and resubmitted.
     assert not path.exists()
 
 
@@ -2464,7 +2464,7 @@ async def test_report_deleted_between_read_and_write_is_not_recreated(tmp_path, 
     def load_then_deleted(p):
         doc = real_load(p)
         if Path(p) == path:
-            path.unlink()                # 不走这把锁的删除方在读完之后删掉了它
+            path.unlink()                # An unlocked remover deletes after reading.
         return doc
 
     monkeypatch.setattr(recovery, "_load_json", load_then_deleted)
@@ -2476,12 +2476,12 @@ async def test_unavailable_marker_is_not_written_onto_another_visits_report(tmp_
     v, other = vid(123), vid(124)
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
-    (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")       # 这场的转录损坏
+    (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")       # This visit's transcript corrupt.
     path = _queue_report(tmp_path, v)
     body = json.dumps({"visit_id": other, "include_transcript": True})
-    path.write_text(body, encoding="utf-8")                               # 文件里却是别场的举报
+    path.write_text(body, encoding="utf-8")                               # File contains another visit's report.
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=Reports())
-    # 这场转录的不可用原因不能盖到别场的举报上
+    # Never attach this transcript's unavailability reason to another visit's report.
     quarantined = tmp_path / "visit_reports" / f"{v}.json.mismatch"
     assert quarantined.read_text(encoding="utf-8") == body
 
@@ -2496,7 +2496,7 @@ async def test_terminal_rejection_is_not_counted_as_uploaded(tmp_path):
         return "parts_out_of_range"
 
     report = await _recover(tmp_path, upload_transcript=reject)
-    # 终态拒收与上传成功分开记：uploads 的 True 只表示转录到了 Servers
+    # Distinguish terminal rejection from upload success: uploads=True means transcripts reached Servers only.
     assert v not in report.uploads and report.rejected == {v: "parts_out_of_range"}
 
 
@@ -2524,13 +2524,13 @@ async def test_rejected_upload_that_cannot_be_deleted_is_not_uploaded_again(tmp_
     with monkeypatch.context() as patch:
         patch.setattr(Path, "unlink", stubborn)
         await _recover(tmp_path, upload_transcript=reject)
-    # 删不掉：文件里记下拒收，保留期不因此后推
+    # Cannot delete: persist rejection without extending retention.
     assert json.loads(sealed.read_text(encoding="utf-8"))["rejected"] == "parts_out_of_range"
     assert abs(sealed.stat().st_mtime - old) < 2
     report_path = _queue_report(tmp_path, v, include_transcript=True)
     reports = Reports()
     report = await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
-    # 下次启动不再整份重传、再被拒一次：直接删文件，举报带着拒收原因提交
+    # Next startup never reuploads just to be rejected again; delete directly and submit reports with rejection reasons.
     assert calls == [v] and not sealed.exists() and report.rejected == {v: "parts_out_of_range"}
     (visit_id, doc), = reports.calls
     assert doc["transcript_unavailable"] == "parts_out_of_range" and not report_path.exists()
@@ -2563,12 +2563,12 @@ async def test_terminal_rejection_keeps_the_upload_until_the_report_records_it(t
         return "parts_out_of_range"
 
     await _recover(tmp_path, upload_transcript=reject, submit_report=Reports(ok=False))
-    # 原因没记进举报、本轮举报也没交出去：上传文件是终态拒收唯一持久的记录，不能先删
+    # Reason absent from reports and report submission failed: upload file alone durably records terminal rejection; preserve it first.
     assert sealed.exists() and json.loads(sealed.read_text(encoding="utf-8"))["rejected"] == "parts_out_of_range"
     monkeypatch.setattr(recovery_mod, "_write_private_json", real_write)
     reports = Reports()
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
-    # 下次启动：不再重传，先把原因记进举报、删上传文件，举报带着原因交上去
+    # Next startup: skip reupload, persist report reasons before deleting upload files, then submit reports carrying reasons.
     (visit_id, doc), = reports.calls
     assert uploads == [v] and not sealed.exists() and doc["transcript_unavailable"] == "parts_out_of_range"
 
@@ -2580,10 +2580,10 @@ async def test_expired_upload_gets_one_more_attempt_before_it_is_given_up(tmp_pa
     sealed = d / f"{v}.upload.json"
     sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")
     old = time.time() - 8 * 86400
-    os.utime(sealed, (old, old))                                 # 8 天没开 app：本次启动之前一次都没试过
+    os.utime(sealed, (old, old))                                 # App unopened for eight days; no prior upload attempts this startup.
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 「自结束起 7 天仍失败才放弃」：放弃之前本次启动先补传一次，传上去了就不丢
+    # Abandon only after failures for seven days since ending: retry once this startup first, retaining successful uploads.
     assert [visit_id for visit_id, _ in uploads.calls] == [v] and not sealed.exists()
 
 
@@ -2601,19 +2601,19 @@ async def test_expired_upload_that_still_fails_releases_its_report_in_the_same_p
     uploads = Uploads(ok=False)
     reports = Reports()
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
-    # 再试一次仍失败：放弃这份转录，排队的举报本轮就带着原因交上去
+    # Retry still fails: abandon transcript and submit queued reports with reasons this pass.
     (visit_id, doc), = reports.calls
     assert len(uploads.calls) == 1 and not sealed.exists() and doc["transcript_unavailable"] == "expired"
 
 
 async def test_recovery_digest_protects_other_local_cat_names_in_peer_labels(tmp_path):
-    await seed_roster(tmp_path, peer_display="B")                # 对端把自己叫成本机另一只猫的名字
+    await seed_roster(tmp_path, peer_display="B")                # Peer calls themselves another local cat's name.
     await make_visit(tmp_path, vid(112), [ln(i, f"line {i}", ("own_cat", "peer_cat", "peer_human", "own_human")[i % 4])
                                           for i in range(8)])
     server = FakeMemoryServer()
     await _recover(tmp_path, server)
     segments = server.calls("scoped_history")[1]["segments"]
-    # 补录的 digest 同样拿到本机角色名单：对端不能顶替成本机另一只猫
+    # Backfilled digests receive local-character rosters too, preventing peer impersonation of another local cat.
     assert "B" not in {seg["speaker_label"] for seg in segments}
 
 
@@ -2623,13 +2623,13 @@ async def test_expired_stream_keeps_its_age_and_finalized_reason_through_the_ext
     stream = _write_stream(tmp_path, v, _stream_records(v))
     old = time.time() - 8 * 86400
     for path in (stream, spool.state_path):
-        os.utime(path, (old, old))                              # 8 天没开 app：流水和 state 都过期了
+        os.utime(path, (old, old))                              # App unopened eight days: stream/state expired.
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
     (visit_id, doc), = uploads.calls
-    # 补传之前 state.json 不能先被按龄删掉：正常结束的场次照样按 wrap_up 封存，不变成 crash
+    # Do not age-delete state.json before retry; normally ended visits still seal as wrap_up, never crash.
     assert doc["request"]["finalized_reason"] == "wrap_up"
-    # 封出来的文件接着流水的年龄算：再试一次仍失败就在本轮放弃，不再多留 7 天
+    # Sealed files inherit stream age: failed retry abandons this pass, not after another seven days.
     assert not (_spool_dir(tmp_path) / f"{v}.upload.json").exists()
 
 
@@ -2646,12 +2646,12 @@ async def test_expired_upload_is_kept_when_there_is_no_uploader(tmp_path):
     (reports_dir / f"{v}.json").write_text(json.dumps({"visit_id": v, "include_transcript": True}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=None, submit_report=reports)
-    # 没有上传回调：一次都没试过，不能就此放弃转录，举报也继续等它
+    # No upload callback means no attempts; retain transcripts and keep reports waiting.
     assert sealed.exists() and reports.calls == []
     older = time.time() - 15 * 86400
     os.utime(sealed, (older, older))
     await _recover(tmp_path, upload_transcript=None, submit_report=reports)
-    # 但最多再留一个保留期：超过 2 倍保留期照样按到期放弃，附转录的举报带着原因交出去
+    # Retain at most one more period: after twice retention, abandon and submit attached-transcript reports with reasons.
     (visit_id, doc), = reports.calls
     assert not sealed.exists() and doc["transcript_unavailable"] == "expired"
 
@@ -2663,7 +2663,7 @@ async def test_sealed_upload_of_another_account_is_not_uploaded(tmp_path):
     (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_visit_uid": OWN_B}), encoding="utf-8")
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 角色 id 一样也不够：账号对不上的文件交上去就是用错的账号上传
+    # Matching character IDs are insufficient: account mismatches upload under wrong accounts.
     assert uploads.calls == []
 
 
@@ -2674,7 +2674,7 @@ async def test_ownerless_sealed_upload_takes_the_visits_account(tmp_path):
     (d / f"{v}.upload.json").write_text(json.dumps({**_sealed(v), "own_visit_uid": None}), encoding="utf-8")
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 旧版本封出来的无主文件：用本场 state.json 的账号补上，上传回调才选得中登录账号
+    # Ownerless legacy uploads inherit this visit's state.json account so callbacks can choose logged-in accounts.
     (visit_id, doc), = uploads.calls
     assert doc["own_visit_uid"] == OWN_A
 
@@ -2686,10 +2686,10 @@ async def test_expired_state_is_kept_for_checking_a_lone_ownerless_upload(tmp_pa
     sealed.write_text(json.dumps({**_sealed(v), "own_visit_uid": None}), encoding="utf-8")
     old = time.time() - 8 * 86400
     for path in (sealed, spool.state_path):
-        os.utime(path, (old, old))                              # 无主上传文件与 state.json 都过期了
+        os.utime(path, (old, old))                              # Ownerless uploads and state.json both expired.
     uploads = Uploads(ok=True)
     await _recover(tmp_path, upload_transcript=uploads)
-    # 第一遍回收不能先删 state.json：只剩上传文件时要拿它核对身份、给无主文件补账号
+    # First cleanup must retain state.json for ownership verification and account backfill when only uploads remain.
     (visit_id, doc), = uploads.calls
     assert doc["own_visit_uid"] == OWN_A
 
@@ -2714,7 +2714,7 @@ async def test_terminal_rejection_leaves_another_accounts_report_unmarked(tmp_pa
     reports = Reports()
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
     for _visit_id, doc in reports.calls:
-        assert "transcript_unavailable" not in doc        # 共用电脑上另一账号的举报不带这份转录的原因
+        assert "transcript_unavailable" not in doc        # Another shared-computer account's report omits this transcript's reason.
     on_disk = json.loads((reports_dir / f"{v}.json").read_text(encoding="utf-8")) \
         if (reports_dir / f"{v}.json").exists() else {}
     assert "transcript_unavailable" not in on_disk
@@ -2734,7 +2734,7 @@ async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(t
     (reports_dir / f"{v}.json").write_text(
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
     def unreadable(*_a, **_k):
-        raise OSError("in use")                              # 核对归属时读不了举报
+        raise OSError("in use")                              # Report unreadable during ownership verification.
 
     monkeypatch.setattr(recovery, "_mark_report_sync", unreadable)
 
@@ -2745,7 +2745,7 @@ async def test_an_unverified_reason_is_not_attached_to_another_accounts_report(t
     await _recover(tmp_path, upload_transcript=reject, submit_report=reports)
     assert any(visit_id == v for visit_id, _doc in reports.calls), "目标举报必须提交"
     for _visit_id, doc in reports.calls:
-        assert "transcript_unavailable" not in doc          # 提交前复核：属于另一账号的举报不带原因
+        assert "transcript_unavailable" not in doc          # Presubmission recheck: another account's report carries no reason.
 
 
 
@@ -2757,7 +2757,7 @@ async def test_a_corrupt_upload_leaves_another_accounts_report_unmarked(tmp_path
     if damage == "sealed_only":
         (d / f"{v}.upload.json").write_text("{torn", encoding="utf-8")
     else:
-        _write_stream(tmp_path, v, [{"kind": "line"}])                       # 流水没有头行：损坏
+        _write_stream(tmp_path, v, [{"kind": "line"}])                       # Stream lacks headers: corrupt.
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     other = "f" * 24
@@ -2765,7 +2765,7 @@ async def test_a_corrupt_upload_leaves_another_accounts_report_unmarked(tmp_path
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": other}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
-    # 损坏的是 OWN_A 那一侧的转录：另一账号排的举报不带这个原因
+    # OWN_A-side transcript corrupt; another account's report omits its reason.
     for _visit_id, doc in reports.calls:
         assert "transcript_unavailable" not in doc
     if (reports_dir / f"{v}.json").exists():
@@ -2784,7 +2784,7 @@ async def test_a_transiently_unreadable_upload_rearms_the_background_retry(tmp_p
 
     def locked(path):
         if path.name == f"{v}.upload.json":
-            raise PermissionError("in use")                   # Windows 共享冲突
+            raise PermissionError("in use")                   # Windows sharing conflict.
         return real_load(path)
 
     monkeypatch.setattr(recovery, "_load_json", locked)
@@ -2810,7 +2810,7 @@ async def test_an_expired_upload_leaves_another_accounts_report_unmarked(tmp_pat
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 到期放弃的是 OWN_A 那一侧的转录：另一账号排的举报不带这个原因
+    # OWN_A-side transcript expires; another account's report omits its reason.
     assert not sealed.exists()
     assert any(visit_id == v for visit_id, _doc in reports.calls)
     for _visit_id, doc in reports.calls:
@@ -2835,7 +2835,7 @@ async def test_a_transient_seal_failure_rearms_the_retry_only_for_a_lone_stream(
         tmp_path, live=lambda _v: False, upload_transcript=Uploads(), submit_report=None,
         report=recovery.RecoveryReport(), retry_later=armed.append,
     )
-    # 只剩流水：后台会从流水重封；旁边有坏封存文件：后台重封不了，不白排一个立刻退出的重试
+    # Stream only: background reseals; corrupt neighboring sealed files prevent background resealing, so never queue doomed immediate-exit retries.
     assert v in pending and armed == ([v] if beside == "nothing" else [])
 
 
@@ -2849,7 +2849,7 @@ async def test_another_accounts_pending_upload_does_not_hold_back_a_report(tmp_p
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 待传的是 OWN_A 那一侧的转录：另一账号的附转录举报不等它
+    # OWN_A-side transcript pending: another account's attached-transcript report does not wait.
     assert [visit_id for visit_id, _doc in reports.calls] == [v]
 
 
@@ -2858,7 +2858,7 @@ async def test_the_report_gate_reads_the_owner_from_the_upload_when_state_is_gon
     v = vid(111)
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
-    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}           # 新版本写的、本版本留着不动
+    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}           # Written by newer versions; preserve unchanged here.
     (d / f"{v}.upload.json").write_text(json.dumps(newer), encoding="utf-8")
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
@@ -2866,15 +2866,15 @@ async def test_the_report_gate_reads_the_owner_from_the_upload_when_state_is_gon
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 没有 state.json：归属从封存文件里取，另一账号的附转录举报不等这份
+    # No state.json: derive ownership from sealed files; another account's attached-transcript report does not wait.
     assert [visit_id for visit_id, _doc in reports.calls] == [v]
 
 
 
 async def test_the_report_gate_prefers_the_owner_named_by_the_upload_itself(tmp_path):
     v = vid(112)
-    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json 记的是 B
-    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}                 # 留着的新版本转录是 A 的
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json records B.
+    newer = {**_sealed(v), "v": 99, "own_visit_uid": OWN_A}                 # Retained newer-version transcript belongs to A.
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(newer), encoding="utf-8")
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
@@ -2882,7 +2882,7 @@ async def test_the_report_gate_prefers_the_owner_named_by_the_upload_itself(tmp_
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_A}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 待传的是 A 自己那一侧的转录：A 的附转录举报照样等它，不能按 state.json 的 B 放行
+    # A-side transcript pending: A's attached-transcript reports still wait, never released based on state.json's B.
     assert reports.calls == []
 
 
@@ -2892,11 +2892,11 @@ async def test_the_report_gate_ignores_the_owner_of_a_file_from_another_visit(tm
 
     v = vid(113)
     await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)
-    wrong = {**_sealed(vid(114)), "own_visit_uid": OWN_A}                    # 别场的文件，写着 A
+    wrong = {**_sealed(vid(114)), "own_visit_uid": OWN_A}                    # Another visit's file names A.
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(wrong), encoding="utf-8")
 
     async def undeletable(_spool_dir, _visit_id):
-        return False                                                    # 一时删不掉，留着待处理
+        return False                                                    # Temporarily undeletable; retain pending.
 
     monkeypatch.setattr(recovery, "_drop_corrupt_sealed", undeletable)
     reports_dir = tmp_path / "visit_reports"
@@ -2905,7 +2905,7 @@ async def test_the_report_gate_ignores_the_owner_of_a_file_from_another_visit(tm
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_B}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 别场文件里写的 A 不算：按 state.json 的 B，B 的附转录举报照旧等
+    # A in another visit's file does not count: use state.json's B, whose attached-transcript report still waits.
     assert reports.calls == []
 
 
@@ -2915,7 +2915,7 @@ async def test_an_expired_self_contained_upload_keeps_its_owner_for_the_report(t
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
     sealed = d / f"{v}.upload.json"
-    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")       # 自带 A 的归属，没有 state.json
+    sealed.write_text(json.dumps(_sealed(v)), encoding="utf-8")       # File owns A, without state.json.
     old = time.time() - 8 * 86400
     os.utime(sealed, (old, old))
     reports_dir = tmp_path / "visit_reports"
@@ -2924,7 +2924,7 @@ async def test_an_expired_self_contained_upload_keeps_its_owner_for_the_report(t
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 到期放弃的是 A 的转录（归属在删之前取）：另一账号的举报不带这个原因
+    # A's transcript expires, ownership read before deletion: another account's reports omit reasons.
     assert not sealed.exists()
     assert [visit_id for visit_id, _doc in reports.calls] == [v]
     assert all("transcript_unavailable" not in doc for _visit_id, doc in reports.calls)
@@ -2935,8 +2935,8 @@ async def test_the_report_gate_uses_the_state_owner_for_a_rejected_current_file(
     from main_logic.visit import recovery
 
     v = vid(116)
-    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json 记的是 B
-    conflicting = {**_sealed(v), "own_visit_uid": OWN_A}                     # 本场格式，却写着 A
+    await make_visit(tmp_path, v, [ln(0)], own_uid=OWN_B)                   # state.json records B.
+    conflicting = {**_sealed(v), "own_visit_uid": OWN_A}                     # This visit's format but names A.
     (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(conflicting), encoding="utf-8")
 
     async def undeletable(_spool_dir, _visit_id):
@@ -2949,7 +2949,7 @@ async def test_the_report_gate_uses_the_state_owner_for_a_rejected_current_file(
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": OWN_B}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(ok=False), submit_report=reports)
-    # 与 state.json 对不上的文件被拒：按 state 的 B 算，B 的附转录举报照旧等，不当作别人的转录放行
+    # File mismatching state.json is rejected: use B's state ownership and keep B's reports waiting, never release as another person's transcript.
     assert reports.calls == []
 
 
@@ -2973,7 +2973,7 @@ async def test_a_transiently_unreadable_queued_report_rearms_the_retry(tmp_path,
     armed, reports = [], Reports()
     await recovery._submit_reports(tmp_path, skip=set(), submit_report=reports,
                                    report=recovery.RecoveryReport(), retry_later=armed.append)
-    # 只交举报、没有上传任务的场次：一时读不了就交给后台，不等下次启动
+    # Report-only visits without upload tasks: temporary unreadability triggers background handling, not next-startup waiting.
     assert reports.calls == [] and armed == [v]
 
 
@@ -2987,7 +2987,7 @@ async def test_an_upload_callback_failing_before_its_own_scheduling_rearms_the_r
     (d / f"{v}.upload.json").write_text(json.dumps(_sealed(v)), encoding="utf-8")
 
     async def setup_failed(_visit_id, _doc):
-        raise PermissionError("progress file in use")                   # 回调自己排重试之前就出错
+        raise PermissionError("progress file in use")                   # Callback fails before scheduling its own retry.
 
     armed = []
     pending = await recovery._upload_pending(
@@ -3002,10 +3002,10 @@ async def test_a_lone_streams_header_names_the_pending_owner(tmp_path):
     from main_logic.visit import recovery
 
     v = vid(119)
-    _write_stream(tmp_path, v, _stream_records(v))                       # 没有 state.json、没有封存文件
+    _write_stream(tmp_path, v, _stream_records(v))                       # No state.json or sealed files.
     assert await recovery._pending_upload_owner(tmp_path, v) == OWN_A
     other = vid(120)
-    _write_stream(tmp_path, other, [_header(v)])                         # 头行写的是别场
+    _write_stream(tmp_path, other, [_header(v)])                         # Header identifies another visit.
     assert await recovery._pending_upload_owner(tmp_path, other) is None
 
 
@@ -3030,14 +3030,14 @@ async def test_a_corrupt_streams_header_owner_guards_another_accounts_report(tmp
     from main_logic.visit import recovery
 
     v = vid(122)
-    _write_stream(tmp_path, v, [{**_header(v), "transport": 42}, {"kind": "line"}])   # 头行归属有效、其余坏了
+    _write_stream(tmp_path, v, [{**_header(v), "transport": 42}, {"kind": "line"}])   # Valid header ownership, corrupt remainder.
     reports_dir = tmp_path / "visit_reports"
     reports_dir.mkdir()
     (reports_dir / f"{v}.json").write_text(
         json.dumps({"visit_id": v, "include_transcript": True, "own_visit_uid": "f" * 24}), encoding="utf-8")
     reports = Reports()
     await _recover(tmp_path, upload_transcript=Uploads(), submit_report=reports)
-    # 没有 state.json：归属按流水头的 OWN_A 记，另一账号的举报不带「corrupt」
+    # Without state.json, use stream-header OWN_A ownership; another account's reports omit corrupt reasons.
     for _visit_id, doc in reports.calls:
         assert "transcript_unavailable" not in doc
 
@@ -3063,7 +3063,7 @@ async def test_crashed_memory_on_visit_without_lines_is_abandoned_not_retried(tm
     assert state["debrief_choice"] == "abandoned"
     assert state["digest_writes"]["0"]["abandoned"] == "no_transcript"
     assert region_settled(state) and debrief_final(state)
-    # 下次启动：终态已在，不再弹芯片、不再改写 state.json
+    # Next startup sees terminal state, never redisplaying chips or rewriting state.json.
     before = spool.state_path.stat().st_mtime_ns
     await _recover(tmp_path, render_chips=chips, summary_llm=llm)
     assert chips.calls == [] and spool.state_path.stat().st_mtime_ns == before

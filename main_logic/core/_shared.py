@@ -58,21 +58,21 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "topic.hook": 1000,
     "topic.material": 1000,
     "realtime.prime": 1000,
-    # ⚠️ 用户 ban-topic 禁令块。日常语料远低于默认的 1000（实测真实中/日文
-    # 20 条满额也就 419~449 tokens），但**理论上界不是**：term 长度上限 40 字
-    # （_TERM_MAX_LEN）× 活跃条数上限 20（USER_DIRECTIVE_MAX_ACTIVE）在高 token
-    # 密度的假名上量到 1727。
-    # 越线的后果不是"少几条"那么轻：request_id 按**完整** term 集合算，于是
-    # 截断后的重试要么被去重、要么原样再追加同一份截断载荷，被截掉的那几条禁令
-    # **永远进不去**（codex）。登记一个覆盖理论上界的预算把这条 latent 路径掐掉。
-    # tests/unit/test_user_directives_midsession_inject.py 有守卫钉住
-    # 「最坏情况渲染块 ≤ 本预算」，改大上面两个常量任一个都会红。
+    # User ban-topic directive block: ordinary corpora fall well below the default 1000 tokens (20 real Chinese/Japanese
+    # entries measured only 419-449), but the theoretical maximum does not. Maximum term length 40
+    # (_TERM_MAX_LEN) times 20 active entries (USER_DIRECTIVE_MAX_ACTIVE) reaches 1727 with
+    # high-token-density kana.
+    # Exceeding the limit is worse than losing a few entries: request_id derives from the complete term set,
+    # so truncated retries either deduplicate or append the same truncated payload again, permanently excluding
+    # omitted directives (codex). Register a budget covering the theoretical maximum to close this latent path.
+    # tests/unit/test_user_directives_midsession_inject.py guards that
+    # worst-case rendered blocks fit this budget; raising either constant above makes it fail.
     "user_directives": 2000,
 }
-# ⚠️ 这张表只作用于 ``prime_context`` 那条回落路径，而那条只有
-# ``lifetime in {"current_session", "session_family"}`` 才走得到。纯
-# ``next_session`` 的 source（如 ``user_directives``）登记在这里是死配置，
-# 会让人误以为它还会经 realtime instructions 下发 —— 别加。
+# This table applies only to prime_context's fallback path, reachable only for
+# lifetime in {"current_session", "session_family"}. Registering a pure
+# next_session source such as user_directives here creates dead configuration,
+# misleadingly suggesting delivery through realtime instructions; do not add it.
 _CONTEXT_APPEND_BARE_PRIME_SOURCES = frozenset({
     "game.realtime_context",
     "game.postgame",
@@ -132,36 +132,36 @@ def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
 logger = get_module_logger("main_logic.core", "Main")
 
 
-# 用户静默达到此阈值 → 后台 loop 主动 end_session，让下一条消息触发
-# start_session(new=False) 重新拉 /new_dialog 注入新鲜时间/长间隔提示/节日
-# 上下文，解决长挂机 session 上下文僵化（"猫娘还停留在前一晚"）的问题。
-# 周期检查间隔故意远小于阈值（粒度 ~1 min），避免静默 30:01 时还要再等
-# 一整轮。
+# After this user-silence threshold, the background loop proactively ends the session, making the next message
+# start_session(new=False) fetch /new_dialog with fresh time, long-gap hints, and holiday
+# context, avoiding long-idle sessions stuck on the previous evening.
+# Intentionally check much more often than the threshold, about every minute, avoiding a full extra interval
+# after 30:01 of silence.
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
-# 前端文本会话 start_session 等 session_started 的硬超时（static/app/app-buttons.js
-# 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
-# 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started
-# 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
+# Frontend text-session hard timeout awaiting session_started (static/app/app-buttons.js
+# setTimeout(..., 15000)). Bound start_session deduplication waits for in-flight startup before sending this
+# request's ack by that timeout. A later session_started is meaningless because the frontend
+# already rejected and sent end_session; it naturally bounds the useful acknowledgment window.
 FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
 
-# 跨模式重启时「等 in-flight 落定」的等待上限。必须明显短于前端超时：等完之后
-# 还要花几秒真正起目标模式会话（含最坏 ~12s 的 TTS 就绪等待），若把大半个 15s 都
-# 耗在等待上，重启发出的 session_started 会晚于前端 deadline，前端照样超时、甚至
-# reset 后才收到 ack 起孤儿会话（Codex P2）。取前端超时的一半，给重启留 ~7.5s 余量；
-# in-flight 没在这窗口内落定就放弃（回落 baseline：前端超时、无孤儿）。in-flight
-# （text）正常 1~3s 落定，远在窗口内。注：TTS 冷启动叠加 in-flight 贴线落定的双重
-# 最坏情形仍可能溢出 15s，此时由 start_session 末尾的连接/放弃校验与重启侧守卫兜底。
+# Bound in-flight completion waiting for cross-mode restarts well below frontend timeout: target-mode startup
+# still needs seconds afterward, including up to about 12 s for TTS readiness. Spending most of 15 s
+# waiting would deliver session_started after the frontend deadline, causing timeout or orphan sessions
+# acknowledged after reset (Codex P2). Use half the frontend timeout, leaving about 7.5 s for restart;
+# abandon if in-flight startup misses this window, retaining baseline frontend timeout without orphans. Normal
+# text startup takes 1-3 s. Combined worst-case cold TTS and near-deadline in-flight completion
+# can still exceed 15 s; start_session's final connection/abandonment checks and restart guards handle that.
 CROSS_MODE_RESTART_WAIT_SECONDS = FRONTEND_START_SESSION_TIMEOUT_SECONDS / 2
 
-# 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
-# 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
-# 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
-# handle_text_data / handle_output_transcript 检查此 contextvar：若已设置且与
-# current_speech_id 不符，说明本路径生成的 chunk 已不属于当前轮次，必须丢弃
-# 以免 proactive 文本被错打上用户新 sid 混进用户回复 TTS。
-# contextvar 是 per-task 隔离，不会泄漏到用户 stream_text 所在的独立任务。
+# Expected sid for proactive calls to prompt_ephemeral.
+# prompt_ephemeral enqueues TTS through on_text_delta=handle_text_data callbacks, potentially preempted by
+# user input clearing queues and changing current_speech_id in stream_text.
+# handle_text_data / handle_output_transcript inspect this contextvar: if set and different from
+# current_speech_id, these chunks no longer belong to the current turn and must be discarded,
+# preventing proactive text from receiving the user's new sid and entering reply TTS.
+# contextvars are task-local and cannot leak into the separate user stream_text task.
 _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     '_proactive_expected_sid', default=None,
 )
@@ -175,14 +175,14 @@ _proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
     contextvars.ContextVar('_proactive_published_text_chunks', default=None)
 )
 
-# TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效 / 免费服务黑白名单拦截）
+# Unrecoverable TTS errors forbid respawn: insufficient balance, invalid API keys, or free-service allow/blocklist denial.
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID', 'API_ACCESS_DENIED'}
-# TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（配额不定时重试，但回复时的隐式重试照常）
+# TTS errors reported immediately, bypassing the third-error threshold; quota errors have no timed retry, but reply-triggered implicit retries remain.
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
-# TTS worker 未就绪后的定时 respawn 间隔；API_RATE_LIMIT 按次翻倍，封顶到下一个常量
+# Timed respawn interval after TTS-worker unavailability; double per API_RATE_LIMIT up to the next constant's cap.
 TTS_RESPAWN_DELAY_SECONDS = 13
 TTS_RATE_LIMIT_MAX_RESPAWN_DELAY_SECONDS = 300
-# 限流截止时刻的容差，只给定时 respawn：asyncio 定时器可按时钟精度提前唤醒，不能被自己的截止时刻拦下
+# Rate-limit deadline tolerance only for timed respawn: asyncio timers can wake early by clock resolution and must not reject themselves.
 TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS = 1.0
 
 
@@ -209,10 +209,10 @@ def get_locale_text(language: str | None, dotted_key: str, fallback: str) -> str
     Language chain: explicit ``language`` (else the global full code), its
     short code, ``en``, ``zh-CN`` (``zh-TW`` is kept, issue #2500).
     """
-    # ⚠️ 兜底必须取 full。下面的 format='full' 只能保住已有的字形，救不回
-    # 已经丢掉的：get_global_language() 返回短码，繁中在进这个函数之前就成了
-    # zh，format='full' 再把它扩成 zh-CN，static/locales/zh-TW.json 永远读不到
-    # （issue #2500）。显式传进来的 language 照旧优先。
+    # Fallback must use full locale. format='full' below preserves existing orthography but cannot recover
+    # lost distinctions: get_global_language() returns short codes, collapsing traditional Chinese to
+    # zh before entry, then expanding to zh-CN so static/locales/zh-TW.json is never read
+    # (issue #2500). Explicit language arguments still take precedence.
     raw_lang = language or get_global_language_full()
     try:
         lang_full = normalize_language_code(raw_lang, format='full')
@@ -247,9 +247,9 @@ def get_locale_text(language: str | None, dotted_key: str, fallback: str) -> str
 # session/websocket while also inflating session_start_failure_count.
 _START_LLM_CONCURRENT_ABORTED = object()
 
-# 强引用兜底：事件循环只弱引用 task，分离的收尸 task（lifecycle 的 listener
-# 取消超时 fail-close 后等旧 listener 退出再关旧 session）若无人持有可能被
-# GC 掐死在半路。add + done_callback(discard) 模式。
+# Retain strong references: event loops hold tasks weakly, so detached reapers waiting for old listeners
+# to exit before closing old sessions after cancellation-timeout fail-close could be garbage-collected
+# mid-cleanup. Use add plus done_callback(discard).
 _ORPHAN_SESSION_REAPER_TASKS: set = set()
 
 
@@ -276,11 +276,15 @@ class FreshScreenshot:
       the screen itself. The frontend had no opinion about this image, so the
       caller MAY fall back to the position that came with the original request.
     - ``''``: nothing was captured.
+
+    ``declined`` distinguishes a revoked/limited capture from a technical failure;
+    callers must not revive a Phase-1 image after a decline.
     """
 
     b64: str = ""
     source: str = ""
     avatar_position: dict | None = None
+    declined: bool = False
 
 
 @dataclass(eq=False)
@@ -323,6 +327,7 @@ class _ReplyTurn:
     session: Any = None
     turn_ended: bool = False
     taken_over: bool = False
+    reply_tail: Any = None
 
 
 def _taken_over_reply_turn(kind) -> _ReplyTurn | None:
@@ -367,8 +372,8 @@ def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
         call_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
         if not call_ids:
             continue
-        # execute 路径原子追加 assistant + 紧随其后的各 tool result，所以闭合的
-        # 结果消息是「连续」的；遇到非 tool 消息即停止该 assistant 的结果收集。
+        # execute atomically appends assistant followed by all tool results, making closed result groups
+        # contiguous; stop collecting an assistant's results at the first nontool message.
         result_idx: list[int] = []
         covered: set = set()
         for j in range(i + 1, n):
@@ -378,7 +383,7 @@ def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
                 covered.add(rj.get("tool_call_id"))
             else:
                 break
-        if call_ids <= covered:  # 每个 call 都有结果 → 已闭合，整对删
+        if call_ids <= covered:  # Every call has a result -> closed; delete the whole pair.
             remove.add(i)
             remove.update(result_idx)
     for idx in sorted(remove, reverse=True):

@@ -189,7 +189,7 @@ def test_catgirl_character_id_stays_stable_when_migration_write_is_temporarily_b
         second = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
 
     assert first == second
-    # 写入恢复后，缓存快路径必须先补写同一个 ID；清空缓存重读仍应保持一致。
+    # After writes recover, the cache fast path must first persist the same ID; clearing cache and rereading must remain consistent.
     characters_clock.advance()  # past the write-back backoff
     persisted = cm.load_characters()["猫娘"]["Legacy"]["_reserved"]["character_id"]
     with cm._characters_cache_lock:
@@ -235,7 +235,7 @@ def test_dirty_character_identity_survives_subsequent_source_read_failure(
 
 @pytest.mark.unit
 def test_character_read_failure_never_persists_fallback_defaults(tmp_path):
-    """损坏的角色文件只能触发内存回退，不能被默认角色覆盖。"""  # noqa: DOCSTRING_CJK
+    """A corrupt character file must trigger only an in-memory fallback, never replacement with default characters."""  # noqa: DOCSTRING_CJK
 
     cm = _make_config_manager(tmp_path)
     characters_path = cm.config_dir / "characters.json"
@@ -1833,9 +1833,9 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
 
 @pytest.mark.unit
 def test_profile_rename_event_master_is_person_neutral():
-    """主人改名记录进的是猫娘 persona 的 master section，读者是猫娘、
-    改名的是用户。第一人称会让猫娘误以为是自己改名，所以这里去掉人称、
-    用中性陈述，既不能出现「我」也不带「你」。"""  # noqa: DOCSTRING_CJK
+    """The owner's rename is recorded in the catgirl persona's master section; the reader is the catgirl,
+    while the user is the person renaming. First person would imply the catgirl renamed herself, so use
+    neutral statements with neither "我" nor "你"."""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         PROFILE_RENAME_EVENT_FIELD_MASTER,
         PROFILE_RENAME_EVENT_TEXT_MASTER,
@@ -1849,7 +1849,7 @@ def test_profile_rename_event_master_is_person_neutral():
     zh_label, zh_text = render_profile_rename_event_context("zh-CN", "旧名", "新名", entity="master")
     assert zh_label == "改名记录"
     assert "旧名" in zh_text and "新名" in zh_text
-    # 去人称：既无第一人称「我」也无第二人称「你」。
+    # Remove personal perspective: neither first-person "我" nor second-person "你".
     assert "我" not in zh_text
     assert "你" not in zh_text
 
@@ -1858,7 +1858,7 @@ def test_profile_rename_event_master_is_person_neutral():
     assert "Old" in en_text and "New" in en_text
     assert "My " not in en_text and "Your " not in en_text
 
-    # 缺省（neko）仍是第一人称，主人变体不影响默认行为。
+    # Default (neko) remains first-person; the owner variant does not affect default behavior.
     _, neko_text = render_profile_rename_event_context("zh-CN", "旧名", "新名")
     assert "我曾用名" in neko_text
 
@@ -1885,8 +1885,12 @@ def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
     assert "你" not in context
 
 
-def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
-    """Character config with master rename events and a persisted prompt locale."""
+def _rename_card_sync_fixture(td: str, language: str | None = "zh-CN"):
+    """Character config with master rename events and a persisted prompt locale.
+
+    ``language=None`` leaves ``prompt_locale.json`` unwritten, as for a
+    character whose sessions never declared a language.
+    """
     from memory.persona import PersonaManager
 
     cm = _make_config_manager(Path(td))
@@ -1906,18 +1910,29 @@ def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
     locale_dir = Path(cm.memory_dir) / her_name
     locale_dir.mkdir(parents=True, exist_ok=True)
     locale_path = locale_dir / "prompt_locale.json"
-    locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
+    if language is not None:
+        locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
 
     pm = PersonaManager()
     pm._config_manager = cm
     persona = {"master": {"facts": []}, "neko": {"facts": []}}
 
-    def rename_text() -> str:
+    def rename_entry() -> dict:
         for fact in persona["master"]["facts"]:
             text = str(fact.get("text") or "")
             if text.startswith(("改名记录:", "Profile Rename Record:")):
-                return text
-        return ""
+                return fact
+        return {}
+
+    def rename_text() -> str:
+        return str(rename_entry().get("text") or "")
+
+    def add_master_rename(old_name: str, new_name: str) -> None:
+        current = cm.load_characters()
+        current["主人"]["_reserved"]["ai_context"]["rename_events"].append(
+            {"type": "profile_rename", "old_name": old_name, "new_name": new_name},
+        )
+        cm.save_characters(current)
 
     return SimpleNamespace(
         cm=cm,
@@ -1925,7 +1940,9 @@ def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
         persona=persona,
         her_name=her_name,
         locale_path=locale_path,
+        rename_entry=rename_entry,
         rename_text=rename_text,
+        add_master_rename=add_master_rename,
     )
 
 
@@ -2050,6 +2067,169 @@ def test_persona_card_sync_skips_when_durable_locale_read_fails_transiently():
             assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
 
         assert fx.rename_text() == pinned
+
+
+@pytest.mark.unit
+def test_persona_card_sync_without_durable_locale_keeps_rename_fact_language():
+    """Without prompt_locale.json the session and process languages must not take turns.
+
+    Session-end sync runs in the session language, a background ensure a few
+    seconds later in the process language; both persisted the rename fact, so
+    it flipped between the two sentences on every session.
+    """
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        assert not fx.locale_path.exists()
+
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        first = fx.rename_text()
+        assert first.startswith("改名记录:")
+        assert fx.rename_entry().get("source_fingerprint")
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == first
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_persona_card_sync_without_durable_locale_keeps_rename_fact_language():
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+
+        with language_context("zh-CN"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is True
+        first = fx.rename_text()
+        assert first.startswith("改名记录:")
+
+        with language_context("en"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == first
+
+
+@pytest.mark.unit
+def test_persona_card_sync_without_durable_locale_survives_persona_reload():
+    """The fingerprint must ride along in persona.json, or every reload rewrites the fact."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        with language_context("zh-CN"):
+            fx.pm.ensure_persona(fx.her_name)
+        persona_path = Path(fx.pm._persona_path(fx.her_name))
+        saved = persona_path.read_text(encoding="utf-8")
+        assert "改名记录:" in saved
+
+        fx.pm._personas.clear()
+        with language_context("en"):
+            fx.pm.ensure_persona(fx.her_name)
+
+        assert persona_path.read_text(encoding="utf-8") == saved
+
+
+@pytest.mark.unit
+def test_persona_card_sync_without_durable_locale_rewrites_when_renames_change():
+    """A new rename event changes the fingerprint, so the fact is rendered again."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        old_fingerprint = fx.rename_entry()["source_fingerprint"]
+
+        fx.add_master_rename("棍母", "阿坤")
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        rewritten = fx.rename_text()
+        assert rewritten.startswith("Profile Rename Record:")
+        assert "棍母" in rewritten and "阿坤" in rewritten
+        new_fingerprint = fx.rename_entry()["source_fingerprint"]
+        assert new_fingerprint and new_fingerprint != old_fingerprint
+
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        assert fx.rename_text() == rewritten
+
+
+@pytest.mark.unit
+def test_persona_card_sync_backfills_fingerprint_on_legacy_entry_once():
+    """An entry saved before fingerprints existed is written once, then stays put."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        fx.rename_entry().pop("source_fingerprint")
+
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        backfilled = fx.rename_text()
+        assert fx.rename_entry().get("source_fingerprint")
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        assert fx.rename_text() == backfilled
+
+
+@pytest.mark.unit
+def test_persona_card_sync_with_durable_locale_still_follows_locale_change():
+    """A persisted language keeps text comparison, so changing it re-renders the fact."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language="zh-CN")
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        assert fx.rename_text().startswith("改名记录:")
+        fingerprint = fx.rename_entry()["source_fingerprint"]
+
+        fx.locale_path.write_text('{"language": "en"}', encoding="utf-8")
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        assert fx.rename_text().startswith("Profile Rename Record:")
+        assert fx.rename_entry()["source_fingerprint"] == fingerprint
+
+
+@pytest.mark.unit
+def test_persona_card_sync_user_ai_context_field_still_compares_by_text():
+    """A user field that only shares the __ai_context. prefix is not a synthetic field."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        characters = fx.cm.load_characters()
+        characters["主人"]["__ai_context.profile_rename_events"] = "用户自己写的字段"
+        fx.cm.save_characters(characters)
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+
+        def _user_entry() -> dict:
+            return next(
+                fact for fact in fx.persona["master"]["facts"]
+                if fact.get("text") in ("用户自己写的字段", "用户改过的字段")
+            )
+
+        assert "source_fingerprint" not in _user_entry()
+        characters = fx.cm.load_characters()
+        characters["主人"]["__ai_context.profile_rename_events"] = "用户改过的字段"
+        fx.cm.save_characters(characters)
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        assert _user_entry()["text"] == "用户改过的字段"
+        assert fx.rename_text().startswith("改名记录:")
 
 
 @pytest.mark.unit
@@ -2277,7 +2457,7 @@ async def test_character_management_and_recent_save_regression():
             )
             for corrupt_bytes in (b"{broken-json", b"\xff"):
                 numeric_session_path.write_bytes(corrupt_bytes)
-                # 仍然整体中止（fail-closed），但以结构化 JSON 指出阻塞的剧场文件，而不是抛出裸异常。
+                # Still abort entirely (fail-closed), but return structured JSON identifying the blocking theater file rather than a bare exception.
                 blocked = await characters_router_module.delete_catgirl("测试角色")
                 assert blocked.status_code == 500
                 blocked_payload = json.loads(blocked.body)
@@ -2693,8 +2873,8 @@ async def test_character_rename_and_delete_name_unreadable_theater_file(tmp_path
     """An unreadable theater file of unknown owner fails closed with an actionable JSON error."""
     from main_routers.characters_router import crud
 
-    # 损坏文件的归属只能从正文判断，所以即便该角色从未使用剧场也必须中止；
-    # 但删除和改名都要返回结构化错误，并指出剧场根目录下的具体文件。
+    # A corrupt file's ownership can only be determined from its body, so abort even if this character never used theater;
+    # both deletion and renaming must return structured errors naming the specific file under the theater root.
     bad_file = tmp_path / "numeric_v2" / kind / file_name
     bad_file.parent.mkdir(parents=True)
     bad_file.write_text("{broken", encoding="utf-8")
@@ -2799,7 +2979,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
                 '[{"id":"fact-1","text":"旧记忆"}]',
                 encoding="utf-8",
             )
-            # 构造升级前没有 character_id 的剧场档案和结束回执，验证它们进入同一改名事务。
+            # Construct pre-upgrade theater archives and end receipts without character_id, verifying they join the same rename transaction.
             from services.theater.numeric_v2_archive import NumericV2ArchiveStore
             from services.theater.paths import theater_root
 
@@ -2853,7 +3033,7 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             assert "新角色" in hidden_context
             from memory.persona import PersonaManager
             persona_md = PersonaManager().render_persona_markdown("新角色")
-            # 合成字段的内部裸键不能泄漏进渲染给模型的 persona 文本，只保留本地化标签。
+            # Internal bare keys of synthesized fields must not leak into model-facing persona text; keep only localized labels.
             assert "__ai_context.profile_rename_events" not in persona_md
             assert "我的改名记录" in persona_md
             assert "我曾用名" in persona_md
@@ -2932,8 +3112,8 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
 
             _, _, master_basic_config, _, _, _, _, _, _ = cm.get_character_data()
             hidden_context = master_basic_config["__ai_context.profile_rename_events"]
-            # 主人改名记录进的是猫娘 persona 的 master section，去掉人称用中性陈述，
-            # 既不能第一人称「我」（否则猫娘会以为是自己改了名），也不带第二人称「你」。
+            # Record the owner's rename in the catgirl persona's master section, using neutral statements:
+            # no first-person "我" (which would imply the catgirl renamed herself), nor second-person "你".
             assert "改名记录" in hidden_context
             assert "我" not in hidden_context
             assert "你" not in hidden_context
@@ -2942,7 +3122,7 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
 
             from memory.persona import PersonaManager
             persona_md = PersonaManager().render_persona_markdown(current_catgirl)
-            # 同上：裸键不泄漏，且主人段无人称。
+            # Likewise: bare keys must not leak, and the owner section has no personal perspective.
             assert "__ai_context.profile_rename_events" not in persona_md
             assert "改名记录" in persona_md
             assert old_master_name in persona_md
@@ -3921,10 +4101,10 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_bound_character():
-    # 回归：旧数据 / 半迁移数据可能只有 avatar.asset_source 绑定（例如 live2d_item_id
-    # 迁移只写 avatar.asset_source_id，或用户在模型设置里手动绑定 Workshop 模型），
-    # 没有 character_origin。退订路径已按 avatar 命中删除它并打 tombstone，恢复路径
-    # 也必须按 avatar 命中并清理 tombstone，否则该角色会永远卡在 409。
+    # Regression: old / partially migrated data may bind only avatar.asset_source (e.g. live2d_item_id
+    # migration writes only avatar.asset_source_id, or users manually bind a Workshop model in model settings),
+    # with no character_origin. Unsubscribe already matches via avatar, deletes it, and writes a tombstone;
+    # restore must also match via avatar and clear the tombstone, or this character stays stuck at 409 forever.
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
@@ -4204,8 +4384,8 @@ async def test_sync_single_workshop_character_card_treats_restored_existing_as_s
     assert response["success"] is True
     assert response["restored_deleted_names"] == ["恢复角色"]
     assert response["message"] == "已加入角色卡：恢复角色"
-    # 前端成功提示只读 added_character_names，仅恢复场景也必须带上恢复角色名，
-    # 否则会被 formatWorkshopCharacterNameList 回退成“未知角色卡”。
+    # Frontend success notifications read only added_character_names. Restore-only results must include restored names,
+    # or formatWorkshopCharacterNameList falls back to "unknown character card".
     assert response["added_character_names"] == ["恢复角色"]
 
 
@@ -4266,8 +4446,8 @@ async def test_sync_single_workshop_character_card_treats_restored_existing_as_s
             "WORKSHOP_CHARACTER_NOT_ADDED",
         ),
         (
-            # 真实后端异常被显式标记为 WORKSHOP_SYNC_FAILED 时，必须回 500，
-            # 不能因 target_found / found_character_names 的残留值被误判成业务态。
+            # A genuine backend exception explicitly marked WORKSHOP_SYNC_FAILED must return 500;
+            # stale target_found / found_character_names values must not misclassify it as a business outcome.
             {
                 "added": 0,
                 "backfilled_faces": 0,
@@ -4333,8 +4513,8 @@ async def test_batch_workshop_character_sync_reports_subscription_unavailable():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_workshop_character_sync_reports_internal_failure_as_500():
-    # 后端异常被标记为 WORKSHOP_SYNC_FAILED 时，批量入口也要回 500，
-    # 不能伪装成 success 的“同步完成”。
+    # Bulk endpoints must also return 500 for backend exceptions marked WORKSHOP_SYNC_FAILED,
+    # rather than disguising them as successful synchronization.
     workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
     sync_result = {
         "added": 0,
@@ -5919,15 +6099,15 @@ def test_timeindexed_readonly_open_still_runs_writable_bootstrap_on_first_write(
 
 
 def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp_path):
-    """``TimeIndexedMemory.db_paths`` 是 per-character path cache，cache 命中后
-    短路 return 不会重新校核当前 ``memory_dir``。罕见但可能：``/reload``
-    期间底层 ``storage_policy`` 被改写，或测试 monkeypatch 了 memory_dir，
-    cached 路径就和实际目标分叉。老 SQLAlchemy engine 还连着旧文件，新
-    数据全飘到老位置——``/process`` 的 ``except Exception`` 又把 SQL
-    错误吞掉，表象是 db 永远不更新（time perception 错乱）。
+    """``TimeIndexedMemory.db_paths`` is a per-character path cache. A cache hit
+    short-circuits without rechecking current ``memory_dir``. Rarely, ``/reload``
+    rewrites underlying ``storage_policy``, or a test monkeypatches memory_dir,
+    causing the cached path to diverge. The old SQLAlchemy engine stays on the old file,
+    receiving all new data. ``/process`` additionally swallows SQL errors through
+    ``except Exception``, making the database appear unchanged (disrupting time perception).
 
-    本用例验证 ``_ensure_engine_exists`` 检测到 cached vs expected 漂移
-    后会 dispose 旧 engine + 用 expected 路径重建。
+    Verify that ``_ensure_engine_exists`` detects cached/expected drift,
+    disposes the old engine, and rebuilds using the expected path.
     """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
@@ -5952,7 +6132,7 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
     ensure_calls: list = []
     migrate_calls: list = []
 
-    # 受控的 time_store——第一次返 old，第二次返 new，模拟 memory_dir 漂移。
+    # Controlled time_store: return old first, then new, simulating memory_dir drift.
     current_time_store = {"测试角色": str(old_db_path)}
 
     def _fake_character_data():
@@ -5978,28 +6158,28 @@ def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp
         lambda _engine, _lanlan_name: migrate_calls.append((_lanlan_name, _engine)),
     )
 
-    # 第一次初始化：从 time_store 解析到 old_db_path，engine 缓存
+    # First initialization resolves old_db_path through time_store and caches the engine.
     assert manager._ensure_engine_exists("测试角色") is True
     assert manager.engines["测试角色"] is old_engine
     assert os.path.normcase(str(manager.db_paths["测试角色"])) == os.path.normcase(str(old_db_path))
     assert old_engine.dispose_calls == 0
 
-    # 模拟 memory_dir 漂移——time_store 现在指向 new_db_path
+    # Simulate memory_dir drift: time_store now points to new_db_path.
     current_time_store["测试角色"] = str(new_db_path)
 
-    # 第二次 _ensure_engine_exists：cache 命中但 expected 已变；应 dispose + 重建
+    # Second _ensure_engine_exists: cache hit but expected changed; dispose and rebuild.
     assert manager._ensure_engine_exists("测试角色") is True
     assert old_engine.dispose_calls == 1
     assert manager.engines["测试角色"] is new_engine
     assert os.path.normcase(str(manager.db_paths["测试角色"])) == os.path.normcase(str(new_db_path))
-    # 新 engine 走完整 writable 初始化（确保表结构在新文件里就位）
+    # New engine performs full writable initialization (ensuring the new file has its schema).
     assert ensure_calls[-1] == ("测试角色", new_engine)
     assert migrate_calls[-1] == ("测试角色", new_engine)
 
 
 def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_path):
-    """对偶用例：cached 与 expected 一致时 drift 检测不该误伤——cache 命中
-    应仍然短路，不重建 engine。
+    """Symmetric case: drift detection must not disturb matching cached/expected paths; a cache hit
+    still short-circuits without rebuilding the engine.
     """  # noqa: DOCSTRING_CJK
     from memory.timeindex import TimeIndexedMemory
 
@@ -6047,7 +6227,7 @@ def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_p
     assert manager._ensure_engine_exists("测试角色") is True
     assert manager._ensure_engine_exists("测试角色") is True
     assert manager._ensure_engine_exists("测试角色") is True
-    # 仅第一次创建 engine + bootstrap，后续短路
+    # Only the first call creates and bootstraps the engine; later calls short-circuit.
     assert len(create_calls) == 1
     assert ensure_calls == ["测试角色"]
     assert migrate_calls == ["测试角色"]

@@ -1,4 +1,5 @@
 @import url('base.css');
+@import url('chat_sync.css');
 
 *,
 *::before,
@@ -7010,6 +7011,10 @@ margin-top: 10px;
     background: linear-gradient(135deg, #6f8fbf, #8aaad9);
 }
 
+.card-meta-origin-badge.origin-molili {
+    background: linear-gradient(135deg, #9b6fd8, #b28ae6);
+}
+
 .card-meta-placeholder {
     text-align: center;
     color: #aaa;
@@ -8660,4 +8665,71 @@ margin-top: 10px;
 [data-theme="dark"] .settings-form-layout.panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action.btn.delete:hover:not(:disabled) {
     background: linear-gradient(135deg, #1da8d8, #2f72ff);
     box-shadow: 0 10px 22px rgba(14, 116, 144, 0.34);
+}
+
+/* Card saves apply this compact switch; editing never re-enables a paused role by default. */
+.character-chat-sync-row {
+    display: flex;
+    align-items: center;
+    gap: var(--settings-column-gap, 14px);
+    min-height: 44px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(64, 197, 241, 0.18);
+}
+.character-chat-sync-label {
+    flex: 0 1 var(--settings-label-col, 148px);
+    color: #40566c;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.character-chat-sync-choice {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 48px;
+    width: 48px;
+    min-height: 44px;
+    cursor: pointer;
+}
+.character-chat-sync-choice input {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: inherit;
+}
+.character-chat-sync-track {
+    display: block;
+    width: 48px;
+    height: 28px;
+    border-radius: 14px;
+    background: #cbd9e4;
+    transition: background-color 160ms ease;
+}
+.character-chat-sync-track::after {
+    content: '';
+    display: block;
+    width: 22px;
+    height: 22px;
+    margin: 3px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(24, 62, 89, 0.18);
+    transition: transform 160ms ease;
+}
+.character-chat-sync-choice input:checked + .character-chat-sync-track { background: #30b8ed; }
+.character-chat-sync-choice input:checked + .character-chat-sync-track::after { transform: translateX(20px); }
+.character-chat-sync-choice input:focus-visible + .character-chat-sync-track { outline: 2px solid #087fae; outline-offset: 3px; }
+.character-chat-sync-choice input:disabled { cursor: default; }
+.character-chat-sync-choice input:disabled + .character-chat-sync-track { opacity: 0.45; }
+[data-theme="dark"] .character-chat-sync-label { color: #dbe7f2; }
+[data-theme="dark"] .character-chat-sync-track { background: #3e5265; }
+[data-theme="dark"] .character-chat-sync-choice input:focus-visible + .character-chat-sync-track { outline-color: #8edcff; }
+@media (prefers-reduced-motion: reduce) {
+    .character-chat-sync-track, .character-chat-sync-track::after { transition: none; }
 }

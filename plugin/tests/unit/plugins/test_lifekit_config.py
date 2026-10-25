@@ -16,9 +16,9 @@ def test_hourly_safe_idx_rejects_negative_index() -> None:
 
 
 def test_router_plugin_entries_are_registered() -> None:
-    """确保 @plugin_entry 装饰的 router 方法被 PluginRouter.__init__ 自动注册；
-    否则 LifeKitPlugin.collect_entries 返回的入口只有 lifecycle，12 个 router 的
-    get_weather/find_food/... 全部失效喵。"""
+    """Ensure PluginRouter.__init__ automatically registers router methods decorated with @plugin_entry;
+    otherwise LifeKitPlugin.collect_entries returns only lifecycle entries and all get_weather/find_food/...
+    entries across the 12 routers fail, meow."""
     from plugin.plugins.lifekit.routers import (
         CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
         LocationsRouter, TripRouter, NearbyRouter,
@@ -51,8 +51,8 @@ def test_router_plugin_entries_are_registered() -> None:
 
 
 def test_router_decorated_entries_respect_prefix_and_conflict() -> None:
-    """装饰器入口必须在 collect_entries() 时按当前 prefix 解析，
-    并和 add_entry 保持相同的冲突语义、meta.id 与 key 一致喵。"""
+    """Resolve decorated entries using the current prefix at collect_entries(),
+    matching add_entry conflict semantics and keeping meta.id consistent with the key, meow."""
     from plugin.sdk.plugin import plugin_entry
     from plugin.sdk.shared.core.router import PluginRouter
     from plugin.sdk.shared.models.exceptions import EntryConflictError
@@ -62,7 +62,7 @@ def test_router_decorated_entries_respect_prefix_and_conflict() -> None:
         async def do_thing(self):
             return None
 
-    # prefix 在 __init__ 之后变更时，新 key 必须生效，meta.id 也要跟 key 一致
+    # If prefix changes after __init__, the new key must take effect and meta.id must match it.
     router = _FooRouter()
     assert router.entry_ids == ["do_thing"]
     router.set_prefix("foo.")
@@ -70,7 +70,7 @@ def test_router_decorated_entries_respect_prefix_and_conflict() -> None:
     assert list(entries.keys()) == ["foo.do_thing"]
     assert entries["foo.do_thing"].meta.id == "foo.do_thing"
 
-    # 装饰器 id 与 add_entry 已注册的 id 冲突时必须显式报错（不静默覆盖）
+    # A decorator ID conflicting with an add_entry ID must fail explicitly, never overwrite silently.
     import asyncio
 
     conflict_router = _FooRouter()
@@ -85,14 +85,14 @@ def test_router_decorated_entries_respect_prefix_and_conflict() -> None:
 
 
 def test_registry_entries_preview_includes_routers() -> None:
-    """静态预览（插件未启动时 UI 列出的 entries）必须把 __routers__ 里装饰的入口也覆盖到喵；
-    否则用户在插件管理器里根本看不到 get_weather/unit_convert 这些操作。"""
+    """Static previews (entries listed in UI before plugin startup) must also include decorated __routers__ entries, meow;
+    otherwise users cannot see get_weather/unit_convert and similar actions in the plugin manager."""
     from plugin.core.registry import _extract_entries_preview
     from plugin.plugins.lifekit import LifeKitPlugin
 
     entries = _extract_entries_preview("lifekit", LifeKitPlugin, conf={}, pdata={})
     ids = {e["id"] for e in entries}
-    # 随手挑 3 个分别来自不同 router 的代表入口
+    # Choose three representative entries from different routers.
     for required in ("get_weather", "unit_convert", "food_recommend"):
         assert required in ids, f"static preview missing {required} (got {sorted(ids)})"
 

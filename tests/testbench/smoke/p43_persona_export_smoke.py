@@ -25,7 +25,7 @@ Pure packer:
 
 Endpoint (TestClient + monkeypatched ``session.sandbox.real_paths``):
   X5 — happy: 200 / application/zip / Content-Disposition carries the CJK
-       ``<角色名>.zip`` via RFC 5987; the zip structure round-trips.
+       ``<角色名>.zip`` (character-name ZIP) via RFC 5987; the zip structure round-trips.
   X6 — no session -> 404 NoActiveSession.
   X7 — unknown character -> 404 NoSuchRealCharacter.
   X8 — round-trip: the exported zip imports back cleanly through
@@ -269,7 +269,7 @@ def check_packer() -> list[str]:
         # silently pack sibling B's UNREDACTED files under the A/ prefix. The
         # up-front is_symlink() reject must fire regardless of target (greptile
         # sibling P1).
-        cfg_s2, mem_s2 = _build_real_dir()  # builds CHAR ("小天") as real dir
+        cfg_s2, mem_s2 = _build_real_dir()  # builds CHAR ("小天", Xiaotian) as real dir
         sib = "分身"
         sib_link = mem_s2 / sib
         sib_symlink_ok = True

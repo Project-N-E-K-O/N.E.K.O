@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """Tests for ``validate_chat_payload`` size caps.
 
-背景:``/recent_file/save`` 接收用户粘贴进 recent 的整段对话,之前
-``validate_chat_payload`` 只校验结构(list of {role, text:str}),对
-单条 text 长度 / 总量 / 条数都没有上限。用户复制一坨长文本粘贴进来 →
-原样写盘 → 后续 memory pipeline 喂给 embedder → 触发 batch padding 内
-存炸点(已在 embedder 侧加 token-budget 兜底,这里加入边界硬上限,
-避免异常大对象漫到 ndjson / db / recall 等所有下游)。
+Background: ``/recent_file/save`` accepts complete conversations pasted into recent. Previously,
+``validate_chat_payload`` checked only structure (list of {role, text:str}), without limits on
+individual text length, total size, or item count. A user could paste a huge text block →
+write it unchanged to disk → feed the embedder through the memory pipeline → trigger batch-padding
+memory exhaustion (the embedder already has a token-budget safeguard; add hard boundary caps here
+to keep oversized objects from reaching ndjson / db / recall and other downstream components).
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def test_normal_payload_passes():
 
 
 def test_rejects_oversized_single_message():
-    """单条 text > 32K 字符 → 拒收。这是堵掉「粘贴一大坨」的主入口。"""
+    """Reject individual text > 32K characters: the main defense against pasting a huge block."""
     chat = [{"role": "user", "text": "x" * (_RECENT_MESSAGE_TEXT_MAX_CHARS + 1)}]
     ok, err = validate_chat_payload(chat)
     assert not ok
@@ -36,17 +36,17 @@ def test_rejects_oversized_single_message():
 
 
 def test_accepts_at_limit_single_message():
-    """边界值:正好等于上限的 text 应当通过(off-by-one 守护)。"""
+    """Boundary value: text exactly at the limit must pass (off-by-one guard)."""
     chat = [{"role": "user", "text": "x" * _RECENT_MESSAGE_TEXT_MAX_CHARS}]
     ok, err = validate_chat_payload(chat)
     assert ok, err
 
 
 def test_rejects_total_chars_overflow():
-    """每条都不超单条上限,但累计超 2MB → 拒收(总量攻击防御)。"""
-    # 单条 30K,要超过 2MB 需要 ~70 条
+    """Reject totals above 2MB even when each item is within its limit (aggregate-size attack defense)."""
+    # At 30K per item, exceeding 2MB takes about 70 items
     per_msg = _RECENT_MESSAGE_TEXT_MAX_CHARS - 1000  # < single cap
-    n = (_RECENT_CHAT_TOTAL_CHARS_MAX // per_msg) + 2  # 保证超总量
+    n = (_RECENT_CHAT_TOTAL_CHARS_MAX // per_msg) + 2  # Ensure the total limit is exceeded
     chat = [{"role": "user", "text": "x" * per_msg} for _ in range(n)]
     ok, err = validate_chat_payload(chat)
     assert not ok
@@ -54,7 +54,7 @@ def test_rejects_total_chars_overflow():
 
 
 def test_rejects_too_many_messages():
-    """条数超 10000 → 拒收(冗余防御,即使每条都短)。"""
+    """Reject more than 10000 items (defense in depth even if each is short)."""
     chat = [{"role": "user", "text": "a"} for _ in range(_RECENT_CHAT_MAX_MESSAGES + 1)]
     ok, err = validate_chat_payload(chat)
     assert not ok
@@ -62,7 +62,7 @@ def test_rejects_too_many_messages():
 
 
 def test_structural_validation_still_works():
-    """加上限不影响原有结构校验。"""
+    """Adding limits does not change existing structural validation."""
     ok, err = validate_chat_payload("not a list")
     assert not ok
     assert "列表" in err
@@ -86,7 +86,7 @@ def test_empty_payload_passes():
 
 
 def test_text_field_optional():
-    """没 text 字段的 message 应当通过(原行为)。"""
+    """Messages without a text field must pass, preserving existing behavior."""
     chat = [{"role": "system"}]
     ok, err = validate_chat_payload(chat)
     assert ok, err

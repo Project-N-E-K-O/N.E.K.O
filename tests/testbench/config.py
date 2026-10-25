@@ -30,59 +30,59 @@ from pathlib import Path
 #     panel for avatar/agent-callback/proactive-chat, +Prompt Preview
 #     buttons for Memory/Evaluation, +role=system chokepoint rewrite,
 #     +tester-facing manual.
-#   * v1.2.0 — 上游同步 2026-06 (2026-06-19): merged main up to 2026-07,
+#   * v1.2.0 — upstream sync 2026-06 (2026-06-19): merged main up to 2026-07,
 #     +5 memory-subsystem semantic-contract adapters & smokes (evidence /
 #     hybrid_recall fusion / refine bookkeeping / anti-repeat BM25 / deep-
 #     topic readiness), +free-preset "unusable in testbench" warning on
 #     Settings → Models/Providers, native es/pt language coercion.
-#   * v1.3.0 — P27 记忆溯源 (2026-06-29): +6th workspace "Memory Trace"
+#   * v1.3.0 — P27 memory provenance (2026-06-29): +6th workspace "Memory Trace"
 #     (pure-SVG lineage node graph; Tier A solid / Tier C dashed reverse
 #     attribution).
-#   * v1.4.0 — Memory Trace 打磨 + zip 导入 (2026-06-29): one-click
-#     "推测全部源头" batch text attribution, SVG node text clip + structured
+#   * v1.4.0 — Memory Trace refinement + zip import (2026-06-29): one-click
+#     "推测全部源头" batch text attribution, SVG node text clipping + structured
 #     conversation-content extraction fixes, +third import source
 #     "从 zip 人格档案导入" (POST /api/persona/import_from_archive).
-#   * v1.5.0 — 记忆分析系统 · 向量空间 (2026-06-30): +2nd sub-page
-#     "向量空间" (read-only embedding analysis: 体检/PCA 散点/最近邻/
-#     语义源vs结构源 + 与记忆溯源跳转联动).
-#   * v1.6.0 — 向量空间 · UMAP 按需降维 (2026-06-30): +侧栏 PCA/UMAP
-#     降维切换, +POST /api/memory/embedding/enable_umap 联网按需安装
-#     umap-learn (完善失败处理, cosine metric, 装不上/条目过少回落 PCA),
-#     +坐标缓存 (按角色/维度/语料哈希/reducer).
-#   * v1.7.0 — 向量空间 · 近重复 + 相似度矩阵 (2026-06-30): 补齐 P28 余下
-#     视图 —— ④近重复 (GET /duplicates, 阈值滑块 + 散点连线 + 相似对列表) 与
-#     ⑤相似度矩阵 (GET /matrix, canvas 热力图 + 贪心聚类重排 + 子集下钻).
-#     至此 P28 六视图全部交付.
-#   * v1.7.1 — UMAP 安装修复 (2026-06-30): uv 管理的 .venv 默认无 pip,
-#     enable_umap 改为优先 `uv pip install` (兜底 python -m pip / ensurepip),
-#     修复 "No module named pip" 装不上的问题.
-#   * v1.8.0 — 向量空间 · 自动聚类 + 簇标签 (2026-06-30): 散点自动聚类
-#     (HDBSCAN/numpy 连通分量), +GET /clusters +POST /cluster_labels (LLM 概括).
-#   * v1.8.1 — 加载卡顿 + LLM 失败反馈修复 (2026-06-30): 向量重算改
-#     asyncio.to_thread 不再阻塞全界面; LLM 概括失败把"该填哪个 API"原因透传到前端.
-#   * v1.9.0 — 记忆分析系统 · 系统概况 (2026-06-30): +3rd (默认入口) 子页
-#     "系统概况" —— 只读聚合 P27 溯源 + P28 向量空间, 自动排查冗余重复 / 矛盾记忆
-#     (L0 已记录 / L1 待核对候选 / L2 LLM 裁决) / 归因偏离 / 结构孤儿 / 嵌入健康 /
-#     流水线吞吐 / 晋升保真 / 留存质量, 每条发现一键下钻 + 结论可信度元诊断,
-#     +可选 LLM 体检报告 (GET /overview, POST /overview/ai_report|contradictions).
-#   * v1.9.1 — 系统概况/向量空间 两处发现修复 (2026-06-30): ① 概况「无来源
-#     的人设」(D2) 改用溯源图自身的来源边 (promoted_from/merged_from) 判定,
-#     不再因"合并晋升的人设其单一 source_id 已被合并消解"而误报 (与溯源图一致);
-#     ② 向量空间「声明却不相近」里"未嵌入的来源事实"改为显示真实文本 + (未嵌入)
-#     标注, 不再只给一个 `fact_xxx (∅)` 的无效序号片段.
-#   * v1.9.2 — 系统概况 +新发现 D4「引用了已删除的事实」(2026-07-01): 反思的
-#     source_fact_ids 引用了已被硬删除 (非 absorbed) 的事实 = 引用完整性问题
-#     (删事实时未清理引用它的反思), 概况自动统计并提示, 一键下钻到向量空间桥接视图.
-#   * v1.9.3 — LLM 失败回退不再静默 (2026-07-01): 记忆溯源 Tier C「分析来源
-#     (LLM 精判)」失败回退到文本相似度时, 后端回传结构化 llm_fallback (含原因),
-#     前端在详情栏持久显示"已回退 + 原因概括", 不再只靠一闪而过的 toast. (其它
-#     LLM 回退机制——簇标签→medoid / 概况 AI 报告·矛盾裁决→unavailable——本就已
-#     持久透出原因, 本次统一对齐。)
+#   * v1.5.0 — Memory Analysis System · Vector Space (2026-06-30): +2nd subpage
+#     "向量空间" (read-only embedding analysis: health check/PCA scatter/nearest neighbors/
+#     semantic vs structural sources + linked navigation to memory provenance).
+#   * v1.6.0 — Vector Space · on-demand UMAP dimensionality reduction (2026-06-30): +sidebar PCA/UMAP
+#     toggle, +POST /api/memory/embedding/enable_umap installs
+#     umap-learn on demand (improved failure handling, cosine metric, falls back to PCA if install fails or there are too few items),
+#     +coordinate cache (by character/dimensions/corpus hash/reducer).
+#   * v1.7.0 — Vector Space · near-duplicates + similarity matrix (2026-06-30): completes the remaining P28
+#     views — ④ near-duplicates (GET /duplicates, threshold slider + scatter links + similar-pairs list) and
+#     ⑤ similarity matrix (GET /matrix, canvas heatmap + greedy-clustering reorder + subset drilldown).
+#     All six P28 views are now delivered.
+#   * v1.7.1 — UMAP install fix (2026-06-30): uv-managed .venv has no pip by default;
+#     enable_umap now prefers `uv pip install` (fallback to python -m pip / ensurepip),
+#     fixing the "No module named pip" installation failure.
+#   * v1.8.0 — Vector Space · automatic clustering + cluster labels (2026-06-30): automatic scatter clustering
+#     (HDBSCAN/numpy connected components), +GET /clusters +POST /cluster_labels (LLM summaries).
+#   * v1.8.1 — Loading stalls + LLM failure feedback fix (2026-06-30): vector recomputation now uses
+#     asyncio.to_thread so it no longer blocks the whole interface; LLM-summary failure reasons ("which API to configure") are passed through to the frontend.
+#   * v1.9.0 — Memory Analysis System · System Overview (2026-06-30): +3rd (default landing) subpage
+#     "系统概况" — read-only aggregation of P27 provenance + P28 vector space, automatically checks for redundant/duplicate/conflicting memories
+#     (L0 recorded / L1 candidate pending review / L2 LLM adjudication) / attribution drift / structural orphans / embedding health /
+#     pipeline throughput / promotion fidelity / retention quality; each finding has one-click drilldown + conclusion-confidence meta-diagnostics,
+#     +optional LLM health report (GET /overview, POST /overview/ai_report|contradictions).
+#   * v1.9.1 — Fix findings in System Overview / Vector Space (2026-06-30): ① Overview "persona
+#     without a source" (D2) now uses source edges from the provenance graph itself (promoted_from/merged_from),
+#     avoiding false positives when "the sole source_id of a merged/promoted persona has itself been merged away" (matching the provenance graph);
+#     ② in Vector Space "declared but not similar," show the actual text of "source facts without embeddings" with an (unembedded)
+#     label instead of only an invalid index fragment like `fact_xxx (∅)`.
+#   * v1.9.2 — System Overview + new finding D4 "引用了已删除的事实" (2026-07-01): reflection
+#     source_fact_ids references a fact that was hard-deleted (not absorbed) = referential-integrity issue
+#     (the reference was not cleared when the fact was deleted); System Overview counts and reports it, with one-click drilldown to the Vector Space bridge view.
+#   * v1.9.3 — LLM failure fallback is no longer silent (2026-07-01): Memory Provenance Tier C "分析来源
+#     (LLM 精判)" falls back to text similarity; the backend returns structured llm_fallback (with reason),
+#     the frontend persistently displays "fallback + reason summary" instead of relying on a fleeting toast. Other
+#     LLM fallback mechanisms — cluster labels → medoid / Overview AI report and contradiction adjudication → unavailable — already
+#     persist their reasons; this change brings them into line.
 #
 # When bumping this, remember to:
 #   1. Update ``CHANGELOG.md`` with a dated section.
 #   2. Update ``TESTBENCH_PHASE`` to a short human-readable release
-#      name that will be shown on Settings → About as "当前阶段: X".
+#      name that will appear in Settings → About as "Current stage: X".
 #      Avoid internal blueprint codes (``Pnn``) in this value — those
 #      are developer nomenclature and shouldn't leak into tester UI.
 #   3. Update ``TESTBENCH_LAST_UPDATED`` to the ISO-8601 date of the

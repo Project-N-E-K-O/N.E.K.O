@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from dataclasses import dataclass
 import json
 import os
@@ -16,7 +15,6 @@ import uuid
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.install_source import (
-    InstallSourceError,
     InstallSourceManager,
     get_install_source_manager,
 )
@@ -41,7 +39,6 @@ from plugin.settings import (
     PLUGIN_CONFIG_ROOTS,
     ensure_plugin_exec_state_roots_separated,
     get_plugin_state_root,
-    get_user_package_profiles_root,
     get_user_plugin_config_root,
     get_user_plugin_exec_root,
 )
@@ -108,12 +105,6 @@ class UninstallPluginError(RuntimeError):
             "filesystem_rollback": filesystem_rollback,
             "runtime_restart": runtime_restart,
         }
-
-
-@dataclass(frozen=True, slots=True)
-class _StagedPackageProfile:
-    original_dir: Path
-    staged_dir: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,55 +230,9 @@ async def _start_plugin(plugin_id: str) -> None:
     await PluginLifecycleService().start_plugin(plugin_id, refresh_registry=False)
 
 
-def _profile_path_from_entry_sync(entry: LockEntry, profiles_root: Path) -> Path | None:
-    if entry.channel not in {"imported", "market"}:
-        return None
-    if entry.profile_installed is False:
-        return None
-    package_id = entry.package_id or entry.plugin_id
-    if not package_id:
-        return None
-    candidate = (
-        Path(entry.profile_dir).expanduser()
-        if entry.profile_dir
-        else profiles_root / package_id
-    )
-    if _path_has_symlink_ancestor(candidate):
-        return None
-    try:
-        profile_dir = candidate.resolve()
-    except Exception:
-        return None
-    if profile_dir.name != package_id:
-        return None
-    # A recorded profile location remains valid after the configured profile
-    # root changes. Legacy fallback paths are still constrained to that root.
-    if not entry.profile_dir and (
-        profile_dir != profiles_root and profiles_root not in profile_dir.parents
-    ):
-        return None
-    return profile_dir
-
-
 def _path_has_symlink_ancestor(path: Path) -> bool:
     """Reject a path when resolving it would traverse a symlink."""
     return any(candidate.is_symlink() for candidate in (path, *path.parents))
-
-
-def _has_other_entry_without_package_id(
-    active_entries: Sequence[LockEntry],
-    current_primary_key: tuple[str, str],
-) -> bool:
-    """Report whether another installed row also predates package id tracking."""
-    for entry in active_entries:
-        if entry.channel not in {"imported", "market"}:
-            continue
-        key = (entry.root_id, entry.directory_name)
-        if key == current_primary_key:
-            continue
-        if not entry.package_id:
-            return True
-    return False
 
 
 def _deferred_profile_cleanup_record_path_sync() -> Path:
@@ -356,28 +301,6 @@ def _save_deferred_profile_cleanup_paths_sync(
             pass
 
 
-def _record_deferred_profile_cleanup_sync(
-    staged_profile: _StagedPackageProfile,
-) -> bool:
-    try:
-        record_path = _deferred_profile_cleanup_record_path_sync()
-        paths = _load_deferred_profile_cleanup_paths_sync(record_path)
-        if paths is None:
-            return False
-        staged_path = str(staged_profile.staged_dir)
-        if staged_path not in paths:
-            paths.append(staged_path)
-        _save_deferred_profile_cleanup_paths_sync(record_path, paths)
-        return True
-    except Exception as exc:
-        logger.error(
-            "uninstall: failed to persist deferred profile cleanup for {}: {}",
-            staged_profile.staged_dir,
-            exc,
-        )
-        return False
-
-
 def _is_safe_deferred_profile_cleanup_path(path: Path) -> bool:
     return (
         path.is_absolute()
@@ -387,7 +310,7 @@ def _is_safe_deferred_profile_cleanup_path(path: Path) -> bool:
 
 
 def retry_deferred_profile_cleanup_sync() -> int:
-    """Retry profile cleanup jobs persisted after transient deletion failures."""
+    """Finish legacy committed cleanup jobs; new uninstalls retain profile exports."""
     record_path = _deferred_profile_cleanup_record_path_sync()
     record_paths = [record_path]
     legacy_record_path = _legacy_deferred_profile_cleanup_record_path_sync()
@@ -452,182 +375,6 @@ def retry_deferred_profile_cleanup_sync() -> int:
     return cleaned
 
 
-def _stage_orphaned_package_profile_sync(
-    plugin_dir: Path,
-    *,
-    manager: InstallSourceManager | None = None,
-) -> _StagedPackageProfile | None:
-    """Stage an unshared package profile while deletion is in progress.
-
-    Moving the profile out of its package location prevents a concurrent
-    reinstall from seeing it, but preserves it until executable deletion has
-    succeeded. This lets a failed executable deletion roll back without
-    losing the plugin's persisted configuration.
-    """
-    manager = manager or get_install_source_manager()
-    if manager is None:
-        return None
-
-    try:
-        current_entry = manager.entry_for_directory(
-            plugin_dir,
-            include_removed=False,
-        )
-        active_entries = manager.list_entries()
-    except InstallSourceError as exc:
-        logger.warning(
-            "uninstall: failed to inspect install source for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-        return None
-    except Exception as exc:
-        logger.warning(
-            "uninstall: unexpected install-source cleanup failure for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-        return None
-
-    # Only package installers own package profiles. A scanner-created manual
-    # entry with no profile record must never infer ownership from a matching
-    # directory name.
-    if current_entry is None or current_entry.channel not in {"imported", "market"}:
-        return None
-
-    current_primary_key = (current_entry.root_id, current_entry.directory_name)
-    recorded_package_id = current_entry.package_id
-    if _has_other_entry_without_package_id(active_entries, current_primary_key):
-        # Rows written before the package id was tracked do not say which
-        # package owns their profile, and a bundle's profile is named after the
-        # package rather than after any member plugin. Such a row may be a
-        # sibling from the same bundle that still uses this profile, and the
-        # sharing check below cannot see it: it can only infer that row's
-        # profile from its plugin id, which is not where a bundle profile
-        # lives. This holds whichever side is missing the package id, so the
-        # guard looks at every other installed row rather than only at ours.
-        #
-        # Cost: one such row suppresses profile cleanup for every deletion
-        # until it is itself removed or reinstalled, which degrades to the
-        # pre-change behaviour (a stale profile blocks a reinstall). That is
-        # strictly better than permanently deleting a sibling's configuration.
-        logger.warning(
-            "uninstall: skipping profile cleanup while an installation "
-            "without a recorded package id may share this profile: {}",
-            plugin_dir,
-        )
-        return None
-
-    package_id = recorded_package_id or current_entry.plugin_id
-    if not package_id:
-        return None
-    recorded_profile_dir = current_entry.profile_dir
-    if current_entry.profile_installed is False:
-        return None
-
-    try:
-        profiles_root = get_user_package_profiles_root().resolve()
-        profile_candidate = (
-            Path(recorded_profile_dir).expanduser()
-            if recorded_profile_dir
-            else profiles_root / package_id
-        )
-        if _path_has_symlink_ancestor(profile_candidate):
-            logger.warning(
-                "uninstall: refusing symlinked package profile path: {}",
-                profile_candidate,
-            )
-            return None
-        current_profile_dir = profile_candidate.resolve()
-    except Exception as exc:
-        logger.warning(
-            "uninstall: failed to resolve package profile for plugin_dir={}: {}",
-            plugin_dir,
-            exc,
-        )
-        return None
-
-    state_root = get_plugin_state_root().expanduser().resolve(strict=False)
-    if (
-        current_profile_dir == state_root
-        or state_root in current_profile_dir.parents
-        or current_profile_dir in state_root.parents
-    ):
-        logger.warning(
-            "uninstall: refusing package profile overlapping the persistent "
-            "state root: {}",
-            current_profile_dir,
-        )
-        return None
-
-    builtin_root = Path(BUILTIN_PLUGIN_CONFIG_ROOT).expanduser().resolve(strict=False)
-    if (
-        current_profile_dir == builtin_root
-        or builtin_root in current_profile_dir.parents
-        or current_profile_dir in builtin_root.parents
-    ):
-        logger.warning(
-            "uninstall: refusing package profile overlapping the builtin "
-            "plugin root: {}",
-            current_profile_dir,
-        )
-        return None
-
-    if current_profile_dir.name != package_id or (
-        not recorded_profile_dir
-        and (
-            current_profile_dir != profiles_root
-            and profiles_root not in current_profile_dir.parents
-        )
-    ):
-        logger.warning(
-            "uninstall: refusing unsafe package profile path: {}",
-            current_profile_dir,
-        )
-        return None
-
-    for entry in active_entries:
-        if (entry.root_id, entry.directory_name) == current_primary_key:
-            continue
-        if _profile_path_from_entry_sync(entry, profiles_root) == current_profile_dir:
-            return None
-
-    staged_profile_dir = current_profile_dir.with_name(
-        f".{current_profile_dir.name}.deleting-{uuid.uuid4().hex}"
-    )
-    try:
-        current_profile_dir.replace(staged_profile_dir)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        logger.exception(
-            "uninstall: failed to stage package profile {}", current_profile_dir
-        )
-        raise
-    return _StagedPackageProfile(
-        original_dir=current_profile_dir,
-        staged_dir=staged_profile_dir,
-    )
-
-
-def _restore_staged_package_profile_sync(staged_profile: _StagedPackageProfile) -> None:
-    """Restore a profile after executable deletion failed."""
-    if not staged_profile.staged_dir.exists():
-        return
-    staged_profile.staged_dir.replace(staged_profile.original_dir)
-
-
-def _finalize_staged_package_profile_sync(
-    staged_profile: _StagedPackageProfile,
-) -> Path | None:
-    """Permanently remove a profile only after executable deletion succeeds."""
-    try:
-        shutil.rmtree(staged_profile.staged_dir)
-    except FileNotFoundError:
-        return None
-    return staged_profile.original_dir
-
-
 def _stage_plugin_code_sync(plugin_dir: Path) -> _StagedPluginCode:
     """Stage the code directory with a same-filesystem rename, never rmtree."""
     transaction_id = uuid.uuid4().hex
@@ -658,8 +405,8 @@ def _stage_plugin_code_sync(plugin_dir: Path) -> _StagedPluginCode:
 
 
 def _restore_staged_plugin_code_sync(staged: _StagedPluginCode) -> None:
-    # staged 只在挪走成功后才存在，暂存目录没了就是旧代码回不来了，必须报失败，
-    # 否则回滚会被记成"源码已恢复"。清理照做，最后再抛。
+    # staged exists only after a successful move; missing staging means old code cannot be restored and must fail,
+    # or rollback falsely records source restoration. Still clean up, then raise.
     staged_missing = not staged.staged_dir.exists()
     if not staged_missing:
         staged.staged_dir.replace(staged.original_dir)
@@ -919,9 +666,9 @@ def _registry_failure_matches_target(
 async def _refresh_registry(
     target: _RegistryRefreshTarget,
 ) -> dict[str, object]:
-    # 这里原本要先显式清一次元数据扫描缓存，因为缓存键只看得见插件目录内部、
-    # 看不到共享 vendor/ 或装进 site-packages 的包。缓存没有了，刷新每次都重读
-    # 盘面，所以直接刷新即可。
+    # This previously cleared metadata scan cache explicitly because cache keys saw only plugin-directory contents,
+    # not shared vendor/ or site-packages dependencies. With caching removed, every refresh rereads
+    # disk state, so refresh directly.
     result = await plugin_registry_service.refresh_registry()
     failed = result.get("failed")
     if isinstance(failed, list) and any(
@@ -956,17 +703,16 @@ async def _rollback_precommit(
     source_entry: LockEntry,
     source_update_attempted: bool,
     staged_code: _StagedPluginCode | None,
-    staged_profile: _StagedPackageProfile | None,
     preference_snapshot: _RuntimePreferenceSnapshot,
     preference_update_attempted: bool,
     was_running: bool,
     stop_attempted: bool,
     registry_target: _RegistryRefreshTarget,
 ) -> _RollbackOutcome:
-    """Compensate in reverse stage order: source, code, profile, preference,
+    """Compensate in reverse stage order: source, code, preference,
     registry, then the original runtime. Each step is best effort."""
     filesystem_changed = (
-        source_update_attempted or staged_code is not None or staged_profile is not None
+        source_update_attempted or staged_code is not None
     )
     filesystem_complete = True
     source_restored = True
@@ -988,17 +734,6 @@ async def _rollback_precommit(
             source_restored = False
             logger.exception(
                 "uninstall rollback failed to restore code plugin_id={}", plugin_id
-            )
-    if staged_profile is not None:
-        try:
-            await asyncio.to_thread(
-                _restore_staged_package_profile_sync, staged_profile
-            )
-        except Exception:
-            filesystem_complete = False
-            logger.exception(
-                "uninstall rollback failed to restore profile plugin_id={}",
-                plugin_id,
             )
     preference_restored = True
     if preference_update_attempted:
@@ -1126,7 +861,6 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         _snapshot_runtime_preference, plugin_id
     )
     stop_attempted = False
-    staged_profile: _StagedPackageProfile | None = None
     staged_code: _StagedPluginCode | None = None
     source_update_attempted = False
     preference_update_attempted = False
@@ -1138,12 +872,8 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             stop_attempted = True
             await _stop_plugin(plugin_id)
 
-        stage = "stage_profile"
-        staged_profile = await asyncio.to_thread(
-            _stage_orphaned_package_profile_sync,
-            plugin_dir,
-            manager=manager,
-        )
+        # Package profiles are legacy export artifacts, not runtime state.
+        # Retain existing directories without staging or deleting them.
         stage = "stage_code"
         staged_code = await asyncio.to_thread(_stage_plugin_code_sync, plugin_dir)
 
@@ -1158,21 +888,21 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         restored_builtin = bool(
             restored_meta and restored_meta.get("effective_source") == "builtin"
         )
-        # 卸载之后那条待批准记录一定是过时的：它是为被卸掉的那份代码记的。
-        # 留着的话，恢复出来的内置插件（用户原本就在自启）会被它继续拦下来；
-        # 插件被整个移除时，它也会挂在这个 id 上等着误伤将来的重装（codex）。
+        # After uninstall, pending approval is necessarily stale because it referred to removed code.
+        # Retaining it keeps blocking the restored built-in plugin that the user already autostarted;
+        # if the plugin is removed entirely, it remains on the ID and wrongly blocks future reinstalls (codex).
         #
-        # 但清之前要记下原状态：这一步之后还有预提交步骤会失败，而
-        # _rollback_precommit 会把插件文件和偏好都恢复回去，却不知道批准位被动过。
-        # 一个从没被启动过的新插件在那种回滚之后会变成"已批准"，下次开机直接自启
-        # （codex）。所以下面的 except 分支要把它放回去。
+        # Record the old state before clearing: subsequent precommit steps can fail,
+        # and _rollback_precommit restores plugin files/preferences without knowing the approval bit changed.
+        # A never-started new plugin would then become approved after rollback and autostart next launch
+        # (codex), so restore it in the except branch below.
         autostart_was_pending = not await asyncio.to_thread(
             is_autostart_approved, plugin_id
         )
         if not await asyncio.to_thread(clear_autostart_pending, plugin_id):
-            # 清不掉就不能报成功。盘上那条旧记录会继续拦住恢复出来的内置插件，
-            # 而且同 id 的重装还会继承它（coderabbit）。抛出去交给既有的预提交
-            # 回滚，把卸载恢复回去，比留下一个说不清的状态好。
+            # Failure to clear means failure overall. The old disk record keeps blocking the restored built-in plugin,
+            # and same-ID reinstalls inherit it too (coderabbit). Raise into the existing precommit
+            # rollback to restore the uninstall rather than leave ambiguous state.
             raise UninstallPluginError(
                 code="PLUGIN_AUTOSTART_APPROVAL_PERSIST_FAILED",
                 message=(
@@ -1200,7 +930,6 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             source_entry=source_entry,
             source_update_attempted=source_update_attempted,
             staged_code=staged_code,
-            staged_profile=staged_profile,
             preference_snapshot=preference_snapshot,
             preference_update_attempted=preference_update_attempted,
             was_running=was_running,
@@ -1208,21 +937,21 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             registry_target=registry_target,
         )
         if not rollback.source_restored:
-            # 旧源码没能原样恢复，恢复许可不能留给盘上剩下的东西。只看插件
-            # 自己的源码；包配置目录没恢复好不改变盘上是哪份代码。
+            # If original source cannot be restored exactly, recovery permission must not cover whatever remains on disk. Check only
+            # plugin source; incomplete package-config restoration does not change which code is present.
             from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
 
             revoke_hot_reload_recovery(plugin_id)
         if autostart_was_pending and await asyncio.to_thread(plugin_dir.exists):
-            # 回滚把插件文件放回去了，那条待批准记录也得跟着回去。少了它，一个
-            # 用户从没启动过的插件在一次失败的卸载之后变成"已批准"，下次开机自己
-            # 跑起来（codex）。和别处同一条判据：看盘不看意图——代码真的没了就
-            # 别补记录，否则将来占用这个 id 的插件会被它误伤。
+            # When rollback restores plugin files, restore pending approval too. Otherwise a plugin the user
+            # never started becomes approved after a failed uninstall and automatically
+            # runs next launch (codex). Apply the shared criterion: inspect disk, not intent; if code really is gone,
+            # do not restore a record that would wrongly block a future plugin using this ID.
             if not await asyncio.to_thread(mark_autostart_pending, plugin_id):
-                # 改抛会把真正的失败原因换掉，所以这里不抛；但也不能只写日志——
-                # 补偿失败要跟着回滚结果一起交出去，和 preference_rollback 同一个
-                # 形状（coderabbit）。coderabbit 还要求「持久化一条可恢复的阻止
-                # 状态」，那一半我没做：能持久化的只有刚刚写失败的那个存储。
+                # Reraising would replace the real failure reason, so do not raise here; logging alone is also insufficient.
+                # Return compensation failure with rollback results, matching preference_rollback's
+                # shape (coderabbit). Its additional request to persist recoverable blocking
+                # state is not implemented: the only available persistence store just failed to write.
                 autostart_gate_rollback = "incomplete"
                 logger.error(
                     "uninstall rollback restored plugin {} but could not restore "
@@ -1283,8 +1012,8 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     # here on are reported, never presented as a rolled-back uninstall. ----
     from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
 
-    # 没在跑的插件不会走 stop_plugin；恢复许可要在提交后撤销，否则会被恢复的
-    # 同 ID 内置插件或之后重装的包继承。回滚则保留：旧源码原样回来了。
+    # Stopped plugins do not pass through stop_plugin; revoke recovery permission after commit so restored
+    # same-ID built-ins or reinstalls cannot inherit it. Keep it on rollback, which restores the original source exactly.
     revoke_hot_reload_recovery(plugin_id)
     runtime_restart: RuntimeRestart = "not_needed"
     runtime_restart_error: dict[str, str] | None = None
@@ -1306,7 +1035,6 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             )
 
     cleanup_pending = False
-    deleted_profile_dir: Path | None = None
     try:
         await asyncio.to_thread(_finalize_committed_plugin_code_sync, committed_code)
     except Exception:
@@ -1314,28 +1042,11 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         logger.exception(
             "uninstall committed but code cleanup is pending plugin_id={}", plugin_id
         )
-    if staged_profile is not None:
-        try:
-            deleted_profile_dir = await asyncio.to_thread(
-                _finalize_staged_package_profile_sync,
-                staged_profile,
-            )
-        except Exception:
-            cleanup_pending = True
-            recorded = await asyncio.to_thread(
-                _record_deferred_profile_cleanup_sync, staged_profile
-            )
-            logger.exception(
-                "uninstall committed but profile cleanup is pending plugin_id={} persisted={}",
-                plugin_id,
-                recorded,
-            )
-
     return UninstallPluginResult(
         plugin_id=plugin_id,
         plugin_dir=plugin_dir,
         deleted_from_disk=True,
-        deleted_profile_dir=deleted_profile_dir,
+        deleted_profile_dir=None,
         restored_builtin=restored_builtin,
         preference_action=preference_action,
         filesystem_rollback="not_needed",

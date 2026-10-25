@@ -116,7 +116,7 @@ class RecordingMixin:
 
         Reads the disk file + merges the in-memory not-yet-persisted delta; modifies nothing.
         """
-        # 读磁盘（atomic_write_json 保证文件一致性，无需文件锁）
+        # Read disk (atomic_write_json ensures file consistency without a file lock)
         disk_data = self._load_file(self._storage_path)
         if not disk_data:
             disk_data = self._empty_file_data()
@@ -124,7 +124,7 @@ class RecordingMixin:
         merged_daily = disk_data.get("daily_stats", {})
         all_records = disk_data.get("recent_records", [])
 
-        # 合并内存中未落盘的 delta
+        # Merge in-memory deltas not yet persisted
         with self._lock:
             for day_key, day_delta in self._delta_daily.items():
                 if day_key not in merged_daily:
@@ -133,7 +133,7 @@ class RecordingMixin:
                     _merge_day_stats(merged_daily[day_key], day_delta)
             all_records = all_records + list(self._delta_records)
 
-        # 按 days 过滤
+        # Filter by days
         today = date.today()
         daily = {}
         for i in range(days):
@@ -141,7 +141,7 @@ class RecordingMixin:
             if d in merged_daily:
                 daily[d] = merged_daily[d]
 
-        # 去重 recent_records
+        # Deduplicate recent_records
         unique_records = self._dedupe_records(all_records)
 
         return {
@@ -158,7 +158,7 @@ class RecordingMixin:
         today = date.today().isoformat()
         merged = disk_data.get("daily_stats", {}).get(today, self._empty_day())
 
-        # 合并内存 delta
+        # Merge in-memory deltas
         with self._lock:
             if today in self._delta_daily:
                 _merge_day_stats(merged, self._delta_daily[today])
@@ -182,18 +182,18 @@ class RecordingMixin:
             self._has_recorded_app_start = True
             self._session_start_ts = time.time()
             self._session_process = process
-            self._session_msg_count = 0  # 新 session 起点，轮数清零
+            self._session_msg_count = 0  # New session starts; reset turn count
 
-        # 新埋点：sparse event 走本地 events.jsonl（诊断），同时打 counter
-        # 走远程聚合通道（dashboard 看 DAU / session 总数）。event 因为带
-        # context 字段、暂未集成进远程上报；counter 是聚合数字、走 60s 通道。
+        # New instrumentation: sparse events go to local events.jsonl for diagnostics, while counters
+        # use remote aggregation (dashboard DAU / total sessions). Events include context fields
+        # and are not yet integrated into remote reporting; counters are aggregate numbers sent through the 60s channel.
         try:
             from utils.instrument import event as _instr_event, counter as _instr_counter
             _instr_event("session_start", process=process)
             _instr_counter("session_start", process=process)
         except Exception:
-            # 埋点失败不能挡 app 启动 —— 老 record() 路径下面已经跑过，
-            # DAU 仍能从 by_call_type='app_start' 统计出来，不会丢用户。
+            # Instrumentation failures must not block startup: the existing record() path below has already run,
+            # so DAU remains countable through by_call_type='app_start', without losing users.
             pass
 
         self.record(
@@ -207,9 +207,9 @@ class RecordingMixin:
             success=True,
         )
 
-        # 启动快照：当前主动搭话 / 隐私设置。只在 main_server 打，避免多进程
-        # （agent/memory_server 也跑 record_app_start）把同一份设置重复计 3 次。
-        # settings 是 user-facing 概念，跟 main 进程绑定最自然。
+        # Startup snapshot: current proactive-chat/privacy settings. Record only in main_server to avoid multiple processes
+        # (agent/memory_server also call record_app_start) counting the same settings three times.
+        # Settings are user-facing, making the main process the natural owner.
         if process == "main_server":
             record_settings_state()
 
@@ -236,7 +236,7 @@ class RecordingMixin:
             if anchor > 0:
                 _h("time_to_first_message_sec", max(0.0, time.time() - anchor))
         except Exception:
-            # 埋点失败不能挡用户消息处理
+            # Instrumentation failure must not block user-message processing
             pass
 
     def note_user_message(self, input_type: str = "text"):
@@ -258,7 +258,7 @@ class RecordingMixin:
             from utils.instrument import counter as _c
             _c("user_message_sent", input_type=input_type)
         except Exception:
-            # 埋点失败不能挡用户消息处理
+            # Instrumentation failure must not block user-message processing
             pass
 
     def note_core_loop_completed(self):
@@ -280,15 +280,15 @@ class RecordingMixin:
             if self._core_loop_recorded:
                 return
             if not self._first_user_message_recorded:
-                return  # 用户还没开口，不算用户发起的核心 loop
+                return  # The user has not spoken yet, so this is not a user-initiated core loop
             self._core_loop_recorded = True
 
         try:
             from utils.instrument import counter as _c
             _c("core_loop_completed")
         except Exception:
-            # 埋点 best-effort；前面已置位 _core_loop_recorded，丢一次计数
-            # 不影响幂等，也不该影响调用方（音频投递路径）。
+            # Instrumentation is best-effort; _core_loop_recorded is already set, so losing one count
+            # does not break idempotency and must not affect the caller (audio-delivery path).
             pass
 
     def has_completed_core_loop(self) -> bool:

@@ -1,6 +1,6 @@
 """Unit tests for ``scripts/check_module_layering.py``.
 
-Two-pronged coverage:
+Three-pronged coverage:
 
 1. End-to-end: run the real script against the live repo. Exit must be 0.
    This is the gate that will fail CI the moment someone introduces a new
@@ -10,10 +10,15 @@ Two-pronged coverage:
    handful of ``edges`` and assert the analyzer flags the right things.
    We poke ``find_violations`` directly so the unit test stays fast and
    doesn't touch the filesystem.
+
+3. Registration completeness: a top-level directory with Python code that
+   is in no layer fails the gate. Exercised on throwaway trees under
+   ``tmp_path``.
 """
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -327,3 +332,172 @@ def test_public_knowledge_boundaries_are_forbidden_edges(script_module) -> None:
         "plugin/server/routes/knowledge_bridge.py",
         "knowledge/service.py",
     }
+
+
+@pytest.mark.unit
+def test_services_boundaries_are_forbidden_edges(script_module) -> None:
+    """``services`` shares L2 with main_logic and knowledge, so layers alone
+    allow services -> main_logic and services -> knowledge. main_logic
+    imports services, and services is Main-side code that must reach public
+    knowledge over HTTP, so ``FORBIDDEN_EDGES`` pins both. Its L2 peer memory
+    and everything below stay importable."""
+    root = script_module.REPO_ROOT
+
+    def edge(rel: str, dst: str):
+        src = rel.split("/", 1)[0]
+        return (root / rel, 1, 1, src, dst, f"import {dst}")
+
+    edges = [
+        edge("services/chat_sync/profile_sync.py", "main_logic"),
+        edge("services/theater/tts_bridge.py", "main_logic"),
+        edge("services/chat_sync/source.py", "knowledge"),
+        # Allowed: same-layer memory, lower layers, and the reverse direction.
+        edge("services/theater/numeric_v2_archive.py", "memory"),
+        edge("services/chat_sync/runtime.py", "utils"),
+        edge("services/chat_sync/runtime.py", "config"),
+        edge("main_logic/core/greeting.py", "services"),
+        edge("main_routers/chat_sync_router.py", "services"),
+    ]
+    flagged = {
+        (found[0][0].relative_to(root).as_posix(), found[0][4])
+        for found in script_module.find_forbidden_edges(edges)
+    }
+    assert flagged == {
+        ("services/chat_sync/profile_sync.py", "main_logic"),
+        ("services/theater/tts_bridge.py", "main_logic"),
+        ("services/chat_sync/source.py", "knowledge"),
+    }
+
+
+@pytest.mark.unit
+def test_services_theater_workshop_and_launcher_core_are_layered(script_module) -> None:
+    """services is an L2 peer of main_logic, theater_workshop an L3 peer of
+    main_routers and launcher_core an L6 entrypoint next to app. With the
+    real layers, services importing main_routers is an inversion while the
+    legitimate edges of the three packages are not."""
+    layer = script_module.PACKAGE_TO_LAYER
+    assert layer["services"] == layer["main_logic"] == 2
+    assert layer["theater_workshop"] == layer["main_routers"] == 3
+    assert layer["launcher_core"] == layer["app"] == 6
+
+    edges = [
+        _make_edge("services", "main_routers"),
+        _make_edge("services", "memory"),
+        _make_edge("theater_workshop", "services"),
+        _make_edge("launcher_core", "app"),
+        _make_edge("main_logic", "services"),
+    ]
+    inversions, cycles = script_module.find_violations(edges)
+    assert [(e[3], e[4]) for e in inversions] == [("services", "main_routers")]
+    assert cycles == []
+
+
+# ---------------------------------------------------------------------------
+# 3. Registration completeness
+# ---------------------------------------------------------------------------
+
+
+def _write(root: Path, rel: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+
+
+def _write_tree(root: Path) -> None:
+    """A tree where only ``newpkg`` is an unregistered top-level package."""
+    for rel in (
+        "registered/mod.py",
+        "scripts/tool.py",                # UNLAYERED_TOP_LEVEL
+        "tests/test_mod.py",              # EXCLUDE_DIRS
+        "docs/conf.py",                   # EXCLUDE_DIRS
+        ".hidden/mod.py",                 # dot-directory
+        "data_only/readme.txt",           # no Python
+        "vendored/node_modules/mod.py",   # Python only under an excluded dir
+        "launcher.py",                    # root-level module, not a directory
+        "newpkg/sub/mod.py",
+    ):
+        _write(root, rel)
+
+
+@pytest.mark.unit
+def test_unregistered_package_is_reported_without_git(
+    script_module, tmp_path, monkeypatch,
+) -> None:
+    """Without git, the filesystem walk reports a top-level directory holding
+    Python code that is in no layer, and only that one."""
+    monkeypatch.setattr(script_module, "_tracked_python_files", lambda root: None)
+    _write_tree(tmp_path)
+    found = script_module.find_unregistered_packages(tmp_path, {"registered"})
+    assert found == [("newpkg", "newpkg/sub/mod.py")]
+    # Registering it clears the report.
+    assert script_module.find_unregistered_packages(
+        tmp_path, {"registered", "newpkg"},
+    ) == []
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_unregistered_package_check_reads_git_index(
+    script_module, tmp_path, monkeypatch,
+) -> None:
+    """With git, only tracked files count: an untracked local scratch
+    directory and a tracked file deleted from the working tree are ignored,
+    while a tracked unregistered package is still reported."""
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=str(tmp_path), check=True, capture_output=True,
+        )
+
+    git("init", "-q")
+    _write_tree(tmp_path)
+    _write(tmp_path, "gone/mod.py")
+    git("add", "-A")
+    (tmp_path / "gone" / "mod.py").unlink()
+    _write(tmp_path, "scratch/mod.py")  # untracked
+
+    assert script_module._tracked_python_files(tmp_path) is not None
+    found = script_module.find_unregistered_packages(tmp_path, {"registered"})
+    assert found == [("newpkg", "newpkg/sub/mod.py")]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_tree_inside_another_checkout_falls_back_to_the_filesystem(
+    script_module, tmp_path, monkeypatch,
+) -> None:
+    """An exported tree unpacked inside some other git work tree must not be
+    judged by that outer repository's index, which tracks none of its files."""
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True, capture_output=True)
+    exported = tmp_path / "exported"
+    _write_tree(exported)
+
+    assert script_module._tracked_python_files(exported) is None
+    found = script_module.find_unregistered_packages(exported, {"registered"})
+    assert [directory for directory, _ in found] == ["newpkg"]
+
+
+@pytest.mark.unit
+def test_live_repo_has_no_unregistered_packages(script_module) -> None:
+    """Every top-level directory of the repo with Python code has a layer."""
+    assert script_module.find_unregistered_packages(
+        script_module.REPO_ROOT, script_module.KNOWN_PACKAGES,
+    ) == []
+
+
+@pytest.mark.unit
+def test_main_fails_on_unregistered_package(script_module, monkeypatch, capsys) -> None:
+    """``main`` runs the completeness check and tells how to register."""
+    monkeypatch.setattr(script_module, "collect_edges", lambda paths: [])
+    monkeypatch.setattr(
+        script_module, "find_unregistered_packages",
+        lambda root, known: [("newpkg", "newpkg/mod.py")],
+    )
+    assert script_module.main([]) == 1
+    out = capsys.readouterr().out
+    assert "newpkg/  UNREGISTERED_PACKAGE  newpkg/mod.py" in out
+    assert "Add 'newpkg' to LAYERS" in out

@@ -1,28 +1,28 @@
 """Stage Coach HTTP surface (P14).
 
-五个端点, 全部薄封装 :mod:`pipeline.stage_coordinator`:
+Five thinly wrapped endpoints from :mod:`pipeline.stage_coordinator`:
 
-* ``GET   /api/stage``            — 当前阶段 + 推荐 op + 上下文快照 + 历史
-* ``POST  /api/stage/preview``    — 一律 412 PreviewUnsupported (stage 层
-                                     不包 dry-run; memory op 去 Setup →
-                                     Memory 点 Trigger, evaluation op
-                                     去 Evaluation → Run 子页或直接调
+* ``GET   /api/stage``            — current stage + recommended op + context snapshot + history
+* ``POST  /api/stage/preview``    — always 412 PreviewUnsupported (the stage layer does
+                                     not wrap dry-run; for memory ops, go to Setup →
+                                     Memory and click Trigger; for evaluation ops,
+                                     go to the Evaluation → Run subpage or call
                                      ``/api/judge/run`` {persist:false})
-* ``POST  /api/stage/advance``    — 推进到下一阶段 (循环: evaluation →
-                                     chat_turn), 只改 stage_state, 不跑副作用
-* ``POST  /api/stage/skip``       — 同 advance 但 history 标 ``skipped=true``
-* ``POST  /api/stage/rewind``     — 跳到任意合法阶段, 历史保留不截断
+                                     the endpoint directly
+                                     chat_turn), changing only stage_state and running no side effects
+* ``POST  /api/stage/skip``       — same as advance, but marks history ``skipped=true``
+* ``POST  /api/stage/rewind``     — jump to any valid stage; keep history without truncating it
 
-PLAN §P14: **Stage Coach 永远只建议 + 预览 + 等确认, 绝不自动跑任何副作用**.
-因此 stage 的切换**只能**通过本 router 显式触发 — ``/chat/send`` /
-``/chat/auto_dialog/start`` / ``/chat/script/*`` 等业务端点不会自动把
-stage 从 chat_turn 推到 post_turn_memory_update; 测试人员必须点 UI 按钮.
+PLAN §P14: **Stage Coach only recommends + previews + waits for confirmation; it never runs side effects automatically**.
+Therefore stage transitions can **only** be triggered explicitly through this router — ``/chat/send`` /
+``/chat/auto_dialog/start`` / ``/chat/script/*`` and other business endpoints do not automatically move
+stage from chat_turn to post_turn_memory_update; testers must click the UI button.
 
-锁粒度 (与 P04/P06/P10 对齐):
-* GET /stage: 不进 session_operation — 纯读快照, 允许与任何 BUSY op 并发观测
-* POST advance/skip/rewind: 进 session_operation(BUSY), 与 /chat/send 等
-  互斥 (避免在 stream 中间切 stage 造成 history 错位), 持锁时间极短
-* POST preview: 同 GET, 不进 session_operation (P14 里它必然直接 412)
+Lock granularity (aligned with P04/P06/P10):
+* GET /stage: does not enter session_operation — read-only snapshot, can observe any BUSY operation concurrently
+* POST advance/skip/rewind: enters session_operation(BUSY), mutually exclusive with /chat/send and others
+  (prevents history misalignment from changing stage mid-stream); the lock is held very briefly
+* POST preview: like GET, does not enter session_operation (it always returns 412 under P14)
 """
 from __future__ import annotations
 

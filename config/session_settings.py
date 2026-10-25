@@ -17,265 +17,265 @@
 
 # ---- Main: session / avatar / omni ----
 SESSION_ARCHIVE_TRIGGER_TOKENS = 5000
-"""会话历史归档触发的累计 token 总量。
-- 用途：core.py 主循环每 turn-end 后检查；超过则置
-  is_preparing_new_session=True，触发记忆压缩 + 新会话准备。
-- 上游：当前会话的 conversation_history。
-- 限制：仅对 OmniOfflineClient 路径生效（realtime 不维护历史，走轮次触发）。
-- 设计依据：用户一轮平均 ~150 token + AI 一轮平均 ~400 token =
-  ~550/轮；5000/550 ≈ 9 轮触发归档（与 SESSION_TURN_THRESHOLD 对齐）。"""
+"""Cumulative token threshold triggering session-history archiving.
+- Purpose: core.py checks after each turn-end; exceeding sets
+  is_preparing_new_session=True, triggering memory compression/new-session preparation.
+- Upstream: current session conversation_history.
+- Scope: OmniOfflineClient only; realtime keeps no history and uses turn triggers.
+- Rationale: average user turn ~150 tokens +AI turn ~400 tokens =
+  ~550/round; 5000/550 ≈9 rounds, matching SESSION_TURN_THRESHOLD."""
 
 SESSION_TURN_THRESHOLD = 10
-"""触发会话归档的用户轮次阈值。
-- 用途：core.py:_session_turn_count >= 此值触发新会话准备（与
-  SESSION_ARCHIVE_TRIGGER_TOKENS 是 OR 关系，任一满足即触发）。
-- 计数语义：仅用户输入计数（AI 回复不算），见 core.py:980。
-- 设计依据：~10 轮约对应 5500 token 总量，跟 token 触发对齐。"""
+"""User-turn threshold triggering session archiving.
+- Purpose: core.py:_session_turn_count >=this value starts new-session preparation,
+  ORed with SESSION_ARCHIVE_TRIGGER_TOKENS; either suffices.
+- Counts only user inputs, not AI replies; see core.py:980.
+- Rationale: ~10 turns correspond to ~5500 total tokens, aligning token triggers."""
 
 USER_DIRECTIVE_TTL_SECONDS = 3 * 86400
-"""用户显式 ban-topic 指令（"别再提 X / stop saying X"）的**基础**存活时长。
-- 用途：memory/user_directives.py 的 active 判定 + render_prompt_block
-  注入到下次 session 启动的 system prompt。
-- 设计依据：用户态度的有效期介于"本轮结束"和"永久偏好"之间——3 天足够覆盖
-  连续几天的会话上下文又不至于把一时情绪固化成长期人设。
-- ⚠️ 这是 hit_count==1（只说过一次）时的时长。重复说同一条会按
-  USER_DIRECTIVE_TTL_MAX_SECONDS 封顶线性递增，见该常量。
-- 上游：main_logic/core.py:_build_initial_prompt 注入；
-  memory/user_directives.py:UserDirectivesManager 内部判活 + 清理。"""
+"""**Base** lifetime of explicit user ban-topic commands (\"别再提 X / stop saying X\").
+- Purpose: memory/user_directives.py active checks plus render_prompt_block
+  inject into the next session's system prompt.
+- Rationale: attitudes last between one turn and permanent preferences; 3 days covers
+  consecutive sessions without hardening transient feelings into lasting personas.
+- ⚠ This applies at hit_count==1, mentioned once. Repetitions increase linearly
+  up to USER_DIRECTIVE_TTL_MAX_SECONDS; see that constant.
+- Upstream: main_logic/core.py:_build_initial_prompt injection;
+  memory/user_directives.py:UserDirectivesManager liveness/cleanup."""
 
 USER_DIRECTIVE_TTL_MAX_SECONDS = 30 * 86400
-"""ban-topic 指令按重复次数递增后的 TTL 上限（30 天）。
-- 用途：memory/user_directives.py:_effective_ttl —— 实际 TTL =
-  min(USER_DIRECTIVE_TTL_SECONDS * hit_count, 本常量)。说 1 次 3 天，
-  说 2 次 6 天，说 10 次及以上封顶 30 天。
-- 设计依据：说一次可能是当下情绪，反复说就是稳定偏好，两者不该同一个
-  有效期——但递增必须封顶，否则刷几十次就等于写进人设，而 ban list 是
-  纯 prompt 约束、用户今天还没有界面能删（管理面另行补）。30 天足够长到
-  "用户真的不想听"能被尊重，又短到一次误抽取不会长期占位。
-- ⚠️ 只有**再次命中**才会刷新 expire_at；沉默不续期。所以封顶值是
-  "最后一次说完之后还能记多久"，不是累计寿命。"""
+"""Repeated ban-topic TTL ceiling: 30 days.
+- Purpose: memory/user_directives.py:_effective_ttl computes
+  min(USER_DIRECTIVE_TTL_SECONDS * hit_count, this constant). 1 mention gives 3 days,
+  2 gives 6; 10 or more caps at 30 days.
+- Rationale: one mention may be momentary emotion, repetitions stable preferences; lifetimes
+  should differ, but remain capped or dozens of repeats effectively become permanent personas.
+  Ban lists constrain prompts only, currently lacking user deletion UI (management follows separately).
+  30 days respects genuine avoidance without letting one extraction mistake persist too long.
+- ⚠ Only another **hit** refreshes expire_at; silence never renews. The cap means
+  retention after the final mention, not cumulative lifetime."""
 
 USER_DIRECTIVE_MAX_ACTIVE = 20
-"""注入到 system prompt 的活跃 ban-topic 上限。
-- 用途：UserDirectivesManager.get_active 截断到 last_seen 最新的 N 条。
-- 设计依据：超过 20 个不同 ban-topic 同时活跃几乎一定是抽取出错或用户在
-  故意刷指令——截断比把 prompt 塞爆好。
-- ⚠️ 这是**读取/注入**侧的上限，不是落盘上限；落盘见
-  USER_DIRECTIVE_MAX_STORED。"""
+"""Maximum active ban-topic directives injected into system prompts.
+- Purpose: UserDirectivesManager.get_active takes N latest last_seen entries.
+- Rationale: over 20 simultaneously active topics almost certainly indicates extraction errors
+  or deliberate spam; truncate rather than overload prompts.
+- ⚠ This caps **reading/injection**, not persistence; see
+  USER_DIRECTIVE_MAX_STORED for disk limits."""
 
 USER_DIRECTIVE_MAX_STORED = 60
-"""user_directives.json 的落盘条数上限，超限按 last_seen_at 从旧到新淘汰。
-- 用途：UserDirectivesManager.record 写入后 rotate。
-- 为什么需要：在 TTL 递增之前，条目最多活 3 天，文件靠过期自然收敛；递增到
-  最长 30 天之后，一个爱刷指令的用户能把文件堆到上千条——每次 record 都要
-  全量读+全量写，而落盘跑在**同步 fan-out** 链上（见 _save_unlocked 注释），
-  文件越大越拖慢用户每条消息的处理。
-- 取值依据：MAX_ACTIVE（20）的 3 倍。注入只取最新 20 条，多留两倍是给
-  "旧条目被冷落一阵又被重新提起"留回旋余地；再多则纯属占磁盘。
-- 淘汰序与 get_active 的排序**对偶**：都按 last_seen_at，一个取最新 N 条
-  注入，一个丢最旧的。最久没被提起的先走。"""
+"""user_directives.json entry cap; evict oldest last_seen_at first.
+- Purpose: UserDirectivesManager.record rotates after writes.
+- Need: before incremental TTL, 3-day expiration naturally bounded files; extending
+  up to 30 days lets spammers create thousands of entries. Every record reads/writes
+  whole files on **synchronous fan-out** (see _save_unlocked),
+  slowing every user message as files grow.
+- Value: 3 times MAX_ACTIVE=20. Injection needs only latest 20; retaining two extra
+  windows allows old neglected entries to be mentioned again; more only wastes disk.
+- Eviction mirrors get_active ordering: both use last_seen_at, one injecting newest N,
+  the other removing oldest; least recently mentioned leaves first."""
 
-# ── 防复读（anti-repeat）BM25 相关 ─────────────────────────────────
+# ── Anti-repeat BM25 settings ─────────────────────────────────
 ANTI_REPEAT_BG_WINDOW = 100
-"""anti-repeat corpus 背景窗口长度（最近 N 条 AI 输出）。
-- 用途：memory/anti_repeat.py 的滚动 corpus 保留最近 N 条文本算 DF。
-- 设计依据：100 条 ≈ 用户半天到一天的对话量；窗口太短 IDF 不稳定，太长
-  又会让一周前的偶发话题永远算"高 IDF unique"。"""
+"""Anti-repeat background corpus window: latest N AI outputs.
+- Purpose: memory/anti_repeat.py retains N texts for DF calculation.
+- Rationale: 100 is roughly half-to-one day of dialogue; short windows destabilize IDF,
+  while long ones keep week-old incidental topics artificially unique/high-IDF."""
 
 ANTI_REPEAT_FG_WINDOW = 5
-"""anti-repeat 前景窗口长度（最近 N 条算"是否重复"）。
-- 用途：BM25 评分把最近 N 条当 query corpus 算 TF；新 draft 与这 5 条比。
-- 设计依据：5 条 ≈ 用户最近能感知到的复读窗口；7+ 已经记不清了。"""
+"""Anti-repeat foreground window: recent N entries checked for repetition.
+- Purpose: BM25 uses these as query corpus for TF; compare new drafts with these 5.
+- Rationale: 5 matches perceptible recent repetition; 7 or more becomes hard to remember."""
 
 ANTI_REPEAT_FG_TTL_SECONDS = 600.0
-"""anti-repeat 前景窗口的时间新鲜度上限（秒）。仅作用于 FG（TF/复读判定），
-不影响 BG（DF/IDF 词频背景，仍按 ANTI_REPEAT_BG_WINDOW 条数封顶）。
-- 用途：memory/anti_repeat.py 的 score_draft / top_recent_topics 只把「最近
-  ANTI_REPEAT_FG_TTL_SECONDS 内」的输出计入前景 TF；更早的条目照旧留在 BG
-  里贡献 IDF。
-- 设计依据：修复「空闲死锁」——主动搭话在用户空闲时才触发，而所有 drop 路径
-  都不写 corpus、成功投递才写，于是空闲期 FG 窗被最近几条同话题（如屏幕解说）
-  冻结，每轮打出同样的超高 BM25 → 永远 drop → 永远无法搭话。加了 TTL 后，空闲
-  超此时长 FG 自然清空、bm25_score 命中 `not fg_docs` 返回 0，本轮放行。
-- 取值：10 分钟。防复读本就只防「刚说过、又说一遍」的 back-to-back 复读；十分钟
-  前说过的话题再提不算复读。BG（IDF 语境）不设 TTL，评分质量不受影响。"""
+"""Foreground anti-repeat freshness limit, seconds, affecting only FG (TF/repetition),
+not BG (DF/IDF background, still count-capped by ANTI_REPEAT_BG_WINDOW).
+- Purpose: memory/anti_repeat.py score_draft/top_recent_topics includes only outputs within
+  ANTI_REPEAT_FG_TTL_SECONDS in foreground TF; older entries remain in BG
+  contributing IDF.
+- Rationale: fix idle deadlocks. Proactive chat triggers only while users idle, and drops never
+  update corpus, only successful deliveries do; recent same-topic entries (screen commentary)
+  freeze FG, repeatedly producing high BM25 ->permanent drops ->no more speech. TTL makes
+  FG empty naturally after idle, so bm25_score's `not fg_docs` returns 0 and allows delivery.
+- Value: 10 minutes. Guard immediate repetition, not revisiting topics ten minutes later.
+  BG IDF context has no TTL, preserving score quality."""
 
 ANTI_REPEAT_UNANSWERED_WINDOW = 64
-"""用户持续无互动时，长窗口复读信号最多检查的主动搭话条数。
-- 与 FG 的「最近 5 条 / 10 分钟」不同，这里要识别隔几轮才出现一次的雷同内容。
-- 64 条足以覆盖高频主动搭话的一整段使用时段，同时保持 O(N) 检查足够小。"""
+"""Maximum proactive entries inspected for long-window repetition during continuous user inactivity.
+- Unlike FG's latest 5 /10 minutes, detect similarities recurring every several rounds.
+- 64 covers a sustained high-frequency proactive period while keeping O(N) small."""
 
 ANTI_REPEAT_UNANSWERED_MAX_AGE_SECONDS = 86400.0
-"""用户持续无互动时，长窗口复读信号回看的最长时间（24 小时）。
-- 只有用户最后一条真实消息（或本次进程开始观察）之后的主动搭话会参与；
-  用户一旦互动，旧的「未回应」证据立即失效。
-- 24 小时用于抓跨小时、非连续复读，不把更早的表达固化成长期禁题。"""
+"""Maximum long-window repetition lookback during continuous inactivity: 24 hours.
+- Include only proactive messages after the user's latest genuine message or process observation start;
+  any user interaction immediately invalidates old unanswered evidence.
+- 24 hours catches nonconsecutive cross-hour repetition without making older topics permanent bans."""
 
 ANTI_REPEAT_UNANSWERED_SIMILARITY_THRESHOLD = 0.85
-"""长窗口内两条主动搭话的 ngram Dice 相似度阈值。
-- 聚焦用户实际遇到的近乎逐字复读，避免把围绕同一主题的正常改写误判为重复。
-- 仍低于字面 SequenceMatcher 的 0.90 硬阈值，并通过长窗口捕获隔几轮或跨小时
-  再次出现的高度相似内容。
-- 必须再满足多次命中 + 用户持续无互动，不能单独作为拦截依据。"""
+"""Ngram Dice similarity threshold between proactive messages in long windows.
+- Target near-verbatim user-visible repetition, without rejecting ordinary same-topic paraphrases.
+- Still below literal SequenceMatcher's 0.90 hard threshold; long windows catch highly similar
+  content recurring several rounds or hours later.
+- Require multiple matches plus continued user inactivity; never block on this signal alone."""
 
 ANTI_REPEAT_UNANSWERED_MIN_MATCHES = 2
-"""当前草稿至少命中多少条未获回应的相似主动搭话才触发干预。
-- 2 条历史命中意味着当前草稿是同类内容的第三次出现；
-  单次撞题只作为弱信号，不触发 regen / drop。"""
+"""Minimum similar unanswered proactive-history matches triggering draft intervention.
+- 2 historical matches make this draft the third occurrence;
+  one topic collision is weak evidence, insufficient for regen/drop."""
 
 ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS = 4
-"""长窗口主动搭话内容形状评分的最小 ngram 数。
-- 与通用 BM25 的 12-token 门槛分离：休息提醒按设计很短，英文、西语、葡语、
-  俄语等空格分词语言常只有 4~10 个关键词，仍需进入未回应证据窗口。
-- 保留 4-token 下限，避免“嗯”“好”等极短输出污染持久化语料。"""
+"""Minimum ngram count for long-window proactive content-shape scoring.
+- Separate from generic BM25's 12-token threshold: break reminders are intentionally short;
+  English/Spanish/Portuguese/Russian space-tokenized messages often have 4~10 keywords, yet still belong in unanswered evidence windows.
+- Keep a 4-token floor so tiny outputs such as “嗯”“好” cannot pollute persisted corpora."""
 
 ANTI_REPEAT_INJECT_TOP_K = 6
-"""注入 system prompt 的 "最近高频 topic 词" 数量。
-- 用途：build_recent_topics_block 取 BM25 排名前 K 的 ngram。
-- 设计依据：6 个词够覆盖"几个话题"，又不至于把 prompt 撑长。"""
+"""Recent frequent-topic terms injected into system prompts.
+- Purpose: build_recent_topics_block takes top-K BM25 ngrams.
+- Rationale: 6 terms cover several topics without long prompts."""
 
 ANTI_REPEAT_REGEN_THRESHOLD = 8.0
-"""proactive 出口 BM25 总分超此值则触发 1 次 regen。
-- 用途：system_router proactive 流式完成后评分；超阈值用 avoidance prompt
-  重 sample 一次。
-- 设计依据：经验起点；后续 testbench 调。"""
+"""Proactive outbound BM25 above this total triggers 1 regeneration.
+- Purpose: system_router scores completed streams, then resamples once with avoidance prompts
+  when over threshold.
+- Rationale: empirical starting point, adjustable through testbench later."""
 
 ANTI_REPEAT_DROP_THRESHOLD = 16.0
-"""proactive regen 后仍超此值则放弃投递（不发）。
-- 用途：避免 LLM 卡死在某个 topic 上连续复读。
-- 设计依据：REGEN 的 2 倍，给 LLM 一次纠正机会。"""
+"""After proactive regeneration, abandon delivery if BM25 still exceeds this value.
+- Purpose: prevent LLMs repeatedly stuck on one topic.
+- Rationale: 2 times REGEN gives one correction opportunity."""
 
 ANTI_REPEAT_BM25_K1 = 1.5
-"""BM25 k1 参数（控制 TF saturation 速度）。Robertson 经典推荐值。"""
+"""BM25 k1 controlling TF saturation speed; Robertson's classic recommended value."""
 
 ANTI_REPEAT_BM25_B = 0.75
-"""BM25 b 参数（文档长度归一化强度）。Robertson 经典推荐值。"""
+"""BM25 b controlling document-length normalization; Robertson's classic recommended value."""
 
 ANTI_REPEAT_MIN_DRAFT_TOKENS = 12
-"""draft 短于此长度（tokens 数）就不评分，直接放行。
-- 用途：避免"嗯。"、"好"这种短回复被错杀。
-- 设计依据：~12 个 ngram token 才能形成稳定的 BM25 信号。"""
+"""Drafts shorter than this token count bypass scoring.
+- Purpose: avoid wrongly rejecting tiny replies such as \"嗯。\" or \"好\".
+- Rationale: ~12 ngram tokens are needed for stable BM25 signals."""
 
 ANTI_REPEAT_EXEMPT_SOURCE_TAGS = frozenset({"MUSIC", "MEME"})
-"""主动搭话里"复读判定从台词切到素材维度"的来源标签。
-- 动机：BM25 防的是"话题/措辞复读"，但素材推送类 channel 的开场白天生模板
-  化（推歌"换首歌 / 这旋律 / 听听看"、表情包"看这个 / 笑死"），台词长一个
-  样、而推送的素材（曲目 / 表情包搜索关键词）却不同；用台词 BM25 判它属于
-  天生误杀——博士连点几首后 FG 窗被音乐 intro 占满，分数爆表，后续自发推
-  歌全被 drop，表现为"放音乐频率极低"。
-- 语义：这类 channel 的复读按"素材本身"去重——MUSIC 看曲目、MEME 看搜索
-  关键词（不是图片）。本轮素材与近期不雷同时，豁免台词级硬拦截（字面相似
-  度 + BM25 regen/drop）直接放行；素材雷同（反复推同一曲目 / 同一关键词）
-  才回落到正常台词判定，台词没雷同则依然能发。
-- 另：这类 channel 的台词不录进 anti-repeat corpus（见 finish_proactive_
-  delivery），免得模板化 intro 污染 FG 窗、漂移其它 channel 的复读基线；
-  素材标识的近期去重走 system_router 的 _proactive_material_history。
-- 例外见 ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS：MEME 素材新鲜时仍拦单纯复读。"""
+"""Source tags whose proactive repetition criterion shifts from dialogue to material.
+- Motivation: BM25 detects topic/wording repetition, but material-push channels have inherently
+  templated intros (songs \"换首歌 / 这旋律 / 听听看\", memes \"看这个 / 笑死\"); similar wording
+  accompanies different tracks/search terms. Dialogue BM25 inherently misclassifies these;
+  after several requested songs, music intros fill FG and inflate scores, dropping later spontaneous
+  recommendations and making music extremely infrequent.
+- Semantics: deduplicate material itself: MUSIC by track, MEME by search
+  keywords, not images. Fresh material bypasses dialogue hard gates (literal similarity
+  and BM25 regen/drop). Repeated tracks/keywords
+  fall back to ordinary dialogue checks, still allowing nonrepetitive wording.
+- Also exclude these channels' lines from anti-repeat corpus (see finish_proactive_
+  delivery), preventing templated intros polluting FG and other channels' baselines;
+  system_router._proactive_material_history deduplicates recent material identifiers.
+- Exception: ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS still blocks verbatim MEME text with fresh material."""
 
 ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS = frozenset({"MEME"})
-"""ANTI_REPEAT_EXEMPT_SOURCE_TAGS 里素材新鲜时仍要拦"单纯复读"的子集。
-- 动机：MEME 的素材标识是搜索关键词而不是图片；随机热词 fallback 时关键词
-  为空 → 永远算新素材 → 永远豁免，而 Phase 2 看不到图，配文可能与近期某句
-  一字不差（"快看这个，笑死我了"）。
-- 语义：只拦逐字相同（去掉空白 / 标点 / 符号 / emoji 后完全一致，见
-  _find_verbatim_recent_proactive_chat）；换图时配文相似但不完全一样照常
-  放行，不跑 0.90 字面相似度、BM25 与未回应长窗，台词也仍不录进 anti-repeat
-  corpus。命中时不直接 drop，而是带上原句走一次 regen 换个说法；改写后仍
-  逐字相同才 drop。
-- 素材不新鲜时与其它 channel 一样走完整台词判定，这里不起作用。"""
+"""Subset of ANTI_REPEAT_EXEMPT_SOURCE_TAGS still blocking verbatim repetition with fresh material.
+- Motivation: MEME identity uses search terms, not images; random-trending fallback leaves keywords
+  empty, always fresh/exempt, while Phase 2 cannot see images and may repeat captions
+  exactly (\"快看这个，笑死我了\").
+- Semantics: block only exact text after removing whitespace/punctuation/symbols/emoji, via
+  _find_verbatim_recent_proactive_chat. Similar but different captions on new images still
+  pass, bypassing 0.90 literal similarity, BM25, and unanswered long windows; text stays outside
+  anti-repeat corpus. Hits regenerate once using the original line,
+  dropping only if the rewrite remains verbatim.
+- Nonfresh material uses full dialogue checks like other channels; this exemption is inactive."""
 
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
-"""_recent_avatar_interaction_ids deque maxlen。
-- 用途：去重已处理的 avatar 交互 ID。
-- 上游：UI/avatar 端的交互事件序列。"""
+"""_recent_avatar_interaction_ids deque maxlen.
+- Purpose: deduplicate processed avatar interaction IDs.
+- Upstream: UI/avatar interaction-event sequence."""
 
 AVATAR_INTERACTION_DEDUPE_WINDOW_MS = 8000
-"""avatar 交互去重的时间窗口。
-- 用途：cross_server _should_persist_avatar_interaction_memory 在此窗口
-  内同 key 的交互不重复持久化。
-- 上游：UI 端的交互时间戳。"""
+"""Avatar-interaction deduplication window.
+- Purpose: cross_server _should_persist_avatar_interaction_memory avoids duplicate persistence
+  for identical keys within this window.
+- Upstream: UI interaction timestamps."""
 
 AVATAR_INTERACTION_CONTEXT_MAX_TOKENS = 80
-"""avatar 交互文本上下文的 token 上限。
-- 用途：_sanitize_avatar_interaction_text_context 截断后写进 LLM
-  prompt 作为 avatar 触发的现场上下文。
-- 上游：avatar 端透传的现场文本片段。"""
+"""Avatar-interaction text-context token cap.
+- Purpose: _sanitize_avatar_interaction_text_context truncates before LLM
+  prompts use it as interaction scene context.
+- Upstream: scene text passed through by avatar clients."""
 
 PENDING_USER_IMAGES_MAX = 3
-"""cross_server pending_user_images 保留的最近图片数。
-- 用途：del pending_user_images[:-N] 滑动窗口。
-- 上游：用户上传的图片队列。"""
+"""Recent images retained in cross_server pending_user_images.
+- Purpose: del pending_user_images[:-N] sliding window.
+- Upstream: user-uploaded image queue."""
 
 OMNI_RECENT_RESPONSES_MAX = 3
-"""omni_offline / omni_realtime 最近 AI 回复轮数。
-- 用途：_recent_responses 列表 pop(0) 维护的滑动窗口；用于重复检测
-  (_check_repetition)。
-- 上游：当前会话内的 AI 历史回复。"""
+"""Recent AI-reply turns retained by omni_offline /omni_realtime.
+- Purpose: _recent_responses pop(0) maintains a sliding window for
+  _check_repetition.
+- Upstream: AI reply history in the current session."""
 
 OMNI_WS_FRAME_LIMIT_BYTES = 250_000
-"""omni_realtime WebSocket 帧大小安全阈值。
-- 用途：发送前检查 payload size，超过则拒绝（低于 256KB 服务器上限）。
-- 上游：序列化后的 WS 帧字节数（不是 token）。
-- 交叉引用：main_logic/proactive_delivery.py 的
-  TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES（8 MiB / 轮）是**文本路径**的图片预算，
-  两者不是同一道闸。realtime 路径上先撞的是这条 250KB 单帧限制，而且是在
-  base64 把图撑大 ~4/3 之后的 JSON 上量的（折合约 180KB 图片字节，比 8 MiB
-  紧约 45 倍）——过了那边的预算不代表这边发得出去。改任一个都要回看另一个。"""
+"""Safe omni_realtime WebSocket frame-size threshold.
+- Purpose: reject oversized payloads before sending, below the server's 256KB cap.
+- Upstream: serialized WS bytes, not tokens.
+- Cross-reference: main_logic/proactive_delivery.py
+  TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES (8 MiB/turn) budgets images on **text paths**,
+  not the same gate. Realtime first hits this 250KB frame limit, measured on
+  JSON after base64 expands images ~4/3, roughly 180KB image bytes,
+  ~45 times tighter than 8 MiB. Passing one does not guarantee delivery through the other; review both on changes."""
 
 # ---- Main: proactive search & emotion ----
 PROACTIVE_PHASE1_FETCH_PER_SOURCE = 10
-"""Phase 1 每个信息源固定抓取条数。
-- 用途：fetch_news_content / fetch_video_content 等的 limit 参数统一值。
-- 上游：外部 web/news/video 抓取结果。"""
+"""Fixed fetch count per Phase-1 source.
+- Purpose: shared limit for fetch_news_content/fetch_video_content and related functions.
+- Upstream: external web/news/video results."""
 
 PROACTIVE_PHASE1_TOTAL_TOPICS = 12
-"""Phase 1 输入给筛选 LLM 的候选话题总数。
-- 用途：从所有 source 合并后去重，截到此数后送 LLM 筛选。
-- 上游：cap 后的 fetch 结果汇总。
-- 设计依据：原值 20。早期 external 是主要信号源，候选池开得很大。
-  Phase 2 引入 vision / music / meme / reminiscence 等并行通道后，
-  external 的相对权重下降——筛选 LLM 多看 8 条边际候选无助于挑出更
-  好的 top-1，反而让 Phase 1 prompt 一次跑过 2k tokens 上限。下调到
-  12 仍给筛选 LLM 充分多样性，且单次调用 token 减半左右。"""
+"""Total candidate topics supplied to Phase-1 filtering LLMs.
+- Purpose: merge/deduplicate all sources and take this many for LLM selection.
+- Upstream: capped aggregate fetch results.
+- Rationale: originally 20, when external content dominated and needed a large pool.
+  Phase 2's parallel vision/music/meme/reminiscence channels reduced external
+  weighting; 8 marginal extra candidates do not improve top-1 selection,
+  but push Phase-1 prompts above 2k tokens. Lowering to
+  12 retains diversity while roughly halving per-call tokens."""
 
 PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS = 200
-"""Phase 2 外部内容（news/video/social/meme 等）单条 token 上限。
-- 用途：build_phase2_external_section 拼 system prompt 前对每条 web
-  content 做截断。
-- 上游：外部 API 返回的 title + source + url + 摘要。
-- 设计依据：单条 200 token 已足够 LLM 知道"这是什么"，详细信息靠
-  Phase 2 LLM 自行总结。"""
+"""Per-item token cap for Phase-2 external content (news/video/social/meme, etc.).
+- Purpose: build_phase2_external_section truncates each web
+  content item before assembling system prompts.
+- Upstream: external API title +source +url +summary.
+- Rationale: 200 tokens suffice to identify an item; Phase-2 LLMs
+  summarize details themselves."""
 
 PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS = 1500
-"""Phase 1 外部候选拼合后的总 token 上限（Phase 2 实际只看 top-1）。
-- 用途：所有 selected web items 序列化后，再做一次总和截断。
-- 上游：cap 后的 external_section 文本。
-- 设计依据：跟 PROACTIVE_PHASE1_TOTAL_TOPICS 同步下调。原值 2000 是
-  20 候选 × 200 token 留的硬顶；候选数收到 12 之后，1500 已留出
-  ~250 token 富余，超出仍兜底截断。Phase 2 generate prompt 实际只
-  把 Phase 1 选中的单条 web_topic（~50-100 token）放进
-  external_section，本字段约束的是 Phase 1 的 prompt 大小。"""
+"""Total assembled Phase-1 external-candidate token cap (Phase 2 sees only top-1).
+- Purpose: truncate serialized selected web items once more by total size.
+- Upstream: capped external_section text.
+- Rationale: lower alongside PROACTIVE_PHASE1_TOTAL_TOPICS. Original 2000 was
+  a hard ceiling for 20 ×200-token candidates. With 12 candidates, 1500 leaves
+  ~250 spare tokens and still truncates excess. Phase-2 generation prompts
+  actually include only Phase 1's selected web_topic (~50-100 tokens) in
+  external_section; this field constrains Phase-1 prompt size."""
 
 PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS = 300
-"""Phase 2 流式输出的 abort fence。
-- 用途：流式生成超过此值则 abort（防止 LLM 跑飞写小作文）。
-- 上游：LLM 输出（不是输入）。"""
+"""Phase-2 streaming-output abort fence.
+- Purpose: abort generation above this value, preventing runaway essays.
+- Upstream: LLM output, not input."""
 
 PROACTIVE_PHASE2_GENERATE_MAX_TOKENS = int(PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS * 1.5)
-"""Phase 2 主流式生成的 SDK 端 max_completion_tokens。
-- 用途：_make_llm 默认值，由 Phase 2 stream 主调用使用。
-- 设计依据：应用层在 [main_routers/system_router.py] 流式中段
-  `count_tokens(full_text + chunk) > PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS`
-  硬 abort，所以 SDK 端再大也用不上。设成 abort fence × 1.5 留 50%
-  bandwidth 给 token 计数误差和 prompt-cache flush 边界。"""
+"""SDK max_completion_tokens for primary Phase-2 streaming generation.
+- Purpose: _make_llm default used by the main Phase-2 stream call.
+- Rationale: application streaming in [main_routers/system_router.py] hard-aborts on
+  `count_tokens(full_text + chunk) > PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS`,
+  so larger SDK limits cannot be used. Set abort fence ×1.5, reserving 50%
+  bandwidth for token-count errors and prompt-cache flush boundaries."""
 
 PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS = 1024
-"""Phase 1 unified 筛选 LLM 的 max_completion_tokens。
-- 用途：_llm_call_with_retry 默认值，由 Phase 1 unified prompt 使用
-  （web 筛选 + music 关键词 + meme 关键词单次合并调用）。
-- 上游：LLM 输出 JSON（话题 ID 列表 + 简短理由）。"""
+"""max_completion_tokens for Phase-1 unified selection LLMs.
+- Purpose: _llm_call_with_retry default used by unified Phase-1 prompts
+  combining web filtering, music keywords, and meme keywords in one call.
+- Upstream: LLM JSON output (topic-ID lists plus brief reasons)."""
 
 PROACTIVE_CHAT_HISTORY_MAX = 10
-"""_proactive_chat_history deque maxlen。
-- 用途：每个 lanlan 维护的最近主动搭话记录，用于 1h 内去重。
-- 上游：proactive 触发的搭话事件。"""
+"""_proactive_chat_history deque maxlen.
+- Purpose: recent proactive-chat records per character for 1h deduplication.
+- Upstream: proactive chat events."""

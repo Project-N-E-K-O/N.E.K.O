@@ -137,7 +137,7 @@ def _assume_bridges_alive(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_plugin_messaging_started_initializes_response_map_and_router(
+async def test_ensure_plugin_messaging_started_initializes_router_and_delivery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -172,7 +172,7 @@ async def test_ensure_plugin_messaging_started_initializes_response_map_and_rout
     # calls, NOT push_message. Starting only the router produced a plugin whose
     # tool calls worked while every alert, including the character's own death,
     # went nowhere with nothing logged above DEBUG (2026-09-10).
-    assert calls == ["response_map", "router_start", "delivery_path"]
+    assert calls == ["router_start", "delivery_path"]
 
 
 @pytest.mark.asyncio
@@ -213,14 +213,8 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
     assert await module.ensure_plugin_messaging_started() is False
 
     # A response-map failure must not cost the delivery path either.
-    assert calls == ["response_map", "router_start", "delivery_path"]
-    assert warnings == [
-        (
-            "failed to initialize plugin response map early: err_type={}, err={}",
-            "RuntimeError",
-            "response map unavailable",
-        )
-    ]
+    assert calls == ["router_start", "delivery_path"]
+    assert warnings == []
 
 
 @pytest.mark.asyncio

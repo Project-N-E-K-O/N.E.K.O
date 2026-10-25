@@ -308,8 +308,8 @@ def test_model_manager_pngtuber_character_config_fallback_loads_preview():
 
     assert script.index(timer_decl) < script.index("await switchModelDisplay(savedModelType, savedSubType);")
     assert script.count(timer_decl) == 1
-    # 单写入者纪律：旗标只由 switchModelDisplay() 维护（恒等于当前真实 model type）；
-    # previewPNGTuberConfig 不再写它，避免在非 pngtuber 页面被误置而让 live2d-init 跳过 Live2D/VRM 初始化
+    # Single-writer rule: only switchModelDisplay() maintains the flag (always matching the actual current model type);
+    # previewPNGTuberConfig no longer writes it, avoiding an incorrect value on non-PNGTuber pages that would make live2d-init skip Live2D/VRM initialization
     assert "window._modelManagerCurrentAvatarType =" not in preview_block
     assert script.count("window._modelManagerCurrentAvatarType =") == 1
     assert "window._modelManagerCurrentAvatarType = type;" in script

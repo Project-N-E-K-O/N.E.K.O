@@ -258,15 +258,15 @@ class TtsRuntimeMixin:
         Default 300 tokens ≈ 400 CJK characters / ~1200 English characters.
         """
         try:
-            # 优先从对话设置中读取，如果不存在则从核心配置读取
+            # Prefer conversation settings; fall back to core configuration if absent.
             conversation_settings = _core_facade.load_global_conversation_settings()
             if 'textGuardMaxLength' in conversation_settings:
                 value = int(conversation_settings['textGuardMaxLength'])
             else:
                 value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
-            # 0 / 负数都表示"无限制"，与 OmniOfflineClient.__init__ /
-            # update_max_response_length 的语义统一。原本 < 0 会 raise 然后
-            # fallback 到 300，存量配置带 -1 的会被静默降级。
+            # Zero / negative means unlimited, matching OmniOfflineClient.__init__ /
+            # update_max_response_length. Previously negative values raised and
+            # fell back to 300, silently degrading existing -1 configurations.
             if value <= 0:
                 return 999999
             return value
@@ -305,7 +305,7 @@ class TtsRuntimeMixin:
             if sid == speech_id
         )
         if not remaining.startswith(sentence):
-            # 边界不一致时宁可保留文本，也不能误删尚未播出的内容。
+            # On boundary mismatch, retain text rather than wrongly removing unplayed content.
             logger.warning("TTS 回放句界不匹配，保留现有未确认文本")
             return
         remaining = remaining[len(sentence):]
@@ -346,10 +346,10 @@ class TtsRuntimeMixin:
         appropriate moment.
         """
         # Retain pre-normalized text because the replacement may use another protocol class.
-        # 保留规范化前的原始文本；替代 worker 可能属于另一协议类别，需要从原文重放。
+        # Preserve raw pre-normalization text; fallback worker may use another protocol class and need original-text replay.
         self._remember_tts_replay_chunk(speech_id, text)
 
-        # speech_id 切换时重置所有 stripper 状态（pending 内容属于上一轮，丢弃）
+        # On speech_id change, reset all stripper state (discard pending content from previous turn).
         if speech_id != self._tts_norm_speech_id:
             self._tts_stream_normalizer.reset()
             self._tts_markdown_stripper.reset()
@@ -361,19 +361,19 @@ class TtsRuntimeMixin:
             text = self._tts_stream_normalizer.feed(text)
             if not text:
                 return
-        # markdown → bracket 顺序固定：链接先剥成文本再交给 bracket
+        # Fixed markdown → bracket order: strip links to text before bracket processing.
         text = self._tts_markdown_stripper.feed(text)
         if not text:
             return
         text = self._tts_bracket_stripper.feed(text)
         if not text:
             return
-        # 最后一道：删掉会被念出来的装饰 / 技术符号（@、| …）；运算符、货币、
-        # 负号和 C# 的 # 保留，句读标点照常
+        # Final pass: remove pronounceable decorative / technical symbols (@, |, etc.); preserve operators, currency,
+        # minus signs, C#'s #, and ordinary punctuation.
         text = self._strip_tts_symbols_across_chunks(text)
         if getattr(self, "_tts_pending_name_hash", ""):
-            # 「C」「#」时 # 还没定：空闲软 flush 会先把「C」合成出去，C# 的读法
-            # 就丢了。等下一块或收尾把 # 定下来再说。
+            # With chunks 'C', '#', the # is undecided: idle soft flush would synthesize C first, losing C# pronunciation.
+            # Wait for the next chunk or finalization to resolve #.
             self._cancel_tts_soft_flush()
             if text:
                 self._put_tts_text(speech_id, text)
@@ -386,8 +386,8 @@ class TtsRuntimeMixin:
             speech_id,
             len(text),
         )
-        # 每个入队的 chunk 都把空闲定时器重新拨到 idle 秒之后：文本停了、done
-        # 又迟迟不来，就让 worker 先把攒着的尾句合成出来。
+        # Every enqueued chunk resets idle timer to idle seconds later; if text stops and done
+        # is delayed, let the worker synthesize its buffered final phrase first.
         self._arm_tts_soft_flush(speech_id)
 
     @staticmethod
@@ -427,7 +427,7 @@ class TtsRuntimeMixin:
                 self._tts_soft_flush_after_idle(speech_id)
             )
         except RuntimeError:
-            # 没有运行中的事件循环（同步测试夹具直接调用入队）：不兜底，就是不发
+            # No running loop (synchronous test fixture enqueues directly): no fallback, simply do not send.
             self._tts_soft_flush_task = None
 
     def _cancel_tts_soft_flush(self) -> None:
@@ -473,7 +473,7 @@ class TtsRuntimeMixin:
 
     def _reset_tts_symbol_gap(self) -> None:
         self._tts_last_spoken_char = ""
-        # 最后念出的两个字符：判断块首的「#」是不是 C# 这类名字要看两位。
+        # Last two pronounced characters: deciding whether leading # belongs to names like C# needs two-character context.
         self._tts_last_spoken_tail = ""
         self._tts_symbol_gap_pending = False
         self._tts_prev_chunk_ended_emoji = False
@@ -495,8 +495,8 @@ class TtsRuntimeMixin:
         Returns ``""`` when nothing is left to speak.
         """
         if text and not text.strip():
-            # 纯空白分块原样放行（不经 normalizer 的流式 provider 靠它分隔
-            # 「9」「 」「28」），也记成上一个字符，下一块不用再补空格。
+            # Pass whitespace-only chunks unchanged (streaming providers without normalizer use them to separate
+            # '9', ' ', '28'); record as previous character so next chunk needs no extra space.
             pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
             self._tts_symbol_gap_pending = False
             self._tts_prev_chunk_ended_emoji = False
@@ -509,32 +509,32 @@ class TtsRuntimeMixin:
             )[-2:]
             return pending_name_hash + text
         if getattr(self, "_tts_prev_chunk_ended_emoji", False):
-            # 上一块以 emoji 结尾：这块开头的零宽连接符 / 变体选择符是被切开的
-            # 复合 emoji 的残余，一并删掉。
+            # Prior chunk ended in emoji: leading zero-width joiners / variation selectors here are residue of a split
+            # composite emoji; remove them too.
             text = strip_leading_emoji_joiners(text)
             if not text:
                 return ""
         self._tts_prev_chunk_ended_emoji = tts_chunk_ends_in_emoji(text)
         last = getattr(self, "_tts_last_spoken_char", "")
         last_tail = getattr(self, "_tts_last_spoken_tail", "") or last
-        # 块尾的负号在这一块里看不到后面的数字，会被当成符号删掉：先记下，
-        # 下一块以数字开头时再补回去。
+        # Trailing minus cannot see next chunk's number and would be stripped as a symbol: remember it,
+        # restoring when next chunk starts with a digit.
         pending_minus = getattr(self, "_tts_pending_minus", "")
-        # 之前只有符号、还没念出来的分块接在前面一起判断，分块方式不改变结果：
-        # 「C」「#」「-」「5」与「C#-5」一样，「3」「@」「-」「5」与「3@-5」一样。
+        # Include earlier unspoken symbol-only chunks when deciding, so chunk boundaries do not change results:
+        # 'C', '#', '-', '5' equals 'C#-5'; '3', '@', '-', '5' equals '3@-5'.
         deferred_symbols = getattr(self, "_tts_deferred_symbols", "")
         self._tts_pending_minus = tts_chunk_trailing_minus(
             deferred_symbols + text, last_tail
         )
-        # C# 可能被切开（「C」「#」「 dev」、「a#」「@」「b」）：块尾的「#」看不到
-        # 下文，先暂存，等下一块有内容的分块或收尾再决定。其间只有符号的分块不作数。
+        # C# may split ('C', '#', ' dev'; 'a#', '@', 'b'): trailing # cannot see
+        # following text, so buffer until next nonempty chunk or finalization; intervening symbol-only chunks do not count.
         pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
         held_name_hash = tts_chunk_trailing_name_hash(text, last_tail)
         cleaned = strip_tts_muted_symbols(text, last_tail)
         if held_name_hash and cleaned.endswith(held_name_hash):
             cleaned = cleaned[: -len(held_name_hash)]
         if not cleaned or not cleaned.strip():
-            # 整块都是符号：记下这里原本有个分隔，由下一块决定要不要补空格。
+            # Entire chunk is symbols: remember a separator existed and let next chunk decide whether to insert a space.
             if held_name_hash:
                 self._tts_pending_name_hash = held_name_hash
             if text and text.strip() and is_tts_operand_char(last):
@@ -543,7 +543,7 @@ class TtsRuntimeMixin:
                 deferred_symbols + text
             )
             return ""
-        # 本块尾暂存的「#」也算作还没念出的符号：「C#」「-」「5」与「C#-5」一样。
+        # This chunk's buffered trailing # also counts as unspoken symbol: 'C#', '-', '5' equals 'C#-5'.
         self._tts_deferred_symbols = held_name_hash
         self._tts_pending_name_hash = held_name_hash
         next_char = tts_first_unmuted_char(text)
@@ -563,7 +563,7 @@ class TtsRuntimeMixin:
             and is_tts_word_char(cleaned[0])
         ):
             cleaned = " " + cleaned
-        # 块尾暂存了「#」：这里原本有个分隔，下一块以字母数字开头时补空格。
+        # Buffered trailing #: there was a separator; insert space when next chunk starts alphanumeric.
         self._tts_symbol_gap_pending = bool(held_name_hash) and is_tts_word_char(
             cleaned[-1]
         )
@@ -586,7 +586,7 @@ class TtsRuntimeMixin:
         if not worker_alive:
             return "no_worker"
 
-        # 本轮要收尾了（立即排入或等 ready 后补发都算）：空闲软 flush 没有意义了
+        # Turn is finalizing (queued immediately or replayed after readiness): idle soft flush no longer matters.
         self._cancel_tts_soft_flush()
 
         if not self.tts_ready or self.tts_pending_chunks:
@@ -594,20 +594,20 @@ class TtsRuntimeMixin:
             self._tts_done_pending_until_ready = True
             return "deferred"
 
-        # 把 markdown/bracket stripper 的 pending 兜底 emit：链 markdown.flush()
-        # → bracket.feed(...) → bracket.flush() 顺序，与 _enqueue_tts_text_chunk
-        # 的串接顺序一致。markdown.flush 把残留的孤立 marker 字符删掉再 emit；
-        # bracket.feed 处理任何残留括号字符；bracket.flush 直接 reset 不读
-        # 未闭合的括号内容。normalizer.flush 永远返回 ""，省略调用。
-        # 悬挂的 * _ ~ ` 留给下面的符号过滤：它记得上一块结尾，能补分隔空格。
+        # Emit pending markdown/bracket stripper content via fallback: chain markdown.flush()
+        # → bracket.feed(...) → bracket.flush(), matching _enqueue_tts_text_chunk's
+        # composition order. markdown.flush strips residual lone markers before emitting;
+        # bracket.feed handles remaining bracket characters, while bracket.flush resets without reading
+        # unclosed bracket content. normalizer.flush always returns "", so omit it.
+        # Leave dangling * _ ~ ` to symbol filtering below, which remembers the prior chunk ending and can insert separating spaces.
         flushed = self._tts_markdown_stripper.flush(keep_symbol_markers=True)
         if flushed:
             flushed = self._tts_bracket_stripper.feed(flushed)
         self._tts_bracket_stripper.flush()
         if flushed:
             flushed = self._strip_tts_symbols_across_chunks(flushed)
-        # 以「C」「#」结束的一轮，或收尾缓冲本身以「C#」结尾：暂存的 # 没有
-        # 下一块来补了，收尾时一并放出。
+        # Turn ends with 'C', '#' or finalization buffer itself ends in C#: buffered # has no
+        # next chunk to supply context, so release it on finalization too.
         pending_name_hash = getattr(self, "_tts_pending_name_hash", "")
         self._tts_pending_name_hash = ""
         if pending_name_hash:
@@ -616,8 +616,8 @@ class TtsRuntimeMixin:
             self._put_tts_text(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
-        # 流式 mirror 的入队回调登记到它的结束标记真正入队为止（立即入队或就绪后补发都走这里），
-        # 同一刻把 TTS 轮次交给下一条流
+        # Keep streaming mirror's enqueue callback registered until its end marker actually queues (immediate or readiness replay both pass here),
+        # handing the TTS turn to the next stream at the same moment.
         callbacks = getattr(self, "_mirror_stream_callbacks", None)
         if callbacks:
             callbacks.pop(self.current_speech_id, None)
@@ -822,8 +822,8 @@ class TtsRuntimeMixin:
         markdown_output = markdown.feed(text) + markdown.flush(keep_symbol_markers=True)
         spoken = bracket.feed(markdown_output)
         bracket.flush()
-        # 与实际朗读路径 _enqueue_tts_text_chunk 同一道符号过滤，缓存音频才和
-        # 同一句话真正念出来的一致。
+        # Use the same symbol filter as _enqueue_tts_text_chunk so cached audio matches
+        # actual pronunciation of the same sentence.
         return strip_tts_muted_symbols(str(spoken or "")).strip()
 
     def cancel_game_speech_preloads(self) -> None:
@@ -1245,25 +1245,25 @@ class TtsRuntimeMixin:
         Returns what ``_finish_tts_clear`` needs, or None when this output is
         not current (nothing to clear).
         """
-        # ``_tts_done_queued_for_turn`` 的对偶是下面的 ``__interrupt__``：一入队
-        # 就把上一轮那个 done sentinel 作废，而这个 flag 是"本轮 sentinel 已排队"
-        # 的唯一记账。所以清零属于 interrupt 的同一步，必须落在第一个 await
-        # （_finish_tts_clear 里的 sleep）之前：本函数全是同步语句，取消无从
-        # 投递，两者因此原子。放在 await 之后（历史写法：由各调用方在 await
-        # 返回后各自清）取消落在 sleep 上就会留下"worker 已被中断、记账还说
-        # 已排队"的残留态，下一轮 ``_request_tts_done_locked`` 因此
-        # early-return "already"，flush sentinel 永远进不了队 —— 正是
-        # handle_new_message 那两行清零本来要防的后果。
+        # ``_tts_done_queued_for_turn`` pairs with ``__interrupt__`` below: enqueueing invalidates
+        # previous turn's done sentinel, and this flag alone records that this turn's sentinel is queued.
+        # Therefore reset as part of interrupt, before the first await
+        # (sleep in _finish_tts_clear). This function is synchronous, so cancellation cannot
+        # intervene, making both atomic. After-await clearing (historically each caller cleared after
+        # await returned) leaves worker-interrupted / bookkeeping-still-queued residue if cancellation arrives at sleep,
+        # causing next turn's ``_request_tts_done_locked`` to
+        # return 'already' early, preventing flush sentinel enqueue forever; exactly
+        # what handle_new_message's two reset lines intended to prevent.
         #
-        # ``_tts_done_pending_until_ready`` 不能跟着挪上来：它的对偶是
-        # ``tts_pending_chunks``（"这批文本还没刷出去，done 要等它们之后再补发"），
-        # 两者一起在 _finish_tts_clear 末尾的 tts_cache_lock 段里清。单把 flag
-        # 提前、chunks 留在原地，取消落在 sleep 上就撕成另一个方向的半套态：
-        # worker 就绪后 ``_flush_tts_pending_chunks`` 会把陈旧 chunks 重新入队，
-        # 却因为 flag 已是 False 而跳过它们的 done 补发，合成器一直不 flush。
-        # 所以它留在后半段不动。调用方在 _clear_tts_pipeline 返回后的重复清零
-        # 保留不动：那是给 sleep 窗口内被并发置回 True 的情况兜底，与这里要修的
-        # 取消残留是两件事。
+        # ``_tts_done_pending_until_ready`` must not move earlier with it: it pairs with
+        # ``tts_pending_chunks`` ('text not flushed yet; replay done afterward'),
+        # both cleared in tts_cache_lock at _finish_tts_clear's end. Moving only flag
+        # while retaining chunks allows sleep cancellation to leave the opposite partial state:
+        # when ready, ``_flush_tts_pending_chunks`` requeues stale chunks,
+        # but skips done replay because flag is False, leaving synthesis unflushed.
+        # Therefore keep it in the latter section. Preserve caller resets after _clear_tts_pipeline returns:
+        # they guard concurrent True assignment during sleep, separate from this
+        # cancellation residue.
         runtime = self._snapshot_tts_runtime()
         request_queue = self.tts_request_queue
         response_queue = self.tts_response_queue
@@ -1276,8 +1276,8 @@ class TtsRuntimeMixin:
             return None
 
         self._tts_done_queued_for_turn = False
-        # 打断作废的是这一轮的一切，包括还没到点的空闲软 flush；同样在第一个
-        # await 之前同步取消，让它和 __interrupt__ 入队一起落地。
+        # Interruption invalidates everything this turn, including not-yet-due idle soft flush; cancel synchronously before
+        # first await too, atomically with __interrupt__ enqueue.
         self._cancel_tts_soft_flush()
         self._cancel_game_speech_completion_wait()
         self._clear_game_speech_correlation()
@@ -1305,8 +1305,8 @@ class TtsRuntimeMixin:
         """
         if interrupt is None or not interrupt[-1]:
             return
-        # 等待 TTS worker 处理 __interrupt__ 并 mute 回调（worker 轮询间隔 ~10ms）
-        # 然后再次清空响应队列，确保旧 synthesizer 泄漏的音频全部丢弃
+        # Wait for TTS worker to process __interrupt__ and mute callbacks (worker polls ~10ms).
+        # Then clear response queue again to discard all audio leaked by old synthesizer.
         await asyncio.sleep(0.02)
         if still_owned is None or still_owned():
             self._drain_tts_responses(interrupt[1])
@@ -1333,13 +1333,13 @@ class TtsRuntimeMixin:
                     or not self._tts_output_is_current()):
                 return
             self.tts_pending_chunks.clear()
-            # 再清一次 queued：上面那 20ms 里并发路径（finish_proactive_delivery
-            # 等）可能看到 False、排了自己的 sentinel 并把它置回 True。那个
-            # sentinel 排在 __interrupt__ 之后、本轮后续文本之前，本来就已作废；
-            # 而记账留 True 会让后续文本的 done 请求 early-return "already"，
-            # 重试那一轮因此发不出句尾 sentinel。handle_new_message 一族靠调用方
-            # 返回后的重复清零兜住了这一点，丢弃/takeover 两条路径没有，所以兜底
-            # 收进这里，让五个调用方拿到同一个保证。
+            # Clear queued again: during the 20ms above, concurrent paths (finish_proactive_delivery,
+            # etc.) may see False, enqueue their own sentinel, and set it True. That
+            # sentinel is after __interrupt__ but before this turn's subsequent text and is already invalid;
+            # leaving bookkeeping True makes later text's done request return 'already' early,
+            # preventing this retry turn's final sentinel. handle_new_message and related paths use callers
+            # post-return resets to guard this, unlike discard/takeover paths; centralize the fallback
+            # here so all five callers get the same guarantee.
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self._reset_tts_replay_state()
@@ -1511,7 +1511,7 @@ class TtsRuntimeMixin:
         )
         if gsv_enabled:
             return True
-        # 克隆音色始终走 custom 路径。
+        # Cloned voices always use the custom path.
         if bool(self.voice_id) and not self._is_free_preset_voice:
             return True
         return False
@@ -1520,7 +1520,7 @@ class TtsRuntimeMixin:
         """Return the voice identity and custom flag used for worker dispatch."""
         # Recovery keeps character storage unchanged but strips the failed preset
         # from the replacement worker's routing and credential context.
-        # 回退只清理替代 worker 的路由上下文，不修改角色卡中保存的音色。
+        # Fallback clears only replacement-worker routing context, without changing the voice saved in character card.
         if getattr(self, "_tts_fallback_uses_default_voice", False):
             return "", False
         return self.voice_id or "", self._has_custom_tts()
@@ -1559,14 +1559,14 @@ class TtsRuntimeMixin:
         if old_runtime is not None and not old_runtime.retired:
             self._retire_tts_runtime(old_runtime)
         self._tts_capacity_exhausted = False
-        # 重置就绪状态，新 worker 需重新握手
+        # Reset readiness; new worker requires a fresh handshake.
         self.tts_ready = False
         self._tts_runtime_key = None
         if not preserve_provider_exclusions:
             self._tts_excluded_provider_keys = frozenset()
             self._tts_fallback_uses_default_voice = False
 
-        # 检查是否禁用了 TTS
+        # Check whether TTS is disabled.
         tts_worker, api_key, route_voice_id, provider_key, disabled, tts_config = (
             self._resolve_tts_worker_spec()
         )
@@ -1582,16 +1582,16 @@ class TtsRuntimeMixin:
         )
         self._tts_audio_output_supported = self._tts_completion_supported
 
-        # 根据实际选中的 TTS provider 类别决定是否启用流式文本规范化。
-        # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，
-        # normalizer 的 pending_spaces 延迟投递和 CJK 边界空格删除会干扰送达节奏。
-        # http_sentence 类（cogtts / gemini / openai / minimax）做客户端句子分割，
-        # 需要干净的文本，normalizer 在此有意义。
-        # 注意：'free' 不在 registry 中 → meta 为 None → 走 fallthrough 启用 normalizer，
-        # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
+        # Enable streaming text normalization according to actual selected TTS provider class.
+        # ws_bistream (qwen / step / cosyvoice) sends fragments directly for server processing;
+        # normalizer pending_spaces delays and CJK-boundary space removal would disrupt delivery cadence.
+        # http_sentence (cogtts / gemini / openai / minimax) splits sentences client-side
+        # and needs clean text, making normalization useful.
+        # Note: 'free' is absent from registry → meta None → fallthrough enables normalizer,
+        # because overseas free uses Gemini and needs CJK space cleanup.
         meta = TTS_PROVIDER_REGISTRY.get(provider_key) if provider_key else None
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
-        # 文本空闲软 flush 只发给认这个哨兵的 worker（能力位在注册表）。
+        # Send text-idle soft flush only to workers recognizing this sentinel (capability in registry).
         self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
         self._cancel_tts_soft_flush()
         self._tts_replay_progress_supported = bool(
@@ -1638,15 +1638,15 @@ class TtsRuntimeMixin:
 
         # The ledger is authoritative after response.done: some realtime paths
         # rotate ``current_speech_id`` before trailing TTS audio has finished.
-        # 回复流结束时 current_speech_id 可能已提前轮换；旧 worker 的尾音仍在处理，
-        # 因此优先使用账本中的 speech_id，避免恰在收尾失败时漏掉整轮重放。
+        # current_speech_id may rotate before response stream ends, while old worker's final audio is still processing;
+        # prefer ledger speech_id to avoid missing entire-turn replay on finalization failure.
         active_speech_id = getattr(self, "_tts_replay_speech_id", None)
         if active_speech_id is None:
             active_speech_id = getattr(self, "current_speech_id", None)
 
         # Only replay the active utterance. A new turn can be cached while a late
         # error from the superseded worker is still arriving on the old queue.
-        # 只重放当前轮次，避免旧 worker 的迟到错误把上一轮文本带进新回复。
+        # Replay current turn only; late old-worker errors must not inject previous-turn text into new replies.
         replay_chunks = [
             item
             for item in getattr(self, "_tts_replay_chunks", ())
@@ -1665,8 +1665,8 @@ class TtsRuntimeMixin:
         audio_emitted = bool(getattr(self, "_tts_replay_audio_emitted", False))
         if audio_emitted:
             if getattr(self, "_tts_replay_progress_supported", False):
-                # HTTP 分句 worker 会逐句确认进度：已播句从该账本删除，失败句若
-                # 已输出部分音频也只跳过本句，后续完整句仍交给保底 provider。
+                # HTTP sentence workers acknowledge per-sentence progress: remove played sentences from ledger; if a failed sentence
+                # emitted partial audio, skip only that sentence and send remaining complete ones to fallback provider.
                 replay_chunks = [
                     item
                     for item in getattr(self, "_tts_replay_sent_chunks", ())
@@ -1677,7 +1677,7 @@ class TtsRuntimeMixin:
                     "自定义 TTS API 已输出部分音频，仅重放未确认的后续文本"
                 )
             else:
-                # WS 双流协议没有文本到音频位置确认，不能安全推导精确后缀。
+                # WS bidirectional protocol has no text-to-audio position acknowledgements, so exact suffix cannot be safely inferred.
                 replay_chunks = []
                 replay_done = bool(pending_chunks and replay_done)
                 logger.warning(
@@ -1686,11 +1686,11 @@ class TtsRuntimeMixin:
 
         # Excluding one failed provider lets get_tts_worker reuse every existing
         # fallback rule below it; no fallback provider or priority is hardcoded.
-        # 这里只排除失败项，再调用原 dispatcher；不新增、不重排任何保底方案。
+        # Exclude only failures, then call existing dispatcher; add/reorder no fallback options.
         self._tts_excluded_provider_keys = excluded | {failed_provider}
         if _core_facade.tts_provider_uses_configured_preset_voice(failed_provider):
             self._tts_fallback_uses_default_voice = True
-        # 替代 worker 不继承故障 provider 的错误码和提示次数。
+        # Replacement worker does not inherit failed provider's error codes or notification counts.
         self._last_tts_error_code = ''
         self._tts_retry_notify_count = 0
         old_runtime = self._snapshot_tts_runtime()
@@ -1704,8 +1704,8 @@ class TtsRuntimeMixin:
             failed_provider,
             failure_stage,
         )
-        # 新 worker 就绪后按原始文本重建本轮请求。不能沿用失败 preset 的
-        # Voice ID/凭证；角色配置本身不变，下个会话仍可重新尝试该 provider。
+        # Once ready, rebuild this turn from original text; never reuse failed preset's
+        # voice ID/credentials. Character config stays unchanged; next session may retry the provider.
         self.tts_pending_chunks = replay_chunks + pending_chunks
         self._reset_tts_replay_state()
         self._tts_done_queued_for_turn = False
@@ -1896,7 +1896,7 @@ class TtsRuntimeMixin:
         if self.tts_thread and self.tts_thread.is_alive() and not (runtime and runtime.retired):
             return
 
-        # 如果上次错误属于不应自动重试的类型，直接跳过 respawn
+        # Skip respawn directly if last error must not retry automatically.
         if self._last_tts_error_code in NO_RETRY_TTS_CODES:
             logger.warning(f"⚠️ _respawn_tts_worker: 上次错误为 {self._last_tts_error_code}，跳过自动重试")
             return
@@ -1904,31 +1904,31 @@ class TtsRuntimeMixin:
         import time
         now = time.monotonic()
         if now - self._last_tts_respawn_time < 12.0:
-            return  # 冷却中，保留待执行的延迟任务和错误码状态
+            return  # Cooling down: preserve pending delayed task and error code state.
         deadline_slack = TTS_RATE_LIMIT_DEADLINE_SLACK_SECONDS if timed else 0.0
         if (
             self._last_tts_error_code == 'API_RATE_LIMIT'
             and now + deadline_slack < getattr(self, '_tts_rate_limit_retry_at', 0.0)
         ):
-            return  # 限流退避中：截止时刻从被拒那一刻算起，定时 respawn 会在截止时拉起
+            return  # Rate-limit backoff: deadline begins at rejection; scheduled respawn starts at expiry.
 
         if (
             getattr(self, '_tts_quota_blocked', False)
             and getattr(self, '_tts_quota_stale_speech_ids', None) is None
             and self.tts_pending_chunks
         ):
-            # 调用方都是先缓存再拉起，此刻最后一条就是触发这次重试的回复；
-            # 缓存里其余 speech_id 都是配额期间被拒轮次的残尾。每次配额拦截
-            # 只在首次隐式重试时判定一次：这次重试的 worker 若因别的原因没起来，
-            # 之后的定时/隐式重试不能拿后来排队的语音当触发者重判，否则原本那轮
-            # 恢复回复会被误当旧轮次删掉。
+            # Callers buffer before spawning, so latest entry is the reply triggering this retry;
+            # other cached speech_ids are residual tails from quota-rejected turns. Classify old turns once
+            # per quota interception, at first implicit retry. If that retry's worker fails for another reason,
+            # later scheduled/implicit retries must not reclassify using newer queued speech as trigger,
+            # or the original recovery reply would be deleted as an old turn.
             trigger_speech_id = self.tts_pending_chunks[-1][0]
             self._tts_quota_stale_speech_ids = frozenset(
                 speech_id for speech_id, _text in self.tts_pending_chunks
                 if speech_id != trigger_speech_id
             )
 
-        # 通过冷却检查后，取消可能仍在等待的延迟重试任务，既然已经在直接 respawn 了
+        # After cooldown passes, cancel any delayed retry still waiting since direct respawn is underway.
         if self._tts_respawn_task and not self._tts_respawn_task.done():
             # A delayed retry may be the caller. Never cancel that task from
             # inside its own respawn attempt.
@@ -1936,8 +1936,8 @@ class TtsRuntimeMixin:
                 self._tts_respawn_task.cancel()
             self._tts_respawn_task = None
         self._last_tts_respawn_time = now
-        # 错误码只描述上一个 worker 的失败。新 worker 若不带 __error__ 直接报未
-        # 就绪（如握手超时），沿用旧的配额/限流码会误停定时重试或误推退避。
+        # Error codes describe only the previous worker. If new worker reports not-ready without __error__
+        # (e.g. handshake timeout), stale quota/rate-limit codes would wrongly stop scheduled retry or extend backoff.
         self._last_tts_error_code = ''
         self._tts_quota_from_server_close = False
 
@@ -1959,7 +1959,7 @@ class TtsRuntimeMixin:
             self._schedule_tts_capacity_recovery()
             return
 
-        # 重新启动 tts_response_handler 以监听新队列
+        # Restart tts_response_handler to listen on new queue.
         if self.tts_handler_task and not self.tts_handler_task.done():
             self.tts_handler_task.cancel()
         self._start_tts_response_handler()
@@ -2065,7 +2065,7 @@ class TtsRuntimeMixin:
                             logger.error(f"💥 发送缓存的TTS请求失败: {e}")
                             break
 
-                # 清空缓存
+                # Clear cache.
                 self.tts_pending_chunks.clear()
 
             if self._tts_done_pending_until_ready:
@@ -2090,22 +2090,22 @@ class TtsRuntimeMixin:
 
         if input_mode == 'text':
             return True
-        # Livestream 上游是 free 路 Gemini 系，服务端始终承担原生 TTS。客户端
-        # 角色卡的 voice_id 不论是不是 free preset，都不应该再开外部 TTS——
-        # 否则文本会被客户端按整句喂给 tts_proxy，丢掉服务端 Gemini → core_proxy
-        # → CV3 那条真 bistream 路径的首音频延迟优势。
+        # Livestream upstream is the free Gemini route; server always handles native TTS. Client
+        # character-card voice_id must never activate external TTS, whether free preset or otherwise,
+        # or client sends complete sentences to tts_proxy, losing the first-audio latency advantage of server Gemini → core_proxy
+        # → CV3's true bidirectional streaming path.
         #
-        # PR #1369 在原 free-preset gate 第三个条件里 OR 了 livestream-active，
-        # 但前两个 AND（_is_free_preset_voice / core_api_type='free'）没拆，
-        # 导致 livestream + 非 free preset 音色（克隆 / 空 voice_id / 主播
-        # 自定义未识别为 preset）仍会 fallback 到外部 TTS。这里独立早退兜底。
-        # _is_livestream_active 内部已经 gate 了 core_api_type='free'。
+        # PR #1369 ORed livestream-active into the original free-preset gate's third condition,
+        # but retained its first two ANDs (_is_free_preset_voice / core_api_type='free'),
+        # so livestream + non-free-preset voices (clones / empty voice_id / streamer-custom
+        # voices unrecognized as presets) still fell back to external TTS. Add independent early return here.
+        # _is_livestream_active already gates core_api_type='free' internally.
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
         # Configured preset ownership must be resolved before core-native voice
         # routing; identical IDs still belong to the explicitly selected TTS API.
-        # 配置型音色与核心原生音色同名时，自定义 TTS 的显式归属优先，不能被原生路由抢走。
+        # When configured and core-native voices share a name, explicit custom-TTS ownership takes priority over native routing.
         configured_provider = _core_facade.selected_configured_tts_preset_provider_key(
             core_config_snapshot,
             self._config_manager,
@@ -2151,10 +2151,10 @@ class TtsRuntimeMixin:
             default='',
             legacy_keys=('voice_id',),
         )
-        # 声音来源统一架构惰性迁移：characters.json 里 voice 可能是旧扁平串，也可能是
-        # 用户设音色后迁成的结构对象 {source,provider,ref}。read_legacy_voice_id 把两形态
-        # 统一读成 dispatch/route gating 一直消费的 legacy 前缀串（顺带 strip 收口空白），
-        # 下游 literal 比较 / is_free_preset_voice_id 等无需感知存储形态。
+        # Lazy migration to unified voice sources: characters.json voice may be an old flat string or
+        # structured {source,provider,ref} after user voice selection. read_legacy_voice_id reads both
+        # as the legacy prefixed string consumed by dispatch/routing gates, stripping surrounding whitespace,
+        # keeping downstream literal comparisons / is_free_preset_voice_id independent of storage shape.
         from utils.voice_config import read_legacy_voice_id
         return read_legacy_voice_id(raw)
 
@@ -2180,7 +2180,7 @@ class TtsRuntimeMixin:
         raw_voice_id = self._get_voice_id()
         self.voice_id = raw_voice_id
         self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
-        # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
+        # Free preset selected outside free mode → do not send it, avoiding leakage of preset ids to other providers.
         if self._is_free_preset_voice and self.core_api_type != 'free':
             self.voice_id = ''
             self._is_free_preset_voice = False
@@ -2244,10 +2244,10 @@ class TtsRuntimeMixin:
         """
         if str(old_core_url or '') == str(new_core_url or ''):
             return False
-        # 免费目录归属分两半：大陆预设由 _is_free_preset_voice 标记；海外
-        # free_intl（yui + 完整 Gemini 原生目录）用 registry 按**旧路由**判——
-        # 翻转前音色就是在旧路由目录下解析出来的，字面量列举会漏掉非 yui 的
-        # Gemini 音色。自配/克隆音色两边都不命中，保持不动。
+        # Free catalog ownership has two parts: mainland presets use _is_free_preset_voice; overseas
+        # free_intl (yui + full native Gemini catalog) uses registry against the **old route**,
+        # because voice resolved under that catalog before switching. Literal enumeration misses non-yui
+        # Gemini voices. Custom/cloned voices match neither side and remain unchanged.
         overseas_native = False
         if not self._is_free_preset_voice and self.voice_id:
             try:
@@ -2272,7 +2272,7 @@ class TtsRuntimeMixin:
         """Push the voice migration notice into the buffer pool, delegating to the module-level function for unified dedup."""
         enqueue_voice_migration_notice(legacy_names)
 
-    def normalize_text(self, text): # 对文本进行基本预处理
+    def normalize_text(self, text): # Perform basic text preprocessing.
         text = text.strip()
         text = text.replace("\n", "")
         if contains_chinese(text):
@@ -2487,7 +2487,7 @@ class TtsRuntimeMixin:
         monitor/viewer surface consumes audio.
         """
         if not speech_id or not self._tts_output_is_current():
-            # 无主信号会让前端给错误的一轮收尾，宁可不发。
+            # Ownerless signals would finalize the wrong frontend turn; prefer not sending.
             return False
         try:
             # Pinned for the same reason as send_speech: the terminal signal has
@@ -2549,9 +2549,9 @@ class TtsRuntimeMixin:
             if not self._tts_runtime_is_current(runtime) or q is not self.tts_response_queue:
                 return
             try:
-                # 阻塞 get 挂在线程池里，无消息时主 event loop 完全沉默；
-                # 取消时 except CancelledError 分支会 push 哨兵唤醒线程池里那个
-                # 仍在 q.get() 上的线程，避免线程泄漏。
+                # Blocking get runs in thread pool, leaving main event loop idle when no messages;
+                # on cancellation, except CancelledError pushes a sentinel to wake the thread
+                # still blocked in q.get(), avoiding thread leaks.
                 pending_get = asyncio.create_task(asyncio.to_thread(q.get))
                 data = await asyncio.shield(pending_get)
                 pending_get = None
@@ -2559,10 +2559,10 @@ class TtsRuntimeMixin:
                         or q is not self.tts_response_queue):
                     return
 
-                # 处理 cancel 时为唤醒泄漏线程而 push 的哨兵。同一个 handler 实例
-                # 不会在 cancel 之后继续运行（CancelledError 已 raise），所以这里
-                # 只是为了在 handler 被替换后，新 handler（绑同一 queue）若意外
-                # 读到旧 handler 留下的哨兵也能正确忽略。
+                # Handle the sentinel pushed on cancellation to wake leaked threads. The same handler
+                # never continues after cancel (CancelledError re-raised); this only lets
+                # a replacement handler on the same queue correctly ignore a leftover sentinel
+                # accidentally read from its predecessor.
                 if isinstance(data, tuple) and len(data) == 2 and data[0] == "__handler_exit__":
                     continue
 
@@ -2580,9 +2580,9 @@ class TtsRuntimeMixin:
                         GAME_SPEECH_AUDIO_CACHE.fail_capture(self, speech_id)
                         self._mark_game_speech_delivery_failed(speech_id)
                     if speech_id == getattr(self, "_tts_replay_speech_id", None):
-                        # marker 排在该句所有音频之后；只有音频实际送达前端才推进边界。
-                        # 失败句若已播放过前缀也整体跳过，避免 fallback 从句首重念；
-                        # 其后的未确认句仍保留在账本中。
+                        # Marker follows all sentence audio; advance boundaries only when audio actually reached frontend.
+                        # Skip the whole failed sentence if any prefix played, preventing fallback from repeating its start;
+                        # retain subsequent unacknowledged sentences in ledger.
                         if getattr(self, "_tts_replay_sentence_audio_emitted", False):
                             self._consume_tts_replay_sentence(speech_id, str(sentence))
                         self._tts_replay_sentence_audio_emitted = False
@@ -2590,10 +2590,10 @@ class TtsRuntimeMixin:
 
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__audio_done__":
-                        # 必须 await，不能 _fire_task：handler 顺序消费队列，
-                        # await 才能保证这条收尾信号排在该 sid 的所有
-                        # __audio__/裸 bytes 之后。fire-and-forget 会插到尾音
-                        # 前面，前端提前收尾——正是本信号要解决的问题。
+                        # Must await, not _fire_task: handler consumes queue sequentially,
+                        # and await ensures this finalization signal follows all
+                        # __audio__/raw bytes for this sid. Fire-and-forget can overtake final audio,
+                        # finalizing frontend early, exactly the issue this signal addresses.
                         speech_id = data[1]
                         done_sent = await self.send_audio_done(speech_id)
                         if not self._tts_runtime_is_current(runtime):
@@ -2642,9 +2642,9 @@ class TtsRuntimeMixin:
                             self._tts_rate_limit_retry_at = 0.0
                             self._tts_quota_from_server_close = False
                             if getattr(self, '_tts_quota_blocked', False):
-                                # 配额期间缓存里有之前各轮被拒回复的残尾；只丢掉触发
-                                # 这次重试那一刻已判为旧轮次的 speech_id，之后合法排队
-                                # 的语音（触发重试的那一轮、镜像播报等）照常播出。
+                                # During quota rejection, cache contains tails of rejected replies; discard only speech_ids classified
+                                # as old at this retry's initial trigger. Later legitimately queued
+                                # speech (retry-triggering turn, mirrored speech, etc.) plays normally.
                                 stale_speech_ids = getattr(
                                     self, '_tts_quota_stale_speech_ids', None
                                 ) or frozenset()
@@ -2670,7 +2670,7 @@ class TtsRuntimeMixin:
                             )
                             # Configured endpoints fall back once; the handler
                             # then follows the replacement worker's new queue.
-                            # 自定义端点未就绪时立即切到保底 worker，并改听新队列。
+                            # If custom endpoint is not ready, immediately switch to fallback worker and listen on new queue.
                             if await self._activate_configured_tts_fallback_after_capacity("初始化", runtime):
                                 q = self.tts_response_queue
                                 runtime = self._snapshot_tts_runtime()
@@ -2681,15 +2681,15 @@ class TtsRuntimeMixin:
                                 continue
                             if not self._tts_runtime_is_current(runtime):
                                 return
-                            # 复用 __error__ 分支记录的 code 判断是否重试
+                            # Use the code recorded by __error__ to decide retries.
                             _last_code = self._last_tts_error_code
                             if _last_code in NO_RETRY_TTS_CODES:
                                 logger.warning(f"⚠️ TTS 未就绪且上次错误为 {_last_code}，跳过自动重试")
-                                # 取消可能仍在等待的延迟重试任务，避免绕过 no-retry 策略
+                                # Cancel pending delayed retry to avoid bypassing no-retry policy.
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
-                                # TTS 不会恢复，清空无用的缓存文本，避免白白占用内存
+                                # TTS cannot recover; clear unused buffered text to free memory.
                                 async with self.tts_cache_lock:
                                     if not self._tts_runtime_is_current(runtime):
                                         return
@@ -2699,9 +2699,9 @@ class TtsRuntimeMixin:
                             elif _last_code == 'API_QUOTA_TIME' and getattr(
                                 self, '_tts_quota_from_server_close', False
                             ):
-                                # 服务端不告知恢复时间（按 IP 滚动 24h 窗口），定时
-                                # 重拉只会一直被拒。不定时重试；每次回复首 chunk 的
-                                # 隐式 respawn 照常放行，窗口一到期下一句就恢复。
+                                # Server provides no recovery time (IP-based rolling 24h window); scheduled
+                                # respawns would repeatedly reject. Disable scheduled retries but continue implicit respawn
+                                # on each reply's first chunk; the next utterance recovers once window expires.
                                 logger.warning("⚠️ TTS 配额已用完，停止定时重试；下一次回复时再尝试")
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
@@ -2713,7 +2713,7 @@ class TtsRuntimeMixin:
                                     self.tts_pending_chunks.clear()
                                 self._fail_dropped_tts_speech(dropped)
                             else:
-                                # 1013 限流 / 并发超限：逐次拉长间隔，其余照旧 13 秒。
+                                # 1013 rate/concurrency limit: increase delay progressively; other errors keep 13 seconds.
                                 if _last_code == 'API_RATE_LIMIT':
                                     backoff_level = getattr(self, '_tts_rate_limit_backoff_level', 0)
                                     respawn_delay = min(
@@ -2725,11 +2725,11 @@ class TtsRuntimeMixin:
                                 else:
                                     respawn_delay = TTS_RESPAWN_DELAY_SECONDS
                                 logger.warning(f"⚠️ 收到TTS未就绪信号，{respawn_delay}秒后尝试重新拉起Worker")
-                                # 取消之前的延迟重试任务（如有）
+                                # Cancel previous delayed retry task, if any.
                                 if self._tts_respawn_task and not self._tts_respawn_task.done():
                                     self._tts_respawn_task.cancel()
                                     self._tts_respawn_task = None
-                                # 捕获当前会话身份与 TTS 标志，防止跨会话的错误 respawn
+                                # Capture current session identity and TTS flag to prevent cross-session respawn.
                                 _expected_session = self.session
                                 _expected_use_tts = self.use_tts
                                 async def _delayed_respawn(_expected_session=_expected_session,
@@ -2749,7 +2749,7 @@ class TtsRuntimeMixin:
                                 self._tts_respawn_task = asyncio.ensure_future(_delayed_respawn())
                         continue
                     elif data[0] == "__warning__":
-                        # TTS worker 发来的提示性消息（如水印检测），直接转发前端
+                        # Forward informational TTS-worker messages (e.g. watermark detection) directly to frontend.
                         # Keep the transport write inside the handler lifetime:
                         # retirement drains this task before allowing handoff.
                         await self.send_status(data[1])
@@ -2780,7 +2780,7 @@ class TtsRuntimeMixin:
                         # A configured endpoint failure is observable in the
                         # backend log above, then redispatched through the exact
                         # pre-existing fallback chain for subsequent audio.
-                        # 自定义 API 运行时出错后，仅切换 provider；现有保底顺序不变。
+                        # On custom-API runtime failure, change provider only, preserving existing fallback order.
                         if await self._activate_configured_tts_fallback_after_capacity("运行时", runtime):
                             q = self.tts_response_queue
                             runtime = self._snapshot_tts_runtime()
@@ -2792,7 +2792,7 @@ class TtsRuntimeMixin:
                         if not self._tts_runtime_is_current(runtime):
                             return
 
-                        # 优先尝试从结构化 JSON 中提取明确的 code 字段
+                        # Prefer explicit code field from structured JSON.
                         _known_codes = {
                             'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
@@ -2801,20 +2801,20 @@ class TtsRuntimeMixin:
                             'API_ACCESS_DENIED',
                         }
                         _parsed_code = None
-                        _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
-                        # 展示给用户的那句：默认沿用原文，但关闭帧类错误改成只报
-                        # 关闭码——理由文本由 provider 控制，不该进 UI（约定见
+                        _keyword_target = error_msg_text  # Fallback for non-JSON errors.
+                        # User-facing text defaults to original, except close-frame errors report only
+                        # close code: provider-controlled reason text must not enter UI (contract in
                         # tests/unit/runtime/test_realtime_connection_recovery.py）。
-                        # 关键词分类仍读 data.message，不受影响。
+                        # Keyword classification still reads data.message, unaffected.
                         _display_msg = error_msg_text
-                        # 免费服务 worker 按关闭帧分类的拒绝会带 data.close_code
+                        # Free-service rejections classified by close frame include data.close_code.
                         _from_server_close = False
                         try:
                             _parsed = json.loads(error_msg_text)
                             if isinstance(_parsed, dict):
                                 _close_data = _parsed.get('data')
-                                # 判定要求 close_code 非空：展示串由它拼出来，
-                                # 缺值的载荷会渲染成 "WebSocket close code None"。
+                                # Require nonempty close_code, used to build display string;
+                                # missing values would render 'WebSocket close code None'.
                                 _from_server_close = (
                                     isinstance(_close_data, dict)
                                     and _close_data.get('close_code') is not None
@@ -2823,20 +2823,20 @@ class TtsRuntimeMixin:
                                     _display_msg = (
                                         f"WebSocket close code {_close_data.get('close_code')}"
                                     )
-                                # 结构化错误：关键词匹配只看 data.message，避免元数据误判
+                                # Structured errors: keyword matching reads only data.message, avoiding metadata false positives.
                                 _keyword_target = ""
-                                # 先检查顶层 code
+                                # Check top-level code first.
                                 _candidate = _parsed.get('code', '')
                                 if isinstance(_candidate, str) and _candidate in _known_codes:
                                     _parsed_code = _candidate
-                                # 再检查 data.code（TTS 事件结构）
+                                # Then check data.code (TTS event structure).
                                 if not _parsed_code:
                                     _data = _parsed.get('data', {})
                                     if isinstance(_data, dict):
                                         _candidate = _data.get('code', '')
                                         if isinstance(_candidate, str) and _candidate in _known_codes:
                                             _parsed_code = _candidate
-                                        # 关键词匹配仅针对 message 字段
+                                        # Match keywords only in message field.
                                         _keyword_target = str(_data.get('message', '') or "")
                         except (json.JSONDecodeError, TypeError):
                             # JSON parsing may fail for free-form error strings from
@@ -2848,7 +2848,7 @@ class TtsRuntimeMixin:
                             user_msg = json.dumps({"code": _parsed_code, "details": {"msg": _display_msg}})
                             self._last_tts_error_code = _parsed_code
                         else:
-                            # 回退到关键词匹配（仅匹配 message 字段，不匹配 UUID/时间戳等元数据）
+                            # Fall back to keyword matching only on message, excluding UUID/timestamp metadata.
                             error_msg_lower = _keyword_target.lower()
                             if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
                                 user_msg = json.dumps({"code": "API_ARREARS"})
@@ -2875,20 +2875,20 @@ class TtsRuntimeMixin:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": _display_msg}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
-                        # 只有免费服务按关闭帧判定的日配额才停定时重试；付费 / 自定义
-                        # provider 的 "429 quota exceeded" 同样归为配额，但常是可恢复的
-                        # 每分钟限流，保留原有的定时重试。
+                        # Disable scheduled retries only for free-service daily quotas identified by close frame; paid/custom
+                        # providers' '429 quota exceeded' also classifies as quota but often means recoverable
+                        # per-minute throttling, retaining existing scheduled retries.
                         self._tts_quota_from_server_close = (
                             self._last_tts_error_code == 'API_QUOTA_TIME'
                             and _from_server_close
                         )
-                        # Telemetry：TTS 失败。code 是已归一化的低基数枚举
+                        # Telemetry: TTS failure; code is a normalized low-cardinality enum.
                         # （API_ARREARS / API_KEY_REJECTED / TTS_CONNECTION_FAILED ...）。
-                        # 首日听不到语音是核心体验断裂，D1 流失重要信号。
+                        # No voice on day one breaks the core experience, an important D1 churn signal.
                         try:
                             from utils.instrument import counter as _instr_counter
-                            # before_first_loop：TTS 在用户体验到核心 loop 前就坏 =
-                            # 首次体验障碍（开了口但没听到回复）。低基数 true/false/unknown。
+                            # before_first_loop: TTS breaks before user experiences core loop =
+                            # first-experience barrier (spoke but heard no reply). Low-cardinality true/false/unknown.
                             try:
                                 from utils.token_tracker import TokenTracker as _TT
                                 _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
@@ -2896,9 +2896,9 @@ class TtsRuntimeMixin:
                                 _bfl = "unknown"
                             _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32], before_first_loop=_bfl)
                         except Exception:
-                            # 埋点 best-effort，绝不影响 TTS 错误的重试/上报主流程。
+                            # Telemetry is best effort and must never affect TTS retry/reporting flow.
                             pass
-                        # 可重试的错误：前2次静默重试，第3次失败时上报前端
+                        # Retryable errors: first two retries silent; report to frontend on the third failure.
                         if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
                             self._tts_retry_notify_count += 1
                             if self._tts_retry_notify_count < 3:
@@ -2937,15 +2937,15 @@ class TtsRuntimeMixin:
                         self._tts_replay_audio_emitted = True
                         self._tts_replay_sentence_audio_emitted = True
                         self._confirm_pending_ai_voice_echo(speech_id)
-                        # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
-                        # note_core_loop_completed 的"用户已开口"前置，构成 D1
-                        # 核心 loop 完成信号（每进程一次，内部幂等）。
+                        # Telemetry: successful audio delivery means user heard the character. Together with
+                        # note_core_loop_completed's prerequisite that user spoke, this signals D1
+                        # core-loop completion (once per process, internally idempotent).
                         try:
                             from utils.token_tracker import TokenTracker as _TT
                             _TT.get_instance().note_core_loop_completed()
                         except Exception:
-                            # 埋点 best-effort，绝不影响音频投递主流程；
-                            # note_core_loop_completed 自身幂等。
+                            # Telemetry is best effort and never affects primary audio delivery;
+                            # note_core_loop_completed is itself idempotent.
                             pass
                     else:
                         GAME_SPEECH_AUDIO_CACHE.fail_capture(self, speech_id)

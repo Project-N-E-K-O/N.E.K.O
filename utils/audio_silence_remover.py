@@ -40,19 +40,19 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────── 常量 ───────────────────
-SILENCE_THRESHOLD_DBFS = -40.0  # 静音阈值 (dBFS)
-MIN_SILENCE_DURATION_MS = 200   # 最小静音持续时间 (ms)
-RETAINED_SILENCE_MS = 200       # 每段静音裁剪后保留的时长 (ms)
-RMS_FRAME_DURATION_MS = 10      # RMS 计算帧长 (ms)
-RMS_FLOAT32_RECHECK_MARGIN_DB = 1e-4  # 阈值附近用 float64 复核，保持边界语义
+# -- Constants --
+SILENCE_THRESHOLD_DBFS = -40.0  # Silence threshold (dBFS).
+MIN_SILENCE_DURATION_MS = 200   # Minimum silence duration (ms).
+RETAINED_SILENCE_MS = 200       # Duration retained after trimming each silence interval (ms).
+RMS_FRAME_DURATION_MS = 10      # RMS analysis frame duration (ms).
+RMS_FLOAT32_RECHECK_MARGIN_DB = 1e-4  # Recheck near-threshold values with float64 to preserve boundary semantics.
 
 
 @dataclass
 class SilenceSegment:
     """A detected silent interval"""
-    start_ms: float   # 起始时间 (ms)
-    end_ms: float     # 结束时间 (ms)
+    start_ms: float   # Start time (ms).
+    end_ms: float     # End time (ms).
 
     @property
     def duration_ms(self) -> float:
@@ -62,12 +62,12 @@ class SilenceSegment:
 @dataclass
 class SilenceAnalysisResult:
     """Silence analysis result"""
-    original_duration_ms: float           # 原始音频总时长 (ms)
-    silence_segments: list[SilenceSegment] = field(default_factory=list)  # 所有静音段
-    total_silence_ms: float = 0.0         # 检测到的静音总时长 (ms)
-    removable_silence_ms: float = 0.0     # 实际可移除的静音时长 (ms)
-    estimated_duration_ms: float = 0.0    # 处理后预计剩余时长 (ms)
-    saving_percentage: float = 0.0        # 节省百分比 (基于实际可移除量)
+    original_duration_ms: float           # Total original audio duration (ms).
+    silence_segments: list[SilenceSegment] = field(default_factory=list)  # All silence intervals.
+    total_silence_ms: float = 0.0         # Total detected silence duration (ms).
+    removable_silence_ms: float = 0.0     # Actually removable silence duration (ms).
+    estimated_duration_ms: float = 0.0    # Expected remaining duration after processing (ms).
+    saving_percentage: float = 0.0        # Percentage saved, based on actually removable duration.
     sample_rate: int = 0
     sample_width: int = 0                 # bytes
     channels: int = 0
@@ -76,8 +76,8 @@ class SilenceAnalysisResult:
 @dataclass
 class TrimResult:
     """Trim processing result"""
-    audio_data: bytes           # 处理后的音频二进制数据 (WAV)
-    md5: str                    # MD5 校验值
+    audio_data: bytes           # Processed audio bytes (WAV).
+    md5: str                    # MD5 checksum.
     original_duration_ms: float
     trimmed_duration_ms: float
     removed_silence_ms: float
@@ -92,7 +92,7 @@ class SilenceRemovalCancelledError(Exception):
     pass
 
 
-# 兼容别名，避免破坏现有调用方
+# Compatibility alias to preserve existing callers.
 CancelledError = SilenceRemovalCancelledError
 
 
@@ -112,14 +112,14 @@ def _samples_to_float(
         arr = np.frombuffer(data, dtype=np.int16).astype(float_dtype)
         arr = arr / float_dtype.type(32768.0)
     elif sample_width == 3:
-        # 24-bit signed – numpy 向量化解码
+        # Signed 24-bit: vectorized NumPy decoding.
         n_samples = len(data) // 3
         raw = np.frombuffer(data, dtype=np.uint8).reshape(n_samples, 3)
-        # 组装为 32-bit 整数 (little-endian: byte0 + byte1<<8 + byte2<<16)
+        # Assemble 32-bit integers (little-endian: byte0 + byte1<<8 + byte2<<16).
         i32 = (raw[:, 0].astype(np.int32)
                | (raw[:, 1].astype(np.int32) << 8)
                | (raw[:, 2].astype(np.int32) << 16))
-        # 符号扩展: 如果最高位 (bit 23) 为 1，扩展为负数
+        # Sign extension: if the highest bit (23) is set, extend to a negative number.
         i32[i32 >= 0x800000] -= 0x1000000
         arr = i32.astype(float_dtype) / float_dtype.type(8388608.0)
     elif sample_width == 4:
@@ -141,9 +141,9 @@ def _float_to_samples(arr: np.ndarray, sample_width: int) -> bytes:
         out = (arr * 32768.0).astype(np.int16)
         return out.tobytes()
     elif sample_width == 3:
-        # numpy 向量化 24-bit 编码
+        # Vectorized NumPy 24-bit encoding.
         i32 = np.clip(arr * 8388608.0, -8388608, 8388607).astype(np.int32)
-        # 将有符号 32-bit 转为无符号以便位运算提取字节
+        # Convert signed 32-bit values to unsigned for bitwise byte extraction.
         u32 = i32.view(np.uint32)
         raw = np.empty((len(u32), 3), dtype=np.uint8)
         raw[:, 0] = u32 & 0xFF
@@ -200,18 +200,18 @@ def detect_silence(
 
     duration_ms = (n_frames / sample_rate) * 1000.0
 
-    # 主分析数组使用 float32；只有落在阈值极近处的帧才按原始 PCM
-    # 以 float64 复核，从而保留旧实现的严格边界分类。
+    # Use float32 for the main analysis array; recheck only frames extremely close to the threshold
+    # using original PCM in float64, preserving the old implementation's strict boundary classification.
     float_samples = _samples_to_float(raw_data, sample_width)
     raw_view = memoryview(raw_data)
 
-    # 如果是多声道，取平均作为单声道进行分析
+    # Average multichannel audio into mono for analysis.
     if channels > 1:
         float_samples_mono = float_samples.reshape(-1, channels).mean(axis=1)
     else:
         float_samples_mono = float_samples
 
-    # 每帧的采样数
+    # Samples per frame.
     frame_size = int(sample_rate * RMS_FRAME_DURATION_MS / 1000.0)
     if frame_size < 1:
         frame_size = 1
@@ -255,12 +255,12 @@ def detect_silence(
                 if seg_duration >= min_silence_ms:
                     silence_segments.append(SilenceSegment(start_ms=start_ms, end_ms=end_ms))
 
-        # 进度回调 (检测阶段占 0-100%)
+        # Progress callback (detection occupies 0-100%).
         if progress_callback and i % max(1, total_frames // 100) == 0:
             pct = int((i / total_frames) * 100)
             progress_callback(min(pct, 100))
 
-    # 处理末尾仍在静音中的情况
+    # Handle silence continuing through the audio's end.
     if in_silence:
         start_ms = (silence_start_frame * frame_size / sample_rate) * 1000.0
         end_ms = duration_ms
@@ -269,7 +269,7 @@ def detect_silence(
             silence_segments.append(SilenceSegment(start_ms=start_ms, end_ms=end_ms))
 
     total_silence_ms = sum(s.duration_ms for s in silence_segments)
-    # 每段静音保留 RETAINED_SILENCE_MS，超出部分才是实际可移除量
+    # Retain RETAINED_SILENCE_MS per interval; only the excess is actually removable.
     removable_silence_ms = sum(
         max(0, s.duration_ms - RETAINED_SILENCE_MS) for s in silence_segments
     )
@@ -323,7 +323,7 @@ def trim_silence(
         TrimResult
     """
     if not analysis.silence_segments:
-        # 没有静音段，直接返回原始音频
+        # No silence intervals: return the original audio directly.
         audio_buffer.seek(0)
         original_data = audio_buffer.read()
         md5 = hashlib.md5(original_data).hexdigest()
@@ -346,15 +346,15 @@ def trim_silence(
         n_frames = wf.getnframes()
         raw_data = wf.readframes(n_frames)
 
-    # 每侧保留的采样数
+    # Samples retained on each side.
     retain_half_samples = int(sample_rate * (RETAINED_SILENCE_MS / 2) / 1000.0)
 
     if progress_callback:
         progress_callback(0)
 
-    # 按顺序遍历音频，对每段静音只保留首尾各 retain_half，移除正中间部分
+    # Traverse audio in order, retaining retain_half at each end of each silence and removing its center.
     total_segs = len(analysis.silence_segments)
-    prev_end = 0  # 上一次拷贝到的样本位置
+    prev_end = 0  # Last copied sample position.
     kept_frames = 0
     frame_width = sample_width * channels
     raw_view = memoryview(raw_data)
@@ -371,30 +371,30 @@ def trim_silence(
             seg_start = int(seg.start_ms * sample_rate / 1000.0)
             seg_end = int(seg.end_ms * sample_rate / 1000.0)
 
-            # 计算中心裁剪区域
-            cut_start = seg_start + retain_half_samples  # 前半保留结束点
-            cut_end = seg_end - retain_half_samples       # 后半保留起始点
+            # Calculate the central trimming interval.
+            cut_start = seg_start + retain_half_samples  # End of the retained first half.
+            cut_end = seg_end - retain_half_samples       # Start of the retained second half.
 
             if cut_start >= cut_end:
-                # 静音段不足以裁剪（≤ RETAINED_SILENCE_MS），保留完整静音
+                # Silence too short to trim (<= RETAINED_SILENCE_MS): preserve it entirely.
                 continue
 
-            # 直接写入原始 PCM 帧，避免浮点往返和整段 concatenate。
+            # Write original PCM frames directly, avoiding floating-point round trips and full concatenation.
             if cut_start > prev_end:
                 out_wf.writeframesraw(
                     raw_view[prev_end * frame_width : cut_start * frame_width]
                 )
                 kept_frames += cut_start - prev_end
 
-            # 跳过中间部分 [cut_start, cut_end)
+            # Skip the middle [cut_start, cut_end).
             prev_end = cut_end
 
-            # 进度回调
+            # Progress callback.
             if progress_callback:
                 pct = int(((idx + 1) / total_segs) * 100)
                 progress_callback(min(pct, 100))
 
-        # 拷贝最后一段静音之后的剩余音频
+        # Copy remaining audio after the last silence.
         if prev_end < n_frames:
             out_wf.writeframesraw(raw_view[prev_end * frame_width :])
             kept_frames += n_frames - prev_end
@@ -485,8 +485,8 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
             for packet in container.demux(stream):
                 for frame in packet.decode():
                     if resampler is None:
-                        # 优先用流元数据；某些容器/编码下 stream.sample_rate
-                        # 会缺失或为 0，此时回退到首个解码帧的采样率
+                        # Prefer stream metadata; some containers/codecs have missing or zero stream.sample_rate,
+                        # in which case use the first decoded frame's sample rate.
                         sample_rate = int(stream.sample_rate or frame.sample_rate or 0)
                         if sample_rate <= 0:
                             raise ValueError('无法确定音频采样率')
@@ -530,7 +530,7 @@ def convert_wav_back(wav_buffer: io.BytesIO, original_format: str, original_para
     try:
         from pydub import AudioSegment
     except ImportError:
-        # fallback: 返回 WAV
+        # Fallback: return WAV.
         wav_buffer.seek(0)
         return wav_buffer
 

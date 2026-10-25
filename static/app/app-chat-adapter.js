@@ -631,6 +631,7 @@
                     }
                 }
             }
+            if (window.nekoReplyTail) window.nekoReplyTail.changed();
         }
     }
 
@@ -708,6 +709,7 @@
             } catch (_) {}
         }
         window._realisticGeminiQueue = [];
+        if (window.nekoReplyTail) window.nekoReplyTail.changed();
     }
 
     // ======================== appendMessage（覆盖核心） ========================
@@ -1075,7 +1077,10 @@
         return true;
     }
 
-    function appendReactChatBlocks(payload) {
+    function appendReactChatBlocks(payload, tailPlacement) {
+        if (payload && payload.reply_tail && !tailPlacement) {
+            return !!(window.nekoReplyTail && window.nekoReplyTail.enqueue(payload));
+        }
         var host = getHost();
         var blocks = structuredBlocksFrom(payload && payload.blocks);
         var cardHandled = false;
@@ -1113,6 +1118,11 @@
             blocks: blocks,
             status: 'sent'
         };
+        if (tailPlacement) {
+            message.id = tailPlacement.id;
+            message.sortKey = tailPlacement.sortKey;
+            message.createdAt = tailPlacement.createdAt;
+        }
         if (host && typeof host.appendMessage === 'function') {
             _tryFlushPendingHostMessages();
             if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {
@@ -1172,6 +1182,66 @@
         host.removeMessage('topic-hint-' + tid);
     }
 
+    // ======================== 串门台词（visit_line / visit_line_delta） ========================
+
+    // 说话人 → 角色：对端（访客猫娘 / 对方亲人）一律 'tool'（OD-19，样式在 index.css）；
+    // 本侧猫娘是她自己（assistant），本侧亲人是用户自己（user）
+    function visitLineRole(speaker) {
+        if (!speaker || speaker.self !== true) return 'tool';
+        return speaker.kind === 'human' ? 'user' : 'assistant';
+    }
+
+    /**
+     * visit-chat.js 拼好一行台词后交到这里上屏（新建或原地更新同一条气泡）。
+     * spec: {messageId, speaker, author, avatarUrl, text, notice, replace}
+     * 台词块一律纯文本（§3.6.6）：不走 SmartTextBlock / ReactMarkdown，对端塞的
+     * Markdown 图片 / 链接原样显示、不加载、不可点。
+     */
+    function renderVisitLine(spec) {
+        var host = getHost();
+        if (!spec || !spec.messageId) return false;
+        var role = visitLineRole(spec.speaker);
+        var author = sanitizeDisplayName(spec.author) || (role === 'user' ? getCurrentUserName() : getCurrentAssistantName());
+        var blocks = [{ type: 'text', text: String(spec.text || ''), plain_text: true }];
+        if (spec.notice) {
+            blocks.push({ type: 'status', tone: 'info', text: String(spec.notice) });
+        }
+        var avatarUrl = role === 'assistant' ? getAssistantAvatarUrl() : (spec.avatarUrl || '');
+        var patch = {
+            role: role,
+            author: author,
+            avatarLabel: Array.from(author)[0] ? Array.from(author)[0].toUpperCase() : undefined,
+            avatarUrl: avatarUrl || undefined,
+            blocks: blocks,
+            status: 'sent'
+        };
+        // 串门台词按 (lp, side_rank) 落位：visit-chat 算好的排序键（没有就照常追加到末尾）
+        if (typeof spec.sortKey === 'number' && isFinite(spec.sortKey)) patch.sortKey = spec.sortKey;
+        var messages = host && typeof host.getState === 'function' ? (host.getState().messages || []) : [];
+        var exists = messages.some(function (message) { return message && message.id === spec.messageId; });
+        if (exists && host && typeof host.updateMessage === 'function') {
+            host.updateMessage(spec.messageId, patch);
+            return true;
+        }
+        var message = Object.assign({
+            id: spec.messageId,
+            time: getCurrentTimeString(),
+            createdAt: Date.now()
+        }, patch);
+        if (host && typeof host.appendMessage === 'function') {
+            _tryFlushPendingHostMessages();
+            return !!appendHostMessageSafely(host, message, 'visit_line');
+        }
+        var pending = _pendingHostMessages.find(function (m) { return m.id === spec.messageId; });
+        if (pending) {
+            Object.assign(pending, patch);
+        } else {
+            _queuePendingHostMessage(message);
+        }
+        _tryFlushPendingHostMessages();
+        return true;
+    }
+
     // ======================== refreshReactAssistantAvatars ========================
 
     function refreshReactAssistantAvatars() {
@@ -1213,6 +1283,7 @@
         window.appChat.appendReactTopicHint = appendReactTopicHint;
         window.appChat.removeReactTopicHint = removeReactTopicHint;
         window.appChat.setReactMessageStatus = setReactMessageStatus;
+        window.appChat.renderVisitLine = renderVisitLine;
     }
 
     // 头像更新事件

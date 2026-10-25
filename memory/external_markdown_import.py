@@ -55,7 +55,7 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ignore_previous", re.compile(r"\b(?:ignore|disregard)\b.{0,40}\b(?:previous|prior|above)\b.{0,30}\b(?:instructions?|prompts?|rules?)\b", re.IGNORECASE)),
     # Both orthographies on every alternation. Simplified-only meant a Traditional
     # injection only tripped this when its wording happened to be script-neutral —
-    # "忽略以上指令" fired, "無視上述規則" did not. The middle group (以上/上述/之前)
+    # "忽略以上指令" (ignore previous instructions) fired, while "無視上述規則" (ignore the above rules) did not. The middle group (以上/上述/之前)
     # is spelled the same in both, which is exactly why the misses looked random.
     ("ignore_previous_zh", re.compile(
         r"(?:忽略|无视|無視|不要理会|不要理會)(?:以上|上述|之前).{0,12}"
@@ -219,14 +219,27 @@ def _split_long_fragment(text: str) -> list[str]:
     return [item for item in out if item]
 
 
-def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
+#: Cap on fragments per extraction batch. This is an **optimistic** cap, not a safety cap: more fragments =
+#: fewer total calls (friendlier to free quotas), at the cost that dense batches may hit the 4096 output guard;
+#: the facts-side split-in-half recursion covers that (failed batches retry in halves; a day is dropped only when a single fragment fails),
+#: so err on the large side here: a tighter cap pre-splits more batches and makes total calls more expensive.
+MAX_FRAGMENTS_PER_EXTRACTION_BATCH = 40
+
+
+def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[list[str]]:
     """Greedily pack one day's journal fragments into extraction batches, each
-    within ``max_tokens``. Oversized single fragments are token-sliced instead
-    of truncated so no journal tail is silently dropped (Greptile P1); a slice
-    that cannot shrink further may exceed the budget by a fraction of a token
-    — acceptable for an extraction-input soft cap. Used by both the commit-side
+    within ``max_tokens`` input tokens AND
+    :data:`MAX_FRAGMENTS_PER_EXTRACTION_BATCH` fragments. Oversized single
+    fragments are token-sliced instead of truncated so no journal tail is
+    silently dropped (Greptile P1); a slice that cannot shrink further may
+    exceed the budget by a fraction of a token — acceptable for an
+    extraction-input soft cap. Used by both the commit-side
     extractor (memory/facts.py) and the preview ETA estimator so the per-day
     LLM call count never drifts between them.
+
+    Returns fragment groups (one list per extraction batch); the caller joins
+    each group into the extraction turn. Groups (not joined strings) so a
+    failed batch can be split in half adaptively without re-parsing.
 
     Deliberately imports the tokenizer lazily: this module stays stdlib-only
     for parsing; only batch estimation needs token counting.
@@ -238,7 +251,7 @@ def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
         fragment = (text or "").strip()
         while fragment and count_tokens(fragment) > max_tokens:
             head = truncate_to_tokens(fragment, max_tokens)
-            # decode 可能比原切点略短；只要有推进就切下去，推不动则整段成一批。
+            # Decoding may end slightly before the original cut; split whenever it advances, otherwise keep the entire segment as one batch.
             if not head or len(head) >= len(fragment):
                 break
             pieces.append(head)
@@ -246,18 +259,21 @@ def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
         if fragment:
             pieces.append(fragment)
 
-    batches: list[str] = []
+    batches: list[list[str]] = []
     current: list[str] = []
     current_tokens = 0
     for piece in pieces:
         piece_tokens = count_tokens(piece)
-        if current and current_tokens + piece_tokens > max_tokens:
-            batches.append("\n".join(current))
+        if current and (
+            current_tokens + piece_tokens > max_tokens
+            or len(current) >= MAX_FRAGMENTS_PER_EXTRACTION_BATCH
+        ):
+            batches.append(current)
             current, current_tokens = [], 0
         current.append(piece)
         current_tokens += piece_tokens
     if current:
-        batches.append("\n".join(current))
+        batches.append(current)
     return batches
 
 
@@ -394,8 +410,8 @@ def build_import_candidates(
                 ) from exc
         fragments = split_markdown_entries(
             source.content,
-            # daily 也吃 § 切分：daily→facts 是逐条落盘（非融合再消化），§ 分块必须
-            # 切开，否则一整份日记会当成一条 fact（Codex P2）。SOUL 走融合故不需要。
+            # daily also uses section-sign splitting: daily->facts persists entries individually rather than merging and redigesting them, so split
+            # section-sign chunks or an entire diary becomes a single fact (Codex P2). SOUL merges, so it does not need this.
             hermes_delimiter=(detected == "hermes" and kind in {"user", "memory", "daily"}),
         )
         for fragment in fragments:

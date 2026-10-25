@@ -56,7 +56,7 @@ class _Liveness:
         self.events.append("page_back")
 
     def on_page_socket_back(self, now: float) -> None:
-        # 新 socket 连回：期限改为页面重载的绝对期限
+        # New socket reconnects: replace the deadline with the absolute page-reload deadline.
         self.events.append("page_armed")
 
     expired = False
@@ -244,7 +244,7 @@ def _expect_close(ws, code: int) -> None:
     assert exc.value.code == code
 
 
-# ── 路由表 ─────────────────────────────────────────────────────────────
+# ── Routing table ─────────────────────────────────────────────────────────────
 
 
 def test_route_is_relative_and_mounts_once_under_the_prefix(app):
@@ -254,7 +254,7 @@ def test_route_is_relative_and_mounts_once_under_the_prefix(app):
     assert [getattr(r, "path", "") for r in tw.router.routes] == ["/transport/ws"]
 
 
-# ── 握手：回环 / 代理头 / Origin / auth ────────────────────────────────
+# ── Handshake: loopback / proxy headers / Origin / auth ────────────────────────────────
 
 
 def test_bad_origin_is_rejected_before_accept(app, session):
@@ -274,7 +274,7 @@ def test_non_loopback_peer_is_rejected_even_with_token_and_origin(app, session):
 
 
 def test_behind_proxy_rejects_even_a_rewritten_loopback_peer(app, session, monkeypatch):
-    # proxy_headers=True 时 uvicorn 已把 client.host 改写成 XFF 里的 127.0.0.1
+    # With proxy_headers=True, uvicorn already rewrote client.host to XFF's 127.0.0.1.
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     with pytest.raises(WebSocketDisconnect) as exc:
         with _client(app).websocket_connect(URL, headers={"origin": ORIGIN, "x-forwarded-for": "127.0.0.1"}):
@@ -344,7 +344,7 @@ def test_unknown_visit_closes_4404(app):
         _expect_close(ws, tw.CLOSE_UNKNOWN_VISIT)
 
 
-# ── 能力门与凭证 ───────────────────────────────────────────────────────
+# ── Capability gate and credentials ───────────────────────────────────────────────────────
 
 
 def test_failed_preflight_is_recorded_and_no_credentials_are_sent(app, session):
@@ -377,7 +377,7 @@ def test_failed_preflight_hook_does_not_fetch_credentials(app):
 
 
 def test_preflight_is_not_written_into_another_visits_slot(app, session):
-    vrs.activate_visit_route(LANLAN, visit_id="ZZZZZZZZZZZZZZZZZZZZZZ")  # 同角色已开了下一场
+    vrs.activate_visit_route(LANLAN, visit_id="ZZZZZZZZZZZZZZZZZZZZZZ")  # The same character has already started another visit.
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
         _preflight(ws, ok=False, reason="no_webrtc")
@@ -395,7 +395,7 @@ def test_credentials_are_sent_once_per_connection(app, session):
         ws.send_text(json.dumps({"type": "state", "state": "joining", "peer_present": False, "remote_video": False}))
         _sync(ws)
         assert session.issued == 1
-        # 运行时再塞一条首发：拒；续期：放行
+        # Runtime adds another initial issuance: reject; renewal: allow.
         assert not _run(ws, session.send, first)
         assert _run(ws, session.send, {**first, "refresh": True})
         refreshed = json.loads(ws.receive_text())
@@ -435,7 +435,7 @@ def test_sdk_caps_before_credentials_are_ignored(app, session):
     assert session.sdk == []
 
 
-# ── 上行转发 ───────────────────────────────────────────────────────────
+# ── Uplink forwarding ───────────────────────────────────────────────────────────
 
 
 def test_recv_reaches_the_runtime_and_malformed_is_dropped(app, session):
@@ -469,7 +469,7 @@ def test_disconnect_starts_the_page_grace(app, session):
     assert not tw.is_transport_attached(VISIT_ID, "guest")
 
 
-# ── 重载 / 顶号 ────────────────────────────────────────────────────────
+# ── Reload / supersession ────────────────────────────────────────────────────────
 
 
 def _rejoin(ws) -> list[dict]:
@@ -503,7 +503,7 @@ def test_reload_resends_hello_then_exactly_one_media_snapshot_guest(app, session
     assert msgs[1]["payload"]["t"] == "hello"
     assert msgs[2] == {"type": "media", "publish": True, "crop": "upper", "ladder": 0}
     _wait_page_lost(session, 2)
-    # 连回只把期限改成绝对期限（page_armed），重入成功才 page_back
+    # Reconnection only changes to the absolute deadline (page_armed); page_back requires successful reentry.
     assert session.liveness.events == ["page_lost", "page_armed", "page_back", "page_lost"]
     assert ("resume", PAUSE_PAGE_RELOAD) in session.log
 
@@ -545,7 +545,7 @@ def test_second_connection_supersedes_the_first_with_4409(app, session):
             _sync(new)
             _expect_close(old, tw.CLOSE_SUPERSEDED)
             assert tw.is_transport_attached(VISIT_ID, "guest")
-            # 被顶掉的旧连接断开不算掉页
+            # Superseded old-connection disconnection does not count as page loss.
             assert session.liveness.events == ["page_armed"]
 
 
@@ -646,7 +646,7 @@ class _RecordingWS:
 
 
 def test_late_credentials_of_a_replaced_connection_are_dropped():
-    # TestClient 在服务端关掉连接后不再调度旧 handler 的后续代码，这个时序只能直接驱动 _handle_frame
+    # TestClient stops scheduling an old handler after server closure; drive _handle_frame directly to test this timing.
     import asyncio
 
     async def scenario():
@@ -661,7 +661,7 @@ def test_late_credentials_of_a_replaced_connection_are_dropped():
         task = asyncio.ensure_future(tw._handle_frame(link, old, preflight, 10, VISIT_ID, "guest"))
         while ("issue", 1) not in s.gates:
             await asyncio.sleep(0)
-        # 等 Servers 期间页面重载：新连接已过预检、正等自己的凭证
+        # Page reloads while awaiting Servers: the new connection passed preflight and awaits its own credentials.
         new = tw._Connection(websocket=new_ws, reattach=True)
         new.preflight_seen = True
         link.conn = new
@@ -683,7 +683,7 @@ def test_lifecycle_callbacks_run_on_the_monotonic_clock(app, session, monkeypatc
     session.liveness.on_page_lost = lambda now: seen.append(now)
     from tests.fake_clock import patch_module_clock
 
-    # 墙钟与单调钟故意差很远：回调必须拿到单调钟
+    # Deliberately separate wall and monotonic clocks greatly: callbacks must receive monotonic time.
     patch_module_clock(monkeypatch, tw, monotonic=lambda: 12345.0, time=lambda: 9e9)
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
@@ -706,7 +706,7 @@ def test_takeover_does_not_wait_for_a_stuck_old_socket():
         old = tw._attach(link, _StuckWS())
         stuck = asyncio.ensure_future(old.send_json({"type": "media", "publish": True}))
         await asyncio.sleep(0)
-        new = tw._attach(link, _RecordingWS())  # 同步完成，不等旧连接的发送锁
+        new = tw._attach(link, _RecordingWS())  # Complete synchronously without waiting for the old connection's send lock.
         refused = await asyncio.wait_for(tw._send_on(old, {"type": "media", "publish": False}), 1)
         sent = await asyncio.wait_for(s.send({"type": "media", "publish": False}), 1)
         stuck.cancel()
@@ -739,7 +739,7 @@ def test_send_queued_behind_the_lock_is_dropped_once_retired():
         await asyncio.sleep(0)
         queued = asyncio.ensure_future(conn.send_json({"type": "media", "publish": False}))
         await asyncio.sleep(0)
-        conn.retired = True  # 顶号发生在它排队等锁期间
+        conn.retired = True  # Supersession occurs while it queues for the lock.
         ws.gate.set()
         return await first, await queued, ws.sent
 
@@ -799,7 +799,7 @@ def test_replaced_session_cannot_send_into_its_successor():
         tw._reset_for_tests()
         stale, fresh = FakeSession(), FakeSession()
         tw.register_transport_session(stale)
-        tw.register_transport_session(fresh)  # 同 (visit_id, side) 换了一个 runtime
+        tw.register_transport_session(fresh)  # Replace runtime for the same (visit_id, side).
         ws = _RecordingWS()
         conn = tw._attach(tw._links[(VISIT_ID, "guest")], ws)
         conn.preflight_seen = True
@@ -841,7 +841,7 @@ def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
         ws.receive_text()
         _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
-        _barrier(ws, s)  # 不用 _sync：stats 本身也会触发重试，这里要验的是下一条 connected
+        _barrier(ws, s)  # Avoid _sync: stats also retries; verify specifically the next connected report here.
         assert not s.fail_once and ("resend_hello",) not in s.log
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True,
                                  "remote_video": False}))
@@ -851,8 +851,8 @@ def test_failed_rejoin_is_retried_on_the_next_joined_report(app):
 
 
 def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
-    # 服务端关停 / ASGI 层取消 handler 时，finally 里第一个 await 就会抛 CancelledError：
-    # 掉页处理必须排在任何 await 之前
+    # Server shutdown / ASGI handler cancellation makes the first await in finally raise CancelledError:
+    # page-loss handling must precede every await.
     import asyncio
     from types import SimpleNamespace
 
@@ -876,11 +876,11 @@ def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
         async def receive(self):
             if self.inbox:
                 return self.inbox.pop(0)
-            await asyncio.Event().wait()  # 之后不再有帧：一直挂到被取消
+            await asyncio.Event().wait()  # No further frames: wait until cancellation.
             raise AssertionError("unreachable")
 
         async def close(self, code=1000, reason=""):
-            # anyio 的取消是持续生效的：handler 收尾里的每个 await 都会再抛 CancelledError
+            # anyio cancellation remains active: every await in handler cleanup raises CancelledError again.
             raise asyncio.CancelledError()
 
     async def scenario():
@@ -891,7 +891,7 @@ def test_cancelled_handler_still_starts_the_page_grace(monkeypatch):
         while not tw.is_transport_attached(VISIT_ID, "guest"):
             await asyncio.sleep(0)
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):  # 被取消正是本用例要的结局
+        with contextlib.suppress(asyncio.CancelledError):  # Cancellation is exactly this test's intended outcome.
             _ = await task
         return s
 
@@ -926,7 +926,7 @@ def test_replaced_during_preflight_does_not_fetch_credentials():
         task = asyncio.ensure_future(tw._handle_frame(link, old, preflight, 10, VISIT_ID, "guest"))
         while s.gate is None:
             await asyncio.sleep(0)
-        tw._attach(link, _RecordingWS())  # 页面重载，新连接接管
+        tw._attach(link, _RecordingWS())  # Page reload: new connection takes over.
         s.gate.set()
         assert await task is None
         return s
@@ -952,7 +952,7 @@ def test_unregistered_session_never_delivers_late_credentials():
         task = asyncio.ensure_future(tw._handle_frame(link, conn, preflight, 10, VISIT_ID, "guest"))
         while ("issue", 1) not in s.gates:
             await asyncio.sleep(0)
-        # Servers 回来与场次结束同一拍：handler 先恢复，关闭任务还没来得及跑
+        # Servers returns as the visit ends: handler resumes before the close task runs.
         s.gates[("issue", 1)].set()
         tw.unregister_transport_session(s)
         assert await task is None
@@ -1000,7 +1000,7 @@ def test_failed_state_hook_or_snapshot_retries_the_whole_rejoin(app, broken):
         _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, s)
-        # 失败的这一拍不能开始重入：on_state 失败时 outbox 不动；快照失败时也不能已经恢复 outbox
+        # Failed attempt must not start reentry: leave outbox unchanged on on_state failure, and unresumed on snapshot failure.
         assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True,
@@ -1050,7 +1050,7 @@ def test_superseding_a_live_socket_pauses_the_outbox_until_the_new_iframe_rejoin
 def _rejoin_with_pause_check(ws, session) -> list[dict]:
     _auth(ws)
     _sync(ws)
-    # 新 iframe 还没入房：outbox 不跑，任何 hello / 重传都等它重入后再发到它自己的 socket
+    # New iframe has not joined: outbox stays stopped; send hello / replays to its own socket only after reentry.
     assert PAUSE_PAGE_RELOAD in session.outbox.paused
     return _rejoin(ws)
 
@@ -1086,7 +1086,7 @@ def test_failed_first_credentials_send_does_not_burn_the_slot(app):
         assert not _run(ws, s.send, msg)
 
 
-# ── 本机来源判定 ───────────────────────────────────────────────────────
+# ── Local-source classification ───────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("host,ok", [
@@ -1109,7 +1109,7 @@ def _run(ws, fn, *args):
     return ws.portal.call(fn, *args)
 
 
-# ── 评审（wehos，593d997）补的用例 ─────────────────────────────────────
+# ── Cases added during review (wehos, 593d997) ─────────────────────────────────────
 
 
 class _SlowWS(_RecordingWS):
@@ -1130,7 +1130,7 @@ class _SlowWS(_RecordingWS):
 
 
 def test_rejoin_snapshot_never_overrides_a_newer_media_state():
-    # 复现：发 hello 期间用户关了摄像头，runtime 发 media{publish:false}；旧快照不能最后到、把推流打开
+    # Reproduce: user turns camera off during hello; runtime sends media{publish:false}; old snapshot must not arrive last and restart publishing.
     import asyncio
 
     async def scenario():
@@ -1138,7 +1138,7 @@ def test_rejoin_snapshot_never_overrides_a_newer_media_state():
         s = FakeSession()
         tw.register_transport_session(s)
         link = tw._links[(VISIT_ID, "guest")]
-        link.connections_seen = 1  # 这是一条重载后的连接
+        link.connections_seen = 1  # This connection follows a reload.
         tasks = []
 
         def _camera_off():
@@ -1166,16 +1166,16 @@ def test_a_rejoin_whose_replay_write_fails_keeps_the_original_reload_deadline():
 
     class _BrokenWS(_RecordingWS):
         async def send_text(self, text):
-            raise OSError("socket gone")                  # 回放的第一帧就写不出去
+            raise OSError("socket gone")                  # The first replay frame cannot be written.
 
     async def scenario():
         tw._reset_for_tests()
         s = FakeSession()
         tw.register_transport_session(s)
         link = tw._links[(VISIT_ID, "guest")]
-        link.connections_seen = 1  # 这是一条重载后的连接
+        link.connections_seen = 1  # This connection follows a reload.
         original = object()
-        s.liveness.reload_state = original                # 这次重载原来的（绝对）期限
+        s.liveness.reload_state = original                # This reload's original absolute deadline.
         conn = tw._attach(link, _BrokenWS())
         conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
@@ -1186,9 +1186,9 @@ def test_a_rejoin_whose_replay_write_fails_keeps_the_original_reload_deadline():
     finally:
         tw._reset_for_tests()
     events = s.liveness.events
-    assert events[-2:] == ["page_restored", "page_lost"]   # 被弃之后写回原来的期限，再按这次掉线重算 socket 阶段
-    assert s.liveness.reload_state is original        # 反复重连续不上绝对期限
-    assert [e for e in s.outbox.log if e[0] == "write_failed"]  # 没写出去的帧回滚记账（与泵一样），不算已发
+    assert events[-2:] == ["page_restored", "page_lost"]   # After abandonment, restore the original deadline and recalculate socket phase from this disconnection.
+    assert s.liveness.reload_state is original        # Repeated reconnection cannot extend the absolute deadline.
+    assert [e for e in s.outbox.log if e[0] == "write_failed"]  # Roll back bookkeeping for unwritten frames (like the pump); do not count them as sent.
 
 
 def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadline():
@@ -1204,7 +1204,7 @@ def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadlin
 
         class _StuckThenBroken(_RecordingWS):
             async def send_text(self, text):
-                await gate.wait()                         # 回放卡在背压上
+                await gate.wait()                         # Replay blocked by backpressure.
                 raise OSError("write timed out")
 
         old = tw._attach(link, _StuckThenBroken())
@@ -1212,9 +1212,9 @@ def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadlin
         rejoining = asyncio.ensure_future(
             tw._handle_frame(link, old, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest"))
         await asyncio.sleep(0.05)
-        tw._attach(link, _RecordingWS())                  # iframe 重连成新连接，顶掉旧的
+        tw._attach(link, _RecordingWS())                  # Iframe reconnects with a new connection, superseding the old.
         before = list(s.liveness.events)
-        gate.set()                                        # 旧连接的写入这时才失败
+        gate.set()                                        # Only now does the old connection's write fail.
         await rejoining
         return s, before
 
@@ -1222,7 +1222,7 @@ def test_a_superseded_rejoin_whose_replay_write_fails_does_not_touch_the_deadlin
         s, before = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    assert "page_restored" not in s.liveness.events[len(before):]   # 被顶掉的不写回，不覆盖新连接的重入
+    assert "page_restored" not in s.liveness.events[len(before):]   # Superseded connections do not restore deadlines or overwrite the new connection's reentry.
 
 
 def test_a_rejoin_restore_skips_when_a_new_socket_attached_meanwhile():
@@ -1242,7 +1242,7 @@ def test_a_rejoin_restore_skips_when_a_new_socket_attached_meanwhile():
 
         def lost_then_new_socket(now):
             real_lost(now)
-            link.conn = tw._Connection(websocket=_RecordingWS(), reattach=True)   # 被弃之后新连接马上接上
+            link.conn = tw._Connection(websocket=_RecordingWS(), reattach=True)   # A new connection arrives immediately after abandonment.
 
         s.on_page_lost = lost_then_new_socket
         conn = tw._attach(link, _BrokenWS())
@@ -1254,7 +1254,7 @@ def test_a_rejoin_restore_skips_when_a_new_socket_attached_meanwhile():
         s = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    assert "page_restored" not in s.liveness.events          # 期限归新连接管，不拿旧的写回
+    assert "page_restored" not in s.liveness.events          # The new connection owns the deadline; do not restore the old one.
 
 
 def test_unserializable_downlink_is_dropped_not_a_disconnect():
@@ -1287,12 +1287,12 @@ def test_unserializable_snapshot_keeps_the_socket_open(app, session):
         _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, session)
-        # 快照序列化不了：重入整套不做（不发 hello、outbox 仍暂停、宽限没清），socket 也没被当成断线
+        # Unserializable snapshot: skip all reentry (no hello, outbox still paused, grace uncleared); do not treat socket as disconnected.
         assert tw.is_transport_attached(VISIT_ID, "guest")
         assert PAUSE_PAGE_RELOAD in session.outbox.paused
         assert "page_back" not in session.liveness.events
         assert session.liveness.events.count("page_lost") == 1
-        # 快照恢复正常后，下一条上报完成重入
+        # After snapshot recovery, the next report completes reentry.
         session.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True, "remote_video": False}))
         assert json.loads(ws.receive_text())["type"] == "send"
@@ -1315,9 +1315,9 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
     assert s.liveness.page_deadline == pytest.approx(departed + vs.VISIT_LOCAL_PAGE_GRACE_S)
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
-        _preflight(ws, ok=False, reason="no_webrtc")  # 新 iframe 预检失败：永远不会重入
+        _preflight(ws, ok=False, reason="no_webrtc")  # New iframe fails preflight: it never rejoins.
         _barrier(ws, s)
-        # auth 不清期限，也不重起 20 s：改为绝对期限（离开 + 35 − 5），起点不变
+        # Auth neither clears the deadline nor restarts 20 s; switch to absolute (departure + 35 − 5), retaining the origin.
         assert s.liveness.page_departed_at == departed
         assert s.liveness.page_deadline == pytest.approx(
             departed + vs.VISIT_PEER_REJOIN_GRACE_S - vs.VISIT_PAGE_REJOIN_SAFETY_S)
@@ -1330,7 +1330,7 @@ def test_page_grace_keeps_running_until_the_new_iframe_rejoins(app):
         ws.receive_text()
         ws.receive_text()
         _barrier(ws, s)
-        assert s.liveness.page_deadline is None  # 重入成功才清
+        assert s.liveness.page_deadline is None  # Clear only on successful reentry.
 
 
 def test_superseding_a_live_socket_starts_the_page_grace(app):
@@ -1348,7 +1348,7 @@ def test_superseding_a_live_socket_starts_the_page_grace(app):
         with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
             _auth(new)
             _barrier(new, s)
-            # 旧 iframe 已被顶掉、新的还没入房：要有截止时间
+            # Old iframe superseded, new one not yet in room: require a deadline.
             assert s.liveness.page_deadline is not None
 
 
@@ -1364,7 +1364,7 @@ def test_failed_preflight_blocks_a_runtime_first_issue(app, session):
 
 
 def test_module_has_no_key_routed_downlink_entry():
-    # 下行唯一入口是 session.send（绑定到登记中的 session）
+    # Sole downlink entry is session.send (bound to the registered session).
     assert not hasattr(tw, "send_downlink")
 
 
@@ -1373,11 +1373,11 @@ def test_credentials_message_tier_comes_from_the_credentials():
 
     creds = dataclasses.replace(_creds(), tier="hd1200")
     msg = tw.build_credentials_message(creds, side="guest", crop="upper", codec="vp9")
-    # 档位、码率、帧率都取自凭证的档位，不再是 sd600 写死
+    # Profile, bitrate, and frame rate come from credentials' profile, no longer hardcoded sd600.
     assert msg["tier"] == "hd1200"
     assert msg["publish"]["bitrate_kbps"] == vs.VISIT_TIERS["hd1200"]["video_kbps"]
     assert msg["publish"]["fps"] == vs.VISIT_TIERS["hd1200"]["fps"]
-    # 该档位没有全身裁剪：拒绝
+    # This profile has no full-body crop: reject.
     with pytest.raises(ValueError):
         tw.build_credentials_message(creds, side="guest", crop="full", codec="vp9")
     sd = tw.build_credentials_message(_creds(), side="guest", crop="full", codec="vp9")
@@ -1394,7 +1394,7 @@ def _wait_until(pred, timeout: float = 5.0) -> None:
         _t.sleep(0.01)
 
 
-# ── 页面重载的绝对期限（设计稿 §4.8 VISIT_PEER_REJOIN_GRACE_S 一行）──────
+# ── Absolute page-reload deadline (design §4.8 VISIT_PEER_REJOIN_GRACE_S row) ──────
 
 
 def _reload_session():
@@ -1402,20 +1402,20 @@ def _reload_session():
 
     s = FakeSession()
     s.liveness = VisitLiveness("guest", -1000.0)
-    s.liveness.on_peer_verified(-1000.0)  # 已在会话中：双方 hello 都已核验、ack
+    s.liveness.on_peer_verified(-1000.0)  # Already in session: both hellos verified and acknowledged.
     s.liveness.on_hello_acked(-1000.0)
     s.liveness.on_ready(-1000.0)
     return s
 
 
 def _tick(s, t: float):
-    # 对端始终在线：只看本侧页面期限，不让对端心跳判死抢先
+    # Peer remains online: inspect only local-page deadline, preventing peer-heartbeat death from winning first.
     s.liveness.on_peer_message(t)
     return s.liveness.tick(t)
 
 
 def test_reload_ws_back_at_19s_sdk_at_31s_ends_at_30s():
-    # 设计稿验收：WS 第 19 s 连回、SDK 拖到第 31 s → 本侧第 30 s local_page_lost（对端 35 s 判 peer_left，两侧一致）
+    # Design acceptance: WS returns at 19s, SDK delays until 31s → local_page_lost at local 30s (peer_left at peer 35s, consistent outcomes).
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(19.0)
@@ -1424,13 +1424,13 @@ def test_reload_ws_back_at_19s_sdk_at_31s_ends_at_30s():
 
 
 def test_reload_ws_back_at_19s_sdk_at_21s_survives():
-    # WS 第 19 s 连回、SDK 第 21 s 入房：不能沿用断线起算的 20 s
+    # WS returns at 19s, SDK joins at 21s: cannot reuse 20s from disconnection.
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(19.0)
     assert _tick(s, 20.5) is None
     s.on_page_rejoined(21.0)
-    # 重入准备完之前不清期限（失败时要能回滚），提交之后才清
+    # Do not clear deadline before reentry preparation completes (rollback must remain possible); clear after commit.
     assert s.liveness.page_deadline is not None
     s.on_page_rejoin_committed(21.0)
     assert s.liveness.page_deadline is None
@@ -1445,7 +1445,7 @@ def test_reload_socket_phase_keeps_its_own_20s():
 
 
 def test_reload_deadline_respects_the_peers_heartbeat_clock():
-    # 最后一次成功发出在 -10 s：对端约在 +20 s 判死，本侧必须在 -10 + 27 = 17 s 前回来
+    # Last successful send at -10s: peer declares death around +20s; local must return before -10 + 27 = 17s.
     s = _reload_session()
     s.liveness.on_message_sent(-10.0)
     s.on_page_lost(0.0)
@@ -1457,7 +1457,7 @@ def test_flapping_page_never_extends_past_the_absolute_deadline():
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(5.0)
-    s.on_page_lost(6.0)  # 又断：起点仍是 0
+    s.on_page_lost(6.0)  # Disconnect again: origin remains 0.
     s.on_page_attached(15.0)
     assert _tick(s, 29.9) is None
     assert _tick(s, 30.0) == "local_page_lost"
@@ -1465,13 +1465,13 @@ def test_flapping_page_never_extends_past_the_absolute_deadline():
 
 def test_superseding_a_live_socket_starts_the_reload_now():
     s = _reload_session()
-    s.on_page_attached(100.0)  # 没有断线、直接被顶号：从顶号时刻起算
+    s.on_page_attached(100.0)  # Direct supersession without disconnection: start from supersession time.
     assert _tick(s, 129.9) is None
     assert _tick(s, 130.0) == "local_page_lost"
 
 
 def test_sdk_stage_uses_the_absolute_deadline_not_the_caps_timer():
-    # WS 第 2 s 就连回：重入期限就是绝对期限 30 s；VISIT_CAPS_SDK_TIMEOUT_S 是能力门自己的计时（runtime）
+    # WS returns at 2s: reentry deadline is absolute 30s; VISIT_CAPS_SDK_TIMEOUT_S independently times the runtime capability gate.
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(2.0)
@@ -1480,7 +1480,7 @@ def test_sdk_stage_uses_the_absolute_deadline_not_the_caps_timer():
 
 
 def test_second_drop_after_reconnect_gets_its_own_socket_budget():
-    # 复现（wehos）：t=0 断、t=5 连回、t=25 又断；绝对期限 min(30, 0 + 27) = 27，不能在 t=25 当场判死
+    # Reproduce (wehos): disconnect t=0, return t=5, disconnect t=25; absolute min(30, 0 + 27) = 27, not immediate death at t=25.
     s = _reload_session()
     s.liveness.on_message_sent(0.0)
     s.on_page_lost(0.0)
@@ -1492,7 +1492,7 @@ def test_second_drop_after_reconnect_gets_its_own_socket_budget():
 
 
 def test_a_late_socket_cannot_revive_an_expired_page():
-    # t=0 断、WS 期限 t=20；tick 还没跑到时 t=20.2 才连回：期限不能被挪走
+    # Disconnect t=0, WS deadline t=20; reconnect t=20.2 before tick runs: deadline must not shift.
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(20.2)
@@ -1501,7 +1501,7 @@ def test_a_late_socket_cannot_revive_an_expired_page():
 
 
 def test_rejoin_after_the_deadline_is_refused():
-    # SDK 在绝对期限之后、下一次 tick 之前才报 joined：不能清期限、不能恢复 outbox
+    # SDK reports joined after absolute expiry but before the next tick: neither clear deadline nor resume outbox.
     s = _reload_session()
     s.on_page_lost(0.0)
     s.on_page_attached(19.0)
@@ -1525,18 +1525,18 @@ def test_transport_does_not_re_enter_after_the_deadline():
         conn = tw._attach(link, ws)
         conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
-        assert conn.retired  # 同步退役：之后的帧不再处理
+        assert conn.retired  # Retire synchronously: reject subsequent frames.
         await tw._handle_frame(link, conn, {"type": "recv", "from_vid": PEER_VID, "cmd": 2,
                                             "payload": {"t": "text"}}, 10, VISIT_ID, "guest")
         assert s.recvs == []
-        await asyncio.sleep(0.05)  # 关闭在后台
+        await asyncio.sleep(0.05)  # Close in background.
         return s, ws, conn
 
     try:
         s, ws, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 不重入，已回到房里的迟到 iframe 直接以 4404 关掉（WS 一关 iframe 即离房），不发任何下行
+    # No reentry: close the late iframe already back in room with 4404 (WS closure makes it leave), sending no downlink.
     assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
     assert ws.sent == [] and not conn.rejoined
     assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
@@ -1571,7 +1571,7 @@ def test_failed_replay_preparation_rolls_the_rejoin_back(app):
         _sdk_ok(ws)
         ws.send_text(json.dumps({"type": "state", "state": "joined", "peer_present": True, "remote_video": False}))
         _barrier(ws, s)
-        # 失败时：outbox 重新暂停、清掉的页面期限写回（due() 在最后，失败前期限已清），不留半恢复状态
+        # On failure: pause outbox again and restore page deadline (cleared before due(), which runs last); leave no partial restoration.
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
         assert s.liveness.events[-2:] == ["page_back", "page_restored"]
         ws.send_text(json.dumps({"type": "state", "state": "connected", "peer_present": True, "remote_video": False}))
@@ -1591,13 +1591,13 @@ def test_failed_preflight_hook_does_not_open_the_credentials_gate(app):
     vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
     with _client(app).websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
-        _preflight(ws)  # 预检本身通过，但 runtime 没处理好
+        _preflight(ws)  # Preflight itself passes, but runtime handling fails.
         _barrier(ws, s)
         msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
         assert not _run(ws, s.send, msg)
 
 
-# ── 重入：快照按实际下发检查、提交失败回滚、stats 触发重试（wehos 第四轮） ──
+# ── Reentry: validate actual snapshot delivery, roll back failed commits, retry on stats (wehos fourth round) ──
 
 
 def _reload_and_join(client, s, ws_fn):
@@ -1609,7 +1609,7 @@ def _reload_and_join(client, s, ws_fn):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()  # credentials
-        _sdk_ok(ws)        # 新连接各自过能力门 ③ 才能重入
+        _sdk_ok(ws)        # Each new connection must pass capability gate ③ before reentry.
         return ws_fn(ws)
 
 
@@ -1626,7 +1626,7 @@ def test_rejoin_accepts_a_read_only_mapping_snapshot(app):
 
     class _Proxy(FakeSession):
         def media_snapshot(self):
-            # json.dumps(MappingProxyType) 会抛 TypeError，但 {**proxy, "type": "media"} 能正常下发
+            # json.dumps(MappingProxyType) raises TypeError, but {**proxy, "type": "media"} can be delivered normally.
             return types.MappingProxyType(dict(self.snapshot))
 
     s = _Proxy()
@@ -1646,7 +1646,7 @@ def test_rejoin_accepts_a_read_only_mapping_snapshot(app):
 
 
 def test_oversize_snapshot_does_not_commit_the_rejoin(app, session):
-    # 编码后超过 16 KB 的快照发不出去：不能先置 rejoined、清期限，再被 send_json 丢掉
+    # Encoded snapshots over 16 KB cannot be sent: do not first set rejoined / clear deadline, then let send_json discard them.
     session.snapshot = {"publish": True, "crop": "upper", "ladder": 0, "pad": "x" * tw.FRAME_MAX_BYTES}
 
     def scenario(ws):
@@ -1679,13 +1679,13 @@ def test_failed_commit_rolls_the_rejoin_back_and_is_retried(app):
     def scenario(ws):
         _joined(ws)
         _barrier(ws, s)
-        # 清期限失败：不置 rejoined、outbox 重新暂停，否则之后的上报全被 rejoined 拦住、期限永远不清
+        # Deadline clearing fails: do not set rejoined; pause outbox again, or rejoined blocks later reports and the deadline never clears.
         assert not s.fail_once
         assert not tw._links[(VISIT_ID, "guest")].conn.rejoined
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
-        _sync(ws)  # 下一条 stats 整套重做
-        _barrier(ws, s)  # 先断言再收：回归时直接失败，不挂在 receive_text 上
-        # 第一次的 resend_hello 在 commit 失败前就记下了：要看到第二次，且期限已清
+        _sync(ws)  # Next stats retries the entire sequence.
+        _barrier(ws, s)  # Assert before receiving: regressions fail directly rather than hanging on receive_text.
+        # First resend_hello was recorded before commit failed; expect a second attempt with deadline cleared.
         assert s.log.count(("resend_hello",)) == 2
         assert s.liveness.events[-1] == "page_back"
         hello, media = json.loads(ws.receive_text()), json.loads(ws.receive_text())
@@ -1698,7 +1698,7 @@ def test_failed_commit_rolls_the_rejoin_back_and_is_retried(app):
 
 
 def test_stats_retries_a_rolled_back_rejoin_while_in_the_room(app, session):
-    # iframe 一次入房只报一次 joined：准备失败回滚后，靠下一条 5 s stats 再试
+    # Iframe reports joined once per room entry: after preparation rollback, retry via the next 5s stats.
     session.snapshot = {"publish": True, "bad": {1}}
 
     def scenario(ws):
@@ -1707,7 +1707,7 @@ def test_stats_retries_a_rolled_back_rejoin_while_in_the_room(app, session):
         assert ("resend_hello",) not in session.log
         session.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
         _sync(ws)
-        _barrier(ws, session)  # 先断言再收：回归时直接失败，不挂在 receive_text 上
+        _barrier(ws, session)  # Assert before receiving: regressions fail directly rather than hanging on receive_text.
         assert ("resend_hello",) in session.log
         return json.loads(ws.receive_text()), json.loads(ws.receive_text())
 
@@ -1718,11 +1718,11 @@ def test_stats_retries_a_rolled_back_rejoin_while_in_the_room(app, session):
 
 def test_stats_does_not_rejoin_a_connection_that_is_not_in_the_room(app, session):
     def scenario(ws):
-        # 还没报过入房：stats 不触发重入
+        # No join reported yet: stats does not trigger reentry.
         _sync(ws)
         _barrier(ws, session)
         assert ("resend_hello",) not in session.log
-        # 入房但准备失败，随后 SDK 又掉线（reconnecting）：不在房内就不靠 stats 重试
+        # Joined but preparation failed, then SDK disconnected again (reconnecting): stats must not retry while out of room.
         session.snapshot = {"publish": True, "bad": {1}}
         _joined(ws)
         _joined(ws, "reconnecting")
@@ -1731,7 +1731,7 @@ def test_stats_does_not_rejoin_a_connection_that_is_not_in_the_room(app, session
         _barrier(ws, session)
         assert ("resend_hello",) not in session.log
         assert PAUSE_PAGE_RELOAD in session.outbox.paused
-        # 重新入房的上报照常完成重入
+        # A new join report completes reentry normally.
         _joined(ws, "connected")
         return json.loads(ws.receive_text()), json.loads(ws.receive_text())
 
@@ -1751,10 +1751,10 @@ def test_send_json_and_the_snapshot_check_share_one_encoder():
 
 def test_late_iframe_is_closed_when_it_reports_joined(app, session):
     def scenario(ws):
-        # 期限恰好落在领凭证与入房之间：入房上报时兜底关掉
+        # Deadline falls between credential acquisition and room entry: close defensively on the join report.
         session.liveness.expired = True
         _joined(ws)
-        # 轮询而不是阻塞等关闭帧：回归时直接失败，不会挂住
+        # Poll instead of blocking for close frames: regressions fail directly without hanging.
         _wait_until(lambda: not tw.is_transport_attached(VISIT_ID, "guest"))
 
     _reload_and_join(_client(app), session, scenario)
@@ -1764,7 +1764,7 @@ def test_late_iframe_is_closed_when_it_reports_joined(app, session):
 
 
 def test_failed_commit_restores_the_page_deadline_and_keeps_the_outbox_frames(app):
-    # runtime 覆盖 commit：先清期限（super）再抛异常——期限要写回，due() 还没被调用（帧没被取走）
+    # Runtime overrides commit: clear deadline via super, then raise; restore deadline, and due() has not consumed frames yet.
     class _ClearsThenFails(FakeSession):
         def on_page_rejoin_committed(self, now):
             super().on_page_rejoin_committed(now)
@@ -1778,7 +1778,7 @@ def test_failed_commit_restores_the_page_deadline_and_keeps_the_outbox_frames(ap
         _joined(ws)
         _barrier(ws, s)
         assert s.liveness.events[-2:] == ["page_back", "page_restored"]
-        assert s.outbox.hello_pending  # due() 没被调用：一次性的 hello 重发还在
+        assert s.outbox.hello_pending  # due() not called: one-shot hello replay remains available.
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
 
     _reload_and_join(_client(app), s, scenario)
@@ -1796,7 +1796,7 @@ def test_failed_hook_or_ambiguous_state_does_not_leave_a_stale_in_room():
     async def scenario():
         tw._reset_for_tests()
         s = _BrokenOnReconnecting()
-        s.snapshot = {"publish": True, "bad": {1}}  # 第一次重入准备失败、回滚
+        s.snapshot = {"publish": True, "bad": {1}}  # First reentry preparation fails and rolls back.
         tw.register_transport_session(s)
         link = tw._links[(VISIT_ID, "guest")]
         link.connections_seen = 1
@@ -1804,11 +1804,11 @@ def test_failed_hook_or_ambiguous_state_does_not_leave_a_stale_in_room():
         conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
         assert conn.in_room and not conn.rejoined
-        # error 不是进出房状态：保持在房内，stats 仍会重试
+        # error is not a room entry/exit state: remain in room and allow stats to retry.
         await tw._handle_frame(link, conn, {"type": "state", "state": "error", "error_code": "x"}, 10,
                                VISIT_ID, "guest")
         in_room_after_error = conn.in_room
-        # reconnecting 的 hook 失败：不能停在旧的 in_room=True，否则 stats 会往不在房里的 iframe 重入
+        # reconnecting hook fails: do not retain stale in_room=True, or stats would reenter an iframe outside the room.
         await tw._handle_frame(link, conn, {"type": "state", "state": "reconnecting"}, 10, VISIT_ID, "guest")
         s.snapshot = {"publish": True, "crop": "upper", "ladder": 0}
         await tw._handle_frame(link, conn, {"type": "stats"}, 10, VISIT_ID, "guest")
@@ -1847,7 +1847,7 @@ def test_rejoin_fallback_snapshot_never_overrides_a_runtime_media():
 
             await super().send_text(text)
             if json.loads(text).get("type") == "send":
-                # hello 发送期间 runtime 关掉了摄像头（这时发送锁被占着：runtime 的 media 排在锁后面）
+                # Runtime turns camera off during hello (send lock held; runtime media queues behind it).
                 _aio.ensure_future(self.session.send({"type": "media", "publish": False}))
                 await _aio.sleep(0)
 
@@ -1861,7 +1861,7 @@ def test_rejoin_fallback_snapshot_never_overrides_a_runtime_media():
         conn = tw._attach(link, ws)
         conn.preflight_seen = conn.preflight_ok = conn.credentials_sent = conn.sdk_seen = conn.sdk_ok = True
         await tw._handle_frame(link, conn, {"type": "state", "state": "joined"}, 10, VISIT_ID, "guest")
-        await asyncio.sleep(0.05)  # 让排在锁后面的 runtime media 发完
+        await asyncio.sleep(0.05)  # Let runtime media queued behind the lock finish sending.
         return ws
 
     try:
@@ -1911,7 +1911,7 @@ def test_pre_encoded_text_is_still_size_checked():
 
     async def scenario():
         conn = tw._Connection(websocket=_RecordingWS(), reattach=False)
-        # 合法 JSON：去掉大小检查时 _RecordingWS 能正常收下，测试才会变红
+        # Valid JSON: without size checking _RecordingWS accepts it, causing the test to fail.
         big = json.dumps({"type": "media", "pad": "x" * tw.FRAME_MAX_BYTES})
         return await conn.send_json({"type": "media"}, text=big), conn
 
@@ -1954,7 +1954,7 @@ def test_backpressured_socket_does_not_block_closing_the_late_iframe(monkeypatch
 
     class _StuckWS(_RecordingWS):
         async def send_text(self, text):
-            await asyncio.Event().wait()  # 背压：永远写不出去
+            await asyncio.Event().wait()  # Backpressure: write never completes.
 
     async def scenario():
         tw._reset_for_tests()
@@ -1975,7 +1975,7 @@ def test_backpressured_socket_does_not_block_closing_the_late_iframe(monkeypatch
         ws, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 写不出去的 socket 也照样关闭（不先发任何下行）
+    # Close unwritable sockets too, without any preceding downlink.
     assert conn.closed and ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
 
@@ -1989,11 +1989,11 @@ def test_page_back_after_the_deadline_is_closed_on_attach(app, session):
     session.liveness.expired = True
     with client.websocket_connect(URL, headers={"origin": ORIGIN}) as ws:
         _auth(ws)
-        # 先等它 attach 上，再轮询看它被关掉（回归时直接失败，不挂在 receive 上）
+        # Wait for attach, then poll closure (regressions fail directly instead of hanging on receive).
         _wait_until(lambda: "page_armed" in session.liveness.events)
         _wait_until(lambda: not tw.is_transport_attached(VISIT_ID, "guest"))
         _expect_close(ws, tw.CLOSE_UNKNOWN_VISIT)
-    # 预检、领凭证都没走到
+    # Neither preflight nor credential acquisition was reached.
     assert session.preflights == [] and session.issued == 0
 
 
@@ -2008,7 +2008,7 @@ def test_deadline_passing_before_preflight_issues_no_credentials():
         link.connections_seen = 1
         ws = _RecordingWS()
         conn = tw._attach(link, ws)
-        s.liveness.expired = True  # attach 之后、预检之前到期
+        s.liveness.expired = True  # Expires after attach but before preflight.
         await tw._handle_frame(link, conn, {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID,
                                             "side": "guest", "preflight_ok": True,
                                             "is_secure_context": True, "ua": "x"}, 10, VISIT_ID, "guest")
@@ -2019,7 +2019,7 @@ def test_deadline_passing_before_preflight_issues_no_credentials():
         s, ws, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 不为过期的页面去 Servers 领凭证（签发记录、配额都有副作用）
+    # Do not obtain Servers credentials for expired pages (issuance records and quotas have side effects).
     assert s.issued == 0 and ws.sent == []
     assert conn.retired and ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
@@ -2047,7 +2047,7 @@ def test_rejected_runtime_media_does_not_suppress_the_fallback_snapshot():
         async def send_text(self, text):
             await super().send_text(text)
             if json.loads(text).get("type") == "send":
-                # runtime 发了一条发不出去的 media（序列化不了）：它没送达，不能挡掉兜底快照
+                # Runtime sent unsendable media (unserializable): undelivered media must not suppress the fallback snapshot.
                 asyncio.ensure_future(self.session.send({"type": "media", "bad": {1}}))
                 await asyncio.sleep(0)
 
@@ -2165,14 +2165,14 @@ def test_buffered_frames_cannot_turn_the_late_page_close_into_1000(monkeypatch):
     class _ExpiresAfterIssue(FakeSession):
         async def issue_credentials(self):
             msg = await super().issue_credentials()
-            self.liveness.expired = True  # 领完凭证即到期
+            self.liveness.expired = True  # Expire immediately after credentials are obtained.
             return msg
 
     async def scenario():
         tw._reset_for_tests()
         s = _ExpiresAfterIssue()
         tw.register_transport_session(s)
-        tw._links[(VISIT_ID, "guest")].connections_seen = 1  # 页面重载后的替换连接
+        tw._links[(VISIT_ID, "guest")].connections_seen = 1  # Replacement connection after page reload.
         ws = _BufferedWS([
             {"type": "auth", "csrf_token": TOKEN},
             {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID, "side": "guest",
@@ -2189,7 +2189,7 @@ def test_buffered_frames_cannot_turn_the_late_page_close_into_1000(monkeypatch):
         ws = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 1000 对 iframe 不是终态（会再重连一轮）；必须是 4404
+    # 1000 is not terminal for iframe (it reconnects again); require 4404.
     assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
 
@@ -2203,7 +2203,7 @@ def test_late_page_frames_reach_no_runtime_hook():
         link = tw._links[(VISIT_ID, "guest")]
         link.connections_seen = 1
         conn = tw._attach(link, _RecordingWS())
-        s.liveness.expired = True  # attach 之后、预检之前到期
+        s.liveness.expired = True  # Expires after attach, before preflight.
         await tw._handle_frame(link, conn, {"type": "caps", "stage": "preflight", "visit_id": VISIT_ID,
                                             "side": "guest", "preflight_ok": False,
                                             "is_secure_context": True, "ua": "x"}, 10, VISIT_ID, "guest")
@@ -2213,7 +2213,7 @@ def test_late_page_frames_reach_no_runtime_hook():
         s, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 过期页面的预检既不写路由状态、也不交给 runtime（否则 preflight_ok:false 会按 unsupported 收尾）
+    # Expired-page preflight neither writes route state nor reaches runtime (otherwise preflight_ok:false ends as unsupported).
     assert s.preflights == [] and conn.retired
 
 
@@ -2238,7 +2238,7 @@ def test_unhashable_reason_or_state_does_not_close_the_socket():
     finally:
         tw._reset_for_tests()
     assert s.preflights[0]["reason"] is None
-    # runtime 收到的是清洗后的 state
+    # Runtime receives sanitized state.
     assert s.states[-1]["state"] is None and not conn.closed
     assert tw._sdk_caps({"reason": ["x"]})["reason"] is None
 
@@ -2250,7 +2250,7 @@ def test_credentials_are_not_sent_when_the_deadline_passes_during_the_issue():
     class _ExpiresDuringIssue(FakeSession):
         async def issue_credentials(self):
             msg = await super().issue_credentials()
-            self.liveness.expired = True  # Servers 往返期间到期
+            self.liveness.expired = True  # Expires during the Servers round trip.
             return msg
 
     async def scenario():
@@ -2271,7 +2271,7 @@ def test_credentials_are_not_sent_when_the_deadline_passes_during_the_issue():
         s, ws, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 领到了但不发：否则 iframe 会带同一个 vid 先入房、再被关
+    # Obtained but not sent: otherwise iframe joins with the same vid before being closed.
     assert s.issued == 1 and ws.sent == []
     assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
@@ -2305,7 +2305,7 @@ def test_unknown_deadline_after_preflight_issues_no_credentials():
         s, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 期限查不了：会提交副作用的领凭证一律不做（与重入同一口径）
+    # Unreadable deadline: skip credential acquisition with side effects (consistent with reentry).
     assert s.issued == 0 and not conn.closed
 
 
@@ -2324,7 +2324,7 @@ def test_a_send_failure_retires_the_socket():
         return ok, conn
 
     ok, conn = asyncio.run(scenario())
-    # 写不出去就收尾：接收循环据此结束、按掉页起期限，不会留下「已提交却没发出去」的重入
+    # Unwritable means cleanup: receive loop exits and starts a page-loss deadline, leaving no committed-but-unsent reentry.
     assert not ok and conn.retired and conn.closed
     assert conn.websocket.closed_with == tw.CLOSE_SEND_FAILED
 
@@ -2346,7 +2346,7 @@ def test_rejoin_checks_and_commits_with_one_clock_reading():
         tw.register_transport_session(s)
         link = tw._links[(VISIT_ID, "guest")]
         link.connections_seen = 1
-        # attach 1.0（连回：绝对期限 30）；帧入口 29.0、重入 29.9；若重入里再取一次时钟就会拿到 30.1（期限刚过）
+        # Attach at 1.0 (reconnect: absolute deadline 30); frame entry 29.0, reentry 29.9; another clock read in reentry would get 30.1 (just expired).
         readings = iter([1.0, 29.0, 29.9, 30.1, 30.1, 30.1])
         s.now = lambda: next(readings)
         conn = tw._attach(link, _RecordingWS())
@@ -2359,7 +2359,7 @@ def test_rejoin_checks_and_commits_with_one_clock_reading():
         s, conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 用检查时的同一个 now 提交：期限真的清掉了，不会出现「已重入、期限却还在」
+    # Commit with the same now as the check: deadline is actually cleared, avoiding rejoined state with a remaining deadline.
     assert conn.rejoined and s.liveness.page_deadline is None
 
 
@@ -2380,7 +2380,7 @@ def test_replacing_a_session_closes_its_socket_as_superseded():
         ws = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 4404：终态且离房（4409 的 iframe 不离房，session 级替换没有同 vid 的新 iframe 把它顶下线）
+    # 4404: terminal and leave room (4409 iframe stays; session replacement has no new same-vid iframe to evict it).
     assert ws.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
 
@@ -2400,7 +2400,7 @@ def test_a_send_failure_unbinds_and_starts_the_reload_at_once():
         link = tw._links[(VISIT_ID, "guest")]
         conn = tw._attach(link, _BrokenSendWS())
         ok = await s.send({"type": "media", "publish": True})
-        # 同步解绑并起期限：不等接收循环（半断开的 socket 可能要等 ping 超时）
+        # Unbind synchronously and start deadline without waiting for receive loop (half-disconnected sockets may await ping timeout).
         attached = tw.is_transport_attached(VISIT_ID, "guest")
         await asyncio.sleep(0.05)
         return s, conn, ok, attached
@@ -2430,7 +2430,7 @@ def test_a_failed_stop_closes_with_a_terminal_code():
         conn = asyncio.run(scenario())
     finally:
         tw._reset_for_tests()
-    # 收尾的 stop 没发出去：iframe 不能再重连、领凭证、用同一个 vid 入房
+    # Final stop was not delivered: iframe must not reconnect, acquire credentials, or join with the same vid.
     assert conn.websocket.closed_with == tw.CLOSE_UNKNOWN_VISIT
 
 
@@ -2462,7 +2462,7 @@ def test_registering_the_same_session_again_keeps_its_socket():
         tw.register_transport_session(s)
         link = tw._links[(VISIT_ID, "guest")]
         conn = tw._attach(link, _RecordingWS())
-        tw.register_transport_session(s)  # 幂等重试
+        tw.register_transport_session(s)  # Idempotent retry.
         await asyncio.sleep(0.05)
         return link, conn
 
@@ -2481,7 +2481,7 @@ def test_a_downlink_write_that_never_drains_retires_the_socket(monkeypatch):
 
     class _StuckWS(_RecordingWS):
         async def send_text(self, text):
-            await asyncio.Event().wait()            # iframe 不读了：写永远不返回
+            await asyncio.Event().wait()            # Iframe stops reading: writes never return.
 
     async def scenario():
         ws = _StuckWS()
@@ -2491,8 +2491,8 @@ def test_a_downlink_write_that_never_drains_retires_the_socket(monkeypatch):
         return ok, ws.closed_with
 
     ok, closed_with = asyncio.run(scenario())
-    assert ok is False                              # 接待 / 激活 / 泵不再卡在这一次写上
-    assert closed_with == tw.CLOSE_SEND_FAILED      # 退役这条 socket，iframe 走正常重连
+    assert ok is False                              # Hosting / activation / pump no longer blocks on this write.
+    assert closed_with == tw.CLOSE_SEND_FAILED      # Retire this socket; iframe reconnects normally.
 
 
 def test_rejoin_waits_for_this_connections_sdk_gate_and_books_its_frames(app):
@@ -2508,13 +2508,13 @@ def test_rejoin_waits_for_this_connections_sdk_gate_and_books_its_frames(app):
         _auth(ws)
         _preflight(ws)
         ws.receive_text()  # credentials
-        _joined(ws)        # 入房报告先到，这条连接的能力门 ③ 还没报
+        _joined(ws)        # Join report arrives first; this connection has not reported capability gate ③ yet.
         _barrier(ws, s)
         assert not any(e[0] in ("resend_hello", "resume") for e in s.log)
         assert PAUSE_PAGE_RELOAD in s.outbox.paused
-        _sdk_ok(ws)        # 能力门一过就重入
+        _sdk_ok(ws)        # Rejoin as soon as the capability gate passes.
         hello = json.loads(ws.receive_text())
         json.loads(ws.receive_text())  # media
     assert hello["type"] == "send"
-    # 重入时直接发出的帧同样交给 runtime 记账
+    # Frames sent directly during reentry also enter runtime bookkeeping.
     assert ("frame_sent", "hello") in s.log

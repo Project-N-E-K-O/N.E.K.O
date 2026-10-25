@@ -424,10 +424,10 @@ def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
     log = _fresh_log(str(tmp_path))
     # Replace per-character lock with a no-op context manager
     log._get_lock = lambda name: nullcontext()
-    # 锁一拆，record_and_save 收尾那句哨兵落盘也跟着失去串行化，5 个线程会同时
-    # os.replace 到同一个 events_applied.json —— Windows 上直接 WinError 5。哨兵
-    # 落盘不是本用例的被测对象（上一条正向 oracle 才覆盖它），所以给每个线程一个
-    # 独立的哨兵文件名：真实写盘路径照跑，只是不再互抢同一个目标。
+    # Once the lock is split, the sentinel write at the end of record_and_save also loses serialization; five threads can concurrently
+    # os.replace the same events_applied.json and hit WinError 5 on Windows. The sentinel
+    # Persistence is not what this test is measuring (the previous positive oracle covers it), so give each thread
+    # a separate sentinel filename: use the real write path but avoid contention on one target.
     _real_sentinel_path = log._sentinel_path
     log._sentinel_path = lambda name: os.path.join(
         os.path.dirname(_real_sentinel_path(name)),
@@ -492,10 +492,10 @@ def test_concurrent_append_during_compact_preserves_events(tmp_path):
 
     t = real_threading.Thread(target=appender, daemon=True)
     t.start()
-    # 不能用固定 sleep 猜「线程起来了没」：线程启动延迟不受控，而 Windows 上
-    # sleep 的实际时长又是 15.6ms 粒度的抛硬币；睡短了 compact 会在第一次并发
-    # append 之前就跑完，用例静默退化成非并发、断言恒真。改成轮询到确实已经
-    # 写出一条事件，并发前提才是确定的。
+    # Do not guess "has the thread started?" with a fixed sleep: thread startup delay is uncontrolled, and on Windows
+    # sleep duration is quantized in 15.6 ms increments; if it sleeps too briefly, compact can finish before the first concurrent
+    # append and the test silently degrades to sequential execution with a vacuous assertion. Poll until one event has actually
+    # been written so the concurrency precondition is deterministic.
     _deadline = time.monotonic() + 5.0
     while not appended_ids and not append_errors and time.monotonic() < _deadline:
         time.sleep(0.001)
@@ -537,14 +537,14 @@ def test_apply_and_advance_does_not_interleave_with_record_and_save(tmp_path):
     timeline: list[tuple[str, str]] = []   # (thread name, step)
 
     def mark(step: str) -> None:
-        # list.append 在 GIL 下是原子的，两个线程共写一条时间线是安全的
+        # list.append is atomic under the GIL, so two threads can safely write to one timeline
         timeline.append((real_threading.current_thread().name, step))
 
     from memory import event_log as event_log_module
     real_write_json = event_log_module.atomic_write_json
 
     def tracking_write_json(*args, **kwargs):
-        # 哨兵写是两条路径的最后一步，必须也落在各自的临界区里
+        # Sentinel writing is the final step in both paths and must also be inside each critical section
         mark("sentinel")
         return real_write_json(*args, **kwargs)
 
@@ -647,7 +647,7 @@ def test_advance_sentinel_does_not_interleave_with_record_and_save(tmp_path):
     def load(name):
         mark("record_load")
         record_inside.set()
-        # 临界区故意撑开 0.3s：无锁的 advance_sentinel 会在这段里插进来
+        # Intentionally hold the critical section for 0.3s so unlocked advance_sentinel can interleave
         time.sleep(0.3)
         return {"facts": []}
 
@@ -678,11 +678,11 @@ def test_advance_sentinel_does_not_interleave_with_record_and_save(tmp_path):
 
     assert not t_record.is_alive() and not t_advance.is_alive(), "线程没收干净"
 
-    # 非空过证明：ADVANCE 确实是在 RECORD 还没写完 view 的时候就开跑了
+    # Non-empty pass proves ADVANCE started while RECORD was still writing its view
     assert timeline.index(("ADVANCE", "advance_enter")) < \
         timeline.index(("RECORD", "record_save")), \
         f"ADVANCE 没赶在 RECORD 临界区里启动，测试是空过的: {timeline}"
-    # 互斥证明：它的哨兵写仍然排在 RECORD 自己的哨兵写之后
+    # Mutual exclusion proof: its sentinel write still comes after RECORD's own sentinel write
     record_sentinel = [i for i, e in enumerate(timeline) if e == ("RECORD", "sentinel")]
     advance_sentinel = [i for i, e in enumerate(timeline) if e == ("ADVANCE", "sentinel")]
     assert len(record_sentinel) == 1 and len(advance_sentinel) == 1, f"哨兵写次数不对: {timeline}"
@@ -717,7 +717,7 @@ def test_apply_and_advance_detects_the_conflict_before_running_the_handler(tmp_p
     log = _fresh_log(str(tmp_path))
     log.advance_sentinel("小天", "evt-live-writer")
 
-    # 更新的写者刚写好的值；陈旧事件的 payload 会把它打回 archived
+    # The value just written by the newer writer; a stale event payload would roll it back to archived
     view = {"status": "promoted"}
     applied = {"n": 0}
 
@@ -968,14 +968,14 @@ async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp
 
     _write_view({"r1": "old", "r2": "old"})
 
-    # 崩溃遗留的尾巴：两条都没应用进 view
+    # Crash leftovers: neither entry has been applied to the view
     log.append("小天", EVT_REFLECTION_STATE_CHANGED, {"rid": "r1", "to": "repair"})
     log.append("小天", EVT_REFLECTION_STATE_CHANGED, {"rid": "r2", "to": "repair"})
 
     applied_calls: list[tuple[str, str]] = []
 
     def handler(name, payload):
-        # 与 make_reflection_evidence_handler 同形：读盘 → 改目标条目 → 写回
+        # Same shape as make_reflection_evidence_handler: read from disk → update target entry → write back
         applied_calls.append((payload["rid"], payload["to"]))
         data = _read_view()
         if data.get(payload["rid"]) == payload["to"]:
@@ -993,11 +993,11 @@ async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp
     async def _tail_then_live_write(name, after_event_id):
         tail = await real_aread_since(name, after_event_id)
         if live_write_done["yes"]:
-            # 重扫时不再插第二次写：本用例要的是「一次 live 写 + 一次重扫」
+            # Do not write a second time during rescan: this test expects "one live write + one rescan"
             return tail
         live_write_done["yes"] = True
-        # 真 record_and_save：view 用的是重放之前那份快照（r1 还是 old），
-        # 收尾无条件把哨兵推到自己这条（日志最后一行）。
+        # Real record_and_save: view uses the snapshot from before replay (r1 is still old),
+        # and cleanup unconditionally advances the sentinel to its own event (last line in the log).
         live_event_id["id"] = log.record_and_save(
             name, EVT_REFLECTION_STATE_CHANGED, {"rid": "r2", "to": "live"},
             sync_load_view=lambda n: {"r1": "old", "r2": "live"},
@@ -1012,8 +1012,8 @@ async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp
             patch.object(event_log_module.logger, "warning") as warn:
         await rec.areconcile("小天")
 
-    # 归因：冲突是「待办陈旧、改为重扫」，不是「handler 失败」也不是「哨兵写
-    # 失败（view 已修好）」—— 后两句会让运维以为盘上是完全不同的状态。
+    # Attribution: the conflict is "stale pending event, switch to rescan," not "handler failed" or "sentinel write
+    # failed (view was already repaired)" — those latter messages would lead operators to believe disk is in a completely different state.
     messages = [str(c.args[0]) for c in warn.call_args_list]
     assert len(messages) == 1, f"该只有一条告警: {messages}"
     assert "重扫" in messages[0], f"归因错了: {messages[0]}"
@@ -1028,7 +1028,7 @@ async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp
     assert final["r1"] == "repair", (
         "尾巴上的修复被丢掉了 —— 哨兵已经越过它，之后任何一次开机都不会再重放"
     )
-    # 机制断言：重扫后按日志顺序重放，live 那条排在与它冲突的陈旧事件之后。
+    # Mechanism assertion: after rescan, replay in log order; the live event follows the stale event that conflicts with it.
     assert applied_calls == [
         ("r1", "repair"), ("r2", "repair"), ("r2", "live"),
     ], f"重放顺序不是日志顺序: {applied_calls}"
@@ -1038,19 +1038,19 @@ async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp
 @pytest.mark.asyncio
 async def test_frozen_rescan_picks_up_events_that_land_after_its_snapshot(tmp_path):
     """A writer arriving after the rescan's snapshot must not be overwritten."""
-    # 上一条用例钉的是「冲突之后改为重扫」。这条钉的是重扫本身的边界：它读到的
-    # 「日志末尾」是一次快照，而写者还在往后追加。
+    # The previous test pins down "switch to rescan after a conflict." This one pins down the rescan boundary itself: the
+    # "end of log" it reads is a snapshot, while a writer is still appending later entries.
     #
-    # 时序（每一步都由 patch 掉的 aread_since 精确制造）：
-    #   1. 崩溃遗留 r1/r2/r3 三条 repair 没应用；
-    #   2. reconciler 读初始尾巴时，写者 A 提交 r2="live" 并把哨兵抢到自己那条
-    #      → 第一次 CAS 就冲突，哨兵冻结、改为重扫；
-    #   3. **重扫取快照的那一刻**，写者 B 提交 r3="live2"，它的事件排在快照之后；
-    #   4. 快照里排在前面的陈旧 e3（r3="repair"）被重放，把 B 刚写好的值盖掉。
+    # Timing (each step is constructed precisely by patching aread_since):
+    #   1. Three crash-leftover repairs r1/r2/r3 have not been applied;
+    #   2. While the reconciler reads the initial tail, writer A commits r2="live" and advances the sentinel to its own event
+    #      → the first CAS conflicts, so freeze the sentinel and switch to rescan;
+    #   3. **At the moment the rescan snapshot is captured**, writer B commits r3="live2", whose event falls after the snapshot;
+    #   4. The stale e3 (r3="repair") earlier in the snapshot is replayed and overwrites the value B just wrote.
     #
-    # 此时哨兵停在 B 那条上，下次开机 read_since 从它**之后**开始读，B 的事件
-    # 不会被重放回来纠正 —— 丢的不是这一轮的进度，是用户刚产生的内容，永久性的。
-    # 所以扫完一轮必须再朝末尾探一次，直到探不到新东西。
+    # The sentinel now points to B's event. At next startup, read_since begins **after** it, so B's event will
+    # never be replayed to correct the value — what is lost is not this run's progress but content the user just created, permanently.
+    # Therefore after each scan, probe toward the tail again until no new entries are found.
     from memory.event_log import EVT_REFLECTION_STATE_CHANGED
 
     log, rec = _fresh_reconciler(str(tmp_path))
@@ -1084,12 +1084,12 @@ async def test_frozen_rescan_picks_up_events_that_land_after_its_snapshot(tmp_pa
 
     real_aread_since = log.aread_since
     written: dict[str, str] = {}
-    # 只在前两次读之后各插一个写者：第 1 次制造冲突，第 2 次（重扫取快照）制造
-    # 「快照之后才落地」。之后的探测读不再插，否则这一轮永远收不了尾。
+    # Insert writers only after the first two reads: the first creates the conflict; the second (rescan snapshot) creates
+    # an event that lands "after the snapshot." Do not insert more during later probe reads or this run would never finish.
     pending_writers = [("A", "r2", "live"), ("B", "r3", "live2")]
 
     async def _tail_then_writer(name, after_event_id):
-        # 先取尾巴再写：返回的这份**不含**紧接着落地的那条，正是要复现的形状。
+        # Read the tail before writing: the returned copy **does not include** the entry committed immediately afterward, which reproduces the required case.
         tail = await real_aread_since(name, after_event_id)
         if pending_writers:
             who, rid, to = pending_writers.pop(0)
@@ -1113,7 +1113,7 @@ async def test_frozen_rescan_picks_up_events_that_land_after_its_snapshot(tmp_pa
     )
     assert final["r2"] == "live", "写者 A 的值也不许被陈旧事件盖掉"
     assert final["r1"] == "repair", "崩溃遗留的修复不许被丢"
-    # 机制断言：B 那条是在快照重放**之后**补扫回来的，不是碰巧混在中间。
+    # Mechanism assertion: B's event is recovered by a later scan **after** snapshot replay, not accidentally included in the middle.
     assert applied_calls == [
         ("r1", "repair"), ("r2", "repair"), ("r3", "repair"),
         ("r2", "live"), ("r3", "live2"),
@@ -1124,9 +1124,9 @@ async def test_frozen_rescan_picks_up_events_that_land_after_its_snapshot(tmp_pa
 @pytest.mark.asyncio
 async def test_frozen_rescan_stops_after_a_bounded_number_of_probes(tmp_path):
     """Endless appends must end the round loudly, not spin the boot forever."""
-    # 补扫是「探到没有新东西为止」，那就必须有个头：写入一直不停时启动不能卡死。
-    # 停下来是有代价的（剩下那些位于哨兵之前，下次开机也不会自动补上），所以这条
-    # 同时钉住「必须报出来」——静悄悄地截断会让人以为 reconcile 干净地跑完了。
+    # Rescan means "probe until nothing new appears," so it needs a bound: startup must not hang if writes never stop.
+    # Stopping has a cost (remaining entries before the sentinel will not be replayed automatically next startup), so this also
+    # pins down "must report it" — silent truncation would make it look as though reconciliation finished cleanly.
     import asyncio
 
     from memory.event_log import EVT_REFLECTION_STATE_CHANGED
@@ -1150,7 +1150,7 @@ async def test_frozen_rescan_stops_after_a_bounded_number_of_probes(tmp_path):
     async def _tail_then_endless_writer(name, after_event_id):
         tail = await real_aread_since(name, after_event_id)
         reads["n"] += 1
-        # 每一次读之后都追加，永不停歇。
+        # Append after every read forever.
         log.record_and_save(
             name, EVT_REFLECTION_STATE_CHANGED, {"rid": f"w{reads['n']}", "to": "live"},
             sync_load_view=lambda n: {},
@@ -1196,8 +1196,8 @@ async def test_reconciler_never_rewinds_a_sentinel_onto_an_unhandled_event(tmp_p
     real_aread_since = log.aread_since
 
     async def _tail_then_live_write(name, after_event_id):
-        # 读完尾巴之后、apply 之前插一个 live writer：追加一条本进程没注册
-        # handler 的事件并把哨兵推过去（record_and_save 的收尾就是这两步）。
+        # After reading the tail but before apply, insert a live writer: append an event whose
+        # handler is not registered in this process and advance the sentinel (the final steps of record_and_save).
         tail = await real_aread_since(name, after_event_id)
         if "id" not in live_event_id:
             live_event_id["id"] = log.append(name, EVT_FACT_ABSORBED, {"fact_id": "f9"})
@@ -1219,7 +1219,7 @@ async def test_reconciler_never_rewinds_a_sentinel_onto_an_unhandled_event(tmp_p
         "尾巴剩下的修复也必须落盘（哨兵已经越过它们，跳过就是丢）"
     assert log.read_sentinel("小天") == live_event_id["id"], \
         f"哨兵被写回旧位置（{eid1} 那一带），没 handler 的事件会回到尾巴卡死后续 replay"
-    # 卡死判据：尾巴必须是空的，否则下一次开机会撞未注册事件类型并原地不动。
+    # Hang criterion: the tail must be empty; otherwise the next startup hits an unregistered event type and stalls in place.
     assert log.read_since("小天", log.read_sentinel("小天")) == []
     assert await rec.areconcile("小天") == 0
 

@@ -207,7 +207,7 @@ class PersistenceMixin:
                 except (TypeError, ValueError):
                     continue
             else:
-                # 旧格式 {key: int}
+                # Legacy format {key: int}.
                 try:
                     out[str(k)] = {"n": int(v), "at": None}
                 except (TypeError, ValueError):
@@ -249,19 +249,19 @@ class PersistenceMixin:
         no lock (failure branches all run outside the post-LLM lock), so this
         takes _get_alock itself for the read-modify-write."""
         async with self._get_alock(name):
-            # 拷贝一份再改：_aload_synth_backoff 返回的是进程内镜像引用，
-            # 由 _asave_synth_backoff 统一回写，避免半改状态被并发读看到。
+            # Copy before modifying: _aload_synth_backoff returns the process-local mirror reference;
+            # _asave_synth_backoff writes it back centrally, preventing concurrent reads of half-modified state.
             backoff = dict(await self._aload_synth_backoff(name))
             attempts = backoff.get(key, {}).get("n", 0) + 1
             entry = {"n": attempts, "at": datetime.now().isoformat()}
             backoff[key] = entry
-            # 防失败 key 长期累积：超阈值时只留 attempts 最高的若干条
-            # （dead-letter 候选优先保活，被丢的低分 key 下次失败重新计起）。
+            # Prevent failed keys accumulating indefinitely: above the threshold, retain entries with highest attempts
+            # (keep dead-letter candidates; discarded low-count keys restart counting on their next failure).
             if len(backoff) > 64:
                 backoff = dict(
                     sorted(backoff.items(), key=lambda kv: -kv[1].get("n", 0))[:64]
                 )
-                backoff[key] = entry  # 确保当前 key 不被裁掉
+                backoff[key] = entry  # Ensure the current key is retained.
             await self._asave_synth_backoff(name, backoff)
         logger.debug(
             f"[Reflection] {name}: key {key} 合成失败退避 → {attempts} ({reason})"
@@ -386,14 +386,14 @@ class PersistenceMixin:
     async def aforget_subject(self, name: str, subject) -> dict:
         """Delete every reflection belonging to one exact (subject, scope).
 
-        撤回入口（对偶 FactStore.aforget_subject）。**不走** asave_reflections
-        ——它的 prepare_save_reflections 会把磁盘上不在入参 id 集里的
-        merged / promote_blocked 条目并回主文件，删除会被静默 undo；这里
-        在角色锁内读主文件全量、过滤后直写。surfaced.json 里引用被删
-        reflection 的行一并清（surfaced 条目自带 text，会进 feedback
-        prompt）。归档分片不清：分片不进任何渲染/召回读路径，属事件留底；
-        但会严格扫描分片及迁移失败时保留的 legacy flat fallback，以找回
-        archive-only reflection ID，防止 surfaced 副本漏删。
+        Withdrawal entry point, symmetric with FactStore.aforget_subject. Do not use asave_reflections:
+        its prepare_save_reflections merges disk entries absent from input IDs back into the main file,
+        including merged / promote_blocked entries, silently undoing deletion. Instead, hold the character lock,
+        read the complete main file, filter, and write directly. Also clear surfaced.json references to deleted
+        reflections, because surfaced entries contain text that enters feedback
+        prompts. Keep archive shards: they are event backups outside all render/recall read paths.
+        Still scan shards and legacy flat fallbacks retained after migration failures to recover
+        archive-only reflection IDs and avoid leaving surfaced copies undeleted.
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import coerce_subject, entry_matches_subject
         memory_subject = coerce_subject(subject)

@@ -64,13 +64,13 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# 「最后写入时间」认这三个字段：fact/reflection 落盘都带 created_at；
-# scoped reflection 另有 confirmed_at；restored_at 由 restore 路径盖在
-# 三个存储的恢复条目上——显式恢复必须重置归档时钟，否则下一轮 sweep
-# 就把 restore 原样撤销。persona 普通条目通常三者皆无——它们是晋升派
-# 生物，贡献不了时间戳也无妨（facts 是权威写入面）。派生管线（合成/
-# 晋升/refine）产出的新条目会把 last_write 往后推，方向保守：只会推迟
-# 归档，绝不会提前。
+# Last-write time recognizes three fields: persisted facts/reflections have created_at;
+# scoped reflections also have confirmed_at; restore stamps restored_at on recovered
+# entries in all three stores. Explicit restoration must reset the archival clock or the next sweep
+# immediately undoes it. Ordinary persona entries usually lack all three because they derive from promotion;
+# missing timestamps there is acceptable, since facts are the authoritative write surface. New derived entries from synthesis/
+# promotion/refine advance last_write conservatively, delaying archival
+# but never accelerating it.
 _TIMESTAMP_FIELDS = ('created_at', 'confirmed_at', 'restored_at')
 
 
@@ -82,9 +82,9 @@ def _parse_iso(value) -> datetime | None:
     except (ValueError, TypeError):
         return None
     if parsed.tzinfo is not None:
-        # 外部导入/迁移路径可能写带时区的 ISO 串；sweep 的 now 是 naive
-        # 本地时间，aware-naive 混算直接 TypeError、整个 stage 每轮报废。
-        # 统一折算成本地 naive 再比较。
+        # External imports/migrations may write timezone-aware ISO strings; sweep's now is naive
+        # local time, and mixing them raises TypeError, failing the whole stage each round.
+        # Convert all timestamps to local naive time before comparison.
         parsed = parsed.astimezone().replace(tzinfo=None)
     return parsed
 
@@ -123,7 +123,7 @@ def collect_subject_last_writes(
             cur = last.get(marker)
             if cur is None or ts > cur[1]:
                 last[marker] = (subject, ts)
-    # 有任一带时间戳行的 subject 不算「无时间戳」。
+    # A subject with any timestamped row is not timestamp-free.
     return last, no_ts - set(last)
 
 
@@ -235,17 +235,17 @@ async def asweep_scoped_subject_archive(
         [entry for _, entry in persona_entries],
     ])
     if no_ts:
-        # fail-closed：完全没有可解析时间戳的 subject 永不归档，但要留痕
-        # ——判据写错就是静默丢记忆，反向（该归的没归）也要可观测。
+        # Fail closed: never archive subjects with no parseable timestamps, but log evidence;
+        # an incorrect criterion silently loses memory, while missed eligible archival also needs observability.
         logger.debug(
             f"[SubjectArchive] {name}: {len(no_ts)} 个 subject 无可解析时间戳，"
             f"跳过归档判定"
         )
 
-    # 参与者级合并：canonical 写路由之后，同一个人的非 canonical 堆停止写入，
-    # 90 天后会被判 stale——而这个人明明还活跃。取参与者内的最大时间戳并写回
-    # 每个 marker，让「最后写入时间」按人而不是按 account 计。resolver 由这里
-    # 注入，`subject_archive` 本身仍不 import trust_store。
+    # Merge per participant: after canonical write routing, noncanonical accounts stop receiving writes and appear stale
+    # after 90 days although the person remains active. Take the participant's latest timestamp and write it to
+    # every marker so last-write time applies per person rather than account. Inject the resolver
+    # here, keeping subject_archive independent of trust_store imports.
     last_writes = _coalesce_by_participant(last_writes)
 
     stale = find_stale_subjects(last_writes, now=now, stale_days=stale_days)
@@ -261,15 +261,15 @@ async def asweep_scoped_subject_archive(
 
     active_refls = await reflection_engine.aload_reflections(name)
     now_iso = now.isoformat()
-    # stale 判据的快照口径带进执行层：fact store 在写锁内用它重验——
-    # 判定之后落进来的新写入（created_at >= cutoff）会让该 subject 的
-    # 归档整体中止，绝不把复活后的第一条新记忆扫出召回。
+    # Carry the staleness decision snapshot into execution for locked fact-store revalidation:
+    # new writes arriving after assessment (created_at >= cutoff) abort archival for the entire subject,
+    # preserving the first new memory after reactivation in recall.
     stale_cutoff = now - timedelta(days=stale_days)
 
     for subject, last_dt in stale:
-        # fact 侧的待办按全池「无标记行」计：活跃行要搬走，absorbed 收缩
-        # 早已搬进归档文件的行要就地补 subject_archived_at——否则只有
-        # absorbed 历史的 stale subject 会永远留在召回池里。
+        # Fact-side pending work counts all unmarked rows: move active rows and stamp subject_archived_at in place
+        # on absorbed rows already residing in archive files; otherwise stale subjects containing only
+        # absorbed history remain in recall forever.
         fact_targets = [
             f for f in facts_full
             if isinstance(f, dict)
@@ -291,7 +291,7 @@ async def asweep_scoped_subject_archive(
             and entry.get('id')
         ]
         if not fact_targets and not refl_targets and not persona_targets:
-            # 上一轮已归干净（或本就无活跃条目），静默跳过。
+            # Already fully archived last round, or no active entries: skip silently.
             continue
 
         counts = {
@@ -319,8 +319,8 @@ async def asweep_scoped_subject_archive(
                     name, subject, now_iso, stale_cutoff,
                 )
             except Exception as e:
-                # 写盘/权限类真失败与复活中止同治：跳过其余存储，防止
-                # 「facts 留在活跃池、reflection/persona 已进分片」的劈叉。
+                # Treat real disk/permission failures like reactivation aborts: skip remaining stores to prevent
+                # divergence where facts remain active but reflection/persona have moved into shards.
                 logger.warning(
                     f"[SubjectArchive] {name}: subject "
                     f"[{_domain_marker(subject)}] facts 归档失败，跳过本轮"
@@ -328,10 +328,10 @@ async def asweep_scoped_subject_archive(
                 )
                 moved = None
             if moved is None:
-                # fact store 在锁内发现判定窗口里落了新写入：subject 已
-                # 复活。三个存储要么按同一判定走、要么全不走——跳过该
-                # subject 的 reflection/persona 归档，下一轮 sweep 用新
-                # 的 last_write 重新判定。
+                # Locked fact-store checks detected new writes since assessment, reactivating the subject.
+                # All three stores must follow the same decision or none; skip this subject's
+                # reflection/persona archival and let the next sweep reassess using the new
+                # last_write value.
                 logger.info(
                     f"[SubjectArchive] {name}: subject "
                     f"[{_domain_marker(subject)}] 判定窗口内复活，跳过本轮"
@@ -369,7 +369,7 @@ async def asweep_scoped_subject_archive(
     return report
 
 
-# ── restore（归档不是删除：可回滚的另一半） ─────────────────────────────
+# -- Restore: archival is reversible, not deletion --
 
 
 async def _ascan_shards_for_subject(
@@ -414,9 +414,9 @@ async def _ascan_shards_for_subject(
                 continue
             if not entry_matches_subject(entry, subject):
                 continue
-            # 同 id 多分片副本（archive→restore→archive 循环）：按
-            # archived_at 取最新快照。分片文件名的同日后缀是随机 uuid8，
-            # 文件序不等于时间序，不能靠遍历顺序。
+            # Multiple shard copies of one ID after archive/restore cycles: select
+            # the latest archived_at snapshot. Same-day shard suffixes are random uuid8,
+            # so filename/traversal order is not chronological.
             prev = candidates.get(entry['id'])
             if (
                 prev is None
@@ -457,8 +457,8 @@ async def _arestore_subject_reflections(
             entry = dict(snapshot)
             entry.pop('archived_at', None)
             entry.pop('archive_shard_path', None)
-            # scoped 活跃态只有 confirmed（pending 对 scoped 是死路），恢复
-            # 统一落 confirmed；confirmed_at 缺失补 restore 时刻。
+            # confirmed is the only active scoped state; pending cannot progress. Restore
+            # as confirmed, supplying restoration time if confirmed_at is missing.
             entry['status'] = 'confirmed'
             entry.setdefault('confirmed_at', now_iso)
             entry['restored_at'] = now_iso
@@ -467,7 +467,7 @@ async def _arestore_subject_reflections(
                 'from': 'archived',
                 'to': 'confirmed',
                 'restored_at': now_iso,
-                # 快照进事件：与归档事件对称，全量 replay 后可人工/重跑恢复。
+                # Include snapshots in events, symmetric with archival events, for manual/retried recovery after full replay.
                 'entry_snapshot': dict(entry),
             }
 
@@ -534,9 +534,9 @@ async def _arestore_subject_persona_entries(
             entry.pop('archived_at', None)
             entry.pop('archive_shard_path', None)
             entry['restored_at'] = now_iso
-            # payload 不带 archive_shard_path：persona 归档 handler 只处理
-            # 带该字段的事件，restore 事件在 replay 时是 no-op（见模块
-            # docstring 的全量 replay 限制说明）。
+            # Omit archive_shard_path from payload: the persona archive handler processes only
+            # events with that field, so restore events replay as no-ops (see the module
+            # docstring's full-replay limitations).
             payload = {
                 'entity_key': subject.persona_section_key,
                 'entry_id': eid,
@@ -601,9 +601,9 @@ async def arestore_scoped_subject(
             name, memory_subject, now_iso, forgotten_at,
         )
         if facts_restored is None:
-            # 与归档侧对称的中止语义：facts_archive.json 损坏时不再继续恢复
-            # 高层存储——「facts 仍归档、reflection/persona 已活跃」的劈叉
-            # 会一直保持到归档文件被修好，且反复 restore 也修不平。
+            # Abort symmetrically with archival: corrupt facts_archive.json must stop restoration
+            # of higher-level stores; otherwise facts stay archived while reflection/persona become active,
+            # a divergence that repeated restores cannot repair until the archive file is fixed.
             logger.warning(
                 f"[SubjectArchive] {name}: subject "
                 f"[{_domain_marker(memory_subject)}] fact 恢复中止（归档文件"

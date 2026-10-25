@@ -5,6 +5,7 @@
       :effect="effect"
       size="small"
       :class="['status-tag', `status-${status}`]"
+      :style="{ '--status-color': statusColor }"
     >
       <span class="status-dot" :style="{ backgroundColor: statusColor }"></span>
       {{ statusText }}
@@ -66,6 +67,11 @@ const tagType = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.status-tag.el-tag--light {
+  background: color-mix(in srgb, var(--status-color) 6%, var(--surface-card));
+  border-color: transparent;
 }
 
 .status-dot {

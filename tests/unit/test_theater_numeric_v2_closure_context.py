@@ -21,7 +21,7 @@ def closure_cases():
     for place, task, done, unfinished, target, future in SCENES:
         engine = NumericV2Engine.from_mapping(numeric_v2_story())
         node = engine.nodes['start']
-        # 长方向将完成范围留在末尾，重现原180 Token字段截断丢失收束说明。
+        # The long direction leaves completion scope at the end, reproducing its loss under the old 180-token field truncation.
         direction = (f'两人在{place}协作处理眼前事务。' +
             '她把桌面可用空间留给玩家，留意他的实际操作，按需要解释自己负责的部分；环境保持平静，双方可以交流眼前物件的用途。' * 4 +
             f'本幕只要求{task}，女主对此作出回应即可收束；随后可邀请去{target}，{future}属于下一阶段，不必现在完成。')
@@ -59,7 +59,7 @@ def test_actor_identity_instruction_does_not_use_framework_name(phase):
     from services.theater.numeric_v2_actor import _system_prompt
     prompt = _system_prompt(catgirl_name='测试猫娘', player_address='你', phase=phase)
     if phase == 'transition_compact':
-        # 正式转场还需生成 NPC 旁白；猫娘身份仍由动态角色决定，不能把实现名称当作身份。
+        # A formal transition also generates NPC narration; catgirl identity remains determined by the dynamic character, not the implementation name.
         assert '猫娘写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
         assert '当前猫娘由“测试猫娘”扮演。' in prompt
     else:

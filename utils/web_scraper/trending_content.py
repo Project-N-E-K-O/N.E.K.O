@@ -25,14 +25,15 @@ import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
+from utils.language_utils import get_global_language_full, normalize_language_code
 import random
 import re
 import time
 from typing import TYPE_CHECKING, Dict, List, Any
 from urllib.parse import quote, urljoin, urlparse
 
-# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
-# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+# Lazy bs4 import on first parser use, backed by utils.module_warmup background warmup: this module is
+# imported at system_router's top level in main_server's startup chain; eager bs4 delays port readiness.
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
 
@@ -55,7 +56,7 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
-# The community API's discover feed is deliberately fetched as its first page
+# Each proactive fetch starts a fresh server recommendation round with a page
 # of 60 cards. The caller's smaller ``limit`` is applied after normalization,
 # so Phase 1 keeps its existing prompt budget while still getting a varied pool.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
@@ -77,7 +78,7 @@ def _neko_community_urls() -> tuple[str, str]:
     """Return community feed and discover URLs for the configured social host."""
 
     base_url = social_base_url().rstrip("/")
-    return f"{base_url}/api/feed", f"{base_url}/discover"
+    return f"{base_url}/api/feed/recommendations", f"{base_url}/discover"
 
 
 def _same_community_origin(left: str, right: str) -> bool:
@@ -224,7 +225,7 @@ async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
         Dict with success status and post list
     """
     try:
-        # Reddit的JSON API端点
+        # Reddit JSON API endpoint.
         url = f"https://www.reddit.com/r/popular/hot.json?limit={limit}"
         
         headers = {
@@ -245,7 +246,7 @@ async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
         for item in children[:limit]:
             post_data = item.get('data', {})
 
-            # 跳过NSFW内容
+            # Skip NSFW content.
             if post_data.get('over_18'):
                 continue
 
@@ -311,7 +312,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     Falls back to the public API on failure
     """
     try:
-        # 动态获取平台 Cookie，拒绝硬编码
+        # Retrieve platform cookies dynamically; never hardcode them.
         weibo_cookies = await asyncio.to_thread(_get_platform_cookies, 'weibo')
         sub_cookie = weibo_cookies.get('SUB') or weibo_cookies.get('sub', '')
         if sub_cookie:
@@ -319,7 +320,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
         else:
             cookie_header = ""
         
-        # 优先使用s.weibo.com热搜页面（刷新频率更高）
+        # Prefer s.weibo.com trending searches for more frequent updates.
         url = "https://s.weibo.com/top/summary?cate=realtimehot"
         
         headers = {
@@ -331,24 +332,24 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
         if cookie_header:
             headers['Cookie'] = cookie_header
         
-        # 添加随机延迟
+        # Add a random delay.
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
         client = get_external_http_client()
         response = await client.get(url, headers=headers, timeout=5.0)
         response.raise_for_status()
 
-        # 检查是否重定向到登录页面
+        # Check for login-page redirection.
         if 'passport' in str(response.url):
             logger.warning("微博Cookie可能已过期，回退到公开API")
             return await _fetch_weibo_trending_fallback(limit)
 
         html = response.text
-        # BS4 解析放线程池（与 Google/Baidu/Twitter 链路一致）
+        # Parse BS4 in the thread pool, matching Google/Baidu/Twitter paths.
         from bs4 import BeautifulSoup
         soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
-        # 解析热搜列表 (td-02 class)
+        # Parse the trending list (td-02 class).
         td_items = soup.find_all('td', class_='td-02')
 
         if not td_items:
@@ -368,25 +369,25 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                 if not word:
                     continue
 
-                # 获取链接
+                # Get the link.
                 href = a_tag.get('href', '')
-                # 构建完整URL（相对链接需要加上域名）
+                # Build the full URL, adding the domain for relative links.
                 if href and not href.startswith('http'):
                     href = f"https://s.weibo.com{href}"
 
-                # 解析热度值
+                # Parse popularity.
                 if span:
                     hot_text = span.get_text(strip=True)
                 else:
                     hot_text = ''
-                # 热度可能包含类型标签如"剧集 336075"，需要提取数字
+                # Popularity may contain type labels such as "剧集 336075"; extract the number.
                 hot_match = re.search(r'(\d+)', hot_text)
                 if hot_match:
                     raw_hot = int(hot_match.group(1))
                 else:
                     raw_hot = 0
 
-                # 提取标签（如"剧集"、"晚会"等）
+                # Extract labels such as drama series or gala.
                 if hot_text:
                     note = re.sub(r'\d+', '', hot_text).strip()
                 else:
@@ -448,7 +449,7 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
                     continue
 
                 word = item.get('word', '')
-                # 构建搜索URL
+                # Build a search URL.
                 if word:
                     search_url = f"https://s.weibo.com/weibo?q={quote(word)}"
                 else:
@@ -498,7 +499,7 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
         Dict with success status and trend list
     """
     try:
-        # Twitter探索/热门页面
+        # Twitter explore/trending page.
         url = "https://twitter.com/explore/tabs/trending"
         
         headers = {
@@ -517,10 +518,10 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
         response.raise_for_status()
         html_content = response.text
 
-        # 从页面解析热门话题
+        # Parse trending topics from the page.
         trending_list = []
 
-        # 尝试从页面的JSON数据中提取热门话题
+        # Try extracting trending topics from page JSON.
         trend_pattern = r'"trend":\{[^}]*"name":"([^"]+)"'
         tweet_count_pattern = r'"tweetCount":"([^"]+)"'
 
@@ -532,7 +533,7 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
                 if not trend.startswith('@'):
                     trend = '#' + trend
 
-            # 构建搜索URL
+            # Build a search URL.
             if trend:
                 search_url = f"https://twitter.com/search?q={quote(trend)}"
             else:
@@ -607,7 +608,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
                 })
         return trending_list
     
-    # 第三方热门话题源列表（按优先级排序）
+    # Third-party trending-topic sources, ordered by priority.
     fallback_sources = [
         {
             'name': 'Trends24',
@@ -627,7 +628,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         'Accept-Language': 'en-US,en;q=0.9',
     }
     
-    # 按优先级遍历所有数据源
+    # Try all data sources in priority order.
     for source in fallback_sources:
         try:
             await asyncio.sleep(random.uniform(0.1, 0.3))
@@ -636,7 +637,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
             response = await client.get(source['url'], headers=headers, timeout=5.0)
 
             if response.status_code == 200:
-                # BS4 解析 + 解析器迭代统一放线程池，避免阻塞 event loop
+                # Run BS4 parsing and parser iteration in the thread pool to avoid blocking the event loop.
                 def _parse_in_thread(html: str, parser, _limit: int) -> List[Dict[str, Any]]:
                     from bs4 import BeautifulSoup
                     return parser(BeautifulSoup(html, 'lxml'), _limit)
@@ -655,7 +656,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
             logger.warning(f"{source['name']}获取失败: {e}")
             continue
     
-    # 所有第三方源都失败，返回提示信息
+    # All third-party sources failed: return an explanatory message.
     logger.warning("所有Twitter热门数据源均不可用")
     return {
         'success': False,
@@ -683,7 +684,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
         non-Chinese region: 'reddit' and 'twitter' keys
     """
     try:
-        # 检测用户区域
+        # Detect the user's region.
         china_region = is_china_region()
         
         if china_region:
@@ -700,7 +701,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
                 return_exceptions=True
             )
 
-            # 处理异常
+            # Handle exceptions.
             if isinstance(bilibili_result, Exception):
                 logger.error(f"B站爬取异常: {bilibili_result}")
                 bilibili_result = {'success': False, 'error': str(bilibili_result)}
@@ -709,7 +710,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
                 logger.error(f"微博爬取异常: {weibo_result}")
                 weibo_result = {'success': False, 'error': str(weibo_result)}
             
-            # 检查是否至少有一个成功
+            # Check whether at least one succeeded.
             if not bilibili_result.get('success') and not weibo_result.get('success'):
                 return {
                     'success': False,
@@ -726,7 +727,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
                 'weibo': weibo_result
             }
         else:
-            # 非中文区域：使用Reddit和Twitter
+            # Non-Chinese regions: use Reddit and Twitter.
             logger.info("检测到非中文区域，获取Reddit和Twitter热门内容")
             
             reddit_task = fetch_reddit_popular(reddit_limit)
@@ -738,7 +739,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
                 return_exceptions=True
             )
             
-            # 处理异常
+            # Handle exceptions.
             if isinstance(reddit_result, Exception):
                 logger.error(f"Reddit爬取异常: {reddit_result}")
                 reddit_result = {'success': False, 'error': str(reddit_result)}
@@ -747,7 +748,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
                 logger.error(f"Twitter爬取异常: {twitter_result}")
                 twitter_result = {'success': False, 'error': str(twitter_result)}
             
-            # 检查是否至少有一个成功
+            # Check whether at least one succeeded.
             if not reddit_result.get('success') and not twitter_result.get('success'):
                 return {
                     'success': False,
@@ -1840,20 +1841,12 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
-    """Return a bounded prefix of the first list-shaped card collection."""
-
-    def bounded_items(items: list[Any]) -> list[dict[str, Any]]:
-        return [
-            item
-            for item in islice(items, NEKO_COMMUNITY_FEED_PAGE_SIZE)
-            if isinstance(item, dict)
-        ]
-
+def _community_feed_collection(payload: Any) -> list[Any] | None:
+    """Locate the first supported card collection, distinguishing empty from absent."""
     if isinstance(payload, list):
-        return bounded_items(payload)
+        return payload
     if not isinstance(payload, dict):
-        return []
+        return None
 
     containers: list[Any] = [payload]
     for key in ("data", "result", "feed"):
@@ -1862,14 +1855,24 @@ def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
             containers.append(value)
     for container in containers:
         if isinstance(container, list):
-            return bounded_items(container)
+            return container
         if not isinstance(container, dict):
             continue
         for key in ("items", "posts", "cards", "results", "list"):
             value = container.get(key)
             if isinstance(value, list):
-                return bounded_items(value)
-    return []
+                return value
+    return None
+
+
+def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
+    """Return a bounded prefix of the first list-shaped card collection."""
+    items = _community_feed_collection(payload)
+    return [
+        item
+        for item in islice(items if items is not None else [], NEKO_COMMUNITY_FEED_PAGE_SIZE)
+        if isinstance(item, dict)
+    ]
 
 
 def _community_text(
@@ -2138,14 +2141,14 @@ async def _fetch_neko_community_payload(
     client: httpx.AsyncClient,
     feed_api: str,
     *,
-    params: dict[str, int],
+    query: dict[str, Any],
     headers: dict[str, str],
 ) -> tuple[int, Any | None]:
     """Read one bounded community feed response before JSON decoding."""
 
     body = bytearray()
     async with client.stream(
-        "GET", feed_api, params=params, headers=headers, timeout=10.0
+        "POST", feed_api, json=query, headers=headers, timeout=10.0
     ) as response:
         if response.status_code in {401, 403}:
             return response.status_code, None
@@ -2157,7 +2160,9 @@ async def _fetch_neko_community_payload(
     return response.status_code, json.loads(body)
 
 
-async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
+async def fetch_neko_community_feed(
+    limit: int = 10, *, locale: str | None = None
+) -> dict[str, Any]:
     """Fetch community cards with the validated desktop OAuth session when available."""
 
     try:
@@ -2167,14 +2172,15 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
             "Referer": discover_url,
             "User-Agent": XHH_USER_AGENT,
         }
-        params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        query: dict[str, Any] = {"cursor": None, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
         access_token = ""
         if _neko_community_bearer_transport_allowed(feed_api):
             access_token = await _neko_community_access_token(feed_api)
         authenticated = bool(access_token)
+        rejected_auth_status: int | None = None
         if authenticated:
-            # Never put a refreshable community bearer into the process-wide client:
-            # its cookie jar and connection lifetime are shared by unrelated scrapers.
+            # Omit locale so the server honors the account's saved language.
+            # Keep the refreshable bearer out of the shared client's cookie jar.
             headers["Authorization"] = f"Bearer {access_token}"
             async with httpx.AsyncClient(
                 timeout=10.0,
@@ -2182,30 +2188,32 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
                 follow_redirects=False,
             ) as client:
                 status_code, payload = await _fetch_neko_community_payload(
-                    client, feed_api, params=params, headers=headers
+                    client, feed_api, query=query, headers=headers
                 )
-            # A permission/scope mismatch must not suppress the public discovery feed.
             if status_code in {401, 403}:
+                rejected_auth_status = status_code
                 authenticated = False
                 headers.pop("Authorization", None)
-                _, payload = await _fetch_neko_community_payload(
-                    get_external_http_client(), feed_api, params=params, headers=headers
-                )
-        else:
-            _, payload = await _fetch_neko_community_payload(
-                get_external_http_client(), feed_api, params=params, headers=headers
+        if not authenticated:
+            # Missing or rejected credentials use anonymous recommendations.
+            query["locale"] = normalize_language_code(
+                locale or get_global_language_full(), format="full"
+            )
+            status_code, payload = await _fetch_neko_community_payload(
+                get_external_http_client(), feed_api, query=query, headers=headers
+            )
+        if status_code in {401, 403}:
+            auth_context = (
+                f" after authenticated HTTP {rejected_auth_status}"
+                if rejected_auth_status is not None else ""
+            )
+            raise ValueError(
+                f"Anonymous community recommendations rejected: HTTP {status_code}{auth_context}"
             )
         posts = normalize_neko_community_feed(payload, limit=limit)
-        if not posts:
+        if not posts and _community_feed_collection(payload) != []:
             raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
-        # The feed API ranks cards by hot score, so this first page's order is
-        # near-static within a day. Feeding Phase 1 that fixed order every
-        # round made the same candidate prefix — and the same logged top
-        # titles — reappear on every proactive cycle. Shuffle the bounded
-        # pool so each round presents a fresh slice of it; the source-history
-        # cooldown (keyed by dedupe_key, order-independent) still keeps
-        # already-delivered cards out.
-        random.shuffle(posts)
+        # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
             "success": True,
             "posts": posts,

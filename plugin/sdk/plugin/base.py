@@ -175,8 +175,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         host-side.
 
         Use this for character-aware text like
-        ``"立即基于最新画面向 {MASTER_NAME} 叙述..."`` instead of hardcoded
-        ``"用户"`` / ``"master"`` / ``"主人"``, which feel generic and
+        ``\"Immediately describe the latest screen to {MASTER_NAME}...\"`` instead of hardcoded
+        ``\"user\"`` / ``\"master\"`` / ``\"owner\"``, which feel generic and
         misbehave on multi-character setups. See PLUGIN_DEVELOPMENT_GUIDE.md
         ("Writing role-aware text") for details.
         """
@@ -260,7 +260,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         llm_fields = getattr(meta, "llm_result_fields", None)
         if llm_fields:
             meta_dict["llm_result_fields"] = list(llm_fields)
-        # 控制字段随注册一起过去，宿主才能按声明的预算调用、按声明的 schema 读结果。
+        # Forward control fields with registration so the host uses declared budgets and result schemas.
         for name in ("timeout", "model_validate", "persist"):
             value = getattr(meta, name, None)
             if value is not None:
@@ -556,6 +556,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         handler: Any,
         timeout: float = 30.0,
         role: str | None = None,
+        reply_tail: bool = False,
     ) -> bool:
         """Register an LLM tool at runtime.
 
@@ -592,6 +593,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             parameters=dict(parameters) if isinstance(parameters, dict) else {"type": "object", "properties": {}},
             timeout_seconds=float(timeout),
             role=role,
+            reply_tail=reply_tail,
         )
         self._register_llm_tool_internal(meta, handler)
         return True
@@ -619,6 +621,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 "parameters": dict(meta.parameters),
                 "timeout_seconds": meta.timeout_seconds,
                 "role": meta.role,
+                **({"reply_tail": True} if meta.reply_tail else {}),
             }
             for meta in self._llm_tools.values()
         ]

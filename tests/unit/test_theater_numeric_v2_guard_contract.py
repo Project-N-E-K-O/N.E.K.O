@@ -90,7 +90,7 @@ def _messages(candidate):
     )[0]
 
 
-# 只保留现行入口与 Prompt 检查使用的两份候选。
+# Keep only the two candidates used by the current entry point and prompt checks.
 _BUTTON_ONLY_CANDIDATE = {
     "performance": "（点头）预约已经确认。",
     "suggested_inputs": ["我们去阅览室查档。"],
@@ -191,12 +191,12 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
         "offer_present", "offer_quote", "offer_kind", "valid", "body_violations", "unsafe_suggestion_indexes",
         "failure_reason", "player_action_kind",
     }
-    # 固定字段数与实际示例一致，模型不会被错误计数引导去补造或删减字段。
+    # Match the fixed field count to the actual example so an incorrect count does not prompt the model to invent or remove fields.
     assert "固定八字段" in system and len(example) == 8
     assert not _parse_transition_judge_output(json.dumps(example)).body_violations
     assert "_preserved" not in system
     assert "玩家已明确实施的同一动作可以被正文承接，不是 Actor 代做" in system
-    # 口语执行规则放入共享合同后，尝试仍不能保证未知结果。
+    # Even after conversational execution rules enter the shared contract, attempts still cannot guarantee unknown outcomes.
     assert "尝试也不保证未知的成功结果" in system
     assert "历史另一次操作也不授权本次结果" in system
     assert "未来邀请即使请求立即开始也不是已执行" in system
@@ -204,7 +204,7 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
 
 
 def test_guard_requires_offer_quote_from_reviewed_body():
-    """正文邀请必须给出本轮待审正文中的逐字短句，按钮和空引文不能制造邀请。"""  # noqa: DOCSTRING_CJK
+    """Narrative invitations must quote an exact phrase from this turn's prose under review; buttons and empty quotes cannot create invitations."""  # noqa: DOCSTRING_CJK
 
     body = "（指向门口）我们现在去阅览室查档，好吗？"
     missing = _parse_transition_judge_output(

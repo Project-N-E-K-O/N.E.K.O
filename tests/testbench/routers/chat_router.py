@@ -21,45 +21,45 @@ Endpoints
 * **P09** ``POST   /api/chat/send``                    — SSE (text/event-stream);
                                                          body: ``{content, role?,
                                                          source?, time_advance?}``.
-* **P11** ``GET    /api/chat/simulate_user/styles``    — 风格预设列表.
-* **P11** ``POST   /api/chat/simulate_user``           — 调 simuser LLM
-                                                         生成一条"用户消息
-                                                         草稿"; **不落盘**,
-                                                         供 composer 填充后
-                                                         再走 /chat/send.
-* **P12** ``GET    /api/chat/script/templates``        — 合并 builtin/user
-                                                         两个目录, 返回可用
-                                                         脚本 meta 列表.
-* **P12** ``POST   /api/chat/script/load``             — 加载指定脚本到会话;
+* **P11** ``GET    /api/chat/simulate_user/styles``    — list style presets.
+* **P11** ``POST   /api/chat/simulate_user``           — invoke simuser LLM
+                                                         to generate one user-message
+                                                         draft; **no persistence**,
+                                                         fill the composer, then
+                                                         send through /chat/send.
+* **P12** ``GET    /api/chat/script/templates``        — merge builtin/user
+                                                         directories and return available
+                                                         script metadata.
+* **P12** ``POST   /api/chat/script/load``             — load a script into the session;
                                                          body: ``{name}``.
-                                                         应用 bootstrap, 初始
-                                                         化 ``script_state``.
-* **P12** ``POST   /api/chat/script/unload``           — 清空 ``script_state``.
-* **P12** ``GET    /api/chat/script/state``            — 当前脚本加载状态.
-* **P12** ``POST   /api/chat/script/next``             — SSE; 跑一个 user
-                                                         turn (自动累积 expected
-                                                         到下次 AI 回复).
-* **P12.5** ``GET    /api/chat/script/templates/{name}`` — 读模板详情 (编辑器用).
-* **P12.5** ``POST   /api/chat/script/templates``        — 保存用户模板.
-* **P12.5** ``DELETE /api/chat/script/templates/{name}`` — 删用户模板 (builtin 不可删).
-* **P12.5** ``POST   /api/chat/script/templates/duplicate`` — 复制模板到用户目录.
-* **P12** ``POST   /api/chat/script/run_all``          — SSE; 循环 Next 直到
-                                                         脚本耗尽或 error.
-* **P13** ``POST   /api/chat/auto_dialog/start``       — SSE; 双 AI 自动对话,
-                                                         持 BUSY 锁整段; 事件
-                                                         里含 turn_begin /
+                                                         apply bootstrap and initialize
+                                                         ``script_state``.
+* **P12** ``POST   /api/chat/script/unload``           — clear ``script_state``.
+* **P12** ``GET    /api/chat/script/state``            — current script-loading state.
+* **P12** ``POST   /api/chat/script/next``             — SSE; run one user
+                                                         turn (accumulate expected
+                                                         until the next AI reply).
+* **P12.5** ``GET    /api/chat/script/templates/{name}`` — read template details for the editor.
+* **P12.5** ``POST   /api/chat/script/templates``        — save a user template.
+* **P12.5** ``DELETE /api/chat/script/templates/{name}`` — delete a user template (builtins cannot be deleted).
+* **P12.5** ``POST   /api/chat/script/templates/duplicate`` — copy a template into the user directory.
+* **P12** ``POST   /api/chat/script/run_all``          — SSE; repeat Next until
+                                                         script exhaustion or error.
+* **P13** ``POST   /api/chat/auto_dialog/start``       — SSE; dual-AI automatic dialogue,
+                                                         holding BUSY throughout; events
+                                                         include turn_begin /
                                                          simuser_done / target
-                                                         stream 透传 / turn_done
+                                                         stream passthrough / turn_done
                                                          / paused / resumed /
                                                          stopped / error.
-* **P13** ``POST   /api/chat/auto_dialog/pause``       — graceful pause (当前
-                                                         step 跑完后不进入下
-                                                         一 step); 不持锁.
-* **P13** ``POST   /api/chat/auto_dialog/resume``      — 继续; 不持锁.
-* **P13** ``POST   /api/chat/auto_dialog/stop``        — 请求终止; 不持锁.
-* **P13** ``GET    /api/chat/auto_dialog/state``       — 观测当前运行态 (刷新
-                                                         页面后前端可靠 auto_
-                                                         state 决定要不要重挂
+* **P13** ``POST   /api/chat/auto_dialog/pause``       — graceful pause (finish the current
+                                                         step without entering the
+                                                         next); no lock.
+* **P13** ``POST   /api/chat/auto_dialog/resume``      — resume; no lock.
+* **P13** ``POST   /api/chat/auto_dialog/stop``        — request termination; no lock.
+* **P13** ``GET    /api/chat/auto_dialog/state``       — observe runtime state (after page
+                                                         refresh, the frontend uses auto_
+                                                         state to decide SSE reattachment).
                                                          SSE).
 
 Design notes
@@ -318,11 +318,11 @@ class _SendRequest(BaseModel):
     both in a single round-trip instead of /time/stage_next_turn then
     /chat/send.
 
-    2026-04-22 Day 8 验收反馈 #3: ``content`` 改为可空. 场景: rerun-from-user
-    截断后末尾是 user, 用户期望"让 AI 直接对这条已有 user 回复"而不是"再
-    手打一条 user". 空字符串 → pipeline 走 ``stream_send(user_content=None)``
-    "只跑 LLM" 路径, 避免产生连续两条 user. 后端 ``chat_runner`` 会校验
-    session.messages 末尾是 user 再跑 — 如果末尾不是 user 就会 422 报错.
+    2026-04-22 Day 8 acceptance feedback #3: ``content`` becomes nullable. After rerun-from-user
+    truncation leaves a trailing user, users expect a direct AI response to that existing message rather than
+    typing another user message. Empty strings use ``stream_send(user_content=None)`` in the pipeline's
+    LLM-only path, avoiding consecutive user messages. Backend ``chat_runner`` verifies
+    session.messages ends with user before running; otherwise return 422.
     """
 
     content: str = Field(
@@ -483,8 +483,8 @@ async def patch_message_timestamp(
 
     If the edited message is the **last** one, the session clock's
     cursor is also snapped to the new timestamp — the runtime's "clock
-    resync" rule (see PLAN §时间轴与消息 timestamp).
-    """
+    resync" rule (see PLAN §时间轴与消息 timestamp, timeline and message timestamps).
+    """  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
         async with store.session_operation("chat.messages.patch_timestamp") as session:
@@ -504,8 +504,8 @@ async def patch_message_timestamp(
             # Retroactive retiming must keep the list monotonic relative
             # to its neighbours (the edited row itself is ignored — we're
             # about to overwrite its timestamp). Reject otherwise with
-            # 422 so the UI can surface a specific toast ("新时间戳早于
-            # 上一条") instead of silently committing a broken list.
+            # 422 so the UI can surface a specific toast (new timestamp precedes
+            # the previous one) instead of silently committing a broken list.
             err = check_timestamp_monotonic(session.messages, idx, new_ts)
             if err:
                 raise HTTPException(
@@ -572,8 +572,8 @@ async def truncate_messages(body: _TruncateRequest) -> dict[str, Any]:
 
     Also rewinds ``session.clock.cursor`` to the last surviving
     message's timestamp (or clears it when the list is emptied) — the
-    "Re-run from here 同时回滚时钟" rule from PLAN §时间轴.
-    """
+    "Re-run from here also rewinds the clock" rule from PLAN §时间轴 (timeline).
+    """  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
         async with store.session_operation("chat.messages.truncate") as session:
@@ -728,22 +728,22 @@ async def _send_event_stream(
                     delta=timedelta(seconds=body.time_advance_seconds),
                 )
 
-            # 2026-04-23 P25 Day 2 polish r5 — 空输入框 (或只打了空白
-            # 字符) 的 [发送] 点击分诊:
+            # 2026-04-23 P25 Day 2 polish r5: triage Send clicks with an empty input box
+            # (or whitespace-only content):
             #
-            #   - 末尾是 user 消息 → 走 Day 8 #3 "重发最后一条 user 的
-            #     LLM 回复" 合法路径 (user_content=None).
-            #   - 末尾不是 user (或 session 为空) → 之前 (r4 及以前)
-            #     走 pipeline ValueError → SSE error frame → UI error
-            #     徽章 + Errors 页都会出现假信号. 用户反馈: "这种情况
-            #     不应当算 error, 只需要报警提示用户不得输入空消息即可,
-            #     但是依然需要在日志里面记录下来". 降级为:
-            #       (a) SSE 发一个 `warning` frame (type=empty_content_
-            #           ignored) 让前端弹 toast warn, **不走 error 路径**;
-            #       (b) diagnostics_store.record_internal 写一条
-            #           CHAT_SEND_EMPTY_IGNORED (info 级), 日志可见但
-            #           Errors 页不当 error 计数;
-            #       (c) 直接 return, 不调 LLM 不改 session.messages.
+            #   - Final message is user: use Day 8 #3's valid resend-the-last-user's
+            #     LLM-response path (user_content=None).
+            #   - Final message is not user (or session empty): previously (r4 and earlier)
+            #     pipeline ValueError -> SSE error frame -> UI error
+            #     badge + Errors page all produced false signals. User feedback: this should
+            #     not count as an error, only warn that empty messages are forbidden,
+            #     while still recording it in logs. Degrade to:
+            #       (a) emit an SSE `warning` frame (type=empty_content_
+            #           ignored) to show a warning toast, **bypassing error handling**;
+            #       (b) diagnostics_store.record_internal records
+            #           CHAT_SEND_EMPTY_IGNORED (info), visible in logs but
+            #           excluded from Errors-page error counts;
+            #       (c) return immediately without invoking the LLM or changing session.messages.
             content_stripped = (body.content or "").strip()
             is_empty_click = (not content_stripped)
             if is_empty_click:
@@ -752,7 +752,7 @@ async def _send_event_stream(
                 if session.messages:
                     tail_role = session.messages[-1].get("role")
                 if tail_role != ROLE_USER:
-                    # 不是合法"重发" — 发 warning 然后提前 return.
+                    # Not a valid resend: emit warning and return early.
                     from tests.testbench.pipeline import diagnostics_store as _ds
                     from tests.testbench.pipeline.diagnostics_ops import (
                         DiagnosticsOp,
@@ -771,7 +771,7 @@ async def _send_event_stream(
                                 "tail_empty": tail_empty,
                             },
                         )
-                    except Exception as exc:  # noqa: BLE001 — audit 不得阻流
+                    except Exception as exc:  # noqa: BLE001 — audit must not block streaming.
                         python_logger().warning(
                             "chat.send empty-ignore audit record failed: "
                             "%s: %s", type(exc).__name__, exc,
@@ -790,10 +790,10 @@ async def _send_event_stream(
             backend = get_chat_backend()
             stream_ok = False
             try:
-                # 2026-04-22 Day 8 #3: 空字符串 → None, 触发 pipeline 的
-                # "只跑 LLM 对末尾已有 user 回复" 路径. pipeline 自己校验
-                # 末尾必须是 user (r5 前已在上面预诊拦截, 到这里 None 路径
-                # 一定合法).
+                # 2026-04-22 Day 8 #3: empty string -> None, triggering the pipeline's
+                # LLM-only reply to the existing trailing user message. The pipeline verifies
+                # the final role is user; r5 pre-triage above guarantees the None path
+                # is valid here.
                 user_content_arg = body.content if content_stripped else None
                 async for event in backend.stream_send(
                     session,
@@ -809,8 +809,8 @@ async def _send_event_stream(
                     "error": {"type": exc.code, "message": exc.message},
                 })
             except ValueError as exc:
-                # pipeline 的预检查 (比如 stream_send(user_content=None)
-                # 要求末尾是 user) 走 ValueError. 给前端一个友好的 error_type.
+                # Pipeline prechecks (e.g. stream_send(user_content=None)
+                # requiring a trailing user) raise ValueError. Give the frontend a friendly error_type.
                 yield _sse_frame({
                     "event": "error",
                     "error": {
@@ -881,8 +881,8 @@ async def send_chat(body: _SendRequest) -> StreamingResponse:
 class _SimulateUserRequest(BaseModel):
     """Body for ``POST /api/chat/simulate_user``.
 
-    All fields are optional; 空都给就是 "friendly 预设 + 不带额外人设 +
-    没有临时提示" 的默认行为.
+    All fields are optional; omitting everything defaults to the friendly preset with no extra persona
+    and no temporary guidance.
     """
 
     style: str | None = Field(
@@ -903,8 +903,8 @@ class _SimulateUserRequest(BaseModel):
 async def simulate_user_styles() -> dict[str, Any]:
     """Return the closed-set style presets for the composer UI.
 
-    Shape: ``{styles: [{id, prompt}, ...], default: str}``. 前端 i18n
-    负责把 ``id`` 映射到中文 label, 这里只吐 id + prompt 文本.
+    Shape: ``{styles: [{id, prompt}, ...], default: str}``. Frontend i18n
+    maps ``id`` to Chinese labels; expose only id + prompt text here.
     """
     from tests.testbench.pipeline.simulated_user import DEFAULT_STYLE
 
@@ -915,23 +915,23 @@ async def simulate_user_styles() -> dict[str, Any]:
 async def simulate_user(body: _SimulateUserRequest) -> dict[str, Any]:
     """Generate one user-message draft; **do not** persist it.
 
-    Rationale: PLAN §P11 约定"生成到 composer textarea 供编辑再发送" —
-    所以本端点**只**跑 LLM 拿文本返回, 不动 ``session.messages``、不动
-    ``session.clock``. 用户编辑完后再点 Send, 走 ``/api/chat/send``
-    (source=simuser) 那条老路写入会话、推进时钟、同步前端消息流.
+    Rationale: PLAN §P11 specifies generating into the composer textarea for editing before sending;
+    this endpoint therefore **only** invokes the LLM and returns text, leaving ``session.messages`` and
+    ``session.clock`` untouched. After editing, users click Send through ``/api/chat/send``
+    (source=simuser), the existing path that writes the session, advances time, and synchronizes frontend messages.
 
-    会话锁: 使用 ``BUSY`` 状态锁, 原因是 (a) SimUser 与 Chat.send 共享
-    session.messages 读视角, 并发调 LLM 会让前端的流式 UI 和 composer
-    互相干扰; (b) 后续 P12/P13 脚本/自动对话会复用同一锁粒度, 这里提前
-    对齐. 代价是如果正在 /chat/send 流式进行中调 /simulate_user 会返回
-    409, 前端 composer 自行禁用按钮避免误触.
+    Session lock: use ``BUSY`` because (a) SimUser and Chat.send share a read view of
+    session.messages, and concurrent LLM calls would interfere with frontend streaming and the composer;
+    (b) future P12/P13 script/automatic dialogue shares this locking granularity, so align
+    early. The cost is 409 for /simulate_user during an active /chat/send stream;
+    the frontend composer disables the button to prevent accidental calls.
 
-    错误码映射:
-        * 404 NoActiveSession — 还没建会话.
-        * 409 SessionConflict — 并发调用.
+    Error-code mapping:
+        * 404 NoActiveSession — no session created yet.
+        * 409 SessionConflict — concurrent invocation.
         * 412 SimuserModelNotConfigured / SimuserApiKeyMissing — simuser
-          组 base_url/model/api_key 缺失.
-        * 502 LlmFailed — LLM 调用真的挂了 (超时/上游 500/认证失败).
+          group missing base_url/model/api_key.
+        * 502 LlmFailed — actual LLM failure (timeout/upstream 500/authentication failure).
     """
     store = get_session_store()
     try:
@@ -968,11 +968,11 @@ class _ScriptLoadRequest(BaseModel):
 
 
 def _script_error_to_http(exc: ScriptError) -> HTTPException:
-    """ScriptError → HTTPException, 把可能挂载的 ``errors`` 字段一并透出.
+    """ScriptError -> HTTPException, exposing an attached ``errors`` field too.
 
-    P12.5 保存/校验接口需要把字段级错误清单透到前端红框高亮. ScriptError 的
-    默认签名只接 message, 422 的场景下我们在 ``save_user_template`` 里 attach
-    了 ``exc.errors``, 这里透传.
+    P12.5 save/validation endpoints expose field-level errors for frontend red highlights. ScriptError's
+    default signature accepts only message; for 422 cases ``save_user_template`` attaches
+    ``exc.errors``, passed through here.
     """
     detail: dict[str, Any] = {"error_type": exc.code, "message": exc.message}
     errors = getattr(exc, "errors", None)
@@ -986,28 +986,28 @@ async def script_templates() -> dict[str, Any]:
     """Return merged builtin + user dialog-template meta list.
 
     Shape: ``{templates: [{name, description, user_persona_hint, turns_count,
-    source, path, overriding_builtin}], count: int}``. 前端 composer 用
-    ``name`` / ``description`` / ``turns_count`` / ``source`` 渲染下拉;
-    ``path`` 仅供 Diagnostics 未来链接到文件位置.
+    source, path, overriding_builtin}], count: int}``. The frontend composer renders dropdowns using
+    ``name`` / ``description`` / ``turns_count`` / ``source``;
+    ``path`` is reserved for future Diagnostics links to file locations.
 
-    不需要会话 — 刚启动 UI 还没建 session 时就能预览可用脚本.
+    No session required: preview available scripts immediately after UI startup, before session creation.
     """
     templates = list_script_templates()
     return {"templates": templates, "count": len(templates)}
 
 
-# ── P12.5: Setup → Scripts 子页 CRUD ──────────────────────────────
+# ── P12.5: Setup -> Scripts sub-page CRUD ──
 #
-# 这五个端点都不需要 session (脚本模板是全局资产, 测试人员没建会话也可以
-# 编辑模板). 保持纯 IO, 不碰 session_store.
+# These five endpoints need no session: script templates are global assets and testers may edit
+# them before creating sessions. Keep pure I/O without session_store access.
 
 
 class _ScriptSaveRequest(BaseModel):
     """Body for ``POST /api/chat/script/templates``.
 
-    模型故意松散 — 详细字段校验归 ``validate_template_dict`` 做软校验, UI
-    想要"保存半成品"时有更友好的错误清单反馈. pydantic 只拦 "不是 dict"
-    / "name 都没传" 这种粗粒度.
+    Deliberately permissive model: ``validate_template_dict`` provides detailed soft field validation, giving the UI
+    friendlier error lists when saving unfinished work. pydantic catches only coarse failures such as non-dict input
+    or an entirely missing name.
     """
 
     name: str = Field(..., description="模板 name (= 文件名).")
@@ -1035,7 +1035,7 @@ async def script_template_read(name: str) -> dict[str, Any]:
     """Return the active template + builtin/user co-existence flags.
 
     Shape: ``{template, has_builtin, has_user, overriding_builtin}``.
-    前端编辑器打开时先拉一次, 决定 readonly (builtin-only) / 可编辑 (user).
+    The frontend editor fetches once on opening to choose readonly (builtin-only) or editable (user).
     """
     try:
         details = read_script_template(name)
@@ -1053,13 +1053,13 @@ async def script_template_read(name: str) -> dict[str, Any]:
 async def script_template_save(body: _ScriptSaveRequest) -> dict[str, Any]:
     """Create or overwrite a user dialog template.
 
-    - 422 ScriptSchemaInvalid (detail 含 ``errors`` 清单) — 字段校验失败.
-    - 200 ``{template, overriding_builtin, path}`` — 写盘成功.
+    - 422 ScriptSchemaInvalid (detail includes ``errors`` list) — field validation failure.
+    - 200 ``{template, overriding_builtin, path}`` — persisted successfully.
 
-    不需要 session. 写完如果跟当前 session 加载中的脚本同 name, UI 端应该
-    自己决定是否提示 "当前加载的剧本已被改写" — 后端不自动失效, 因为
-    session.script_state.turns 是加载时的 snapshot, 改磁盘不影响已跑起来的
-    脚本 (语义跟"锁定快照"一致, 避免跑到一半切底).
+    No session required. When the written name matches the current session's loaded script, the UI decides
+    whether to warn that the loaded script changed. Backend state is not automatically invalidated because
+    session.script_state.turns is a load-time snapshot; disk changes do not affect running
+    scripts, preserving locked-snapshot semantics without switching content mid-run.
     """
     payload = body.model_dump(exclude_unset=False)
     try:
@@ -1072,11 +1072,11 @@ async def script_template_save(body: _ScriptSaveRequest) -> dict[str, Any]:
 async def script_template_delete(name: str) -> dict[str, Any]:
     """Delete a user template by name.
 
-    - 404 ScriptNotFound — user 目录没有这个 name (builtin 本来就不能删).
+    - 404 ScriptNotFound — name absent from user directory (builtins cannot be deleted).
     - 200 ``{deleted_name, resurfaces_builtin, warnings}``.
 
-    若当前 session 正加载同名脚本, 塞一条 warning 提示"磁盘被删, 内存中
-    的快照还会继续跑完, 但下次 list 看不到了".
+    If the session currently loads a same-named script, add a warning: disk content was deleted, but the in-memory
+    snapshot will continue to completion; the next listing will omit it.
     """
     warnings: list[str] = []
     try:
@@ -1098,8 +1098,8 @@ async def script_template_delete(name: str) -> dict[str, Any]:
 async def script_template_duplicate(body: _ScriptDuplicateRequest) -> dict[str, Any]:
     """Copy a template (usually builtin) into the user directory under a new name.
 
-    200 返回跟 save 一样 ``{template, overriding_builtin, path}``.  409 =
-    target_name 已被占且没带 overwrite=true.
+    200 returns ``{template, overriding_builtin, path}``, as save does. 409 means
+    target_name is occupied without overwrite=true.
     """
     try:
         return duplicate_script_template(
@@ -1113,16 +1113,16 @@ async def script_template_duplicate(body: _ScriptDuplicateRequest) -> dict[str, 
 async def script_load(body: _ScriptLoadRequest) -> dict[str, Any]:
     """Install ``body.name`` as the session's current script.
 
-    副作用:
-        * 读模板 → 应用 bootstrap (若 ``session.messages`` 为空) → 初始化
-          ``session.script_state``. 已有脚本加载时直接覆盖, 不要求先 unload.
-        * ``warnings`` 里可能包含 "bootstrap 跳过 (已有消息)" 等提示, 前端
-          弹 toast 让测试人员知道.
+    Side effects:
+        * Read template -> apply bootstrap if ``session.messages`` is empty -> initialize
+          ``session.script_state``. Overwrite loaded scripts directly without requiring unload first.
+        * ``warnings`` may include bootstrap skipped because messages already exist; the frontend
+          shows a toast to inform testers.
 
-    错误码映射:
+    Error-code mapping:
         * 404 NoActiveSession / ScriptNotFound.
         * 409 SessionConflict.
-        * 422 ScriptSchemaInvalid — JSON 读上来但 schema 错.
+        * 422 ScriptSchemaInvalid — JSON readable but schema invalid.
     """
     store = get_session_store()
     try:
@@ -1278,11 +1278,11 @@ def _sse_headers() -> dict[str, str]:
 async def script_next() -> StreamingResponse:
     """Stream one scripted user turn as ``text/event-stream``.
 
-    事件 (在 :func:`advance_one_user_turn` 文档里详述): 用 user / assistant_start
-    / delta / assistant / done / usage / wire_built 与手动 /chat/send 保持一致,
-    另追加 script_turn_warnings / script_turn_done / script_exhausted.
+    Events (detailed in :func:`advance_one_user_turn`): user / assistant_start
+    / delta / assistant / done / usage / wire_built match manual /chat/send,
+    with additional script_turn_warnings / script_turn_done / script_exhausted.
 
-    整条 SSE 期间持有会话 BUSY 锁, 防止 /chat/send 同时改 session.messages.
+    Hold session BUSY for the entire SSE stream, preventing concurrent /chat/send changes to session.messages.
     """
     return StreamingResponse(
         _script_next_event_stream(),
@@ -1295,7 +1295,7 @@ async def script_next() -> StreamingResponse:
 async def script_run_all() -> StreamingResponse:
     """Stream a full script run until ``script_exhausted`` or ``error``.
 
-    前端一旦看到 ``script_exhausted`` / ``error`` 就认定循环结束.
+    The frontend considers the loop complete upon ``script_exhausted`` / ``error``.
     """
     return StreamingResponse(
         _script_run_all_event_stream(),
@@ -1308,13 +1308,13 @@ async def script_run_all() -> StreamingResponse:
 
 
 def _auto_error_to_http(exc: AutoDialogError) -> HTTPException:
-    """AutoDialogError → HTTPException. 沿用 script/simuser 的错误包装风格,
-    便于前端 error_bus 按 ``detail.error_type`` 选 toast 文案.
+    """AutoDialogError -> HTTPException. Follow script/simuser error wrapping,
+    letting frontend error_bus select toast wording by ``detail.error_type``.
 
-    P24 Day 7 (§12.3.F): 若 ``exc.errors`` 非空 (批量校验错误), 多挂一个
-    ``errors: list[str]`` 字段让前端 ``auto_banner`` 渲染多行折叠面板
-    (既避免 toast 被 280 字符截断, 又省得用户需要解析 "err1; err2; err3"
-    合成字符串).
+    P24 Day 7 (§12.3.F): when ``exc.errors`` contains batch-validation errors, attach an additional
+    ``errors: list[str]`` field for frontend ``auto_banner`` to render a collapsible multiline panel,
+    avoiding 280-character toast truncation and making users parse a combined "err1; err2; err3"
+    string unnecessary.
     """
     detail: dict[str, Any] = {"error_type": exc.code, "message": exc.message}
     if exc.errors:
@@ -1325,9 +1325,9 @@ def _auto_error_to_http(exc: AutoDialogError) -> HTTPException:
 class _AutoDialogStartRequest(BaseModel):
     """Body for ``POST /api/chat/auto_dialog/start``.
 
-    字段全部可选由 pydantic 先松校验; 具体范围/预设值校验下放给
-    :meth:`AutoDialogConfig.from_request` 做 (好处: 错误消息都是中文 & 错误
-    code 统一在 ``AutoDialogError`` 里定义, 不用 pydantic 翻 error translate).
+    All optional fields receive permissive initial pydantic validation; detailed ranges/presets are checked by
+    :meth:`AutoDialogConfig.from_request`, providing Chinese errors and centrally defined error
+    codes in ``AutoDialogError`` without translating pydantic errors.
     """
 
     total_turns: int = Field(..., ge=1, description="要跑的 target 回复总数.")
@@ -1341,14 +1341,14 @@ class _AutoDialogStartRequest(BaseModel):
 async def _auto_dialog_event_stream(body: _AutoDialogStartRequest) -> AsyncIterator[str]:
     """SSE generator for ``/auto_dialog/start``.
 
-    持 BUSY 锁整个生命周期 (与 script/run_all 同粒度), 期间 pause/resume/stop
-    三个 "控制" 端点**不持锁**, 只通过 ``session.auto_state`` 里的 asyncio
-    Event 通信 — 如果它们也想拿锁就会跟本函数死锁.
+    Hold BUSY throughout, matching script/run_all. The pause/resume/stop
+    control endpoints **take no lock**, communicating only through asyncio
+    Events in ``session.auto_state``; taking the lock would deadlock with this function.
 
-    错误路径: 配置校验 (InvalidConfig) / 会话冲突 (SessionConflict) / 已
-    有运行中实例 (AutoAlreadyRunning) 都作为 SSE error 帧送出 + 紧跟
-    stopped(reason=error). 这样前端只需要一条错误通道 (error bus + 模态
-    toast) 就能把所有情况处理完.
+    Error paths: invalid configuration (InvalidConfig), session conflict (SessionConflict), or an
+    existing running instance (AutoAlreadyRunning) emit SSE error frames immediately followed by
+    stopped(reason=error), letting one frontend error channel (error bus + modal
+    toast) handle every case.
     """
     store = get_session_store()
     try:
@@ -1445,7 +1445,7 @@ async def _auto_dialog_event_stream(body: _AutoDialogStartRequest) -> AsyncItera
 async def auto_dialog_start(body: _AutoDialogStartRequest) -> StreamingResponse:
     """Start a double-AI auto-dialog; stream SSE until stop / completion.
 
-    锁粒度: 整段 SSE 持 BUSY; pause/resume/stop 通过独立端点调整运行标志.
+    Lock granularity: hold BUSY for the whole SSE stream; pause/resume/stop change runtime flags through separate endpoints.
     """
     return StreamingResponse(
         _auto_dialog_event_stream(body),
@@ -1456,10 +1456,10 @@ async def auto_dialog_start(body: _AutoDialogStartRequest) -> StreamingResponse:
 
 @router.post("/auto_dialog/pause")
 async def auto_dialog_pause() -> dict[str, Any]:
-    """Request graceful pause — 当前 step 跑完后不再启动下一 step.
+    """Request graceful pause: finish the current step without starting the next.
 
-    不持会话锁 (start 端点正在持); 直接读 ``session.auto_state`` 里的
-    ``running_event.clear()``. 无运行中实例 → 409.
+    Take no session lock (start already holds it); access ``session.auto_state`` directly and call
+    ``running_event.clear()``. No running instance -> 409.
     """
     store = get_session_store()
     try:
@@ -1477,7 +1477,7 @@ async def auto_dialog_pause() -> dict[str, Any]:
 
 @router.post("/auto_dialog/resume")
 async def auto_dialog_resume() -> dict[str, Any]:
-    """Resume a paused auto-dialog. 幂等 (未 paused 时 set 也无副作用)."""
+    """Resume a paused auto-dialog. Idempotent: set has no side effects when not paused."""
     store = get_session_store()
     try:
         session = store.require()
@@ -1494,10 +1494,10 @@ async def auto_dialog_resume() -> dict[str, Any]:
 
 @router.post("/auto_dialog/stop")
 async def auto_dialog_stop() -> dict[str, Any]:
-    """Request stop — generator 下一次循环头会走 break 分支.
+    """Request stop: the generator breaks at its next loop header.
 
-    当前 step 仍然跑完 (graceful), 已经落盘的消息保留. 实际 "stopped" 事件
-    在 SSE 里由 runner 发出, 此端点只负责 "告诉 runner 该停了" 的信号.
+    Finish the current step gracefully and retain persisted messages. The runner emits the actual stopped
+    event over SSE; this endpoint merely signals the runner to stop.
     """
     store = get_session_store()
     try:
@@ -1515,11 +1515,11 @@ async def auto_dialog_stop() -> dict[str, Any]:
 
 @router.get("/auto_dialog/state")
 async def auto_dialog_state() -> dict[str, Any]:
-    """Observe 当前 Auto-Dialog 运行态 (或空闲).
+    """Observe current Auto-Dialog runtime state or idleness.
 
-    前端 mount 时调这个决定要不要立刻挂 SSE 重连 banner (刷新页面后
-    auto 仍在跑的场景). 不需要 session 时返回 ``{is_running: false,
-    auto_state: null}`` 而不是 404 — UI 逻辑更简单.
+    The frontend calls on mount to decide immediate SSE reconnection/banner attachment if automatic dialogue
+    continues after refresh. Without a session, return ``{is_running: false,
+    auto_state: null}`` rather than 404, simplifying UI logic.
     """
     store = get_session_store()
     session = store.get()

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Phase A-3 — ReflectionEngine.apply_refine_actions: fact 不可变 + 四件套。
+"""Phase A-3: ReflectionEngine.apply_refine_actions: immutable facts and the four-field set.
 
-cluster 内 fact 是只读 info source；代码层必须 reject 任何针对 fact id
-的 split / discard / modify，以及 merge.source_ids 含 fact id 的 action。
-fact 可以作为 merge / modify 的 absorbed_from_fact_ids（吸收信息到产物
-的 source_fact_ids 中）。"""
+Facts in clusters are read-only information sources; reject all split / discard / modify actions targeting fact IDs
+and merge actions whose source_ids include facts.
+Facts may be absorbed_from_fact_ids for merge / modify, with their information entering the result's
+source_fact_ids."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -131,7 +131,7 @@ async def test_fact_cannot_be_discard_source(tmp_path):
 
 @pytest.mark.asyncio
 async def test_merge_rejected_when_source_ids_contains_fact(tmp_path):
-    """整个 merge action 拒绝，不是 partial 应用。"""
+    """Reject the entire merge action rather than applying it partially."""
     engine = _install(str(tmp_path))
     r1 = await _seed_refl(engine, "小天", id='r1', text='r1')
     r2 = await _seed_refl(engine, "小天", id='r2', text='r2')
@@ -177,11 +177,11 @@ async def test_modify_absorbs_fact_into_source_fact_ids(tmp_path):
     assert target['text'] == 'new text'
     assert 'existing_fact' in target['source_fact_ids']
     assert 'f_new' in target['source_fact_ids']
-    # 文本变 → embedding 三字段清空
+    # Text changed: clear all three embedding fields.
     assert target['embedding'] is None
     assert target['embedding_text_sha256'] is None
     assert target['embedding_model_id'] is None
-    # modification_history 记录
+    # Record modification_history.
     mh = target.get('modification_history') or []
     assert mh and mh[-1]['reason'] == '吸收 f_new 后表述更准'
     assert mh[-1]['absorbed_fact_ids'] == ['f_new']
@@ -232,13 +232,13 @@ async def test_discard_reflection_removes_it(tmp_path):
 
 @pytest.mark.asyncio
 async def test_all_malformed_actions_does_not_stamp_reflection(tmp_path):
-    """Codex P2 修复：非空 actions 全 reject (含针对 fact id 的非法 source_id)
-    → applied=0 但不 stamp，等下轮重试。"""
+    """Codex P2 fix: if every nonempty action is rejected (including invalid source_id targeting a fact),
+    applied=0 without stamping, allowing a retry next round."""
     engine = _install(str(tmp_path))
     r1 = await _seed_refl(engine, "小天", id='r_keep', text='kept')
     cluster = [_annot_refl(r1), _annot_fact('f_ctx')]
     actions = [
-        {'action': 'split', 'source_id': 'f_ctx',  # fact 不可 split
+        {'action': 'split', 'source_id': 'f_ctx',  # Facts cannot be split.
          'produce': [{'text': 'a'}, {'text': 'b'}]},
         {'action': 'invent_an_action', 'source_id': 'r_keep'},
     ]
@@ -252,8 +252,8 @@ async def test_all_malformed_actions_does_not_stamp_reflection(tmp_path):
 
 @pytest.mark.asyncio
 async def test_empty_actions_still_stamps_cluster_reflections(tmp_path):
-    """Codex P1 修复：LLM 返回 [] (no-op) 也必须 stamp 整个 cluster
-    内的 reflection（fact 跳过），否则下轮 cron 重复审视。"""
+    """Codex P1 fix: even LLM [] (noop) must stamp every reflection in the cluster
+    (skipping facts), or cron reviews it again next round."""
     engine = _install(str(tmp_path))
     r1 = await _seed_refl(engine, "小天", id='r_a', text='one')
     r2 = await _seed_refl(engine, "小天", id='r_b', text='two')

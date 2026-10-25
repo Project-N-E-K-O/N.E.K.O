@@ -1,23 +1,23 @@
 """
-插件上下文模块
+Plugin context module
 
-提供插件运行时上下文，包括状态更新和消息推送功能。
+Provides plugin runtime context, including status updates and message-push features.
 """
-import contextlib
-import contextvars
 import asyncio
 import base64
+import contextlib
+import contextvars
 import copy
 import queue
 import threading
 import time
+
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib
-import uuid
 import functools
-
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,28 +34,29 @@ try:
 except ImportError:  # pragma: no cover
     zmq = None
 
-from plugin.core.state import state
+from plugin.core.rpc import RpcPeer
 from plugin.settings import (
     EXPORT_INLINE_BINARY_MAX_BYTES,
-    PLUGIN_LOG_CTX_MESSAGE_PUSH,
     PLUGIN_LOG_CTX_STATUS_UPDATE,
     PLUGIN_LOG_SYNC_CALL_WARNINGS,
     SYNC_CALL_IN_HANDLER_POLICY,
 )
 
 if TYPE_CHECKING:
-    # 仅用于 PluginContext.app 的类型标注；运行时导入会把整个 fastapi/starlette 拉进每个插件子进程。
+    # Used only for type annotations on PluginContext.app; importing at runtime would pull all of fastapi/starlette into every plugin subprocess.
     from fastapi import FastAPI
-    from plugin.core.bus.types import BusHubProtocol
+
+    from plugin.core.bus.conversations import ConversationClient
     from plugin.core.bus.events import EventClient
+    from plugin.core.bus.frames import FrameClient
     from plugin.core.bus.lifecycle import LifecycleClient
     from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
-    from plugin.core.bus.conversations import ConversationClient
-    from plugin.core.bus.frames import FrameClient
-    from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
-    # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
+    from plugin.core.bus.types import BusHubProtocol
+
+    # ⚠ Never import loguru. The actual type of the logger field is plugin.logging_config.PluginLoggerAdapter.
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
+    from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
 
 
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
@@ -222,21 +223,21 @@ class _BusHub:
         return FrameClient(self._ctx)
 
 
-# 宿主在写 message plane 之前会对记录做规范化，所以它打包出来的字节比 SDK 在
-# push_message() 里量到的多。这段余量被 _reject_if_payload_too_large 扣掉，好让
-# "刚好卡在上限下沿"的推送被同步拒掉，而不是拿到 submitted=True 之后在 ingest
-# 那边被静默丢弃。
+# The host normalizes the record before writing to the message plane, so the packed payload is larger than what the SDK measures
+# inside push_message(). _reject_if_payload_too_large subtracts this overhead so a push that is
+# "right at the lower edge of the limit" is rejected synchronously instead of receiving submitted=True and then being
+# silently discarded during ingest.
 #
-# **推导出来，不是挑出来的**——挑过一版 128，实测被打脸：宿主盖的 plugin_id
-# 最长 128 字符，光它一项就能把漂移推到 222 字节。三项贡献：
+# **Derived, not guessed** — an earlier choice of 128 was disproven in practice: the host-added plugin_id
+# can be 128 characters, and that alone can cause 222 bytes of drift. Three contributors:
 #
-#   plugin_id   宿主按认证身份盖上，key + 值（≤ _HOST_PLUGIN_ID_MAX_CHARS）
-#   message_id  缺失时补 uuid4 字符串（36 字符）
-#   time        缺失或是 float（fast_mode）时换成 ISO 串（28 字符）
+#   plugin_id   added by the host from authenticated identity, key + value (≤ _HOST_PLUGIN_ID_MAX_CHARS)
+#   message_id  filled with a uuid4 string when missing (36 characters)
+#   time        converted to an ISO string (28 characters) when missing or a float (fast_mode)
 #
-# 每项再算上 msgpack 的 key 与长度头。放模块级而不是埋在函数里，是因为守卫要
-# 读它——守卫按**最坏形状**（两者都缺 + 最长 plugin_id）实测，所以这个数不够
-# 会红，而不是悄悄把窗口放回来。
+# Each also includes the msgpack key and length header. It is module-level rather than buried in a function because the guard
+# reads it — the guard measures the **worst-case shape** (both missing + longest plugin_id), so an undersized value
+# fails instead of silently reopening the gap.
 _HOST_PLUGIN_ID_MAX_CHARS = 128
 _HOST_ENVELOPE_HEADROOM_BYTES = (
     (4 + len("plugin_id") + _HOST_PLUGIN_ID_MAX_CHARS)
@@ -247,21 +248,17 @@ _HOST_ENVELOPE_HEADROOM_BYTES = (
 
 @dataclass
 class PluginContext:
-    """插件运行时上下文"""
+    """Plugin runtime context"""
     plugin_id: str
     config_path: Path
     logger: "LoguruLogger"
     status_queue: Any
-    message_queue: Any = None  # 消息推送队列
+    message_queue: Any = None  # Message-push queue
     app: Optional["FastAPI"] = None
-    _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（主进程提供）
-    _zmq_ipc_client: Optional[Any] = None
-    _cmd_queue: Optional[Any] = None  # 命令队列（用于在等待期间处理命令）
-    _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
-    _response_queue: Optional[Any] = None
-    _response_pending: Optional[Dict[str, Any]] = None
-    _direct_response_waiters: Optional[Dict[str, Any]] = None
-    _direct_response_lock: Any = field(
+    _plugin_comm_queue: Optional[Any] = None  # Inter-plugin communication queue (provided by the main process)
+    _rpc_peer: Optional[RpcPeer] = field(default=None, init=False, repr=False)
+    _rpc_closed: bool = field(default=False, init=False, repr=False)
+    _runtime_lock: Any = field(
         default_factory=threading.Lock,
         init=False,
         repr=False,
@@ -273,11 +270,11 @@ class PluginContext:
     _model_gateway_closed: bool = field(default=False, init=False, repr=False)
     _models: Optional[Any] = field(default=None, init=False, repr=False)
     _image_uploads_blocked: bool = False
-    _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
+    _entry_map: Optional[Dict[str, Any]] = None  # Entry-point mapping (for handling commands)
     _entry_meta_map: Optional[Dict[str, Any]] = None  # entry_id -> EventMeta
-    _instance: Optional[Any] = None  # 插件实例（用于处理命令）
+    _instance: Optional[Any] = None  # Plugin instance (for handling commands)
     _bus_hub: Optional[Any] = None
-    _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
+    _restored_from_freeze: bool = False  # Whether restored from frozen state
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
@@ -291,6 +288,12 @@ class PluginContext:
         return cast("BusHubProtocol", hub)
 
     @property
+    def reply_tail(self) -> Any:
+        from plugin.sdk.shared.core.reply_tail import ReplyTailClient
+
+        return ReplyTailClient(self)
+
+    @property
     def images(self) -> Any:
         images = self._images
         if images is None:
@@ -302,7 +305,7 @@ class PluginContext:
 
     @property
     def models(self) -> Any:
-        with self._direct_response_lock:
+        with self._runtime_lock:
             models = self._models
             if models is None:
                 from plugin.sdk.shared.core.models import PluginModels
@@ -311,126 +314,70 @@ class PluginContext:
                 self._models = models
             return models
 
-    async def _upload_image(
-        self,
-        data: bytes,
-        *,
-        mime: str,
-        deadline: float | None = None,
-        timeout: float,
-    ) -> dict[str, object]:
-        """Upload one image within ``timeout`` TOTAL.
-
-        ``deadline`` is a monotonic instant established by the caller before it
-        began any work on this upload. Without it the legs each got a fresh
-        ``timeout`` — send, then wait — so an upload could take past twice its
-        advertised budget and overrun a timer or entry handler's own deadline.
-        The decode gate widened that further, since queueing for a slot happens
-        before the transport is even touched (Codex).
-        """
+    async def _upload_image(self, data: bytes, *, mime: str, deadline: float | None = None, timeout: float) -> dict[str, object]:
         self._ensure_image_upload_available()
-        transport = self._image_transport
-        if transport is None:
+        if self._image_transport is None:
             raise RuntimeError("temporary image transport is not available")
         if timeout <= 0:
             raise ValueError("image upload timeout must be positive")
-
-        request_id = str(uuid.uuid4())
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        with self._direct_response_lock:
-            waiters = self._direct_response_waiters
-            if waiters is None:
-                waiters = {}
-                self._direct_response_waiters = waiters
-            waiters[request_id] = (loop, future)
+        deadline = deadline if deadline is not None else asyncio.get_running_loop().time() + timeout
+        ready = getattr(self, "_downlink_ready", None)
+        while ready is not None and not ready.is_set():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(f"image upload timed out after {timeout}s (plugin downlink not ready)")
+            await asyncio.sleep(min(0.02, remaining))
         try:
-            def _remaining() -> float:
-                if deadline is None:
-                    return timeout
-                return deadline - asyncio.get_running_loop().time()
-
-            # The host starts timer and custom-event handler threads BEFORE the
-            # downlink loop begins reading, and _on_command_loop_start can await
-            # for as long as it likes in between. An upload launched in that
-            # window is sent to nobody: the reply has no reader, so it can only
-            # time out (Codex).
-            #
-            # Waiting is the honest answer rather than refusing, because those
-            # handlers are legitimate uploaders the moment the loop is up -- a
-            # refusal keyed on handler NAME would also reject them afterwards.
-            # The wait is charged to the SAME deadline, so it is never a second
-            # budget stacked on the caller's: a plugin that asked for three
-            # seconds still gets an answer within three seconds.
-            ready = getattr(self, "_downlink_ready", None)
-            while ready is not None and not ready.is_set():
-                remaining = _remaining()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"image upload timed out after {timeout}s "
-                        "(plugin downlink not ready)"
-                    )
-                await asyncio.sleep(min(0.02, remaining))
-
-            send_budget = _remaining()
-            if send_budget <= 0:
-                raise TimeoutError(f"image upload timed out after {timeout}s")
-            await transport.send_image(
-                request_id,
-                mime=mime,
-                data=data,
-                timeout=send_budget,
-            )
-            wait_budget = _remaining()
-            if wait_budget <= 0:
-                raise TimeoutError(f"image upload timed out after {timeout}s")
-            try:
-                response = await asyncio.wait_for(future, timeout=wait_budget)
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"image upload timed out after {timeout}s") from None
-            return self._unwrap_image_upload_response(response)
-        finally:
-            with self._direct_response_lock:
-                waiters.pop(request_id, None)
+            # SDK image normalization uses the caller loop's clock. Transfer
+            # its remaining budget, never that loop's arbitrary clock epoch.
+            rpc_deadline = time.monotonic() + max(0.0, deadline - asyncio.get_running_loop().time())
+            result = await self._get_rpc_peer().request("IMAGE_UPLOAD", {
+                "data": data, "mime": mime, "_request_deadline_monotonic": rpc_deadline,
+            }, timeout=timeout)
+        except TimeoutError:
+            raise TimeoutError(f"image upload timed out after {timeout}s") from None
+        return self._unwrap_image_upload_response({"result": result})
 
     def _ensure_image_upload_available(self) -> None:
         if self._image_uploads_blocked:
             raise RuntimeError("ctx.images.upload() is not available while the plugin is freezing")
 
-    def _dispatch_direct_response(self, response: Any) -> bool:
-        """Resolve SDK-owned response futures before the legacy shared inbox."""
-        if not isinstance(response, dict) or response.get("type") != "IMAGE_UPLOAD_RESULT":
+    def _get_rpc_peer(self) -> RpcPeer:
+        with self._runtime_lock:
+            if self._rpc_closed:
+                raise RuntimeError("Plugin context is closed")
+            if self._rpc_peer is None:
+                self._rpc_peer = RpcPeer(self._send_rpc_request, cancel=self._cancel_rpc_request, logger=self.logger)
+            return self._rpc_peer
+
+    async def _send_rpc_request(self, request: dict, timeout: float | None) -> None:
+        if request["type"] == "IMAGE_UPLOAD":
+            await self._image_transport.send_image(request["request_id"], mime=request["mime"],
+                data=request["data"], timeout=timeout)
+            return
+        queue = self._plugin_comm_queue
+        if queue is None:
+            raise RuntimeError(f"Plugin communication queue not available for plugin {self.plugin_id}")
+        request = dict(request, from_plugin=self.plugin_id)
+        await asyncio.to_thread(queue.put, request, timeout=timeout)
+
+    async def _cancel_rpc_request(self, request: dict) -> None:
+        if request["type"] != "IMAGE_UPLOAD" and self._plugin_comm_queue is not None:
+            await asyncio.to_thread(self._plugin_comm_queue.put, {
+                "type": "RPC_CANCEL", "from_plugin": self.plugin_id,
+                "request_id": request["request_id"],
+            }, timeout=0.1)
+
+    def _dispatch_rpc_response(self, response: Any) -> bool:
+        if not isinstance(response, dict) or response.get("type") not in ("IMAGE_UPLOAD_RESULT", "PLUGIN_TO_PLUGIN_RESPONSE"):
             return False
         request_id = response.get("request_id")
-        with self._direct_response_lock:
-            waiters = self._direct_response_waiters
-            waiter = waiters.get(request_id) if waiters and request_id else None
-        if waiter is not None:
-            loop, future = waiter
-            try:
-                loop.call_soon_threadsafe(
-                    self._resolve_direct_response,
-                    future,
-                    response,
-                )
-            except RuntimeError:
-                pass
-        # A late image result is owned by this path too; don't leak it into the
-        # plugin-to-plugin response inbox where it can confuse correlation.
+        with self._runtime_lock:
+            peer = self._rpc_peer
+        if peer is not None and isinstance(request_id, str):
+            peer.receive(request_id, result=response.get("result"), error=response.get("error"))
         return True
 
-    @staticmethod
-    def _resolve_direct_response(
-        future: asyncio.Future[Any],
-        response: dict[str, Any],
-    ) -> None:
-        if not future.done():
-            future.set_result(response)
-
-    @staticmethod
-    def _cancel_direct_response(future: asyncio.Future[Any]) -> None:
-        if not future.done():
-            future.cancel()
 
     @staticmethod
     def _unwrap_image_upload_response(response: dict[str, Any]) -> dict[str, object]:
@@ -447,37 +394,16 @@ class PluginContext:
         return dict(result)
 
     def close(self) -> None:
-        """Release resources owned directly by this context.
-
-        This is safe to call multiple times.
-        """
+        """Close this context and terminate all its outstanding requests."""
         self._model_gateway_closed = True
+        with self._runtime_lock:
+            self._rpc_closed = True
+            peer = self._rpc_peer
+        if peer is not None:
+            peer.close()
         models = getattr(self, "_models", None)
         if models is not None:
             models.close()
-        with self._direct_response_lock:
-            waiters = getattr(self, "_direct_response_waiters", None)
-            pending = tuple(waiters.values()) if waiters else ()
-            if waiters:
-                waiters.clear()
-        for loop, future in pending:
-            try:
-                loop.call_soon_threadsafe(self._cancel_direct_response, future)
-            except RuntimeError:
-                pass
-
-        zmq_client = getattr(self, "_zmq_ipc_client", None)
-        if zmq_client is not None:
-            try:
-                close_fn = getattr(zmq_client, "close", None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
-            try:
-                self._zmq_ipc_client = None
-            except Exception:
-                pass
 
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
@@ -555,9 +481,9 @@ class PluginContext:
         return merged
 
     def _get_sync_call_in_handler_policy(self) -> str:
-        """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
+        """Get the synchronous-call policy, preferring the plugin's own setting and then the global setting.
 
-        有效值："warn" / "reject"。任何非法值都会回退到全局策略。
+        Valid values: \"warn\" / \"reject\". Any invalid value falls back to the global policy.
         """
         try:
             st = self.config_path.stat()
@@ -681,10 +607,10 @@ class PluginContext:
         return rid
 
     def _is_in_event_loop(self) -> bool:
-        """检测当前是否在事件循环中运行。
+        """Detect whether currently running inside an event loop.
         
         Returns:
-            True 如果当前在事件循环中，False 如果在无事件循环环境
+            True if currently in an event loop; False if there is no running event loop
         """
         try:
             asyncio.get_running_loop()
@@ -726,7 +652,7 @@ class PluginContext:
 
     def update_status(self, status: Dict[str, Any]) -> None:
         """
-        子进程 / 插件内部调用：把原始 status 丢到主进程的队列里，由主进程统一整理。
+        Calls from subprocesses / plugins enqueue the raw status for the main process to normalize centrally.
         """
         try:
             payload = {
@@ -739,10 +665,10 @@ class PluginContext:
             if PLUGIN_LOG_CTX_STATUS_UPDATE:
                 self.logger.info(f"Plugin {self.plugin_id} status updated: {payload}")
         except (AttributeError, RuntimeError) as e:
-            # 队列操作错误
+            # Queue operation error
             self.logger.warning(f"Queue error updating status for plugin {self.plugin_id}: {e}")
         except Exception:
-            # 其他未知异常
+            # Other unexpected exception
             self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}")
 
     # ==================== Unified Export Push ====================
@@ -959,7 +885,7 @@ class PluginContext:
         metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        """Smart agent: detect the execution environment and choose synchronous or asynchronous execution automatically."""
         coro = self._run_update_async(
             run_id=run_id,
             progress=progress,
@@ -1054,7 +980,7 @@ class PluginContext:
         message: Optional[str] = None,
         timeout: float = 5.0,
     ):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        """Smart agent: detect the execution environment and choose synchronous or asynchronous execution automatically."""
         coro = self._run_progress_async(
             run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout
         )
@@ -1339,8 +1265,8 @@ class PluginContext:
                 size = len(ormsgpack.packb(payload))
             except Exception:
                 return None
-            # 减去宿主规范化会追加的那点字节，见上面的说明。夹到 >=1，免得
-            # 有人把上限配成比余量还小的值时这里变成"全拒"。
+            # Subtract the bytes added by host normalization, as described above. Clamp to >=1 so
+            # setting the limit below this overhead does not make everything get rejected.
             limit = max(
                 1,
                 int(MESSAGE_PLANE_PAYLOAD_MAX_BYTES) - _HOST_ENVELOPE_HEADROOM_BYTES,
@@ -1350,17 +1276,17 @@ class PluginContext:
             totals = _inline_carrier_totals(carriers)
             labels = [label for label, _size in totals]
             dominant = totals[0][0] if totals else ""
-            # 内联载体解释得了这次超限吗？把它们全部拿掉之后还剩多少。
+            # How much of this overage can be explained by inline carriers? How much remains after removing all of them?
             #
-            # 只看 totals 排序会把锅永远扣在内联载体上，哪怕它根本不是元凶：
-            # 600 KiB 的 metadata 配一张 1 字节的图，dominant 仍是 "image"，
-            # 于是作者被告知去 ctx.images.upload() —— 照做之后依然超限，因为
-            # 那张图本来就不占地方。建议给错方向比不给建议更糟，它让人以为
-            # 自己已经改对了。
+            # Sorting only by totals would always blame the inline carrier, even when it is not the cause:
+            # 600 KiB of metadata plus a 1-byte image still makes "image" dominant,
+            # so the author would be told to use ctx.images.upload() — and the request would remain over the limit,
+            # because the image never used meaningful space. Bad advice is worse than none; it makes the author think
+            # the problem is already fixed.
             carrier_bytes = sum(size_b for _label, size_b in totals)
             non_inline = max(0, size - carrier_bytes)
             if totals and non_inline > limit:
-                # 卸掉全部内联仍然过不去：真正撑爆的是文本或 metadata。
+                # Even after removing all inline data the request is still too large: text or metadata is the actual cause.
                 remedy = (
                     "The inline payloads are not what blew this cap: even with "
                     f"all of them removed the push is about {non_inline}B, still "
@@ -1547,221 +1473,30 @@ class PluginContext:
         return PluginView(self, view_id, target_lanlan or self.current_lanlan)
 
     async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":
-        """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
+        """Async push_message wrapper, using asyncio.to_thread around the synchronous call.
 
-        Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。新签名见
-        :meth:`push_message`。本方法仅做参数透传，不在此处做兼容翻译。
+        Note: the underlying ZMQ socket is synchronous; this method uses a thread pool to avoid blocking. See the new signature in
+        :meth:`push_message`. This method only forwards parameters; it does not perform compatibility translation.
         """
         return await asyncio.to_thread(self.push_message, *args, **kwargs)
 
-    def _send_request_and_wait(
-        self,
-        *,
-        method_name: str,
-        request_type: str,
-        request_data: Dict[str, Any],
-        timeout: float,
-        wrap_result: bool = True,
-        send_log_template: Optional[str] = None,
-        error_log_template: Optional[str] = None,
-        warn_on_orphan_response: bool = False,
-        orphan_warning_template: Optional[str] = None,
-    ) -> Any:
+    def _send_request_and_wait(self, *, method_name: str, request_type: str,
+                               request_data: Dict[str, Any], timeout: float, wrap_result: bool = True) -> Any:
         self._enforce_sync_call_policy(method_name)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(
-                self._send_request_and_wait_async(
-                    method_name=method_name,
-                    request_type=request_type,
-                    request_data=request_data,
-                    timeout=timeout,
-                    wrap_result=wrap_result,
-                    send_log_template=send_log_template,
-                    error_log_template=error_log_template,
-                    warn_on_orphan_response=warn_on_orphan_response,
-                    orphan_warning_template=orphan_warning_template,
-                )
-            )
-        raise RuntimeError(
-            f"Sync call '{method_name}' cannot be used inside a running event loop. "
-            "Use _send_request_and_wait_async(...) instead."
-        )
+        if self._is_in_event_loop():
+            raise RuntimeError(f"Sync call '{method_name}' cannot be used inside a running event loop")
+        return asyncio.run(self._send_request_and_wait_async(
+            method_name=method_name, request_type=request_type, request_data=request_data,
+            timeout=timeout, wrap_result=wrap_result,
+        ))
 
-    async def _send_request_and_wait_async(
-        self,
-        *,
-        method_name: str,
-        request_type: str,
-        request_data: Dict[str, Any],
-        timeout: float,
-        wrap_result: bool = True,
-        send_log_template: Optional[str] = None,
-        error_log_template: Optional[str] = None,
-        warn_on_orphan_response: bool = False,
-        orphan_warning_template: Optional[str] = None,
-    ) -> Any:
-        _ = method_name
-
-        def _error_to_message(error: Any) -> str:
-            if isinstance(error, str):
-                return error
-            if isinstance(error, dict):
-                code = error.get("code")
-                message = error.get("message")
-                details = error.get("details")
-                parts = []
-                if isinstance(code, str) and code:
-                    parts.append(f"[{code}]")
-                if isinstance(message, str) and message:
-                    parts.append(message)
-                if details is not None:
-                    parts.append(f"details={details}")
-                if parts:
-                    return " ".join(parts)
-            return str(error)
-
-        plugin_comm_queue = self._plugin_comm_queue
-        if plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        request_id = str(uuid.uuid4())
-        payload = dict(request_data or {})
-        for _k in ("type", "from_plugin", "request_id", "timeout"):
-            payload.pop(_k, None)
-        request: Dict[str, Any] = {
-            **payload,
-            "type": request_type,
-            "from_plugin": self.plugin_id,
-            "request_id": request_id,
-            "timeout": timeout,
-        }
-
-        deadline = time.time() + timeout
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: plugin_comm_queue.put(request, timeout=max(0.0, deadline - time.time())),
-            )
-            if send_log_template:
-                try:
-                    self.logger.debug(
-                        send_log_template.format(
-                            request_id=request_id,
-                            from_plugin=self.plugin_id,
-                            **payload,
-                        )
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            if error_log_template:
-                try:
-                    self.logger.exception(error_log_template.format(error=e))
-                except Exception:
-                    pass
-            raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
-
-        response_queue = getattr(self, "_response_queue", None)
-        pending = getattr(self, "_response_pending", None)
-        if pending is None:
-            pending = {}
-            try:
-                object.__setattr__(self, "_response_pending", pending)
-            except Exception:
-                self._response_pending = pending
-
-        if isinstance(pending, dict) and request_id in pending:
-            response = pending.pop(request_id)
-            if isinstance(response, dict) and response.get("error"):
-                raise RuntimeError(_error_to_message(response.get("error")))
-            result = response.get("result") if isinstance(response, dict) else None
-            if wrap_result:
-                return result if isinstance(result, dict) else {"result": result}
-            return result
-
-        if response_queue is not None:
-            while time.time() < deadline:
-                response = state.get_plugin_response(request_id)
-                if isinstance(response, dict):
-                    if response.get("error"):
-                        raise RuntimeError(_error_to_message(response.get("error")))
-                    result = response.get("result")
-                    if wrap_result:
-                        return result if isinstance(result, dict) else {"result": result}
-                    return result
-
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        response_queue.get(), timeout=min(0.05, remaining),
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                except Exception:
-                    break
-                if not isinstance(msg, dict):
-                    continue
-                rid = msg.get("request_id")
-                if rid == request_id:
-                    if msg.get("error"):
-                        raise RuntimeError(_error_to_message(msg.get("error")))
-                    result = msg.get("result")
-                    if wrap_result:
-                        return result if isinstance(result, dict) else {"result": result}
-                    return result
-                if isinstance(pending, dict) and rid:
-                    if len(pending) > 1024:
-                        raise RuntimeError(
-                            f"_response_pending overflow (size={len(pending)}, rid={rid}); "
-                            "upstream response correlation/backpressure bug must be fixed."
-                        )
-                    pending[str(rid)] = msg
-
-        check_interval = 0.01
-        while time.time() < deadline:
-            response = state.get_plugin_response(request_id)
-            if not isinstance(response, dict):
-                await asyncio.sleep(check_interval)
-                continue
-
-            if response.get("error"):
-                raise RuntimeError(_error_to_message(response.get("error")))
-
-            result = response.get("result")
-            if wrap_result:
-                return result if isinstance(result, dict) else {"result": result}
-            return result
-
-        orphan_response = None
-        try:
-            orphan_response = state.peek_plugin_response(request_id)
-        except Exception:
-            orphan_response = None
-        if warn_on_orphan_response and orphan_response is not None:
-            try:
-                state.get_plugin_response(request_id)
-            except Exception:
-                pass
-            if orphan_warning_template:
-                try:
-                    self.logger.warning(
-                        orphan_warning_template.format(
-                            request_id=request_id,
-                            from_plugin=self.plugin_id,
-                            **payload,
-                        )
-                    )
-                except Exception:
-                    pass
-        raise TimeoutError(f"{request_type} timed out after {timeout}s")
+    async def _send_request_and_wait_async(self, *, method_name: str, request_type: str,
+                                            request_data: Dict[str, Any], timeout: float, wrap_result: bool = True) -> Any:
+        payload = dict(request_data)
+        for key in ("type", "from_plugin", "request_id", "timeout"):
+            payload.pop(key, None)
+        result = await self._get_rpc_peer().request(request_type, payload, timeout=timeout)
+        return (result if isinstance(result, dict) else {"result": result}) if wrap_result else result
     
     def trigger_plugin_event_sync(
         self,
@@ -1771,17 +1506,17 @@ class PluginContext:
         params: Dict[str, Any],
         timeout: float = 10.0
     ) -> Dict[str, Any]:
-        """同步版本:触发其他插件的自定义事件（插件间通信）
+        """Synchronous version: trigger a custom event in another plugin (inter-plugin communication)
         
         Args:
-            target_plugin_id: 目标插件ID
-            event_type: 自定义事件类型
-            event_id: 事件ID
-            params: 参数字典
-            timeout: 超时时间（秒）
+            target_plugin_id: Target plugin ID
+            event_type: Custom event type
+            event_id: Event ID
+            params: Parameter dictionary
+            timeout: Timeout in seconds
             
         Returns:
-            事件处理器的返回结果
+            Return value from the event handler
         """
         try:
             return self._send_request_and_wait(
@@ -1791,20 +1526,10 @@ class PluginContext:
                     "to_plugin": target_plugin_id,
                     "event_type": event_type,
                     "event_id": event_id,
-                    "args": params,  # 内部协议仍使用 args
+                    "args": params,  # The internal protocol still uses args
                 },
                 timeout=timeout,
                 wrap_result=False,
-                send_log_template=(
-                    "[PluginContext] Sent plugin communication request: {from_plugin} -> {to_plugin}, "
-                    "event={event_type}.{event_id}, req_id={request_id}"
-                ),
-                error_log_template="Failed to send plugin communication request: {error}",
-                warn_on_orphan_response=True,
-                orphan_warning_template=(
-                    "[PluginContext] Timeout reached, but response was found (likely delayed). "
-                    "Cleaned up orphan response for req_id={request_id}"
-                ),
             )
         except TimeoutError as e:
             raise TimeoutError(
@@ -1819,7 +1544,7 @@ class PluginContext:
         params: Dict[str, Any],
         timeout: float = 10.0
     ) -> Dict[str, Any]:
-        """异步版本:触发其他插件的自定义事件（插件间通信）"""
+        """Asynchronous version: trigger a custom event in another plugin (inter-plugin communication)"""
         try:
             return await self._send_request_and_wait_async(
                 method_name="trigger_plugin_event",
@@ -1828,20 +1553,10 @@ class PluginContext:
                     "to_plugin": target_plugin_id,
                     "event_type": event_type,
                     "event_id": event_id,
-                    "args": params,  # 内部协议仍使用 args
+                    "args": params,  # The internal protocol still uses args
                 },
                 timeout=timeout,
                 wrap_result=False,
-                send_log_template=(
-                    "[PluginContext] Sent plugin communication request: {from_plugin} -> {to_plugin}, "
-                    "event={event_type}.{event_id}, req_id={request_id}"
-                ),
-                error_log_template="Failed to send plugin communication request: {error}",
-                warn_on_orphan_response=True,
-                orphan_warning_template=(
-                    "[PluginContext] Timeout reached, but response was found (likely delayed). "
-                    "Cleaned up orphan response for req_id={request_id}"
-                ),
             )
         except TimeoutError as e:
             raise TimeoutError(
@@ -1856,10 +1571,10 @@ class PluginContext:
         params: Dict[str, Any],
         timeout: float = 10.0
     ):
-        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        """Adaptive version: detect the execution environment and choose synchronous or asynchronous execution.
         
         Returns:
-            在事件循环中返回协程,否则返回结果字典
+            Return a coroutine in the event loop; otherwise return a result dictionary
         """
         if self._is_in_event_loop():
             return self.trigger_plugin_event_async(
@@ -1878,7 +1593,7 @@ class PluginContext:
         )
 
     def query_plugins_sync(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        """同步版本:查询插件列表"""
+        """Synchronous version: query plugin list"""
         try:
             return self._send_request_and_wait(
                 method_name="query_plugins",
@@ -1886,14 +1601,12 @@ class PluginContext:
                 request_data={"filters": filters or {}},
                 timeout=timeout,
                 wrap_result=True,
-                send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
-                error_log_template="Failed to send plugin query request: {error}",
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
     
     async def query_plugins_async(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        """异步版本:查询插件列表"""
+        """Asynchronous version: query plugin list"""
         try:
             return await self._send_request_and_wait_async(
                 method_name="query_plugins",
@@ -1901,17 +1614,15 @@ class PluginContext:
                 request_data={"filters": filters or {}},
                 timeout=timeout,
                 wrap_result=True,
-                send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
-                error_log_template="Failed to send plugin query request: {error}",
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
     
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0):
-        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        """Adaptive version: detect the execution environment and choose synchronous or asynchronous execution.
         
         Returns:
-            在事件循环中返回协程,否则返回结果字典
+            Return a coroutine in the event loop; otherwise return a result dictionary
         """
         if self._is_in_event_loop():
             return self.query_plugins_async(filters=filters, timeout=timeout)
@@ -1997,7 +1708,6 @@ class PluginContext:
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
@@ -2013,7 +1723,6 @@ class PluginContext:
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
@@ -2029,7 +1738,6 @@ class PluginContext:
                 request_data={"plugin_id": self.plugin_id},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin profiles state get timed out after {timeout}s") from e
@@ -2054,7 +1762,6 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin profile config get timed out after {timeout}s") from e
@@ -2094,7 +1801,6 @@ class PluginContext:
                 request_data=request_data,
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin effective config get timed out after {timeout}s") from e
@@ -2107,13 +1813,12 @@ class PluginContext:
                 request_data={},
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"System config get timed out after {timeout}s") from e
 
     def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
-        """同步版本:查询内存数据"""
+        """Synchronous version: query memory data"""
         try:
             return self._send_request_and_wait(
                 method_name="query_memory",
@@ -2124,13 +1829,12 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Memory query timed out after {timeout}s") from e
     
     async def query_memory_async(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
-        """异步版本:查询内存数据"""
+        """Asynchronous version: query memory data"""
         try:
             return await self._send_request_and_wait_async(
                 method_name="query_memory",
@@ -2141,16 +1845,15 @@ class PluginContext:
                 },
                 timeout=timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
         except TimeoutError as e:
             raise TimeoutError(f"Memory query timed out after {timeout}s") from e
     
     def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0):
-        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        """Adaptive version: detect the execution environment and choose synchronous or asynchronous execution.
         
         Returns:
-            在事件循环中返回协程,否则返回结果字典
+            Return a coroutine in the event loop; otherwise return a result dictionary
         """
         if self._is_in_event_loop():
             return self.query_memory_async(lanlan_name=lanlan_name, query=query, timeout=timeout)
@@ -2181,7 +1884,6 @@ class PluginContext:
                 },
                 timeout=request_timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
             if isinstance(config_obj, dict):
@@ -2240,7 +1942,6 @@ class PluginContext:
                 },
                 timeout=request_timeout,
                 wrap_result=True,
-                error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
             if isinstance(config_obj, dict):

@@ -1,10 +1,10 @@
-"""Market Bridge — 本地客户端与插件市场的双向联动协议。
+"""Market Bridge: bidirectional coordination between local clients and plugin markets.
 
-提供以下能力：
-1. Market 前端探测本地客户端状态
-2. Market 前端触发插件安装（从 URL 下载 → 校验 → 安装）
-3. 查询本地已安装插件列表（供 Market 标记已安装状态）
-4. 安装任务进度查询
+Capabilities:
+1. Market frontend detects local client status.
+2. Market triggers plugin installation through URL download, validation, and install.
+3. List locally installed plugins for Market installed-state indicators.
+4. Query install-task progress.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 import dataclasses
+import errno
 import hashlib
 import hmac
 import json
@@ -28,19 +29,33 @@ if TYPE_CHECKING:
     import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
 
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
+from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 from plugin.server.infrastructure.package_download import (
     PackageDownloadDeadline,
+    PackageDownloadWriteError,
     PackageSizeExceeded,
     cleanup_download_file as _cleanup_download_file,
-    download_package_file,
+    warm_package_connections,
 )
+from plugin.server.infrastructure.package_sources import (
+    GITHUB_DOWNLOAD_SOURCES,
+    DownloadPreferences,
+    download_candidates,
+    is_github_release,
+    load_preferences,
+    reset_transfer_history,
+    save_preferences,
+    validate_preferences,
+    warmup_urls,
+)
+from plugin.server.infrastructure.package_transfer import RACE_WIDTH, download_package
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
@@ -77,23 +92,23 @@ def _inspect_package_sync(package_path: Path):
     return inspect_package(package_path)
 
 
-# ─── Bridge Token（本地安全令牌）───────────────────────────────────
-# 每次服务启动时生成，防止恶意网页未经授权调用本地 API。
-# Market 前端需要通过 neko:// 协议或用户手动配对获取此 token。
+# -- Bridge Token: local security token --
+# Generate at each service startup, blocking unauthorized malicious-page access to local APIs.
+# Market frontends acquire it through neko:// or manual user pairing.
 _BRIDGE_TOKEN: str = secrets.token_urlsafe(32)
 
-# 安装任务存储（内存，重启清空）
+# In-memory install tasks, cleared on restart.
 _tasks: dict[str, dict[str, Any]] = {}
 _task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
 _MARKET_RELEASE_CHECK_TIMEOUT = 10.0
 
-# 短期一次性配对码；成功交换后立即消费。
+# Short-lived one-time pairing codes, consumed immediately on successful exchange.
 _ONE_TIME_CODES: dict[str, float] = {}
 _ONE_TIME_CODE_TTL_SECONDS = 5 * 60
 
-# OAuth 登录状态存储在本机用户目录，仅供本地插件面板使用。
+# Persist OAuth state in local user storage for the local plugin panel only.
 _OAUTH_CLIENT_ID = NEKO_AUTH_CLIENT_ID
 _OAUTH_SCOPE = "openid email profile offline"
 _OAUTH_SCOPE_ALIASES = {"offline": "offline_access"}
@@ -110,35 +125,55 @@ _OAUTH_REFRESH_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_LOCK = asyncio.Lock()
 _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 
-# 下载限制
-_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
-_DOWNLOAD_TIMEOUT = 120.0  # 秒
-# httpx 的超时是**每阶段**的（连接/读/写各自计时），所以一个"每次读都及时返回一点点
-# 字节"的服务器永远不会触发它——总时长必须有独立兜底。本文件里 _fetch_market_release
-# 已经为同一个理由用了 asyncio.timeout，注释就写着 "HTTPX phase timeouts alone do not
-# bound total response time"。1800s 对应 200MB 上限下约 114KB/s 的最低持续吞吐：低于
-# 这个速度的下载实际上已经停滞，而调用方本来就有 GitHub 直连的回退路径可以重试。
+# Download limits.
+_DOWNLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
+# httpx timeouts apply per phase, connection/read/write; servers steadily trickling timely bytes
+# never trigger them, so independently bound total duration. _fetch_market_release already uses
+# asyncio.timeout for the same reason, noting phase timeouts do not bound total
+# response time. At the 500 MiB limit, 1800 s implies about 284 KiB/s minimum sustained throughput;
+# slower downloads are effectively stalled, and callers can retry through direct GitHub fallback.
 _DOWNLOAD_TOTAL_TIMEOUT = 1800.0
-# Keep at most one 4 MiB batch of chunks. Progress and cancellation are still
-# checked every 64 KiB, while a 200 MiB package needs only 50 worker writes.
-_DOWNLOAD_FLUSH_BYTES = 4 * 1024 * 1024
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+# Serializes the read-then-write of PUT /download-preferences.
+_DOWNLOAD_PREFERENCES_LOCK = asyncio.Lock()
 
-# GitHub Release download mirrors exposed by the local plugin-manager UI.
-# Keeping this allowlist server-side means the speed test never accepts an
-# arbitrary URL from a browser request.
-_GITHUB_PROXY_SOURCES = (
-    ("github-direct", "https://github.com/"),
-    ("gh-proxy-com", "https://gh-proxy.com/"),
-    ("gh-proxy-org", "https://gh-proxy.org/"),
-    ("hk-gh-proxy-org", "https://hk.gh-proxy.org/"),
-    ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/"),
-    ("edgeone-gh-proxy-org", "https://edgeone.gh-proxy.org/"),
-)
+# Probe settings for the knowledge market's GitHub Release mirror speed test.
 _GITHUB_PROXY_PROBE_TIMEOUT = 8.0
 _GITHUB_PROXY_PROBE_CONCURRENCY = 3
-_GITHUB_PROXY_MEASURE_LOCK = asyncio.Lock()
-_GITHUB_PROXY_MEASURE_TASK: asyncio.Task[tuple[dict[str, object], ...]] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _DownloadRoute:
+    """How one install fetches a GitHub release: ranked routes, one deadline."""
+
+    candidates: tuple[tuple[str, str], ...]
+    # A specified mirror that fails is retried once straight from GitHub.
+    direct_fallback: bool
+    deadline: float
+
+    def direct_only(self) -> "_DownloadRoute":
+        """The same deadline, fetched as one plain download from GitHub."""
+        return dataclasses.replace(self, candidates=(), direct_fallback=False)
+
+
+async def _warm_package_routes(url: str, preferences: DownloadPreferences) -> None:
+    """Pre-connect every origin the download's opening race will reach.
+
+    That is each route the race opens first and, for a direct route, the
+    asset host GitHub redirects to.
+    """
+    if not is_github_release(url):
+        return
+    candidates = download_candidates(url, preferences)
+    await warm_package_connections(warmup_urls(candidates[:RACE_WIDTH]))
+
+
+async def _cancel_and_wait(task_or_tasks: asyncio.Task[Any] | Iterable[asyncio.Task[Any]]) -> None:
+    """Cancel tasks and await their cleanup before proceeding."""
+    tasks = [task_or_tasks] if isinstance(task_or_tasks, asyncio.Task) else list(task_or_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _normalize_required_sha256(value: str | None) -> str:
@@ -159,22 +194,22 @@ def _normalize_required_sha256(value: str | None) -> str:
 
 
 def get_bridge_token() -> str:
-    """获取当前 bridge token（供 URI scheme handler 使用）。"""
+    """Get the current bridge token for URI-scheme handlers."""
     return _BRIDGE_TOKEN
 
 
 def _main_server_port() -> int:
-    """返回主服务的运行时端口；按 config.MAIN_SERVER_PORT 动态读取。
+    """Return main service runtime ports dynamically from config.MAIN_SERVER_PORT.
 
-    launcher 会在端口冲突时把 ``config.MAIN_SERVER_PORT`` 改成 fallback 端口，
-    所以这里始终通过 ``import config`` 拿最新值，而不是在模块加载时锁死。
+    Launchers switch this value to fallback ports after conflicts; import config
+    to read current values rather than freeze them at module import.
     """
 
     try:
         import config
 
         return int(config.MAIN_SERVER_PORT)
-    except Exception:  # pragma: no cover - 兜底，避免 bridge 写文件因配置异常崩溃
+    except Exception:  # pragma: no cover - Prevent config errors crashing bridge file writes.
         return 48911
 
 
@@ -183,9 +218,10 @@ def _is_loopback_host(host: str) -> bool:
     return normalized in {"localhost", "127.0.0.1", "::1"}
 
 
-def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
+def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:
     try:
         parsed = urlparse(origin)
+        port = parsed.port or 80
     except ValueError:
         return False
     if parsed.scheme != "http" or not parsed.hostname or not _is_loopback_host(parsed.hostname):
@@ -194,7 +230,7 @@ def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
         return False
     if parsed.params or parsed.query or parsed.fragment:
         return False
-    return (parsed.port or 80) == expected_port
+    return port in expected_ports
 
 
 def _require_local_bridge_token_access(request: Request) -> None:
@@ -202,6 +238,12 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     Remote Market origins are intentionally excluded here even when CORS trusts
     them; remote pages must pair through /token-exchange instead.
+
+    The manager page is served by Main (packaged) or by this server
+    directly; a POST carries its Origin, so the origin may be Main's port or
+    the port this request reached. The Vite dev server (5173) is not trusted:
+    its proxy rewrites the Origin of the requests it forwards to the backend's
+    own, so any other page on that port is still refused.
     """
 
     if request.scope.get("neko.market_remote_authorized") or has_forwarding_metadata(request.headers):
@@ -209,20 +251,24 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     host_header = request.headers.get("host", "")
     try:
-        host = urlparse(f"//{host_header}").hostname or ""
+        parsed_host = urlparse(f"//{host_header}")
+        host = parsed_host.hostname or ""
+        request_port = parsed_host.port or 80
     except ValueError:
         host = ""
+        request_port = 0
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host) or not _is_loopback_host(host):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     origin = request.headers.get("origin")
-    if origin and not _is_local_bridge_origin(origin, _main_server_port()):
+    expected_ports = {request_port, _main_server_port()}
+    if origin and not _is_local_bridge_origin(origin, expected_ports):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
 
 def write_bridge_token_file(directory: Path) -> Path:
-    """将 bridge token 写入文件，供外部进程读取。"""
+    """Write bridge tokens to files for external-process access."""
     directory.mkdir(parents=True, exist_ok=True)
     token_file = directory / "bridge.json"
     one_time_code = _issue_one_time_code()
@@ -312,6 +358,11 @@ def _plugin_config_roots() -> tuple[Path, ...]:
 def _read_plugin_toml_metadata(manifest: Path) -> tuple[str | None, str]:
     try:
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Expected: the upgrade path probes the builtin root for a same-id
+        # plugin that a Market install may be overriding; most have none.
+        logger.debug("Plugin manifest not found: {}", manifest)
+        return None, ""
     except (OSError, tomllib.TOMLDecodeError) as exc:
         logger.warning("Failed to read plugin manifest {}: {}", manifest, exc)
         return None, ""
@@ -330,7 +381,7 @@ def _read_plugin_toml_id(manifest: Path) -> str | None:
     return _read_plugin_toml_metadata(manifest)[0]
 
 
-# ─── 请求/响应模型 ─────────────────────────────────────────────────
+# -- Request/response models --
 
 
 class MarketStatusResponse(BaseModel):
@@ -345,11 +396,11 @@ class MarketStatusResponse(BaseModel):
 
 
 class MarketInstallRequest(BaseModel):
-    """从 Market 触发安装的请求。
+    """Market-triggered install requests.
 
-    v2 (design §3.4.1) 在原有字段之上新增 ``mode`` / ``channel`` /
-    ``published_at``，让客户端区分 install / upgrade / reinstall 三种
-    语义并把 Market 已知的发布证据透传到 lock entry 上。
+    v2, design section 3.4.1, adds mode/channel/published_at to existing fields,
+    distinguishing install/upgrade/reinstall and passing Market's known publication
+    evidence into lock entries.
     """
     package_url: str = Field(..., description="插件包下载 URL")
     canonical_package_url: str | None = Field(
@@ -363,7 +414,7 @@ class MarketInstallRequest(BaseModel):
     payload_hash: str | None = Field(None, description="可选的 payload hash 二次校验")
     plugin_id: str | None = Field(None, description="Market 侧的插件标识")
     version: str | None = Field(None, description="版本号")
-    # v2: stable / beta channel 透传给客户端，让 lock entry 携带完整证据
+    # v2 passes stable/beta channels to clients so lock entries retain complete evidence.
     channel: str | None = Field(
         default=None,
         description="Market 上 latest_version.channel；None 时按 'stable' 处理",
@@ -372,7 +423,7 @@ class MarketInstallRequest(BaseModel):
         default=None,
         description="Market 上 latest_version.created_at；None 时由客户端兜底为当前时间",
     )
-    # v2: install / upgrade / reinstall mode 选择；旧客户端不传 mode 则默认 install
+    # v2 selects install/upgrade/reinstall; older clients omitting mode default to install.
     mode: Literal["install", "upgrade", "reinstall", "override_builtin"] = Field(
         default="install",
         description=(
@@ -380,9 +431,9 @@ class MarketInstallRequest(BaseModel):
             "override_builtin=以 Market 版本覆盖同 ID 的内置插件"
         ),
     )
-    # v2 (Option C): plugin 身份一致性校验 —— Market slug 透传给客户端，
-    # 客户端 unpack 后比对包内 plugin.toml [plugin].id；install 不一致时
-    # 附 warning，upgrade/reinstall 不一致时拒绝并回滚。
+    # v2 Option C validates plugin identity: pass Market slugs through,
+    # compare with unpacked plugin.toml [plugin].id; warn on install mismatches,
+    # reject/roll back upgrade/reinstall mismatches.
     expected_plugin_toml_id: str | None = Field(
         default=None,
         description=(
@@ -456,11 +507,14 @@ class MarketTaskStatus(BaseModel):
     message: str = ""
     downloaded_bytes: int = 0
     total_bytes: int | None = None
+    active_sources: list[str] = Field(default_factory=list)
     result: dict[str, Any] | None = None
-    # v2 (R10.1 / R10.2): error 字段保留 message 以便旧前端展示；新增 error_code
-    # 让前端识别稳定错误码（upgrade_rollback_completed / package_id_change / ...）。
+    # v2 R10.1/R10.2 retains error messages for older frontend display, adding error_code
+    # for stable upgrade_rollback_completed/package_id_change/etc. recognition.
     error: str | None = None
     error_code: str | None = None
+    error_details: dict[str, Any] | None = None
+    retryable: bool | None = None
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
@@ -476,9 +530,9 @@ class MarketInstalledPlugin(BaseModel):
     market_installed: bool = False
     builtin_version: str = ""
     latest_market_version: str = ""
-    # v2 (R6.1 / R6.6 / design §3.5): 让前端在不二次请求的前提下展示 yank /
-    # channel / 版本对比信息。仅 channel="market" 的 entry 投影；非 market /
-    # 没有 lock entry 时为 None。
+    # v2 R6.1/R6.6/design section 3.5 exposes yank/channel/version comparisons
+    # without another request. Project only channel="market" entries;
+    # nonmarket or absent lock entries yield None.
     latest_install_source: dict[str, Any] | None = None
 
 
@@ -488,19 +542,28 @@ class MarketInstalledResponse(BaseModel):
 
 
 class MarketTokenExchangeRequest(BaseModel):
-    """用于 neko:// 回调后交换 token 的请求。"""
+    """Token-exchange requests after neko:// callbacks."""
     one_time_code: str = Field(min_length=1, max_length=128)
 
 
 class MarketTokenExchangeResponse(BaseModel):
     bridge_token: str
-    expires_in: int | None = None  # None = 不过期（直到重启）
+    expires_in: int | None = None  # None means no expiration before restart.
 
 
 class MarketBridgeTokenResponse(BaseModel):
-    """供同源前端（plugin-manager UI）直接获取 bridge token。"""
+    """Let same-origin plugin-manager frontends obtain bridge tokens directly."""
     bridge_token: str
     port: int = 48911
+
+
+class MarketPairCodeResponse(BaseModel):
+    """A one-time code the local manager hands to a remote Market page."""
+    one_time_code: str
+    # Main's port, like bridge.json: the Market page reaches this server
+    # through Main's /market proxy, which passes CORS headers back unchanged.
+    port: int = 48911
+    expires_in: int = _ONE_TIME_CODE_TTL_SECONDS
 
 
 class MarketOAuthStartResponse(BaseModel):
@@ -579,7 +642,7 @@ class MarketOAuthAccountSummaryResponse(BaseModel):
     expires_at: float | None = None
 
 
-# ─── 端点 ──────────────────────────────────────────────────────────
+# -- Endpoints --
 
 
 _CATALOG_RESPONSE_HEADERS = frozenset(
@@ -747,10 +810,10 @@ async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
 
 @router.get("/status", response_model=MarketStatusResponse)
 async def market_status():
-    """探测本地客户端是否在线。
+    """Probe local-client availability.
 
-    此端点不需要 token，供 Market 前端快速探测。
-    返回 market_url 供前端知道 Market 地址。
+    Token-free for quick Market-frontend detection.
+    Return market_url so frontends know Market's address.
     """
     try:
         cli_service = await get_plugin_cli_service()
@@ -766,9 +829,9 @@ async def market_status():
     )
 
 
-# 一整轮镜像测速的墙钟上限。单源的 per-I/O 超时乘以重定向跳数之后并不封顶，
-# 这个才封。12s 的取法：健康时实测一轮 4.6s，留出两倍余量，同时远小于用户会
-# 愿意干等的时间。
+# Whole-round mirror benchmarking wall-clock cap. Per-source IO timeouts multiplied by redirects do not bound
+# the round; this does. Healthy measured rounds take 4.6 s, so 12 s leaves over double headroom
+# while remaining below reasonable user waiting times.
 # Env: NEKO_MARKET_PROXY_PROBE_TOTAL_BUDGET
 from plugin.server.application.plugins._env_budgets import env_seconds
 
@@ -806,17 +869,17 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
             "status_code": status_code,
         }
 
-    # 整轮加一个总预算。
+    # Add one overall round budget.
     #
-    # 现有的 httpx.Timeout 是 per-I/O-op 的，而这里开了 follow_redirects 且允许
-    # 5 跳，所以单个源的上界是"跳数 × 每跳超时"，六个源在慢重定向链下能叠到几十
-    # 秒——实测六源各挂在 3s/跳、深 5 的 301 链后是 37.5s，8s 的那个超时一次都
-    # 没触发。而调用它的前端用的是裸 fetch，没有超时。
+    # Existing httpx.Timeout applies per IO, with follow_redirects and up to
+    # 5 hops. Six slow redirect chains can therefore take tens of seconds:
+    # six sources behind 5-deep 301 chains at 3 s/hop measured 37.5 s without triggering
+    # any 8 s timeout. The calling frontend uses fetch without timeout.
     #
-    # 超预算时保留已经量到的结果，而不是整批丢弃：慢但可用的镜像也是有用信息。
+    # Keep completed measurements on budget expiry rather than discard everything; slow usable mirrors still matter.
     tasks = [
         asyncio.ensure_future(probe(source_id, base_url))
-        for source_id, base_url in _GITHUB_PROXY_SOURCES
+        for source_id, base_url in GITHUB_DOWNLOAD_SOURCES
     ]
     done, pending = await asyncio.wait(
         tasks, timeout=_GITHUB_PROXY_PROBE_TOTAL_BUDGET
@@ -824,35 +887,52 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     for task in pending:
         task.cancel()
     if pending:
-        # cancel() 只是排一个 CancelledError，任务要到下一轮事件循环才真的停。
-        # 不等就返回的话，这些 HTTP 连接会在响应发出之后才收尾，留下一批看不见
-        # 的悬挂任务（CodeRabbit）。
+        # cancel() merely schedules CancelledError; tasks stop on the next loop turn.
+        # Returning without awaiting leaves HTTP connections cleaning up after responses,
+        # creating invisible lingering tasks (CodeRabbit).
         await asyncio.gather(*pending, return_exceptions=True)
     measured = [task.result() for task in tasks if task in done and not task.cancelled()]
     return tuple(measured)
 
 
-@router.get("/github-proxy/measure")
-async def measure_github_proxy_sources() -> dict[str, object]:
-    """Measure sources once for concurrent callers from the local UI."""
+class MarketDownloadPreferences(BaseModel):
+    mode: Literal["auto", "direct", "specified"] = "auto"
+    specified_source_id: str = "gh-proxy-com"
+    initialize_only: bool = False
 
-    global _GITHUB_PROXY_MEASURE_TASK
-    async with _GITHUB_PROXY_MEASURE_LOCK:
-        if _GITHUB_PROXY_MEASURE_TASK is None or _GITHUB_PROXY_MEASURE_TASK.done():
-            _GITHUB_PROXY_MEASURE_TASK = asyncio.create_task(
-                _measure_github_proxy_sources(),
-                name="market-github-proxy-measure",
+    @model_validator(mode="after")
+    def _validate_preferences(self) -> "MarketDownloadPreferences":
+        validate_preferences(self.mode, self.specified_source_id)
+        return self
+
+
+@router.get("/download-preferences")
+async def market_download_preferences(token: str = Query(...)) -> dict[str, Any]:
+    _verify_token(token)
+    preferences, configured = await asyncio.to_thread(load_preferences)
+    return {**dataclasses.asdict(preferences), "configured": configured}
+
+
+@router.put("/download-preferences")
+async def update_market_download_preferences(
+    payload: MarketDownloadPreferences, token: str = Query(...),
+) -> dict[str, Any]:
+    _verify_token(token)
+    async with _DOWNLOAD_PREFERENCES_LOCK:
+        preferences, configured = await asyncio.to_thread(load_preferences)
+        if not (payload.initialize_only and configured):
+            preferences = DownloadPreferences(
+                mode=payload.mode, specified_source_id=payload.specified_source_id,
             )
-        task = _GITHUB_PROXY_MEASURE_TASK
+            await asyncio.to_thread(save_preferences, preferences)
+    return {**dataclasses.asdict(preferences), "configured": True}
 
-    try:
-        measured = await asyncio.shield(task)
-    finally:
-        if task.done():
-            async with _GITHUB_PROXY_MEASURE_LOCK:
-                if _GITHUB_PROXY_MEASURE_TASK is task:
-                    _GITHUB_PROXY_MEASURE_TASK = None
-    return {"sources": measured}
+
+@router.post("/download-history/reset")
+async def reset_market_download_history(token: str = Query(...)) -> dict[str, bool]:
+    _verify_token(token)
+    await reset_transfer_history()
+    return {"ok": True}
 
 
 class _MarketCatalogError(Exception):
@@ -1276,14 +1356,14 @@ async def market_install(
     payload: MarketInstallRequest,
     token: str = Query(..., description="Bridge token"),
 ):
-    """从 Market 触发插件安装。
+    """Trigger plugin installation from Market.
 
-    流程：下载包 → 校验 SHA256 → 调用 install_package → 返回任务 ID。
-    安装是异步的，前端通过 /market/tasks/{task_id} 轮询进度。
+    Download package, validate SHA256, call install_package, then return task ID.
+    Installation is asynchronous; frontends poll /market/tasks/{task_id}.
 
-    v2 (design §3.4.2): mode 字段决定走 install / upgrade / reinstall 三条
-    分支；upgrade / reinstall 在 bridge 内部协调 lifecycle stop → rename
-    旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
+    v2 design section 3.4.2 selects install/upgrade/reinstall by mode.
+    For upgrade/reinstall, the bridge coordinates stop, rename old directory, unpack,
+    record, and start, reversing rollback steps on failure.
     """
     _verify_token(token)
     request_error = _market_release_request_error(payload)
@@ -1403,7 +1483,7 @@ async def market_install(
         "cancel_requested": False,
     }
 
-    # 异步执行安装
+    # Run installation asynchronously.
     _task_workers[task_id] = asyncio.create_task(
         _execute_install(task_id, task_payload),
         name=f"market-install-{task_id}",
@@ -1421,7 +1501,7 @@ async def market_task_status(
     task_id: str,
     token: str = Query(..., description="Bridge token"),
 ):
-    """查询安装任务进度。"""
+    """Query install-task progress."""
     _verify_token(token)
     _cleanup_tasks()
 
@@ -1464,16 +1544,16 @@ async def cancel_market_install_task(
 async def market_installed(
     token: str = Query(..., description="Bridge token"),
 ):
-    """查询本地已安装的插件列表。
+    """List locally installed plugins.
 
-    v2 (design §3.5): 把 lock 上 ``channel="market"`` 的 entry 投影成
-    ``latest_install_source`` 一并返回，前端不再需要二次请求即可拿到
-    版本号 / channel / sha256 / payload_hash 用于 upgrade 与 yank 判定。
+    v2 design section 3.5 projects channel="market" lock entries as
+    latest_install_source, exposing version/channel/sha256/payload_hash without
+    extra requests for upgrade/yank decisions.
     """
     _verify_token(token)
 
     try:
-        # 一次性拿全量 lock 索引
+        # Fetch the complete lock index once.
         mgr = get_install_source_manager()
         if mgr is not None:
             await asyncio.to_thread(mgr.load)
@@ -1629,14 +1709,14 @@ def _project_market_source_detail(
 
 @router.post("/token-exchange", response_model=MarketTokenExchangeResponse)
 async def market_token_exchange(payload: MarketTokenExchangeRequest):
-    """通过一次性码交换 bridge token。
+    """Exchange one-time codes for bridge tokens.
 
-    流程：
-    1. N.E.K.O 客户端生成 one-time code 并通过 neko:// URI 传给浏览器
-    2. Market 前端用此 code 调用本端点换取 bridge_token
-    3. 后续请求使用 bridge_token
+    Flow:
+    1. N.E.K.O generates codes and passes them to browsers via neko://.
+    2. Market calls this endpoint with the code to obtain bridge_token.
+    3. Subsequent requests use bridge_token.
 
-    注意：此端点本身不需要 token（因为是用来获取 token 的）。
+    This endpoint requires no token because it issues one.
     """
     if not _consume_one_time_code(payload.one_time_code):
         raise HTTPException(status_code=403, detail="无效的一次性码")
@@ -1649,15 +1729,26 @@ async def market_token_exchange(payload: MarketTokenExchangeRequest):
 
 @router.get("/bridge-token", response_model=MarketBridgeTokenResponse)
 async def market_bridge_token(request: Request):
-    """供同源前端（plugin-manager UI）获取 bridge token。
+    """Provide bridge tokens to same-origin plugin-manager frontends.
 
-    plugin-manager UI 由同一个 FastAPI 进程托管，跟 /market/* 同源，所以
-    不需要走 one-time code 配对。只允许 127.0.0.1 / localhost 来源，避免
-    被外部网页拿到 token。
+    The same FastAPI process hosts plugin-manager and /market/*, requiring
+    no one-time-code pairing. Allow only 127.0.0.1/localhost origins to prevent
+    external pages obtaining tokens.
     """
     _require_local_bridge_token_access(request)
 
     return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
+
+
+@router.post("/pair-code", response_model=MarketPairCodeResponse)
+async def market_pair_code(request: Request):
+    """Issue a short-lived code the local manager passes to a remote Market page.
+
+    The page exchanges it at ``/token-exchange``. Same local-only gate as
+    ``/bridge-token``; the returned port is Main's (see the response model).
+    """
+    _require_local_bridge_token_access(request)
+    return MarketPairCodeResponse(one_time_code=_issue_one_time_code(), port=_main_server_port())
 
 
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)
@@ -1669,10 +1760,10 @@ async def market_oauth_start(
     ),
     authorization: str | None = Header(None),
 ):
-    """启动 N.E.K.O → Auth OAuth 登录。
+    """Start N.E.K.O -> Auth OAuth login.
 
-    本地服务生成 PKCE verifier/challenge 并只把 verifier 存到本机文件；
-    前端只拿授权 URL，避免把可换 token 的 secret 暴露到浏览器状态里。
+    Local services generate PKCE verifier/challenge, storing verifiers only locally.
+    Frontends receive authorization URLs only, keeping exchangeable secrets out of browser state.
     """
     _verify_token(token, authorization=authorization)
     if not NEKO_AUTH_URL or not MARKET_API_URL:
@@ -1869,7 +1960,7 @@ async def market_oauth_status(
     ),
     authorization: str | None = Header(None),
 ):
-    """返回本地保存的 Auth 登录状态，并用 Market 资源侧接口复核。"""
+    """Return locally persisted Auth state and verify against Market resource APIs."""
     _verify_token(token, authorization=authorization)
     token_data = await _ensure_valid_oauth_token()
     if not token_data:
@@ -2066,7 +2157,7 @@ async def market_oauth_complete(
     ),
     authorization: str | None = Header(None),
 ):
-    """消费浏览器回调写入的授权码并换取 Auth token。"""
+    """Consume browser-callback authorization codes and exchange for Auth tokens."""
     _verify_token(token, authorization=authorization)
 
     pending = _read_json_file(_OAUTH_PENDING_FILE)
@@ -2177,7 +2268,7 @@ async def market_oauth_logout(
     ),
     authorization: str | None = Header(None),
 ):
-    """清除本地保存的 Auth OAuth token，Auth revoke 失败不影响本地退出。"""
+    """Clear local Auth OAuth tokens; revoke failures must not prevent local logout."""
     _verify_token(token, authorization=authorization)
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     _clear_account_summary_cache()
@@ -2189,7 +2280,7 @@ async def market_oauth_logout(
     return MarketOAuthLogoutResponse(message="已退出 Auth 登录")
 
 
-# ─── 内部实现 ──────────────────────────────────────────────────────
+# -- Internal implementation --
 
 
 def _verify_token(
@@ -2197,7 +2288,7 @@ def _verify_token(
     *,
     authorization: str | None = None,
 ) -> None:
-    """验证 bridge token。
+    """Verify bridge tokens.
 
     Phase 3 dual-accept window (PR #1480 review-fix bug 1.6): the
     bridge token is accepted from EITHER the legacy ``?token=...``
@@ -3458,12 +3549,12 @@ async def _bind_market_package_hash(
 
 
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
-    """异步执行下载 + 校验 + 安装 / 升级流程（design §3.4）。
+    """Asynchronously download, validate, and install/upgrade, design section 3.4.
 
-    根据 ``payload.mode`` 走 ``_do_install`` / ``_do_upgrade`` 之一；后者
-    再细分为 ``upgrade`` (版本号必须前进) / ``reinstall`` (允许相同版本号)。
-    所有结构化错误都收敛到 :class:`_TaskError`，最终落到 task dict 的
-    ``error_code`` 字段供前端识别。
+    payload.mode selects _do_install or _do_upgrade; the latter distinguishes
+    upgrades requiring version advancement from reinstall allowing unchanged versions.
+    Normalize structured failures into _TaskError, ultimately populating task
+    error_code for frontend recognition.
     """
 
     task = _tasks[task_id]
@@ -3482,11 +3573,29 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             task, status="pending", stage="pending", progress=0.0,
             message="正在核对市场发布信息...",
         )
+        preferences, _ = await asyncio.to_thread(load_preferences)
+        warmup = asyncio.create_task(
+            _warm_package_routes(payload.canonical_package_url or payload.package_url, preferences),
+            name=f"market-route-warmup-{task_id}",
+        )
         try:
             payload, market_release = await _bind_market_package_hash(payload)
         except _TaskError:
             _raise_if_task_cancel_requested(task)
             raise
+        finally:
+            # Connections opened while the catalogue answered are pooled;
+            # one still connecting is not worth delaying the download for.
+            await _cancel_and_wait(warmup)
+        # A GitHub release is fetched from its catalogue URL over the routes
+        # the saved download preferences choose; anything else as requested.
+        if is_github_release(payload.canonical_package_url or ""):
+            payload = payload.model_copy(update={"package_url": payload.canonical_package_url})
+            task["_download_route"] = _DownloadRoute(
+                candidates=tuple(download_candidates(payload.package_url, preferences)),
+                direct_fallback=preferences.mode == "specified",
+                deadline=time.monotonic() + _DOWNLOAD_TOTAL_TIMEOUT,
+            )
         _raise_if_task_cancel_requested(task)
         if payload.mode in ("install", "override_builtin"):
             await _do_install(task, payload, log_ctx)
@@ -3540,6 +3649,8 @@ class _TaskError(Exception):
     code: str
     message: str
     http_status: int | None = None
+    details: dict[str, Any] | None = None
+    retryable: bool | None = None
 
     def __post_init__(self) -> None:
         super().__init__(self.code, self.message)
@@ -3589,6 +3700,8 @@ def _finalize_task_failure(
     task["progress"] = task.get("progress", 0.0)
     task["error"] = err.message
     task["error_code"] = err.code
+    task["error_details"] = err.details
+    task["retryable"] = err.retryable
     task["completed_at"] = time.time()
     task["message"] = _human_message_for(err.code) or err.message
     logger.error(
@@ -3639,6 +3752,12 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "lock_write_failed": "安装记录写入失败",
     "market_list_fetch_failed": "无法连接到 Market",
     "download_failed": "下载失败",
+    "package_size_exceeded": "插件包超过大小限制",
+    "download_timeout": "插件包下载超时",
+    "download_network_error": "下载插件包时网络连接失败",
+    "download_http_error": "插件下载服务器返回错误",
+    "insufficient_disk_space": "磁盘空间不足，无法保存插件包",
+    "download_write_failed": "无法将插件包保存到磁盘",
     "package_hash_mismatch": "插件包校验失败",
     "install_failed": "安装失败，已清理临时文件",
     "override_rollback_completed": "内置插件升级失败，已恢复内置版本",
@@ -3741,7 +3860,7 @@ async def _do_install(
         raise
     except Exception as exc:
         _raise_if_task_cancel_requested(task)
-        raise _TaskError(code="download_failed", message=str(exc)) from exc
+        raise _download_task_error(exc) from exc
 
     try:
         _raise_if_task_cancel_requested(task)
@@ -3761,7 +3880,7 @@ async def _do_install(
             )
         except _DownloadAttemptError as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -4047,7 +4166,7 @@ async def _do_upgrade(
             raise
         except Exception as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
 
         _raise_if_task_cancel_requested(task)
         try:
@@ -4066,7 +4185,7 @@ async def _do_upgrade(
             )
         except _DownloadAttemptError as exc:
             _raise_if_task_cancel_requested(task)
-            raise _TaskError(code="download_failed", message=str(exc)) from exc
+            raise _download_task_error(exc) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -4100,40 +4219,6 @@ async def _do_upgrade(
                     f"installed={installed_package_id!r} incoming={package_id!r}"
                 ),
             )
-        recorded_profile_dir = str(getattr(entry, "profile_dir", "") or "")
-        profile_candidate = (
-            Path(recorded_profile_dir).expanduser()
-            if recorded_profile_dir
-            else path_policy.package_profiles_root / package_id
-        )
-        if any(path.is_symlink() for path in (profile_candidate, *profile_candidate.parents)):
-            raise _TaskError(
-                code="unsafe_profile_path",
-                message=f"recorded package profile path contains a symlink: {profile_candidate}",
-            )
-        try:
-            profile_dir = profile_candidate.resolve()
-        except OSError as exc:
-            raise _TaskError(
-                code="unsafe_profile_path",
-                message=f"cannot resolve recorded package profile path: {profile_candidate}",
-            ) from exc
-        if profile_dir.name != package_id:
-            raise _TaskError(
-                code="unsafe_profile_path",
-                message=f"recorded package profile path does not match package id: {profile_dir}",
-            )
-        manual_package_has_profiles = bool(
-            manual_takeover and getattr(inspected, "profile_names", ())
-        )
-        if manual_package_has_profiles and (
-            profile_dir.exists() or profile_dir.is_symlink()
-        ):
-            raise _TaskError(
-                code="manual_takeover_profile_target_exists",
-                message="manual takeover cannot claim an existing package profile",
-                http_status=409,
-            )
         market_override = _build_market_override(
             payload,
             mode="reinstall" if record_as_reinstall else "upgrade",
@@ -4154,10 +4239,9 @@ async def _do_upgrade(
             return await cli_service.upload_and_install(
                 filename=_extract_filename(payload.package_url),
                 package_path=str(package_path),
-                profiles_root=str(profile_dir.parent),
-                _allow_external_profiles_root=True,
                 on_conflict="fail",
                 install_source_override=market_override,
+                _preserve_autostart_plugin_id=installed_plugin_id,
             )
 
         async def rollback_install_source() -> None:
@@ -4223,12 +4307,6 @@ async def _do_upgrade(
                 plugin_dir=plugin_dir,
                 layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
                 install_new=install_new,
-                additional_targets=(
-                    (profile_dir,)
-                    if not manual_takeover or manual_package_has_profiles
-                    else ()
-                ),
-                preserve_targets=(() if manual_takeover else (profile_dir,)),
                 validate_channel_specific=validate_channel_specific,
                 on_rollback_start=mark_rollback_running,
                 manual_snapshot_sha256=manual_snapshot_sha256,
@@ -4417,27 +4495,44 @@ def _utc_iso_now() -> str:
 
 
 class _DownloadAttemptError(ValueError):
-    """A failed HTTP download that may safely use the GitHub direct fallback."""
+    """Download failure with a stable category and explicit retry policy."""
+
+    def __init__(
+        self, message: str, *, code: str = "download_failed",
+        details: dict[str, Any] | None = None, retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+        self.retryable = retryable
 
 
-def _direct_github_download_fallback(url: str) -> str | None:
-    """Return the original GitHub Release asset for an allowlisted proxy URL."""
+def _download_task_error(exc: Exception) -> _TaskError:
+    if isinstance(exc, _DownloadAttemptError):
+        return _TaskError(
+            code=exc.code, message=str(exc), details=exc.details,
+            retryable=exc.retryable,
+        )
+    return _TaskError(code="download_failed", message=str(exc))
 
-    for source_id, base_url in _GITHUB_PROXY_SOURCES:
-        if source_id == "github-direct" or not url.startswith(base_url):
-            continue
-        candidate = url.removeprefix(base_url)
-        parsed = urlparse(candidate)
-        if (
-            parsed.scheme == "https"
-            and parsed.hostname == "github.com"
-            and parsed.username is None
-            and parsed.password is None
-            and parsed.path.startswith("/")
-            and "/releases/download/" in parsed.path
-        ):
-            return candidate
-    return None
+
+def _retry_from_github_direct(task: dict[str, Any], *, after_hash_mismatch: bool) -> bool:
+    """Whether to retry a failed or mismatched download straight from GitHub.
+
+    A routed download is retried once as a plain GitHub download within the
+    same deadline: after a hash mismatch always, after a failure only when a
+    specified mirror was chosen (auto mode already raced GitHub itself). An
+    unrouted download is not a GitHub release and is never retried, nor is
+    one whose deadline has passed. A retry switches the task's route to
+    GitHub direct.
+    """
+    route: _DownloadRoute | None = task.get("_download_route")
+    if route is None or route.deadline <= time.monotonic():
+        return False
+    retry = bool(route.candidates) if after_hash_mismatch else route.direct_fallback
+    if retry:
+        task["_download_route"] = route.direct_only()
+    return retry
 
 
 def _prepare_direct_github_fallback(task: dict[str, Any], message: str) -> None:
@@ -4455,7 +4550,7 @@ async def _verify_downloaded_package_with_fallback(
     expected_hash: str,
     task: dict[str, Any],
 ) -> tuple[Path, Literal["passed", "mismatch"]]:
-    """Verify a package and retry one allowlisted proxy mismatch via GitHub."""
+    """Verify a package and retry one routed mismatch via GitHub direct."""
 
     expected_hash = _normalize_required_sha256(expected_hash)
     verification_task = asyncio.create_task(
@@ -4472,22 +4567,19 @@ async def _verify_downloaded_package_with_fallback(
         _cleanup_download_file(package_path)
         raise
     except ValueError:
-        fallback_url = _direct_github_download_fallback(url)
-        if not fallback_url:
+        if not _retry_from_github_direct(task, after_hash_mismatch=True):
             raise
         _cleanup_download_file(package_path)
         logger.warning(
-            "[market-download] proxy package hash mismatch; retrying direct GitHub "
-            "origin={} fallback_origin={}",
+            "[market-download] package hash mismatch; retrying direct GitHub origin={}",
             _safe_url_log_origin(url),
-            _safe_url_log_origin(fallback_url),
         )
         _prepare_direct_github_fallback(
             task,
             "镜像下载内容校验失败，正在通过 GitHub 直连重试...",
         )
         try:
-            direct_path = await _download_package_once(fallback_url, task)
+            direct_path = await _download_package_once(url, task)
         except _TaskCancelled:
             raise
         except _DownloadAttemptError:
@@ -4546,25 +4638,24 @@ def _download_package_result(
 
 
 async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
-    """Download a package, retrying a failed allowlisted proxy via GitHub direct."""
+    """Download a package, retrying a failed routed proxy via GitHub direct."""
 
     try:
         return await _download_package_once(url, task), url
-    except _DownloadAttemptError:
-        fallback_url = _direct_github_download_fallback(url)
-        if not fallback_url:
+    except _DownloadAttemptError as exc:
+        if not exc.retryable:
+            raise
+        if not _retry_from_github_direct(task, after_hash_mismatch=False):
             raise
         logger.warning(
-            "[market-download] proxy failed; retrying direct GitHub "
-            "origin={} fallback_origin={}",
+            "[market-download] proxy failed; retrying direct GitHub origin={}",
             _safe_url_log_origin(url),
-            _safe_url_log_origin(fallback_url),
         )
         _prepare_direct_github_fallback(
             task,
             "镜像下载失败，正在通过 GitHub 直连重试...",
         )
-        return await _download_package_once(fallback_url, task), fallback_url
+        return await _download_package_once(url, task), url
 
 
 async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
@@ -4590,14 +4681,20 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             task["message"] = f"正在下载: {_format_bytes(received)}"
 
     try:
-        return await download_package_file(
-            url,
-            directory,
-            maximum_bytes=_DOWNLOAD_MAX_BYTES,
-            phase_timeout=_DOWNLOAD_TIMEOUT,
-            total_timeout=_DOWNLOAD_TOTAL_TIMEOUT,
-            flush_bytes=_DOWNLOAD_FLUSH_BYTES,
-            report_progress=progress,
+        route: _DownloadRoute | None = task.get("_download_route")
+        # An unrouted download (not a GitHub release) gets its own budget.
+        deadline = route.deadline if route is not None else started_at + _DOWNLOAD_TOTAL_TIMEOUT
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise PackageDownloadDeadline("Package download total deadline expired")
+        # A direct retry and an unrouted URL are both fetched as requested.
+        routes = route.candidates if route and route.candidates else download_candidates(
+            url, DownloadPreferences(mode="direct"),
+        )
+        return await download_package(
+            routes, directory, maximum_bytes=_DOWNLOAD_MAX_BYTES,
+            total_timeout=remaining, report_progress=progress,
+            report_route=lambda source_id: task.update(active_sources=[source_id]),
             check_cancelled=lambda: _raise_if_task_cancel_requested(task),
         )
     except httpx.HTTPStatusError as exc:
@@ -4611,7 +4708,10 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError(f"下载失败: HTTP {exc.response.status_code}") from exc
+        raise _DownloadAttemptError(
+            f"下载失败: HTTP {exc.response.status_code}", code="download_http_error",
+            details={"http_status": exc.response.status_code},
+        ) from exc
     except httpx.TimeoutException as exc:
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
@@ -4621,7 +4721,7 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
     except httpx.RequestError as exc:
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
@@ -4632,12 +4732,12 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载网络错误") from exc
+        raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except PackageDownloadDeadline as exc:
-        # asyncio.timeout 的**总时长**兜底到期。与上面的 httpx.TimeoutException 是两回事：
-        # 那个是某一阶段超时，这个是"每阶段都没超时、但整通下载拖得太久"（滴流式响应）。
-        # 必须单独接住并转成 _DownloadAttemptError，否则会落到最后的 except Exception
-        # 裸抛出去——既拿不到 GitHub 直连的回退重试，用户看到的也不是"下载超时"。
+        # asyncio.timeout's total-duration cap differs from per-phase httpx.TimeoutException:
+        # every phase may stay timely while the whole trickle download takes too long.
+        # Catch separately and convert to _DownloadAttemptError; otherwise final generic handling
+        # reraises, losing direct-GitHub retries and the user-facing download-timeout classification.
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
         logger.warning(
             "[market-download] request failed "
@@ -4646,29 +4746,46 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise _DownloadAttemptError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
     except PackageSizeExceeded as exc:
         raise _DownloadAttemptError(
-            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)"
+            f"包文件过大: {exc.actual} bytes (最大 {exc.maximum} bytes)",
+            code="package_size_exceeded",
+            details={
+                "actual_bytes": exc.actual, "maximum_bytes": exc.maximum,
+                "size_source": exc.source,
+            },
+            retryable=False,
         ) from exc
+    except PackageDownloadWriteError as exc:
+        no_space = exc.error.errno == errno.ENOSPC or getattr(exc.error, "winerror", None) == 112
+        raise _DownloadAttemptError(
+            "磁盘空间不足，无法保存插件包" if no_space else "无法将插件包保存到磁盘",
+            code="insufficient_disk_space" if no_space else "download_write_failed",
+            retryable=False,
+        ) from exc
+    except TimeoutError as exc:
+        raise _DownloadAttemptError("下载超时", code="download_timeout") from exc
+    except OSError as exc:
+        raise _DownloadAttemptError("下载网络错误", code="download_network_error") from exc
     except ValueError as exc:
         raise _DownloadAttemptError(str(exc)) from exc
 
 
 def _format_bytes(value: int) -> str:
     if value >= 1024 * 1024:
-        return f"{value / (1024 * 1024):.1f}MB"
+        return f"{value / (1024 * 1024):.1f} MiB"
     if value >= 1024:
-        return f"{value / 1024:.1f}KB"
-    return f"{value}B"
+        return f"{value / 1024:.1f} KiB"
+    return f"{value} B"
 
 
 def _extract_filename(url: str) -> str:
-    """从 URL 提取文件名。"""
+    """Extract filenames from URLs."""
     from urllib.parse import urlparse, unquote
     path = urlparse(url).path
     name = unquote(path.rsplit("/", 1)[-1]) if "/" in path else "package.neko-plugin"
-    # 确保有合法后缀
+    # Ensure a valid suffix.
     if not any(name.endswith(s) for s in _ALLOWED_SUFFIXES):
         name = name + ".neko-plugin"
     return name

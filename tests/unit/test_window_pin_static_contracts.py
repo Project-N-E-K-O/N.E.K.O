@@ -193,7 +193,7 @@ def test_credentials_shared_submit_button_is_scoped_to_the_latest_request():
 
     assert "let submitButtonGeneration = 0;" in script
     assert "const generation = ++submitButtonGeneration;" in script
-    # 恢复必须过代数闸，不能再有裸的 submitBtn.disabled = false
+    # Restoration must pass the generation gate; no unguarded submitBtn.disabled = false may remain.
     release = re.search(
         r"function releaseSubmitButtonLock\(generation\) \{(?P<body>[\s\S]*?)\n\}",
         script,
@@ -201,7 +201,7 @@ def test_credentials_shared_submit_button_is_scoped_to_the_latest_request():
     assert release
     assert "if (generation !== submitButtonGeneration) return;" in release.group("body")
 
-    # 保存凭证和 Twitch 授权两条路径都走同一把锁，函数体里不许再直接动按钮。
+    # Credential saving and Twitch authorization share one lock; their bodies must not manipulate the button directly.
     assert script.count("const submitLock = beginSubmitButtonLock();") == 2
     assert script.count("releaseSubmitButtonLock(submitLock);") == 2
     for name in ("startTwitchDeviceCode", "submitCurrentCookie"):
@@ -213,7 +213,7 @@ def test_credentials_shared_submit_button_is_scoped_to_the_latest_request():
         assert "releaseSubmitButtonLock(" in body.group("body"), name
         assert not re.search(r"\.\s*disabled\s*=", body.group("body")), name
 
-    # 换平台放行共用按钮，但语言切换的同平台重渲染不能放行。
+    # Platform changes release the shared button, but same-platform rerenders on language changes must not.
     assert re.search(
         r"if \(!isReRender && previousPlatform !== platformKey\) \{\s*\n"
         r"\s*submitButtonGeneration\+\+;",
@@ -252,13 +252,13 @@ def test_credentials_tabs_are_wired_to_the_single_tab_panel():
     template = read_text("templates/cookies_login.html")
 
     tab_buttons = re.findall(r'<button class="tab-btn[^>]*>', template)
-    # 凭证源会持续增删，锁死具体个数只会让每个新增源都红一次；真正要守的是每个按钮的
-    # ARIA 接线。和 switchTab 调用数交叉比对，正则一旦失配就会立刻不等，避免测出 0 个假绿。
+    # Credential sources continually change, so fixed counts fail every addition. Guard each button's ARIA wiring
+    # instead, cross-checking switchTab call counts so regex mismatch cannot pass with zero matches.
     switch_calls = template.count("switchTab('")
     assert switch_calls > 0
     assert len(tab_buttons) == switch_calls
     for button in tab_buttons:
-        # 逐个按钮各带一次调用，才能保证上面那个总数相等不是靠"这里漏一次、别处多一次"凑出来的。
+        # Require one call per button, preventing matched totals from hiding one missing call balanced by an extra elsewhere.
         assert button.count("switchTab('") == 1, button
         assert 'role="tab"' in button, button
         assert 'aria-controls="main-panel"' in button, button
@@ -280,7 +280,7 @@ def test_credentials_deferred_mascot_reaction_has_a_bounded_deadline():
         script,
     )
     assert defer_body
-    # 重排必须沿用同一个 deadline，重新取一次 Date.now() 等于上限失效。
+    # Rescheduling must preserve the same deadline; calling Date.now() again defeats the upper bound.
     assert "if (Date.now() >= deadline) return;" in defer_body.group("body")
     assert "deferMascotReaction(type, duration, deadline);" in defer_body.group("body")
     assert "Date.now() + MASCOT_DEFERRED_MAX_MS" not in defer_body.group("body")
@@ -296,7 +296,7 @@ def test_credentials_guide_screenshot_keeps_no_readable_cookie_value():
         pane = image.convert("RGB").crop((334, 843, image.width, image.height))
 
     rgb = np.asarray(pane).astype(int)
-    # 面板上压着红色标注箭头，它本来就是高对比度的，先连边缘一起排除。
+    # Exclude the red annotation arrow and its edges first; it is inherently high contrast.
     red = (
         (rgb[:, :, 0] > 140)
         & (rgb[:, :, 1] < 110)
@@ -307,9 +307,9 @@ def test_credentials_guide_screenshot_keeps_no_readable_cookie_value():
         Image.fromarray((red * 255).astype("uint8")).filter(ImageFilter.MaxFilter(9))
     ).astype(bool)
 
-    # 字形靠相邻像素的突变成立；抹干净之后剩下的只有平滑渐变。
-    # 逐通道比而不是转灰度：白字压在浅蓝选中底色上，亮度差只有 38，
-    # 转灰度会把这条判据糊过去，逐通道能看到 70。
+    # Glyphs rely on abrupt changes between adjacent pixels; after removal, only smooth gradients remain.
+    # Compare per channel, not grayscale: white text against light-blue selection differs in luminance by only 38;
+    # grayscale hides the criterion, while channel comparison sees 70.
     horizontal = np.abs(np.diff(rgb, axis=1)).max(axis=2)[keep[:, :-1] & keep[:, 1:]]
     vertical = np.abs(np.diff(rgb, axis=0)).max(axis=2)[keep[:-1, :] & keep[1:, :]]
     contrast = int(max(horizontal.max(), vertical.max()))
@@ -535,11 +535,11 @@ def test_plugin_manager_pin_control_and_bridge_contract():
 
 def test_pin_labels_exist_in_all_main_and_plugin_locales():
     i18n_bootstrap = read_text("static/i18n-i18next.js")
-    # 只要求存在一个非空的 LOCALE_VERSION（locale 文件靠它做 cache-bust），
-    # 不再钉死具体取值：钉死等于让每一次无关的版本串变更都打红这条用例。
-    # #2465「Refactor memory browser UI」把它从 2026-07-22-window-pin-controls-i18n
-    # 改成 2026-07-24-memory-browser-ui-refactor，这条就一直红着——当时
-    # tests/unit 还没进 CI，没人看见。
+    # Require only a nonempty LOCALE_VERSION for locale cache busting,
+    # without fixing its value and failing every unrelated version-string update.
+    # #2465 "Refactor memory browser UI" changed 2026-07-22-window-pin-controls-i18n
+    # to 2026-07-24-memory-browser-ui-refactor, leaving this test failing unnoticed because
+    # tests/unit was not yet in CI.
     locale_version = re.search(
         r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", i18n_bootstrap
     )

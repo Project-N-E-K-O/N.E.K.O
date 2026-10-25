@@ -900,8 +900,8 @@ def test_jukebox_transport_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
 def test_jukebox_parts_are_loaded_in_directory_order():
     expected_paths = [f"/static/jukebox/jukebox/{part.name}" for part in JUKEBOX_PARTS]
 
-    # 模板里的 src 带 ?v={{ static_asset_version }}，所以只能匹配到路径为止，
-    # 不能带闭合引号。
+    # Template src includes ?v={{ static_asset_version }}, so match only through the path,
+    # excluding the closing quote.
     loader_positions = [JUKEBOX_LOADER_SCRIPT.find(f"'{part_path}'") for part_path in expected_paths]
     template_positions = [JUKEBOX_TEMPLATE.find(f'"{part_path}?') for part_path in expected_paths]
     manager_positions = [JUKEBOX_MANAGER_TEMPLATE.find(f'"{part_path}?') for part_path in expected_paths]
@@ -927,7 +927,7 @@ def test_jukebox_loader_fetches_all_parts_sequentially(mock_page: Page):
             body=(JUKEBOX_PARTS_DIR / file_name).read_text(encoding="utf-8"),
         )
 
-    # part URL 现在带 ?jukebox_control_api=N，glob 必须容纳 query。
+    # Part URLs now include ?jukebox_control_api=N; globs must allow query parameters.
     mock_page.route("**/static/jukebox/jukebox/*.js*", serve_jukebox_part)
     mock_page.set_content('<base href="http://jukebox.test/"><body></body>')
     mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
@@ -2959,8 +2959,8 @@ def test_jukebox_execute_control_stop_discards_pending_play(mock_page: Page):
     )
 
     assert result == {
-        # stop 现在推进的是独立的取消世代，这条 play 在预检之前就被判定为
-        # 「已取消」——比原来的 play_superseded 更准，也省掉一次 HEAD 预检。
+        # stop now advances an independent cancellation generation, identifying this play as cancelled before
+        # preflight: more precise than play_superseded and avoids a HEAD request.
         "play": {
             "ok": False,
             "action": "play",
@@ -3640,8 +3640,8 @@ def test_jukebox_loader_reloads_stale_control_api_with_versioned_url(mock_page: 
 
     def fulfill_jukebox(route):
         requested_urls.append(route.request.url)
-        # 多 part 加载：桩对象放在 bootstrap（真实 bootstrap.js 也只负责建 window.Jukebox），
-        # 其余 part 返回空体，避免桩被后续 Object.assign 覆盖。
+        # Multipart loading: place stubs in bootstrap, as real bootstrap.js only creates window.Jukebox;
+        # return empty bodies for other parts so subsequent Object.assign cannot overwrite the stub.
         if not route.request.url.split("?")[0].endswith("/bootstrap.js"):
             route.fulfill(status=200, content_type="application/javascript", body="")
             return
@@ -3768,7 +3768,7 @@ def test_jukebox_audio_end_queued_next_respects_request_generation(mock_page: Pa
 
 
 # ---------------------------------------------------------------------------
-# 以下六条是 #2293 评审检出问题的回归护栏，每条都对应一个具体的失败场景。
+# These six regressions guard specific failure scenarios found in #2293 review.
 # ---------------------------------------------------------------------------
 
 
@@ -3842,7 +3842,7 @@ def test_jukebox_control_next_replays_the_only_song_instead_of_stopping(mock_pag
 
     assert result == {
         "afterPlay": {"ok": True, "isPlaying": True, "currentSong": "only"},
-        # 非随机模式才会走 getManualAdjacentSong，也就是评审描述的那个场景。
+        # getManualAdjacentSong applies only outside shuffle mode, the scenario described in review.
         "playbackMode": "sequence",
         "afterNext": {"ok": True, "isPlaying": True, "currentSong": "only", "replayed": True},
         "afterPrevious": {"ok": True, "isPlaying": True, "currentSong": "only", "replayed": True},
@@ -3894,7 +3894,7 @@ def test_jukebox_control_volume_scale_does_not_invert_between_one_and_two(mock_p
     )
 
     assert result["ladder"] == [0.01, 0.02, 0.03, 0.1, 0.5, 1.0]
-    # 单调：1 到 100 之间不再出现「更大的请求得到更小的音量」。
+    # Monotonic: between 1 and 100, larger requests never produce lower volume.
     assert result["ladder"] == sorted(result["ladder"])
     assert result["halfAsRatio"] == 0.5
     assert result["adjustByOne"] == 0.31
@@ -3984,10 +3984,10 @@ def test_jukebox_fuzzy_distance_stays_linear_in_candidate_length(mock_page: Page
         """
     )
 
-    # 这个形状下必须判定为不匹配 —— 先确认量的确实是「未命中」这条最坏路径。
+    # This shape must not match; first confirm the measurement exercises the worst-case miss path.
     assert measured["result"] == "inf"
-    # 同一形状在 chromium 实测：旧的双层枚举 20 次约 420 ms，线性实现约 2 ms。
-    # 阈值取 100 ms —— 比实现本身宽 50 倍，又比二次方实现低 4 倍。
+    # Chromium measurements for this shape: 20 old nested-enumeration runs take ~420 ms versus ~2 ms for linear implementation.
+    # Use 100 ms threshold, 50× implementation time but 4× below quadratic implementation time.
     assert measured["elapsed"] < 100, (
         f"模糊匹配 20 次耗时 {measured['elapsed']:.0f} ms，疑似退回二次方实现"
     )
@@ -4310,7 +4310,7 @@ def test_vrm_animation_stale_request_does_not_touch_shared_state(mock_page: Page
 
     assert result["started"] is False
     assert result["played"] == 0
-    # 作废的请求既不该改 isIdleAnimation，也不该在活着的 mixer 上建 action。
+    # Invalidated requests must neither alter isIdleAnimation nor create actions on a live mixer.
     assert result["isIdleAnimation"] == "untouched"
     assert result["created"] == 0
     assert result["released"] == 0
@@ -4349,7 +4349,7 @@ def test_jukebox_superseded_fuzzy_search_settles_instead_of_hanging(mock_page: P
         """
     )
 
-    # 被取代的那次必须 settle（返回 null 即可），不能永远悬着。
+    # Superseded requests must settle, returning null if necessary, instead of remaining pending forever.
     assert result["firstSettled"] is True
     assert result["firstResult"] is None
     assert result["secondId"] == "song4"
@@ -4409,7 +4409,7 @@ def test_jukebox_play_recovers_when_library_was_empty_at_startup(mock_page: Page
     assert result["ok"] is True
     assert result["message"] is None
     assert result["current"] == "late"
-    # 一次是运行时初始化，一次是找不到歌之后的兜底刷新。
+    # One runtime initialization and one fallback refresh after missing a song.
     assert result["configFetches"] == 2
 
 
@@ -4516,7 +4516,7 @@ def test_jukebox_stop_during_animation_load_actually_stops_audio(mock_page: Page
 
     assert result["stopOk"] is True
     assert result["pausedBeforeStop"] is False
-    # ok:true 必须名副其实：声音真的停了。
+    # ok:true must mean sound actually stopped.
     assert result["pausedAfterStop"] is True
     assert result["isPlaying"] is False
 
@@ -4602,7 +4602,7 @@ def test_jukebox_exact_match_wins_past_the_thousandth_song(mock_page: Page):
 
     assert result["exactIndex"] == 1001
     assert result["foundId"] == "exact"
-    # 档间距 1000，位置只在档内并列时起作用，永远不能把精确档压到前缀档以下。
+    # Tier spacing is 1000; position breaks ties only within tiers and can never rank exact matches below prefixes.
     assert result["exactScore"] > result["prefixScore"]
     assert result["exactScore"] > 9000
 
@@ -4906,9 +4906,9 @@ def test_jukebox_open_marks_the_control_owner_ready_only_when_standalone(mock_pa
     )
 
     assert result["standalone"]["started"] == 1
-    # 宣告的那一刻，可见运行时必须真的就位：播放器建好、曲库拉完。
+    # On announcement, visible runtime must truly be ready: player constructed and library fetched.
     assert result["standalone"]["stateAtAnnounce"] == [{"hasPlayer": True, "songCount": 4}]
-    # 嵌在角色窗口里的点歌台不是拥有者，绝不能去抢这个身份。
+    # The jukebox embedded in the character window is not the owner and must never claim ownership.
     assert result["embedded"]["started"] == 0
 
 
@@ -4970,7 +4970,7 @@ def test_jukebox_restores_idle_when_the_replacement_animation_fails(mock_page: P
     assert result["idleAfterDance"] == 0
     assert result["switchedOk"] is True
     assert result["current"] == "song2"
-    # 动画没起来 -> 必须把待机接回去，不能让模型僵在原地。
+    # Animation failed to start: restore idle rather than freezing the model.
     assert result["idleRestored"] is True
 
 
@@ -5019,7 +5019,7 @@ def test_jukebox_falls_back_to_main_thread_when_the_worker_fails(mock_page: Page
         """
     )
 
-    # worker 失败不等于没这首歌：主线程匹配得出来。
+    # Worker failure does not mean the song is absent; main-thread matching can find it.
     assert result["foundId"] == "song4"
     assert result["ok"] is True
     assert result["message"] is None
@@ -5081,9 +5081,9 @@ def test_jukebox_abandoned_auto_advance_restores_idle(mock_page: Page):
     )
 
     assert result["idleBefore"] == 0
-    # 钉住走的确实是模式变更那条出口，而不是「运行时未就绪」那条。
+    # Verify the actual exit is mode change, not runtime-unready.
     assert result["runtimeReady"] is True
-    # 续播作废了，待机必须接回去，模型不能僵在原地。
+    # Continuation invalidated: restore idle so the model does not freeze.
     assert result["idleRestored"] is True
     assert result["current"] is None
 
@@ -5134,7 +5134,7 @@ def test_jukebox_standalone_close_tears_down_playback(mock_page: Page):
     )
 
     assert result["headlessFlag"] is True
-    # 独立窗口整个要销毁，不存在保活：必须走完整停播路径。
+    # Destroying the whole standalone window has no keepalive; use the complete stop path.
     assert result["stopped"] == 1
     assert result["headlessAfter"] is False
     assert result["hostLeft"] is False
@@ -5200,9 +5200,9 @@ def test_jukebox_auto_advance_restores_idle_when_the_successor_animation_fails(m
 
     assert result["idleBefore"] == 0
     assert result["runtimeReady"] is True
-    # 续播确实发生了（不是走了放弃分支）。
+    # Continuation actually happened, rather than taking the abandonment branch.
     assert result["advanced"] == "song2"
-    # 接班动画没起来 -> 待机必须接回去。
+    # Successor animation failed to start: restore idle.
     assert result["idleRestored"] is True
 
 
@@ -5323,14 +5323,14 @@ def test_jukebox_standalone_teardown_delegates_idle_restore_to_the_pet_window(mo
         """
     )
 
-    # 走的确实是独立窗口分支：停止经 IPC 发给 Pet，本地既不动 vrmManager
-    # 也不在本窗口恢复待机。
+    # Confirm the standalone-window path: send stop to Pet through IPC without locally touching vrmManager
+    # or restoring idle in this window.
     assert result["afterClose"] == {"idle": 0, "stops": 0, "vmd": False, "bridge": [False]}
-    # 桌面端补发的那一下：本地没有欠账，所以不会再多发一条。
+    # Desktop catch-up send: no local pending obligation, so emit no additional request.
     assert result["bridgeAfterElectronStop"] == [False]
     assert result["idleAfterElectronStop"] == 0
     assert result["stopsAfterElectronStop"] == 0
-    # 欠账不会留在原地拖着。
+    # No obligation remains pending.
     assert result["pendingSettled"] is True
 
 
@@ -5377,7 +5377,7 @@ def test_jukebox_player_adopts_the_volume_set_before_it_existed(mock_page: Page)
     )
 
     assert result["hadPlayerWhenDragged"] is False
-    # 播放器按用户拖到的值建，滑条和标签也不会被 100% 反向覆盖。
+    # Construct the player with the user-dragged value; 100% must not overwrite slider/label state.
     assert result["constructedWith"] == 0.4
     assert result["playerVolume"] == 0.4
     assert result["slider"] == "0.4"
@@ -5448,7 +5448,7 @@ def test_jukebox_stop_cancels_a_play_still_inside_its_awaits(mock_page: Page):
         assert outcome["stopOk"] is True, label
         assert outcome["ok"] is False, label
         assert outcome["message"] == "play_cancelled", label
-        # 关键：stop 之后不许再有声音起来。
+        # Crucially, no sound may start after stop.
         assert outcome["startedAudio"] is False, label
         assert outcome["isPlaying"] is False, label
         assert outcome["currentSong"] is None, label
@@ -5563,7 +5563,7 @@ def test_jukebox_cancel_during_preflight_and_startup_stops_the_play(mock_page: P
         outcome = result[label]
         assert outcome["ok"] is False, label
         assert outcome["message"] == "play_cancelled", label
-        # 起播中途被取消时，刚响起来的声音也必须停掉。
+        # Cancellation during playback startup must stop even audio that just began.
         assert outcome["isPlaying"] is False, label
         assert outcome["currentSong"] is None, label
 
@@ -5613,7 +5613,7 @@ def test_jukebox_cancelled_play_skips_the_preflight_requests(mock_page: Page):
 
     assert result["ok"] is False
     assert result["message"] == "play_cancelled"
-    # 取消之后不该再为一首永远不会播的歌发预检请求。
+    # After cancellation, do not preflight a song that will never play.
     assert result["headRequests"] == 0
 
 
@@ -5709,7 +5709,7 @@ def test_jukebox_failed_startup_settles_the_idle_debt(mock_page: Page):
     assert result["idleBefore"] == 0
     assert result["played"] is None
     assert result["debtSettled"] is True
-    # 起播失败之后模型必须回到待机，不能停在舞蹈最后一帧。
+    # Playback-start failure must restore idle instead of leaving the model on its final dance frame.
     assert result["idleRestored"] is True
 
 
@@ -5754,10 +5754,10 @@ def test_jukebox_standalone_forwards_the_idle_restore_to_the_pet(mock_page: Page
         """
     )
 
-    # 抑制恢复的那一下确实记了账。
+    # Suppressed restoration actually recorded its pending obligation.
     assert result["afterSuppressedStop"]["calls"] == [{"stop": True}]
     assert result["afterSuppressedStop"]["debt"] is True
-    # 结账必须真的把恢复转发给 Pet，而不是清个标志了事。
+    # Settlement must forward restoration to Pet, not merely clear a flag.
     assert result["afterSettle"] == [{"stop": True}, {"stop": False}]
     assert result["debtAfter"] is False
 
@@ -5807,9 +5807,9 @@ def test_jukebox_compensating_stop_settles_an_outstanding_debt(mock_page: Page):
         """
     )
 
-    # 补发的停止把账结了，待机接回去。
+    # The catch-up stop settles the obligation and restores idle.
     assert result["local"] == {"idle": 1, "debt": False}
-    # 抑制恢复的停止不结账，也不会多恢复一次。
+    # Stops suppressing restoration neither settle the obligation nor restore again.
     assert result["suppressed"] == {"idle": 1, "debt": True}
 
 
@@ -5932,7 +5932,7 @@ def test_jukebox_teardown_during_startup_stops_the_orphaned_audio(mock_page: Pag
     assert result["audibleBeforeTeardown"] is True
     assert result["ok"] is False
     assert result["message"] == "jukebox_torn_down"
-    # 拆除之后不许留下一份还在响、没人管的音频。
+    # Teardown must leave no unowned audio still playing.
     assert result["stillAudible"] is False
     assert result["isPlaying"] is False
 
@@ -6006,14 +6006,14 @@ def test_jukebox_owner_queues_controls_that_arrive_before_it_is_ready(mock_page:
         """
     )
 
-    # 窗口一存在就有主，角色窗口不会以为没人管而自己起隐藏运行时。
+    # The window has an owner from creation; character windows must not start hidden runtimes assuming no owner exists.
     assert result["announcedBeforeReady"] is True
     assert result["readyBefore"] is False
-    # 就绪之前只排队，不执行——否则会用默认模型类型选动作。
+    # Queue without execution before readiness, or default model types select actions.
     assert result["servedWhileNotReady"] is False
     assert result["queued"] == 1
     assert result["modeBeforeReady"] == "sequence"
-    # 就绪之后按到达顺序放出去。
+    # Release in arrival order after readiness.
     assert result["servedAfterReady"] is True
     assert result["modeAfterReady"] == "random"
 
@@ -6055,7 +6055,7 @@ def test_jukebox_standalone_bootstrap_claims_ownership_immediately(mock_page: Pa
 
     assert result["standalone"]["error"] is None
     assert result["standalone"]["calls"] == ["claimed"]
-    # 嵌在角色窗口里的点歌台不是拥有者，绝不能去抢这个身份。
+    # The jukebox embedded in the character window is not the owner and must never claim ownership.
     assert result["embedded"]["calls"] == []
 
 
@@ -6147,13 +6147,13 @@ def test_jukebox_stale_play_spares_a_successor_mid_startup(mock_page: Page):
         """
     )
 
-    # B 的音频已经在响、也已认领，但 currentSong 还没提交——正是「没人认领这份
-    # 声音」这类判据最容易 misfire 的窗口。
+    # B's audio is playing and claimed, but currentSong is not committed; this is exactly where 'nobody owns this
+    # audio' checks are most likely to misfire.
     assert result["midStartup"]["audible"] is True
     assert result["midStartup"]["currentSong"] is None
     assert result["midStartup"]["audioOwner"] is True
     assert result["aOk"] is False
-    # 过期的 A 醒来不许把 B 的声音停掉。
+    # Stale A must not stop B's sound when it resumes.
     assert result["afterStaleWoke"]["audible"] is True
     assert result["bOk"] is True
     assert result["current"] == "song2"
@@ -6209,7 +6209,7 @@ def test_jukebox_audio_claim_is_released_by_a_stop(mock_page: Page):
     )
 
     assert result["claimedByFirst"] is True
-    # stop 必须把认领清掉，否则下一条播放永远认领不到。
+    # stop must release the claim, or the next playback can never acquire it.
     assert result["claimAfterStop"] is None
     assert result["secondOk"] is False
     assert result["stillAudible"] is False
@@ -6282,10 +6282,10 @@ def test_jukebox_owner_queue_keeps_order_and_spares_non_playback(mock_page: Page
     )
 
     assert result["queuedBeforeReady"] == 2
-    # 取消只丢播放类，音量那条留下；被丢的那条立刻有回执，调用方不必干等超时。
+    # Cancellation discards playback commands only, retaining volume; immediately acknowledge discarded commands so callers need not await timeout.
     assert result["afterCancel"]["pending"] == ["set_volume"]
     assert result["afterCancel"]["replied"] == [["q-play", "play_cancelled"]]
-    # 串行：后到的 next 不许插到攒着的 set_volume 中间。
+    # Serialize: a later next must not overtake accumulated set_volume commands.
     assert result["order"] == [
         "start:set_volume", "end:set_volume", "start:next", "end:next",
     ]
@@ -6341,7 +6341,7 @@ def test_jukebox_owner_drops_a_request_the_caller_stopped_waiting_for(mock_page:
         """
     )
 
-    # 调用方早就不等了：不执行，但要明确回执。
+    # Caller stopped waiting long ago: do not execute, but acknowledge explicitly.
     assert result["executed"] == 0
     assert result["replies"] == [["stale", "jukebox_request_expired"]]
     assert result["mode"] == "sequence"
@@ -6389,7 +6389,7 @@ def test_jukebox_random_queue_rewinds_when_the_pick_never_plays(mock_page: Page)
 
     assert result["ok"] is False
     assert result["message"] == "audio_not_found"
-    # 没播起来就不许推进队列，否则下一次 next 会从错的位置继续、跳过一首。
+    # Failed startup must not advance the queue, or next continues from the wrong place and skips a song.
     assert result["after"] == result["before"]
     assert result["current"] == "song1"
 
@@ -6452,11 +6452,11 @@ def test_jukebox_stale_match_refreshes_before_reporting_failure(mock_page: Page)
     )
 
     assert result["cachedAudio"] == "songs/old.mp3"
-    # 命中的是陈旧对象、预检失败 -> 刷新一次再试，这次能播。
+    # A stale matched object fails preflight: refresh once and retry successfully.
     assert result["ok"] is True
     assert result["current"] == "moved"
     assert result["audioNow"] == "songs/new.mp3"
-    # 一次运行时初始化 + 一次陈旧刷新。
+    # One runtime initialization + one stale-data refresh.
     assert result["configFetches"] == 2
 
 
@@ -6480,7 +6480,7 @@ def test_jukebox_fbx_reports_that_no_animation_started(mock_page: Page):
         """
     )
 
-    # 一帧都没播，就不能报「起播了」——否则待机欠账会被错误地清掉。
+    # Without a single played frame, never claim startup succeeded, or pending idle restoration is incorrectly cleared.
     assert result["started"] is False
 
 
@@ -6517,7 +6517,7 @@ def test_jukebox_cold_start_keeps_the_persisted_volume(mock_page: Page):
 
     assert result["pendingBefore"] is None
     assert result["constructedWith"] is False
-    # 上次会话的 30% 必须留住，不能被 savedVolume 的默认值 1 抹掉。
+    # Preserve the preceding session's 30%; savedVolume's default 1 must not erase it.
     assert result["playerVolume"] == 0.3
 
 
@@ -6578,7 +6578,7 @@ def test_jukebox_control_refresh_rerenders_the_open_panel(mock_page: Page):
     assert result["ok"] is True
     assert result["current"] == "late"
     assert result["songCount"] == 2
-    # 刷新之后面板必须跟着重画，否则它会永久停在旧的那批行上。
+    # Refresh must redraw the panel, or it permanently retains old rows.
     assert result["rowsAfter"] == 2
 
 
@@ -6637,7 +6637,7 @@ def test_jukebox_owner_answers_the_forwards_it_abandons_on_shutdown(mock_page: P
 
     assert result["queued"] == 2
     assert result["pendingAfter"] == 0
-    # 每一条被丢掉的都要有回执，调用方才不用干等 TTL；而且回执要能分辨是哪一条。
+    # Acknowledge every discarded command with identifiable receipts so callers need not wait for TTL.
     assert result["results"] == [
         {"requestId": "req-1", "message": "jukebox_owner_gone", "ok": False},
         {"requestId": "req-2", "message": "jukebox_owner_gone", "ok": False},
@@ -6693,7 +6693,7 @@ def test_jukebox_loader_settles_in_flight_forwards_when_the_owner_goes_away(mock
     assert result["ownerSeen"] is True
     assert result["settled"]["ok"] is False
     assert result["settled"]["message"] == "jukebox_owner_gone"
-    # 关键是「不必等满 TTL」：转发超时是 5000ms。
+    # Crucially, do not wait the full TTL: forwarding timeout is 5000ms.
     assert result["elapsed"] < 2000, result["elapsed"]
 
 
@@ -6756,9 +6756,9 @@ def test_jukebox_runtime_init_slot_is_cleared_only_by_its_own_initialization(moc
     )
 
     assert result["loadsBeforeAResumes"] == 2
-    # A 的 finally 只有在槽位还指向它自己时才该清。
+    # A's finally clears the slot only if it still points to A.
     assert result["slotStillHeld"] is True
-    # 第三条指令复用 B：没有第三次并发的配置加载去乱序覆盖 State.songs。
+    # The third command reuses B, avoiding a third concurrent configuration load overwriting State.songs out of order.
     assert result["loadsAfterThirdCommand"] == 2, result["loadsAfterThirdCommand"]
 
 
@@ -6800,7 +6800,7 @@ def test_jukebox_random_queue_rewinds_when_the_auto_advance_is_abandoned(mock_pa
         """
     )
 
-    # 那首从没播过，队列位置不许停在它身上。
+    # That song never played, so queue position must not remain on it.
     assert result["after"] == result["before"]
     assert result["currentSong"] is None
 
@@ -6851,7 +6851,7 @@ def test_jukebox_plays_the_song_revision_that_passed_preflight(mock_page: Page):
         """
     )
 
-    # 曲库里已经是新一版了，但播的必须是通过预检的那一版。
+    # The library holds a new version, but play the version that passed preflight.
     assert result["tableAudio"] == "songs/reuploaded.mp3"
     assert result["loaded"] == ["songs/song1.mp3"], result["loaded"]
 
@@ -6892,9 +6892,9 @@ def test_jukebox_abandoned_auto_advance_keeps_the_anchor_repair(mock_page: Page)
         """
     )
 
-    # 锚点修复保留：队列指向刚播完的那一首。
+    # Preserve anchor repair: the queue points to the song that just finished.
     assert result["anchored"] == "song1", result
-    # 而那一步投机性的前进仍然被撤销了：队列没有停在从没播过的下一首上。
+    # Still undo speculative advancement: queue position must not remain on an unplayed next song.
     assert result["queue"] == ["song1"], result["queue"]
     assert result["index"] == 0
     assert result["queue"] != result["stale"]["queue"]
@@ -6975,9 +6975,9 @@ def test_jukebox_owner_cancel_reaches_the_ready_state_queue_too(mock_page: Page)
         """
     )
 
-    # 排队的那条 play 不许开跑；音量照常执行。
+    # Queued play must not start; volume executes normally.
     assert result["executed"] == ["play:slow", "set_volume:"], result["executed"]
-    # 而且被作废的那条要有回执，调用方才不用干等转发超时。
+    # Also acknowledge invalidated commands so callers need not wait for forwarding timeout.
     assert {"requestId": "r2", "message": "play_cancelled", "ok": False} in result["results"]
     assert [r for r in result["results"] if r["requestId"] == "r3"][0]["ok"] is True
 
@@ -7023,7 +7023,7 @@ def test_jukebox_random_queue_rewinds_when_the_auto_advance_itself_fails(mock_pa
         """
     )
 
-    # 没播起来就不许把位置留在它身上，否则下一次随机导航跳过一首。
+    # Failed playback must not retain its queue position, or the next shuffle navigation skips a song.
     assert result["after"] == result["before"], result
 
 
@@ -7071,12 +7071,12 @@ def test_jukebox_cancelling_playback_keeps_the_navigation_anchor(mock_page: Page
         """
     )
 
-    # 作废把声音停了，但没把「用户在哪儿」也一起抹掉。
+    # Invalidation stopped sound without erasing the user's navigation position.
     assert result["audibleAfterCancel"] is False
     assert result["anchorAfterCancel"] == "song2"
-    # 于是排在后面的 next 走的是 song2 的下一首，而不是退回第一首。
+    # The queued next therefore follows song2 instead of reverting to the first song.
     assert result["nextSong"] == "song3", result["nextSong"]
-    # 随机历史同理：作废不该清空它。
+    # Likewise, invalidation must preserve shuffle history.
     assert len(result["queueBefore"]) >= 2
     assert result["queueAfterCancel"] == result["queueBefore"]
 
@@ -7142,9 +7142,9 @@ def test_jukebox_auto_advance_rewind_survives_the_idle_settlement(mock_page: Pag
         """
     )
 
-    # 先确认这条用例真的走到了那个形态：世代是在 playSong 里被推进的。
+    # Confirm this test reaches the intended state: generation advances inside playSong.
     assert result["generationMovedInPlaySong"] is True
-    # 结账推进了世代，但队列仍然归这次自动续播所有，所以回滚必须发生。
+    # Settlement advances generation, but this automatic continuation still owns the queue, so rollback must occur.
     assert result["after"] == result["before"], result
 
 
@@ -7202,10 +7202,10 @@ def test_jukebox_auto_advance_rewind_yields_to_a_replacement_play(mock_page: Pag
         """
     )
 
-    # 队列已经归接手的那一方了，陈旧快照不许盖回去 —— 三种形态都要认得出。
+    # Queue ownership transferred; stale snapshots must not overwrite it. Recognize all three forms.
     assert result["reset"]["after"] == result["reset"]["replacement"], result["reset"]
     assert result["reset"]["after"]["queue"] == ["song3"]
-    # reindex 这一种长度和内容都没变，只有位置动了：只有位置比对能守住。
+    # Reindex changes position alone, preserving length/content; only position comparisons detect this.
     reindex = result["reindex"]
     assert reindex["replacement"]["queue"] == reindex["advanced"]["queue"], reindex
     assert reindex["replacement"]["index"] != reindex["advanced"]["index"], reindex
@@ -7282,11 +7282,11 @@ def test_jukebox_owner_cancel_from_relative_navigation_spares_the_queued_play(mo
         """
     )
 
-    # 相对导航不顶替排队中的 play：判据必须和发件侧一致。
+    # Relative navigation does not supersede queued play; match sender-side criteria.
     assert result["relative"] == ["play:slow", "play:queued"], result["relative"]
-    # 绝对指令照旧顶替。
+    # Absolute commands still supersede.
     assert result["absolute"] == ["play:slow"], result["absolute"]
-    # 认不出动作时按绝对处理：漏顶替会让用户喊停之后声音又起来。
+    # Treat unknown actions as absolute; failing to supersede can restart sound after the user says stop.
     assert result["unlabelled"] == ["play:slow"], result["unlabelled"]
 
 
@@ -7339,11 +7339,11 @@ def test_jukebox_navigation_anchor_is_recorded_when_the_audio_starts(mock_page: 
         """
     )
 
-    # 声音已经在响，锚点此刻就该记上了，不必等动画。
+    # Audio is already playing: record the anchor now without waiting for animation.
     assert result["midStartup"]["audible"] is True
     assert result["midStartup"]["anchor"] == "song2"
     assert result["anchorAfterCancel"] == "song2"
-    # 于是 next 走的是 song2 的下一首，而不是退回第一首。
+    # next therefore follows song2 instead of reverting to the first song.
     assert result["adjacent"] == "song3", result["adjacent"]
 
 
@@ -7403,8 +7403,8 @@ def test_jukebox_manual_navigation_rollback_yields_to_a_replacement(mock_page: P
     )
 
     assert result["ok"] is False
-    # 队列已经归接手的那一方了，陈旧快照不许盖回去 —— 注意长度和位置都没变，
-    # 只有内容变了，所以这条只有逐项比对能守住。
+    # Queue ownership transferred; stale snapshots must not overwrite it. Length and position are unchanged,
+    # only contents differ, requiring item-by-item comparison.
     assert result["queue"][-1] in ("song3", "song4")
     assert result["queue"] == result["replaced"], result
     assert result["index"] == result["replacedIndex"]
@@ -7448,7 +7448,7 @@ def test_jukebox_loader_labels_the_cancel_signal_with_its_action(mock_page: Page
         """
     )
 
-    # 动作原样带过去，并且归一化过大小写；没有动作时是空串（拥有者按绝对处理）。
+    # Forward the action unchanged except case normalization; absence is empty string, treated as absolute by the owner.
     assert result["seen"] == ["next", "stop", ""], result["seen"]
 
 
@@ -7511,11 +7511,11 @@ def test_jukebox_stale_audio_ended_without_a_current_song_still_cleans_up(mock_p
     )
 
     assert result["threw"] is None, result["threw"]
-    # 清理照做。
+    # Cleanup still runs.
     assert result["isPlaying"] is False
     assert result["stoppedStatusRefreshed"] is True
     assert result["idleRestorePending"] is False
-    # 但队列不该被推进 —— 没有「刚播完的那首」可言。
+    # But do not advance the queue: there is no song that just finished.
     assert result["queueUnchanged"] is True
 
 
@@ -7582,7 +7582,7 @@ def test_jukebox_torn_down_runtime_does_not_commit_its_library(mock_page: Page):
     )
 
     assert result["afterFresh"] == ["fresh"]
-    # 属于已拆除运行时的那份响应不许落盘。
+    # Responses belonging to torn-down runtimes must not persist.
     assert result["afterStaleArrived"] == ["fresh"], result
     assert result["revision"] == "rev-2"
 
@@ -7637,7 +7637,7 @@ def test_jukebox_panel_selection_beats_a_pending_remote_play(mock_page: Page):
     )
 
     assert result["userChoice"] == "song1"
-    # 迟到的远端指令不许把用户刚选的这首顶掉。
+    # Late remote commands must not supersede the song the user just selected.
     assert result["remoteOk"] is False
     assert result["remoteMessage"] == "play_cancelled", result["remoteMessage"]
     assert result["current"] == "song1", result["current"]
@@ -7687,7 +7687,7 @@ def test_jukebox_targetless_previous_leaves_the_music_playing(mock_page: Page):
     assert result["before"] == {"playing": True, "song": "song1"}
     assert result["ok"] is False
     assert result["message"] == "no_previous_song"
-    # 空操作的导航不该把音乐停掉。
+    # No-op navigation must not stop music.
     assert result["afterPlaying"] is True, result
     assert result["afterSong"] == "song1"
     assert result["audioPaused"] is False, result
@@ -7762,12 +7762,12 @@ def test_jukebox_close_tears_down_when_only_the_panel_was_used(mock_page: Page):
         "isRuntimeReady": False,
         "playing": True,
     }
-    # 手动开的面板：关闭就该停播、彻底拆除、通知卸载分片。
+    # Manually opened panel: closing stops playback, fully tears down, and requests part unloading.
     assert result["stopped"] == 1, result
     assert result["fullCloseEvents"] == 1, result
     assert result["isPlaying"] is False
     assert result["currentSong"] is None
     assert result["songCount"] == 0
-    # 这条不能省：上面几项在「只 stopPlayback、不 prepareForUnload」的回归下全都
-    # 照样成立，播放器却还活着。要证明走的是彻底拆除那条分支，只能看它死没死。
+    # This assertion is essential: regressions calling stopPlayback without prepareForUnload still satisfy
+    # every preceding assertion while leaving the player alive; full teardown can only be proven by its destruction.
     assert result["playerDestroyed"] is True

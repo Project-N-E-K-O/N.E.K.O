@@ -130,6 +130,58 @@ def names_in_query(query: str, entry: StoredEntry) -> bool:
     return False
 
 
+def _name_length(name: str) -> tuple[int, int]:
+    """CJK characters and other letters/digits in ``name``."""
+    view = search_view(name)
+    cjk = sum(1 for ch in view if is_cjk_token(ch))
+    other = sum(1 for ch in view if ch.isalnum() and not is_cjk_token(ch))
+    return cjk, other
+
+
+def _is_whole_text(text: str, name: str) -> bool:
+    """The whole message is ``name``, give or take edge punctuation and quotes."""
+    name_loose = loose_surface(name)
+    if name_loose and loose_surface(text) == name_loose:
+        return True
+    name_strict = strict_surface(name)
+    return bool(name_strict) and strict_surface(text) == name_strict
+
+
+def named_in_text(
+    text: str, entry: StoredEntry, *, min_cjk_chars: int, min_latin_chars: int
+) -> bool:
+    """Whether a chat message names the entry: its title, an alias or a
+    recognition phrase occurs in it.
+
+    Passive retrieval reads whole chat messages, not queries, so short names
+    are held to more: a name with fewer than ``min_cjk_chars`` CJK characters
+    and fewer than ``min_latin_chars`` other letters names the entry only when
+    it is the whole message. Longer names count wherever they occur as a
+    phrase (Latin words on word boundaries, symbols as written).
+    """
+    query_runs: list[str] | None = None
+    text_surface = ""
+    names = (entry.title, *entry.terms.get("alias", ()), *entry.terms.get("recognition", ()))
+    for name in names:
+        if not strict_surface(name):
+            continue
+        if _is_whole_text(text, name):
+            return True
+        cjk, other = _name_length(name)
+        if cjk < min_cjk_chars and other < min_latin_chars:
+            continue
+        if not loose_surface(name):
+            text_surface = text_surface or strict_surface(text)
+            if _contains_word(text_surface, strict_surface(name)):
+                return True
+            continue
+        if query_runs is None:
+            query_runs = _plain_query_runs(text)
+        if _phrase_in(ordered_runs(name), query_runs):
+            return True
+    return False
+
+
 def _phrase_in(name_runs: list[str], query_runs: list[str]) -> bool:
     """Whether the name's word runs occur in order and adjacent in the query.
 
@@ -203,11 +255,14 @@ def semantic_candidates(
     allowed_pack_ids: Iterable[str],
     exclude_entry_ids: Collection[int] = (),
     limit: int = SEMANTIC_CANDIDATES,
+    threshold: float = SEMANTIC_THRESHOLD,
 ) -> list[SemanticMatch]:
     """Best-scoring chunk per entry over the allowed packs, best first.
 
     ``exclude_entry_ids`` (disabled entries) are skipped before the cut to
-    ``limit``, so they cannot crowd out entries that may be served.
+    ``limit``, so they cannot crowd out entries that may be served. Passive
+    retrieval passes its own ``threshold``: it compares a hit with the next
+    one down, which may sit below the tool's bar.
     """
     if snapshot is None or query_vector is None:
         return []
@@ -218,24 +273,44 @@ def semantic_candidates(
     if not allowed:
         return []
     mask = np.isin(snapshot.chunk_pack_index, np.asarray(allowed, dtype=np.int32))
-    if not mask.any():
+    rows = np.flatnonzero(mask)
+    if rows.size == 0:
         return []
-    scores = snapshot.matrix[mask] @ query_vector
-    entry_ids = snapshot.entry_ids[mask].tolist()
-    chunk_indexes = (
-        snapshot.chunk_indexes[mask].tolist()
-        if snapshot.chunk_indexes is not None
-        else [None] * len(entry_ids)
-    )
-    excluded = set(exclude_entry_ids)
-    best: dict[int, SemanticMatch] = {}
-    for entry_id, score, chunk_index in zip(entry_ids, scores.tolist(), chunk_indexes):
-        if entry_id in excluded:
-            continue
-        current = best.get(entry_id)
-        if score >= SEMANTIC_THRESHOLD and (current is None or score > current.score):
-            best[entry_id] = SemanticMatch(entry_id, score, chunk_index)
-    return sorted(best.values(), key=lambda match: -match.score)[:limit]
+    if rows.size * 4 >= mask.size:
+        # Most of the matrix: one product over all of it beats copying the rows.
+        scores = (snapshot.matrix @ query_vector)[rows]
+    else:
+        scores = snapshot.matrix[rows] @ query_vector
+    entry_ids = snapshot.entry_ids[rows]
+    # Compared in float64, as the Python floats of the per-chunk scan were.
+    keep = scores.astype(np.float64) >= threshold
+    if exclude_entry_ids:
+        excluded = np.fromiter((int(entry_id) for entry_id in exclude_entry_ids), dtype=np.int64)
+        keep &= ~np.isin(entry_ids, excluded)
+    kept = np.flatnonzero(keep)
+    if kept.size == 0:
+        return []
+    scores = scores[kept]
+    entry_ids = entry_ids[kept]
+    # Each entry's best chunk, the first of equal ones: chunks by score
+    # descending, then by position, and the first row of every entry.
+    by_score = np.lexsort((np.arange(kept.size), -scores))
+    distinct, first_in_order = np.unique(entry_ids[by_score], return_index=True)
+    best_rows = by_score[first_in_order]
+    # Entries by best score, ties in the order each entry first appears,
+    # as the per-chunk scan this replaces ranked them.
+    _same, first_seen = np.unique(entry_ids, return_index=True)
+    best_scores = scores[best_rows]
+    ranked = np.lexsort((first_seen, -best_scores))[:limit]
+    chunk_indexes = snapshot.chunk_indexes[rows[kept]] if snapshot.chunk_indexes is not None else None
+    return [
+        SemanticMatch(
+            int(distinct[position]),
+            float(best_scores[position]),
+            int(chunk_indexes[best_rows[position]]) if chunk_indexes is not None else None,
+        )
+        for position in ranked.tolist()
+    ]
 
 
 def best_excerpt_index(query: str, bodies: Sequence[str], semantic_chunk: int | None) -> int:

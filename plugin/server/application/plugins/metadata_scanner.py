@@ -50,25 +50,25 @@ _WORKER_BOOTSTRAP = (
 )
 
 
-# 单个插件扫描的上限。
+# Per-plugin scan limit.
 #
-# 从 30s 降下来：实测本机 17 个真实插件里最慢的 1.41s、中位 0.97s，所以 10s 仍有
-# 约 7 倍余量，冷盘或杀软首次逐个扫解释器时也够。30s 的问题是它乘以插件数——
-# 一个卡住的插件能把整轮 discovery 拖到分钟级，而前端只等 30s。
+# Reduced from 30 s: among 17 real local plugins, the slowest measured 1.41 s and median 0.97 s, so 10 s still leaves
+# roughly sevenfold headroom for cold disks or initial antivirus interpreter scans. The problem with 30 s is multiplication by plugin count:
+# one stuck plugin can stretch discovery into minutes while the frontend waits only 30 s.
 #
-# 注意单项上限本身不足以封顶：17 个插件按 5 并发是 4 波，4×10s 仍然超前端预算。
-# 真正封顶的是 registry_service 那边的总预算，这里只负责让单个坏插件早点放手。
+# A per-item limit alone is insufficient: 17 plugins at concurrency 5 require 4 waves, and 4 x 10 s exceeds the frontend budget.
+# registry_service's overall budget provides the real bound; this limit only releases individual bad plugins sooner.
 # Env: NEKO_PLUGIN_METADATA_SCAN_TIMEOUT
 from plugin.server.application.plugins._metadata_scan_settings import (
     METADATA_SCAN_TIMEOUT_SECONDS as _DEFAULT_SCAN_TIMEOUT_SECONDS,
 )
 
-# 这里曾经有一个全局信号量，限制同时活着的元数据解释器数量，因为 discovery 会
-# 并行强扫十几个插件、每个常驻约 66 MB。discovery 不再扫描之后扇出没有了：唯一
-# 的调用方是 start_plugin，而它跑在插件操作锁里，一次只可能有一个。
+# A global semaphore once limited live metadata interpreters because discovery concurrently rescanned
+# over a dozen plugins, each occupying about 66 MB. Discovery no longer scans, removing that fan-out: the only
+# caller is start_plugin, serialized by the plugin operation lock.
 #
-# 连带删掉的还有"等槽位超过 50ms 就把超时改判成预算问题"那条判据——它的存在
-# 前提就是有人要排队等槽位。
+# Also removed the rule reclassifying timeouts as budget issues after waiting over 50 ms for a slot;
+# it presupposed callers queuing for slots.
 
 
 def _metadata_worker_command() -> list[str]:
@@ -135,8 +135,8 @@ def _terminate_worker_tree(
             try:
                 process.kill()
             except OSError:
-                # 进程在 poll() 和 kill() 之间自己退了，或者句柄已经无效——
-                # 目的（它不再运行）已经达成，没有可补救的。
+                # The process exited between poll() and kill(), or its handle is invalid;
+                # the goal of stopping it is already achieved and there is nothing to recover.
                 pass
 
 
@@ -151,8 +151,8 @@ def _terminate_and_reap_worker(
         except subprocess.TimeoutExpired:
             process.kill()
             try:
-                # 同理：已经 kill 过的进程通常立刻可收，但这一步无界等待没有
-                # 任何东西护着，收不掉就放手，别把关停卡在这儿。
+                # Likewise, a killed process is usually immediately reapable, but nothing protects an unbounded wait here;
+                # abandon reaping if necessary rather than blocking shutdown.
                 process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
             except subprocess.TimeoutExpired:
                 pass
@@ -494,8 +494,8 @@ def _scan_plugin_metadata_uncached(
     source_only: bool = False,
 ) -> IsolatedPluginMetadata:
     if timeout <= 0:
-        # 总预算已经用完：连进程都不要起。调用方拿到的是和"扫描超时"同一种
-        # 错误，于是插件照样出现在列表里（标成扫描失败），而不是整批中断。
+        # Overall budget exhausted: do not even start a process. Return the same error as a scan timeout,
+        # retaining the plugin in the list as scan-failed instead of aborting the whole batch.
         raise PluginMetadataScanError(
             "ScanBudgetExhausted",
             "Plugin metadata scan skipped: discovery time budget exhausted",

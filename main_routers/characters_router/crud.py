@@ -85,6 +85,9 @@ from utils.config_manager import (
     is_valid_character_uid,
     set_reserved,
 )
+from utils.api_config_loader import (  # noqa: F401 - re-exported by the characters_router facade
+    DEFAULT_NEW_CHARACTER_FREE_VOICE_ID as DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
+)
 from utils.asyncio_retirement import await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
@@ -130,21 +133,19 @@ from services.theater.numeric_v2_maintenance import (
 )
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
-
-
-DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+from services.chat_sync import host as _chat_sync_host
 
 
 def _get_new_catgirl_default_voice_id() -> str:
-    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
-    from utils.api_config_loader import get_free_voices
+    """Late-bound alias of ``utils.api_config_loader.get_new_character_default_voice_id``.
 
-    free_voices = get_free_voices() or {}
-    return (
-        free_voices.get('cuteGirl')
-        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
-        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
-    )
+    add_catgirl looks this name up here, so patching it still reaches that
+    route; resolving the utils attribute at call time keeps patches of the
+    utils function effective too, and survives ``importlib.reload`` of crud.
+    """
+    from utils import api_config_loader
+
+    return api_config_loader.get_new_character_default_voice_id()
 
 
 EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"
@@ -211,7 +212,7 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
     events = [event for event in existing if isinstance(event, dict)] if isinstance(existing, list) else []
     new_event = _build_profile_rename_event(old_name, new_name)
 
-    # 防止同一次请求重放时连续写入完全相同的改名事件。
+    # Prevent identical rename events being written consecutively on replay of the same request.
     if events:
         last = events[-1]
         if (
@@ -239,9 +240,9 @@ async def _clear_character_recent_history(
         operation="save",
         target=f"memory/{character_name}/recent.json",
     )
-    # 走 utils.recent_file 的 per-path 锁：merged 单进程下 memory_server 的写者
-    # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。底层原子写
-    # 会在 generation 校验成功后创建父目录，stale callback 不得提前重建它。
+    # Use utils.recent_file's per-path lock: merged single-process mode places memory_server writers
+    # in this same process, so bare atomic_write_json_async bypasses exclusion. The underlying atomic writer
+    # creates parents after successful generation checks; stale callbacks must not recreate them early.
     await asyncio.to_thread(
         write_recent_payload,
         recent_path,
@@ -401,8 +402,8 @@ def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | N
         if key not in CHARACTER_RESERVED_FIELD_SET
     ]
     if requested_order is None:
-        # 也认顶层 _field_order：工坊上传卡的顺序存在顶层（上传时 _reserved 被剥离），
-        # 只读 _reserved.field_order 会漏掉它而退回 JSON key 枚举顺序（数字 key 被提前）。
+        # Honor top-level _field_order too: uploaded workshop cards store order there because _reserved is stripped.
+        # Reading only _reserved.field_order misses it and falls back to JSON-key order, promoting numeric keys.
         requested_order = _extract_catgirl_field_order_payload(catgirl_data)
     field_order = _normalize_catgirl_field_order(requested_order, available_fields)
     set_reserved(catgirl_data, "field_order", field_order)
@@ -463,9 +464,9 @@ def _numeric_v2_preflight_failure_response(
         current = current.__cause__ or current.__context__
     payload = {"success": False, "error": f"{message}，请稍后重试"}
     if failed_path:
-        # 文件内容无法确认归属时只能整体中止；返回剧场根目录下的相对路径，便于用户修复或移走该文件。
+        # Abort entirely when file ownership is uncertain; return a theater-root-relative path so users can repair or move it.
         try:
-            # 存储层路径均由同一剧场根拼接，纯字符串比较即可，无需访问文件系统。
+            # Storage paths share one theater root, so string comparison suffices without filesystem access.
             relative = Path(failed_path).relative_to(Path(numeric_theater_root)).as_posix()
         except ValueError:
             relative = Path(failed_path).name
@@ -739,7 +740,7 @@ async def collect_numeric_v2_character_purge(
 async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> None:
     """Erase a collected character's theater data (sessions, archives, receipts, intents, quarantines)."""
     archive_store = purge.archive_store
-    # 角色卡是剧场 Session 槽位的一部分；删除角色时必须同步删除所有剧本下的对应槽位。
+    # Character cards belong to theater Session slots; deleting a character must delete matching slots across all scripts.
     await delete_numeric_v2_sessions(
         purge.theater_root,
         character_id=purge.character_id,
@@ -750,7 +751,7 @@ async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> Non
         character_id=purge.character_id,
         legacy_catgirl_name=purge.legacy_catgirl_name,
     )
-    # 完整公开演绎属于角色数据，必须与 Session、回执在同一删除事务内级联清理。
+    # Full public performances are character data; cascade-delete them with Sessions and receipts in one transaction.
     await _await_thread_mutation(
         archive_store.delete_public_archives,
         story_id="",
@@ -759,7 +760,7 @@ async def purge_numeric_v2_character_data(purge: NumericV2CharacterPurge) -> Non
     )
     for intent_path in purge.forget_paths:
         await _await_thread_mutation(intent_path.unlink, missing_ok=True)
-    # 隔离区冷档案已进入调用方快照；删除失败时随其它目标一并恢复。
+    # Quarantined cold archives already enter the caller's snapshot; restore them with other targets on deletion failure.
     for quarantined_path in (
         *purge.quarantined_archive_paths,
         *purge.quarantined_session_paths,
@@ -1027,33 +1028,33 @@ async def _rollback_character_operation(
 async def get_characters(request: Request):
     """Get character data, with persona auto-translation based on the user language."""
     _config_manager = get_config_manager()
-    # 创建深拷贝，避免修改原始配置数据
+    # Deep-copy to avoid modifying original configuration data.
     characters_data = copy.deepcopy(await _config_manager.aload_characters())
     if isinstance(characters_data.get('猫娘'), dict):
-        # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
+        # COMPAT(v1->v2): frontend still uses legacy flat fields; expand at the interface layer as needed.
         for cat_name, cat_data in list(characters_data['猫娘'].items()):
             if isinstance(cat_data, dict):
                 characters_data['猫娘'][cat_name] = _flatten_catgirl_for_response(cat_data)
 
-    # 尝试从请求参数或请求头获取用户语言
+    # Try obtaining user language from request parameters or headers.
     user_language = request.query_params.get('language')
     if not user_language:
         accept_lang = request.headers.get('Accept-Language', 'zh-CN')
-        # Accept-Language 可能包含多个语言，取第一个
+        # Accept-Language may list several languages; take the first.
         user_language = accept_lang.split(',')[0].split(';')[0].strip()
-    # 使用公共函数归一化语言代码
+    # Normalize language codes with the shared helper.
     user_language = normalize_language_code(user_language, format='full')
 
-    # 如果语言是中文，不需要翻译
+    # Chinese needs no translation.
     if user_language == 'zh-CN':
         return _json_no_store_response(characters_data)
 
-    # 需要翻译：翻译人设数据（在深拷贝上进行，不影响原始配置）
+    # Translate persona data on the deep copy without affecting original configuration.
     try:
         from utils.language_utils import get_translation_service
         translation_service = get_translation_service(_config_manager)
 
-        # 翻译主人数据
+        # Translate owner data.
         if '主人' in characters_data and isinstance(characters_data['主人'], dict):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
@@ -1061,13 +1062,13 @@ async def get_characters(request: Request):
                 fields_to_translate=['昵称']
             )
 
-        # 翻译猫娘数据（并行翻译以提升性能）
+        # Translate catgirl data concurrently for performance.
         if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
             async def translate_catgirl(name, data):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['昵称', '性别']  # 注意：不翻译档案名和 system_prompt
+                        fields_to_translate=['昵称', '性别']  # Do not translate profile names or system_prompt.
                     )
                 return name, data
 
@@ -1106,7 +1107,7 @@ async def rename_catgirl(old_name: str, request: Request):
             end_character_mutation(old_name, new_name)
 
 
-async def _rename_catgirl_serialized(old_name: str, new_name: str):
+async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commit=None):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
@@ -1115,15 +1116,15 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
 
-    # 如果当前猫娘是被重命名的猫娘，先缓存 WebSocket，
-    # 只有在持久化和重载全部成功后才发送通知，避免前端先切换到未提交状态。
+    # If renaming the active catgirl, cache its WebSocket first;
+    # notify only after all persistence and reload succeeds, preventing frontend switches to uncommitted state.
     is_current_catgirl = characters.get('当前猫娘') == old_name
 
-    # 检查当前角色是否有活跃的语音session
+    # Check whether the current character has an active voice session.
     if is_current_catgirl and old_name in session_manager:
         mgr = session_manager[old_name]
         if mgr.is_active:
-            # 检查是否是语音模式（通过session类型判断）
+            # Determine voice mode from session type.
             from main_logic.omni_realtime_client import OmniRealtimeClient
             is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
 
@@ -1133,18 +1134,18 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                     'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
                 }, status_code=400)
     if is_character_lifecycle_locked(old_name):
-        # 外部路由（小游戏 / 串门）占着这个角色、或串门还在按这个名字写后台数据（收尾、摘要、
-        # 清除记忆）：改名会让它们写到旧名字下（OD-13）
+        # External routing (mini-games / visits) owns this character, or visit background writes still use its name
+        # (finalization, summaries, memory erasure): renaming would leave writes under the old name (OD-13).
         return JSONResponse({'success': False, 'error_code': EXTERNAL_ROUTE_ACTIVE,
                              'error': '角色正在串门或小游戏中，请结束后再修改名称'}, status_code=400)
-    # 与上面的检查之间没有 await：从这里到事务结束，这个角色不能再开串门 / 小游戏
+    # No await since the check above: no new visit / mini-game may start for this character before the transaction ends.
     begin_character_mutation(old_name, new_name)
     from main_routers.visit_router import character_hooks as visit_hooks
 
     refusal = await _visit_name_refusal(_config_manager, new_name, "新档案名")
     if refusal is not None:
         return refusal
-    # 串门数据跟着改名走：先记意图（pending_rename），事务结束后按配置里的实际名字迁移或撤回
+    # Migrate visit data with rename: record pending_rename first, then migrate or withdraw according to actual committed configuration names.
     try:
         visit_marker = await visit_hooks.begin_rename(
             _config_manager, characters, old_name, new_name, get_character_uid(characters['猫娘'][old_name]),
@@ -1158,6 +1159,7 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
     try:
         result = await _rename_catgirl_transaction(
             _config_manager, session_manager, characters, old_name, new_name, is_current_catgirl,
+            sync_commit=sync_commit,
         )
     finally:
         if visit_marker is not None:
@@ -1165,13 +1167,23 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str):
                 visit_hooks.settle_rename(_config_manager, visit_marker),
             )
     if not visit_settled and isinstance(result, dict) and result.get("success"):
-        # 改名已生效，串门数据没迁完：标记保留，下次启动对账补完
+        # Rename committed but visit migration incomplete: retain marker for startup reconciliation.
         result["partial_success"] = True
         result["visit_data_migration_pending"] = True
     if settle_cancelled:
-        # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
+        # Cancellation during finalization: marker handling finished; propagate cancellation normally, like other cleanup calls.
         raise asyncio.CancelledError
     return result
+
+
+# Chat sync's confirmed remote rename (services layer) reuses this exact
+# transaction. The lambda looks the function up on every call, so patches of
+# _rename_catgirl_serialized reach chat sync and reload(crud) just reinstalls.
+_chat_sync_host.install_rename_transaction(
+    rename_character=lambda old_name, new_name, *, sync_commit=None: _rename_catgirl_serialized(
+        old_name, new_name, sync_commit=sync_commit,
+    ),
+)
 
 
 async def _visit_name_refusal(config_manager, name: str, label: str):
@@ -1186,6 +1198,7 @@ async def _visit_name_refusal(config_manager, name: str, label: str):
 
 async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
+    *, sync_commit=None,
 ):
     rename_notification_ws = None
     rename_notification_message = None
@@ -1242,7 +1255,7 @@ async def _rename_catgirl_transaction(
     memory_targets.extend(numeric_public_archive_targets)
     memory_targets.extend(numeric_receipt_targets)
     memory_targets.append(numeric_session_index_path)
-    # 卡面文件纳入 snapshot，使迁移失败也能回滚
+    # Include cover files in the snapshot so failed migration can roll back.
     old_face = _config_manager.card_faces_dir / f"{old_name}.png"
     new_face = _config_manager.card_faces_dir / f"{new_name}.png"
     old_meta = _config_manager.card_face_meta_path(old_name)
@@ -1326,16 +1339,24 @@ async def _rename_catgirl_transaction(
             if snapshot_cancelled:
                 raise asyncio.CancelledError
 
-            # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
-            # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
-            memory_rename_result, rename_cancelled = await _await_thread_call_to_completion(
-                rename_character_memory_storage,
-                _config_manager,
-                old_name,
-                new_name,
-                keep_recent_locks=True,
-                recent_transaction=recent_transaction,
-            )
+            # to_thread: recent.json reads/writes in rename acquire file locks, never on the event-loop
+            # thread (symmetric call in main_routers/memory_router.py).
+            if sync_commit is None:
+                memory_rename_result, rename_cancelled = await _await_thread_call_to_completion(
+                    rename_character_memory_storage,
+                    _config_manager,
+                    old_name,
+                    new_name,
+                    keep_recent_locks=True,
+                    recent_transaction=recent_transaction,
+                )
+            else:
+                # A sync rename retains the existing rollback transaction but
+                # fences each durable mutation by its captured login/consent.
+                memory_rename_result, rename_cancelled = await _await_coroutine_to_completion(
+                    sync_commit(rename_character_memory_storage, _config_manager, old_name, new_name,
+                                keep_recent_locks=True, recent_transaction=recent_transaction)
+                )
             if rename_cancelled:
                 raise asyncio.CancelledError
             retired_names = (old_name,)
@@ -1347,15 +1368,20 @@ async def _rename_catgirl_transaction(
             # identity that does not exist.
             reretire_names = (new_name,)
 
-            # 重命名角色真源
+            # Rename the authoritative character source.
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
             _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
-            # 如果当前猫娘是被重命名的猫娘，也需要更新
+            # Update the current catgirl too if it is the renamed character.
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
-            await _await_thread_mutation(
-                _config_manager.save_characters, characters,
-            )
+            if sync_commit is None:
+                await _await_thread_mutation(_config_manager.save_characters, characters)
+            else:
+                _, save_cancelled = await _await_coroutine_to_completion(
+                    sync_commit(_config_manager.save_characters, characters)
+                )
+                if save_cancelled:
+                    raise asyncio.CancelledError
 
             await update_numeric_v2_character_bindings(
                 numeric_theater_root,
@@ -1366,8 +1392,8 @@ async def _rename_catgirl_transaction(
                     new_name,
                 ),
             )
-            # 旧版冷档案和结束回执可能没有 character_id；必须与 Session 一起迁移，
-            # 否则改名后既无法列出档案，也无法消费尚未处理的结束回执。
+            # Legacy cold archives / completion receipts may lack character_id; migrate them with Sessions,
+            # or renamed archives become unlistable and outstanding completion receipts unconsumable.
             await asyncio.to_thread(
                 numeric_archive_store.update_character_binding,
                 character_id=renamed_character_id,
@@ -1375,14 +1401,14 @@ async def _rename_catgirl_transaction(
                 catgirl_name=new_name,
             )
 
-            # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
-            # 等价于"删除旧 + 新增新"，不遍历其它 N-1 个。
+            # Fast path: remove the old name and start one catgirl slot with the new name.
+            # Equivalent to delete old + add new, without traversing the other N-1 characters.
             remove_one_catgirl = get_remove_one_catgirl()
             init_one_catgirl = get_init_one_catgirl()
             await remove_one_catgirl(old_name)
             await init_one_catgirl(new_name, is_new=True)
 
-            # 迁移卡面 PNG 与 sidecar JSON（纳入同一事务）
+            # Migrate cover PNG and sidecar JSON within the same transaction.
             from datetime import datetime as _dt
             _ts = _dt.now().strftime('%Y%m%d%H%M%S')
             if old_face.exists():
@@ -1435,6 +1461,12 @@ async def _rename_catgirl_transaction(
                     status_code=500,
                 )
 
+            if sync_commit is not None:
+                # A pause/logout during awaited reload or asset migration must
+                # roll back before this existing transaction becomes committed.
+                _, guard_cancelled = await _await_coroutine_to_completion(sync_commit(lambda: None))
+                if guard_cancelled:
+                    raise asyncio.CancelledError
             rename_committed = True
             _, finalize_cancelled = await _await_thread_call_to_completion(
                 finalize_character_recent_rename, memory_rename_result,
@@ -1519,7 +1551,7 @@ async def _rename_catgirl_transaction(
         finally:
             release_character_recent_transaction(recent_transaction)
 
-    # 数据更新+重载+卡面迁移完成后再通知前端
+    # Notify frontend only after data update, reload, and cover migration complete.
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
         try:
             await rename_notification_ws.send_text(rename_notification_message)
@@ -1575,9 +1607,9 @@ async def set_current_catgirl(request: Request):
     if catgirl_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
 
-    # Numeric v2 以不可变 character_id 独立恢复；切换角色只发布当前配置，
-    # 不结束或删除其他角色的剧本进度。
-    # 当前角色发布与剧场提交共享角色生命周期锁，保证提交前复验结果不会被切换请求穿透。
+    # Numeric v2 recovers independently by immutable character_id; switching publishes current configuration only,
+    # without ending or deleting other characters' script progress.
+    # Current-character publication shares the lifecycle lock with theater commits, preventing switches bypassing precommit revalidation.
     async with character_config_mutation_lock:
         # Waiting for the lock can queue multiple card switches. Read both the
         # outgoing character and its voice state from the configuration we publish.
@@ -1596,13 +1628,13 @@ async def set_current_catgirl(request: Request):
                     }, status_code=400)
         latest_characters['当前猫娘'] = catgirl_name
         await _config_manager.asave_characters(latest_characters)
-    # Fast path：切换只改变 `当前猫娘` 字段，per-k 的 prompt / voice_id / thread 都不变，
-    # 只需刷新 globals 即可。N=20 只猫娘时从 O(N) 降到 O(1)。
+    # Fast path: switching changes only 当前猫娘; per-k prompt / voice_id / thread remain unchanged,
+    # requiring only refreshed globals. With 20 catgirls this reduces O(N) to O(1).
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
 
-    # 角色卡切换会复用同一个前端猫爪面板和工具服务全局状态。
-    # 这里先把旧状态归零，避免新角色刷新后继承上一张卡的开关状态。
+    # Character-card switches reuse the same frontend paw panel and global tool-service state.
+    # Reset old state first so the new card cannot inherit the previous card's toggles on refresh.
     if old_catgirl != catgirl_name:
         await force_disable_agent_for_character_switch(catgirl_name, old_catgirl)
 
@@ -1630,8 +1662,8 @@ async def set_current_catgirl(request: Request):
             # clean up if this hook misses.
             logger.warning("角色切换外部路由收尾失败: lanlan=%s err=%s", old_catgirl, exc)
 
-    # 通过WebSocket通知所有连接的客户端
-    # 使用session_manager中的websocket，但需要确保websocket已设置
+    # Notify all connected clients through WebSockets.
+    # Use session_manager's websocket, ensuring it has been set.
     notification_count = 0
     logger.info(f"开始通知WebSocket客户端：猫娘从 {old_catgirl} 切换到 {catgirl_name}")
 
@@ -1641,8 +1673,8 @@ async def set_current_catgirl(request: Request):
         "old_catgirl": old_catgirl
     })
 
-    # 并行通知所有 session_manager —— 每个 send_text 独立，per-mgr 失败时只清自己的 ws，
-    # 串行版本里一个慢/卡的 ws 会拖累后面的通知。
+    # Notify all session_managers concurrently: send_text calls are independent and failures clear only that manager's ws;
+    # sequential delivery lets one slow/stuck websocket delay later notifications.
     snapshot = list(session_manager.items())
     for lanlan_name, mgr in snapshot:
         logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={mgr.websocket is not None}")
@@ -1657,7 +1689,7 @@ async def set_current_catgirl(request: Request):
             return True
         except Exception as e:
             logger.warning(f"❌ 通知 {lanlan_name} 的连接失败: {e}")
-            # 如果发送失败，可能是连接已断开，清空websocket引用
+            # Failed sends may indicate disconnection; clear the websocket reference.
             if mgr.websocket == ws:
                 mgr.websocket = None
             return False
@@ -1734,7 +1766,7 @@ async def update_master(request: Request):
         _append_profile_rename_event(next_master, previous_profile_name, profile_name)
     characters['主人'] = next_master
     await _config_manager.asave_characters(characters)
-    # 自动重新加载配置
+    # Automatically reload configuration.
     await initialize_character_data()
     return {"success": True}
 
@@ -1819,7 +1851,7 @@ async def add_catgirl(request: Request):
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
-        # 创建猫娘数据，只保存非空字段
+        # Create catgirl data, saving nonempty fields only.
         catgirl_data = {}
         for k, v in created_data.items():
             if k != '档案名' and v:
@@ -1828,18 +1860,18 @@ async def add_catgirl(request: Request):
         characters['猫娘'][key] = catgirl_data
         ensure_catgirl_character_id(catgirl_data)
         _sync_catgirl_field_order(catgirl_data, requested_field_order)
-        # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
-        # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
+        # Default to free presets: LLMSessionManager's existing gate clears self.voice_id outside free / lanlan.tech, preventing leakage to other TTS providers.
+        # Read free_voices['cuteGirl'] to avoid hardcoded drift; fall back to the first nonempty preset, then the legacy default.
         default_free_voice_id = _get_new_catgirl_default_voice_id()
         set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
-        # 新角色（含复制已有角色的字段新建）一律拿新的稳定 id；改名沿用同一条目，id 不变。
+        # New characters, including copies of existing fields, always get fresh stable IDs; renames retain the same entry and ID.
         assign_new_character_uid(catgirl_data)
         publish_cancelled = await asave_characters_with_recent_activation(
             _config_manager, characters, key,
         )
         pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
-        # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
+        # Fast path: allocate resources and start a thread only for catgirl key, without affecting others.
         init_one_catgirl = get_init_one_catgirl()
         await init_one_catgirl(key, is_new=True)
 
@@ -1885,14 +1917,14 @@ async def update_catgirl(name: str, request: Request):
     if not raw_data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
 
-    # COMPAT(v1->v2): 兼容旧客户端仍通过通用接口提交 voice_id。
-    # 通用字段仍按保留字段规则过滤，voice_id 走独立检测与应用逻辑。
+    # COMPAT(v1->v2): legacy clients still submit voice_id through the generic interface.
+    # Generic fields still follow reserved-field filtering; voice_id uses separate validation/application.
     voice_id_in_payload = 'voice_id' in raw_data
     requested_voice_id = ''
     if voice_id_in_payload:
         requested_voice_id = str(raw_data.get('voice_id') or '').strip()
 
-    # 兼容前端自动修复：允许通过通用接口修改 model_type 保留字段。
+    # Frontend auto-repair compatibility: allow generic updates to reserved model_type.
     model_type_in_payload = 'model_type' in raw_data
     requested_model_type = ''
     if model_type_in_payload:
@@ -1923,7 +1955,7 @@ async def update_catgirl(name: str, request: Request):
                 return _voice_session_starting_response()
 
         if voice_id_in_payload and requested_voice_id:
-            # 验证 voice_id 是否在 voice_storage 中
+            # Verify voice_id exists in voice_storage.
             if not _config_manager.validate_voice_id(requested_voice_id):
                 voices = _config_manager.get_voices_for_current_api()
                 available_voices = list(voices.keys())
@@ -1933,7 +1965,7 @@ async def update_catgirl(name: str, request: Request):
                     'available_voices': available_voices
                 }, status_code=400)
 
-        # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
+        # Update only submitted ordinary fields, deleting omitted ones; dedicated endpoints always manage reserved fields.
         removed_fields = []
         for k in characters['猫娘'][name]:
             if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
@@ -1941,16 +1973,16 @@ async def update_catgirl(name: str, request: Request):
         for k in removed_fields:
             characters['猫娘'][name].pop(k)
 
-        # 更新普通字段
+        # Update ordinary fields.
         for k, v in data.items():
             if k != '档案名' and v:
                 characters['猫娘'][name][k] = v
 
-        # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段（惰性迁移成结构对象）。
+        # Legacy API compatibility: if supplied, write voice_id into reserved fields too, lazily migrating to a structured object.
         if voice_id_in_payload:
             set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(requested_voice_id))
 
-        # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
+        # Frontend auto-repair compatibility: if supplied, also write model_type into reserved fields.
         if model_type_in_payload and requested_model_type:
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
 
@@ -1962,7 +1994,7 @@ async def update_catgirl(name: str, request: Request):
         voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
         prompt_fields_changed = _catgirl_prompt_fields_changed(previous_catgirl_data, characters['猫娘'][name])
 
-    # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
+    # Explicitly report filtered reserved fields rather than silently swallowing them.
     ignored_reserved_fields = sorted(
         (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id', 'model_type'}
     )
@@ -1992,7 +2024,7 @@ async def update_catgirl(name: str, request: Request):
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
-        # 如果是当前活跃的猫娘，只结束当前语音会话；voice_id 会在下方刷新到 session_manager。
+        # For the active catgirl, end only the current voice session; refresh session_manager voice_id below.
         if is_current_catgirl and name in session_manager and session_manager[name].is_active:
             logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备结束当前语音会话...")
             notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
@@ -2004,25 +2036,25 @@ async def update_catgirl(name: str, request: Request):
                 logger.info(f"{name} 的session已结束")
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
-            # 与 set_voice_id 路径对偶：清掉前一会话的失败计数 / 熔断，
-            # 否则下一次 start_session 会被旧熔断静默拦截。
+            # Symmetric with set_voice_id: clear previous-session failure counts / circuit breakers,
+            # or stale breakers silently block the next start_session.
             session_manager[name].reset_session_start_circuit()
 
         if is_current_catgirl:
-            # Fast path：只刷新被编辑角色的 session_manager（prompt/voice_id），
-            # 其它 N-1 个 catgirl 不动。
+            # Fast path: refresh only the edited character's session_manager prompt/voice_id;
+            # leave the other N-1 catgirls unchanged.
             init_one_catgirl = get_init_one_catgirl()
             await init_one_catgirl(name, is_new=False)
             logger.info("配置已重新加载，新的voice_id已生效")
         else:
-            # 非当前猫娘：原来靠下次 switch 的全量 init 顺带 rescue。切换改走 fast path
-            # 后 rescue 不再发生，所以这里必须显式刷 session_manager[name]。
-            # init_one_catgirl 只写 session_manager[name] 的 prompt/voice_id，不碰当前 session。
+            # Noncurrent catgirls were previously rescued by full initialization on the next switch. Fast-path switches
+            # no longer do that, so explicitly refresh session_manager[name] here.
+            # init_one_catgirl updates only that manager's prompt/voice_id, without touching its current session.
             init_one_catgirl = get_init_one_catgirl()
             await init_one_catgirl(name, is_new=False)
             logger.info(f"非当前猫娘 {name} 的音色已更新并同步到 session_manager")
     else:
-        # Fast path：普通字段编辑，只刷新被编辑角色。
+        # Fast path: ordinary-field edits refresh only the edited character.
         init_one_catgirl = get_init_one_catgirl()
         await init_one_catgirl(name, is_new=False)
 
@@ -2068,6 +2100,78 @@ async def _delete_catgirl_by_name(name: str):
             end_character_mutation(name)
 
 
+async def _delete_synced_character(uid: str, before_delete):
+    """Apply an authenticated remote deletion by UID under the ordinary lifecycle lock."""
+    from utils.config_manager import assign_new_character_uid
+    from utils.config_manager.reserved_schema import ensure_catgirl_character_id
+
+    async with character_config_mutation_lock:
+        await before_delete()
+        cm = get_config_manager()
+        characters = await cm.aload_characters()
+        name = next((key for key, raw in characters.get('猫娘', {}).items()
+                     if isinstance(raw, dict) and get_character_uid(raw) == uid), None)
+        if name is None:
+            return True
+        managers = get_session_manager() or {}
+        sockets = [manager.websocket for manager in managers.values() if getattr(manager, 'websocket', None)]
+        if _chat_sync_host.conversation_busy(managers.get(name)) or is_character_lifecycle_locked(name):
+            return False
+        previous_current = characters.get('当前猫娘', '')
+        switched = previous_current == name
+        fallback = None
+        created_fallback = False
+        success = False
+        try:
+            if switched:
+                fallback = next((key for key in characters['猫娘'] if key != name), None)
+                if fallback is None:
+                    default_name, default_role = next(iter(cm.get_default_characters()['猫娘'].items()))
+                    fallback = default_name if default_name != name else f"{default_name} (2)"
+                    default_role = copy.deepcopy(default_role)
+                    assign_new_character_uid(default_role)
+                    ensure_catgirl_character_id(default_role)
+                    characters['猫娘'][fallback] = default_role
+                    created_fallback = True
+                characters['当前猫娘'] = fallback
+                await before_delete()
+                await cm.asave_characters(characters)
+                if created_fallback:
+                    await get_init_one_catgirl()(fallback, is_new=False)
+                await get_switch_current_catgirl_fast()()
+                await force_disable_agent_for_character_switch(fallback, name)
+            await before_delete()
+            result = await _delete_catgirl_by_name_serialized(name)
+            success = isinstance(result, dict) and result.get('success') is True
+        finally:
+            end_character_mutation(name)
+            if switched and not success:
+                async def restore_previous_character():
+                    latest = await cm.aload_characters()
+                    if name in latest.get('猫娘', {}):
+                        latest['当前猫娘'] = previous_current
+                        if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
+                            del latest['猫娘'][fallback]
+                        await cm.asave_characters(latest)
+                        if created_fallback:
+                            await get_remove_one_catgirl()(fallback)
+                        await get_switch_current_catgirl_fast()()
+                try:
+                    await _await_cleanup_to_completion(restore_previous_character())
+                except (Exception, asyncio.CancelledError):
+                    logger.exception("Failed to restore current character after sync deletion")
+        if success and switched:
+            frame = json.dumps({'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback})
+            await asyncio.gather(*(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
+                                 return_exceptions=True)
+        return success
+
+
+_chat_sync_host.install_delete_transaction(
+    delete_character=lambda uid, before_delete: _delete_synced_character(uid, before_delete),
+)
+
+
 async def _cleanup_deleted_chat_avatar(directory, uid):
     if uid is None:
         return True
@@ -2085,18 +2189,18 @@ async def _delete_catgirl_by_name_serialized(name: str):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
-    # 检查是否是当前正在使用的猫娘
+    # Check whether this is the currently used catgirl.
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
     if is_character_lifecycle_locked(name):
-        # 切换角色后旧角色的串门 / 小游戏收尾仍在跑、或还在写它的后台数据：删掉之后会被重建（OD-13）
+        # After switching characters, old visit / mini-game finalization or background writes may remain; deleting now would recreate data (OD-13).
         return JSONResponse({'success': False, 'error_code': EXTERNAL_ROUTE_ACTIVE,
                              'error': '角色正在串门或小游戏中，请结束后再删除'}, status_code=400)
     begin_character_mutation(name)
     from main_routers.visit_router import character_hooks as visit_hooks
 
-    # 串门残留退役：先记删除标记（pending_retire），删除提交后才退役；回滚则只撤标记
+    # Retire visit residue: record pending_retire first, retire after deletion commits, and merely remove markers on rollback.
     try:
         visit_item = await visit_hooks.begin_retire(
             _config_manager, name, get_character_uid(characters["猫娘"][name]),
@@ -2159,11 +2263,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
                 visit_hooks.settle_retire(_config_manager, visit_item),
             )
     if not visit_settled and isinstance(result, dict) and result.get("success"):
-        # 角色已删除，串门残留没退役完：不回滚角色，标记保留，下次启动补完
+        # Character deleted but visit retirement incomplete: retain the marker for next startup without restoring the character.
         result["partial_success"] = True
         result["visit_data_retire_pending"] = True
     if settle_cancelled or retirement_finish_cancelled:
-        # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
+        # Cancellation during finalization: marker handling finished; propagate cancellation normally, like other cleanup calls.
         raise asyncio.CancelledError
     return result
 
@@ -2194,7 +2298,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             config_manager=_config_manager,
         )
     except (OSError, NumericV2StoreError, NumericV2ArchiveError) as exc:
-        # 与改名一致：无法确认归属的剧场文件使整个删除中止，并返回结构化错误而非裸 500。
+        # Like rename, uncertain theater-file ownership aborts the whole deletion with a structured error rather than bare 500.
         logger.exception("删除角色 Numeric v2 预检失败: %s", name)
         return _numeric_v2_preflight_failure_response(
             exc, numeric_theater_root, "删除角色预检失败",
@@ -2212,7 +2316,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             )
             unsafe_config_deleted = False
             try:
-                # 非法名称救援仍要删除按角色归属的剧场数据；这些文件已进入上方事务快照。
+                # Invalid-name recovery must still delete character-owned theater data; those files already enter the transaction snapshot.
                 await purge_numeric_v2_character_data(numeric_purge)
                 del characters['猫娘'][name]
                 _, save_cancelled = await _await_coroutine_to_completion(
@@ -2404,13 +2508,13 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
 
-            # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
+            # Delete cover PNG and sidecar JSON in the same rollback-capable transaction.
             if face_path.exists():
                 await _await_thread_mutation(face_path.unlink)
             if meta_path.exists():
                 await _await_thread_mutation(meta_path.unlink)
 
-            # 剧场 Session、回执、公开冷档案、遗忘意图与隔离区都已进入上方快照。
+            # Theater Sessions, receipts, public cold archives, forget intents, and quarantine are all snapshotted above.
             await purge_numeric_v2_character_data(numeric_purge)
 
             if not is_cloudsave_disabled_due_to_local_state_unavailable():
@@ -2419,12 +2523,12 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     _build_character_tombstones_state(_config_manager, name),
                 )
 
-            # 删除角色配置
+            # Delete character configuration.
             del characters['猫娘'][name]
             await _await_thread_mutation(
                 _config_manager.save_characters, characters,
             )
-            # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
+            # Fast path: stop only this character's threads, clear dictionaries, refresh globals; skip the other N-1.
             remove_one_catgirl = get_remove_one_catgirl()
             await remove_one_catgirl(name)
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
@@ -2559,17 +2663,17 @@ async def set_microphone(request: Request):
         data = await request.json()
         microphone_id = data.get('microphone_id')
 
-        # 使用标准的load/save函数
+        # Use standard load/save helpers.
         _config_manager = get_config_manager()
         characters_data = await _config_manager.aload_characters()
 
-        # 添加或更新麦克风选择
+        # Add or update microphone selection.
         characters_data['当前麦克风'] = microphone_id
 
-        # 保存配置
+        # Save configuration
         await _config_manager.asave_characters(characters_data)
-        # 麦克风 ID 是纯前端读取的字段（仅 get_microphone 读），不影响任何 catgirl
-        # 的 prompt / voice_id / session_manager，无需触发任何 init。
+        # Microphone ID is frontend-only (read solely by get_microphone), affecting no catgirl prompt /
+        # voice_id / session_manager, so no initialization is needed.
 
         return {"success": True}
     except Exception as e:
@@ -2581,10 +2685,10 @@ async def set_microphone(request: Request):
 async def get_microphone():
     try:
         _config_manager = get_config_manager()
-        # 使用配置管理器加载角色配置
+        # Load character configuration through the config manager.
         characters_data = await _config_manager.aload_characters()
 
-        # 获取保存的麦克风选择
+        # Get the saved microphone selection.
         microphone_id = characters_data.get('当前麦克风')
 
         return {"microphone_id": microphone_id}

@@ -163,6 +163,15 @@ describe('installed projection loading', () => {
     ).resolves.toEqual([])
   })
 
+  it.each([null, {}, { installed: null }, { installed: {} }, { installed: 'missing' }])(
+    'rejects a malformed successful projection instead of treating it as empty: %j',
+    async (body) => {
+      await expect(
+        fetchInstalledProjection(async () => new Response(JSON.stringify(body), { status: 200 }))
+      ).resolves.toBeNull()
+    }
+  )
+
   it('infers an unresolved local conflict only after the installed projection loaded', () => {
     expect(inferUnresolvedLocalConflict(false, undefined, true)).toBe(false)
     expect(inferUnresolvedLocalConflict(true, undefined, true)).toBe(true)

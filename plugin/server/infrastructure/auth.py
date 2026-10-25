@@ -23,6 +23,6 @@ async def verify_admin_code() -> str:
     return "authenticated"
 
 
-# 创建依赖项
+# Create dependencies
 require_admin = Depends(verify_admin_code)
 

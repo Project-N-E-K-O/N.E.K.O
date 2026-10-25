@@ -45,19 +45,18 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loading, WarningFilled, InfoFilled } from '@element-plus/icons-vue'
 import { get } from '@/api'
-import { PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
+import { PANEL_FILL_HEIGHT } from '@/utils/constants'
 
 const props = withDefaults(defineProps<{
   pluginId: string
   height?: string
 }>(), {
-  // 默认填满宿主容器（宿主必须提供确定高度）；min/max 只做兜底，理由见 utils/constants.ts。
+  // 默认填满确定高度的宿主；显式 height 继续由调用方控制。
   height: PANEL_FILL_HEIGHT,
 })
 
 const frameStyle = computed(() => ({
   height: props.height,
-  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const emit = defineEmits<{
@@ -254,6 +253,7 @@ watch(() => props.pluginId, () => {
 .plugin-ui-frame {
   position: relative;
   width: 100%;
+  min-height: 0;
   border: 1px solid var(--el-border-color);
   border-radius: var(--el-border-radius-base);
   background: var(--el-bg-color);
@@ -264,6 +264,7 @@ watch(() => props.pluginId, () => {
   width: 100%;
   height: 100%;
   border: none;
+  display: block;
 }
 
 .loading-overlay,
@@ -277,10 +278,18 @@ watch(() => props.pluginId, () => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
+  overflow: auto;
+  padding: var(--spacing-lg);
   gap: 12px;
   background: var(--el-bg-color);
   color: var(--el-text-color-secondary);
+}
+
+.loading-overlay > *,
+.error-overlay > *,
+.no-ui-overlay > * {
+  flex-shrink: 0;
 }
 
 .error-message {

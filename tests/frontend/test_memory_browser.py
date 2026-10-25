@@ -11,6 +11,28 @@ from utils.file_utils import atomic_write_json
 from utils.storage_policy import save_storage_policy
 
 
+def test_recent_sync_notification_refreshes_saved_view_and_preserves_dirty_draft(mock_page, running_server, seed_memory_file):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f'{running_server}/memory_browser')
+    rows = mock_page.locator('#memory-chat-edit .chat-item')
+    expect(rows).to_have_count(3)
+    current = json.loads(seed_memory_file.read_text())
+    current.append({'type': 'human', 'data': {'content': 'remote visible chat'}})
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    notify = """() => { const channel = new BroadcastChannel('neko_page_channel');
+        channel.postMessage({action:'recent_memory_changed',catgirl_name:'测试猫娘'}); channel.close(); }"""
+    mock_page.evaluate(notify)
+    expect(rows).to_have_count(4)
+    memo = mock_page.locator('#memory-chat-edit .memo-textarea').first
+    memo.fill('unsaved local draft')
+    current.append({'type': 'ai', 'data': {'content': 'another remote chat'}})
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    mock_page.evaluate(notify)
+    mock_page.wait_for_timeout(150)
+    expect(rows).to_have_count(4)
+    expect(memo).to_have_value('unsaved local draft')
+
+
 def _request_json(route):
     post_data_json = route.request.post_data_json
     return post_data_json() if callable(post_data_json) else post_data_json
@@ -3588,7 +3610,7 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     assert message_surfaces["humanBubbleBorder"] != "rgba(0, 0, 0, 0)"
     assert message_surfaces["humanBubblePaddingTop"] == 8
     assert message_surfaces["aiBubblePaddingTop"] == 8
-    # 删除按钮排成一列贴住行尾，各行右缘对齐。
+    # Arrange delete buttons in a column at the row ends, with right edges aligned.
     assert message_surfaces["deleteRightInset"] == 0
     assert message_surfaces["deleteEdgesAligned"] is True
     assert message_surfaces["deleteClearsContent"] is True
@@ -4045,7 +4067,8 @@ def test_memory_browser_serializes_concurrent_saves_for_same_file(
     )
     mock_page.wait_for_function("window.__memorySaveBodies.length === 1")
     memo.fill("第二版备忘录")
-    mock_page.evaluate("document.getElementById('save-memory-btn').onclick()")
+    # Do not await the queued save: this test releases its predecessor below.
+    mock_page.evaluate("() => { document.getElementById('save-memory-btn').onclick(); }")
     mock_page.wait_for_timeout(50)
     assert len(mock_page.evaluate("window.__memorySaveBodies")) == 1
     expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
@@ -4733,10 +4756,10 @@ _OLDER_SENTENCE = "几天前两人养过一株窗台幼苗，并烤了草莓蛋�
 
 
 def _write_memo_seed(clean_user_data_dir, divider: str):
-    """种子一个 recent.json，memo body + 指定形态的 `---` 分隔符 + older。
+    """Seed a recent.json with a memo body, a `---` separator in the specified form, and older text.
 
-    `divider` 是 body 与 older 之间的完整分隔片段（包含前后换行），让用例
-    覆盖 LLM 实际可能漂移的几种间距（漏空行 / 多空行 / 多个连字符）。"""
+    `divider` is the complete separator fragment between the body and older section (including surrounding newlines), so the test
+    covers spacing variations an LLM might produce (missing blank lines / extra blank lines / multiple hyphens)."""
     app_root = Path(clean_user_data_dir) / "N.E.K.O"
     save_storage_policy(
         None,
@@ -4773,7 +4796,7 @@ def _write_memo_seed(clean_user_data_dir, divider: str):
 
 @pytest.fixture
 def seed_memory_file_with_older_divider(clean_user_data_dir, running_server):
-    """种子文件：memo 用规范 `\\n\\n---\\n\\n` 分界（LLM 严格遵守 prompt 的形态）。"""
+    """Seed file: the memo uses the canonical `\\n\\n---\\n\\n` divider (the LLM strictly follows the prompt's format)."""
     return _write_memo_seed(clean_user_data_dir, "\n\n---\n\n")
 
 
@@ -4783,11 +4806,11 @@ def test_memory_browser_renders_older_section_when_divider_present(
     running_server: str,
     seed_memory_file_with_older_divider,
 ):
-    """memo 含 `\\n\\n---\\n\\n` 时，前端必须把"较久前"段拆成独立 textarea 渲染，
-    并出现一个 `memo-older-label` 提示。
+    """When a memo contains `\\n\\n---\\n\\n`, the frontend must render the \"Older\" section in a separate textarea,
+    and show a `memo-older-label` hint.
 
-    这是 SUMMARY_STALE_HINT 硬分隔约定的落地点——LLM 输出端 + 前端识别端
-    之间的契约就靠这条端到端测。
+    This implements the hard separator contract in SUMMARY_STALE_HINT — the end-to-end test pins the contract
+    between LLM output and frontend recognition.
     """
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     _install_ready_memory_browser_routes(mock_page, seed_memory_file_with_older_divider)
@@ -4797,7 +4820,7 @@ def test_memory_browser_renders_older_section_when_divider_present(
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
 
-    # 主体 textarea：不包含 `---`，也不包含尾段文本
+    # Main textarea: excludes `---` and the trailing text
     body_ta = mock_page.locator(".memo-textarea:not(.memo-textarea--older)")
     expect(body_ta).to_have_count(1, timeout=5000)
     body_value = body_ta.input_value()
@@ -4805,7 +4828,7 @@ def test_memory_browser_renders_older_section_when_divider_present(
     assert "---" not in body_value, "主体段不应含分隔符——已被 splitter 切掉"
     assert "草莓蛋糕" not in body_value, "尾段文本应只出现在 older textarea"
 
-    # 较久前 label + 独立 textarea
+    # Separate "Older" label and textarea
     older_label = mock_page.locator(".memo-older-label")
     expect(older_label).to_have_count(1, timeout=5000)
     older_ta = mock_page.locator(".memo-textarea--older")
@@ -4833,11 +4856,11 @@ def test_memory_browser_splits_non_canonical_divider_spacing(
     clean_user_data_dir,
     divider,
 ):
-    """LLM 实际输出经常漂移：漏空行、多空行、多输连字符——splitter 都得切得开。
+    """LLM output often drifts in practice: missing blank lines, extra blank lines, or extra hyphens — the splitter must handle all of them.
 
-    Regression for codex review on PR #1358 catching that the original regex
-    强制要求 `---` 前后各一行空行，少一行就识别不到，导致尾段还是塞回 body
-    textarea。修后正则只要求 `---` 单独成行（前后至少各一个换行）。"""
+    Regression for Codex review on PR #1358: the original regex
+    required a blank line both before and after `---`; if either was missing it was not recognized, leaving the trailing section in the body
+    textarea. The fixed regex requires only that `---` be on its own line (with at least one newline on each side)."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     memory_file = _write_memo_seed(clean_user_data_dir, divider)
     _install_ready_memory_browser_routes(mock_page, memory_file)
@@ -4852,8 +4875,8 @@ def test_memory_browser_splits_non_canonical_divider_spacing(
     body_ta = mock_page.locator(".memo-textarea:not(.memo-textarea--older)")
     body_value = body_ta.input_value()
     assert _BODY_SENTENCE in body_value
-    # 收紧到只查"≥3 连字符"的分隔符形态——单/双连字符在正文里可能合法
-    # （日期、复合词），不该被这条断言误伤。
+    # Narrow this to separators with "≥3 hyphens" — one or two hyphens may be valid in body text
+    # (dates, compound words), and should not trigger this assertion.
     assert "---" not in body_value, "body 不应残留分隔符"
     assert _OLDER_SENTENCE in older_ta.input_value()
 
@@ -4864,8 +4887,8 @@ def test_memory_browser_saves_memo_with_divider_roundtrip(
     running_server: str,
     seed_memory_file_with_older_divider,
 ):
-    """编辑任一 textarea 后保存，发往后端的 payload 必须重新拼回 `\\n\\n---\\n\\n`
-    规范形式——不能漏掉尾段、也不能改用别的分隔符。"""
+    """After editing either textarea and saving, the payload sent to the backend must reassemble into canonical `\\n\\n---\\n\\n`
+    form — do not omit the trailing section or use another separator."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
 
     saved_payloads: list[dict] = []
@@ -4931,10 +4954,10 @@ def test_memory_browser_saves_memo_with_divider_roundtrip(
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector(".memo-textarea--older", timeout=5000)
 
-    # 改写尾段并 commit（textarea 的 `change` 事件靠 blur 触发）
+    # Rewrite the trailing section and commit (the textarea's `change` event fires on blur)
     older_ta = mock_page.locator(".memo-textarea--older").first
     older_ta.fill("几天前的旧事件——已归档。")
-    # 把焦点挪走触发 change
+    # Move focus away to trigger change
     mock_page.locator(".memo-textarea:not(.memo-textarea--older)").first.click()
 
     with mock_page.expect_response(
@@ -4950,15 +4973,15 @@ def test_memory_browser_saves_memo_with_divider_roundtrip(
     assert len(system_msgs) == 1
     saved_text = system_msgs[0]["text"]
 
-    # 1) 仍以本地化前缀打头
+    # 1) Still starts with the localized prefix
     assert saved_text.startswith("先前对话的备忘录: ")
-    # 2) 主体段保留
+    # 2) Main section is preserved
     assert "正在和小猫娘一起挖铁矿" in saved_text
-    # 3) 尾段被改写
+    # 3) Trailing section was rewritten
     assert "几天前的旧事件——已归档。" in saved_text
-    # 4) 分隔符是规范的 `\n\n---\n\n`
+    # 4) Separator is canonical `\n\n---\n\n`
     assert "\n\n---\n\n" in saved_text
-    # 5) 整段里 `---` 只出现一次
+    # 5) `---` appears only once in the full text
     assert saved_text.count("\n---\n") == 1
 
 
@@ -4968,9 +4991,9 @@ def test_memory_browser_preserves_leading_indent_in_older_section(
     running_server: str,
     seed_memory_file_with_older_divider,
 ):
-    """Regression for codex review on PR #1358: composeMemo 不能把 older 段首字符
-    的有意义缩进当 noise 削掉——只能削整行空白。比如用户在 older textarea 里
-    手写一个嵌套列表（前导 2 空格 / tab），保存后必须 byte-for-byte 留住。"""
+    """Regression for Codex review on PR #1358: composeMemo must not strip meaningful indentation at the start of the older section
+    as noise — it may strip only whole blank lines. For example, if the user types a nested list in the older textarea
+    (leading 2 spaces / tab), saving must preserve it byte for byte."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
 
     saved_payloads: list[dict] = []
@@ -5023,7 +5046,7 @@ def test_memory_browser_preserves_leading_indent_in_older_section(
     mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
     mock_page.wait_for_selector(".memo-textarea--older", timeout=5000)
 
-    # 写一段首字符就有 2 空格缩进 + 后续行 4 空格缩进的内容（模拟嵌套列表）
+    # Write content whose first character has 2 spaces of indentation and following lines have 4 spaces (simulates a nested list)
     indented_older = "  顶层条目一\n    子条目 a\n    子条目 b"
     older_ta = mock_page.locator(".memo-textarea--older").first
     older_ta.fill(indented_older)
@@ -5041,7 +5064,7 @@ def test_memory_browser_preserves_leading_indent_in_older_section(
         m["text"] for m in saved_payloads[0]["chat"] if m.get("role") == "system"
     )
 
-    # 关键断言：分隔符之后立刻是 `  顶层条目一`，前导 2 空格没有被吃掉
+    # Key assertion: immediately after the separator is `  Top-level item one`; the leading 2 spaces were not stripped
     assert "\n\n---\n\n  顶层条目一\n    子条目 a\n    子条目 b" in saved_text, (
         f"older 段前导缩进被吞掉了，实际保存：{saved_text!r}"
     )
@@ -6141,6 +6164,73 @@ def test_memory_browser_keeps_theater_capsule_read_only_on_save(
         ("system", 2, True),
     ]
     assert chat[1]["text"] == "共同守住了雨夜里的住处。"
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("operation", ["single", "clear", "discard"])
+def test_memory_browser_edits_local_memory_without_chat_sync(
+    mock_page, running_server, seed_memory_file, operation,
+):
+    """Ignore sync history and keep delete, clear and discard on local memory."""
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file,
+        recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"])
+    uid, first, second, local = (char * 32 for char in "abcd")
+    posts = []
+    loads = []
+    sync_requests = []
+    mock_page.on("request", lambda request: sync_requests.append(request.url)
+        if "/api/chat-sync/" in request.url else None)
+
+    def load(route):
+        loads.append(route.request.url)
+        route.fulfill(json={"content": seed_memory_file.read_text(encoding="utf-8"),
+            "fingerprint": "fp", "identity_token": "token", "chat_sync": {
+                "characterSyncId": uid, "binding": None,
+                "originals": [{"messageId": mid, "role": "user", "text": "same exact text"}
+                              for mid in (first, second)],
+                "localReplies": [{"messageId": local, "role": "assistant", "text": "local tool reply"}]}})
+
+    def save(route):
+        posts.append(_request_json(route))
+        route.fulfill(json={"success": True, "need_refresh": False,
+                           "fingerprint": "next", "identity_token": "token"})
+
+    mock_page.route("**/api/memory/recent_file?**", load)
+    mock_page.route("**/api/memory/recent_file/save", save)
+    confirms = []
+    mock_page.on("dialog", lambda dialog: (confirms.append(dialog.message), dialog.accept()))
+    mock_page.goto(f"{running_server}/memory_browser")
+    rows = mock_page.locator('#memory-chat-edit .chat-item')
+    expect(rows).to_have_count(3)
+    expect(mock_page.locator('[data-chat-sync-kind]')).to_have_count(0)
+    expect(mock_page.locator('.memory-chat-section-label')).to_have_count(0)
+    expect(mock_page.locator('#memory-chat-edit')).not_to_contain_text('same exact text')
+    expect(mock_page.locator('#memory-chat-edit')).not_to_contain_text('local tool reply')
+    if operation == "clear":
+        mock_page.locator('#clear-memory-btn').click()
+        expect(rows).to_have_count(1)
+    else:
+        mock_page.locator('.chat-item[data-role="human"] .delete-btn').click()
+        expect(rows).to_have_count(2)
+    assert posts == []
+    expect(mock_page.locator('#memory-unsaved-status')).to_be_visible()
+    if operation == "discard":
+        mock_page.locator('.cat-btn', has_text='备用猫娘').click()
+        mock_page.locator('#memory-unsaved-switch-discard').click()
+        expect(rows).to_have_count(3)
+        expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
+        assert posts == []
+    else:
+        mock_page.locator('#save-memory-btn').click()
+        expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
+        assert 'chat_sync' not in posts[0]
+        assert 'chat_history_only' not in posts[0]
+        assert len(posts[0]['chat']) == (1 if operation == "clear" else 2)
+        assert posts[0]['chat'][0]['role'] == 'system'
+        assert all('chat_sync_kind' not in item and 'messageId' not in item for item in posts[0]['chat'])
+    assert confirms == []
+    assert loads and all('include_chat_sync' not in url for url in loads)
+    assert sync_requests == []
 
 
 @pytest.mark.frontend

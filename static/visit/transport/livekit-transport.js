@@ -294,6 +294,15 @@
             });
           });
           handlers.onState('joined', {});
+        }, function (err) {
+          // LiveKit 的连接异常不含凭证；保留一段压缩后的原因，方便区分
+          // 信令、ICE 和服务端拒绝，不能只留下笼统的 join_failed。
+          var code = err && (err.errorCode || err.code || err.name);
+          var message = err && err.message;
+          var detail = [code, message].filter(Boolean).join(': ')
+            .replace(/\s+/g, ' ').slice(0, 240) || 'join_failed';
+          handlers.onLog('warn', 'livekit connect rejected', detail);
+          throw err;
         });
       },
       updateCredentials: function (c) {

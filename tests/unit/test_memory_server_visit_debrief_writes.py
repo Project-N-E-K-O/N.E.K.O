@@ -180,7 +180,7 @@ async def test_keyed_cache_writes_once_and_a_retry_is_a_duplicate(env):
     stored = _keyed(env)[0]
     assert stored["type"] == "ai" and stored["data"]["content"] == "今天去了邻居家，聊了很久。"
     assert (await _key_record())["state"] == "done"
-    # 带键写入不登记 post-turn 后处理：恢复判定只看两处存储
+    # Keyed writes do not register post-turn processing; recovery decisions consult only both stores
     env.spawn.assert_not_awaited()
     status, body = await _cache(env, _diary_request())
     assert body == {"status": "cached", "duplicate": True, "count": 0}
@@ -205,7 +205,7 @@ async def test_a_non_visit_key_keeps_the_theater_only_answer(env):
 
 
 async def test_pending_key_with_both_stores_written_is_a_duplicate(env):
-    # 写完 recent / tsdb、标 done 之前崩溃：重试按两处存储判为已写，不重复追加
+    # Crash after recent/tsdb writes but before done: retry detects persisted writes in both stores without appending again
     await _cache(env, _diary_request())
     from app.memory_server import idempotency
 
@@ -227,7 +227,7 @@ async def test_time_index_row_without_recent_entry_writes_recent_only(env):
 
 
 async def test_pending_key_with_nothing_written_writes_both(env):
-    # 标 pending 之后、写入之前崩溃：两处都没有，重试照常写入（不能当作已写）
+    # Crash after pending but before writes: both stores empty, so retry writes normally rather than claiming completion
     await _set_pending(env)
     status, body = await _cache(env, _diary_request())
     assert body == {"status": "cached", "count": 1}
@@ -235,8 +235,8 @@ async def test_pending_key_with_nothing_written_writes_both(env):
 
 
 async def test_entry_moved_out_of_recent_is_not_written_back(env):
-    # 两处都写完、标 done 前中断，随后 recent 被整表改写（压缩 / 裁剪 / 浏览器保存）挤掉这条：
-    # 退役旁路记下了键，重试判为已写
+    # Both stores written before interruption preceding done, then recent's wholesale rewrite (compression/pruning/browser save) evicts this entry:
+    # the retirement sidecar retained its key, so retry recognizes the prior write
     await _cache(env, _diary_request())
     from app.memory_server import idempotency
 
@@ -252,7 +252,7 @@ async def test_entry_moved_out_of_recent_is_not_written_back(env):
 
 
 async def test_same_text_of_another_visit_is_written(env):
-    # 按键核对，不按正文互认：两场日记正文相同，第二场照常写
+    # Reconcile by key, not body: two sessions with identical diary text must both write
     await _cache(env, _diary_request())
     other = "visit-debrief:" + "Z" * 22
     status, body = await _cache(env, _diary_request(key=other))
@@ -276,7 +276,7 @@ async def test_unreadable_recent_answers_503(env, monkeypatch):
     Path(env.recent_path).write_text("[]", encoding="utf-8")
     monkeypatch.setattr(recent_file, "read_recent_text_unlocked", unreadable)
     status, _ = await _cache(env, _diary_request())
-    # 先核存储、读不出就 503：键记录一次都没写（不是 done）
+    # Check storage first and return 503 if unreadable; never write key records, including done
     assert status == 503 and await _key_record() is None
 
 
@@ -295,7 +295,7 @@ async def test_pending_key_with_other_content_is_refused(env):
 
 
 async def test_keys_survive_a_restart_and_compaction(env):
-    # 键记录在 idempotency_keys.json（不在 recent.json）：重启（内存清空）+ 压缩后同键仍去重
+    # Keys live in idempotency_keys.json, not recent.json; same-key dedup survives memory-clearing restarts and compression
     await _cache(env, _diary_request())
     recent_file.write_recent_payload(env.recent_path, [])
     env.recent.user_histories.clear()
@@ -317,11 +317,11 @@ def test_rewrites_record_dropped_keyed_entries(tmp_path):
     recent_file.write_recent_payload(path, messages_to_dict([_keyed_entry("d", K1), HumanMessage(content="h")]))
     recent_file.write_recent_payload(path, messages_to_dict([HumanMessage(content="h")]))
     assert set(recent_file.read_retired_keys(path)) == {K1}
-    # 已记的键保留第一次的时间
+    # Existing keys retain their first timestamp
     first = recent_file.read_retired_keys(path)[K1]
     recent_file.write_recent_payload(path, [])
     assert recent_file.read_retired_keys(path)[K1] == first
-    # recent.json 的根仍是 list
+    # recent.json root remains a list
     assert isinstance(json.loads(Path(path).read_text(encoding="utf-8")), list)
 
 
@@ -333,7 +333,7 @@ def test_unkeyed_rewrites_leave_no_sidecar(tmp_path):
 
 
 def test_sidecar_is_written_before_recent_is_replaced(tmp_path, monkeypatch):
-    # 故障注入：写完旁路、替换 recent.json 之前崩溃 → 键已记、条目仍在，两者都是「写过」的证据
+    # Fault injection: crash after sidecar write but before recent.json replacement; both recorded keys and remaining entries prove prior writes
     path = str(tmp_path / "recent.json")
     recent_file.write_recent_payload(path, messages_to_dict([_keyed_entry("d", K1)]))
 
@@ -352,7 +352,7 @@ def test_sidecar_is_written_before_recent_is_replaced(tmp_path, monkeypatch):
 
 
 async def test_manager_keyed_append_sees_present_and_retired_keys(tmp_path, monkeypatch):
-    # 压缩、硬裁剪、改人设清空、浏览器保存都经 write_recent_payload_unlocked 整表改写
+    # Compression, hard pruning, personality-reset clearing, and browser saves all rewrite through write_recent_payload_unlocked
     monkeypatch.setattr("memory.recent.assert_cloudsave_writable", lambda *a, **k: None)
     path = str(tmp_path / "recent.json")
     mgr = _recent_manager(path)
@@ -391,9 +391,9 @@ async def test_cleanup_drops_old_records_of_terminal_keys_only(env):
     await idempotency.update_key(NAME, KPEND, idempotency.transition(idempotency.KEY_STATE_PENDING))
     report = await idempotency.cleanup_expired([NAME], ttl_s=0, now=10**12)
     assert report["retired_removed"] == 1
-    # pending 键的退役记录不过期：它是「已写过 recent」的唯一证据
+    # Retirement records for pending keys never expire; they are the only proof of prior recent writes
     assert set(recent_file.read_retired_keys(path)) == {KPEND}
-    # done 键记录本身永久保留
+    # Done-key records themselves remain permanently
     assert (await idempotency.read_key(NAME, KDONE))["state"] == "done"
 
 
@@ -456,7 +456,7 @@ async def test_visit_facts_are_stamped_by_the_server(env):
     for row in rows:
         assert (row["importance"], row["absorbed"], row["origin"], row["source"]) == (
             4, True, "neko_visit", "ai_disclosure")
-    # reflection 只取 importance>=5 且未 absorbed：永远取不到串门事实
+    # Reflection selects only unabsorbed importance>=5 items, never visit facts
     unabsorbed = await env.fs.aget_unabsorbed_facts(NAME, min_importance=5)
     assert not any(f.get("origin") == "neko_visit" for f in unabsorbed)
     unabsorbed_any = await env.fs.aget_unabsorbed_facts(NAME, min_importance=0)
@@ -539,7 +539,7 @@ def test_visit_facts_request_bounds():
 
 
 async def test_new_facts_only_get_visit_provenance(env):
-    # 精确去重命中的旧事实不升级这些字段
+    # Exact-deduplicated existing facts must not upgrade these fields
     await env.fs._apersist_new_facts(NAME, [{"text": "邻居家有只白猫", "importance": 6}])
     body = await _facts(env, ["邻居家有只白猫"])
     assert body == {"ok": True, "written": 0, "deduped": 1}
@@ -553,11 +553,11 @@ async def test_concurrent_same_visit_writes_once(env):
     assert len([r for r in _pool(env) if r.get("visit_id") == VISIT]) == 1
 
 
-# ── 评审第 1 轮 ──────────────────────────────────────────────────────────
+# ── Review round 1 ──────────────────────────────────────────────────────────
 
 
 async def test_a_retired_key_writes_neither_store(env):
-    # 云存档连 time_indexed.db 一起回滚、退役旁路记着本键：不把恢复掉的日记补回时间索引
+    # Cloudsave rolls back time_indexed.db too, while the retirement sidecar retains this key: do not restore removed diaries to the time index
     await _set_pending(env)
     recent_file.write_recent_payload(env.recent_path, messages_to_dict([_keyed_entry("d", KEY)]))
     recent_file.write_recent_payload(env.recent_path, [])
@@ -612,7 +612,7 @@ async def test_visit_facts_skip_semantic_arbitration(env, monkeypatch):
     assert seen["semantic_dedup"] is False
 
 
-# ── 评审第 2 轮 ──────────────────────────────────────────────────────────
+# ── Review round 2 ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("settle", ["done", "pending"])
@@ -632,11 +632,11 @@ async def test_visit_facts_reject_a_changed_fact_list(env, settle):
     assert [r["text"] for r in _pool(env) if r.get("visit_id") == VISIT] == ["在邻居家看了星星"]
 
 
-# ── 评审第 4 轮 ──────────────────────────────────────────────────────────
+# ── Review round 4 ──────────────────────────────────────────────────────────
 
 
 async def test_model_output_cannot_claim_visit_provenance(env):
-    # 普通抽取路径里模型多吐一个 _visit_origin：不能把事实标成串门事实、躲开 reflection 与铸卡
+    # Model output with extra _visit_origin in normal extraction must not mark facts as visit-origin to evade reflection/card forging
     await env.fs._apersist_new_facts(NAME, [
         {"text": "她喜欢晒太阳", "importance": 7, "_visit_origin": {"visit_id": VISIT}},
     ])
@@ -654,7 +654,7 @@ def test_extraction_skips_only_visit_diary_keys():
 
 
 async def test_cleanup_reads_key_records_under_the_recent_lock(env, monkeypatch):
-    # 清理排队等 recent 文件锁期间，云存档恢复删掉了键记录：锁内重读，保留退役记录
+    # Cloud restoration deletes key records while cleanup waits on the recent lock: reread under lock and preserve retirement records
     from app.memory_server import idempotency
 
     path = os.path.join(str(env.root), NAME, "recent.json")
@@ -673,14 +673,14 @@ async def test_cleanup_reads_key_records_under_the_recent_lock(env, monkeypatch)
     assert KDONE in recent_file.read_retired_keys(path)
 
 
-# ── 评审第 5 轮 ──────────────────────────────────────────────────────────
+# ── Review round 5 ──────────────────────────────────────────────────────────
 
 
 async def test_a_pending_retry_fills_in_missing_visit_facts(env):
     from app.memory_server import idempotency
 
     await _facts(env, ["在邻居家看了星星", "邻居家有只白猫"])
-    # 标 done 之前中断，且其中一条随后被删掉
+    # Interrupted before done, then one entry subsequently deleted
     rows = json.loads(Path(env.fs._facts_path(NAME)).read_text(encoding="utf-8"))
     Path(env.fs._facts_path(NAME)).write_text(json.dumps([r for r in rows if r["text"] != "邻居家有只白猫"],
                                                          ensure_ascii=False), encoding="utf-8")
@@ -709,13 +709,13 @@ def test_a_deeply_nested_sidecar_does_not_block_recent_writes(tmp_path):
     before = Path(sidecar).read_bytes()
     recent_file.write_recent_payload(path, [])
     assert json.loads(Path(path).read_text(encoding="utf-8")) == []
-    # 坏旁路原样保留（不拿只含这一条的新旁路盖掉旧证据），带键读取继续 fail closed
+    # Preserve corrupt sidecars unchanged, never overwrite old evidence with a new single-entry sidecar; keyed reads continue failing closed
     assert Path(sidecar).read_bytes() == before
     with pytest.raises((ValueError, RecursionError)):
         recent_file.read_retired_keys(path)
 
 
-# ── 评审第 7 轮 ──────────────────────────────────────────────────────────
+# ── Review round 7 ──────────────────────────────────────────────────────────
 
 
 def test_a_time_index_row_without_timestamp_is_completed(tmp_path, monkeypatch):
@@ -729,7 +729,7 @@ def test_a_time_index_row_without_timestamp_is_completed(tmp_path, monkeypatch):
     with engine.connect() as conn:
         conn.execute(text(f"CREATE TABLE {TIME_ORIGINAL_TABLE_NAME} "
                           "(id INTEGER PRIMARY KEY, session_id TEXT, message TEXT, timestamp DATETIME)"))
-        # 插入已提交、补时间戳的 UPDATE 失败：行在、时间戳为空
+        # INSERT committed but timestamp-backfill UPDATE failed: row exists with empty timestamp
         conn.execute(text(f"INSERT INTO {TIME_ORIGINAL_TABLE_NAME} (session_id, message) VALUES ('idem-x', '{{}}')"))
         conn.commit()
     tim = object.__new__(TimeIndexedMemory)
@@ -743,11 +743,11 @@ def test_a_time_index_row_without_timestamp_is_completed(tmp_path, monkeypatch):
 
 
 
-# ── 评审第 8 轮 ──────────────────────────────────────────────────────────
+# ── Review round 8 ──────────────────────────────────────────────────────────
 
 
 def test_only_well_formed_diary_entries_count_as_retired_evidence(tmp_path):
-    # 普通消息里调用方带的同名 metadata（格式不对、或不是 AI 消息）不是「写过」的证据，也不进旁路
+    # Caller-supplied same-named metadata in normal messages (malformed/non-AI) is neither write evidence nor sidecar input
     path = str(tmp_path / "recent.json")
     human = {"type": "human", "data": {"content": "x", "metadata": {"idempotency_key": KEY}}}
     odd = messages_to_dict([_keyed_entry("y", "visit-debrief:manual")])[0]
@@ -757,7 +757,7 @@ def test_only_well_formed_diary_entries_count_as_retired_evidence(tmp_path):
     assert not os.path.exists(recent_file.recent_sidecar_path(path, recent_file.RETIRED_KEYS_FILENAME))
 
 
-# ── 评审第 9 轮 ──────────────────────────────────────────────────────────
+# ── Review round 9 ──────────────────────────────────────────────────────────
 
 
 def test_an_undecodable_old_recent_file_does_not_block_its_replacement(tmp_path):
@@ -772,7 +772,7 @@ async def test_keys_of_another_endpoint_are_not_taken_as_written(env):
 
     from app.memory_server import idempotency
 
-    # 带键 /scoped_history 先用了同名键并已终态：/cache 与 visit_facts 都不能把它当成自己写过
+    # Keyed /scoped_history already used the same key terminally; neither /cache nor visit_facts may treat it as their own completed write
     for key in (KEY, f"visit-facts:{VISIT}"):
         await idempotency.update_key(NAME, key, idempotency.transition(
             idempotency.KEY_STATE_DONE, request={"wire_keys": []}))
@@ -801,7 +801,7 @@ async def test_scoped_history_refuses_reserved_key_prefixes(env, key):
 
 
 async def test_a_damaged_sidecar_keeps_keyed_writes_failing_closed(env):
-    # 旁路坏了：带键 /cache 返回 503，不把可能已被移出的日记写回去
+    # Corrupt sidecar: keyed /cache returns 503 rather than restoring a possibly removed diary
     sidecar = recent_file.recent_sidecar_path(env.recent_path, recent_file.RETIRED_KEYS_FILENAME)
     Path(env.recent_path).write_text("[]", encoding="utf-8")
     Path(sidecar).write_text("{not json", encoding="utf-8")
@@ -809,7 +809,7 @@ async def test_a_damaged_sidecar_keeps_keyed_writes_failing_closed(env):
     assert status == 503 and _keyed(env) == []
 
 
-# ── 评审第 12 轮 ─────────────────────────────────────────────────────────
+# ── Review round 12 ─────────────────────────────────────────────────────────
 
 
 async def test_an_empty_keyed_batch_is_refused(env):
@@ -828,7 +828,7 @@ async def test_an_unkeyed_write_cannot_forge_diary_evidence(env):
                         ensure_ascii=False)
     env.tsdb.astore_conversation = AsyncMock(return_value=None)
     real_update = env.recent.update_history
-    # 路由这一道单独验：update_history 换成不清洗的替身，时间索引里也不能带进保留键
+    # Validate routing independently: replace update_history with an unsanitized stub; reserved keys still must not enter the time index
     env.recent.update_history = AsyncMock(return_value=None)
     await _cache(env, HistoryRequest(input_history=forged))
     stored = env.tsdb.astore_conversation.await_args.args[1]
@@ -836,7 +836,7 @@ async def test_an_unkeyed_write_cannot_forge_diary_evidence(env):
     env.recent.update_history = real_update
     await _cache(env, HistoryRequest(input_history=forged))
     assert recent_file.keyed_entry_keys(_recent_entries(env)) == set()
-    # 真正的带键写入照常写进去
+    # Actual keyed writes persist normally
     status, body = await _cache(env, _diary_request())
     assert body == {"status": "cached", "count": 1} and len(_keyed(env)) == 1
 
@@ -852,7 +852,7 @@ async def test_ordinary_history_updates_drop_reserved_metadata(tmp_path, monkeyp
 
 
 def test_stripping_covers_every_message_shape():
-    stored = messages_to_dict([_keyed_entry("x", KEY)])[0]          # 落盘形态 data.metadata
+    stored = messages_to_dict([_keyed_entry("x", KEY)])[0]          # Persisted shape: data.metadata
     flat = {"role": "assistant", "content": "y", "metadata": {"idempotency_key": KEY}}
     obj = _keyed_entry("z", KEY)
     recent_file.strip_idempotency_metadata([stored, flat, obj])
@@ -861,7 +861,7 @@ def test_stripping_covers_every_message_shape():
 
 
 async def test_existing_evidence_is_reported_even_when_bookkeeping_writes_are_blocked(env, monkeypatch):
-    # 云存档维护期：簿记写被挡。recent 里已有本键条目时照样如实回 duplicate，不报 503
+    # Cloudsave maintenance blocks bookkeeping writes; if recent already contains this key, honestly return duplicate rather than 503
     from app.memory_server import idempotency
 
     await _cache(env, _diary_request())
@@ -877,7 +877,7 @@ async def test_existing_evidence_is_reported_even_when_bookkeeping_writes_are_bl
     assert (status, body["duplicate"]) == (200, True) and len(_keyed(env)) == 1
 
 
-# ── CodeRabbit / Codex 第 16 轮 ──────────────────────────────────────────
+# ── CodeRabbit / Codex round 16 ──────────────────────────────────────────
 
 
 async def test_a_failed_done_mark_after_a_write_still_reports_success(env, monkeypatch):
@@ -885,7 +885,7 @@ async def test_a_failed_done_mark_after_a_write_still_reports_success(env, monke
 
     def maintenance_after_pending(*_a, **_k):
         calls["n"] += 1
-        if calls["n"] > 1:  # pending 记上之后，标 done 时遇到云存档维护
+        if calls["n"] > 1:  # Cloudsave maintenance starts after pending is recorded but before done
             raise RuntimeError("cloudsave maintenance")
 
     monkeypatch.setattr("app.memory_server.idempotency.assert_cloudsave_writable", maintenance_after_pending)
@@ -913,7 +913,7 @@ def test_non_finite_retired_stamps_fail_closed(tmp_path, stamp):
 
 
 def test_a_huge_integer_stamp_does_not_block_recent_writes(tmp_path):
-    # JSON 能解析出超大整数：读旁路不能抛 OverflowError，recent.json 照常可写
+    # JSON accepts huge integers; sidecar reads must not raise OverflowError, and recent.json remains writable
     path = str(tmp_path / "recent.json")
     recent_file.write_recent_payload(path, messages_to_dict([_keyed_entry("d", KEY)]))
     sidecar = recent_file.recent_sidecar_path(path, recent_file.RETIRED_KEYS_FILENAME)
@@ -924,24 +924,24 @@ def test_a_huge_integer_stamp_does_not_block_recent_writes(tmp_path):
     assert KEY in recent_file.read_retired_keys(path)
 
 
-# ── Codex 第 22 轮 ───────────────────────────────────────────────────────
+# ── Codex round 22 ───────────────────────────────────────────────────────
 
 
 async def test_a_terminal_cache_record_without_its_hash_is_not_trusted(env):
-    # 键记录是合法 JSON，却缺 content_hash：不凭它回「已写过」，按两处存储的证据判定（这里都没有 → 照写）
+    # Valid JSON key records missing content_hash do not prove prior writes; use both stores' evidence, absent here, so write normally
     from app.memory_server import idempotency
 
     await idempotency.update_key(NAME, KEY, idempotency.transition(idempotency.KEY_STATE_DONE, kind="cache"))
     status, body = await _cache(env, _diary_request())
     assert (status, body) == (200, {"status": "cached", "count": 1})
     assert len(_keyed(env)) == 1 and env.tsdb.stores == 1
-    # 再试一次：存储里已有本键条目，如实回 duplicate、不再写
+    # Retry again: storage now contains this key; return duplicate honestly without writing again
     status, body = await _cache(env, _diary_request())
     assert body["duplicate"] is True and env.tsdb.stores == 1 and len(_keyed(env)) == 1
 
 
 async def test_a_terminal_facts_record_without_its_hash_is_not_trusted(env):
-    # 键记录是终态却缺 content_hash：不凭它回「已写过」，按事实池里本场的行判定（这里一条都没有 → 照写）
+    # Terminal records missing content_hash do not prove prior writes; inspect this session's fact-pool rows, absent here, so write normally
     from app.memory_server import idempotency
 
     data = {f"visit-facts:{VISIT}": {"state": "done", "written_at": 1.0, "kind": "visit_facts", "written": 2}}
@@ -953,7 +953,7 @@ async def test_a_terminal_facts_record_without_its_hash_is_not_trusted(env):
 
 
 async def test_recovering_from_the_pool_refuses_different_fact_texts(env):
-    # 键记录丢失（或缺哈希）时按事实池恢复：池里本场的行与这次请求文本不同，不能报成已写
+    # Recover missing/hashless key records from the fact pool: existing session rows with different text do not mean this request was written
     from fastapi import HTTPException
 
     from app.memory_server import idempotency
@@ -963,14 +963,14 @@ async def test_recovering_from_the_pool_refuses_different_fact_texts(env):
     with pytest.raises(HTTPException) as caught:
         await _facts(env, ["在邻居家看了月亮", "邻居家有只白猫"])
     assert caught.value.status_code == 422
-    # 同样的文本照常判为已写
+    # Identical text still counts as already written
     body = await _facts(env, ["在邻居家看了星星", "邻居家有只白猫"])
     assert body["duplicate"] is True and body["written"] == 2
 
 
 @pytest.mark.parametrize("bad", ["two", -1, True, 1.5])
 async def test_a_terminal_facts_record_with_malformed_counters_recovers_from_the_pool(env, bad):
-    # 终态记录的计数畸形（手改 / 旧版本）：不抛 500，按事实池恢复
+    # Malformed terminal counts from manual edits/old versions must recover from facts rather than return 500
     from app.memory_server import idempotency, routes
 
     await _facts(env, ["在邻居家看了星星", "邻居家有只白猫"])
@@ -982,7 +982,7 @@ async def test_a_terminal_facts_record_with_malformed_counters_recovers_from_the
     assert len([r for r in _pool(env) if r.get("visit_id") == VISIT]) == 2
 
 
-# ── Codex 第 29 轮 ───────────────────────────────────────────────────────
+# ── Codex round 29 ───────────────────────────────────────────────────────
 
 
 async def test_a_terminal_facts_record_missing_its_counters_recovers_and_is_repaired(env):
@@ -994,12 +994,12 @@ async def test_a_terminal_facts_record_missing_its_counters_recovers_and_is_repa
     Path(idempotency.keys_path(NAME)).write_text(json.dumps(data), encoding="utf-8")
     body = await _facts(env, ["在邻居家看了星星", "邻居家有只白猫"])
     assert body["duplicate"] is True and body["written"] == 2
-    # 恢复之后记录被补全：下一次直接走终态快路径
+    # Recovery completes the record; next time use the terminal fast path directly
     assert (await _key_record(f"visit-facts:{VISIT}"))["written"] == 2
 
 
 async def test_a_terminal_cache_record_without_its_hash_is_repaired_after_recovery(env):
-    # 修好之后，同一个键换了内容再来要回 422，而不是被当成 duplicate
+    # After repair, different content under the same key must return 422 instead of duplicate
     from app.memory_server import idempotency, routes
 
     await idempotency.update_key(NAME, KEY, idempotency.transition(idempotency.KEY_STATE_DONE, kind="cache"))
@@ -1011,8 +1011,8 @@ async def test_a_terminal_cache_record_without_its_hash_is_repaired_after_recove
 
 
 async def test_an_unverifiable_hash_is_not_stamped_onto_a_malformed_record(env):
-    # 存储里已有本键日记（内容 A），键记录是缺哈希的终态：带另一份内容 B 的请求只能凭「键写过」回 duplicate，
-    # 不能把 B 的哈希补进记录；之后用 A 重试照常是 duplicate，不会被 422 误拒
+    # Storage holds keyed diary A while the terminal record lacks a hash: a request containing B may return duplicate based only on prior key use,
+    # never backfill B's hash; retrying A must still return duplicate rather than incorrectly fail with 422
     from app.memory_server import idempotency
 
     await _cache(env, _diary_request())
@@ -1034,7 +1034,7 @@ async def test_terminal_fact_counters_inconsistent_with_the_request_are_not_trus
     data[f"visit-facts:{VISIT}"].update(written=0, deduped=0)
     Path(idempotency.keys_path(NAME)).write_text(json.dumps(data), encoding="utf-8")
     body = await _facts(env, ["在邻居家看了星星", "邻居家有只白猫"])
-    # 按事实池核对出真实条数，而不是照抄记录里的 0；核对后把计数写回记录，下次直接走终态快路径
+    # Recover actual counts from the fact pool, not the record's 0; persist corrected counts so later calls use the terminal fast path
     assert body["duplicate"] is True and body["written"] == 2
     record = await _key_record(f"visit-facts:{VISIT}")
     assert (record["written"], record["deduped"]) == (2, 0)

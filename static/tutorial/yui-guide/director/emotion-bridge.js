@@ -8,6 +8,9 @@
             this.pendingLive2DEmotion = '';
             this.pendingLive2DExpressionFile = '';
             this.activeLive2DExpressionFile = '';
+            this.live2dExpressionRequest = null;
+            this.live2dEmotionRequest = null;
+            this.guideExpressionOwner = null;
         }
 
         normalizeModelType(modelType) {
@@ -130,10 +133,18 @@
             }
 
             this.pendingLive2DEmotion = normalizedEmotion;
+            const request = { manager: window.live2dManager, model: window.live2dManager?.currentModel,
+                internalModel: window.live2dManager?.currentModel?.internalModel,
+                coreModel: window.live2dManager?.currentModel?.internalModel?.coreModel };
+            this.live2dEmotionRequest = request;
+            const isCurrent = () => this.live2dEmotionRequest === request
+                && window.live2dManager === request.manager && request.manager?.currentModel === request.model
+                && request.model && !request.model.destroyed && request.model.internalModel === request.internalModel
+                && request.internalModel?.coreModel === request.coreModel;
             const run = async () => {
                 const targetEmotion = this.pendingLive2DEmotion;
                 const manager = window.live2dManager;
-                if (!manager || !manager.currentModel) {
+                if (!manager || !manager.currentModel || !isCurrent()) {
                     return;
                 }
 
@@ -142,12 +153,12 @@
                 }
 
                 await this.waitForLive2DMotionCompletion(manager, 2200);
-                if (this.pendingLive2DEmotion !== targetEmotion) {
+                if (!isCurrent() || this.pendingLive2DEmotion !== targetEmotion) {
                     return;
                 }
 
                 if (typeof manager.setEmotion === 'function') {
-                    await manager.setEmotion(targetEmotion);
+                    await manager.setEmotion(targetEmotion, { isCurrent });
                     return;
                 }
                 if (typeof manager.playMotion === 'function') {
@@ -167,29 +178,35 @@
 
         clearLive2DGuideExpression(managerOverride) {
             const manager = managerOverride || window.live2dManager;
+            const owned = this.guideExpressionOwner;
+            this.live2dExpressionRequest = null;
             this.pendingLive2DExpressionFile = '';
-            this.activeLive2DExpressionFile = '';
 
-            if (!manager) {
+            if (!manager || !owned || owned.manager !== manager || manager.currentModel !== owned.model
+                || manager._manualExpressionListener !== owned.listener
+                || manager._manualExpressionEmitter !== owned.emitter
+                || manager._activeExpressionParamIds !== owned.paramIds) {
+                this.guideExpressionOwner = null;
+                this.activeLive2DExpressionFile = '';
                 return false;
             }
 
             let handled = false;
             if (typeof manager._removeManualExpressionOverride === 'function') {
                 try {
-                    manager._removeManualExpressionOverride();
-                    handled = true;
+                    handled = manager._removeManualExpressionOverride(owned.listener, owned.emitter) === true;
                 } catch (error) {
                     console.warn('[YuiGuide] 清理教程临时表情失败:', error);
                 }
             }
 
-            if (Object.prototype.hasOwnProperty.call(manager, '_activeExpressionParamIds')) {
-                manager._activeExpressionParamIds = null;
-                handled = true;
+            if (!handled) return false;
+            if (manager._activeExpressionParamIds === owned.paramIds) manager._activeExpressionParamIds = null;
+            if (this.guideExpressionOwner === owned) {
+                this.guideExpressionOwner = null;
+                this.activeLive2DExpressionFile = '';
             }
-
-            return handled;
+            return true;
         }
 
         buildLive2DExpressionCandidates(manager, expressionFile) {
@@ -228,7 +245,7 @@
             return candidateFiles;
         }
 
-        async loadLive2DExpressionData(manager, expressionFile) {
+        async loadLive2DExpressionData(manager, expressionFile, isCurrent = () => true) {
             const candidateFiles = this.buildLive2DExpressionCandidates(manager, expressionFile);
             if (candidateFiles.length === 0) {
                 return null;
@@ -236,18 +253,23 @@
 
             let lastFetchError = null;
             for (const candidateFile of candidateFiles) {
+                if (!isCurrent()) return null;
                 try {
                     const response = await fetch(manager.resolveAssetPath(candidateFile));
+                    if (!isCurrent()) return null;
                     if (!response.ok) {
                         lastFetchError = new Error('Failed to load expression: ' + response.statusText);
                         continue;
                     }
 
+                    const expressionData = await response.json();
+                    if (!isCurrent()) return null;
                     return {
-                        expressionData: await response.json(),
+                        expressionData: expressionData,
                         loadedExpressionFile: candidateFile
                     };
                 } catch (error) {
+                    if (!isCurrent()) return null;
                     lastFetchError = error;
                 }
             }
@@ -281,18 +303,26 @@
                 )
             );
             this.pendingLive2DExpressionFile = normalizedExpressionFile;
+            const request = { manager: window.live2dManager, model: window.live2dManager?.currentModel,
+                internalModel: window.live2dManager?.currentModel?.internalModel,
+                coreModel: window.live2dManager?.currentModel?.internalModel?.coreModel };
+            this.live2dExpressionRequest = request;
+            const isCurrent = () => this.live2dExpressionRequest === request
+                && window.live2dManager === request.manager && request.manager?.currentModel === request.model
+                && request.model && !request.model.destroyed && request.model.internalModel === request.internalModel
+                && request.internalModel?.coreModel === request.coreModel;
 
             const previousEmotionSequence = this.live2dApplySequence;
             const previousExpressionSequence = this.live2dExpressionSequence;
             const run = async () => {
                 const targetExpressionFile = this.pendingLive2DExpressionFile;
                 const manager = window.live2dManager;
-                if (!manager || !manager.currentModel || targetExpressionFile !== normalizedExpressionFile) {
+                if (!manager || !manager.currentModel || targetExpressionFile !== normalizedExpressionFile || !isCurrent()) {
                     return false;
                 }
 
-                const loadedExpression = await this.loadLive2DExpressionData(manager, targetExpressionFile);
-                if (!loadedExpression || this.pendingLive2DExpressionFile !== targetExpressionFile) {
+                const loadedExpression = await this.loadLive2DExpressionData(manager, targetExpressionFile, isCurrent);
+                if (!loadedExpression || !isCurrent() || this.pendingLive2DExpressionFile !== targetExpressionFile) {
                     return false;
                 }
 
@@ -303,12 +333,16 @@
                     return false;
                 }
 
-                manager._activeExpressionParamIds = new Set(
+                const paramIds = new Set(
                     expressionParams
                         .map((param) => param && param.Id)
                         .filter(Boolean)
                 );
-                manager._installManualExpressionOverride(expressionParams, fadeInMs);
+                if (manager._installManualExpressionOverride(expressionParams, fadeInMs) !== true || !isCurrent()) return false;
+                manager._activeExpressionParamIds = paramIds;
+                this.guideExpressionOwner = { manager: manager, model: request.model,
+                    listener: manager._manualExpressionListener, emitter: manager._manualExpressionEmitter,
+                    paramIds: manager._activeExpressionParamIds };
                 this.activeLive2DExpressionFile = loadedExpression.loadedExpressionFile;
                 return true;
             };

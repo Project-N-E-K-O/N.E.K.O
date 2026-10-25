@@ -28,7 +28,7 @@ export function cancelMotion(element: HTMLElement) {
   active.get(element)?.finish()
 }
 
-const pinnedProperties = ['position', 'left', 'top', 'width', 'height', 'margin', 'pointer-events']
+const pinnedProperties = ['position', 'left', 'top', 'width', 'height', 'margin', 'pointer-events', 'overflow']
 
 export type PinBox = Pick<HTMLElement, 'offsetLeft' | 'offsetTop' | 'offsetWidth' | 'offsetHeight'>
 
@@ -50,6 +50,27 @@ export function pinInPlace(element: HTMLElement, box: PinBox = measurePinBox(ele
   })
 }
 
+/** Pins a leaving view at the frame its scroll container currently shows and
+ * cuts it off at the container's bottom edge, so a tall view adds no scrollable
+ * overflow (no transient scrollbar, no width jump) while the next view enters
+ * at the top of the container. */
+export function pinInScrollport(element: HTMLElement) {
+  const scroller = element.parentElement
+  const box = measurePinBox(element)
+  if (!scroller) {
+    pinInPlace(element, box)
+    return
+  }
+  const { scrollTop, clientHeight } = scroller
+  pinInPlace(element, {
+    ...box,
+    offsetTop: box.offsetTop - scrollTop,
+    offsetHeight: Math.max(0, Math.min(box.offsetHeight, scrollTop + clientHeight - box.offsetTop)),
+  })
+  element.style.overflow = 'hidden'
+  scroller.scrollTop = 0
+}
+
 export function releasePin(element: HTMLElement) {
   for (const property of pinnedProperties) element.style.removeProperty(property)
 }
@@ -61,9 +82,14 @@ export type MotionOptions = {
   done?: () => void
 }
 
-/** One owner per element. No RAF loop, persistent inline style, or layer hints.
- * A replacement samples only an already-running element, never an entire grid.
- * Both cancellation and completion release Vue's transition callback once. */
+export function motionSuppressed() {
+  return document.hidden || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+}
+
+export type FrameTiming = { duration: number; delay?: number; easing: string }
+
+/** Preset entrances and exits. A replacement samples only an already-running
+ * element, never an entire grid. */
 export function playMotion(element: HTMLElement, options: MotionOptions) {
   const frames = motionFrames(options.preset, options.leaving)
   if (active.has(element)) {
@@ -72,25 +98,29 @@ export function playMotion(element: HTMLElement, options: MotionOptions) {
       opacity: current.opacity,
       ...(frames[0]?.transform ? { transform: current.transform } : {}),
     }
-    cancelMotion(element)
   }
-  if (document.hidden || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    || typeof element.animate !== 'function') {
-    options.done?.()
+  playFrames(element, frames, {
+    duration: options.leaving ? motionPolicy.quickDuration : motionPresets[options.preset].duration,
+    delay: options.leaving ? 0 : staggerDelay(options.index),
+    easing: options.leaving ? motionPolicy.exitEasing : motionPolicy.easing,
+  }, options.done)
+}
+
+/** One owner per element: a new animation finishes the running one first. No
+ * RAF loop, persistent inline style, or layer hints. Both cancellation and
+ * completion call `done` once. */
+export function playFrames(element: HTMLElement, frames: Keyframe[], timing: FrameTiming, done?: () => void) {
+  cancelMotion(element)
+  if (motionSuppressed() || typeof element.animate !== 'function') {
+    done?.()
     return
   }
   let animation: Animation
-  const duration = options.leaving ? motionPolicy.quickDuration : motionPresets[options.preset].duration
-  const delay = options.leaving ? 0 : staggerDelay(options.index)
+  const { duration, delay = 0 } = timing
   try {
-    animation = element.animate(frames, {
-      duration,
-      delay,
-      easing: options.leaving ? motionPolicy.exitEasing : motionPolicy.easing,
-      fill: 'both',
-    })
+    animation = element.animate(frames, { ...timing, delay, fill: 'both' })
   } catch {
-    options.done?.()
+    done?.()
     return
   }
   let finished = false
@@ -101,7 +131,7 @@ export function playMotion(element: HTMLElement, options: MotionOptions) {
     animation.cancel()
     active.delete(element)
     unsubscribe()
-    options.done?.()
+    done?.()
   }
   // Also covers a removed document or a browser that never settles finished.
   const timer = setTimeout(finish, duration + delay + 100)

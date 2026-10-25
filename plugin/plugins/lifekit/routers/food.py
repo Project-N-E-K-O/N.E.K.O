@@ -1,4 +1,4 @@
-"""美食推荐 router — 基于位置 + 天气的餐饮推荐。"""
+"""Food-recommendation router — dining recommendations based on location and weather."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from .._routing import format_distance
 
 
 class FoodRecommendRouter(PluginRouter):
-    """food_recommend entry：基于位置和天气的美食推荐。"""
+    """food_recommend entry: food recommendations based on location and weather."""
 
     def __init__(self):
         super().__init__(name="food_recommend")
@@ -60,12 +60,12 @@ class FoodRecommendRouter(PluginRouter):
         if not loc:
             return location_unavailable_result(loc_err, i18n)
 
-        # 确定搜索关键词
+        # Determine search keywords
         query = clean_cuisine or None
         weather_reason = ""
 
         if not query:
-            # 根据天气 + 场景推荐
+            # Recommend based on weather and context
             try:
                 weather_data, _ = await asyncio.wait_for(
                     plugin._get_weather_data(loc),
@@ -75,7 +75,7 @@ class FoodRecommendRouter(PluginRouter):
                 weather_data = None
             query, weather_reason = self._pick_query(weather_data, clean_scene, i18n)
 
-        # POI 搜索
+        # Search for POIs
         svc = POIService(plugin._cfg)
         poi_result = await svc.search(query, loc["lat"], loc["lon"], radius=radius, limit=8)
 
@@ -98,7 +98,7 @@ class FoodRecommendRouter(PluginRouter):
                 "query": query,
             }, loc, i18n))
 
-        # 构建推荐列表
+        # Build the recommendation list
         recs: List[Dict[str, Any]] = []
         for item in poi_result.items:
             entry: Dict[str, Any] = {
@@ -112,13 +112,13 @@ class FoodRecommendRouter(PluginRouter):
                 entry["rating"] = item.rating
             recs.append(entry)
 
-        # 摘要
+        # Summary
         top_names = "、".join(r["name"] for r in recs[:3])
         summary = i18n.t("food.summary", location=loc["city"], query=query, top=top_names)
         if weather_reason:
             summary = f"{weather_reason}，{summary}"
 
-        # 推送卡片
+        # Push the card
         card_lines = []
         for r in recs[:5]:
             line = f"📍 {r['name']}  {r['distance']}"

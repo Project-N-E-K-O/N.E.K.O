@@ -51,7 +51,7 @@ def _session(engine: NumericV2Engine):
 
 
 def _story_state_at(session, revision: int) -> dict:
-    """为手工构造的历史快照同步故事状态 revision。"""  # noqa: DOCSTRING_CJK
+    """Synchronize story-state revision for manually constructed history snapshots."""  # noqa: DOCSTRING_CJK
 
     state = deepcopy(session.story_state)
     state["revision"] = revision
@@ -91,7 +91,7 @@ def test_actor_keeps_per_turn_action_projection_after_system_rules(formal):
 @pytest.mark.parametrize("response", ["刚才已经尝过水了。", "星纹已经接好，可以继续了。"])
 @pytest.mark.parametrize("trim_history", [False, True])
 def test_actor_evidence_dedup_follows_final_retained_history(response, trim_history):
-    # 同轮同来源的完整原文只出现一次；旧轮被装箱裁掉后，检索原文须恢复。
+    # Include full original text only once per turn/source; restore retrieved originals after older turns are packed out.
     evidence = [
         {"revision": 1, "source": "performance", "current_visit": True, "text": response},
         {"revision": 2, "source": "player_input", "current_visit": True, "text": "我记住了。"},
@@ -116,7 +116,7 @@ def test_actor_evidence_dedup_follows_final_retained_history(response, trim_hist
 
 
 def test_actor_evidence_preserves_other_sources_revisions_and_full_quotes():
-    # 相似摘录、同句不同主体、不同回合不能被当成重复证据删除。
+    # Similar excerpts, identical sentences with different actors, and different turns must not be deleted as duplicate evidence.
     evidence = [
         {"revision": 1, "source": "performance", "current_visit": True, "text": "不能公开。"},
         {"revision": 2, "source": "performance", "current_visit": True, "text": "不能公开。"},
@@ -153,7 +153,7 @@ def test_repeat_retry_does_not_require_new_actions_or_facts(retry_number):
     "现在可以按压星纹连接处吗？",
 ])
 def test_partial_action_projection_keeps_raw_input_authority_in_every_consumer(player_input):
-    # 同样的空提取既可能来自明确动作，也可能来自准备或提问，不能作为否定授权的清单。
+    # Empty extraction may follow explicit action, preparation, or questions alike; it cannot serve as a list denying authorization.
     projection = project_player_action_result(player_input)
     assert projection["confirmed_actions"] == []
     assert projection["has_confirmed_player_action"] is False
@@ -217,7 +217,7 @@ def test_closure_signal_is_defined_only_for_review_that_receives_it(scene_comple
 
 
 def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
-    # 普通回合只保留产品已确认的六块数据，并把玩家输入放在最后。
+    # Normal turns retain only the six product-approved data blocks, placing player input last.
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
     outcome = engine.resolve_turn(
@@ -252,7 +252,7 @@ def test_numeric_v2_turn_prompt_uses_six_blocks_in_fixed_order():
     assert "event:scene.entered:start:r0" in payload["story_so_far"]
     assert "当前是第 1 回合" in payload["pacing"]
     assert "推荐 4 回合" in payload["pacing"]
-    # 通用合同只在 System 声明；pacing 不再复制整套事实和行动规则。
+    # Declare the general contract only in System; pacing no longer duplicates all fact/action rules.
     assert "幕内因果单元" in messages[0].content
     assert "NPC 被直接询问或等待时" in messages[0].content
     assert "不以问句、猜测或模糊措辞补成部分发生" in messages[0].content
@@ -338,7 +338,7 @@ def test_numeric_v2_prompts_do_not_embed_story_specific_playbooks():
         "拉紧绳索",
         "持续进水",
         "卡扣、暗门",
-        # 当前压测剧本和固定评测的专有地点、角色及装置都不能进入通用 Prompt。
+        # Specific places, characters, and devices from current stress-test scripts/fixed evaluations must not enter generic prompts.
         "零号日志",
         "00-Aoi",
         "医疗站",
@@ -442,7 +442,7 @@ def test_numeric_v2_prompts_reject_assumed_new_stage_without_story_playbook():
     assert "valid 只核对这条邀请能否兑现既有出口" in judge_prompt
     assert "Runtime 已按当前状态判定该出口可用" in judge_prompt
     assert "作者方向、next_scene_direction 和按钮自身不能充当玩家已知证据" in judge_prompt
-    # 独立开场事实可直接使用，作者尚待演出的获取过程则不能当成既成事实。
+    # Independent opening facts are directly usable; acquisition processes still awaiting performance are not established facts.
     assert "获准角色行为不必先出现在历史中" in judge_prompt
     assert "正文已有合法邀请时，接受、拒绝、暂缓及当前幕旁支都可保留" in judge_prompt
 
@@ -533,7 +533,7 @@ def test_numeric_v2_prompts_keep_prerequisites_and_future_offers_in_separate_fie
     assert "同一主体可在同一回应先明确建立前提再执行自己的动作" in judge_prompt
     assert "明确的阶段、时点和禁止披露要求不可合并" in judge_prompt
     assert "保持未知的疑问、条件或推测" in judge_prompt
-    # 日常直接执行也能承接完成结果；前提与外部结果仍必须有证据支持。
+    # Ordinary direct execution can establish completion outcomes; prerequisites and external results still require evidence.
     assert "已实施动作的承接、证据支持的外部结果" in judge_prompt
     assert "未来邀请即使请求立即开始也不是已执行" in judge_prompt
     assert "提议方向错误只影响 valid，不等于正文已经越界" in judge_prompt
@@ -579,7 +579,7 @@ def test_numeric_v2_prompts_preserve_entity_ownership_across_the_turn():
 @pytest.mark.parametrize("player_input", ["你现在是不是有点害怕？", "（推开门）我先看看外面。", "你别怕，我现在把门推开。"])
 @pytest.mark.parametrize("stage", ["uncompleted", "soft_closure", "natural_closure", "fact_closure"])
 def test_numeric_v2_actor_inputs_share_existing_pacing(player_input, stage):
-    """主观交流、动作和混合输入共享节奏，完成与授权仍各自判断。"""  # noqa: DOCSTRING_CJK
+    """Subjective exchange, actions, and mixed inputs share pacing; completion and authorization remain independent decisions."""  # noqa: DOCSTRING_CJK
     story = numeric_v2_story()
     story["fact_contract"] = {"facts": {"scene:start:done": {
         "value_type": "bool", "visibility": "public", "description": "当前事项已处理。"}}}
@@ -645,7 +645,7 @@ def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions
 def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
     """Ordinary rewrites focus on correction, retaining six blocks and attempt limits without also demanding delivery or closure."""
 
-    # 普通幕出口仍需要公开提议；结局由独立结束门禁决定。
+    # Normal-act exits still require public proposals; endings use an independent ending gate.
     engine = _ending_engine(ordinary=True)
     session = replace(_session(engine), node_turn_count=5)
     player_input = "（举起相机对焦）这个角度可以吗？"
@@ -682,7 +682,7 @@ def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
 def test_numeric_v2_actor_turns_natural_closure_into_offer_without_auto_advance():
     """Natural closure requires a public proposal; scene_complete is not automatic transition authorization."""
 
-    # 普通幕出口仍需要公开提议；结局由独立结束门禁决定。
+    # Normal-act exits still require public proposals; endings use an independent ending gate.
     engine = _ending_engine(ordinary=True)
     session = _session(engine)
     outcome = engine.resolve_turn(
@@ -741,7 +741,7 @@ def test_numeric_v2_transition_suggestion_fill_drops_consumed_source_input():
 
 
 def test_numeric_v2_repeated_long_clause_is_rejected_without_fuzzy_semantics():
-    """换开头后原样复用主要威胁句仍属于高置信度机械复读。"""  # noqa: DOCSTRING_CJK
+    """Reusing the main threat sentence verbatim after changing the opening is still high-confidence mechanical repetition."""  # noqa: DOCSTRING_CJK
 
     previous = {
         "performance": "（别过脸）哼，睡你的觉去。要是敢打呼噜吵到人家，明天就把你扔出去。",
@@ -758,7 +758,7 @@ def test_numeric_v2_repeated_long_clause_is_rejected_without_fuzzy_semantics():
 
 
 def test_numeric_v2_short_dialogue_repeat_is_allowed_only_without_scene_update():
-    """短告别对白可以自然重复，但带场景旁白的重复正文仍需拦截。"""  # noqa: DOCSTRING_CJK
+    """Short goodbye dialogue may repeat naturally, but repeated bodies with scene narration must still be blocked."""  # noqa: DOCSTRING_CJK
 
     assert numeric_v2_actor._is_short_stable_dialogue({
         "performance": "明天见。",
@@ -773,7 +773,7 @@ def test_numeric_v2_short_dialogue_repeat_is_allowed_only_without_scene_update()
 
 
 def test_numeric_v2_earlier_repeat_is_scoped_to_current_scene_visit():
-    """相同对白出现在另一次场景访问时，不得被当成本幕机械复读。"""  # noqa: DOCSTRING_CJK
+    """Identical dialogue on another scene visit must not count as mechanical repetition in this act."""  # noqa: DOCSTRING_CJK
 
     session = SimpleNamespace(
         current_node_id="mainline_02",
@@ -859,7 +859,7 @@ async def test_numeric_v2_actor_accepts_stable_confirmation_for_repeated_input(m
 
 @pytest.mark.asyncio
 async def test_numeric_v2_actor_tags_previous_performance_repeat(monkeypatch):
-    """重复保护异常携带来源标签，但不把正文写入异常。"""  # noqa: DOCSTRING_CJK
+    """Repetition-guard exceptions carry source labels without including body text."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(
@@ -907,7 +907,7 @@ async def test_numeric_v2_actor_tags_previous_performance_repeat(monkeypatch):
 
 
 def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_boundaries():
-    """正式换场不能跳过目标幕前提或把抽象状态擅自具体化。"""  # noqa: DOCSTRING_CJK
+    """Formal transitions must not skip target-act prerequisites or arbitrarily concretize abstract states."""  # noqa: DOCSTRING_CJK
 
     system = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -922,7 +922,7 @@ def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_bounda
 
 
 def test_numeric_v2_turn_prompt_keeps_opening_and_complete_scene_direction():
-    """当前幕不能只剩开场画面，否则长对话或跑题后会丢失作者因果线。"""  # noqa: DOCSTRING_CJK
+    """The current act cannot retain only its opening image, or long/off-topic conversations lose the author's causal thread."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     engine.nodes["start"]["story_beat"]["opening_scene"] = "雨后的花店门铃轻轻响起。"
@@ -954,7 +954,7 @@ def test_numeric_v2_turn_prompt_keeps_opening_and_complete_scene_direction():
 
 
 def test_numeric_v2_turn_prompt_keeps_hard_boundaries_without_allowed_checklist():
-    """普通 Actor 保留禁演与事实边界，但不每轮复述 allowed 清单。"""  # noqa: DOCSTRING_CJK
+    """Ordinary Actor retains performance prohibitions/factual boundaries without reciting the allowed list every turn."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     engine.nodes["start"]["story_beat"]["acting_contract"] = {
@@ -1045,7 +1045,7 @@ def test_numeric_v2_turn_prompt_distinguishes_entry_state_from_committed_changes
     )
     payload = _payload(messages)
 
-    # 作者起点明确是开场结束；下面对已提交拆信事实的检查仍保留，不能靠改标签复位历史。
+    # The author baseline explicitly follows the opening; retain checks of committed letter-opening facts below rather than resetting history through relabeling.
     assert "开场演完后的处境：她在门边等待。" in payload["role"]
     assert "开场演完后的身体与认知状态：她站在门边，手中没有物品。" in payload["role"]
     assert "玩家开场演完后的已知处境：玩家站在柜台旁。" in payload["role"]
@@ -1135,7 +1135,7 @@ def test_numeric_v2_opening_only_boundary_expires_after_public_opening():
 
 
 def test_numeric_v2_structured_persona_traits_are_tone_only():
-    """核心特质不得绕过当前关系合同变成亲密动作或既有关系。"""  # noqa: DOCSTRING_CJK
+    """Core traits must not bypass the current relationship contract to become intimate actions or established relationships."""  # noqa: DOCSTRING_CJK
 
     profile = numeric_v2_actor._profile_for_acting_contract(
         "昵称: 小葵\n自称: 人家\n核心特质: 温柔体贴,粘人撒娇\n行为特点: 喜欢蹭手心",
@@ -1149,7 +1149,7 @@ def test_numeric_v2_structured_persona_traits_are_tone_only():
 
 
 def test_numeric_v2_overdue_pacing_requires_new_result_and_concrete_exit():
-    # 超过推荐回合两轮后，Prompt 必须阻止重复催促，并要求可见推进与具体出口。
+    # Two turns beyond the recommended count, prompts must prevent repeated urging and require visible progress plus a specific exit.
     pacing = numeric_v2_actor._soft_pacing(
         {"min_turns": 1, "recommended_turns": 3},
         5,
@@ -1165,7 +1165,7 @@ def test_numeric_v2_overdue_pacing_requires_new_result_and_concrete_exit():
 
 
 def test_numeric_v2_recommended_turn_is_not_a_forced_offer_countdown():
-    """刚到推荐回合只做软聚焦，不能要求 Actor 无条件提出转场。"""  # noqa: DOCSTRING_CJK
+    """Reaching the recommended turn count permits only soft focus, not unconditional transition proposals from Actor."""  # noqa: DOCSTRING_CJK
 
     pacing = numeric_v2_actor._soft_pacing(
         {"min_turns": 3, "recommended_turns": 3},
@@ -1180,7 +1180,7 @@ def test_numeric_v2_recommended_turn_is_not_a_forced_offer_countdown():
 
 
 def test_numeric_v2_soft_boundary_prefers_authored_fact_over_new_task_chain():
-    """软收束时核心冲突未建立，应直接演出作者事实，不能不断增设调查步骤。"""  # noqa: DOCSTRING_CJK
+    """If the core conflict is absent at soft conclusion, directly enact author facts instead of continually adding investigation steps."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(_session(engine), node_turn_count=3)
@@ -1208,7 +1208,7 @@ def test_numeric_v2_soft_boundary_prefers_authored_fact_over_new_task_chain():
 
 
 def test_numeric_v2_closure_prompt_keeps_unknown_boundary_without_special_investigation_rules():
-    """未知结果仍由通用事实与邀请规则约束，不按回合数附加探查专用任务。"""  # noqa: DOCSTRING_CJK
+    """Unknown outcomes remain governed by general factual/invitation rules, without turn-count-specific investigation tasks."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(_session(engine), node_turn_count=3)
@@ -1234,7 +1234,7 @@ def test_numeric_v2_closure_prompt_keeps_unknown_boundary_without_special_invest
 
 
 def test_numeric_v2_prefilters_unproven_result_suggestion_before_review():
-    """推荐把未在正文出现的读数写成事实时，零调用预筛应只删除该按钮。"""  # noqa: DOCSTRING_CJK
+    """If a recommendation asserts readings absent from the body, the zero-call prefilter removes only that button."""  # noqa: DOCSTRING_CJK
 
     filtered, removed, reasons = _prefilter_suggestion_candidates({
         "performance": "（低头查看）读数一片空白。",
@@ -1250,7 +1250,7 @@ def test_numeric_v2_prefilters_unproven_result_suggestion_before_review():
 
 
 def test_numeric_v2_prefilter_keeps_result_already_visible_in_performance():
-    """正文已经明确交付的结果可以继续作为玩家选择，不应被预筛误删。"""  # noqa: DOCSTRING_CJK
+    """Results explicitly delivered in the body remain valid player choices and must survive prefiltering."""  # noqa: DOCSTRING_CJK
 
     filtered, removed, reasons = _prefilter_suggestion_candidates({
         "performance": "（指向屏幕）读数显示出口在蘑菇村。",
@@ -1263,7 +1263,7 @@ def test_numeric_v2_prefilter_keeps_result_already_visible_in_performance():
 
 
 def test_numeric_v2_turn_prompt_keeps_real_current_scene_history():
-    # 已提交的玩家输入和猫娘回复必须进入 story_so_far，推荐草稿不能代替真实历史。
+    # Committed player inputs/catgirl replies must enter story_so_far; recommendation drafts cannot replace actual history.
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
     history_record = {
@@ -1459,7 +1459,7 @@ def test_numeric_v2_turn_prompt_separates_opening_facts_from_scene_direction():
 
 
 def test_numeric_v2_turn_prompt_keeps_ineligible_next_scene_unknown():
-    # 当前数值没有任何合格出口时，不能把某个候选伪装成已选方向。
+    # When current values qualify for no exit, do not disguise any candidate as an already chosen direction.
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     for route in engine.nodes["start"]["route_gates"]:
         route["conditions"] = {"all": [{"metric": "trust", "op": ">=", "value": 101}]}
@@ -1545,7 +1545,7 @@ def test_actor_receives_actual_entry_movement_without_target_plot():
     assert "你们离开河湾，进入镇内的小巷。" in text
     assert "尚未公开的秘密结果" not in text
     assert "尚未发生" in text
-    # 结局仍只给收束方向，不把结局专属状态提前投给普通演员。
+    # Endings still provide conclusion direction only, without exposing ending-specific state early to ordinary actors.
     target["type"] = "ending"
     text = numeric_v2_actor._next_scene_summary_text(numeric_v2_actor._next_scene_preview_for_actor(engine, cast, source, session.metrics))
     assert "进入镇内的小巷" not in text
@@ -1631,8 +1631,8 @@ def test_numeric_v2_turn_prompt_allows_same_place_ending_closure():
     """Give the Actor an actionable closure direction for ending nodes even without a change of location."""
 
     story = numeric_v2_story()
-    # 只保留一个结局出口，使普通回合能够确定这是结局收束而非未决分支。
-    # 选择测试初始信任度可达的“离开”结局出口，避免制造不可达节点。
+    # Retain one ending exit so ordinary turns can identify conclusion rather than an unresolved branch.
+    # Select the 'leave' ending reachable from test initial trust, avoiding unreachable nodes.
     story["nodes"][0]["route_gates"] = story["nodes"][0]["route_gates"][1:]
     story["nodes"] = [
         node for node in story["nodes"] if node["id"] != "ending_stay"
@@ -1657,7 +1657,7 @@ def test_numeric_v2_turn_prompt_allows_same_place_ending_closure():
         "哥哥",
     ))
 
-    # 结局可以自然结束，提示不再要求为收束额外发出邀请。
+    # Endings may finish naturally; prompts no longer require an extra invitation to conclude.
     assert payload["next_scene"].startswith("下一阶段是结局余韵")
     assert "不为结束追加邀请" in payload["next_scene"]
     assert "结局尚未获准" in payload["pacing"]
@@ -1759,7 +1759,7 @@ def test_numeric_v2_pending_transition_is_highlighted_for_recommendations():
 
 
 def test_numeric_v2_simple_prompt_packing_drops_oldest_complete_history():
-    # 预算不足时只淘汰最早整条记录，最新回合和玩家输入始终保留。
+    # When budget is insufficient, remove only the oldest complete records, always retaining the latest turn/player input.
     history = [
         {"revision": 1, "player_input": "旧回合一", "performance": "（动作）旧回复一"},
         {"revision": 2, "player_input": "旧回合二", "performance": "（动作）旧回复二"},
@@ -1913,7 +1913,7 @@ def test_numeric_v2_rejected_turn_has_no_competing_closure_instruction():
         session, TurnRequestV2("reject_or_chat", 0, "我想先和你聊聊。"), (),
         scene_complete=True, transition_intent="reject",
     )
-    # Actor 在 prepare 后接收的提议状态以 Runtime 结算为准。
+    # Actor's proposal state after prepare follows Runtime settlement.
     session = replace(session, transition_offered=outcome.session.transition_offered)
     payload = _payload(_turn_messages(
         engine, session, outcome, "我想先和你聊聊。", "安静克制", "测试猫娘", "哥哥",
@@ -2006,7 +2006,7 @@ def test_numeric_v2_simple_prompt_packing_drops_previous_scene_tail_first():
 
 
 def test_numeric_v2_actor_parses_visible_suggestions_in_same_output():
-    # 正文和推荐必须来自同一个 JSON；推荐只保留可直接提交的第一人称动作加对白。
+    # Body/recommendations must come from one JSON; retain only directly submittable first-person actions plus dialogue.
     parsed = _parse_output(json.dumps({
         "performance": "（抬眼）我听到了。",
         "transition_offered": True,
@@ -2025,7 +2025,7 @@ def test_numeric_v2_actor_parses_visible_suggestions_in_same_output():
 
 
 def test_numeric_v2_actor_preserves_fact_candidates_for_runtime_review():
-    """Actor 解析器只保留候选结构，事实权限与逐字证据仍由 Runtime 统一裁定。"""  # noqa: DOCSTRING_CJK
+    """Actor parsing retains candidate structure only; Runtime still adjudicates fact permissions and verbatim evidence centrally."""  # noqa: DOCSTRING_CJK
 
     candidate = {
         "key": "scene:start:rescued",
@@ -2043,7 +2043,7 @@ def test_numeric_v2_actor_preserves_fact_candidates_for_runtime_review():
 
 
 def test_numeric_v2_actor_records_missing_expected_fact_candidates_without_rejecting_body():
-    """完成合同下缺少候选字段只记诊断，不能为辅助字段丢正文或触发格式重试。"""  # noqa: DOCSTRING_CJK
+    """Missing candidate fields under completion contracts generate diagnostics only, not body rejection or format retries over auxiliary fields."""  # noqa: DOCSTRING_CJK
 
     diagnostics = {}
     parsed = _parse_output(
@@ -2067,7 +2067,7 @@ def test_numeric_v2_actor_records_missing_expected_fact_candidates_without_rejec
 
 
 def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missing_values():
-    """完成合同出现在导演上下文中，缺失事实不能被投影成已经失败或已经完成。"""  # noqa: DOCSTRING_CJK
+    """Completion contracts appear in director context; absent facts must not project as already failed or completed."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -2110,7 +2110,7 @@ def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missi
 
 
 def test_numeric_v2_committed_completion_facts_prompt_next_turn_offer_without_auto_advance():
-    """全部完成事实已入账时，下一普通回合明确提出出口，但 Runtime 仍不自动换幕。"""  # noqa: DOCSTRING_CJK
+    """Once all completion facts are recorded, the next normal turn explicitly proposes an exit, but Runtime still does not transition automatically."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -2126,7 +2126,7 @@ def test_numeric_v2_committed_completion_facts_prompt_next_turn_offer_without_au
         "all": [{"key": "scene:start:rescued", "equals": True}],
     }
     engine = NumericV2Engine.from_mapping(story)
-    # 测试普通下一幕的邀请；结局仍由自然结束门禁处理，不套用本合同。
+    # Test invitations into normal next acts; endings retain their natural-ending gate and do not use this contract.
     engine.nodes["ending_leave"]["type"] = "scene"
     engine.nodes["ending_leave"]["terminal"] = False
     session = _session(engine)
@@ -2171,7 +2171,7 @@ def test_numeric_v2_committed_completion_facts_prompt_next_turn_offer_without_au
 
 @pytest.mark.parametrize("transition_intent", ["unclear", "reject"])
 def test_numeric_v2_completion_closure_respects_explicit_rejection(transition_intent):
-    """完成后普通交流可以引导，明确拒绝仍然暂停邀请。"""  # noqa: DOCSTRING_CJK
+    """Ordinary exchange after completion may guide progress, while explicit rejection still suspends invitations."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -2202,7 +2202,7 @@ def test_numeric_v2_completion_closure_respects_explicit_rejection(transition_in
         },),
     ).session
     if transition_intent == "reject":
-        # reject 只在已有待确认提议时是有效意图；否则 Runtime 会规范化为 unclear。
+        # reject is valid only with a pending proposal; otherwise Runtime normalizes it to unclear.
         completed = replace(completed, transition_offered=True)
     outcome = engine.resolve_turn(
         completed,
@@ -2227,7 +2227,7 @@ def test_numeric_v2_completion_closure_respects_explicit_rejection(transition_in
 
 
 def test_numeric_v2_review_reuses_same_call_for_pending_completion_fact_candidates():
-    """普通正文复核读取当前幕待完成事实，并在同一 JSON 中返回紧凑候选。"""  # noqa: DOCSTRING_CJK
+    """Normal body review reads pending completion facts for the current act and returns compact candidates in the same JSON."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -2282,7 +2282,7 @@ def test_numeric_v2_review_reuses_same_call_for_pending_completion_fact_candidat
         "evidence_quote": "伤者已经脱困。",
     },)
 def test_numeric_v2_actor_keeps_body_when_suggestions_are_malformed():
-    # 推荐格式失败只降级为空列表，不能因为推荐脏数据丢弃已经合法的猫娘正文。
+    # Malformed recommendations fall back only to an empty list; invalid auxiliary data must not discard an already-valid catgirl body.
     parsed = _parse_output(json.dumps({
         "performance": "（抬眼）我听到了。",
         "transition_offered": False,
@@ -2295,7 +2295,7 @@ def test_numeric_v2_actor_keeps_body_when_suggestions_are_malformed():
 
 
 def test_numeric_v2_actor_drops_suggestion_template_placeholders():
-    """一键发送推荐不能把未替换的姓名占位符展示给玩家。"""  # noqa: DOCSTRING_CJK
+    """One-click recommended inputs must not expose unreplaced name placeholders to players."""  # noqa: DOCSTRING_CJK
 
     parsed = _parse_output(json.dumps({
         "performance": "（抬眼）你可以先介绍自己。",
@@ -2314,7 +2314,7 @@ def test_numeric_v2_actor_drops_suggestion_template_placeholders():
 
 
 def test_numeric_v2_actor_rejects_non_boolean_transition_flag():
-    # 转场状态只能由 Actor 的显式布尔字段交付，字符串不能被当成真值猜测。
+    # Transition state must come from Actor's explicit boolean fields; strings cannot be guessed as truthy.
     with pytest.raises(NumericV2ActorOutputError, match="transition_offered_invalid"):
         _parse_output(json.dumps({
             "performance": "（抬眼）我听到了。",
@@ -2324,7 +2324,7 @@ def test_numeric_v2_actor_rejects_non_boolean_transition_flag():
 
 
 def test_numeric_v2_actor_suggestion_fill_is_limited_to_one_lightweight_call(monkeypatch):
-    # 初次正文调用缺少推荐时，只允许一次 suggestions_only 补全，且不重写正文。
+    # Missing recommendations on initial body generation allow one suggestions_only completion without rewriting the body.
     actor = NumericV2Actor(object())
     calls = []
 
@@ -2491,7 +2491,7 @@ def test_numeric_v2_actor_drops_recommendation_that_repeats_current_input():
 
 
 def test_numeric_v2_actor_suggestion_parser_reports_anonymous_rejection_reasons():
-    """推荐观测只记录格式原因计数，不保存模型原文。"""  # noqa: DOCSTRING_CJK
+    """Recommendation observations record only counts of format reasons, never original model text."""  # noqa: DOCSTRING_CJK
 
     diagnostics = {}
     suggestions = _parse_actor_suggestions(
@@ -2514,7 +2514,7 @@ def test_numeric_v2_actor_suggestion_parser_reports_anonymous_rejection_reasons(
 
 
 def test_numeric_v2_actor_suggestion_parser_keeps_one_valid_item():
-    """推荐不足两条时也展示已验证的选项，不让开场因数量合同变成空白。"""  # noqa: DOCSTRING_CJK
+    """Show validated recommendations even below two options, preventing count contracts from blanking the opening."""  # noqa: DOCSTRING_CJK
 
     diagnostics = {}
     suggestions = _parse_actor_suggestions(
@@ -2528,7 +2528,7 @@ def test_numeric_v2_actor_suggestion_parser_keeps_one_valid_item():
 
 
 def test_numeric_v2_opening_prompt_requires_at_least_one_suggestion():
-    """开场同一次 Actor 调用必须尝试产出至少一条可点击输入。"""  # noqa: DOCSTRING_CJK
+    """The same opening Actor call must attempt at least one clickable input."""  # noqa: DOCSTRING_CJK
 
     system = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -2542,7 +2542,7 @@ def test_numeric_v2_opening_prompt_requires_at_least_one_suggestion():
 
 
 def test_numeric_v2_actor_keeps_one_suggestion_without_waiting_for_fill(monkeypatch):
-    """已有一条合法选项时直接返回，不等待辅助模型。"""  # noqa: DOCSTRING_CJK
+    """Return immediately when one valid option exists, without waiting for an auxiliary model."""  # noqa: DOCSTRING_CJK
 
     actor = NumericV2Actor(object())
 
@@ -2568,7 +2568,7 @@ def test_numeric_v2_actor_keeps_one_suggestion_without_waiting_for_fill(monkeypa
 
 
 def test_numeric_v2_suggestion_fill_boundaries_come_from_authored_scene():
-    """补推荐必须取得事实边界与禁演边界，不能只看到已经生成的正文。"""  # noqa: DOCSTRING_CJK
+    """Recommendation backfill must receive factual/performance boundaries, not only the generated body."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     beat = engine.nodes["start"]["story_beat"]
@@ -2647,7 +2647,7 @@ def test_numeric_v2_actor_preserves_valid_suggestions_after_transition_offer(mon
 
 
 def test_numeric_v2_transition_suggestion_source_uses_final_target_opening_only():
-    """换场补推荐不能继续承接已经结束的来源幕行动。"""  # noqa: DOCSTRING_CJK
+    """Transition recommendation backfill must not continue actions from the already-ended source act."""  # noqa: DOCSTRING_CJK
 
     visible = numeric_v2_actor._suggestion_source_text({
         "segments": [
@@ -2699,7 +2699,7 @@ def test_numeric_v2_compact_transition_declares_sendable_suggestion_format():
 
 
 def test_numeric_v2_actor_preserves_valid_suggestions_after_route_change(monkeypatch):
-    """正式换幕后保留主调用的合法按钮，不因场景变化固定刷新。"""  # noqa: DOCSTRING_CJK
+    """After formal transition, retain valid primary-call buttons rather than always refreshing on scene change."""  # noqa: DOCSTRING_CJK
 
     actor = NumericV2Actor(object())
     calls = []
@@ -2742,7 +2742,7 @@ def test_numeric_v2_actor_preserves_valid_suggestions_after_route_change(monkeyp
 
 
 def test_numeric_v2_actor_prompt_preserves_its_own_committed_proposals():
-    """连续演绎不能否认或偷换猫娘上一轮已经说过的方案。"""  # noqa: DOCSTRING_CJK
+    """Continuous performance cannot deny or covertly replace the catgirl's proposal from the preceding turn."""  # noqa: DOCSTRING_CJK
 
     turn_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
@@ -2766,7 +2766,7 @@ def test_numeric_v2_actor_prompt_preserves_its_own_committed_proposals():
 
 
 def test_numeric_v2_hard_boundary_prompt_requires_refusal_or_safe_alternative():
-    """玩家诱导越界时，Actor 不能靠交换行动主体来顺从。"""  # noqa: DOCSTRING_CJK
+    """Actor must not comply with player-induced boundary violations by swapping action actors."""  # noqa: DOCSTRING_CJK
 
     instruction = numeric_v2_actor._hard_boundary_system_instruction([
         "玩家进入医疗站救人，猫娘留在门口接应。",
@@ -2777,7 +2777,7 @@ def test_numeric_v2_hard_boundary_prompt_requires_refusal_or_safe_alternative():
 
 
 def test_numeric_v2_transition_suggestion_fill_keeps_acceptance_first():
-    """转场补推荐由结构化字段确定顺序，不依赖模型自行排列数组。"""  # noqa: DOCSTRING_CJK
+    """Structured fields determine transition recommendation order, not the model's chosen array ordering."""  # noqa: DOCSTRING_CJK
 
     parsed = _parse_output(
         json.dumps({
@@ -2846,7 +2846,7 @@ def test_numeric_v2_actor_counts_real_provider_requests(monkeypatch):
 
 
 def test_numeric_v2_v22_evaluator_does_not_project_legacy_evidence():
-    """v2.2 判定器不再把目标证据字段送入 Prompt 或结果。"""  # noqa: DOCSTRING_CJK
+    """The v2.2 evaluator no longer sends target-evidence fields into prompts or results."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_1_story()
     story["meta"]["contract_version"] = "v2.2"
@@ -2880,7 +2880,7 @@ def test_numeric_v2_v22_evaluator_does_not_project_legacy_evidence():
 
 
 def test_numeric_v2_evaluator_marks_pending_visible_transition_for_acceptance():
-    """Evaluator 应看到已提交的具体提议，而不是把未选择的推荐当成历史。"""  # noqa: DOCSTRING_CJK
+    """Evaluator must see committed concrete proposals instead of treating unselected recommendations as history."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -2928,7 +2928,7 @@ def test_numeric_v2_evaluator_marks_pending_visible_transition_for_acceptance():
 
 
 def test_numeric_v2_evaluator_distinguishes_followup_topic_shift_and_action():
-    """三态合同要区分追问、完全转题与亲自实施，不增加第四种内部状态。"""  # noqa: DOCSTRING_CJK
+    """The three-state contract distinguishes follow-up questions, complete topic changes, and personal execution without a fourth internal state."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(
@@ -2971,7 +2971,7 @@ def test_numeric_v2_evaluator_distinguishes_followup_topic_shift_and_action():
 
 
 def test_numeric_v2_actor_marks_unresolved_transition_in_pacing():
-    """待确认转场仍留在当前幕时，六块 Prompt 要明确禁止提前抵达目标地点。"""  # noqa: DOCSTRING_CJK
+    """While a pending transition remains in the current act, six-block prompts must explicitly prohibit premature arrival at the destination."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(_session(engine), transition_offered=True)
@@ -2999,7 +2999,7 @@ def test_numeric_v2_actor_marks_unresolved_transition_in_pacing():
 
 
 def test_numeric_v2_evaluator_ignores_unknown_optional_metric_candidate():
-    """未知数值依据只丢弃可选变化，不能阻断本回合其它合法判定。"""  # noqa: DOCSTRING_CJK
+    """Unknown numeric evidence discards only optional changes, without blocking other valid decisions this turn."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
@@ -3024,10 +3024,10 @@ def test_numeric_v2_evaluator_ignores_unknown_optional_metric_candidate():
 
 
 def test_numeric_v2_actor_does_not_force_transition_offer_when_route_is_unresolved():
-    """超过软节奏且路线未定时仍只按当前因果收束，不能无条件逼出提议。"""  # noqa: DOCSTRING_CJK
+    """Beyond soft pacing with an undecided route, conclude from current causality rather than forcing unconditional proposals."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
-    # 两个出口都不满足条件，不能为了软回合预算硬凑一个方向。
+    # Neither exit qualifies; do not force a direction merely to satisfy a soft turn budget.
     engine = NumericV2Engine.from_mapping(story)
     for route in engine.nodes["start"]["route_gates"]:
         route["conditions"] = {"all": [{"metric": "trust", "op": ">=", "value": 101}]}
@@ -3057,7 +3057,7 @@ def test_numeric_v2_actor_does_not_force_transition_offer_when_route_is_unresolv
 def test_numeric_v2_actor_overdue_focus_still_requires_mature_exit():
     """Past the suggested turn count with one exit, focus current causality and propose the next step only when the exit is ready."""
 
-    # 普通幕出口仍需要公开提议；结局由独立结束门禁决定。
+    # Normal-act exits still require public proposals; endings use an independent ending gate.
     engine = _ending_engine(ordinary=True)
     session = replace(_session(engine), node_turn_count=5)
     outcome = engine.resolve_turn(
@@ -3137,11 +3137,11 @@ def test_numeric_v2_transition_judge_receives_visible_offer_and_scene_context():
 
 
 def test_numeric_v2_transition_judge_uses_route_reason_and_actual_nonending_entry():
-    """普通换幕复核使用路线理由及实际入口，不把目标幕后续方向当入幕要求。"""  # noqa: DOCSTRING_CJK
+    """Normal-transition review uses route reasons/actual entry conditions, not subsequent target-act directions as entry requirements."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
-    # 只改变已编译测试引擎中的目标类型，以覆盖普通换幕 Prompt；不改变故事路由条件。
+    # Change only target type in the compiled test engine to cover normal-transition prompts, preserving story routing conditions.
     engine.nodes["ending_leave"]["type"] = "scene"
     engine.nodes["ending_leave"]["terminal"] = False
     messages = _build_transition_judge_messages(
@@ -3218,7 +3218,7 @@ def test_numeric_v2_transition_judge_receives_positive_author_fact_authority():
     assert current_scene["authoritative_state"]["catgirl_state"].endswith("32%。")
     assert current_scene["assertable_self_facts"] == ["自己拥有短时能量保护罩。"]
     assert current_scene["authorized_behaviors"] == ["自然说明自身能源储备。"]
-    # 正向授权仍保留，但待演出的方向与当前事实不再混作一种证据。
+    # Retain positive authorization while distinguishing future performance direction from current factual evidence.
     assert "authoritative_state 的独立开场事实、assertable_self_facts" in messages[0].content
     assert "story_direction 和 authorized_behaviors 是可演出的方向" in messages[0].content
 
@@ -3250,7 +3250,7 @@ def test_numeric_v2_transition_judge_long_history_preserves_latest_complete_evid
     if budget is None:
         assert sum(numeric_v2_evaluator.count_tokens(m.content) for m in messages) <= NUMERIC_V2_ACTOR_BUDGET_PROFILES[session.actor_budget_profile]["judge_input_max_tokens"]
     else:
-        # 固定作者合同自身超预算时仍保留边界与最新证据，不以删空安全输入强行达标。
+        # Even when fixed author contracts exceed budget, retain boundaries/latest evidence rather than emptying safety input to meet the cap.
         assert len(payload["scene_context"]) == 1
         assert payload["scene_fact_index"] == []
     recent = {r["revision"] for r in payload["scene_context"]}
@@ -3258,7 +3258,7 @@ def test_numeric_v2_transition_judge_long_history_preserves_latest_complete_evid
 
 
 def test_numeric_v2_transition_judge_keeps_compact_facts_from_early_scene_turns():
-    """长幕超出固定十二轮窗口后，仍保留早期已完成前因。"""  # noqa: DOCSTRING_CJK
+    """Long acts exceeding the fixed twelve-turn window still retain earlier completed causes."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(_session(engine), actor_budget_profile="economy")
@@ -3300,7 +3300,7 @@ def test_numeric_v2_transition_judge_keeps_compact_facts_from_early_scene_turns(
     payload = json.loads(messages[1].content.split("：", 1)[1])
 
     assert len(payload["scene_context"]) == 12
-    # 近期十二轮已有完整证据，索引只补开场与更早三轮，不重复占用预算。
+    # The latest twelve turns already hold full evidence; index supplements only the opening/earlier three turns without duplicating budget.
     assert len(payload["scene_fact_index"]) == 4
     assert "三名平民" in payload["scene_fact_index"][1]["player_input"]
     assert "安全撤出" in payload["scene_fact_index"][1]["visible_response"]
@@ -3438,7 +3438,7 @@ def test_guard_compacts_recent_history_before_discarding_early_operation(monkeyp
     } for i in range(1, 9))
     session = replace(_session(engine), revision=8, story_state=_story_state_at(_session(engine), 8), node_turn_count=8, performance_history=history)
     kw = dict(player_input="钥匙在哪里？", actor_performance={"performance": "钥匙在柜台。"})
-    # 单独验证摘要压缩；检索可能已用同一操作的完整玩家原文覆盖索引，另有去重与来源测试。
+    # Verify summary compression independently; retrieval may already cover the index with full player text for the same action, covered by separate dedup/source tests.
     monkeypatch.setattr(ev, "history_evidence", lambda *args, **kwargs: [])
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES["balanced"], "judge_input_max_tokens", 10000)
     complete = ev._build_transition_judge_messages(engine, session, **kw)[0]

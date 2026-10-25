@@ -55,6 +55,15 @@
             panel.hidden = !activation || S.isRecording !== true || ['disabled', 'closed'].includes(activation.state);
             if (!activation) return;
             label.textContent = t('voiceIdentity.activation_' + activation.state, activation.state);
+            if (activation.state === 'waiting') {
+                const waitingHints = {
+                    speech_too_short: ['voiceIdentity.activationHint_speech_too_short', 'Not enough speech. Say a longer, complete sentence.'],
+                    owner_not_confirmed: ['voiceIdentity.activationHint_owner_not_confirmed', 'Voice did not match. Keep speaking naturally; verification will continue.'],
+                    verification_insufficient: ['voiceIdentity.activationHint_verification_insufficient', 'This audio could not be verified. Keep speaking naturally to try again.']
+                };
+                const hint = Object.prototype.hasOwnProperty.call(waitingHints, activation.reason) && waitingHints[activation.reason];
+                if (hint) label.textContent = t(hint[0], hint[1]);
+            }
             if (activation.reason && activation.state === 'unavailable') label.textContent += ' — ' + t('voiceIdentity.activationReason_' + activation.reason, t('voiceIdentity.activationRepair', 'Check resources and retry voice activation.'));
             if (restartRequired) label.textContent = t('voiceIdentity.activationRestartRequired', 'Close and reopen the microphone to start a new voice session.');
             retry.hidden = restartRequired || activation.state !== 'unavailable';

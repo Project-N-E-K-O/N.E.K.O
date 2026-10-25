@@ -165,22 +165,22 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if not isinstance(msg, dict):
                 continue
-            # 小剧场角色台词属于虚构演绎，不能进入现实人格的 user_observation
-            # 或 ai_disclosure 提取；原文仍保留在 recent 与 time-indexed 中。
+            # Theater character dialogue is fictional performance and must not enter user_observation
+            # or ai_disclosure extraction for real personalities; retain original text in recent and time-indexed storage.
             if is_theater_memory_message(msg):
                 continue
-            # 带幂等键写入的串门日记（OD-16 v4）：长期事实只经用户逐字确认过的
-            # visit_facts 写入，周期抽取不能再从日记正文里抽出未经预览的事实
+            # Visit diaries written with idempotency keys (OD-16 v4): long-term facts enter only through
+            # verbatim user-confirmed visit_facts; periodic extraction must not extract unpreviewed facts from diary bodies
             if _is_keyed_diary(msg):
                 continue
             msg_type = msg.get('type')
             if msg_type not in ('human', 'ai'):
                 continue
             content = msg.get('data', {}).get('content', '')
-            # content 归一化：内部可能是 str 或 [{type:'text', text:'...'}, ...]
-            # 后者拼回单个 str（path B prompt 不需要细粒度 part 结构，
-            # FactStore._format_conversation 把 list content 拼成 ''.join 也是
-            # 同样语义）。
+            # Normalize content: internally it may be str or [{type:'text', text:'...'}, ...]
+            # Join the latter into one str (the path B prompt does not need fine-grained part structure;
+            # FactStore._format_conversation similarly joins list content using ''.join
+            # with the same semantics).
             if isinstance(content, str):
                 text = content
             elif isinstance(content, list):

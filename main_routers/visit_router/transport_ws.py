@@ -131,7 +131,7 @@ _CODECS_MAX_ITEMS = 16
 _VID_LEN = 26
 
 
-# ── 下行消息构造 ───────────────────────────────────────────────────────
+# ── Downlink message construction ───────────────────────────────────────────────────────
 
 
 def build_credentials_message(
@@ -189,7 +189,7 @@ def build_credentials_message(
     return msg
 
 
-# ── 运行时接口 ─────────────────────────────────────────────────────────
+# ── Runtime interface ─────────────────────────────────────────────────────────
 
 
 class VisitTransportSession(ABC):
@@ -212,7 +212,7 @@ class VisitTransportSession(ABC):
         self.liveness = liveness
         self.outbox = outbox
 
-    # —— 上行回调（runtime 实现）——
+    # —— Uplink callbacks (implemented by runtime) ——
 
     @abstractmethod
     async def on_preflight(self, caps: dict[str, Any]) -> None:
@@ -264,7 +264,7 @@ class VisitTransportSession(ABC):
         """``tx_backpressure``: pause ``typing`` / new deltas while on."""
         self.outbox.set_backpressure(bool(msg.get("on")))
 
-    # —— 页面生命周期（默认实现即 §4.3 的规则）——
+    # —— Page lifecycle (default implementation follows §4.3) ——
 
     def on_page_lost(self, now: float) -> None:
         """The current transport socket dropped: the reload deadline runs, delivery timers pause.
@@ -319,7 +319,7 @@ class VisitTransportSession(ABC):
         """Clock of the lifecycle callbacks: the one ``liveness`` / ``outbox`` run on (monotonic)."""
         return time.monotonic()
 
-    # —— 下行 ——
+    # —— Downlink ——
 
     async def send(self, msg: Mapping[str, Any]) -> bool:
         """Send a downlink message on the current socket of THIS session.
@@ -335,7 +335,7 @@ class VisitTransportSession(ABC):
         return await _send_on(link.conn, msg)
 
 
-# ── 连接登记 ───────────────────────────────────────────────────────────
+# ── Connection registration ───────────────────────────────────────────────────────────
 
 
 @dataclass(eq=False)
@@ -369,25 +369,25 @@ class _Connection:
             if text is None:
                 text = _encode_downlink(msg)
             else:
-                # 预编码的文本同样受大小上限约束（它与 msg 是否一致由 _media_frame 保证）
+                # Pre-encoded text also obeys size limits (_media_frame guarantees consistency with msg).
                 _check_downlink_size(msg, len(text.encode("utf-8")))
         except _DownlinkRejected as exc:
-            # 只是这一条发不出去，不能被接收循环当成断线把正常的 socket 关掉
+            # Only this message is unsendable; the receive loop must not treat it as disconnection and close a healthy socket.
             logger.warning("visit transport: dropping %s downlink: %s", msg.get("type"), exc)
             return False
         async with self.send_lock:
-            # 排队等锁期间可能已被顶掉或关闭：拿到锁后两样都要复查
+            # The connection may be superseded or closed while waiting for the lock; recheck both after acquiring it.
             if self.closed or self.retired:
                 return False
             try:
-                # 有界：iframe 不读了（背压）就当这条 socket 写不出去，退役它让 iframe 重连，
-                # 别让接待 / 激活 / 泵卡在一次写上
+                # Bound the wait: if the iframe stops reading (backpressure), retire this unwritable socket so the iframe reconnects,
+                # rather than blocking hosting / activation / pumping on a single write.
                 await asyncio.wait_for(self.websocket.send_text(text), SEND_TIMEOUT_S)
-            except Exception as exc:  # noqa: BLE001 - 断开中 / 写超时的 socket：当作未送达
+            except Exception as exc:  # noqa: BLE001 - Disconnecting / write-timed-out socket: treat as undelivered.
                 logger.warning("visit transport: %s downlink not written, dropping the socket: %s",
                                msg.get("type"), type(exc).__name__)
-                # 写不出去的 socket 不能留着：stop 失败用终态 4404（iframe 不再重连、不再领凭证入房），
-                # 其它用 1011（iframe 重连，走正常的页面重载）
+                # An unwritable socket must be retired: failed stop uses terminal 4404 (iframe stops reconnecting or obtaining credentials to join);
+                # use 1011 otherwise (iframe reconnects through normal page reload).
                 _abandon(self, CLOSE_UNKNOWN_VISIT if msg.get("type") == "stop" else CLOSE_SEND_FAILED,
                          "send failed")
                 return False
@@ -410,7 +410,7 @@ class _Connection:
         try:
             if self.websocket.application_state != WebSocketState.DISCONNECTED:
                 await asyncio.wait_for(self.websocket.close(code=code, reason=reason), CLOSE_LOCK_WAIT_S)
-        except Exception as exc:  # noqa: BLE001 - 含超时：写不出去的关闭帧交给服务端心跳超时回收
+        except Exception as exc:  # noqa: BLE001 - Includes timeouts: let server heartbeat expiry reclaim an unsendable close frame.
             logger.debug("visit transport: close failed: %s", type(exc).__name__)
         finally:
             if locked:
@@ -432,12 +432,12 @@ def register_transport_session(session: VisitTransportSession) -> None:
     key = (session.visit_id, session.side)
     old = _links.get(key)
     if old is not None and old.session is session:
-        return  # 同一个 session 重复注册（幂等重试）：不能关掉它自己的正常连接
+        return  # Duplicate registration of the same session (idempotent retry) must not close its own healthy connection.
     _links[key] = _Link(session=session)
     if old is not None and old.conn is not None:
-        # 4404：终态（旧 runtime 的 iframe 不能重连进新 session），且 socket 一关 iframe 即离房。
-        # 不用 4409：被顶掉的 iframe 不主动离房，靠同 vid 的新 iframe 入房把它顶下线（§4.3），
-        # session 级替换不保证有这样的新 iframe，旧的会一直留在房里
+        # 4404 is terminal (the old runtime's iframe cannot reconnect into a new session); socket closure immediately makes it leave the room.
+        # Avoid 4409: superseded iframes do not leave proactively; a new iframe with the same vid evicts them on joining (§4.3),
+        # but session-level replacement does not guarantee such a new iframe, so the old one would remain in the room forever.
         _spawn_close(old.conn, CLOSE_UNKNOWN_VISIT, "visit replaced")
 
 
@@ -484,7 +484,7 @@ def _abandon(conn: _Connection, code: int, reason: str) -> None:
     if link is None or _links.get((link.session.visit_id, link.session.side)) is not link or link.conn is not conn:
         return
     link.conn = None
-    conn.lost_as_current = True  # 重入回放写失败时据此判断：是它这次掉线、而不是被更新的连接顶掉
+    conn.lost_as_current = True  # On failed reentry replay writes, use this to distinguish its disconnection from supersession by a newer connection.
     try:
         link.session.on_page_lost(link.session.now())
     except Exception as exc:  # noqa: BLE001
@@ -492,9 +492,9 @@ def _abandon(conn: _Connection, code: int, reason: str) -> None:
 
 
 def _spawn_close(conn: _Connection, code: int, reason: str) -> None:
-    # 先同步退役：关闭任务真正跑起来之前，仍卡在 await 里的 handler 恢复后也发不出任何下行。
-    # 关闭码也同步记下：接收循环有缓冲帧时不让出事件循环，会先走到 finally 自己关，
-    # 那里要用这个码（4404 / 4409 是终态），不能被默认的 1000 抢先
+    # Retire synchronously first: before the close task runs, an awaiting handler cannot send downlink even after resuming.
+    # Record the close code synchronously too: buffered receive frames can reach finally without yielding and close first,
+    # so finally must use this code (4404 / 4409 are terminal), ahead of the default 1000.
     conn.retired = True
     if conn.close_code is None:
         conn.close_code, conn.close_reason = code, reason
@@ -519,13 +519,13 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[
     kind = msg.get("type")
     first_credentials = kind == "credentials" and not msg.get("refresh")
     if first_credentials:
-        # 首发只在本连接预检通过之后（§4.3）：runtime 出错时也不能绕过
+        # First delivery requires this connection's preflight to pass (§4.3), even if runtime errors.
         if conn.credentials_sent or conn.credentials_reserved or not conn.preflight_ok:
             logger.warning("visit transport: refusing a first-issue credentials (duplicate or no passed preflight)")
             return False
         conn.credentials_reserved = True
     elif kind == "credentials" and not conn.credentials_sent:
-        # 续期只替换已有凭证：首发之前没有可替换的
+        # Renewal only replaces existing credentials: none exist before first issuance.
         return False
     if kind == "stop":
         if conn.stop_sent or conn.stop_reserved:
@@ -533,8 +533,8 @@ async def _send_on(conn: _Connection, msg: Mapping[str, Any], *, text: Optional[
         conn.stop_reserved = True
     media_seq = 0
     if kind == "media":
-        # 排进发送锁之前同步编号：重入兜底快照据此判断期间 runtime 是否有更新的 media
-        # 已发出或仍在排队（发送失败的不算）
+        # Assign sequence numbers synchronously before queuing for the send lock: reentry fallback snapshots use them to detect newer runtime media
+        # already sent or still queued during this interval (failed sends do not count).
         conn.media_seq += 1
         media_seq = conn.media_seq
         conn.media_pending.add(media_seq)
@@ -573,7 +573,7 @@ def _reset_for_tests() -> None:
     _preflight_failures.clear()
 
 
-# ── 上行处理 ───────────────────────────────────────────────────────────
+# ── Uplink handling ───────────────────────────────────────────────────────────
 
 
 def _is_int(value: Any) -> bool:
@@ -594,17 +594,17 @@ def _record_preflight(session: VisitTransportSession, msg: dict[str, Any], ok: b
         "ua": str(msg.get("ua") or "")[:_UA_MAX_CHARS],
         "at": time.time(),
     }
-    # 能力门缓存（PR-09a 读）：只写进本角色仍在的串门槽，不建新槽
-    # 槽按角色名登记，同一角色可能已开了下一场：只写进 visit_id 对得上的那一场
+    # Capability-gate cache (read by PR-09a): write only to this character's existing visit slot; never create one.
+    # Slots are keyed by character name; the character may already have started another visit, so require matching visit_id.
     slot = get_visit_route_state(session.lanlan_name)
     if slot is not None and slot.get("visit_id") == session.visit_id:
         slot["caps_preflight"] = dict(caps)
-    # 按页面环境（User-Agent）记下结论：同一环境再建房 / 入房时失败结论可同步 409
+    # Cache by page environment (User-Agent): a failed result allows synchronous 409 on later room creation / joining in the same environment.
     remember_preflight(caps["ua"], ok, caps["reason"])
     return caps
 
 
-# ── 预检结果缓存（§4.6 rooms / join 的同步 409）──────────────────────────
+# ── Preflight-result cache (§4.6 synchronous 409 for rooms / join) ──────────────────────────
 
 _PREFLIGHT_CACHE_MAX = 16
 _preflight_failures: dict[str, tuple[float, Optional[str]]] = {}
@@ -636,7 +636,7 @@ def cached_preflight_failure(user_agent: Any) -> Optional[dict[str, Any]]:
     if hit is None:
         return None
     if time.monotonic() - hit[0] > VISIT_CAPS_CACHE_TTL_S:
-        # 过期：下一次照常建 iframe 重跑预检（环境可能已经变了）
+        # Expired: create an iframe and rerun preflight normally next time; the environment may have changed.
         del _preflight_failures[key]
         return None
     return {"reason": hit[1]}
@@ -668,7 +668,7 @@ def _encode_downlink(msg: Mapping[str, Any]) -> str:
     re-entry snapshot check both use it, so they never disagree.
     """
     try:
-        # allow_nan=False：NaN / Infinity 不是合法 JSON；set / bytes / 孤立代理字符等同样发不出去
+        # allow_nan=False: NaN / Infinity are invalid JSON; set / bytes / lone surrogates likewise cannot be sent.
         text = json.dumps(msg, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         size = len(text.encode("utf-8"))
     except (TypeError, ValueError) as exc:
@@ -698,7 +698,7 @@ async def _call(session: VisitTransportSession, hook: str, *args: Any, **kwargs:
     """Await a runtime hook; an exception is logged and returns ``_HOOK_FAILED``."""
     try:
         return await getattr(session, hook)(*args, **kwargs)
-    except Exception as exc:  # noqa: BLE001 - runtime 回调出错不能拖垮这条 socket
+    except Exception as exc:  # noqa: BLE001 - A failing runtime callback must not take down this socket.
         logger.warning("visit transport: %s hook failed: %s", hook, type(exc).__name__)
         return _HOOK_FAILED
 
@@ -714,8 +714,8 @@ def _attach(link: _Link, websocket: WebSocket) -> _Connection:
     link.conn = conn
     link.connections_seen += 1
     if previous is not None:
-        # 被顶掉的旧连接收 4409：对它是终态（不重连），否则两个 iframe 会互相驱逐。
-        # 先同步退役（之后发往它的一律拒），关闭放后台
+        # Superseded connections receive 4409, terminal for them (no reconnect), otherwise two iframes would evict each other.
+        # Retire synchronously first (reject all later sends to it), then close in the background.
         previous.retired = True
         _spawn_close(previous, CLOSE_SUPERSEDED, "superseded")
     if conn.reattach:
@@ -737,7 +737,7 @@ def _reload_expired(session: VisitTransportSession, now: Optional[float] = None)
     """True when the page reload of ``session`` already missed its deadline; None when the check failed."""
     try:
         return bool(session.liveness.page_expired(session.now() if now is None else now))
-    except Exception as exc:  # noqa: BLE001 - 帧处理路径上不能因此结束接收循环
+    except Exception as exc:  # noqa: BLE001 - Frame handling must not end the receive loop for this failure.
         logger.warning("visit transport: page deadline check failed: %s", type(exc).__name__)
         return None
 
@@ -769,11 +769,11 @@ def _close_if_late(
 async def _handle_frame(
     link: _Link, conn: _Connection, msg: dict[str, Any], nbytes: int, visit_id: str, side: str,
 ) -> None:
-    # 被顶掉（4409）或场次已注销的连接，后续帧一概不交给 runtime
+    # Never pass subsequent frames from superseded (4409) or deregistered-session connections to runtime.
     if not _is_current(link, conn):
         return
     session = link.session
-    # 重载期限已过的替换页面：任何帧都不再交给 runtime（预检写路由状态、sdk 能力都不做），直接关掉
+    # Replacement pages past the reload deadline: pass no frames to runtime (including preflight route-state or SDK-capability writes); close directly.
     if _close_if_late(conn, session):
         return
     kind = msg.get("type")
@@ -785,15 +785,15 @@ async def _handle_frame(
             conn.preflight_seen = True
             ok = msg.get("preflight_ok") is True
             caps = _record_preflight(session, msg, ok)
-            # runtime 没能处理预检（例如更新串门状态失败）就不去 Servers 领凭证，
-            # 也不认这次预检：首发凭证闸门只在 hook 成功之后才放行
+            # If runtime cannot process preflight (e.g. visit-state update fails), do not obtain credentials from Servers
+            # or accept this preflight: open the first-credential gate only after the hook succeeds.
             if await _call(session, "on_preflight", caps) is _HOOK_FAILED or not ok:
                 return
             conn.preflight_ok = True
-            # 等 on_preflight 期间可能已被顶掉：领凭证有 Servers 侧副作用（签发记录、配额），不为它白领一份
+            # Supersession may occur while awaiting on_preflight: credential issuance has Servers-side effects (records, quotas), so do not request unused credentials.
             if not _is_current(link, conn):
                 return
-            # 等 on_preflight 期间期限可能刚过（或查不了）：不为它领凭证，过期就直接关掉
+            # The deadline may expire (or become unreadable) while awaiting on_preflight: request no credentials and close directly on expiry.
             if _close_if_late(conn, session) is not False:
                 return
             creds = await _call(session, "issue_credentials")
@@ -802,8 +802,8 @@ async def _handle_frame(
             if not isinstance(creds, Mapping) or creds.get("type") != "credentials" or creds.get("refresh"):
                 logger.warning("visit transport: issue_credentials returned a non-credentials message")
                 return
-            # 等凭证（Servers 往返）期间期限可能刚过：不发，否则 iframe 会带同一个 vid 先入房再被关，
-            # 打断对端的 peer_left 宽限。被顶掉（closed）的连接 _send_on 本身就不发
+            # The deadline may expire during the Servers credential round trip: do not send, or the iframe would join with the same vid before closing,
+            # interrupting the peer's peer_left grace period. _send_on already rejects superseded (closed) connections.
             if _close_if_late(conn, session) is not False:
                 return
             await _send_on(conn, creds)
@@ -814,22 +814,22 @@ async def _handle_frame(
             caps = _sdk_caps(msg)
             if await _call(session, "on_sdk_caps", caps) is not _HOOK_FAILED:
                 conn.sdk_ok = caps.get("transport_ok") is True
-            # 入房报告可能先到：能力门一过就再试一次重入
+            # A room-entry report may arrive first: retry reentry once the capability gate passes.
             await _try_rejoin(link, conn, session)
         return
     if kind == "state":
-        # 非字符串（list / dict）不能拿去查 frozenset，否则抛 TypeError 被当成断线；
-        # 清洗后的值写回再交给 runtime，它那边拿去查集合也不会出错
+        # Non-strings (list / dict) cannot be looked up in a frozenset; TypeError would otherwise be treated as disconnection.
+        # Write back the sanitized value before passing it to runtime, so its set lookups are safe too.
         state = _enum(msg.get("state"), STATES)
         msg = {**msg, "state": state}
         was_in_room = conn.in_room
-        # 先当作不在房内：hook 失败时（runtime 没认这条上报，状态可能不一致）不能留着旧的
-        # in_room 让后续 stats 去重入；iframe 不再报的话，这场按 fail-safe 到页面期限判 local_page_lost
+        # Start as out of room: if the hook fails (runtime rejected the report, so state may differ), stale
+        # in_room must not let later stats trigger reentry; absent more iframe reports, fail safely as local_page_lost at the page deadline.
         conn.in_room = False
         if await _call(session, "on_state", msg) is _HOOK_FAILED:
             return
-        # 只有明确的进出房状态才改它（error 等保持原样）；入房只认「本连接已拿到首发凭证」之后的上报，
-        # 否则会绕过预检提前恢复 outbox
+        # Change only for explicit join/leave states (leave error, etc. unchanged); accept join reports only after this connection receives its first credentials,
+        # otherwise outbox could resume before preflight.
         if state in REJOINED_STATES:
             conn.in_room = conn.credentials_sent
         elif state not in OUT_OF_ROOM_STATES:
@@ -851,8 +851,8 @@ async def _handle_frame(
         return
     if kind == "stats":
         await _call(session, "on_stats", msg)
-        # 已在房内、重入却没做成（准备失败回滚了）：iframe 一次入房只报一次 joined，
-        # 靠 5 s 一次的 stats 再试，不然只能等到页面期限
+        # In room but reentry failed (preparation failed and rolled back): iframe reports joined only once per room entry,
+        # so retry on stats every 5 s rather than waiting for the page deadline.
         await _try_rejoin(link, conn, session)
         return
     if kind == "tx_backpressure":
@@ -873,37 +873,37 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     ``rejoined`` is set; any failure pauses the outbox again and leaves the
     deadline running, and the next trigger redoes the whole thing.
     """
-    # 只有已被顶掉的旧连接不能替新连接恢复；没入房、已重入的连接不做
-    # 重入同样要本连接过了能力门 ③（每条新连接各自加载 SDK）
+    # A superseded old connection cannot restore the new one; do nothing if not in room or already rejoined.
+    # Reentry also requires this connection to pass capability gate ③ (each new connection loads its own SDK).
     if not (conn.reattach and conn.in_room and conn.sdk_ok and not conn.rejoined and _is_current(link, conn)):
         return
-    # 期限已过（tick 还没来得及判）就不再重入：由 runtime 的 tick 判 local_page_lost。
-    # 帧入口已查过一次；这里复查 on_state 等 await 期间刚过期的情形：新 iframe 已经用同一个 vid
-    # 回到房里，不能留着（对端会取消 peer_left 宽限），关掉它即离房
-    # 只取一次时钟：期限检查与随后的提交（on_page_rejoin_committed → on_page_back）用同一个 now，
-    # 否则两次取时之间期限恰好过去，on_page_back 不清期限、连接却被标成已重入
+    # Past the deadline (before tick notices), do not rejoin: runtime tick determines local_page_lost.
+    # Frame entry already checked; recheck expiry during awaits such as on_state: a new iframe has returned to the room with the same vid
+    # and must not remain (the peer would cancel peer_left grace); closing it makes it leave.
+    # Read the clock once: deadline check and subsequent commit (on_page_rejoin_committed → on_page_back) share now,
+    # otherwise expiry between readings could leave the deadline uncleared in on_page_back while marking the connection rejoined.
     try:
         now = session.now()
-    except Exception as exc:  # noqa: BLE001 - 普通的 stats 帧也会走到这里，不能因此结束接收循环
+    except Exception as exc:  # noqa: BLE001 - Ordinary stats frames reach here too; this must not terminate the receive loop.
         logger.warning("visit transport: rejoin check failed: %s", type(exc).__name__)
         return
     if _close_if_late(conn, session, now) is not False:
-        return  # 已关掉，或期限查不了：都不重入（下一次触发再试）
+        return  # Already closed or deadline unreadable: do not rejoin; retry on the next trigger.
     saved = None
     try:
-        # 快照最先，且按实际下发的那条（含 type、大小上限）检查：它失败时 outbox 仍保持
-        # page_reload 暂停，不会出现「已恢复、重入却没完成」，也不会置位后才发现发不出去
+        # Snapshot first, checked as actually delivered (including type and size limit): failure leaves outbox paused
+        # for page_reload, preventing 'resumed but reentry incomplete' or setting the flag before discovering it cannot be sent.
         media, media_text = _media_frame(session.media_snapshot())
         saved = session.liveness.page_reload_state()
         session.on_page_rejoined(now)
-        # 清期限在 due() 之前：due() 会取走一次性的 hello 重发、标记首发、扣令牌，是唯一撤不回的一步，
-        # 放最后；它之前任何一步失败都能整套回滚（期限按原样写回）
+        # Clear the deadline before due(): due() consumes one-shot hello replay, marks initial sends, and spends tokens; it alone cannot be undone,
+        # so keep it last. Any prior failure can roll back everything (restore the original deadline).
         session.on_page_rejoin_committed(now)
         frames = list(session.outbox.due(now))
     except Exception as exc:  # noqa: BLE001
         logger.warning("visit transport: rejoin failed: %s", type(exc).__name__)
-        # 回滚：恢复了的 outbox 重新暂停、清掉的期限写回，下一次触发整套重做（hello 去重、resume 幂等）
-        # 两步各自兜底、先写回期限：暂停失败也不能留下「期限已清」的半提交状态
+        # Roll back: pause resumed outbox and restore cleared deadline; retry the whole sequence next time (hello deduplication, idempotent resume).
+        # Guard each step separately and restore the deadline first: pause failure must not leave a partially committed, cleared deadline.
         if saved is not None:
             try:
                 session.liveness.restore_page_reload_state(saved)
@@ -918,13 +918,13 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
     media_mark = conn.media_seq
     for index, frame in enumerate(frames):
         if await _send_on(conn, frame.to_ws()):
-            # 与泵发出的帧同一套记账（写出去的时刻、存活计时、收尾步骤计时器），不然重入时写出去的帧（首发或补发）就漏掉了
+            # Use the pump's bookkeeping (send time, lifetime, final-step timer) so initial/replayed frames written during reentry are counted too.
             try:
                 session.on_frame_sent(frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_frame_sent failed: %s", type(exc).__name__)
             continue
-        # 没写出去：与泵一样回滚记账（due 放出时已记成「已发」）。连接这就被弃的话，后面没送的也一并回滚
+        # Unwritten: roll back bookkeeping like the pump (due already marked them sent). If abandoning the connection now, roll back all later unsent frames too.
         unsent = frames[index:] if conn.lost_as_current else [frame]
         for failed in unsent:
             try:
@@ -932,19 +932,19 @@ async def _try_rejoin(link: _Link, conn: _Connection, session: VisitTransportSes
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: write_failed failed: %s", type(exc).__name__)
         if conn.lost_as_current:
-            # 回放写不出去、这条连接作为当前连接被弃（_abandon 已按新一次掉线起了重载期限）：把这次重载
-            # 原来的期限写回，绝对期限不能被反复重连续上。被更新的连接顶掉的不算：新连接可能已经重入完了
+            # Replay write failed and this current connection was abandoned (_abandon started a reload deadline for a new disconnection): restore this reload's
+            # original deadline; repeated reconnects must not extend the absolute deadline. Exclude superseded connections: the new one may already have rejoined.
             _restore_reload_deadline(link, session, saved)
             return
     if _is_current(link, conn):
-        # 发帧期间 runtime 可能已经发了更新的 media（例如刚关掉摄像头）：
-        # 前面那份只用于提前发现失败，真正下发的取发送前一刻的最新状态，
-        # 取到即同步入发送锁队列，不会再被更早的状态盖掉
+        # Runtime may send newer media while frames are being sent (e.g. the camera just turned off):
+        # the earlier snapshot only detects failures early; deliver the latest state fetched immediately before sending,
+        # synchronously queuing it for the send lock so an older state cannot overwrite it later.
         try:
             media, media_text = _media_frame(session.media_snapshot())
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit transport: media_snapshot failed: %s", type(exc).__name__)
-            # 取不到最新的：期间 runtime 发过 media 就不再用旧快照兜底（会盖掉更新的状态）
+            # Latest state unavailable: if runtime sent media meanwhile, do not fall back to the old snapshot (it would overwrite newer state).
             if _newer_media(conn, media_mark):
                 return
         if not await _send_on(conn, media, text=media_text) and conn.lost_as_current:
@@ -961,7 +961,7 @@ def _restore_reload_deadline(link: _Link, session: VisitTransportSession, saved:
     if saved is None:
         return
     if _links.get((session.visit_id, session.side)) is not link or link.conn is not None:
-        # 被弃之后已经有新连接接上（或这场已注销）：期限归新连接管，不再拿旧的写回
+        # A new connection has replaced the abandoned one (or the session was deregistered): the new connection owns the deadline; do not restore the old one.
         return
     try:
         session.liveness.restore_page_reload_state(saved)
@@ -1038,7 +1038,7 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
     close_code = CLOSE_NORMAL
     close_reason = ""
     try:
-        # 重载期限已过才连回的页面：不再接它（预检、领凭证、入房都不做）；与帧入口同一条 4404 路径
+        # Page reconnected after reload expiry: reject it (no preflight, credentials, or joining), using the same 4404 path as frame entry.
         if _close_if_late(conn, link.session):
             return
         while True:
@@ -1053,12 +1053,12 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
             if conn.closed or conn.retired:
                 break
             await _handle_frame(link, conn, msg, len(text.encode("utf-8")), visit_id, side)
-    except Exception as exc:  # noqa: BLE001 - 断开 / 运行时异常都按断线收尾
+    except Exception as exc:  # noqa: BLE001 - Handle both disconnection and runtime errors as disconnect cleanup.
         logger.debug("visit transport: receive loop ended: %s", type(exc).__name__)
     finally:
-        # 先同步解绑并起宽限，再 await 关闭：handler 被取消（关停 / ASGI 层取消）时
-        # await 会立刻抛 CancelledError，放在它后面的掉页处理就永远执行不到。
-        # 被顶掉（4409）或 session 已注销的连接不算掉页：只有仍是当前连接时才起宽限
+        # Unbind synchronously and start grace before awaiting close: if the handler is cancelled (shutdown / ASGI cancellation),
+        # await immediately raises CancelledError, so page-loss handling placed afterward would never run.
+        # Superseded (4409) or deregistered-session connections do not count as page loss; start grace only for the current connection.
         if _links.get((visit_id, side)) is link and link.conn is conn:
             link.conn = None
             try:
@@ -1066,6 +1066,6 @@ async def visit_transport_ws(websocket: WebSocket) -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("visit transport: on_page_lost failed: %s", type(exc).__name__)
         if conn.close_code is not None:
-            # 已经排了关闭（4404 迟到页面 / 4409 被顶掉）：用那个码，不让默认的 1000 抢先
+            # Close already queued (4404 late page / 4409 superseded): use that code before the default 1000 can win.
             close_code, close_reason = conn.close_code, conn.close_reason
         await conn.close(close_code, close_reason)

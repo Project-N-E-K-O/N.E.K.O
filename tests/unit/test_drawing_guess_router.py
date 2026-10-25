@@ -1509,7 +1509,7 @@ def test_cjk_modifier_prefixes_accept_correct_guesses_without_compound_false_hit
 @pytest.mark.parametrize("suffix", ["啦", "哦", "呗", "唄", "哟", "喲"])
 def test_cjk_sentence_endings_accept_correct_guesses(suffix):
     assert dgr._matches_word(f"是猫{suffix}", dgr._WORD_BY_ID["cat"])
-    # 扩展句末助词不能放松普通复合词的前后边界。
+    # Extending sentence-final particles must not relax the boundaries of ordinary compound words.
     assert not dgr._matches_word(f"是火车{suffix}", dgr._WORD_BY_ID["car"])
 
 

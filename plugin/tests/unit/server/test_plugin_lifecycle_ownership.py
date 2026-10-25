@@ -88,9 +88,9 @@ async def test_the_default_app_never_starts_the_lifecycle(
 
     started: list[int] = []
 
-    # 必须是 async 的：生产代码 `await lifecycle_startup()`。同步 stub 只会在
-    # 那条路**真的被执行**时才炸——第一版就是同步的，而这条用例正因为路径没走
-    # 到才绿，等于什么都没证明。
+    # Must be async: production code awaits lifecycle_startup(). A synchronous stub fails only
+    # when that path actually runs. The first version was synchronous, and this test passed
+    # because the path never ran, proving nothing.
     async def _start() -> None:
         started.append(1)
 

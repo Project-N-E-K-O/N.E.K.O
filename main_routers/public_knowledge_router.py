@@ -36,6 +36,7 @@ from main_logic import public_knowledge
 from main_routers.system_router._shared import _validate_local_mutation_request
 from utils.http.knowledge_proxy import (
     READ_PATHS,
+    SERVICE_WRITE_PATHS,
     WRITE_PATHS,
     BodyTooLarge,
     capped_body,
@@ -102,7 +103,7 @@ async def read_public_knowledge(path: str, request: Request):
 @router.post("/{path:path}")
 async def write_public_knowledge(path: str, request: Request):
     path = path.strip("/")
-    max_bytes = WRITE_PATHS.get(path)
+    max_bytes = WRITE_PATHS.get(path, SERVICE_WRITE_PATHS.get(path))
     if max_bytes is None:
         return _failure("not_found", 404)
     rejected = _validate_local_mutation_request(

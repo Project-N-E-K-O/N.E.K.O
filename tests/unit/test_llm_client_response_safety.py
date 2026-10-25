@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Regression tests for ChatOpenAI defensive response reads.
 
-Background: free-agent-model 上游会返回 HTTP 200 + choices 非空，但
-choices[0].message 是 None 的合法响应。原来 ainvoke/invoke 直接
-.message.content 会触发 'NoneType' object has no attribute 'content'，
-连通性预检随之失败。这里固定该场景下不再崩溃、content 退化为 ""。
+Background: free-agent-model upstream may return valid HTTP 200 responses with nonempty
+choices but choices[0].message=None. Previously ainvoke/invoke directly read
+.message.content, raising 'NoneType' object has no attribute 'content' and failing
+connectivity prechecks. Verify no crash here, with content falling back to \"\".
 """
 from __future__ import annotations
 

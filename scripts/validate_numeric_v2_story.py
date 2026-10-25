@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""供 InkAI 调用的 Numeric v2 复验与安全安装 CLI。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 revalidation and safe-install CLI for InkAI."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from services.theater.numeric_v2_registry import (  # noqa: E402
 
 
 def _package_root(config_manager=None) -> Path:
-    """复用 N.E.K.O 自己的存储策略，不在 InkAI 复制平台路径规则。"""  # noqa: DOCSTRING_CJK
+    """Reuse N.E.K.O's storage policy rather than duplicating platform-path rules in InkAI."""  # noqa: DOCSTRING_CJK
 
     from services.theater.paths import theater_root
     from utils.config_manager import ConfigManager
@@ -52,7 +52,7 @@ def _install(compiler: NumericV2Compiler, story) -> dict:
 
 
 def main() -> int:
-    # 工坊尚在独立仓库时沿用这条窄桥读取名称；SDK 内置后直接调用同一个函数。
+    # While Workshop lives in a separate repository, retain this narrow bridge for name reads; once SDK is built in, call the same function directly.
     if sys.argv[1:] == ["--authoring-names"]:
         from services.theater.numeric_v2_identity import numeric_v2_authoring_names
         from utils.config_manager import ConfigManager
@@ -77,7 +77,7 @@ def main() -> int:
             return 5
         payload = json.loads(source.read_text(encoding="utf-8"))
         compiler = NumericV2Compiler()
-        # CLI 与服务端安装入口共用 v2.2 严格门禁，旧包只会得到明确的升级提示。
+        # CLI and server installation share the v2.2 strict gate; old packages receive explicit upgrade instructions.
         compiled = compiler.compile_v2_2(payload)
         if len(sys.argv) == 3:
             data = _install(compiler, compiled.story)
@@ -94,7 +94,7 @@ def main() -> int:
         return 0
     except NumericV2CompileError as exc:
         issue_codes = {issue.code for issue in exc.issues}
-        # 旧包需要作者升级而非修复单个字段；CLI 顶层错误码与服务端门禁保持一致。
+        # Old packages require author upgrades, not single-field fixes; CLI top-level error codes match the server gate.
         error_code = (
             "numeric_v2_upgrade_required"
             if "numeric_v2_upgrade_required" in issue_codes

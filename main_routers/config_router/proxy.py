@@ -72,7 +72,7 @@ async def set_proxy_mode(request: Request):
         else:
             direct = bool(raw_direct)
 
-        # 代理相关环境变量 key 列表
+        # Proxy-related environment-variable keys
         proxy_keys = [
             'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
             'http_proxy', 'https_proxy', 'all_proxy',
@@ -82,10 +82,10 @@ async def set_proxy_mode(request: Request):
         all_keys = proxy_keys + ['NO_PROXY', 'no_proxy']
         with _PROXY_LOCK:
             if direct:
-                # 仅在首次切换到直连时保存快照，避免重复调用覆盖原始值
+                # Save a snapshot only on the first switch to direct connections, so repeated calls cannot overwrite original values
                 if not _proxy_snapshot:
                     _proxy_snapshot = {k: os.environ[k] for k in all_keys if k in os.environ}
-                # 设置 NO_PROXY=* 使 httpx/aiohttp/urllib 跳过 Windows 注册表系统代理
+                # Set NO_PROXY=* so httpx/aiohttp/urllib bypass the Windows registry system proxy
                 os.environ['NO_PROXY'] = '*'
                 os.environ['no_proxy'] = '*'
                 for key in proxy_keys:
@@ -93,7 +93,7 @@ async def set_proxy_mode(request: Request):
                 logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
             else:
                 if _proxy_snapshot:
-                    # 从快照恢复所有代理相关环境变量（含 NO_PROXY）
+                    # Restore all proxy-related environment variables from the snapshot (including NO_PROXY)
                     for k in all_keys:
                         if k in _proxy_snapshot:
                             os.environ[k] = _proxy_snapshot[k]

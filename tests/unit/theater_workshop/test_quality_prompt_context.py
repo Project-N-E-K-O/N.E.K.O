@@ -48,7 +48,7 @@ def test_formal_background_is_citable_and_reaches_all_assessment_and_repair_stag
     corrected = "女主指向敞开的前门，让访客看到入口的告示。"
     story["intro"]["background"] = background
     story["nodes"][0]["story_beat"]["opening_scene"] = opening
-    # 未导出的世界规则不能为了补全正式背景而一并成为运行事实。
+    # Unexported world rules must not become runtime facts merely to complete the canonical background.
     authoring["world"] = {"rules": ["HIDDEN_AUTHOR_RULE_DO_NOT_PROJECT"]}
     before, authoring_before = deepcopy(story), deepcopy(authoring)
     assessor = NumericV2QualityAssessor()
@@ -74,7 +74,7 @@ def test_formal_background_is_citable_and_reaches_all_assessment_and_repair_stag
         assert outline["background"] == background
         assert all("/background" not in node["text_repair_fields"] for node in outline["mainline"])
         if operation == "numeric_v2_fact_evidence_review":
-            # 复核尚未发生，不能把由“缺少复核”推导的否定结论反过来交给裁判。
+            # Review has not occurred; do not give the judge a negative conclusion inferred from the absence of review.
             assert "repairable" not in request["proposed_issues"][0]
             assert "repair_reason" not in request["proposed_issues"][0]
             return json.dumps(review_payload(request["proposed_issues"]), ensure_ascii=False)

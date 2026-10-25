@@ -26,7 +26,12 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from services.chat_sync.source import mark_tool_turn
 from config.prompts.prompts_sys import _loc
+from config.turn_context_settings import (
+    RECALL_MEMORY_TOOL_BUDGET_MS,
+    RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
+)
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
@@ -118,10 +123,38 @@ class ToolCallingMixin:
         return n
 
     def _make_tool_call_handler(self, session):
+        if isinstance(session, OmniRealtimeClient):
+            # Accepting a provider call and executing it are different phases.
+            # The source marker must reach the queue before any terminal, even
+            # if the asynchronous handler has not received CPU yet.
+            session.on_tool_call_accepted = lambda call: self._note_realtime_tool_source(
+                call, invoking_session=session,
+            )
         async def _handle(call: ToolCall) -> ToolResult:
             return await self._on_tool_call(call, invoking_session=session)
 
         return _handle
+
+    def _note_realtime_tool_source(self, call: ToolCall, *, invoking_session) -> None:
+        owner = call.source_owner
+        if (owner is None or invoking_session is not getattr(self, "session", None)
+            or not invoking_session._tool_task_owner_is_current(owner)):
+            return
+        # Never borrow current_speech_id: the provider owner was frozen before
+        # scheduling and a terminal may already have rotated the live host ID.
+        speech_id = owner.host_turn_id
+        if call.provider_meta.get("chat_original_source") is not None:
+            return
+        mark_tool_turn(self, speech_id)
+        proof = getattr(self, "_chat_original_turns", {}).get(str(speech_id or ""))
+        if proof is not None:
+            # Reuse the fixed proof in existing per-call host metadata. The
+            # legacy async fallback must not requeue a completed reply's marker.
+            call.provider_meta["chat_original_source"] = dict(proof)
+        if not getattr(invoking_session, "_is_gemini", False):
+            # Raw continuations use the existing user scope. Gemini instead
+            # carries its explicit dispatch/tool-response source tokens.
+            self._chat_original_tool_owner = (invoking_session, owner, speech_id)
 
     async def _on_tool_call(
         self,
@@ -133,6 +166,25 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        # Tool evidence belongs to the invoking reply, before execution can
+        # yield to another turn. A visible preface must stay in the same local
+        # record as the later result; never relabel a newer reply on completion.
+        owner = call.reply_owner
+        if owner is not None:
+            if not getattr(owner, "turn_ended", False):
+                mark_tool_turn(self, getattr(owner, "speech_id", None))
+        elif call.source_owner is not None:
+            # Retain provenance for direct/legacy handler calls as well as the
+            # synchronous acceptance observer; both enforce the frozen owner.
+            self._note_realtime_tool_source(call, invoking_session=invoking_session)
+        if call.reply_owner is not None:
+            from main_logic.reply_tail import reply_tail_registry
+
+            tool = self.tool_registry.get(call.name)
+            if tool is not None and tool.handler is None and tool.metadata.get("reply_tail") is True:
+                call.host_reply = reply_tail_registry.tool_context(
+                    self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
+                )
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
@@ -188,12 +240,12 @@ class ToolCallingMixin:
         )
 
     # ------------------------------------------------------------------
-    # 内置 pseudo 工具：recall_memory
+    # Built-in pseudo tool: recall_memory
     # ------------------------------------------------------------------
-    # 机制层占位：先让 offline / realtime 两条路径都能 register、把
-    # description / parameters 推到 wire、收到模型的 tool call、回 result。
-    # handler 当前固定返回"没有找到相关记忆"，等真实记忆检索接好后只
-    # 替换 ``_handle_recall_memory_call`` 即可，不动注册 / 同步链路。
+    # Mechanism-level placeholder: first allow both offline and realtime paths to register, send
+    # description / parameters on the wire, receive a model tool call, and return a result.
+    # The handler currently always returns "No relevant memories found"; when real memory retrieval is wired up, only
+    # replace ``_handle_recall_memory_call`` without changing registration / synchronization.
 
     def _register_builtin_tools(self) -> None:
         """Re-register the built-in tools, with description / parameter docs in the current
@@ -231,9 +283,9 @@ class ToolCallingMixin:
                         "description": _loc(RECALL_MEMORY_TOOL_TIME_DESCRIPTION, _lang),
                     },
                 },
-                # query / time 至少给一个：只给 time 就按时间回溯（不依赖
-                # 内容），只给 query 就语义检索。两者都空时 handler 早退回
-                # "没有找到相关记忆"。故 required 留空，靠 handler 兜底。
+                # At least one of query / time is required: time alone performs time-based recall (independent of
+                # content); query alone performs semantic retrieval. If both are empty, the handler returns early with
+                # "No relevant memories found." Keep required empty and let the handler validate.
                 "required": [],
             },
             handler=self._handle_recall_memory_call,
@@ -243,21 +295,21 @@ class ToolCallingMixin:
         self._register_public_knowledge_tool()
 
     # ------------------------------------------------------------------
-    # 内置工具：query_public_knowledge
+    # Built-in tool: query_public_knowledge
     # ------------------------------------------------------------------
-    # 公共知识库在 Memory Server（/internal/knowledge/*），Main 只做 HTTP
-    # 客户端。只有存在可用知识包时才注册：没有导入知识包的用户不必每轮都
-    # 带上这份工具 schema。可用标志在 main_logic.public_knowledge 里缓存，
-    # 变化时回调 _on_public_knowledge_availability 重新注册并同步到会话。
+    # Public knowledge lives in Memory Server (/internal/knowledge/*); Main only provides the HTTP
+    # client. Register this tool only when a usable knowledge package exists, so users who imported none do not need to
+    # include its schema in every turn. Availability is cached in main_logic.public_knowledge; when it changes, callback _on_public_knowledge_availability re-registers and syncs it to the session.
+    #
 
     def _register_public_knowledge_tool(self) -> None:
-        # 可选工具：这里出任何问题都不能连带 recall_memory 的注册。
+        # This optional tool must not affect recall_memory registration if anything goes wrong.
         try:
             public_knowledge.add_availability_listener(self)
             port = getattr(self, "memory_server_port", None)
             if port is not None:
                 public_knowledge.schedule_availability_refresh(port)
-            # 同名工具若是插件等其他来源注册的，不覆盖也不删除。
+            # If a plugin or other source registered a tool with the same name, do not overwrite or delete it.
             current = self.tool_registry.get(public_knowledge.TOOL_NAME)
             ours = current is None or public_knowledge.is_builtin_definition(current)
             if not ours:
@@ -344,8 +396,8 @@ class ToolCallingMixin:
             time_arg = raw_time.strip()
         session_kind = type(self.session).__name__ if self.session is not None else "no-session"
 
-        # 空入参早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次
-        # HTTP。但只要带了 time（按时间回溯，不依赖 query），就不算空入参。
+        # Return early on empty input: the model sometimes sends empty args to "check whether the tool is available," avoiding an HTTP call.
+        # But input with time (time-based recall does not require query) is not empty.
         if not query and not time_arg:
             logger.info(
                 "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
@@ -355,27 +407,32 @@ class ToolCallingMixin:
             logger.debug("[recall_memory] empty-query args=%s", args_dict)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # POST 到 memory_server。query 始终原样下传，不能因为带了 time 就清空
-        # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
-        # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
-        # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
-        post_body = {"query": query, "language": self.user_language}
+        # POST to memory_server. Always forward query unchanged; do not clear it when time is present
+        # — downstream routing: query + time → hybrid_recall(query, time_window=...) performs
+        # joint "semantic + temporal" retrieval (rank by query within the window while retaining semantic matches); time alone
+        # → pure time-proximity recall; if time parsing fails, query still enables semantic-retrieval fallback.
+        post_body = {
+            "query": query,
+            "language": self.user_language,
+            # If the server exceeds this budget, use keyword results only instead of timing out completely and reporting "not found."
+            "budget_ms": RECALL_MEMORY_TOOL_BUDGET_MS,
+        }
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}
-        recall_request_ok = False  # 仅当 memory server 真正成功返回时才置真
+        recall_request_ok = False  # Set true only when Memory Server actually returns successfully
         try:
             from utils.internal_http_client import get_internal_http_client
             client = get_internal_http_client()
             resp = await client.post(
                 f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
                 json=post_body,
-                timeout=5.0,
+                timeout=RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
             )
             if not resp.is_success:
-                # WARNING 只带 status + body 长度（非敏感元数据）；body 原文
-                # 含跨进程边界返回的字符串，可能夹带 query 回显 / 错误细节
-                # 等含上下文内容，按 PR #1384 立的隐私分层规矩落 DEBUG。
+                # WARNING logs include only status + body length (non-sensitive metadata); the raw body
+                # is a string returned across a process boundary and may include echoed query / error details
+                # or other contextual content, so log it at DEBUG under the privacy-tier policy established by PR #1384.
                 body_text = resp.text or ""
                 logger.warning(
                     "[recall_memory] memory_server returned status=%s body_len=%d",
@@ -399,9 +456,9 @@ class ToolCallingMixin:
         results = results if isinstance(results, list) else []
         elapsed_ms = result_payload.get("elapsed_ms", 0) if isinstance(result_payload, dict) else 0
 
-        # INFO 只记 has_time（布尔），不落 time_arg 原值——time_arg 是用户
-        # 原始输入，按本函数 docstring 立的隐私分层规矩（INFO 可能被打包外送）
-        # 原文只进下面的 DEBUG。
+        # INFO records only has_time (boolean), never the original time_arg — time_arg is raw user
+        # input, and under the privacy-tier policy documented in this function's docstring (INFO may be packaged and sent externally)
+        # The raw text goes only to DEBUG below.
         logger.info(
             "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
             "has_time=%s → hits=%d elapsed=%.0fms",
@@ -415,29 +472,29 @@ class ToolCallingMixin:
         )
 
         if not results:
-            # 同时带了 query 和 time 却 0 命中：八成是两个过滤条件叠加太窄
-            # （时间窗口里没有语义匹配的条目）。别直接报"没有记忆"让模型放弃，
-            # 提示它放宽——只留 time 或只留 query 再查一次。
-            # 仅在请求**真正成功返回**时才给放宽提示：non-2xx / 异常也会落到
-            # results=[]，那是 memory server 临时故障，不该误导模型"换条件重试"
-            # 白烧刚收紧的工具迭代预算。
+            # Both query and time were provided but there were zero hits: likely the filters were too narrow together
+            # (no semantically matching entries inside the time window). Do not simply report "no memories found" and make the model give up;
+            # prompt it to broaden the search — retry with only time or only query.
+            # Show the broader-search hint only when the request **actually succeeded**: non-2xx / exceptions also become
+            # results=[], but that indicates a temporary Memory Server failure; do not mislead the model into "retrying with different filters"
+            # and wasting the tool-iteration budget that was just tightened.
             if recall_request_ok and query and time_arg:
                 return _loc(RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN, _lang).format(query=query)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # 整段渲染扔进 worker 线程：truncate_to_tokens 编码的是**截断前**的
-        # 原文，而这条链路存在的理由正是"上游可能返回一条超长的合并
-        # reflection"。tiktoken 对切不开的超长 chunk 是二次退化，同步跑在
-        # 事件循环上会连带卡住语音会话。渲染本身保持同步函数（与插件侧
-        # memory_bridge.render_relevant_memory 同构、测试可直调），offload
-        # 放在这个唯一的 async 调用点。
+        # Render the entire section in a worker thread: truncate_to_tokens encodes the **pre-truncation**
+        # raw text, and this path exists specifically because "upstream may return one extremely long merged
+        # reflection." tiktoken has quadratic fallback on chunks it cannot split; running it synchronously on
+        # the event loop could also stall voice sessions. Keep rendering itself a synchronous function (matching
+        # memory_bridge.render_relevant_memory on the plugin side and directly testable); offload
+        # only at this sole async call site.
         return await asyncio.to_thread(self._render_recall_block, results, _lang)
 
     @staticmethod
     def _render_recall_block(results: list, _lang: str) -> str:
         """Render recall hits through the shared entry point, with a header.
 
-        Format: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``, under an
+        Format: ``1. [fact/about user] text  (2026-05-01, 23 days ago)``, under an
         i18n overview line.
 
         No line building happens here. ``memory.recall_render`` is the one
@@ -491,8 +548,8 @@ class ToolCallingMixin:
         final state.
         """
         async with self._tool_sync_lock:
-            # registry 在 lock 内才读，确保拿到的是 lock 持有期间的真实快照
-            # （而不是入队时的旧值）。
+            # Read registry only inside the lock to ensure the snapshot is the actual value while the lock is held
+            # (not the stale value from when the item was queued).
             defs = self.tool_registry.all()
             targets = []
             if self.session is not None:
@@ -518,6 +575,6 @@ class ToolCallingMixin:
                     logger.warning("⚠️ Tool sync to %s session failed: %s", role, e)
                     errors.append(err_text)
             if errors and raise_on_failure:
-                # 给 ``*_and_sync`` 调用方一个明确信号：wire 上没真生效，
-                # 让 HTTP /api/tools 不要回 ok=true 假成功。
+                # Give ``*_and_sync`` callers an explicit signal that the change did not take effect on the wire,
+                # so HTTP /api/tools does not return a false ok=true success.
                 raise RuntimeError("tool sync failed: " + "; ".join(errors))

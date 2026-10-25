@@ -30,6 +30,11 @@ from main_routers.local_access import is_local_oauth_status_request as _loopback
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from utils.community_locale import community_bootstrap_locale_hints
+from services.chat_sync import host as _chat_sync_host
+# Re-exported: card_drop_router / visit_router.credentials read it as
+# ``community_oauth.status_session_saved``, and tests patch it here.
+from utils.community_session import status_session_saved
 from utils.social_base import auth_public_url as _configured_auth_public_url
 from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
 
@@ -457,15 +462,6 @@ async def _resolve_saved_oauth_status(
     return status
 
 
-def status_session_saved(status: dict[str, Any]) -> bool:
-    """A saved session the cloud could not verify right now (offline, 5xx, refresh unavailable).
-
-    Not logged in, but also not a definite logout: a snapshot the cloud already
-    rejected and only local cleanup left behind does not count.
-    """
-    return bool(status.get("snapshot")) and not status.get("rejected")
-
-
 async def _run_oauth_status_resolution(
     records_key: str,
     records: tuple[dict | None, dict],
@@ -496,6 +492,13 @@ async def resolve_saved_oauth_status() -> dict[str, Any]:
             )
             _oauth_status_tasks[records_key] = task
     return await asyncio.shield(task)
+
+
+# Chat sync (services layer) joins this same resolver, so a rotating refresh
+# token is never refreshed twice. Late-bound: patches of this module reach it.
+_chat_sync_host.install_oauth_status_resolver(
+    resolve_saved_oauth_status=lambda: resolve_saved_oauth_status(),
+)
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
@@ -773,7 +776,7 @@ def _persisted_user_profile(user: dict[str, Any] | None, local_user_id: str | No
     profile = _public_user_profile(user, local_user_id)
     source = user if isinstance(user, dict) else {}
     phone = source.get("phone") or source.get("phone_number") or source.get("mobile")
-    # 无数字的号码按缺失处理：这里在远端 bind 之后执行，抛错会让本地凭证落不了盘。
+    # Treat numbers containing no digits as missing: this runs after remote bind, and raising would prevent local credentials from being saved.
     masked = _mask_phone(phone.strip()) if isinstance(phone, str) else None
     if masked:
         profile["phone"] = masked
@@ -884,7 +887,7 @@ async def visit_account_change(new_local_user_id: str | None = None):
             return True
         from main_routers.visit_router.accounts import local_account
 
-        # 闸已立起才比对：比对期间不会有新串门被准入，另一次登录在这期间换走账号也会被看到
+        # Compare only after the gate is raised: no new visits enter during comparison, and account changes from another login remain visible
         return await local_account() != new_local_user_id
 
     async with runtime.account_change(ends_visits=ends_visits):
@@ -898,7 +901,7 @@ async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    # 在飞的串门先收尾、等它把上传文件封存（记着这场跑在哪个账号下），清本机登录态期间不准入新串门
+    # Finish ongoing visits and wait for upload archival (retaining the account used for each session); admit no new visits while clearing local login state
     async with visit_account_change():
         return await _oauth_logout()
 
@@ -1139,10 +1142,10 @@ async def _handle_oauth_callback(
     }
     async with _oauth_start_lock:
         if not await _oauth_attempt_still_current(expected_state):
-            # 这次登录已被新的 /oauth/start 顶掉：凭证写入本来就会拒绝，不能为它先结束在飞的串门
+            # A newer /oauth/start superseded this login: credential writes will already be rejected, so do not end ongoing visits for it first
             credentials_saved = False
         else:
-            # 换成另一个社区账号：在飞的串门先收尾、等上传文件封存，写入新账号登录态期间不准入新串门
+            # Switching community accounts: finish ongoing visits and await upload archival; admit no new visits while saving the new account's login state
             async with visit_account_change(local_user_id):
                 credentials_saved = await asyncio.to_thread(
                     _persist_oauth_credentials, auth_payload, social_base=social_base,
@@ -1238,6 +1241,7 @@ async def _bootstrap_session(social_base: str, access_token: str) -> dict[str, A
             response = await client.post(
                 f"{social_base.rstrip('/')}/api/auth/session/bootstrap",
                 headers={"Authorization": f"Bearer {access_token}"},
+                json=await asyncio.to_thread(community_bootstrap_locale_hints),
             )
     except httpx.HTTPError as exc:
         logger.info("community_oauth: bootstrap failed: %s", exc)

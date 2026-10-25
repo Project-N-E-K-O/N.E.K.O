@@ -15,6 +15,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
+import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   isCompactExportMessageSelectable,
@@ -79,6 +80,7 @@ type ChatWindowProps = ChatWindowSchemaProps & {
   // ChoicePrompt remains part of ChatWindowSchemaProps. Keep the legacy galgame
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
+  onVisitBarAction?: (actionId: string) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
 };
 
@@ -482,6 +484,8 @@ export default function FullChatSurface({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  visitBar = null,
+  onVisitBarAction,
   theaterPresentation,
   onCompactChatStateChange,
   rollbackDraft,
@@ -3052,7 +3056,7 @@ export default function FullChatSurface({
           </div>
         </div>
       ) : null}
-      {choicePromptHasOptions ? (
+      {choicePromptHasOptions && choicePrompt.source !== 'mini_game_invite' ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
@@ -3061,9 +3065,7 @@ export default function FullChatSurface({
           <div
             className="composer-galgame-options composer-choice-options"
             role="group"
-            aria-label={choicePrompt.source === 'mini_game_invite'
-              ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : choicePrompt.source === 'new_user_icebreaker'
+            aria-label={choicePrompt.source === 'new_user_icebreaker'
                 ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
               : galgameToggleButtonLabel}
           >
@@ -3107,6 +3109,19 @@ export default function FullChatSurface({
       failedStatusLabel={failedStatusLabel}
       thinking={focusThinking}
       onAction={onMessageAction}
+      footerKey={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? choicePrompt.sessionId || 'mini-game-invite' : undefined}
+      footer={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? (
+        <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="card"
+          disabled={composerInteractionsDisabled} onSelect={(option) => {
+            if (submittingRef.current) return;
+            submittingRef.current = true;
+            try {
+              onChoiceSelect?.(option, 'mini_game_invite');
+            } finally {
+              requestAnimationFrame(() => { submittingRef.current = false; });
+            }
+          }} />
+      ) : null}
     />
   );
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
@@ -3130,6 +3145,7 @@ export default function FullChatSurface({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
+      onAction={onMessageAction}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
@@ -3239,6 +3255,30 @@ export default function FullChatSurface({
           data-compact-chat-state={effectiveCompactChatState}
         >
           <div id="music-player-mount" />
+          {/* 串门工具条（full 自己的一份，与 compact 不共用代码）：宿主给状态与按钮，点按钮回传 id */}
+          {!catLocalTextOnly && theaterPresentation?.active !== true && visitBar && (visitBar.badge || visitBar.actions.length > 0) ? (
+            <div
+              className={`full-visit-bar is-${visitBar.tone ?? 'idle'}`}
+              role="toolbar"
+              aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
+            >
+              {visitBar.badge ? <span className="full-visit-bar-badge">{visitBar.badge}</span> : null}
+              {visitBar.detail ? <span className="full-visit-bar-detail">{visitBar.detail}</span> : null}
+              {visitBar.actions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  className={`full-visit-bar-action is-${action.variant ?? 'secondary'}`}
+                  disabled={action.disabled}
+                  aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
+                  data-visit-bar-action={action.id}
+                  onClick={() => onVisitBarAction?.(action.id)}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {!catLocalTextOnly && composerAttachments.length > 0 ? (
             <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
               {composerAttachments.map((attachment) => (

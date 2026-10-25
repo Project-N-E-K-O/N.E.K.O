@@ -1558,6 +1558,15 @@ I.mod = window.appInterpage;
                             if (!skipIdleRestore) {
                                 restoreLive2DIdleAnimationOnMainPage();
                             }
+
+                            // 模型热切换完成后的触摸配置刷新钩子：模型管理页保存的 touch_set
+                            // 只落盘不推送，主页面启动快照不会自动更新；切换后强制重拉一次，
+                            // 让新保存的自定义触摸区域无需手动刷新主页面即生效。
+                            if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+                                window.nekoRefreshLive2DTouchSet({ forceRefetch: true, allowLive2DReload: true }).catch(function (touchSetError) {
+                                    console.warn('[Model] 刷新触摸配置失败:', touchSetError)
+                                })
+                            }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -1703,17 +1712,39 @@ I.mod = window.appInterpage;
             return false;
         }
 
+        // An error can become stale while propagating from reload to this catch.
+        // A readiness error has no reload ticket, so retain its original owner too.
+        var model = manager.currentModel;
+        var internalModel = model?.internalModel;
+        var coreModel = internalModel?.coreModel;
+        var modelPath = manager._lastLoadedModelPath;
+        var modelName = manager.modelName;
+        var reloadSequence = manager._parameterReloadSequence;
+        var configRevision = manager._parameterConfigRevision;
+
         try {
             var result = await manager.reloadModelParameters({
                 model_name: message && message.model_name,
                 model_path: message && message.model_path
             });
-            if (result && result.reason === 'model_mismatch') {
-                console.log('[Live2D] 忽略非当前模型的参数热刷新消息');
+            if (result && (result.reason === 'model_mismatch' || result.reason === 'superseded')) {
+                console.log('[Live2D] 忽略已被接管的参数热刷新消息');
                 return false;
             }
             return !!(result && result.applied);
         } catch (error) {
+            if (window.live2dManager !== manager || manager.currentModel !== model ||
+                model?.internalModel !== internalModel || internalModel?.coreModel !== coreModel ||
+                manager._lastLoadedModelPath !== modelPath || manager.modelName !== modelName) {
+                return false;
+            }
+            var ticket = error && error._parameterReloadTicket;
+            if (ticket && typeof manager._getParameterReloadTicketStatus === 'function') {
+                if (manager._getParameterReloadTicketStatus(ticket) !== 'active') return false;
+            } else if (manager._parameterReloadSequence !== reloadSequence ||
+                manager._parameterConfigRevision !== configRevision) {
+                return false;
+            }
             console.warn('[Live2D] 参数轻量热刷新失败，降级为完整模型重载:', error);
             await I.handleModelReload(message && message.lanlan_name);
             return false;

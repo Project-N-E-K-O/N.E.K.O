@@ -138,7 +138,7 @@ class BranchCharacterStatePayload(StrictPayload):
     environment_state: str = Field(min_length=1, max_length=1000)
     acting_contract: BranchActingContractPayload
     continuity_from_previous: list[str] = Field(min_length=1, max_length=4)
-    # 与生成器及 N.E.K.O 编译合同一致：空边界有效，字段仍必填且最多四条。
+    # Match the generator and N.E.K.O compilation contract: empty boundaries are valid, but the field remains required and allows at most four entries.
     scene_boundaries: list[str] = Field(max_length=4)
 
 
@@ -205,7 +205,7 @@ class MetricPayload(StrictPayload):
     min: int
     max: int
     initial: int
-    # v2.2 的单回合限幅统一限制在 1—5，和 N.E.K.O 运行时合同保持一致。
+    # v2.2 limits every per-turn adjustment to 1–5, matching the N.E.K.O runtime contract.
     increase_limit: int = Field(ge=1, le=5)
     decrease_limit: int = Field(ge=1, le=5)
     increase_criteria: list[str] = Field(min_length=1)
@@ -249,5 +249,5 @@ class NumericV2SetupPayload(StrictPayload):
     relationship: str = Field(default="", max_length=2000)
     content_boundaries: list[str] = Field(default_factory=list, max_length=30)
     length_preset: Literal["short", "standard", "long"]
-    # 首次只生成主线和结局，数值允许作者进入故事地图后再配置。
+    # Initially generate only the main storyline and endings; authors can configure values later in the story map.
     metrics: list[MetricPayload] = Field(default_factory=list, max_length=4)

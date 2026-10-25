@@ -44,18 +44,18 @@ import uuid
 from typing import Any
 
 GLM_TTS_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
-# 官方 /audio/speech 文档 model 枚举仅 glm-tts；复刻音色的合成与试听都用它。
-# 原生 CogTTS 路径（workers/cogtts.py 默认 model="cogtts"）保持不变。
+# Official /audio/speech docs list only glm-tts in the model enum; use it for cloned-voice synthesis and previews.
+# Keep the native CogTTS path unchanged (workers/cogtts.py defaults model="cogtts").
 GLM_TTS_SPEECH_MODEL = "glm-tts"
 GLM_VOICE_CLONE_MODEL = "glm-tts-clone"
 GLM_VOICE_STORAGE_KEY = "__GLM_TTS__"
-# voice_clone 接口「input」必填：克隆时同步生成一段试听语音。固定一句短中文即可，
-# 产物 file_id（voice-clone-output）不落库——试听走 synthesize_preview 按需合成。
+# voice_clone requires input to generate preview audio during cloning; a fixed short Chinese sentence suffices.
+# Do not store the voice-clone-output file_id; previews synthesize on demand via synthesize_preview.
 GLM_VOICE_CLONE_PREVIEW_INPUT = "你好呀，很高兴认识你。"
-# 官方建议示例音频 3-30 秒；文件 ≤10MB（与上传接口 purpose=voice-clone-input 的限制一致）。
+# Official sample-audio recommendation: 3-30 seconds, <=10 MB, matching upload purpose=voice-clone-input limits.
 GLM_VOICE_CLONE_MAX_AUDIO_BYTES = 10 * 1024 * 1024
-# voice_name 需账号内唯一；neko_ 前缀 + 用户前缀（sanitize 后）+ 音频 MD5 片段：
-# 同一账号重传同一段音频时先被本地 MD5 去重拦下，撞名只发生在绕过去重的极小概率场景。
+# voice_name must be unique within the account: neko_ prefix + sanitized user prefix + audio MD5 fragment.
+# Local MD5 deduplication blocks reuploads of the same audio to the same account; name collisions are rare cases bypassing it.
 GLM_VOICE_NAME_PREFIX = "neko"
 GLM_VOICE_NAME_MAX_LENGTH = 64
 
@@ -263,7 +263,7 @@ class GlmVoiceCloneClient:
             )
         content_type = resp.headers.get("content-type", "")
         if "json" in content_type.lower():
-            # 错误体走统一 JSON 结构；解析失败再兜底抛原始片段
+            # Parse errors using the shared JSON structure; on parse failure, raise with a raw excerpt as fallback.
             try:
                 data = resp.json()
             except ValueError:

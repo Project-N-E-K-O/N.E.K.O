@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""用户审计 #1 回归：memory_review 失败退避（dead-letter）。
+"""Regression for user audit #1: memory_review failure backoff (dead letter).
 
-日志实锤：correction 模型持续超时 → review 每轮 3×110s 超时后 'failed' →
-既不刷 ts 也不退避，配合长挂机 bypass 主动续命 → 整夜每 ~6min 无限重烧。
+Logs confirmed: the correction model repeatedly timed out → review timed out 3×110s each round and then returned 'failed' →
+neither refreshed ts nor backed off; combined with long-idle bypass proactively keeping it alive → it kept burning resources all night about every 6 minutes.
 
-修复：'failed' 时 bump review_fail_attempts + 记下失败输入的 tail fingerprint；
-maybe_spawn_review 的 Gate 6 在 attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 且输入
-未变时跳过 spawn。输入一变（master 发新消息，fingerprint 变）→ 复位重试。
+Fix: on 'failed', bump review_fail_attempts and record the tail fingerprint of the failed input;
+maybe_spawn_review Gate 6 skips spawn when attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS and the input
+has not changed. When input changes (master sends a new message, fingerprint changes) → reset and retry.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from utils.llm_client import AIMessage, HumanMessage
 
 
 def _history(n: int):
-    """造 n 条交替 user/ai 消息（长度 ≥ REVIEW_SKIP_HISTORY_LEN=8）。"""
+    """Create n alternating user/AI messages (length ≥ REVIEW_SKIP_HISTORY_LEN=8)."""
     out = []
     for i in range(n):
         if i % 2 == 0:
@@ -32,7 +32,7 @@ def _history(n: int):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_review_failed_bumps_backoff():
-    """review_history 返回 ('failed', None) → bump review_fail_attempts + 记 fp。"""
+    """review_history returns ('failed', None) → bump review_fail_attempts and record the fingerprint."""
     from app import memory_server
     from memory.recent import build_review_fingerprint
 
@@ -42,7 +42,7 @@ async def test_run_review_failed_bumps_backoff():
 
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
-    cancel_event = asyncio.Event()  # 未置位 → 真失败
+    cancel_event = asyncio.Event()  # Not set → genuine failure.
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
@@ -57,7 +57,7 @@ async def test_run_review_failed_bumps_backoff():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_review_cancelled_does_not_bump():
-    """cancel_event 置位时返回 ('failed', None) 是主动取消，不计入失败退避。"""
+    """When cancel_event is set, ('failed', None) means an intentional cancellation and must not count toward failure backoff."""
     from app import memory_server
 
     name = "测试角色"
@@ -67,7 +67,7 @@ async def test_run_review_cancelled_does_not_bump():
     fake_mgr = MagicMock()
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
-    cancel_event.set()  # 模拟 cancel_correction 已置位
+    cancel_event.set()  # Simulate cancel_correction being set.
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
@@ -81,7 +81,7 @@ async def test_run_review_cancelled_does_not_bump():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_review_patched_clears_backoff():
-    """成功 patch → 清掉失败退避计数 + fp。"""
+    """Successful patch → clear the failure backoff count and fingerprint."""
     from app import memory_server
 
     name = "测试角色"
@@ -108,7 +108,7 @@ async def test_run_review_patched_clears_backoff():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_review_patched_save_failure_does_not_bump():
-    """成功 review（patched）的 state 落盘抖动不得被误判成失败 bump（Codex P2）。"""
+    """A state persistence hiccup after a successful (patched) review must not be mistaken for a failed bump (Codex P2)."""
     from app import memory_server
 
     name = "测试角色保存抖动"
@@ -123,8 +123,8 @@ async def test_run_review_patched_save_failure_does_not_bump():
          patch.object(memory_server.gates, "_persist_maint_state_locked", persist):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    # 先确认注入的失败真的被触发过——否则本用例会在「patched 分支根本不落盘」时
-    # 空过（断言弱于主张）。
+    # First confirm that the injected failure was actually triggered; otherwise this test would
+    # pass vacuously when the patched branch does not persist anything (a weaker assertion than the claim).
     assert persist.call_count >= 1, "patched 分支没有落盘，注入的写盘失败被绕过了"
     state = memory_server.gates._maint_state.get(name, {})
     assert state.get("review_fail_attempts", 0) == 0, (
@@ -136,7 +136,7 @@ async def test_run_review_patched_save_failure_does_not_bump():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_review_failed_save_failure_counts_once():
-    """'failed' 分支 save 抛异常时只记一次，不被外层 except 重复 bump（Codex P2）。"""
+    """If save raises in the 'failed' branch, record it only once; do not bump again in the outer except (Codex P2)."""
     from app import memory_server
 
     name = "测试角色失败保存"
@@ -152,8 +152,8 @@ async def test_run_review_failed_save_failure_counts_once():
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
     assert persist.call_count >= 1, "'failed' 分支没有落盘，注入的写盘失败被绕过了"
-    # _record_review_failure 的 mutator 在落盘前已把内存计数 +1；写盘失败被
-    # _mutate_maint_state_locked 收在临界区里（只告警不抛），外层 except 不会重复 bump
+    # _record_review_failure's mutator has already incremented the in-memory count before persistence; the write failure is caught by
+    # _mutate_maint_state_locked inside the critical section (warning only, not re-raised), so the outer except will not bump it again.
     assert memory_server.gates._maint_state.get(name, {}).get("review_fail_attempts", 0) == 1, (
         "save 失败导致 _record_review_failure 抛出后被外层 except 重复计数了"
     )
@@ -161,7 +161,7 @@ async def test_run_review_failed_save_failure_counts_once():
 
 
 async def _drive_spawn(memory_server, name, history):
-    """跑 maybe_spawn_review，gate 1-5 全开（patch 掉），只测 Gate 6。"""
+    """Run maybe_spawn_review with gates 1–5 all open (patched out); test only Gate 6."""
     fake_mgr = MagicMock()
     fake_mgr.aget_recent_history = AsyncMock(
         return_value=(
@@ -169,7 +169,7 @@ async def _drive_spawn(memory_server, name, history):
             recent_file.capture_recent_generation("review-test-recent.json"),
         ),
     )
-    # 被 spawn 的后台 task 真跑起来时会调 review_history——给个安全返回
+    # When the spawned background task actually runs, it calls review_history — provide a safe return value.
     fake_mgr.review_history = AsyncMock(return_value=("white", None))
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
@@ -186,7 +186,7 @@ async def _drive_spawn(memory_server, name, history):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generic_review_does_not_rewrite_theater_messages():
-    """通用 review 跳过剧场胶囊，但保留其前后的普通聊天。"""  # noqa: DOCSTRING_CJK
+    """Generic review skips theater capsules but keeps ordinary chat before and after them."""  # noqa: DOCSTRING_CJK
     from app import memory_server
 
     name = "测试角色-theater-review"
@@ -293,7 +293,7 @@ async def test_stale_background_review_skips_manager_call(tmp_path):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_gate6_skips_when_dead_lettered_and_input_unchanged():
-    """attempts ≥ MAX 且当前 history tail fingerprint == 失败时记下的 → 不 spawn。"""
+    """attempts ≥ MAX and the current history tail fingerprint matches the recorded failure → do not spawn."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.recent import build_review_fingerprint
@@ -373,14 +373,14 @@ async def test_reused_identity_does_not_inherit_output_exhaustion_breaker():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_gate6_resets_and_spawns_when_input_changed():
-    """attempts ≥ MAX 但当前 fingerprint 与失败记录不同（新消息）→ 复位并 spawn。"""
+    """attempts ≥ MAX but the current fingerprint differs from the failure record (new message) → reset and spawn."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
 
     name = "测试角色G6b"
     history = _history(12)
     memory_server.correction_tasks.pop(name, None)
-    # 失败 fp 是另一段输入（与当前 history tail 不同）
+    # The failed fp is from a different input (not the current history tail).
     memory_server.gates._maint_state[name] = {
         "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
         "review_fail_fp": [{"type": "human", "content": "完全不同的旧输入"}],
@@ -388,9 +388,9 @@ async def test_gate6_resets_and_spawns_when_input_changed():
 
     fake_mgr = await _drive_spawn(memory_server, name, history)
 
-    # 输入已变 → 复位计数
+    # Input changed → reset the count.
     assert memory_server.gates._maint_state[name]["review_fail_attempts"] == 0
-    # 并且后台路径确实跑到了 review_history，而不是只创建后立刻取消 task。
+    # Also ensure the background path actually reached review_history, rather than merely creating and immediately canceling the task.
     fake_mgr.review_history.assert_awaited_once()
     assert name not in memory_server.correction_tasks
     memory_server.gates._maint_state.pop(name, None)
@@ -400,7 +400,7 @@ async def test_gate6_resets_and_spawns_when_input_changed():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_failed_resets_budget_on_input_change():
-    """不同 history tail 各失败一次不应跨输入累积（Codex P2）：每次输入变都从 1 计起。"""
+    """Failures on different history tails must not accumulate across inputs (Codex P2): each input change starts again at 1."""
     from app import memory_server
     from memory.recent import build_review_fingerprint
 
@@ -412,7 +412,7 @@ async def test_failed_resets_budget_on_input_change():
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
-        for n in (8, 10, 12):  # 三段 tail fingerprint 互不相同的输入
+        for n in (8, 10, 12):  # Three inputs with distinct tail fingerprints.
             await memory_server._run_review_in_background(name, _history(n), cancel_event)
 
     state = memory_server.gates._maint_state[name]
@@ -424,8 +424,8 @@ async def test_failed_resets_budget_on_input_change():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_review_exception_bumps_backoff():
-    """review_history 直接抛异常（而非返回 ('failed', None)）也要计入失败退避，
-    否则 Gate 6 拿不到预算、持续重烧仍会发生（CodeRabbit Major）。"""
+    """An exception raised directly by review_history (instead of returning ('failed', None)) must also count toward failure backoff,
+    otherwise Gate 6 never gets a budget and repeated resource burn will continue (CodeRabbit Major)."""
     from app import memory_server
     from memory.recent import build_review_fingerprint
 
@@ -449,7 +449,7 @@ async def test_run_review_exception_bumps_backoff():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_failed_same_input_accumulates_budget():
-    """同一输入连续失败才累积预算（与跨输入复位对偶）。"""
+    """Only repeated failures on the same input accumulate budget (paired with reset on input change)."""
     from app import memory_server
 
     name = "测试角色累积2"

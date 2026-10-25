@@ -471,7 +471,7 @@ def test_mmd_silent_frames_leave_iue_to_the_idle_motion():
     keep playing whatever mouth track the idle VMD motion drives. Writing all
     five every frame would hold those three morphs flat for as long as
     _lipSyncEnabled is set.
-    """
+    """  # noqa: DOCSTRING_CJK
     source = _read("static/mmd/mmd-expression.js")
     formant_method = source.split("if (anim._formantAnalyzer) {", 1)[1].split(
         "anim.getLipSyncValue()", 1

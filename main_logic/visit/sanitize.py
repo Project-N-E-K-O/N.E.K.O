@@ -63,9 +63,9 @@ from utils.tokenize import truncate_to_tokens
 _DISPLAY_NAME_MAX_CHARS = 64
 _PRECUT_BYTES = 4 * VISIT_TEXT_MAX_BYTES
 
-# ── 字符类别 ───────────────────────────────────────────────────────────
+# -- Character categories --
 
-# 保留的格式字符：ZWNJ / ZWJ（emoji 组合、波斯语等需要）。其余 Cf（双向覆盖、零宽空格、BOM…）一律去掉。
+# Retain ZWNJ / ZWJ for emoji composition, Persian, etc.; remove other Cf such as bidi overrides, zero-width spaces, and BOM.
 _KEEP_FORMAT = frozenset({"‌", "‍"})
 _LINE_BREAKS = {"\r\n": "\n", "\r": "\n", " ": "\n", " ": "\n", "\x85": "\n"}
 _LINE_BREAK_RE = re.compile("\r\n|[\r  \x85]")
@@ -81,8 +81,8 @@ def strip_control_chars(text: str) -> str:
     if not text:
         return ""
     if text.isprintable():
-        # isprintable 为真即不含 Cc / Cf / Cs / Zl / Zp（与 unicodedata 同一份 UCD）：
-        # 没有要删或要换成 \n 的字符，原样返回，省掉逐字符查类别
+        # isprintable implies absence of Cc / Cf / Cs / Zl / Zp, using unicodedata's UCD:
+        # nothing needs removal or conversion to newlines, so return unchanged without per-character category lookups.
         return text
     text = _LINE_BREAK_RE.sub(lambda m: _LINE_BREAKS[m.group(0)], text)
     out = []
@@ -99,21 +99,21 @@ def strip_control_chars(text: str) -> str:
     return "".join(out)
 
 
-# ── nonce 信封与分隔符中和 ──────────────────────────────────────────────
+# -- Nonce envelopes and delimiter neutralization --
 
 ENVELOPE_TAG = "visit_data"
 """Tag name of the nonce envelope wrapping peer-supplied text in prompts."""
 
-# 信封标签的伪造：< / ＜ / ‹ 后跟可选空白、可选斜杠、visit_data。
+# Forged envelope tags: < / fullwidth less-than / single-angle quotation mark, optional whitespace/slash, then visit_data.
 _TAG_BRACKETS = "<＜‹"
 _ENVELOPE_NAME_RE = re.compile(re.escape(ENVELOPE_TAG), re.IGNORECASE)
 
 
 def _strip_tag_openers(text: str) -> str:
-    # 以每个 visit_data 为锚向左走过紧挨着的一整串「尖括号 / 斜杠 / 空白」，从其中第一个
-    # 尖括号起整串改写：尖括号全删，只留最后一个斜杠及其后的空白。只摘一个尖括号的话
-    # << /visit_data、</<visit_data 剩下的又是合法标签；用正则从每个尖括号起点重试则是
-    # 平方级。改写后锚点左边紧邻的已没有尖括号，一遍即可；向左最多走到上一个锚点，总体线性
+    # Anchor at each visit_data and walk left over its adjacent angle-bracket/slash/whitespace run. Rewrite from
+    # the first angle bracket, removing all brackets and retaining only the last slash and following whitespace. Removing just one
+    # leaves valid tags in << /visit_data or </<visit_data; regex retries from every bracket are
+    # quadratic. Rewriting leaves no adjacent bracket on the left, requiring one pass; walking back at most to the prior anchor is linear overall.
     out: list[str] = []
     pos = 0
     for m in _ENVELOPE_NAME_RE.finditer(text):
@@ -122,7 +122,7 @@ def _strip_tag_openers(text: str) -> str:
         while k > pos and (text[k - 1] in _TAG_BRACKETS or text[k - 1] == "/" or text[k - 1].isspace()):
             k -= 1
         while k < j and text[k] not in _TAG_BRACKETS:
-            k += 1                         # 第一个尖括号之前的空白 / 斜杠不属于它，保留
+            k += 1                         # Preserve whitespace/slashes preceding the first bracket, which do not belong to it.
         if k < j:
             run = text[k:j]
             slash = run.rfind("/")
@@ -151,7 +151,7 @@ def escape_envelope(text: str) -> str:
     """
     if not text:
         return ""
-    # 分隔符转义与提示词数据块共用 config 里那一份，避免两套规则各改各的
+    # Share config's delimiter escaping with prompt data blocks to prevent independently drifting rules.
     text = escape_visit_block_text(text)
     return _strip_tag_openers(text)
 
@@ -172,7 +172,7 @@ def wrap_nonce_envelope(text: str, *, nonce: str) -> str:
     return f'<{ENVELOPE_TAG} nonce="{nonce}">\n{text}\n</{ENVELOPE_TAG} nonce="{nonce}">'
 
 
-# ── Markdown 媒体降级 ───────────────────────────────────────────────────
+# -- Markdown media fallback --
 
 _AUTOLINK_URI_RE = re.compile(r"<([A-Za-z][A-Za-z0-9+.\-]{1,31}:[^\s<>]*)>")
 _AUTOLINK_EMAIL_RE = re.compile(r"<([^\s<>@]+@[^\s<>@]+)>")
@@ -193,7 +193,7 @@ def _match_pairs(text: str, opener: str, closer: str) -> dict[int, int]:
 
 
 def _defang_inline_once(text: str) -> str:
-    # 一遍栈配对：每个 "](" 向左取配平的 "["、向右取配平的 ")"，整段改写为 "text (dest)"。
+    # One-pass stack pairing: for each "](", find the balanced "[" left and ")" right, rewriting the span to "text (dest)".
     if "](" not in text:
         return text
     open_of_bracket = _match_pairs(text, "[", "]")
@@ -242,11 +242,11 @@ def defang_markdown_media(text: str) -> str:
         if nxt == text:
             break
         text = nxt
-    # 兜底：CommonMark 行内链接要求 ] 与 ( 紧邻，拆开即失效。
+    # Fallback: CommonMark inline links require adjacent ] and (; separating them disables the link.
     return text.replace("](", "] (")
 
 
-# ── 长度上限 ────────────────────────────────────────────────────────────
+# -- Length limits --
 
 
 def clamp_text_utf8(text: str, max_bytes: int = VISIT_TEXT_MAX_BYTES) -> str:
@@ -265,14 +265,14 @@ def clamp_text_utf8(text: str, max_bytes: int = VISIT_TEXT_MAX_BYTES) -> str:
 def _truncate_tokens(text: str, max_tokens: int) -> str:
     out = truncate_to_tokens(text, max_tokens)
     if out != text:
-        # BPE 切在多字节字符中间时解码会留下 U+FFFD，去掉。
+        # Remove U+FFFD left by decoding a BPE cut inside a multibyte character.
         out = out.rstrip("�")
     return out
 
 
 def _precut(text: str) -> str:
-    # 先粗截到 4 倍字节上限：后续各步都只会让文本变短或基本不变，输出最多 4096 B，
-    # 粗截点永远落在输出之外；只为挡住超长输入让 defang / tokenizer 白跑。
+    # First truncate coarsely to four times the byte limit; later steps only shorten or barely change text, with at most 4096 B output,
+    # so this cut always lies outside output. It only prevents defang/tokenizer work on excessively long inputs.
     return clamp_text_utf8(text, _PRECUT_BYTES)
 
 
@@ -315,27 +315,27 @@ def clamp_peer_line(text: str, *, max_tokens: int = VISIT_LINE_MAX_TOKENS) -> st
     return clamp_text_utf8(text, VISIT_TEXT_MAX_BYTES)
 
 
-# ── 折叠视图（casefold + 兼容归一）────────────────────────────────────────
+# -- Folded view: casefold and compatibility normalization --
 
 
 def _is_unspaced_script(ch: str) -> bool:
     """CJK ideographs, kana, hangul, Thai, Lao, Khmer, Myanmar: no word spaces."""
     cp = ord(ch)
     return (
-        0x2E80 <= cp <= 0x2FDF       # CJK 部首
-        or 0x3040 <= cp <= 0x30FF    # 平假名 / 片假名
-        or 0x31F0 <= cp <= 0x31FF    # 片假名扩展
-        or 0x3400 <= cp <= 0x4DBF    # CJK 扩展 A
-        or 0x4E00 <= cp <= 0x9FFF    # CJK 统一汉字
-        or 0xF900 <= cp <= 0xFAFF    # CJK 兼容汉字
-        or 0x20000 <= cp <= 0x3134F  # CJK 扩展 B-G
-        or 0x1100 <= cp <= 0x11FF    # 谚文字母
-        or 0x3130 <= cp <= 0x318F    # 谚文兼容字母
-        or 0xAC00 <= cp <= 0xD7AF    # 谚文音节
-        or 0x0E00 <= cp <= 0x0EFF    # 泰文 / 老挝文
-        or 0x1000 <= cp <= 0x109F    # 缅甸文
-        or 0x1780 <= cp <= 0x17FF    # 高棉文
-        or 0xFF66 <= cp <= 0xFF9F    # 半角片假名
+        0x2E80 <= cp <= 0x2FDF       # CJK radicals.
+        or 0x3040 <= cp <= 0x30FF    # Hiragana / katakana.
+        or 0x31F0 <= cp <= 0x31FF    # Katakana extensions.
+        or 0x3400 <= cp <= 0x4DBF    # CJK Extension A.
+        or 0x4E00 <= cp <= 0x9FFF    # CJK unified ideographs.
+        or 0xF900 <= cp <= 0xFAFF    # CJK compatibility ideographs.
+        or 0x20000 <= cp <= 0x3134F  # CJK Extensions B-G.
+        or 0x1100 <= cp <= 0x11FF    # Hangul Jamo.
+        or 0x3130 <= cp <= 0x318F    # Hangul compatibility Jamo.
+        or 0xAC00 <= cp <= 0xD7AF    # Hangul syllables.
+        or 0x0E00 <= cp <= 0x0EFF    # Thai / Lao.
+        or 0x1000 <= cp <= 0x109F    # Myanmar.
+        or 0x1780 <= cp <= 0x17FF    # Khmer.
+        or 0xFF66 <= cp <= 0xFF9F    # Halfwidth katakana.
     )
 
 
@@ -375,7 +375,7 @@ def fold_text(text: str) -> str:
     return _fold_with_map(text or "")[0]
 
 
-# ── 亲人名整词替换 ──────────────────────────────────────────────────────
+# -- Whole-word replacement of family names --
 
 
 class RedactSpan(NamedTuple):
@@ -440,8 +440,8 @@ def redact_outbound_with_spans(
             if not folded.startswith(name, i):
                 continue
             j = i + len(name)
-            # 首尾必须落在源字符边界：假名 / 谚文按 NFKD 折叠成多个字符，只匹配到某个
-            # 源字符分解后的一半（「지숙」里的「지수」）会把整个源字符一起替换掉
+            # Both ends must align with source-character boundaries: NFKD decomposes kana/Hangul into multiple characters; matching
+            # only half a decomposed source character, e.g. 지수 within 지숙, would replace the entire original character.
             if (i > 0 and src[i] == src[i - 1]) or (j < n and src[j] == src[j - 1]):
                 continue
             if _is_word_char(name[0]) and i > 0 and _is_word_char(folded[i - 1]):
@@ -454,7 +454,7 @@ def redact_outbound_with_spans(
             i += 1
             continue
         raw_start = src[i]
-        # 结束位置：最后一个折叠字符所属源字符的下一个；吞掉紧随其后被折叠为空的格式字符不必要。
+        # End after the source character containing the last folded character; there is no need to consume subsequent format characters folded to empty.
         raw_end = src[hit - 1] + 1
         if raw_start < raw_pos:
             i += 1
@@ -465,7 +465,7 @@ def redact_outbound_with_spans(
         spans.append(RedactSpan(raw_start, raw_end, out_len, out_len + len(replacement)))
         out_len += len(replacement)
         raw_pos = raw_end
-        # 跳到下一个源字符对应的折叠位置。
+        # Advance to the next source character's folded position.
         while hit < n and src[hit] < raw_end:
             hit += 1
         i = hit
@@ -498,7 +498,7 @@ def _partial_name_tail(folded: str, src: list[int], names: Sequence[str],
             if src[fi] < raw_pos:
                 break
             if fi > 0 and src[fi] == src[fi - 1]:
-                continue                    # 起点落在某个源字符分解后的中间
+                continue                    # Start falls inside a decomposed source character.
             if _is_word_char(name[0]) and fi > 0 and _is_word_char(folded[fi - 1]):
                 continue
             if best is None or src[fi] < best:
@@ -562,9 +562,9 @@ def map_redacted_offset(spans: Sequence[RedactSpan], out_offset: int, *, inside:
     return out_offset + delta
 
 
-# ── 显示名冒名归一 ──────────────────────────────────────────────────────
+# -- Display-name impersonation normalization --
 
-# 系统 / 角色类保留标签（8 语）：对端显示名与之相等即视为冒充。
+# Reserved system/character labels in 8 languages: equal peer display names count as impersonation.
 _RESERVED_LABELS = (
     "system", "系统", "系統", "システム", "시스템", "система", "sistema", "système",
     "assistant", "助手", "アシスタント", "어시스턴트", "ассистент", "asistente",
@@ -576,7 +576,7 @@ _LABEL_STRUCTURAL_RE = re.compile(r"[\[\]|<>{}［］｜＜＞]")
 
 
 def _impersonation_key(name: str) -> str:
-    # 只留字母 / 数字（含 CJK）：空格、标点、零宽字符都不能用来绕开相等判断。
+    # Retain only letters/digits, including CJK, so spaces/punctuation/zero-width characters cannot evade equality.
     return "".join(ch for ch in fold_text(name) if unicodedata.category(ch)[0] in ("L", "N"))
 
 
@@ -618,9 +618,9 @@ def neutralize_display_name(
     return text
 
 
-# 情绪装饰标签：模型偶尔在台词里带 <happy> / </sad> / <开心> 之类的短标签（TTS 侧另行剥掉）。
-# 只认闭合、且尖括号里全是字母（任意文字，含下划线）的短标签：落单的 "<3" / "a < b"，以及
-# <https://…>、<a b> 这类正常的尖括号内容原样保留（候选先由正则圈出，再由 _is_emotion_tag 判定）
+# Emotional decoration tags: models sometimes emit short <happy> / </sad> / <开心> tags in dialogue; TTS strips them separately.
+# Accept only closed short tags containing solely letters in any script plus underscores; retain isolated "<3" / "a < b" and
+# ordinary <https://…> / <a b> content unchanged. Regex finds candidates before _is_emotion_tag decides.
 _EMOTION_TAG_RE = re.compile(r"</?([^<>]{1,32})>")
 
 
@@ -662,12 +662,12 @@ def strip_emotion_tags(text: str) -> str:
 
     stripped = _EMOTION_TAG_RE.sub(drop, text)
     if not removed:
-        # 一个标签都没去掉：原样返回，不能因为文本里有 "<" 就把每一行的空白重排
+        # No tags removed: return unchanged rather than reformatting every line's whitespace merely because text contains "<".
         return text
     return "\n".join(" ".join(line.split()) for line in stripped.splitlines()).strip()
 
 
-# ── 回家自述 n-gram 断言 ────────────────────────────────────────────────
+# -- Homecoming self-report n-gram assertion --
 
 
 class PeerNgramHit(ValueError):
@@ -682,7 +682,7 @@ class PeerNgramHit(ValueError):
 
 
 def _ngram_fold(text: str) -> str:
-    # n-gram 用 NFKC（组合形）：NFKD 会把谚文音节拆成字母、把浊音假名拆成两字符，单位就不对了。
+    # Use composed NFKC for n-grams; NFKD splits Hangul syllables into Jamo and voiced kana into two characters, changing the counting unit.
     folded = unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
 
@@ -723,7 +723,7 @@ def find_peer_ngram(
     """
     if n <= 0:
         raise ValueError("n must be positive")
-    # 待查文本很短，只为它建索引；整场对端转录逐行流过，不在内存里展开成 n-gram 集合
+    # Index only the short text being checked; stream the peer transcript line by line without expanding all its n-grams in memory.
     units = ngram_units(text or "")
     first_at: dict[tuple[str, ...], int] = {}
     for k in range(len(units) - n + 1):

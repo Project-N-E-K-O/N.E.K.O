@@ -473,8 +473,63 @@
         return String((block && block.thumbnailUrl) || MUSIC_EXPORT_PLACEHOLDER_COVER);
     }
 
-    function extractBlocksPlainText(message) {
+    // Project the visible recommendation into the existing export renderers.
+    // Never mutate chat state or play audio; only project currently displayed meme previews.
+    function getExportBlocks(message) {
         var blocks = message && message.blocks;
+        if (!Array.isArray(blocks)) return [];
+        return blocks.flatMap(function (block) {
+            if (!block || typeof block !== 'object') return [];
+            if (block.type === 'music_recommendation') {
+                var track = block.track || {};
+                var cover = MUSIC_EXPORT_PLACEHOLDER_COVER;
+                try {
+                    var coverUrl = new URL(track.cover, window.location.href);
+                    if (track.cover && (coverUrl.protocol === 'https:' || coverUrl.protocol === 'http:') && !coverUrl.username && !coverUrl.password) cover = coverUrl.href;
+                } catch (_) { /* Invalid covers use the same placeholder as the music card. */ }
+                return [{ type: 'link', url: String(track.url || ''),
+                    title: String(track.name || translateLabel('music.unknownTrack', 'Unknown Track')),
+                    description: String(track.artist || translateLabel('music.unknownArtist', 'Unknown Artist')),
+                    thumbnailUrl: cover,
+                    exportLiteral: true }];
+            }
+            if (block.type !== 'proactive_recommendation') return [block];
+            var content = block.content || {};
+            if (block.category === 'chat') return [];
+            var url = '';
+            try {
+                var parsed = new URL(content.url);
+                if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && !parsed.username && !parsed.password) url = parsed.href;
+            } catch (_) { /* A source-free screen observation can still be exported. */ }
+            if (!url) {
+                return block.category === 'vision' && !content.url && String(content.title || '').trim()
+                    ? [{ type: 'text', text: String(content.title), exportLiteral: true }] : [];
+            }
+            var title = String(content.title || translateLabel('proactiveCard.hints.' + block.category, 'Would you like to take a look?'));
+            if (block.category === 'meme' && /^(?:表情(?:包)?|meme|gif|image)[_\s-]*\d+(?:\.(?:gif|png|jpe?g|webp))?$/i.test(title.trim())) {
+                title = translateLabel('proactiveCard.memeTitle', 'A meme I wanted to share with you');
+            }
+            var projected = [{ type: 'link', url: url, title: title,
+                description: String(content.source || ''), exportLiteral: true }];
+            if (block.category === 'meme' && (block.state === 'accepted' || (block.directDelivery && block.state === 'pending')) && !block.dismissed) {
+                projected.push({ type: 'image', url: '/api/meme/proxy-image?url=' + encodeURIComponent(url), alt: title, exportLiteral: true });
+            }
+            return projected;
+        });
+    }
+
+    function escapeMarkdownDestination(value) {
+        // Escape Markdown's entity syntax without encoding URL query separators.
+        return String(value || '').replace(/[()[\]\\]/g, function (char) { return '%' + char.charCodeAt(0).toString(16).toUpperCase(); })
+            .replace(/&/g, function (char) { return '\\' + char; });
+    }
+
+    function escapeRecommendationMarkdown(value) {
+        return escapeMarkdown(value).replace(/[~&<]/g, function (char) { return '\\' + char; });
+    }
+
+    function extractBlocksPlainText(message) {
+        var blocks = getExportBlocks(message);
         if (!Array.isArray(blocks)) return '';
         var memeOnly = isMemeExportMessage(message);
         var musicOnly = isMusicExportMessage(message);
@@ -508,6 +563,7 @@
                 var url = String(block.url || '');
                 if (title && url) parts.push(title + ' (' + url + ')');
                 else if (title) parts.push(title);
+                if (block.exportLiteral && block.description) parts.push(String(block.description));
                 return;
             }
             if (block.type === 'status') {
@@ -525,7 +581,7 @@
     }
 
     function blocksToMarkdown(message) {
-        var blocks = message && message.blocks;
+        var blocks = getExportBlocks(message);
         if (!Array.isArray(blocks)) return '';
         var memeOnly = isMemeExportMessage(message);
         var musicOnly = isMusicExportMessage(message);
@@ -539,27 +595,37 @@
                 return;
             }
             if (block.type === 'text') {
-                if (block.text) lines.push(String(block.text));
+                if (block.text) lines.push(block.exportLiteral ? escapeRecommendationMarkdown(block.text) : String(block.text));
                 return;
             }
             if (block.type === 'image') {
-                var alt = block.alt ? String(block.alt).replace(/\]/g, ' ') : '';
+                var alt = block.alt ? String(block.alt) : '';
                 var url = String(block.url || '');
+                if (block.exportLiteral) { alt = escapeRecommendationMarkdown(alt); url = escapeMarkdownDestination(url); }
+                else alt = alt.replace(/\]/g, ' ');
                 lines.push('![' + alt + '](' + url + ')');
                 return;
             }
             if (block.type === 'link') {
                 if (isMusicExportBlock(message, block)) {
-                    var musicTitle = block.title ? String(block.title).replace(/\]/g, ' ') : '';
+                    var musicTitle = block.title ? String(block.title) : '';
                     var musicArtist = block.description ? String(block.description) : '';
-                    lines.push('![' + musicTitle + '](' + getMusicExportCover(block) + ')');
+                    if (block.exportLiteral) { musicTitle = escapeRecommendationMarkdown(musicTitle); musicArtist = escapeRecommendationMarkdown(musicArtist); }
+                    else musicTitle = musicTitle.replace(/\]/g, ' ');
+                    var cover = getMusicExportCover(block);
+                    lines.push('![' + musicTitle + '](' + (block.exportLiteral ? escapeMarkdownDestination(cover) : cover) + ')');
                     if (musicTitle) lines.push(musicTitle);
                     if (musicArtist) lines.push(musicArtist);
                     return;
                 }
-                var title = block.title ? String(block.title).replace(/\]/g, ' ') : String(block.url || '');
-                lines.push('[' + title + '](' + String(block.url || '') + ')');
-                if (block.description) lines.push('> ' + String(block.description));
+                var title = block.title ? String(block.title) : String(block.url || '');
+                var destination = String(block.url || '');
+                if (block.exportLiteral) {
+                    title = escapeRecommendationMarkdown(title);
+                    destination = escapeMarkdownDestination(destination);
+                } else title = title.replace(/\]/g, ' ');
+                lines.push('[' + title + '](' + destination + ')');
+                if (block.description) lines.push('> ' + (block.exportLiteral ? escapeRecommendationMarkdown(block.description) : String(block.description)));
                 return;
             }
             if (block.type === 'status') {
@@ -577,7 +643,7 @@
     }
 
     function collectImageDescriptors(message) {
-        var blocks = message && message.blocks;
+        var blocks = getExportBlocks(message);
         if (!Array.isArray(blocks)) return [];
         var result = [];
         blocks.forEach(function (block) {

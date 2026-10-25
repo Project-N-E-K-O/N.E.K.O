@@ -30,7 +30,7 @@ from .numeric_v2_fixture import numeric_v2_setup
 
 
 def test_numeric_v2_workshop_prompts_do_not_embed_stress_story_terms():
-    """工坊生成、优化与评分合同只描述通用语义，不固化当前压测剧本。"""  # noqa: DOCSTRING_CJK
+    """Workshop generation, optimization, and scoring contracts describe general semantics, without hardcoding current stress-test scripts."""  # noqa: DOCSTRING_CJK
 
     prompts = (
         _MAINLINE_PROMPT,
@@ -61,71 +61,71 @@ def test_numeric_v2_workshop_prompts_do_not_embed_stress_story_terms():
 ], ids=["mainline", "continuation", "enhancement", "branch-ending", "branch-path", "optimization"])
 def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     # Short IDs keep PYTEST_CURRENT_TEST below Windows' environment-value limit.
-    # 修补、完善与支线入口同样会产出边界，不能仅修首次主线生成后又被旧合同覆盖。
+    # Repair, refinement, and branch entry also generate boundaries; they must not overwrite initial mainline fixes with old contracts.
     assert prompt.count(_SCENE_PROCESS_AUTHORING_RULE) == 1
     assert prompt.endswith(_SCENE_PROCESS_AUTHORING_RULE)
-    # 双人演绎取向须覆盖续写、支线和改稿，不能只在首份主线中生效。
+    # Two-person enactment orientation applies to continuation, branches, and revision, not just the first mainline draft.
     assert "主线、支线及结局的关键互动优先由男主与女主推进" in prompt
     assert "不默认把配角的连续问答、实际操作、评价或认可作为推进和收束的必要条件" in prompt
     assert "男主的选择、行动和台词仍由玩家输入决定" in prompt
     assert "配角被直接询问时仍可简短回答、拒绝或说明未知" in prompt
-    # 多出口预览不冻结路线，也不要求玩家先把所有候选支线都完成。
+    # Multiexit previews neither freeze routes nor require all candidate branches to finish first.
     assert "不要求把全部候选支线的调查都完成才离幕" in prompt
     assert "玩家接受时仍按最新数值确定路线" in prompt
     assert "各目标入口先兑现这项共同行动" in prompt
-    # 出口明确已知去向和参与者，不能让后续改稿重新变成无界的调查/护送任务。
+    # Exits explicitly identify known destinations/participants, preventing revisions from becoming unbounded investigation/escort tasks again.
     assert "谁同行及配角留在哪里" in prompt
     assert "这四处必须兑现同一去向、时段和开始的活动" in prompt
     assert "单个出口不能写‘去A或去B’却只通往C" in prompt
     assert "不能在换幕后临时编造新路径" in prompt
     assert "不以含糊标识诱导另造设施或重复任务" in prompt
-    # 出口三要素沿用既有作者字段；生成与改稿都不能追加可选素材作为离幕前提。
+    # Reuse existing author fields for all three exit elements; generation/revision must not add optional material as departure prerequisites.
     assert "trigger_fact 只列离开真正必要的具体结果" in prompt
     assert "并安排在来源幕自然公开" in prompt
     assert "下一幕的操作、调查和角色选择不得反写为本幕离开的前提" in prompt
-    # 剧情转折须有当下可执行选择；设备等待不能在换幕时凭空完成。
+    # Plot turns require currently executable choices; device waiting cannot finish magically at transitions.
     assert "写角色此刻能公开并让玩家决定的移动、等候或协作安排" in prompt
     assert "玩家同意后再由桥段承接时间经过" in prompt
-    # 所有写稿入口同步连续动作的历史适配，不能完善后又新增分幕禁令。
+    # All writing entries share historical adaptation for continuous actions; refinement must not reintroduce act-splitting bans.
     assert "玩家提前明确实施后，运行时会承接结果" in prompt
-    # 六个生成/评改入口共享主动转场及未授权反例的规则。
+    # Six generation/review entries share proactive-transition and unauthorized-counterexample rules.
     assert "主动要求进入已公开的下一地点、下一阶段" in prompt
     assert "询问、考虑或准备不算开始" in prompt
-    # 所有共用写稿入口都应区分输入前提冲突与从当前状态开始的新动作。
+    # All shared writing entries distinguish conflicting input prerequisites from new actions beginning in the current state.
     assert "角色应自然提醒实际情况" in prompt
     assert "从当前状态实施的新可行动作仍正常承接" in prompt
     assert "不必再邀请、再确认一次" in prompt
-    # 写作、续写和评改都要保留回应的具体对象，但不能把台词模板变成硬性任务。
+    # Writing, continuation, and review preserve specific response objects without making dialogue templates mandatory tasks.
     assert "必要角色反应写清她回应哪项选择或结果，以及为什么在意" in prompt
     assert "不把示例台词固定为必说原文" in prompt
-    # 各生成/评改入口都应保留反应的因果和阶段差异，不能要求每次互动都升温。
+    # Every generation/review entry preserves causal/stage differences in reactions, without requiring every interaction to intensify relationships.
     assert "女主原先在意的具体事" in prompt
     assert "不能把本幕尚待发生的反应提前写成入幕事实" in prompt
     assert "不要求每幕改变立场" in prompt
     assert "ending.summary 承接变化的原因" in prompt
     assert "不为了制造变化强行和解、彻底改观或升温" in prompt
-    # 结局开场、摘要和状态线必须同一时点，不能通过状态字段偷偷新增玩家行动。
+    # Ending openings, summaries, and state lines share one time point; state fields cannot secretly add player actions.
     assert "结束不等于散场，不默认男主执行作者未写明的附加动作" in prompt
-    # 完善与评分建议也不得重新为已关闭输入的结局分配普通回合任务。
+    # Refinement/scoring must not assign ordinary-turn tasks to endings with closed input.
     assert "结局目标只声明开场已经交付的环境事实" in prompt
-    # 用户明确状态时点为开场结束，七个作者入口不能重新写成开场前或整幕完成后。
+    # The user explicitly places state after the opening; seven author entries must not shift it before opening or after the whole act.
     assert "开场演完、第一条玩家输入之前" in prompt
     assert "不能把 turn 目标的预期结果提前写入状态" in prompt
     assert "ordered_goals 按 timing 区分开场已交付与普通回合待演的内容" in prompt
     assert "明确归于开场已完成的结果，须与 opening_scene 实际展示或明确的前情、上游事实相容" in prompt
-    # 七个入口都须区分约定与执行，防止完善/评改重新追加未来行动作为收束前提。
+    # Seven entries must distinguish agreements from execution, preventing refinement/review from adding future actions as closure prerequisites.
     assert "本幕要交付达成约定还是实际执行" in prompt
     assert "不把未来执行列为本幕缺项" in prompt
     assert "不能只用同意方案代替完成" in prompt
-    # 所有创作入口保留同一完成主体与范围，不能从示范扩大成全员体验结束。
+    # All creative entries preserve the same completion subject/scope, never expanding a demonstration into everyone's completed experience.
     assert "一人示范不代替另一人的亲手操作" in prompt
     assert "出口和结局不得改写成所有参与者均已完成" in prompt
     assert "已授权且结果可确定的最后互动仍可同轮交付" in prompt
-    # 新生成及评改都沿用历史适配合同，不能重新要求逐字复演来源动作。
+    # New generation/review retain historical adaptation contracts rather than demanding verbatim reenactment of source actions.
     assert "运行时会依据实际游玩历史改写桥段与开场措辞" in prompt
     assert "写清必须保留的时间、地点、必要结果和阶段边界" in prompt
     assert "不把再等一会儿、再确认一遍或追加告别作为必经步骤" in prompt
-    # 七个生成/评改入口都须保留同一主体范围，避免后续完善重新写出无主体的硬边界。
+    # Seven generation/review entries preserve the same actor scope so later refinement cannot restore actorless hard boundaries.
     assert "每条限制写明主体、对象及受限行为或必要前提" in prompt
     assert "只限制口头表达时，不扩大为禁止行动反馈，也不约束其他角色" in prompt
     assert "禁止项须与本幕安排的事件及角色反应相容" in prompt
@@ -138,16 +138,16 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     assert "没有阻碍的互动也不必强加阻碍" in prompt
     assert "必要的工具、角色协作或玩家决定必须明确" in prompt
     assert "不要把抽象评价改写为必须反复操作、额外确认或增加失败次数" in prompt
-    # 各入口必须区分当前反馈与真正的跨阶段机会，防止评改时又把奖励写成转场提议。
+    # Each entry distinguishes immediate feedback from real cross-stage opportunities, preventing review from turning rewards into transition proposals.
     assert "proposal 写进入下一阶段的具体邀请或机会" in prompt
     assert "并与下一幕实际开场相容" in prompt
     assert "不能单独冒充跨阶段提议" in prompt
     assert "本幕准备任务与未来见面分开提出" in prompt
-    # 所有写作和评改入口共享终局例外，防止修订阶段再次要求额外确认。
+    # All writing/review entries share the ending exception, preventing extra confirmation requirements during revision.
     assert "上述邀请要求适用于角色提出的普通换幕" in prompt
     assert "结局的 player_decision 可以为空" in prompt
     assert "结局仍需要玩家尚未作出的选择" in prompt
-    # 续写与评改也要保留同轮收束，避免重新追加确认或把最后动作在结局重演。
+    # Continuation/review retain same-turn closure without adding confirmation or reenacting the final action in the ending.
     assert "可以在同一轮完成互动、角色回应并自然结束" in prompt
     assert "仅考虑或准备不算授权" in prompt
     assert "桥段与结局开场承接结果，不再重演同一动作" in prompt
@@ -394,7 +394,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     }
     story = result["story"]
     assert story["meta"]["author"] == "NEKO_Numeric_drama"
-    # 作者已显式填写 100 时必须保留，不把“默认 50”误当成强制重写。
+    # Preserve explicitly entered 100; default 50 is not a mandatory rewrite.
     assert story["metric_schema"]["trust"]["max"] == 100
     assert story["initial_state"]["metrics"] == {"trust": 20}
     assert [node["type"] for node in story["nodes"]].count("ending") == 1
@@ -544,7 +544,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert '"accept_input": "玩家明确接受同一具体安排的一句话' in _BRANCH_PATH_PROMPT
     assert "不得只给抽象结论" in _BRANCH_PATH_PROMPT
     assert "expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计" in _BRANCH_PATH_PROMPT
-    # 作者已确认先事实后文学：时序核对移入事实阶段，文学阶段消费其报告。
+    # The author confirmed facts before literature: move timing checks into the fact stage, whose report feeds literature.
     assert "按路线的实际 source/target" in FACT_REVIEW_PROMPT
     assert "fact_review 是完整事实报告" in _ASSESSMENT_PROMPT
     assert "对每个非结局章节额外核对一条转场因果链" not in _ASSESSMENT_PROMPT
@@ -576,7 +576,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
         "环境保持雨季花店及其已建立的物品状态。"
         "女主掌握旧信原件，既想核实真相，又担心再次被男主隐瞒。"
         "关系上限：戒备；称呼未知，介绍后方可使用；"
-        # 道具只保留固定资料，生命周期中的签收等规划不再作为入幕现状拼接。
+        # Props retain only fixed information; receipt and other lifecycle plans no longer enter act-entry state.
         "已知男主：无；禁止：把未来承诺当作已经兑现。\n"
         "道具资料（仅定义用途，不表示已取得或操作完成）："
         "关键道具“写有日期的旧信”[dated_old_letter]：用途为核对当年离开时间与收信记录。"
@@ -597,12 +597,12 @@ def test_numeric_v2_generator_does_not_publish_planned_prop_change_as_entry_stat
 
     beat = result["story"]["nodes"][0]["story_beat"]
     assert "玩家完成签收" not in beat["catgirl_situation"]
-    # 修复时态不能丢失不随签收变化的名称和用途，否则 Actor 会重新猜测道具能力。
+    # Tense repairs must retain receipt-independent names/purposes, or Actor guesses prop capabilities again.
     assert "写有日期的旧信" in beat["catgirl_situation"]
     assert "核对当年离开时间与收信记录" in beat["catgirl_situation"]
     assert "尚未替他预设新的选择或行动" in beat["catgirl_situation"]
     assert beat["opening_scene"] == candidate["mainline_chapters"][0]["opening_scene"]
-    # 作者规划继续留在作者侧，不能自动变成跨幕永久事实。
+    # Keep author plans author-side; never automatically promote them to permanent cross-act facts.
     assert result["key_props"][0]["states"][0]["state"] == "玩家完成签收，旧信已交给玩家保管"
     assert not any("玩家完成签收" in item for item in
                    result["story"]["nodes"][0]["route_gates"][0]["transition_contract"]["must_preserve"])
@@ -660,7 +660,7 @@ def test_scene_turn_budget_uses_compact_complexity_bands(turn_goal_count, expect
 
 
 def test_scene_turn_budget_keeps_runtime_recommendation_at_three_for_long_author_estimates():
-    # expected_turns 只服务作者侧节奏诊断，不能把 Runtime 的推荐回合拉长。
+    # expected_turns serves author pacing diagnostics only, without extending Runtime recommendation turns.
     assert scene_turn_budget([], 6) == (3, 3)
     assert scene_turn_budget([], 120) == (3, 3)
 
@@ -678,7 +678,7 @@ def test_mainline_pacing_diagnostics_warns_when_player_exit_action_is_missing():
 
 
 def test_mainline_final_natural_ending_allows_no_extra_decision():
-    # 最终收束不是缺少玩家动作；普通幕的空决定仍由相邻用例检查并报告。
+    # Final closure is not missing player action; adjacent cases still check/report empty decisions in ordinary acts.
     candidate = _idea_outline(chapter_count=4)
     candidate["mainline_chapters"][-1]["exit_plan"]["player_decision"] = ""
     diagnostics = _pacing_diagnostics_for_outline(candidate)
@@ -975,7 +975,7 @@ def test_numeric_v2_generator_saves_checkpoint_after_three_incomplete_attempts()
     def fake_call(_messages, **_kwargs):
         nonlocal calls
         calls += 1
-        # 三幕已是合法短篇；两幕仍不足，用它验证失败候选和修订次数被完整保留。
+        # Three acts form a valid short story; two remain insufficient, verifying preservation of failed candidates and revision counts.
         return json.dumps(_idea_outline(chapter_count=2), ensure_ascii=False)
 
     generator.call_llm = fake_call
@@ -1414,7 +1414,7 @@ def _quality_payload(*, weak_dimension: str | None = None, target_node_id: str =
     if weak_dimension:
         issues.append({
             "dimension": weak_dimension,
-            # 测试替身必须像原生评分一样声明具体字段，不能只填可自动修订的标签。
+            # Test doubles must declare specific fields like native scoring, not only automatically revisable tags.
             "repair_targets": [{"node_id": target_node_id, "field": "/summary"}],
             "severity": "major",
             "target_node_ids": [target_node_id],
@@ -1440,7 +1440,7 @@ def _quality_payload(*, weak_dimension: str | None = None, target_node_id: str =
 
 
 def _quality_wire_payload(payload):
-    # 原有报告断言继续检查持久化协议；模型替身按新的逐维填写协议输出。
+    # Existing report assertions still check persistence; model doubles use the new per-dimension protocol.
     from copy import deepcopy
     wire = deepcopy(payload)
     issues = wire.pop("issues", [])
@@ -1452,14 +1452,14 @@ def _quality_wire_payload(payload):
 
 
 def _plan_review_reply(messages):
-    # 独立的模型替身逐条返回复核，不把旧报告静默当成已复核报告。
+    # Independent model doubles return each review without silently treating old reports as reviewed.
     plans = json.loads(messages[1]["content"])["plans"]
     return json.dumps({"conflicts": [], "checks": [{"issue_id": row["issue_id"], "status": "ready",
         "reason": "测试方案与字段一致", "missing_targets": []} for row in plans]})
 
 
 def _reviewed_fixture(report):
-    # 仅供下游补丁测试：这些测试显式构造已通过方案复核的报告；旧报告测试不调用它。
+    # For downstream patch tests only: explicitly build plan-reviewed reports; old-report tests never call this helper.
     report["repair_plan_version"] = 3
     for row in [*report.get("issues", []), *report.get("relationship_advice", [])]:
         row["plan_review"] = {"status": "ready", "reason": "测试方案与字段一致", "missing_targets": [], "conflicting_issue_ids": []}
@@ -1467,7 +1467,7 @@ def _reviewed_fixture(report):
 
 
 def _quality_reply(payload):
-    # 文学测试使用合法空事实报告，避免把第一阶段结构失败误认作文学校验失败。
+    # Literature tests use valid empty fact reports, distinguishing first-stage structural failures from literary-validation failures.
     def reply(messages, **kwargs):
         if kwargs.get("operation") == "numeric_v2_fact_review":
             context = json.loads(messages[1]["content"])
@@ -1581,7 +1581,7 @@ def test_numeric_v2_quality_assessor_rejects_incomplete_dimension_schema():
 @pytest.mark.parametrize("score", [75, 100])
 @pytest.mark.parametrize("severity", ["minor", "major", "blocking"])
 def test_numeric_v2_quality_assessor_keeps_every_issue_for_passing_dimension(score, severity):
-    # 用户要求全部展示；轻微建议不否定分数合格，严重问题必须阻止报告通过。
+    # The user requests displaying everything; minor suggestions do not invalidate qualifying scores, but serious issues must block acceptance.
     assessor = NumericV2QualityAssessor()
     payload = _quality_payload(weak_dimension="plot", target_node_id="mainline_02")
     payload["scores"]["plot"]["score"] = score
@@ -1652,7 +1652,7 @@ def test_numeric_v2_quality_assessor_optimizes_one_map_node_with_all_relevant_su
 
 def test_quality_repair_updates_existing_state_text_without_rewriting_scene_or_permissions():
     from copy import deepcopy
-    # 已获确认的状态文本修正应直达状态字段，不得被迫改写本来正确的开场。
+    # Confirmed state-text corrections must directly update state fields without forcing rewrites of correct openings.
     assessor = NumericV2QualityAssessor()
     story, authoring = _quality_story_context()
     original = deepcopy(story)
@@ -1685,7 +1685,7 @@ def test_quality_repair_updates_existing_state_text_without_rewriting_scene_or_p
 ])
 def test_quality_state_text_repair_rejects_empty_or_permission_changes(state_patch):
     from copy import deepcopy
-    # 修正持物/站位描述不授权改认知、边界或状态结构；失败不能污染调用方的原稿。
+    # Correcting held-item/position descriptions does not authorize knowledge/boundary/state-structure changes; failure must not mutate the caller's draft.
     story, _ = _quality_story_context()
     original = deepcopy(story)
     with pytest.raises(QualityAssessmentError):
@@ -1698,7 +1698,7 @@ def test_quality_state_text_repair_rejects_empty_or_permission_changes(state_pat
 @pytest.mark.parametrize("existing_state", [None, {}, {"player_state": "男主站在柜台旁。"}])
 def test_quality_state_text_repair_does_not_invent_missing_legacy_state(existing_state):
     from copy import deepcopy
-    # 本入口只修已有文本；旧包缺主体状态时，不能凭一条修订建议创建新的状态结构。
+    # This entry repairs existing text only; a revision suggestion cannot create missing subject-state structures in legacy packages.
     story, _ = _quality_story_context()
     story["nodes"][1]["story_beat"]["character_state"] = existing_state
     original = deepcopy(story)
@@ -1713,7 +1713,7 @@ def test_quality_state_text_repair_does_not_invent_missing_legacy_state(existing
 
 def test_quality_context_retains_goal_identity_evidence_and_state_effects():
     from copy import deepcopy
-    # 评分要能定位错误目标并核对证据/发声变化，不能在精简输入时丢掉这些依据。
+    # Scoring must locate incorrect targets and assess evidence/speech changes; input simplification must preserve those bases.
     story, authoring = _quality_story_context()
     goal = story["nodes"][0]["story_beat"]["goals"][0]
     goal["delivery"]["state_effects"] = {"dialogue_policy": "forbidden"}
@@ -1731,7 +1731,7 @@ def test_quality_context_retains_goal_identity_evidence_and_state_effects():
 
 def test_quality_context_retains_delivery_output_and_route_sources_without_expanding_repair_scope():
     from copy import deepcopy
-    # 行动主体需要结合输出字段核对，桥段结果则要能追溯来源目标；两者均只读。
+    # Check action subjects against output fields and trace bridge outcomes to source targets; both are read-only.
     story, authoring = _quality_story_context()
     node = story["nodes"][0]
     goal = node["story_beat"]["goals"][0]
@@ -1745,7 +1745,7 @@ def test_quality_context_retains_delivery_output_and_route_sources_without_expan
     assert sources == route["transition_contract"]["source_ids"]
     sources.clear()
     assert story == original
-    # 能读交付来源不代表文字修订可以改写证据，仍由现有白名单拒绝。
+    # Reading delivery sources does not authorize textual revisions to rewrite evidence; existing allowlists still reject that.
     with pytest.raises(QualityAssessmentError):
         NumericV2QualityAssessor._apply_node_updates(story, {"node_updates": [{
             "node_id": node["id"], "routes": [{"route_id": route["id"],
@@ -1782,7 +1782,7 @@ def test_numeric_v2_quality_assessor_marks_structural_plan_as_manual_only():
     ("long", 9), ("long", 17),
 ])
 def test_numeric_v2_generator_rejects_mainline_outside_length_range(preset, count):
-    # 仅放宽短篇下限；两端越界及其它篇幅仍须拒绝，不能把三幕许可扩大为不限幕数。
+    # Relax only the short-story minimum; both out-of-range ends and other lengths remain invalid, not unlimited act counts.
     generator = NumericV2Generator()
     generator.call_llm = lambda *_args, **_kwargs: json.dumps(
         _idea_outline(chapter_count=count),
@@ -1825,7 +1825,7 @@ def test_mainline_length_boundaries_generate_without_padding(preset, count, mini
     assert sum(node["type"] != "ending" for node in story["nodes"]) == count
     assert sum(node["type"] == "ending" for node in story["nodes"]) == 1
     if preset == "short" and count == 3:
-        # 新下限必须能通过真实 N.E.K.O 编译链，独立结局不拿来凑第三个主线章节。
+        # The new minimum must pass real N.E.K.O compilation; separate endings do not count as a third mainline chapter.
         NumericV2Compiler(InProcessPackageGateway()).compile(story)
 
 
@@ -1922,8 +1922,8 @@ def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once(
         "chapter": title,
         "story_beat": {
             "summary": summary,
-            # 完善已有节点必须看见它已有的开场与状态，而不是仅凭摘要重新猜处境。
-            # 原稿含时点矛盾也原样送达；此测试不代替模型判断或修复自然语言。
+            # Refining existing nodes must see their actual openings/states rather than guessing circumstances from summaries alone.
+            # Preserve contradictory original timing in input; this test neither judges nor repairs natural language for the model.
             "opening_scene": opening,
             "narrative_focus": focus,
             "character_state": {"catgirl_state": state},
@@ -2028,7 +2028,7 @@ def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once(
 
 
 def _ending_enhancement_case():
-    # 结局已关闭玩家输入，目标仅标记开场交付；状态沿用已有有效合同。
+    # Ending input is closed; targets mark only opening delivery, with state retaining its valid existing contract.
     generator = NumericV2Generator()
     story = generator._project_story(
         title="雨后旧信", original_idea="核对旧信后保留分歧。",
@@ -2129,7 +2129,7 @@ def test_character_context_preserves_nonprefix_and_different_state_text():
 ])
 def test_ending_enhancement_rejects_unplayable_goals_without_mutating_story(change):
     from copy import deepcopy
-    # 复现已结束节点被完善成待执行任务、禁言切换或多目标；不能默默丢弃坏目标。
+    # Reproduce completed nodes refined into pending tasks, speech restrictions, or multiple targets; never silently drop invalid targets.
     generator, story, candidate = _ending_enhancement_case()
     if change is None:
         candidate["ordered_goals"].append(deepcopy(candidate["ordered_goals"][0]))
@@ -2146,7 +2146,7 @@ def test_ending_enhancement_rejects_unplayable_goals_without_mutating_story(chan
 
 
 def test_ending_enhancement_preserves_opening_delivery_and_compiles():
-    # 合法结局仍可完善并经生产编译，不能靠全面禁止结局编辑修复这一入口。
+    # Valid endings remain refinable and compile through production; banning all ending editing is not a fix.
     generator, story, candidate = _ending_enhancement_case()
     generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
     update = generator.enhance_node(story=story, node_id="ending_normal")
@@ -2161,7 +2161,7 @@ def test_ending_enhancement_preserves_opening_delivery_and_compiles():
 
 @pytest.mark.parametrize("boundaries", [[], ["不得让女主改写旧信日期"]])
 def test_mainline_preserves_explicit_or_empty_state_boundaries(boundaries):
-    # 空数组表示没有额外限制；有明确限制时生成投影必须原样保留，不能以简化为名删掉。
+    # Empty arrays mean no extra restrictions; projections must retain explicit restrictions unchanged rather than simplify them away.
     outline = _idea_outline()
     outline["character_state_arc"]["stages"][0]["scene_boundaries"] = boundaries
     generator = NumericV2Generator()
@@ -2170,14 +2170,14 @@ def test_mainline_preserves_explicit_or_empty_state_boundaries(boundaries):
     beat = result["story"]["nodes"][0]["story_beat"]
     assert beat["character_state"]["scene_boundaries"] == boundaries
     assert all(item in beat["must_not_happen"] for item in boundaries)
-    # 走真实 N.E.K.O 编译入口，防止生成器接受了最终运行包却不能消费的空边界。
+    # Exercise real N.E.K.O compilation so generator-accepted empty boundaries are consumable by final Runtime packages.
     compiled = NumericV2Compiler(InProcessPackageGateway()).compile(result["story"])
     assert compiled.story["nodes"][0]["story_beat"]["character_state"]["scene_boundaries"] == boundaries
 
 
 @pytest.mark.parametrize("boundaries", [None, [""], ["不得越界"] * 5])
 def test_state_boundary_relaxation_still_rejects_malformed_arrays(boundaries):
-    # 放宽的是数量下限，不是字段形状、非空条目或四条上限。
+    # Relax the count minimum only, not field shape, nonempty-entry requirements, or the four-entry maximum.
     from theater_workshop.sdk.generation.numeric_v2 import _validate_character_state_stage
     state = _idea_outline()["character_state_arc"]["stages"][0]
     state["scene_boundaries"] = boundaries
@@ -2188,7 +2188,7 @@ def test_state_boundary_relaxation_still_rejects_malformed_arrays(boundaries):
 
 
 def test_quality_context_preserves_author_intent_and_terminal_conflicts_without_mutation():
-    # 两份摘要及终点状态故意互相矛盾；评分输入必须保留矛盾，不能替作者归一。
+    # Both summaries and endpoint states intentionally contradict; scoring input must retain contradictions rather than normalize for the author.
     from copy import deepcopy
     story, authoring = _quality_story_context()
     ending = next(node for node in story['nodes'] if node['type'] == 'ending')
@@ -2215,7 +2215,7 @@ def test_quality_context_preserves_author_intent_and_terminal_conflicts_without_
 
 
 def test_quality_context_preserves_adjacent_delivery_and_legacy_state_fallback():
-    # 旧包仍能读取作者状态；普通幕、支线和结局的真实路线可按 ID 联合核对。
+    # Legacy packages retain readable author state; join ordinary-act/branch/ending routes by ID for checking.
     story, authoring = _quality_story_context()
     first, second = story['nodes'][:2]
     first['story_beat'].pop('character_state')
@@ -2235,7 +2235,7 @@ def test_quality_context_preserves_adjacent_delivery_and_legacy_state_fallback()
 
 
 def test_quality_route_issue_resolves_to_owner_and_repairs_only_that_node():
-    # 路线 ID 不是目标幕 ID；修桥段必须落到持有该出口的来源节点。
+    # Route IDs differ from target-act IDs; bridge repairs must target the source node owning the exit.
     story, authoring = _quality_story_context()
     first = story['nodes'][0]
     route = first['route_gates'][0]
@@ -2260,7 +2260,7 @@ def test_quality_route_issue_resolves_to_owner_and_repairs_only_that_node():
 
 @pytest.mark.parametrize('invalid_target', ['unknown_route', None, 'ambiguous_route'])
 def test_quality_does_not_guess_unknown_or_ambiguous_route_ownership(invalid_target):
-    # 未知 ID、非法形状和跨节点重名都不能扩大优化权限。
+    # Unknown IDs, invalid shapes, and cross-node duplicate names must not expand optimization authority.
     story, authoring = _quality_story_context()
     for node in story['nodes'][:2]:
         node['route_gates'][0]['id'] = 'ambiguous_route'
@@ -2271,7 +2271,7 @@ def test_quality_does_not_guess_unknown_or_ambiguous_route_ownership(invalid_tar
 
 
 def test_quality_keeps_high_score_suggestions_alongside_low_score_issues():
-    # 允许问题维度多于低分维度，不能把完整报告误判成非法格式。
+    # Issue dimensions may outnumber low-score dimensions; do not reject complete reports as malformed.
     from copy import deepcopy
     story, authoring = _quality_story_context()
     context = NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring)
@@ -2283,14 +2283,14 @@ def test_quality_keeps_high_score_suggestions_alongside_low_score_issues():
     assert [item['dimension'] for item in report['issues']] == ['plot', 'prose_style']
     assert report['failed_dimensions'] == ['plot']
     assert report['passed'] is False
-    # 放宽展示范围后，低分维度缺问题仍然无效。
+    # After broadening display, low-score dimensions without issues remain invalid.
     payload['issues'] = [minor]
     with pytest.raises(QualityAssessmentError):
         NumericV2QualityAssessor._validated_assessment(context, payload)
 
 
 def test_quality_validates_high_score_issues_instead_of_silently_dropping_them():
-    # 高分不能掩盖不存在的修复目标，避免错误建议进入节点优化入口。
+    # High scores cannot hide nonexistent repair targets, preventing bad suggestions from entering node optimization.
     story, authoring = _quality_story_context()
     context = NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring)
     payload = _quality_payload(weak_dimension='plot', target_node_id='unknown_node')
@@ -2300,8 +2300,8 @@ def test_quality_validates_high_score_issues_instead_of_silently_dropping_them()
 
 
 def test_literature_reads_review_first_without_losing_story_or_suggestions():
-    # 捕获真实阶段请求：先读复核结论，作者顺序/原文与未知扩展字段仍完整保留。
-    # 返回同修法的两项影响，验证阅读优化不会在服务端删掉模型已经给出的意见。
+    # Capture real stage requests: read review conclusions first while preserving author order/text and unknown extension fields.
+    # Return two effects sharing one fix to verify reading optimization never deletes model-provided opinions server-side.
     from copy import deepcopy
     story, authoring = _quality_story_context()
     assessor = NumericV2QualityAssessor()
@@ -2337,7 +2337,7 @@ def test_literature_reads_review_first_without_losing_story_or_suggestions():
 
 
 def test_single_node_request_limits_cross_node_quality_and_relationship_targets():
-    # 真实失败曾把八幕润色字段全部发给单幕修订；两类建议都只能授权当前节点。
+    # A real failure sent eight acts' polish fields into one-act revision; both suggestion types authorize only the current node.
     from copy import deepcopy
     assessor = NumericV2QualityAssessor()
     story, authoring = _quality_story_context()
@@ -2370,7 +2370,7 @@ def test_single_node_request_limits_cross_node_quality_and_relationship_targets(
 
 
 def _linked_quality_payload():
-    # 模型用本轮局部编号显式关联；两类问题均只写一次，后端转换为既有报告卡片编号。
+    # The model explicitly links local IDs this round; write each issue once and convert to existing report-card IDs in the backend.
     raw = _quality_payload(weak_dimension='prose_style', target_node_id='mainline_01')
     raw['issues'][0]['issue_id'] = 'L1'
     raw['relationship_advice'] = [{
@@ -2430,7 +2430,7 @@ def test_literary_links_reject_missing_ambiguous_or_non_explicit_basis(defect):
 
 def test_start_node_enhancement_allows_empty_prior_continuity_and_preserves_story():
     from copy import deepcopy
-    # 合法start首幕没有上一幕；完善入口不能拒绝它或为通过校验凭空补前史。
+    # Valid start acts have no previous act; refinement must not reject them or invent history to pass validation.
     generator, story, candidate = _ending_enhancement_case()
     candidate["character_state"]["continuity_from_previous"] = []
     original = deepcopy(story)
@@ -2450,7 +2450,7 @@ def test_start_node_enhancement_allows_empty_prior_continuity_and_preserves_stor
 
 
 def test_scene_enhancement_still_requires_prior_continuity():
-    # 首幕的空前史例外不能扩散到后续普通幕。
+    # The first-act empty-history exception must not extend to later ordinary acts.
     generator, story, candidate = _ending_enhancement_case()
     candidate["character_state"]["continuity_from_previous"] = []
     generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)

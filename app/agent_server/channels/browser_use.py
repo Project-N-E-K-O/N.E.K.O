@@ -79,7 +79,7 @@ async def dispatch(
                 from utils.instrument import counter as _ic
                 _ic("agent_invoked", agent_type="browser")
             except Exception:
-                pass  # 埋点 best-effort
+                pass  # Best-effort telemetry.
             try:
                 if _shared.Modules.browser_use_dispatch_lock is None:
                     _shared.Modules.browser_use_dispatch_lock = asyncio.Lock()
@@ -214,7 +214,7 @@ async def dispatch(
                     # errors (e.g. ConnectionError from CDP teardown) as the
                     # cancel signal instead of clobbering with "failed".
                     return
-                # exception 字符串可能含用户/LLM 原文，logger 只记元数据
+                # Exception strings may contain raw user/LLM text; log only metadata through logger.
                 logger.warning(f"[BrowserUse] Failed (exc_type={type(e).__name__})")
                 print(f"[BrowserUse] Task raw error: {e}")
                 bu_info["status"] = "failed"

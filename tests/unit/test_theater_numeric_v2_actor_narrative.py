@@ -203,7 +203,7 @@ def test_committed_projection_stays_in_fixed_context_and_keeps_original_history(
 
 
 def test_narrative_projection_is_not_removed_with_older_history_budget(monkeypatch):
-    # 固定块中的新状态与当前输入不能被历史裁剪误删。
+    # History trimming must preserve new state in fixed blocks and the current input.
     monkeypatch.setattr(actor, "count_tokens", len)
     state = "narrative_state:当前由character持有工具"
     data = dict(role="角色", current_scene=state, story_so_far="", pacing="回应",

@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pickle
 import os
+import pickle
 import queue
 import secrets
 import threading
@@ -60,14 +60,9 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
-# Which channels each child -> host socket is allowed to carry. The split
-# belongs to the socket, not to the decoder: _decode_uplink still accepts the
-# union by default, so a transport pair built without a dedicated message
-# endpoint (see ChildTransport, where _msg_sock falls back to _ul_sock) keeps
-# working against a host that reads both planes off one socket. What the split
-# closes is the smuggling route into *this* host: HostTransport always binds
-# both sockets, so a plugin holding the control endpoint must not be able to
-# use it to push message frames around the message plane's own ceiling.
+# Which channels each child -> host socket is allowed to carry. Each host
+# socket decodes with its own set, so a plugin holding the control endpoint
+# cannot use it to push message frames around the message plane's own ceiling.
 _CONTROL_UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_COMM})
 _MESSAGE_UPLINK_CHANNELS = frozenset({CH_MSG, CH_MSG_BATCH})
 _UPLINK_CHANNELS = _CONTROL_UPLINK_CHANNELS | _MESSAGE_UPLINK_CHANNELS
@@ -78,17 +73,17 @@ _UPLINK_PACK_OPTIONS = (
     | ormsgpack.OPT_SERIALIZE_PYDANTIC
 )
 
-# 解包必须带上 OPT_NON_STR_KEYS，否则和打包侧不对称。
+# Unpacking must include OPT_NON_STR_KEYS for symmetry with packing.
 #
-# 这不是可选的对齐：ormsgpack 用一个扩展类型来编码非字符串键的 map，读的时候
-# 不开这个开关就会 `ValueError: invalid type U16`。于是一个返回
-# ``{"by_year": {2024: 3}}`` 的 handler（int / bool / float 键都算）打包成功、
-# 解包抛错，_consume_uplink 的 except 把它记下来 continue，CH_RES 到不了
-# _dispatch_result，pending future 永远不 resolve——调用方在
-# PLUGIN_TRIGGER_TIMEOUT 之后拿到一个不含任何原因的超时。
+# This is mandatory: ormsgpack uses extension types for nonstring map keys; decoding without
+# this option raises `ValueError: invalid type U16`. A handler returning
+# ``{"by_year": {2024: 3}}`` (or bool/float keys) packs successfully but fails
+# unpacking. _consume_uplink logs and continues, preventing CH_RES from reaching
+# _dispatch_result, so its pending future never resolves and the caller receives
+# an unexplained timeout after PLUGIN_TRIGGER_TIMEOUT.
 #
-# 另外三个 option 是打包侧专用的（PASSTHROUGH_TUPLE / SERIALIZE_NUMPY /
-# SERIALIZE_PYDANTIC 都只影响序列化），所以这里只需要这一个。
+# The other three options are packing-only (PASSTHROUGH_TUPLE / SERIALIZE_NUMPY /
+# SERIALIZE_PYDANTIC affect serialization only), so only this one is needed here.
 _UPLINK_UNPACK_OPTIONS = ormsgpack.OPT_NON_STR_KEYS
 
 
@@ -98,39 +93,54 @@ def _normalize_uplink_extension(value: object) -> object:
     raise TypeError(f"unsupported uplink value type: {type(value).__name__}")
 
 
+def pack_rpc_payload(value: Any) -> bytes:
+    """The control protocol's supported value types, shared by its adapters."""
+    return ormsgpack.packb(value, default=_normalize_uplink_extension, option=_UPLINK_PACK_OPTIONS)
+
+
+def unpack_rpc_payload(raw: bytes) -> Any:
+    return ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+
+
+def _result_fault(payload: dict, code: str, message: str) -> dict:
+    req_id = payload.get("req_id")
+    return {"req_id": req_id if isinstance(req_id, (str, int)) else "unknown", "success": False,
+            "data": None, "error": {"code": code, "message": message}}
+
+
 def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
     if not token or channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
         raise TypeError("invalid uplink message")
     try:
-        return ormsgpack.packb(
-            [token, channel, payload],
-            default=_normalize_uplink_extension,
-            option=_UPLINK_PACK_OPTIONS,
-        )
+        return pack_rpc_payload([token, channel, payload])
     except Exception as exc:
         if channel == CH_RES:
-            req_id = payload.get("req_id")
-            error_payload = {
-                "req_id": req_id if isinstance(req_id, (str, int)) else "unknown",
-                "success": False,
-                "data": None,
-                "error": "Plugin result is not MessagePack-serializable",
-            }
-            return ormsgpack.packb(
-                [token, channel, error_payload],
-                option=_UPLINK_PACK_OPTIONS,
-            )
+            return pack_rpc_payload([token, channel, _result_fault(payload, "SERIALIZATION_FAILED",
+                "Plugin result is not MessagePack-serializable")])
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
+
+
+def _encode_bounded_uplink(token: str, channel: str, payload: Any) -> bytes:
+    data = _encode_uplink(token, channel, payload)
+    try:
+        _refuse_oversized_uplink_frame(channel, data)
+    except ValueError:
+        if channel != CH_RES or not isinstance(payload.get("req_id"), str):
+            raise
+        data = _encode_uplink(token, channel, _result_fault(payload, "RESULT_TOO_LARGE",
+            f"Plugin result exceeds control transport limit: {len(data)} > {_control_uplink_max_bytes()} bytes"))
+        _refuse_oversized_uplink_frame(channel, data)
+    return data
 
 
 def _decode_uplink(
     raw: bytes,
     *,
     expected_token: str,
-    allowed_channels: frozenset = _UPLINK_CHANNELS,
+    allowed_channels: frozenset,
 ) -> Tuple[str, dict]:
     try:
-        decoded = ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+        decoded = unpack_rpc_payload(raw)
     except Exception as exc:
         raise ValueError("invalid uplink payload") from exc
     if not isinstance(decoded, list) or len(decoded) != 3:
@@ -253,10 +263,10 @@ def _refuse_oversized_uplink_frame(channel: str, data: bytes) -> None:
     result that was destroyed in transit. Callers of ``ChannelSender.put`` all
     log around it, so this surfaces as a named failure with both numbers in it.
     """
-    # 只管控制通道。消息那侧的丢弃语义是被测试钉住的设计（上游已经按
-    # MESSAGE_PLANE_PAYLOAD_MAX_BYTES 逐条校验过，传输层的上限是最后一道，
-    # 且那条用例明确断言"静默、但连接还活着"）。控制帧两样都没有：工具输出
-    # 在 SDK 契约里没有上限，而它和图片共用同一帧。
+    # Handle control channels only. Message-side dropping is intentional and tested; upstream already validates
+    # each record against MESSAGE_PLANE_PAYLOAD_MAX_BYTES, making transport's limit the last defense,
+    # and the test explicitly requires silent dropping with a live connection. Control frames have neither guarantee:
+    # SDK tool output is unbounded and shares one frame with images.
     if channel in _MESSAGE_UPLINK_CHANNELS:
         return
     cap = _control_uplink_max_bytes()
@@ -300,31 +310,31 @@ def _authenticate_image_metadata(
 
 _IMG_LOCK_SHUTDOWN_WAIT_S = 2.0
 
-# 放弃排空之后再等它退出的时间。只够跑完当前这一次 send，不是第二次排空预算。
+# Time to await exit after abandoning drain, sufficient only for the current send, not another drain budget.
 _BATCHER_ABANDON_JOIN_S = 1.0
 
-# send_uplink_nowait 等发送锁的上限。只够让开一次在途的 send，不是排队预算。
+# send_uplink_nowait send-lock timeout: enough to yield to one in-flight send, not a queueing budget.
 _UPLINK_NOWAIT_LOCK_WAIT_S = 0.05
 
-# 关 uplink socket 之前等它那把发送锁的时间。等不到就交给 ctx.term() 打断持锁
-# 者、由它自己关，所以这个值只是给调度留余量，不是等排空。
+# Wait for the uplink send lock before closing; if unavailable, ctx.term() interrupts its owner,
+# which closes the socket itself. This value allows scheduling margin, not draining time.
 _UPLINK_CLOSE_LOCK_WAIT_S = 2.0
 
 
-# 每个 host 一把 uplink token（见 HostTransport.__init__）。这些 token 全部挂在
-# state.plugin_hosts 上，而插件进程是裸 multiprocessing.Process 起的，POSIX 上
-# 就是 fork——启动插件 B 的那一刻，B 的子进程整份继承了这张表，里面有 A 的
-# HostTransport、A 的 token、A 的 downlink/uplink 端点字符串。B 于是能拿 A 的
-# 凭证造一个 ChildTransport，往 A 的 socket 上发合法的 CH_RES/CH_STS/CH_COMM，
-# A 侧会当作 A 自己发的——本分支新加的 per-host 鉴权就这么绕过去了。
+# Each host has an uplink token (HostTransport.__init__) stored in state.plugin_hosts.
+# Plugins start through bare multiprocessing.Process, using fork on POSIX. When plugin B starts,
+# its child inherits the full table, including A's HostTransport,
+# token, and downlink/uplink endpoints. B can construct ChildTransport with A's
+# credentials and send valid CH_RES/CH_STS/CH_COMM to A's socket, where
+# they appear to originate from A, bypassing this branch's new per-host authentication.
 #
-# plane_bridge 的 ingest token 已经有同款钩子，但它只重铸自己那一个模块级变量；
-# 这里的 token 是每个 host 一份、挂在共享状态上的，要另外擦。
+# plane_bridge's ingest token has a similar hook, but recasts only its own module variable;
+# per-host tokens in shared state need separate erasure here.
 #
-# ⚠️ 这是纵深防御，不是边界。fork 之后子进程的堆里仍然留着那些字符串的字节，
-# 一个存心的插件仍可以去翻自己的内存。真正的结构性解法是让插件进程不用 fork
-# （spawn/forkserver）——Windows 本来就是 spawn，所以插件代码其实已经在 spawn
-# 下跑得通了。那是个有性能代价的架构改动，不在本次范围内。
+# Defense in depth, not a boundary: token bytes remain in the child's forked heap,
+# accessible to a malicious plugin inspecting its own memory. The structural solution is avoiding fork
+# through spawn/forkserver. Windows already uses spawn, so plugin code already supports
+# it; that performance-affecting architecture change is outside this scope.
 # Track transports before credentials are minted, including hosts still starting.
 # Weak references do not extend socket lifetimes. The child hook runs without
 # inherited locks; only its surviving thread can mutate this registry.
@@ -522,7 +532,7 @@ class ChildTransport:
         uplink_endpoint: str,
         uplink_token: str,
         *,
-        message_uplink_endpoint: str | None = None,
+        message_uplink_endpoint: str,
         image_uplink_endpoint: str | None = None,
     ) -> None:
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
@@ -534,14 +544,11 @@ class ChildTransport:
         self._ul_sock.connect(uplink_endpoint)
         self._ul_lock = threading.Lock()
 
-        self._msg_sock = self._ul_sock
-        self._msg_lock = self._ul_lock
-        if message_uplink_endpoint:
-            self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
-            self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
-            self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
-            self._msg_sock.connect(message_uplink_endpoint)
-            self._msg_lock = threading.Lock()
+        self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
+        self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
+        self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
+        self._msg_sock.connect(message_uplink_endpoint)
+        self._msg_lock = threading.Lock()
         self._message_batcher = None
         self._message_batcher_init_lock = threading.Lock()
 
@@ -561,7 +568,7 @@ class ChildTransport:
 
         self._downlink_endpoint = downlink_endpoint
         self._uplink_endpoint = uplink_endpoint
-        self._message_uplink_endpoint = message_uplink_endpoint or uplink_endpoint
+        self._message_uplink_endpoint = message_uplink_endpoint
         self._uplink_token = uplink_token
         self._closed = False
 
@@ -661,12 +668,10 @@ class ChildTransport:
         ``send_uplink_nowait`` — the "non-blocking" one — block. Bounding this
         bounds that.
 
-        Raises ``queue.Full`` rather than something transport-shaped:
-        ``ChannelSender`` stands in for a ``multiprocessing.Queue``, and that
-        is what ``Queue.put(timeout=...)`` raises when it cannot deliver.
+        Raises ``queue.Full`` when it cannot deliver in time; the context's
+        backpressure handling classifies that as a full uplink.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         budget = max(0.0, float(timeout))
         deadline = time.monotonic() + budget
@@ -685,8 +690,8 @@ class ChildTransport:
                 raise queue.Full(f"uplink not writable within {budget}s: {channel}")
             sock.send(data, zmq.NOBLOCK)
         finally:
-            # 关停期间是这个线程最后碰这个 socket，所以由它来关。和
-            # _send_image_sync 的 finally 同一条规则。
+            # During shutdown this thread is the final socket user and must close it, following
+            # the same rule as _send_image_sync's finally.
             if self._closed:
                 self._close_uplink_sock_locked(sock)
             lock.release()
@@ -699,8 +704,7 @@ class ChildTransport:
         one in-flight send; blocking on it without a cap is what made this
         method's name a lie while a bounded ``send_uplink`` held the lock.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         if not lock.acquire(timeout=_UPLINK_NOWAIT_LOCK_WAIT_S):
             raise queue.Full(f"uplink busy: {channel}")
@@ -748,10 +752,10 @@ class ChildTransport:
                     self._message_batcher = batcher
         batcher.enqueue(msg)
 
-    # ── channel senders (queue-compatible interface) ─────────────
+    # ── channel senders ──────────────────────────────────────────
 
     def channel_sender(self, channel: str) -> "ChannelSender":
-        """Return a :class:`ChannelSender` that mimics ``mp.Queue.put`` / ``put_nowait``."""
+        """Return a :class:`ChannelSender` bound to *channel*."""
         if channel == CH_MSG:
             return MessageChannelSender(self, channel)
         return ChannelSender(self, channel)
@@ -798,7 +802,7 @@ class ChildTransport:
                     "authenticated message batcher still running at shutdown; "
                     "closing its socket under the send lock"
                 )
-        # 下行只有 recv 路径碰，没有并发的发送方，直接关。
+        # Downlink has only recv users without concurrent senders; close directly.
         dl_sock = getattr(self, "_dl_sock", None)
         if dl_sock is not None:
             try:
@@ -806,16 +810,16 @@ class ChildTransport:
             except Exception:
                 pass
 
-        # 两条 uplink socket 都在自己的锁下关，做法和媒体 socket 一样（下面
-        # 那段注释里量过的那个）：libzmq 的 socket 不是线程安全的，另一个线程
-        # 正在 send/poll 时从这里关，是崩溃不是失礼。
+        # Close both uplink sockets under their respective locks, like media sockets
+        # discussed below. libzmq sockets are not thread-safe; closing during another thread's
+        # send/poll causes crashes, not merely impolite behavior.
         #
-        # 拿不到锁就**不关**——这正是媒体那条路的做法，别改成"照样关"：
-        # ctx.term() 会先用 ETERM 打断持锁者的 poll/send，它的 finally 看到
-        # self._closed 就把 socket 关掉，然后 term 返回。所以漏关不会挂住终止。
-        # getattr 成对取，不走 _uplink_socket：单测用 __new__ 造这个对象、只填
-        # 自己要用的字段，close() 不能假设 __init__ 的每个字段都在（这条约定
-        # 上面那段注释里就写着）。
+        # If locking fails, do not close, matching media behavior rather than forcing closure:
+        # ctx.term() interrupts the owner's poll/send with ETERM, its finally sees
+        # self._closed and closes the socket, then term returns. Thus deferred closure does not hang termination.
+        # Fetch paired attributes with getattr instead of _uplink_socket: tests construct via __new__ and populate
+        # only needed fields, so close() cannot assume every __init__ field exists,
+        # as documented above.
         for label, sock_attr, lock_attr in (
             (CH_STS, "_ul_sock", "_ul_lock"),
             (CH_MSG, "_msg_sock", "_msg_lock"),
@@ -882,15 +886,15 @@ class ChildTransport:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ChannelSender — drop-in for mp.Queue on the child side
+# ChannelSender — child-side send handles
 # ═══════════════════════════════════════════════════════════════════
 
 class ChannelSender:
-    """Queue-like object that tags each message with a *channel* and sends it
+    """Send-only handle that tags each message with a *channel* and sends it
     through the shared :class:`ChildTransport` uplink.
 
-    Accepted by :class:`~plugin.core.context.PluginContext` in place of the
-    old ``multiprocessing.Queue`` references (``status_queue``, ``message_queue``, etc.).
+    :class:`~plugin.core.context.PluginContext` holds these as
+    ``status_queue`` and ``message_queue``.
     """
 
     __slots__ = ("_transport", "_ch")
@@ -899,24 +903,15 @@ class ChannelSender:
         self._transport = transport
         self._ch = channel
 
-    def put(self, obj: Any, block: bool = True, timeout: float | None = None) -> None:
-        self._transport.send_uplink(self._ch, obj, timeout=timeout or 10.0)
+    def put(self, obj: Any, *, timeout: float | None) -> None:
+        # An unlimited RPC still bounds the frame send itself.
+        if timeout is None:
+            self._transport.send_uplink(self._ch, obj)
+        else:
+            self._transport.send_uplink(self._ch, obj, timeout=timeout)
 
     def put_nowait(self, obj: Any) -> None:
         self._transport.send_uplink_nowait(self._ch, obj)
-
-    def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        raise NotImplementedError("ChannelSender is send-only; use transport.recv_downlink() for reads")
-
-    def get_nowait(self) -> Any:
-        raise NotImplementedError("ChannelSender is send-only")
-
-    # no-ops for mp.Queue compat
-    def close(self) -> None:
-        pass
-
-    def cancel_join_thread(self) -> None:
-        pass
 
 
 class MessageChannelSender(ChannelSender):
@@ -946,18 +941,18 @@ class _AuthenticatedMessageBatcher:
         self._enqueue_timeout_s = max(0.0, float(enqueue_timeout_s))
         self._dropped = 0
         self._stop = threading.Event()
-        # 硬停：置位后 _run 立刻退出，不再排空。只有 stop() 在 join 超时后才
-        # 会用它——正常关停仍然把队列发完。和 _stop 一样建在 __init__ 里：
-        # _run 会被不经 start() 直接调用（测试就是这么用的）。
+        # Hard stop: _run exits immediately without draining once set. Only stop() sets it after join
+        # timeout; normal shutdown still sends the queue. Create it in __init__ like _stop,
+        # because _run can be called directly without start(), as tests do.
         self._abandon = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
-        # 这是重启入口（上面那个 is_alive 判断就是为它写的），所以两个关停位都
-        # 得在这里落下：不清的话新线程一进 _run 就撞上 _abandon / _stop 直接
-        # 退出，队列一条不发，而且完全静默——batcher 本来就是 fire-and-forget。
+        # This is also the restart entry, motivating is_alive above, so reset both shutdown flags
+        # here. Otherwise new threads enter _run and immediately exit on _abandon/_stop,
+        # silently sending nothing, consistent with the batcher's fire-and-forget nature.
         self._stop.clear()
         self._abandon.clear()
         self._thread = threading.Thread(
@@ -1000,7 +995,7 @@ class _AuthenticatedMessageBatcher:
         t.join(timeout=budget)
         if not t.is_alive():
             return True
-        # 排空排不完就别排了。丢掉的批次本来也活不过这次关停。
+        # Abandon an undrainable queue; discarded batches would not survive shutdown anyway.
         self._abandon.set()
         t.join(timeout=_BATCHER_ABANDON_JOIN_S)
         return not t.is_alive()

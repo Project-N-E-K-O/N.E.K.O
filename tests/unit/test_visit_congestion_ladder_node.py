@@ -38,7 +38,7 @@ def test_ladder_steps_down_after_ten_bad_seconds_and_up_after_thirty_clean(crop)
     assert events[0] == [trigger_ms, 1]
     assert events[1] == [2 * trigger_ms, 2]
     downs = [e for e in events if e[1] == 2]
-    assert len(downs) == 1  # 最低档不再降
+    assert len(downs) == 1  # Do not lower the lowest tier further.
     ups = [e for e in events if e[0] >= 60000]
     assert ups[0] == [60000 + recover_ms, 1]
     assert ups[1] == [60000 + 2 * recover_ms, 0]
@@ -62,12 +62,33 @@ def test_ladder_threshold_follows_the_capture_rate_and_uplink_loss():
         return { compat15: run(15, 14.5, 0), compatSlow: run(15, 11, 0), direct25: run(30, 25, 0), direct23: run(30, 23, 0), loss: run(30, 30, 20) };
         """
     )
-    # 兼容模式 15 fps 发送：对端 14.5 fps 不是拥塞（阈值 0.8 × 15 = 12）
+    # Compatibility mode sends at 15 fps: a peer at 14.5 fps is not congested (threshold 0.8 x 15 = 12).
     assert out["compat15"] is None
     assert out["compatSlow"] == 1
     assert out["direct25"] is None
     assert out["direct23"] == 1
     assert out["loss"] == 1
+
+
+def test_loopback_livekit_locks_the_highest_quality():
+    out = run_visit_js(
+        """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const P = ctx.NekoVisitTransport.pack;
+        const L = new P.LadderController({ crop: 'full', level: 2, targetFps: 30 });
+        const restored = L.setLockHighest(true);
+        const afterBad = L.feed({ nowMs: 20000, rxFps: 5, lossPct: 100 });
+        const local = ctx.NekoVisitTransport.loader.isLoopbackLivekit({
+          transport: 'livekit', vendor: { livekit: { url: 'ws://127.0.0.1:7880' } }
+        });
+        const remote = ctx.NekoVisitTransport.loader.isLoopbackLivekit({
+          transport: 'livekit', vendor: { livekit: { url: 'wss://livekit.example.com' } }
+        });
+        return { restored, afterBad, level: L.level, local, remote };
+        """
+    )
+    assert out == {"restored": 0, "afterBad": None, "level": 0, "local": True, "remote": False}
 
 
 def test_controller_steps_the_ladder_from_peer_stats_in_place():
@@ -144,7 +165,7 @@ def test_duplicate_publish_snapshots_while_pending_publish_once():
         return kinds(h.log).filter((k) => k.indexOf('LocalVideo') !== -1 || k === 'start-pending');
         """
     )
-    # 第二个快照排在第一个之后执行，看到同一条轨已发布就不再调 SDK，也不撤销
+    # The second snapshot runs after the first; seeing the same track published, it neither calls the SDK again nor unpublishes it.
     assert out == ["start-pending", "startLocalVideo"]
 
 

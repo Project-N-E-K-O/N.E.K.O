@@ -20,9 +20,9 @@ anti-repetition of AI output (unrelated to user behavior).
 Motivation
 --------
 When generating proactive chats back-to-back, the LLM tends to circle back to the
-same topic ("the tiger shows up again", "let's talk about ... again"). Simple
-SequenceMatcher similarity only catches "exact repeats" and is useless against
-"rephrased but still on the same topic".
+same topic (\"the tiger shows up again\", \"let's talk about ... again\"). Simple
+SequenceMatcher similarity only catches \"exact repeats\" and is useless against
+\"rephrased but still on the same topic\".
 
 We use BM25:
 - background corpus = the most recent ``ANTI_REPEAT_BG_WINDOW`` AI outputs, each
@@ -32,18 +32,18 @@ We use BM25:
   the background, the trailing slice) that are ALSO within
   ``ANTI_REPEAT_FG_TTL_SECONDS``. TF/repetition is a recency signal, so a window
   left idle past the TTL empties and scoring returns 0 — this is what stops the
-  proactive "idle deadlock" (frozen FG re-scoring the same high value every cycle
+  proactive \"idle deadlock\" (frozen FG re-scoring the same high value every cycle
   because drop paths never advance the corpus)
 - new draft score = Σ BM25(term, fg) over the draft's ngrams
-- key property: frequent common words ("今天/觉得/哈哈/嗯") have high DF → low IDF →
-  contribute almost nothing; topic words ("老虎/纳米机器/那个 bug") have low DF →
+- key property: frequent common words (\"今天/觉得/哈哈/嗯\") have high DF → low IDF →
+  contribute almost nothing; topic words (\"老虎/纳米机器/那个 bug\") have low DF →
   high IDF → strong signal
 
 Two paths share the corpus:
 - proactive: total BM25 above ``ANTI_REPEAT_REGEN_THRESHOLD`` → trigger 1 regen;
   still above ``ANTI_REPEAT_DROP_THRESHOLD`` → drop this delivery
 - regular reply: only inject the top-K BM25 ngrams into the next session's system
-  prompt to tell the model "you've recently talked about X / Y / Z"; no hard block
+  prompt to tell the model \"you've recently talked about X / Y / Z\"; no hard block
 
 Design notes
 --------
@@ -60,7 +60,7 @@ Design notes
 Not extracted
 ------
 - Too-short regular drafts (< ``ANTI_REPEAT_MIN_DRAFT_TOKENS`` ngrams): the BM25
-  signal is unstable there, and short replies don't naturally "repeat"; pass
+  signal is unstable there, and short replies don't naturally \"repeat\"; pass
   with ``score=0``. The separate unanswered-proactive scorer uses its lower
   proactive-only threshold so concise reminders remain detectable.
 - Empty corpus: BM25 degrades to 0; every draft passes
@@ -101,10 +101,10 @@ logger = get_module_logger(__name__, "Memory")
 
 _SCHEMA_VERSION = 1
 
-# 空 / None 角色名归一化到这个 key。与 ``memory/user_directives.py`` 的
-# sink fallback + ``main_logic/core.py`` 的 ``_directives_key`` 保持一致：
-# lanlan_name 缺失时，proactive corpus 仍然要落地（否则 BM25 regen / soft
-# hint 在该 session 静默失效，codex P2）。
+# Normalize empty / None character names to this key, consistent with ``memory/user_directives.py``'s
+# sink fallback and ``main_logic/core.py``'s ``_directives_key``:
+# proactive corpus must still persist without lanlan_name, or BM25 regeneration / soft
+# hints silently fail for that session (codex P2).
 _DEFAULT_KEY = "default"
 
 
@@ -178,15 +178,15 @@ def _ngrams(text: str) -> List[str]:
             stop_names = []
         return list(_extract_keywords(text or "", stop_names=stop_names))
     except Exception:
-        # 兜底：persona 模块在某些 entrypoint（memory-only test）可能没加载。
-        # 主路径的 ``_extract_keywords`` 返回 set（同一 doc 内 ngram 去重），下游
-        # bm25_score 里每篇 doc 的 TF 因此始终是 0/1。兜底也必须维持同款
-        # "每 doc 至多 1 次" 语义，否则 ``bug bug bug`` 在 fallback 入口下被算
-        # 成 TF=3，BM25 阈值会比主路径敏感得多——同一段文本走两条路径分数差几倍。
+        # Fallback: persona may not load at some entrypoints (memory-only tests).
+        # Primary ``_extract_keywords`` returns a set (deduplicates ngrams within documents), making downstream
+        # bm25_score's per-document TF always 0/1. Fallback must preserve the same
+        # at-most-once-per-document semantics, or ``bug bug bug`` gets TF=3
+        # and much more sensitive BM25 thresholds; identical text scores several times higher by path.
         return list({t for t in (text or "").split() if len(t) >= 2})
 
 
-# ── 持久化 schema ────────────────────────────────────────────────
+# ── Persisted schema ────────────────────────────────────────────────
 
 
 def _default_payload() -> Dict[str, Any]:
@@ -204,7 +204,7 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
         ngrams = raw.get("ngrams") or []
         if not isinstance(ngrams, list):
             return None
-        # 强制 list[str]，丢掉非 str 元素
+        # Enforce list[str], dropping non-str elements.
         clean = [s for s in ngrams if isinstance(s, str) and s]
         if not clean:
             return None
@@ -228,11 +228,11 @@ def bm25_score(
     k1: float = ANTI_REPEAT_BM25_K1,
     b: float = ANTI_REPEAT_BM25_B,
 ) -> Tuple[float, Dict[str, float]]:
-    """Compute the "repetitiveness" BM25 score of ``draft`` over the foreground window ``fg_docs``.
+    """Compute the \"repetitiveness\" BM25 score of ``draft`` over the foreground window ``fg_docs``.
 
-    Key difference from classic search-oriented BM25: classic BM25 scores "rare in
-    corpus" high (search relevance prefers rare keywords), but **repetition
-    detection** wants "rare in the background + frequent recently" — the former
+    Key difference from classic search-oriented BM25: classic BM25 scores \"rare in
+    corpus\" high (search relevance prefers rare keywords), but **repetition
+    detection** wants \"rare in the background + frequent recently\" — the former
     comes from IDF over the large BG window, the latter from accumulated TF over
     the small FG window. So:
 
@@ -243,9 +243,9 @@ def bm25_score(
     - total = Σ_term IDF_bg(term) × Σ_doc∈fg BM25_tf_norm(term, doc)
 
     Examples:
-    - "老虎" appears in all of the last 5 FG entries (5/5) but only in 5/100 of the
+    - \"老虎\" appears in all of the last 5 FG entries (5/5) but only in 5/100 of the
       BG → high IDF_bg + high TF → high repetitiveness; triggers regen
-    - "今天" appears in nearly all 100 BG entries → IDF_bg near 0 → common words
+    - \"今天\" appears in nearly all 100 BG entries → IDF_bg near 0 → common words
       don't score
     - a stray unique term appearing once in FG → small TF accumulation → a single
       occurrence won't trigger
@@ -266,7 +266,7 @@ def bm25_score(
     if avgdl <= 0:
         return 0.0, {}
 
-    # DF 在 BG 窗上算；用 set 避免一条文档里同 ngram 重复
+    # Compute DF over BG window; set avoids repeated ngrams within a document.
     df: Dict[str, int] = {}
     for doc in bg_docs:
         for term in set(doc):
@@ -280,8 +280,8 @@ def bm25_score(
     fg_lens = [len(doc) or 1 for doc in fg_docs]
     for term in draft_unique:
         n = df.get(term, 0)
-        # IDF Robertson-Sparck-Jones (+0.5 平滑)。term 没在 BG 里出现也按
-        # 0 处理（视作完全 unique，避免对 BG 缺失项倾斜过高的 IDF）。
+        # Robertson-Sparck-Jones IDF (+0.5 smoothing). Terms absent from BG also use
+        # 0 (treated as entirely unique, avoiding excessive IDF bias toward absent terms).
         if n <= 0:
             continue
         idf = math.log((n_bg - n + 0.5) / (n + 0.5) + 1.0)
@@ -321,12 +321,12 @@ class AntiRepeatCorpus:
         self._cache: Dict[str, List[Dict[str, Any]]] = {}
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
-        # 落盘用的第二把锁，和数据锁分开 —— 见 _flush_snapshot 的注释。
+        # Second persistence lock, separate from data lock; see _flush_snapshot comments.
         self._write_locks: Dict[str, threading.Lock] = {}
         self._staged_seq: Dict[str, int] = {}
         self._written_seq: Dict[str, int] = {}
-        # 已摘下的落盘 task。只被局部变量引用的 task 会被 GC 回收，事件循环不保证
-        # 跑完它 —— 必须由这里持强引用到完成为止。见 flush_staged_detached。
+        # Detached persistence tasks need strong references here until completion: locally referenced tasks can be garbage-collected,
+        # and event loop does not guarantee their completion. See flush_staged_detached.
         self._detached_flushes: set = set()
         # Names retired by ``retire_character``; see ``_write_file_path``.
         self._retired: set[str] = set()
@@ -441,13 +441,13 @@ class AntiRepeatCorpus:
         the lock: a snapshot older than what is already on disk is dropped, so
         a late writer can never resurrect a stale window.
         """
-        # 写入屏障必须在临界区内建立：云存档导入会整体替换 memory/<name>/，
-        # 而一个在替换之前就 stage 好的快照，其 seq 仍然大于 _written_seq，
-        # 光靠事后驱逐拦不住它——它会拿到写锁、通过序号检查，把导入进来的
-        # 内容盖回旧数据，而事后的栅栏无法还原已被覆盖的文件。
-        # 交给 cloudsave_writable_transaction：导入围栏关闭期间它直接抛
-        # MaintenanceModeError，这次落盘就被跳过。与
-        # memory/anti_repeat_effects.py 的写入路径同款。
+        # Establish write barrier inside critical section: cloud import replaces all memory/<name>/,
+        # but snapshots staged before replacement still have seq greater than _written_seq,
+        # so later eviction alone cannot stop them acquiring write lock, passing sequence checks, and replacing imported
+        # contents with old data. A later fence cannot restore overwritten files.
+        # Use cloudsave_writable_transaction: while import fence is closed it immediately raises
+        # MaintenanceModeError, skipping this persistence attempt. Same pattern as
+        # memory/anti_repeat_effects.py's write path.
         try:
             from utils.cloudsave_runtime import cloudsave_writable_transaction
 
@@ -477,7 +477,7 @@ class AntiRepeatCorpus:
         except Exception as exc:
             logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
 
-    # ── load / save (锁由调用方持有) ───────────────────────
+    # ── load / save (caller holds lock) ───────────────────────
 
     def _read_window_from_disk(self, name: str) -> List[Dict[str, Any]]:
         """Read and normalize one corpus window without taking the data lock."""
@@ -499,10 +499,10 @@ class AntiRepeatCorpus:
                     name, exc,
                 )
                 window = []
-        # 立刻按当前 BG_WINDOW 裁掉过老条目——磁盘上的文件可能是旧配置下写的
-        # （ANTI_REPEAT_BG_WINDOW 后续调低过），或者 record_output 写入时
-        # 中途被 crash 切断没来得及裁。否则首次 score_draft / top_recent_topics
-        # 会吃到过期历史拉偏 BM25。
+        # Trim overly old entries immediately using current BG_WINDOW: disk files may use an older configuration
+        # (ANTI_REPEAT_BG_WINDOW later reduced), or record_output may have crashed
+        # before trimming. Otherwise first score_draft / top_recent_topics
+        # includes stale history, skewing BM25.
         if len(window) > ANTI_REPEAT_BG_WINDOW:
             window.sort(key=lambda e: float(e.get("ts", 0)))
             window = window[-ANTI_REPEAT_BG_WINDOW:]
@@ -561,7 +561,7 @@ class AntiRepeatCorpus:
           stored. Proactive outputs use the lower
           ``ANTI_REPEAT_UNANSWERED_MIN_DRAFT_TOKENS`` threshold so concise
           whitespace-delimited reminders remain available to the long-window
-          unanswered scorer while "嗯" / "好" still cannot dilute DF.
+          unanswered scorer while \"嗯\" / \"好\" still cannot dilute DF.
         - After insertion, pop the oldest once the window exceeds ``ANTI_REPEAT_BG_WINDOW``
         - Empty names normalize to ``_DEFAULT_KEY`` (consistent with the
           user_directives sink / injection path); otherwise BM25 / soft hints would
@@ -571,7 +571,7 @@ class AntiRepeatCorpus:
         if staged is None:
             return
         resolved, payload, seq = staged
-        # 落盘在数据锁**之外**——见 _flush_snapshot。
+        # Persist **outside** data lock; see _flush_snapshot.
         self._flush_snapshot(resolved, payload, seq)
 
     def _record_in_memory(
@@ -616,9 +616,9 @@ class AntiRepeatCorpus:
         with self._get_lock(name):
             window = self._load_unlocked(name)
             window.append(entry)
-            # 每次都按 ts 排序，不再只在超窗时排。原来「append 时序天然单调」的假设
-            # 靠的是调用方串行；打分侧是拿尾部切片当「最近几条」的（_split_fg_bg），
-            # 错序会让旧回复被当成更新的。窗口只有 ~100 条，每次排一遍可以忽略。
+            # Sort by ts every time, not only on window overflow. The old append-order-is-monotonic assumption
+            # relied on serial callers; scoring takes tail slices as latest entries (_split_fg_bg),
+            # so disorder treats old replies as newer. Window is only ~100 entries; sorting each time is negligible.
             window.sort(key=lambda e: float(e.get("ts", 0)))
             if len(window) > ANTI_REPEAT_BG_WINDOW:
                 del window[: len(window) - ANTI_REPEAT_BG_WINDOW]
@@ -683,8 +683,8 @@ class AntiRepeatCorpus:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # 没有循环可挂（同步调用方，或循环已经关停）。落盘是 best-effort，放弃它
-            # 比在这里同步 fsync 更安全 —— 后者正是这轮改动要移出事件循环的东西。
+            # No event loop available (synchronous caller / loop shut down). Persistence is best effort; abandoning
+            # it is safer than synchronous fsync here, precisely what this change moves off the event loop.
             logger.debug("[AntiRepeat] detached flush skipped: no running loop")
             return
 
@@ -697,7 +697,7 @@ class AntiRepeatCorpus:
                 return
             exc = finished.exception()
             if exc is not None:
-                # 摘下来之后没人 await 它了，异常不主动取一次会变成
+                # Nobody awaits detached tasks; retrieve exceptions proactively or they become
                 # "Task exception was never retrieved"。
                 logger.debug("[AntiRepeat] detached flush failed: %s", exc)
 
@@ -723,11 +723,11 @@ class AntiRepeatCorpus:
         with ``apreload``. The in-memory update remains on the caller so the
         next turn sees it immediately; only persistence is off-loaded.
         """
-        # 内存更新留在调用线程上，只有落盘去 worker。整次记录都丢进 worker 的话，
-        # 在那个 job 排队 / 算 ngram 的这段时间里，事件循环上的 score_draft /
-        # top_recent_topics 会读到还没加进这条回复的旧 _cache —— 紧接着的下一轮
-        # 就可能把刚说过的话又说一遍。数据锁此刻只覆盖几微秒的内存操作（落盘已经
-        # 挪出去了，见 _flush_snapshot），所以在循环上取它是安全的。
+        # Keep memory updates on caller thread and move only persistence to worker. Moving the whole record operation would let
+        # event-loop score_draft / top_recent_topics read stale _cache while that job queues /
+        # computes ngrams, before the reply is added, allowing the very next turn
+        # to repeat it. Data lock now covers only microseconds of memory work (persistence moved out;
+        # see _flush_snapshot), so acquiring it on the loop is safe.
         stamped = float(now if now is not None else _now())
         staged = self._record_in_memory(
             name, text, is_proactive=is_proactive, now=stamped,
@@ -925,7 +925,7 @@ class AntiRepeatCorpus:
             fg_docs, bg_docs = self._split_fg_bg(window, fg_window, now)
         if not fg_docs:
             return []
-        # 把 fg 窗里所有 ngram 拼成一个"伪 draft"
+        # Combine all foreground-window ngrams into one pseudo-draft.
         synthetic_draft: List[str] = []
         for doc in fg_docs:
             synthetic_draft.extend(doc)
@@ -939,8 +939,8 @@ class AntiRepeatCorpus:
         with self._get_lock(name):
             self._cache[name] = []
             payload, seq = self._stage_snapshot_unlocked(name)
-        # 与 record_output 同款：落盘不许在数据锁里做，否则事件循环上的打分调用
-        # 会卡在这次 fsync 上。清空也走 seq，免得它被一次在飞的旧快照写盖回去。
+        # Like record_output, never persist under data lock or event-loop scoring
+        # blocks on fsync. Clearing also uses seq to prevent in-flight old snapshots restoring data.
         self._flush_snapshot(name, payload, seq)
 
     def _evict_unlocked(self, name: str) -> None:
@@ -1016,7 +1016,7 @@ class AntiRepeatCorpus:
                 self._retired.add(name)
 
 
-# ── 进程级单例 ─────────────────────────────────────────────
+# ── Process-wide singleton ─────────────────────────────────────────────
 # A retirement recorded BEFORE the singleton exists must not be lost. Delete
 # and rename retire the identity and only then remove the tree, while the
 # singleton is built lazily on the first runtime event -- so a generation

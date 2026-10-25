@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用固定正反例评测 Numeric v2 正文复核产生的完成事实。"""  # noqa: DOCSTRING_CJK
+"""Evaluate completion facts from Numeric v2 body review using fixed positive and negative examples."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ CIVILIANS_SHELTERED = "scene:rescue:civilians_sheltered"
 
 @dataclass(frozen=True, slots=True)
 class CompletionFactCase:
-    """一条冻结样本；期望键只描述本轮正文新近完整证明的结果。"""  # noqa: DOCSTRING_CJK
+    """A frozen example; expected keys describe only results newly and fully established by this turn's body."""  # noqa: DOCSTRING_CJK
 
     case_id: str
     category: str
@@ -56,9 +56,9 @@ class CompletionFactCase:
     expected_keys: tuple[str, ...] = ()
 
 
-# v1 的阳性正文越过玩家权限；v2 又重复测了前置 Evaluator 应处理的玩家动作。
-# 报告均已留档。v3 只测正文复核负责的角色自主行为与环境结果，并在运行前冻结。
-# 后续不得按模型答案修改这些句子；扩充或修正样本必须再次提升 FIXTURE_VERSION。
+# v1 positive bodies exceeded player permissions; v2 redundantly tested player actions owned by the preceding Evaluator.
+# Both reports are archived. v3 tests only autonomous character actions and environmental outcomes owned by body review, frozen before running.
+# Do not change these sentences to match later model answers; additions/corrections require another FIXTURE_VERSION increment.
 FIXED_CASES = (
     CompletionFactCase(
         case_id="positive_injured_fully_freed",
@@ -130,7 +130,7 @@ FIXED_CASES = (
 
 
 def _evaluation_story() -> dict[str, Any]:
-    """构造只服务评测的最小合法剧本，不读取或改写用户安装包。"""  # noqa: DOCSTRING_CJK
+    """Build a minimal valid script solely for evaluation, without reading or rewriting user-installed packages."""  # noqa: DOCSTRING_CJK
 
     metric = {
         "name": "协作度",
@@ -263,7 +263,7 @@ def _evaluation_story() -> dict[str, Any]:
 
 
 def _visible_evidence(performance: Mapping[str, Any]) -> str:
-    """按正式 Workflow 的顺序拼接可见旁白与演绎正文。"""  # noqa: DOCSTRING_CJK
+    """Concatenate visible narration and performance text in the formal Workflow's order."""  # noqa: DOCSTRING_CJK
 
     return "\n".join(
         str(performance.get(field) or "").strip()
@@ -273,7 +273,7 @@ def _visible_evidence(performance: Mapping[str, Any]) -> str:
 
 
 def _score_rows(rows: Iterable[Mapping[str, Any]], field: str) -> dict[str, Any]:
-    """按键集合计算微平均准确率，并保留每条样本的精确匹配率。"""  # noqa: DOCSTRING_CJK
+    """Compute micro-averaged accuracy over key sets while retaining each example's exact-match rate."""  # noqa: DOCSTRING_CJK
 
     row_list = list(rows)
     true_positive = false_positive = false_negative = exact_matches = 0
@@ -297,7 +297,7 @@ def _score_rows(rows: Iterable[Mapping[str, Any]], field: str) -> dict[str, Any]
 
 
 def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """同时汇总模型原始提议与 Runtime 可提交结果。"""  # noqa: DOCSTRING_CJK
+    """Summarize both raw model proposals and Runtime-committable results."""  # noqa: DOCSTRING_CJK
 
     durations = sorted(float(row["duration_ms"]) for row in rows)
     return {
@@ -320,7 +320,7 @@ async def _run_case(
     case: CompletionFactCase,
     repetition: int,
 ) -> dict[str, Any]:
-    """运行一次真实复核，并按正式 Runtime 规则验收候选。"""  # noqa: DOCSTRING_CJK
+    """Run one real review and accept candidates using the formal Runtime rules."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id=f"completion_fact_{case.case_id}_{repetition}",
@@ -380,7 +380,7 @@ async def _run_case(
                 for operation in outcome.ledger_event.get("fact_operations", ())
                 if isinstance(operation, Mapping)
             ]
-        except Exception as exc:  # 评测必须把单例失败写进报告，不能中止整个固定集。
+        except Exception as exc:  # Record individual-case failures in the evaluation report without aborting the entire fixed set.
             error = f"{type(exc).__name__}:{exc}"
         trace_event(
             "completion_fact_eval.result",

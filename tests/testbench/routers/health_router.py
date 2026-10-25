@@ -25,10 +25,10 @@ from tests.testbench.session_store import get_session_store
 
 router = APIRouter(tags=["health"])
 
-# 进程启动时生成一次. 前端用它判断"服务是否新启动了" — 例如 welcome 横幅
-# 想每次重启都再提醒一次: 比较上次看过时存的 boot_id 和现在返回的, 不一致
-# 就当作"新一轮启动"重置 LS 里的 seen flag. 格式用 UUID 避免任何"按时间
-# 推测前后" 类错觉 (比如同秒内连重启不会误判为同一次).
+# Generated once at process startup. The frontend uses it to determine "whether the service just restarted" — for example, a welcome banner
+# that should reappear after every restart compares the saved boot_id with the current one; if they differ,
+# reset the seen flag in LS as a "new startup." UUID format avoids any illusion of "inferring order from time"
+# (for example, repeated restarts in the same second will not be mistaken for one startup).
 BOOT_ID = uuid.uuid4().hex
 
 
@@ -36,7 +36,7 @@ BOOT_ID = uuid.uuid4().hex
 async def healthz() -> dict:
     """Basic liveness probe. Returns ``{"status": "ok", "boot_id": ...}``.
 
-    ``boot_id`` 每次进程启动生成一次, 前端用来检测服务重启.
+    ``boot_id`` is generated once per process startup; the frontend uses it to detect service restarts.
     """
     return {"status": "ok", "boot_id": BOOT_ID}
 
@@ -64,20 +64,20 @@ async def version() -> dict:
 
 # ── /system/paths ───────────────────────────────────────────────────
 #
-# Diagnostics → Paths 子页列出所有 "testbench 会在这里读/写数据" 的目录.
-# 每项含 key (前端 i18n 查 label/tooltip), 绝对路径 (系统原生分隔符, 方
-# 便 copy-to-clipboard), 存在标志, 字节大小 (`du -sb` 等价, 但纯 Python
-# 实现避免外部依赖), 文件/子目录计数. 当前会话的沙盒和日志文件会被单
-# 独列出 (指向 current session 的子路径, 不是所有 sandbox/log 的聚合),
-# 因为 "我这次测试的数据在哪里" 是第一优先级.
+# The Diagnostics → Paths subpage lists all directories "where testbench reads/writes data."
+# Each entry includes a key (the frontend uses i18n for label/tooltip), an absolute path (native OS separators, for easier
+# copy-to-clipboard), an existence flag, byte size (equivalent to `du -sb`, implemented in pure Python
+# to avoid external dependencies), and counts of files/subdirectories. The current session sandbox and log files are listed
+# separately (paths within the current session, not aggregates of all sandboxes/logs),
+# because "where is the data from my current test?" is the top priority.
 
 
 def _safe_dir_size(path: Path) -> tuple[int, int]:
     """Return (total_bytes, file_count) for ``path`` (0, 0) if unreadable.
 
     Walks recursively. Missing / permission-denied files are silently
-    skipped — Paths 子页是诊断工具, 不能因为一个僵尸文件让整个列表爆
-    炸 500.
+    skipped — the Paths subpage is a diagnostic tool and a stale file must not make the entire list fail
+    with 500.
     """
     if not path.exists() or not path.is_dir():
         return (0, 0)
@@ -243,7 +243,7 @@ class OpenPathRequest(BaseModel):
     Two accepted shapes:
 
     * ``{"path": "<absolute>"}`` — legacy, used by Diagnostics → Paths's
-      per-row [打开] button. The client had already fetched
+      per-row [Open] button. The client had already fetched
       ``/system/paths`` so it knows the absolute path.
     * ``{"key": "<whitelisted_key>"}`` — P24 §12.3.E #13, used by the
       shared ``openFolderButton`` helper across Setup/Evaluation pages.
@@ -475,7 +475,7 @@ async def system_open_path(body: OpenPathRequest) -> dict[str, Any]:
 # :mod:`pipeline.boot_self_check` for the full rationale.
 
 
-# ── /system/health (P24 §3.1 / H1 最小版) ──────────────────────────
+# ── /system/health (P24 §3.1 / minimal H1) ──────────────────────────
 #
 # Aggregated read-only health snapshot. No new pipelines or background
 # tasks — composes existing data sources (diagnostics_store ring buffer,
@@ -775,9 +775,9 @@ _PUBLIC_DOCS: dict[str, str] = {
     "testbench_ARCHITECTURE_OVERVIEW": "testbench_ARCHITECTURE_OVERVIEW.md",
     "external_events_guide": "external_events_guide.md",
     "memory_export_guide": "memory_export_guide.md",
-    # Clean, self-contained explainer for the 代码线索 (开发者) sub-page (P32):
-    # what the leads mean, how the 反推 works and where it stops being reliable.
-    # Deliberately separate from the internal 裁决 doc
+    # Clean, self-contained explainer for the Code Clues (developer) subpage (P32):
+    # what the clues mean, how inference works, and where it becomes unreliable.
+    # Deliberately separate from the internal adjudication doc
     # (MEMORY_CODE_INFERENCE_FEASIBILITY.md, which stays out of /docs) so the
     # testbench-served surface never leaks blueprint / phase internals.
     "code_leads_guide": "code_leads_guide.md",
@@ -789,11 +789,11 @@ def _slugify_heading(text: str) -> str:
     """Convert heading text to a GitHub-style URL slug.
 
     GitHub's algorithm: lower-case, strip non-[\\w\\s\\-], collapse
-    whitespace to ``-``, preserve CJK so Chinese headings like "准备
+    whitespace to ``-``; preserve CJK so Chinese headings such as \"准备
     事项" still get usable anchors (``#准备事项`` is what the docs
     actually link to). We intentionally keep it stable and de-accent-
     free so the same heading always slugs to the same anchor.
-    """
+    """  # noqa: DOCSTRING_CJK
     import re as _re
     # Strip HTML tags (rare but possible in inline anchor pre-emphasis)
     text = _re.sub(r"<[^>]+>", "", text)

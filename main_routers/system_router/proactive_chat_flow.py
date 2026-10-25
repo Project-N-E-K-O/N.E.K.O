@@ -39,6 +39,7 @@ from main_logic.proactive_chat.music_recommendation import (
     _record_music_played_through,
 )
 from utils.theater_activity import is_theater_active
+from main_routers.recommendation_router import capture_owner, attach_music_recommendation, attach_proactive_recommendations
 
 from ..shared_state import get_config_manager, get_session_manager
 from ._shared import _validate_local_mutation_request, logger, router
@@ -186,6 +187,11 @@ async def proactive_chat(request: Request):
                     message="theater session active; ordinary proactive skipped",
                 )
             )
+        try:
+            recommendation_owner = await capture_owner()
+        except Exception as exc:
+            recommendation_owner = None
+            logger.warning("Recommendation identity unavailable: %s", type(exc).__name__)
         result = await proactive_service.handle_proactive_chat(
             command,
             config_manager=config_manager,
@@ -198,6 +204,18 @@ async def proactive_chat(request: Request):
             push_mini_game_invite_resolved=_push_mini_game_invite_resolved,
             meme_proxy_candidate_fetchable=_meme_proxy_candidate_fetchable,
         )
+        try:
+            if recommendation_owner is not None:
+                await attach_music_recommendation(result.body, recommendation_owner, lanlan_name)
+        except Exception as exc:
+            # Delivery already committed. Evidence failure must not replay the
+            # dialogue or silently restore autoplay on the client.
+            logger.warning("Music recommendation registration failed: %s", type(exc).__name__)
+        try:
+            if recommendation_owner is not None:
+                await attach_proactive_recommendations(result.body, recommendation_owner, lanlan_name)
+        except Exception as exc:
+            logger.warning("Proactive recommendation registration failed: %s", type(exc).__name__)
         return _adapt_result(result)
     except asyncio.TimeoutError:
         logger.error("主动搭话超时")

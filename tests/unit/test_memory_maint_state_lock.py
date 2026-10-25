@@ -48,7 +48,7 @@ def clean_state():
     gates._maint_state.clear()
 
 
-# ── 1. 串行化：并发写者不会同时落盘、RMW 不丢写 ──────────────────────
+# ── 1. Serialization: concurrent writers never persist together, and read-modify-write loses no writes ──────────────────────
 
 
 @pytest.mark.unit
@@ -64,7 +64,7 @@ async def test_concurrent_writes_never_overlap_on_disk(clean_state):
         with guard:
             inflight += 1
             max_inflight = max(max_inflight, inflight)
-        # 真实落盘是 dumps + fsync + replace，用 sleep 把那段窗口放大到可观测。
+        # Actual persistence performs dumps + fsync + replace; enlarge that observable window with sleep.
         time.sleep(0.01)
         with guard:
             inflight -= 1
@@ -90,7 +90,7 @@ async def test_concurrent_writes_never_overlap_on_disk(clean_state):
 async def test_concurrent_read_modify_write_loses_no_update(clean_state):
     """The whole read-modify-write must be atomic, not just the disk write."""
     def _mutator(state: dict) -> tuple[bool, None]:
-        # 读 → 慢 → 写：无锁时两个写者都会读到同一个旧值，其中一个的 +1 被吞掉。
+        # Read → delay → write: without locking, both writers read one old value and one +1 update is lost.
         seen = state.get("review_fail_attempts") or 0
         time.sleep(0.005)
         state["review_fail_attempts"] = seen + 1
@@ -117,11 +117,11 @@ async def test_concurrent_real_writes_produce_no_write_errors(clean_state, tmp_p
     real_persist = gates._persist_maint_state_locked
 
     def _watch_persist():
-        # _mutate_maint_state_locked 会把写盘异常收在临界区里只告警，所以这里自己
-        # 把异常记下来再放行，否则并发 os.replace 失败会被静静吞掉、断言空过。
+        # _mutate_maint_state_locked catches write errors inside its critical section and only warns, so explicitly
+        # record/rethrow here; otherwise concurrent os.replace failures disappear and assertions pass vacuously.
         try:
             real_persist()
-        except BaseException as exc:  # noqa: BLE001 - 记录后原样放行
+        except BaseException as exc:  # noqa: BLE001 - record, then propagate unchanged
             errors.append(exc)
             raise
 
@@ -140,7 +140,7 @@ async def test_concurrent_real_writes_produce_no_write_errors(clean_state, tmp_p
     assert landed == gates._maint_state, "最后落地的内容与内存态不一致（落地顺序反转）"
 
 
-# ── 2. 不无脑落盘：外层快筛 + mutator 的 dirty 约定，两层各自有牙 ────
+# ── 2. Avoid needless writes: outer quick filtering and mutator dirty contracts are independently enforced ────
 
 
 @pytest.mark.unit
@@ -149,17 +149,17 @@ async def test_clear_review_clean_does_not_even_switch_threads_when_flag_absent(
     """No flag → no worker thread at all, not merely no disk write."""
     clean_state["角色"] = {"review_clean": False}
 
-    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
-    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
-    # 这里的 call_count 断言就会莫名其妙地飘。
+    # Spy on the write entry itself instead of globally patching asyncio.to_thread; the latter replaces
+    # to_thread process-wide, making unrelated future thread dispatches or parallel tests
+    # inexplicably destabilize call_count assertions.
     real_amutate = gates._amutate_maint_state
     with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_mutate_maint_state_locked") as locked_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await gates._aclear_review_clean("角色")
 
-    # 断言"连线程都没切"，而不是只断言"没落盘"：只留 mutator 里的 dirty 返回、
-    # 删掉 _aclear_review_clean 的锁外快筛，落盘次数照样是 0，那样的断言会空过。
+    # Assert no thread switch at all, not merely no persistence: retaining the mutator's dirty return while
+    # deleting _aclear_review_clean's outside-lock quick filter still produces zero writes and would pass vacuously.
     assert thread_spy.call_count == 0, "标记本来就是 False，却仍然切了一次 worker 线程"
     assert locked_spy.call_count == 0
     assert persist.call_count == 0
@@ -171,9 +171,9 @@ async def test_clear_review_clean_does_persist_when_flag_is_set(clean_state):
     """Dual of the skip test: a set flag must actually go through the entry point."""
     clean_state["角色"] = {"review_clean": True}
 
-    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
-    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
-    # 这里的 call_count 断言就会莫名其妙地飘。
+    # Spy on the write entry itself instead of globally patching asyncio.to_thread; the latter replaces
+    # to_thread process-wide, making unrelated future thread dispatches or parallel tests
+    # inexplicably destabilize call_count assertions.
     real_amutate = gates._amutate_maint_state
     with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
@@ -199,17 +199,17 @@ async def test_clear_compress_backup_failure_does_not_even_switch_threads_when_b
     """
     clean_state["角色"] = {"compress_backup_fail_attempts": 0, "compress_backup_fail_fp": None}
 
-    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
-    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
-    # 这里的 call_count 断言就会莫名其妙地飘。
+    # Spy on the write entry itself instead of globally patching asyncio.to_thread; the latter replaces
+    # to_thread process-wide, making unrelated future thread dispatches or parallel tests
+    # inexplicably destabilize call_count assertions.
     real_amutate = gates._amutate_maint_state
     with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_mutate_maint_state_locked") as locked_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await review._clear_compress_backup_failure("角色")
 
-    # 同样断言"连线程都没切"：只留 mutator 里的 dirty 返回时落盘次数照样是 0，
-    # 那种断言抓不到锁外快筛被删掉。
+    # Again assert no thread switch: retaining only the mutator's dirty return still produces zero writes,
+    # so that assertion alone cannot detect removal of the outside-lock quick filter.
     assert thread_spy.call_count == 0, "退避计数本来就是空的，却仍然切了一次 worker 线程"
     assert locked_spy.call_count == 0
     assert persist.call_count == 0
@@ -221,9 +221,9 @@ async def test_clear_compress_backup_failure_does_persist_when_backoff_present(c
     """Dual of the skip test: a non-empty backoff must actually go through the entry point."""
     clean_state["角色"] = {"compress_backup_fail_attempts": 2, "compress_backup_fail_fp": "fp"}
 
-    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
-    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
-    # 这里的 call_count 断言就会莫名其妙地飘。
+    # Spy on the write entry itself instead of globally patching asyncio.to_thread; the latter replaces
+    # to_thread process-wide, making unrelated future thread dispatches or parallel tests
+    # inexplicably destabilize call_count assertions.
     real_amutate = gates._amutate_maint_state
     with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
@@ -249,7 +249,7 @@ async def test_mutator_dirty_recheck_skips_the_redundant_second_clear(clean_stat
     with patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await gates._amutate_maint_state("角色", gates._mutate_clear_review_clean)
         assert persist.call_count == 1, "标记为 True 时应当落盘一次"
-        # 标记已经是 False：mutator 必须返回 dirty=False，锁内不再落盘。
+        # Marker already False: mutator must return dirty=False and skip persistence under lock.
         await gates._amutate_maint_state("角色", gates._mutate_clear_review_clean)
 
     assert persist.call_count == 1, (
@@ -273,7 +273,7 @@ async def test_compress_backup_mutator_dirty_recheck_skips_the_redundant_second_
     with patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await gates._amutate_maint_state("角色", review._mutate_clear_compress_backup_failure)
         assert persist.call_count == 1, "退避计数非空时应当落盘一次"
-        # 计数已经清空：mutator 必须返回 dirty=False，锁内不再落盘。
+        # Counts already cleared: mutator must return dirty=False and skip persistence under lock.
         await gates._amutate_maint_state("角色", review._mutate_clear_compress_backup_failure)
 
     assert persist.call_count == 1, (
@@ -284,7 +284,7 @@ async def test_compress_backup_mutator_dirty_recheck_skips_the_redundant_second_
     assert clean_state["角色"]["compress_backup_fail_fp"] is None
 
 
-# ── 3. 读侧只读视图 + 单一写入口的结构守卫 ───────────────────────────
+# ── 3. Structural guard for read-only views and a single write entry ───────────────────────────
 
 
 @pytest.mark.unit
@@ -298,7 +298,7 @@ def test_maint_view_is_read_only(clean_state):
         view["review_clean"] = False
     assert not hasattr(view, "setdefault")
     assert not hasattr(view, "pop")
-    # 缺失角色也必须给只读视图，不能返回一个新建的可写 dict 让调用方误以为改得动。
+    # Missing characters must also receive read-only views, not new writable dictionaries misleading callers into believing mutations work.
     with pytest.raises(TypeError):
         gates._maint_view("不存在的角色")["x"] = 1
 
@@ -317,7 +317,7 @@ def test_maint_view_is_a_snapshot_not_a_live_proxy(clean_state):
     entry["review_clean"] = True
     view = gates._maint_view("角色")
 
-    # 模拟读者还攥着 view 时，worker 线程里的 mutator 往活 sub-dict 里加了新键。
+    # Simulate a worker mutator adding keys to a live sub-dictionary while a reader holds its view.
     entry["review_fail_attempts"] = 1
     assert "review_fail_attempts" not in view, "视图跟着活 sub-dict 变了，不是快照"
     assert dict(view) == {"review_clean": True}
@@ -420,8 +420,8 @@ def _collect_mutator_call_sites() -> tuple[list[str], list[str]]:
                 continue
             where = f"{path.relative_to(REPO_ROOT).as_posix()}:{node.lineno}"
             arg = node.args[1] if len(node.args) >= 2 else None
-            # functools.partial(mutator, ...) 是本包绑定额外入参的唯一写法，剥一层
-            # 拿到真正的 mutator。
+            # functools.partial(mutator, ...) is this package's only extra-argument binding form; unwrap one layer
+            # to obtain the actual mutator.
             if isinstance(arg, ast.Call) and _dotted_name(arg.func).split(".")[-1] == "partial":
                 arg = arg.args[0] if arg.args else None
             resolved = _dotted_name(arg).split(".")[-1] if arg is not None else ""
@@ -464,7 +464,7 @@ def test_every_mutator_handed_to_the_write_entry_point_is_synchronous():
     assert async_defs == {}, f"mutator 必须是同步函数: {sorted(async_defs.values())}"
 
 
-# ── 4. 载入时的整体重绑定必须与 mutator 互斥 ─────────────────────────
+# ── 4. Whole-state rebinding during load must exclude mutators ─────────────────────────
 
 
 @pytest.mark.unit
@@ -516,7 +516,7 @@ async def test_load_falls_back_to_empty_state_on_a_mis_encoded_file(
     target = tmp_path / "idle_maintenance_state.json"
     target.write_bytes(payload)
     monkeypatch.setattr(gates, "_maint_state_path", lambda: str(target))
-    # 预置一条残留，确保下面的空断言不是「本来就空」蒙对的。
+    # Seed residue so the empty assertion below cannot pass merely because it was already empty.
     clean_state["上一轮残留"] = {"review_clean": True}
 
     await gates._aload_maint_state()
@@ -552,8 +552,8 @@ async def test_mutator_takes_the_sub_dict_inside_the_lock(clean_state, monkeypat
             task = asyncio.create_task(gates._amutate_maint_state("角色", _mutator))
             await asyncio.sleep(0.05)
             assert not started.is_set(), "锁被占用时 mutator 就跑了"
-            # 直接赋值模拟 _aload_maint_state 的整体重绑定；不走
-            # _rebind_maint_state_locked 是因为它要拿本用例正持着的那把锁。
+            # Direct assignment simulates _aload_maint_state's whole-state rebinding; avoid
+            # _rebind_maint_state_locked because it acquires the lock this test already holds.
             monkeypatch.setattr(gates, "_maint_state", new_map)
         finally:
             gates._maint_state_lock.release()
@@ -565,7 +565,7 @@ async def test_mutator_takes_the_sub_dict_inside_the_lock(clean_state, monkeypat
     assert old_map["角色"]["review_fail_attempts"] == 7
 
 
-# ── 5. 取消路径：to_thread 交出去就取消不掉，锁不能泄漏 ───────────────
+# ── 5. Cancellation: dispatched to_thread workers cannot be cancelled; locks must not leak ───────────────
 
 
 @pytest.mark.unit
@@ -588,8 +588,8 @@ async def test_cancelling_the_awaiting_coroutine_still_releases_the_lock(clean_s
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        # to_thread 的 worker 取消不掉，它会跑完并释放锁。等一个后续写者拿到锁，
-        # 就同时证明了「锁没泄漏成永久持有」和「不需要 shield」。
+        # The uncancellable to_thread worker finishes and releases its lock. A subsequent writer acquiring it proves
+        # both that the lock did not leak permanently and that shield is unnecessary.
         with patch.object(gates, "_persist_maint_state_locked", MagicMock()):
             await asyncio.wait_for(
                 gates._amutate_maint_state("角色", _mutator), timeout=5,
@@ -599,7 +599,7 @@ async def test_cancelling_the_awaiting_coroutine_still_releases_the_lock(clean_s
     assert not gates._maint_state_lock.locked()
 
 
-# ── 6. 「清退避 + 断掉输出耗尽序列」必须落在同一次写里 ────────────────
+# ── 6. Clear backoff and break the output-exhaustion sequence in one write ────────────────
 
 
 @pytest.mark.unit
@@ -640,10 +640,10 @@ async def test_generic_failure_lands_both_updates_in_one_write(clean_state):
     assert snapshot["review_output_exhaustion_blocked"] is False
 
 
-# ── 7. 锁内复查：dead-letter 判定的三条分支 ──────────────────────────
-# 直接同步调 mutator，不经 _amutate_maint_state：这两个 mutator 的价值全在「判定
-# 被搬进临界区」，而判定结果只从返回值出来。经调用点驱动的话，锁外快筛（attempts
-# 不足时压根不进 mutator）会把 'proceed' 早退分支整个遮住，断言就空过了。
+# ── 7. Recheck under lock: three dead-letter decision branches ──────────────────────────
+# Call mutators directly and synchronously, bypassing _amutate_maint_state: their purpose is moving decisions
+# into the critical section, and only returns expose those decisions. Driving through call sites lets the outside-lock quick filter
+# (which skips mutators below the attempts threshold) hide the entire 'proceed' early-return branch, making assertions vacuous.
 
 _BACKOFF_RECHECK_MUTATORS = [
     pytest.param(
@@ -676,8 +676,8 @@ def test_backoff_recheck_proceeds_when_another_writer_already_cleared_the_counte
     state = {attempts_key: 1, fp_key: "same-fp"}
 
     assert mutator("same-fp", 3, state) == (False, "proceed")
-    # 早退不写任何字段：dirty=False 时 _mutate_maint_state_locked 会跳过落盘，
-    # 这里要确认它跳过的确实是一次「什么都没改」的调用。
+    # Early return changes no fields: dirty=False makes _mutate_maint_state_locked skip persistence,
+    # so verify that the skipped call really changed nothing.
     assert state == {attempts_key: 1, fp_key: "same-fp"}
 
 
@@ -708,7 +708,7 @@ def test_backoff_recheck_expires_the_budget_when_the_input_changed(
     assert state[fp_key] is None
 
 
-# ── 8. 落盘失败必须被收在临界区里（承重语义，不是疏忽）─────────────────
+# ── 8. Persistence errors must remain inside the critical section; this is essential semantics, not oversight ─────────────────
 
 
 @pytest.mark.unit
@@ -744,9 +744,9 @@ async def test_persist_failure_is_swallowed_and_memory_state_still_updated(clean
 
 
 # ── Gate 6a recovery: the in-lock recheck ───────────────────────────────
-# 恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以锁内要复查它依赖的
-# 那份输入还在不在。否则另一个后台 review 在那次 await 期间刚 armed 的新断路器会被抹掉，
-# 那条已经证明压不动的 context 又被放行重烧一轮。
+# Recovery evaluation must run outside the lock because asynchronous token counting cannot enter synchronous mutators; recheck under lock that
+# its input still exists. Otherwise a concurrent background review may arm a new circuit breaker during that await, only to have it erased,
+# allowing another wasted pass over context already proven impossible to compress.
 
 
 @pytest.mark.unit
@@ -762,7 +762,7 @@ def test_gate6a_recovery_clears_when_the_observed_breaker_is_still_current() -> 
         state, seen_attempts=2, seen_min_tokens=1000
     )
 
-    # value=True 是给调用方的信号「恢复成立、可以继续 spawn」。
+    # value=True tells callers recovery remains valid and spawning may continue.
     assert (dirty, value) == (True, True)
     assert state['review_output_exhaustion_attempts'] == 0
     assert state['review_output_exhaustion_min_context_tokens'] is None
@@ -802,7 +802,7 @@ def test_gate6a_recovery_keeps_a_breaker_armed_by_a_concurrent_writer(
         newer_state, seen_attempts=2, seen_min_tokens=1000
     )
 
-    # value=False 是给调用方的信号「恢复判定已过期、本轮必须放弃」——只是不清零而
-    # 继续 spawn 的话，等于拿过期判定绕过刚 armed 的断路器。
+    # value=False tells callers recovery evaluation is stale and this round must abort; merely avoiding reset while
+    # continuing to spawn would bypass a newly armed circuit breaker with a stale decision.
     assert (dirty, value) == (False, False), f"{what_changed} 变了就不该清零"
     assert newer_state == before, "复查失败时一个字段都不许动"

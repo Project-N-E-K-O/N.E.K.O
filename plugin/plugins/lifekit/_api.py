@@ -1,4 +1,4 @@
-"""Open-Meteo / IP-geolocation 网络请求封装。"""
+"""Open-Meteo / IP-geolocation network request wrappers."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ import httpx
 from ._geocoders import nominatim_candidates, open_meteo_candidates
 from ._location import LocationPurpose, LocationRequest, LocationResolver, LocationStatus
 
-# HTTPS IP 定位 provider；旧版用的 ip-api.com 免费端点是纯 HTTP + 禁止商用喵
+# HTTPS IP geolocation provider; the old free ip-api.com endpoint used plain HTTP and prohibited commercial use, meow.
 _GEOIP_BASE = "https://ipapi.co"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 _UA = "NEKO-LifeKit-Plugin/0.3"
 
-# ipapi.co 用 ISO 639 简码；Content-Language 头部即可
+# ipapi.co uses ISO 639 short codes; a Content-Language header suffices.
 LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
     "zh-CN": "zh",
     "zh-TW": "zh",
@@ -27,36 +27,36 @@ LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
     "pt": "pt",
 }
 
-# WMO 降水/降雪代码集
+# WMO precipitation/snowfall code set.
 RAIN_CODES = frozenset({51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99})
 SNOW_CODES = frozenset({71, 73, 75, 77, 85, 86})
 
 
-# ── 错误类型 ─────────────────────────────────────────────────────
+# ── Error types ─────────────────────────────────────────────────────
 
 class WeatherAPIError(Exception):
-    """天气 API 调用失败的基类。"""
+    """Base class for weather API failures."""
     def __init__(self, message: str, cause: str = "unknown"):
         super().__init__(message)
         self.cause = cause  # "timeout" | "network" | "api_error" | "not_found"
 
 
 class GeoIPError(WeatherAPIError):
-    """IP 定位失败。"""
+    """IP geolocation failed."""
 
 
 class GeocodeError(WeatherAPIError):
-    """城市 geocoding 失败。"""
+    """City geocoding failed."""
 
 
 class ForecastError(WeatherAPIError):
-    """天气预报 API 失败。"""
+    """Weather forecast API failed."""
 
 
-# ── API 函数 ─────────────────────────────────────────────────────
+# ── API functions ─────────────────────────────────────────────────────
 
 async def geoip_locate(locale: str = "zh-CN", timeout: float = 2.0) -> Optional[Dict[str, Any]]:
-    """IP 定位（HTTPS via ipapi.co）。成功返回 dict，无结果返回 None，网络问题抛 GeoIPError。"""
+    """IP geolocation (HTTPS via ipapi.co). Return a dict on success, None without results; raise GeoIPError for network issues."""
     lang = LOCALE_TO_GEOIP_LANG.get(locale, "en")
     url = f"{_GEOIP_BASE}/json/"
     try:
@@ -137,7 +137,7 @@ async def fetch_forecast(
     forecast_hours: Optional[int] = None,
     timeout: float = 8.0,
 ) -> Dict[str, Any]:
-    """调用 Open-Meteo Forecast API。成功返回 dict，失败抛 ForecastError。"""
+    """Call the Open-Meteo Forecast API. Return a dict on success; raise ForecastError on failure."""
     params: Dict[str, Any] = {
         "latitude": lat,
         "longitude": lon,
@@ -173,7 +173,7 @@ async def fetch_forecast(
 
 
 def daily_val(daily: Dict[str, Any], field: str, idx: int) -> Any:
-    """安全取 daily 数组元素；负索引视为无效（避免上游 idx 回退时静默展示错天数喵）。"""
+    """Safely retrieve a daily-array element; reject negative indices to avoid silently showing the wrong day on upstream index fallback, meow."""
     arr = daily.get(field)
     if isinstance(arr, list) and 0 <= idx < len(arr):
         return arr[idx]
@@ -186,7 +186,7 @@ _AQI_VARS = "european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_di
 
 
 class AirQualityError(WeatherAPIError):
-    """空气质量 API 失败。"""
+    """Air quality API failed."""
 
 
 async def fetch_air_quality(
@@ -195,7 +195,7 @@ async def fetch_air_quality(
     tz: str = "Asia/Shanghai",
     timeout: float = 8.0,
 ) -> Dict[str, Any]:
-    """调用 Open-Meteo Air Quality API。返回 current 数据。"""
+    """Call the Open-Meteo Air Quality API. Return current data."""
     params = {
         "latitude": lat,
         "longitude": lon,

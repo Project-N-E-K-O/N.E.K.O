@@ -3103,8 +3103,11 @@
 
             // Store last submitted text for rollback on RESPONSE_TOO_LONG.
             // Clear stale text for pure-screenshot submissions.
-            window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
-            window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
+            // 串门台词走自己的拒绝 / 恢复路径（visit-chat.js），不写普通回复轮的回滚状态
+            if (options.visitLine !== true) {
+                window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
+                window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
+            }
             var isReactWindowSource = options.source === 'react-chat-window';
             var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';
@@ -3139,8 +3142,11 @@
                 requestChatAutoCollapseAfterAcceptedEnter(options, requestId);
             }
 
+            // 串门台词（visit-chat.js）：本地气泡由串门那边出（纯文本、带收件人），这里不再出普通用户气泡
+            var isVisitLine = options.visitLine === true;
+
             function shouldAppendLegacyUserMessage() {
-                return !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
+                return !isVisitLine && !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
             }
 
             function updateReactOptimisticMessageStatus(status) {
@@ -3153,7 +3159,9 @@
             }
 
             // If no active text session, start one first
+            var startedTextSessionHere = false;
             if (!S.isTextSessionActive) {
+                startedTextSessionHere = true;
                 textSendButton.disabled = true;
                 textInputBox.disabled = true;
                 screenshotButton.disabled = true;
@@ -3373,6 +3381,10 @@
                         if (messageSource) {
                             textMessage.source = messageSource;
                         }
+                        // 串门台词带上发起时的场次：后端对不上当前那一场就拒，不会发给另一场的客人
+                        if (isVisitLine && typeof options.visitId === 'string' && options.visitId) {
+                            textMessage.visit_id = options.visitId;
+                        }
                         S.socket.send(JSON.stringify(textMessage));
 
                         if (!options.preserveInputValue) {
@@ -3409,6 +3421,7 @@
                     }
 
                     updateReactOptimisticMessageStatus('sent');
+                    rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine, startedTextSessionHere);
 
                     if (sentUserContent) {
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
@@ -3424,7 +3437,8 @@
                         // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
                         // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
                         // 同时有 15s freshness ceiling 防止漏清永远卡 true。
-                        S.pendingTextTurnSubmitAt = Date.now();
+                        // 串门台词不开普通回复轮：不标「回复在途」
+                        if (!isVisitLine) S.pendingTextTurnSubmitAt = Date.now();
                     }
 
                     // Reset proactive chat timer
@@ -3432,7 +3446,9 @@
                         window.resetProactiveChatBackoff();
                     }
 
-                    window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                    if (!isVisitLine) {
+                        window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                    }
                     return true;
                 } catch (sendError) {
                     console.error('[Chat] send text payload failed:', sendError);
@@ -3510,6 +3526,54 @@
 
         mod.sendTextPayload = sendTextPayload;
         window.sendTextPayload = sendTextPayload;
+
+        // 已发出的普通句：request_id → 乐观气泡 id（只留最近几条）。后端事后拒了这句（串门期间未授权等）时据此收尾
+        var sentTextSubmissions = [];
+        var lastTurnRequestId = '';   // 最近一句开了普通回复轮（置了 pendingTextTurnSubmitAt）的请求
+        var lastSessionStartRequestId = '';   // 最近一次顺带开文本会话的那句（当前会话归它）
+
+        function rememberSentTextSubmission(requestId, messageId, opensTurn, startedSession) {
+            if (!requestId) return;
+            if (opensTurn) lastTurnRequestId = String(requestId);
+            if (startedSession === true) lastSessionStartRequestId = String(requestId);
+            sentTextSubmissions.push({ requestId: String(requestId), messageId: messageId || '', startedSession: startedSession === true });
+            if (sentTextSubmissions.length > 20) sentTextSubmissions.shift();
+        }
+
+        /** 后端拒了一句已发出的普通句：乐观气泡标失败；它还是最近一句时撤掉「回复在途」并把原文放回旧输入框。 */
+        mod.markTextSubmissionRefused = function markTextSubmissionRefused(requestId) {
+            var id = String(requestId || '');
+            var record = null;
+            for (var i = 0; i < sentTextSubmissions.length; i++) {
+                if (sentTextSubmissions[i].requestId === id) {
+                    record = sentTextSubmissions.splice(i, 1)[0];
+                    break;
+                }
+            }
+            if (!record) return false;
+            // 只在当前会话仍是这句开的时候撤：之后别的句子若已开了真会话，不能把它的标记一起撤掉
+            if (record.startedSession && lastSessionStartRequestId === id && S.isTextSessionActive === true) {
+                lastSessionStartRequestId = '';
+                // 这句顺带发了开会话请求：串门在飞时那只是 ack、并没起普通会话（被拒正说明串门接着输入）。
+                // 撤回标记，串门结束后下一句普通聊天照常显式开会话
+                S.isTextSessionActive = false;
+            }
+            if (record.messageId && window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
+                window.reactChatWindowHost.updateMessage(record.messageId, { status: 'failed' });
+            }
+            // 「回复在途」按开轮的那句认（头像拖放这类 rollbackText 为空的提交不写 _lastSubmittedRequestId）
+            if (lastTurnRequestId === id) {
+                lastTurnRequestId = '';
+                S.pendingTextTurnSubmitAt = 0;
+            }
+            if (window._lastSubmittedRequestId === id) {
+                var legacyInput = document.getElementById('textInputBox');
+                if (legacyInput && !legacyInput.value && window._lastSubmittedText) legacyInput.value = window._lastSubmittedText;
+                window._lastSubmittedText = '';
+                window._lastSubmittedRequestId = '';
+            }
+            return true;
+        };
 
         mod.sendAvatarDropPayload = async function sendAvatarDropPayload(payload) {
             var items = getAvatarDropItems(payload);

@@ -70,8 +70,8 @@ _SOCCER_GAME_STANCES = {
 
 
 def _soccer_random_default_difficulty() -> str:
-    # 默认锁 lv2 与前端 DEFAULT_DIFFICULTY_INDEX / prompts_soccer initialDifficulty 对齐；
-    # lv3 仍是 _SOCCER_DEFAULT_DIFFICULTIES 合法值，允许 upstream 显式 soften 一档。
+    # Default lv2 matches frontend DEFAULT_DIFFICULTY_INDEX / prompts_soccer initialDifficulty;
+    # lv3 remains valid in _SOCCER_DEFAULT_DIFFICULTIES, allowing upstream to explicitly soften one tier.
     return "lv2"
 
 
@@ -208,7 +208,7 @@ def _normalize_soccer_pregame_context(
             else:
                 mark_invalid(field, "invalid_list", actual_type=type(value.get(field)).__name__)
 
-    # 普通陪玩和任何被兜底出来的开局都不能默认 max。
+    # Ordinary play and fallback starts must never default to max.
     if context["gameStance"] == "neutral_play":
         if context["initialDifficulty"] not in _SOCCER_DEFAULT_DIFFICULTIES:
             mark_invalid("initialDifficulty", "not_allowed_for_neutral_play")
@@ -518,8 +518,8 @@ async def _run_soccer_pregame_context_ai(
         neko_initiated=neko_initiated,
         neko_invite_text=neko_invite_text,
         prompt_template=get_soccer_pregame_context_prompt(
-            # 兜底腿也要全码：prompt_locale 为空时才走到这里，短码会把繁体塌成 zh
-            # （issue #2500 第 2 步）。与本文件下面两处 `or user_language_full` 同形。
+            # The fallback also needs a full locale: this path runs only when prompt_locale is empty, and a short code collapses traditional Chinese to zh
+            # (issue #2500 step 2). Match the two `or user_language_full` expressions below.
             prompt_locale
             or char_info.get("user_language_full")
             or char_info.get("user_language")

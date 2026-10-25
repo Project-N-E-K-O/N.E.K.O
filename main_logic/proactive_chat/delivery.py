@@ -59,6 +59,7 @@ class ProactiveLifecycle:
     lanlan_name: str
     log: logging.Logger | None = None
     done_emitted: bool = False
+    screenshot_request_id: str | None = None
     next_schedule_fixed_mode: bool = False
     focus_phase2_reached: bool = False
     focus_episode_token: Any = None
@@ -76,13 +77,34 @@ class ProactiveLifecycle:
         self.focus_episode_token = snapshot.get("focus_episode_id")
         self.focus_turn_token = snapshot.get("focus_turn_count")
 
+    def owns_round(self) -> bool:
+        """Whether this execution still owns the manager and state-machine round."""
+        return (
+            self.screenshot_request_id is not None
+            and getattr(self.mgr, "_proactive_screenshot_request_id", None) == self.screenshot_request_id
+            and getattr(self.mgr.state, "proactive_round_id", self.screenshot_request_id)
+            == self.screenshot_request_id
+        )
+
+    def clear_screenshot_request(self) -> None:
+        """Retire only this round's reply ID, before another round can start."""
+        if (
+            self.screenshot_request_id is not None
+            and getattr(self.mgr, "_proactive_screenshot_request_id", None)
+            == self.screenshot_request_id
+        ):
+            self.mgr._proactive_screenshot_request_id = None
+
     async def safe_done(self) -> None:
         """Fire DONE at most once without applying normal-exit side effects."""
         if self.done_emitted:
             return
         self.done_emitted = True
+        if not self.owns_round():
+            return
+        self.clear_screenshot_request()
         try:
-            await self.mgr.state.fire(self.state_event)
+            await self.mgr.state.fire(self.state_event, round_id=self.screenshot_request_id)
         except Exception as exc:
             self._logger.warning(
                 "[%s] PROACTIVE_DONE fire 异常: %s",
@@ -125,6 +147,7 @@ class ProactiveLifecycle:
 class CommittedDelivery:
     """Delivery facts that may be recorded only after a successful commit."""
 
+    turn_id: str
     primary_channel: str
     source_links: list[dict[str, Any]]
     delivered_tag: str
@@ -201,9 +224,12 @@ async def _commit_proactive_delivery(
     proactive_lang: str,
     master_name: str,
     log: logging.Logger | None = None,
+    round_id: str | None = None,
 ) -> DeliveryCommit:
     """Build, feed, and atomically finish one proactive delivery."""
     active_logger = log or logger
+    # The TTS/commit critical sections recheck round ownership themselves.
+    delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
     has_music_topic = "music" in active_channels
     primary_channel, source_links = build_proactive_response(
         source_tag,
@@ -276,6 +302,7 @@ async def _commit_proactive_delivery(
             response_text,
             expected_speech_id=proactive_sid,
             expected_user_engagement_time=expected_user_engagement_time,
+            **delivery_round,
         )
         if tts_accepted is False and _proactive_feed_rejected_for_takeover(
             mgr,
@@ -311,6 +338,7 @@ async def _commit_proactive_delivery(
             action_note=action_note,
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
+            **delivery_round,
         )
     except Exception as exc:
         active_logger.warning(
@@ -359,6 +387,9 @@ async def _commit_proactive_delivery(
     return DeliveryCommit(
         result=None,
         delivery=CommittedDelivery(
+            # finish_proactive_delivery validated this identity and published
+            # under it. Later accounting awaits may admit a new user turn.
+            turn_id=proactive_sid,
             primary_channel=primary_channel,
             source_links=source_links,
             delivered_tag=delivered_tag,
@@ -511,6 +542,12 @@ async def _record_committed_delivery(
             source_tag=source_tag or "unknown",
             active_channels=active_channels,
             source_links=source_links,
-            turn_id=mgr.current_speech_id,
+            turn_id=delivery.turn_id,
+            # UI-only content for this committed visual turn. Do not return the
+            # screenshot or infer a screen card from enabled modes alone.
+            **({"screen_observation": {"text": response_text}}
+               if delivery.vision_screenshot_b64 and response_text.strip()
+               and not source_links and primary_channel in {"chat", "vision", "unknown"}
+               else {}),
         )
     )

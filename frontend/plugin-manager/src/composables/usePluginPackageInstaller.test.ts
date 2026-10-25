@@ -270,12 +270,10 @@ describe('usePluginPackageInstaller', () => {
     expect(planPluginInstall).toHaveBeenCalledWith({
       package: '/packages/demo.neko-plugin',
       plugins_root: undefined,
-      profiles_root: undefined,
     })
     expect(installPluginPackage).toHaveBeenCalledWith({
       package: '/packages/demo.neko-plugin',
       plugins_root: undefined,
-      profiles_root: undefined,
       on_conflict: 'fail',
       install_source: 'imported',
       confirm_upgrade: true,

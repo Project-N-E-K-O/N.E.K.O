@@ -4086,7 +4086,7 @@ def test_signal_loop_rejects_stale_locale_worker(monkeypatch, tmp_path):
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
 
-    # 升级前入队的旧任务没有顺序号，也不能覆盖已有的新状态。
+    # Old tasks queued before the upgrade lack sequence numbers and must not overwrite newer existing state.
     signal_extraction._signal_check_record_turn("Neko", language="ja")
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
@@ -4235,9 +4235,9 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
     monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
     monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", powerful_enabled)
     def _spawn_stub(coroutine):
-        # 不真起 task（下面手动 await _safe_auto_promote），但仍要返回一个
-        # 已完成的 awaitable：调用点会把它登记进 per-character registry，
-        # 已完成的 future 会立刻触发登记表的自清理回调。
+        # Do not actually start a task (manually await _safe_auto_promote below), but still return
+        # a completed awaitable: the caller adds it to the per-character registry,
+        # and a completed future immediately triggers the registry's self-cleanup callback.
         coroutine.close()
         finished = asyncio.get_running_loop().create_future()
         finished.set_result(None)

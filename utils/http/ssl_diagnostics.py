@@ -42,8 +42,8 @@ def probe_ssl_environment() -> dict:
         "is_asn1_nested_error": False,
     }
     try:
-        # create_default_context 会触发默认信任链加载
-        # 在部分 Windows 环境会于此处抛出 ASN1 相关异常
+        # create_default_context loads the default trust chain.
+        # Some Windows environments raise ASN1-related exceptions here.
         ssl.create_default_context()
     except Exception as e:  # noqa: BLE001
         msg = str(e)

@@ -219,7 +219,7 @@ async def test_import_query_and_remove(tmp_path):
         miss = await service.query(query="明天的天气预报怎么样", language="zh")
         assert miss["result"] == "miss"
         assert miss["context"] == ""
-        # Shares one bigram (网络) with a card, far below the coverage bar.
+        # Shares one bigram (网络, network) with a card, far below the coverage bar.
         weak = await service.query(query="网络安全漏洞扫描工具推荐", language="zh")
         assert weak["result"] == "miss"
 
@@ -876,7 +876,13 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
         monkeypatch.setattr(service_module, "atomic_write_bytes", slow_write)
         async with service._write_lock:
             request = asyncio.create_task(service.import_pack(_raw(_pack())))
-            await asyncio.sleep(0.05)
+            # Parsing runs first, in a thread; cancel only once the request
+            # has reached the shielded admission.
+            for _ in range(200):
+                if service._admitting:
+                    break
+                await asyncio.sleep(0.01)
+            assert service._admitting
             request.cancel()
             (outcome,) = await asyncio.gather(request, return_exceptions=True)
             assert isinstance(outcome, asyncio.CancelledError)
@@ -885,7 +891,14 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
                     break
                 await asyncio.sleep(0.01)
             # The staged file is owned by a job, and the reservation is gone.
-            assert [job["state"] for job in service.list_jobs()] == ["queued"]
+            # The runner may already have picked the job up ("building"), but
+            # it cannot commit while this test holds the write lock.
+            jobs = service.list_jobs()
+            assert len(jobs) == 1, jobs
+            (job,) = jobs
+            assert job["state"] in service_module.ACTIVE_JOB_STATES
+            assert service._staging_path(job["job_id"]).exists()
+            assert load_registry(tmp_path).packs == {}
             assert service._admitting == {}
     finally:
         await service.stop()
@@ -1300,7 +1313,7 @@ async def test_catalog_hides_leftovers_of_a_removed_pack(tmp_path, monkeypatch):
 
 
 def test_deeply_nested_markup_is_defused_in_bounded_passes(monkeypatch):
-    from knowledge import text as text_module
+    from utils import prompt_fence as text_module
 
     passes = {"n": 0}
     real = text_module._CHAT_TOKEN_RE
@@ -1755,13 +1768,14 @@ def test_only_later_removals_supersede_an_import(tmp_path):
     job = service_module.ImportJob(
         job_id="j", pack_id="demo-memes", state="building", created_at="", updated_at="", arrived_at=5
     )
-    service._pending_removals["demo-memes"] = {3}
-    service._removed_at["demo-memes"] = 4
+    # (arrival number, releases covered); None: a local removal, every release.
+    service._pending_removals["demo-memes"] = frozenset({(3, None)})
+    service._removed_at["demo-memes"] = {None: 4}
     assert service._superseded(job) is False
-    service._pending_removals["demo-memes"].add(6)
+    service._pending_removals["demo-memes"] = frozenset({(3, None), (6, None)})
     assert service._superseded(job) is True
     service._pending_removals.clear()
-    service._removed_at["demo-memes"] = 6
+    service._removed_at["demo-memes"] = {None: 6}
     assert service._superseded(job) is True
 
 

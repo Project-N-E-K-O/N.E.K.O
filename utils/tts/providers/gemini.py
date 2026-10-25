@@ -45,10 +45,10 @@ GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 FALLBACK_GEMINI_TTS_DEFAULT_VOICE = "Leda"
 FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE = "Puck"
 
-# 与 api_providers.json 的 native_tts_voice_providers.gemini.voices 保持
-# 同形；config 是权威源，这份是 JSON 加载失败时的兜底，保证 provider 始终
-# 注册成功、routing 不退化到 cosyvoice。两边漂移的代价仅仅是"新版 JSON
-# 加的音色在 config 缺失时不可见"，比 routing 走错路要轻。
+# Match api_providers.json native_tts_voice_providers.gemini.voices;
+# config is authoritative, and this fallback handles JSON load failure, ensuring provider registration
+# succeeds without routing falling back to cosyvoice. Drift only hides new JSON voices when config
+# is missing, less costly than incorrect routing.
 _FALLBACK_GEMINI_TTS_VOICE_GENDERS: dict[str, str] = {
     "Achernar": "Female",
     "Achird": "Male",
@@ -169,12 +169,12 @@ GEMINI_PROVIDER = _create_provider()
 register_provider(GEMINI_PROVIDER)
 
 
-# ---- free_intl：海外免费（free + *.lanlan.app）的有效音色目录 ----
-# 海外免费路由 core_api_type 仍是 'free'（走 lanlan.app 的 Gemini 代理），
-# 但其可选音色是 Gemini 全量 + 一个品牌 yui 音色（服务端识别字面量 "yui"，
-# 映射到 yui 角色专属声音）。这里复用 Gemini 目录，叠加 yui，并把 "default"
-# 别名指到 Leda。registry 由 native_voice_registry 按 host 把 free→free_intl
-# 重映射，cross-cutting 文件无需感知。
+# ---- free_intl: effective voice catalog for overseas free routes (free + *.lanlan.app) ----
+# Overseas free routes retain core_api_type='free' (Gemini proxy on lanlan.app),
+# but offer all Gemini voices plus the branded yui voice (the server recognizes literal "yui"
+# and maps it to Yui's character-specific voice). Reuse Gemini's catalog, add yui, and point "default"
+# to Leda. native_voice_registry remaps free->free_intl by host,
+# keeping cross-cutting files unaware of the distinction.
 _FALLBACK_FREE_INTL_VOICE_GENDERS: dict[str, str] = {
     "yui": "Female",
     **_FALLBACK_GEMINI_TTS_VOICE_GENDERS,

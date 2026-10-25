@@ -1,5 +1,5 @@
 """
-前端静态文件路由
+Frontend static-file routes
 """
 from pathlib import Path
 
