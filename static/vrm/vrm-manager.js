@@ -396,47 +396,68 @@ class VRMManager {
         return texture;
     }
 
+    // 蒙皮网格的 computeBoundingBox 得到的是网格局部、当前姿态的包围盒。
+    // 没有蒙皮属性时退回几何体包围盒，那是绑定姿态的静态边界。
+    _cloneMeshLocalBounds(object) {
+        if (!object?.geometry) return null;
+        if (object.isSkinnedMesh && typeof object.computeBoundingBox === 'function') {
+            const previousBox = object.boundingBox;
+            try {
+                // computeBoundingBox 会清空并原地重填已有盒子。先换成新盒子，
+                // finally 再把原来的引用放回去，内容才不会被这次测量改掉。
+                object.boundingBox = null;
+                object.computeBoundingBox();
+                const computed = object.boundingBox;
+                if (computed && !computed.isEmpty()) return computed.clone();
+            } catch (error) {
+                // 缺少蒙皮属性时走下面的静态几何体边界。
+            } finally {
+                object.boundingBox = previousBox;
+            }
+        }
+        const geometry = object.geometry;
+        if (typeof geometry.computeBoundingBox !== 'function') return null;
+        if (!geometry.boundingBox) geometry.computeBoundingBox();
+        if (!geometry.boundingBox || geometry.boundingBox.isEmpty()) return null;
+        return geometry.boundingBox.clone();
+    }
+
+    // 每个网格先变到 vrm.scene 局部再合并。先合并世界 AABB 再整盒逆变换时，
+    // 场景绕 Y 轴旋转 45° 会把局部宽深放大到约 2 倍，阴影直径跟着朝向变。
+    _collectSceneLocalBodyBox(scene) {
+        const localBodyBox = new window.THREE.Box3();
+        if (!scene) return localBodyBox;
+        scene.updateMatrixWorld(true);
+        const invScene = scene.matrixWorld.clone().invert();
+        const toLocal = new window.THREE.Matrix4();
+        const meshes = [];
+        scene.traverse((object) => {
+            if (object.isSkinnedMesh) meshes.push(object);
+        });
+        if (meshes.length === 0) {
+            scene.traverse((object) => {
+                if (object.isMesh && object !== this._shadowMesh && object.geometry) {
+                    meshes.push(object);
+                }
+            });
+        }
+        for (const object of meshes) {
+            object.updateMatrixWorld(true);
+            const box = this._cloneMeshLocalBounds(object);
+            if (!box || box.isEmpty()) continue;
+            toLocal.multiplyMatrices(invScene, object.matrixWorld);
+            localBodyBox.union(box.applyMatrix4(toLocal));
+        }
+        return localBodyBox;
+    }
+
     _calculateAndAddShadow(result) {
         const SHADOW_SCALE_MULT = 0.5;
         const SHADOW_Y_OFFSET = 0.001;
         const FIX_CENTER_XZ = true;
 
-        result.vrm.scene.updateMatrixWorld(true);
-
-        const bodyBox = new window.THREE.Box3();
-        let hasBodyMesh = false;
-
-        result.vrm.scene.traverse((object) => {
-            if (object.isSkinnedMesh) {
-                object.updateMatrixWorld(true);
-                const meshBox = new window.THREE.Box3();
-                meshBox.setFromObject(object);
-                bodyBox.union(meshBox);
-                hasBodyMesh = true;
-            }
-        });
-
-        if (!hasBodyMesh) {
-            bodyBox.setFromObject(result.vrm.scene);
-        }
-
-        result.vrm.scene.updateMatrixWorld(true);
-        const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
-        const worldCorners = [
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.max.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.max.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.max.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.max.z),
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.max.y, bodyBox.max.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.max.y, bodyBox.max.z),
-        ];
-        const localBodyBox = new window.THREE.Box3();
-        worldCorners.forEach(corner => {
-            const localCorner = corner.clone().applyMatrix4(sceneInverseMatrix);
-            localBodyBox.expandByPoint(localCorner);
-        });
+        // 阴影网格挂在 vrm.scene 下，直径用场景局部尺寸，避免用户缩放被乘两次。
+        const localBodyBox = this._collectSceneLocalBodyBox(result.vrm.scene);
 
         // 阴影网格会挂到 vrm.scene 上，并跟着 scene.scale 一起缩放。
         // 直径必须用场景局部尺寸：世界包围盒已经包含用户缩放，再写进子节点
