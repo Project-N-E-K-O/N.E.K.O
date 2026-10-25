@@ -2348,6 +2348,13 @@
             ? phase : null;
     }
 
+    function relayEndedSnapshotToDisplay(visitId, side) {
+        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
+        window.nekoRelayVisitStateToDisplay({
+            type: 'visit_state_change', action: 'ended', visit_id: visitId, side: side || ''
+        });
+    }
+
     function relayStateSnapshotToDisplay(state, visitId) {
         if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
         var phase = phaseFromState(state.phase);
@@ -2396,19 +2403,22 @@
         releaseEnabled = state.enabled === true;
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
-        // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；bind 后的
-        // 权威快照也同步给 Pet，确保传输 iframe 最终一定会被创建。
-        // 读 state 期间若已经收到更新的生命周期帧，旧快照只用于补对端资料与台词，
-        // 不能再转发给 Pet；否则 pending 会倒灌并停掉已经开始的访客视频。
-        if (snapshotVisit && !stale) relayStateSnapshotToDisplay(state, snapshotVisit);
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
         // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
         if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {
+            if (visit.visitId && visit.visitId !== snapshotVisit && inVisit()) {
+                var previousEndingVisit = visit.visitId;
+                var previousEndingSide = visit.side;
+                onEnded({ visit_id: previousEndingVisit, side: previousEndingSide, reason: '' });
+                if (!stale) relayEndedSnapshotToDisplay(previousEndingVisit, previousEndingSide);
+            }
             if (visit.visitId === snapshotVisit) {
                 onEnded({ visit_id: snapshotVisit, side: state.side || state.role, reason: '' });
             } else {
                 markEnded(snapshotVisit);
             }
+            // 不先转发 ending：显示端会为它补建一个永远收不到 ended 的 iframe。
+            if (!stale) relayEndedSnapshotToDisplay(snapshotVisit, state.side || state.role);
             render();
             return;
         }
@@ -2437,7 +2447,13 @@
         if (snapshotVisit) {
             if (visit.visitId !== snapshotVisit) {
                 // 断线期间别的窗口结束了这一场、又开了新一场：上一场照样留下结束消息、标掉还在等回显的本地气泡
-                if (inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+                if (inVisit()) {
+                    var previousVisit = visit.visitId;
+                    var previousSide = visit.side;
+                    onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
+                    // 显示端必须先退掉旧 iframe，之后才会接受没有 pending 的新场次快照。
+                    relayEndedSnapshotToDisplay(previousVisit, previousSide);
+                }
                 startNewVisit(snapshotVisit);
             }
             visit.side = state.side || state.role || visit.side;
@@ -2450,9 +2466,18 @@
             visit.ownName = currentCatgirl();
             mergeSnapshotDetails(state, false);
             if (visit.reconnecting) pollReconnect();
+            // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；本地场次完成
+            // 收口 / 切换后再同步权威快照，确保显示端不会因旧 visit_id 而丢弃它。
+            relayStateSnapshotToDisplay(state, snapshotVisit);
         } else if (inVisit() && (state.active !== true || state.visit_id !== visit.visitId)) {
             // 断线期间那一场已经结束、ended 帧没收到：走与 ended 帧同一个收尾（留下查看详情 / 导出 / 举报）
-            onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            var endedVisit = visit.visitId;
+            var endedSide = visit.side;
+            onEnded({ visit_id: endedVisit, side: endedSide, reason: '' });
+            relayEndedSnapshotToDisplay(endedVisit, endedSide);
+        } else if (state.active !== true && typeof state.visit_id === 'string' && state.visit_id) {
+            // 页面本地状态已经空了，Pet 窗仍可能留着重载前的 iframe；权威空闲快照照样负责回收。
+            relayEndedSnapshotToDisplay(state.visit_id, state.side || state.role);
         }
         render();
     }

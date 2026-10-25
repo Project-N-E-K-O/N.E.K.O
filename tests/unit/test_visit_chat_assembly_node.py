@@ -759,6 +759,7 @@ const report = {};
     await h.chat.afterBind(h.socket, '咪咪');
     report.snapshot_switch_line = [...h.chat._test.state().lines.values()].find((e) => e.lineId === 'L1' && e.visitId === VID2).text;
     report.snapshot_switch_avatar = h.win.__lastAvatar || '';
+    report.snapshot_switch_relay = h.relayFrames.slice(-2).map((frame) => frame.action + ':' + frame.visit_id);
   }
   // ── 重连轮询发现已结束：照样留下该场的结束消息（查看详情 / 导出 / 举报） ──
   {
@@ -769,6 +770,7 @@ const report = {};
     h.advance(5100);
     await h.settle();
     report.recover_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
+    report.recover_ended_relay = h.relayFrames[h.relayFrames.length - 1].action;
   }
   // ── abort 的 i_done 比收到的片多：补占位，迟片还能落位 ──
   {
@@ -1077,6 +1079,7 @@ const report = {};
     const h3 = createHarness();
     h3.chat.applyState({ active: true, visit_id: VID, phase: 'ending', side: 'guest', room: null, transcript: [], enabled: true }, false);
     report.unstarted_ending_snapshot_phase = h3.chat._test.state().visit.phase;
+    report.unstarted_ending_snapshot_relay = h3.relayFrames.map((frame) => frame.action);
   }
   // ── ending 起输入框交还普通聊天：串门 ack 的会话标记在 ending 撤掉，之后起的真会话 ended 时不动 ──
   {
@@ -1778,10 +1781,14 @@ def test_stale_snapshot_still_merges_peer_and_history(report):
 def test_snapshot_visit_switch_resets_line_and_avatar_caches(report):
     assert report["snapshot_switch_line"] == "新一场的第一句"
     assert report["snapshot_switch_avatar"] == ""
+    assert report["snapshot_switch_relay"] == [
+        "ended:AAAAAAAAAAAAAAAAAAAAAA", "started:BBBBBBBBBBBBBBBBBBBBBB",
+    ]
 
 
 def test_snapshot_recovery_of_an_ended_visit_keeps_its_ended_message(report):
     assert report["recover_ended_message"] is True
+    assert report["recover_ended_relay"] == "ended"
 
 
 def test_abort_extends_to_i_done_with_placeholders(report):
@@ -1898,6 +1905,7 @@ def test_cancel_before_start_leaves_no_ended_message(report):
     assert report["cancel_before_start_phase_after_ended"] is None
     assert report["missed_started_ending_ended_message"] is True
     assert report["unstarted_ending_snapshot_phase"] is None
+    assert report["unstarted_ending_snapshot_relay"] == ["ended"]
     assert report["cancel_before_start_ended_message"] is False
     assert report["started_then_ended_message"] is True
 

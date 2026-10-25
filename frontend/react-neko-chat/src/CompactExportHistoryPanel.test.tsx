@@ -86,7 +86,9 @@ describe('CompactExportHistoryPanel', () => {
     const { container } = renderPanel({ messages, selectedIds: new Set(selectable.map(item => item.id)),
       selectedCount: selectable.length, selectableCount: selectable.length, previewOpen: false });
     expect(container.querySelectorAll('.compact-export-history-bubble[role="button"]')).toHaveLength(3);
-    for (const item of hidden) expect(container.querySelector(`[data-message-id="${item.id}"]`)).toBeNull();
+    for (const item of hidden) {
+      expect(container.querySelector(`[data-compact-export-history-message-id="${item.id}"]`)).toBeNull();
+    }
   });
   it('omits retired proactive placeholder rows while preserving actual dialogue', () => {
     const placeholder = parseChatMessage({ ...message, id: 'retired-topic', blocks: [{
@@ -94,7 +96,7 @@ describe('CompactExportHistoryPanel', () => {
       category: 'chat', state: 'accepted', content: { title: '', source: '', url: '' },
     }] });
     const { container } = renderPanel({ messages: [placeholder, message], controlsOpen: false, previewOpen: false });
-    expect(container.querySelector('[data-message-id="retired-topic"]')).toBeNull();
+    expect(container.querySelector('[data-compact-export-history-message-id="retired-topic"]')).toBeNull();
     expect(container.querySelector('.proactive-recommendation')).toBeNull();
     expect(screen.getByText('Export me.')).toBeInTheDocument();
   });
