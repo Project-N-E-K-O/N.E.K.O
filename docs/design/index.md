@@ -19,8 +19,7 @@ These documents preserve design intent and implementation context. They are grou
 
 ## PetCare
 
-- [宠物养成系统方案（修订稿）](./宠物养成系统方案_修订稿)：锁定的产品目标和行为边界，禁止修改。
-- [猫形态养宠系统首版实施记录](./pet-care-system-v1-implementation)：当前三项目职责、运行拓扑、代码位置、状态机和部署前验收边界。
+- [猫形态养宠系统设计与维护规范](./pet-care-system-design-and-maintenance)：PetCare 的 current contract 和长期维护入口，覆盖三项目职责、产品不变量、运行拓扑、功能合同与变更规则。
 - [猫形态养宠首版数值与内容草案](./pet-care-system-v1-values-draft)：可替换的候选配置和模拟结论，不是产品合同。
 
 正式服务的部署决策、数据库边界和发布门禁由 N.E.K.O.Verse 仓库的
