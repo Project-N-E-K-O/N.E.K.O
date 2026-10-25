@@ -1372,6 +1372,14 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
         desktop_selector,
         "/* 串门工具条使用独立 Portal",
     )
+    visit_anchor = css_block(
+        styles,
+        'body > .compact-chat-visit-anchor[data-chat-surface-mode="compact"] {',
+        ".composer-visit-bar",
+    )
+    assert "top: max(" in visit_anchor
+    assert "--compact-visit-layer-reserved-block-size" in visit_anchor
+    assert "bottom: auto;" in visit_anchor
     assert "var(--compact-choice-available-block-size, 240px)" in css_block(
         host_styles,
         desktop_selector,

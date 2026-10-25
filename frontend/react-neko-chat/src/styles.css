@@ -2763,7 +2763,16 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
 body > .compact-chat-visit-anchor[data-chat-surface-mode="compact"] {
   position: fixed;
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 0px)) + 16px);
+  /* 通常贴在聊天框上方 16px；聊天框拖到屏幕顶端时，用已经测得的工具条
+     高度把其顶部钳在 12px，避免整排按钮跑出视口。 */
+  top: max(
+    12px,
+    calc(
+      var(--desktop-compact-surface-top, var(--compact-surface-top, 0px))
+        - var(--compact-visit-layer-reserved-block-size, 22px) + 6px
+    )
+  );
+  bottom: auto;
   width: min(var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)), 420px);
   height: max-content;
   transform: translateX(-50%);

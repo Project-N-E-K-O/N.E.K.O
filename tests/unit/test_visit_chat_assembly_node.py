@@ -97,6 +97,7 @@ function createHarness(opts) {
   const rollbacks = [];
   const toasts = [];
   const sendCalls = [];
+  const relayFrames = [];
   const socket = { readyState: 1, send(m) { sent.push(JSON.parse(m)); } };
   const body = new Node('body');
   const docListeners = [];
@@ -138,6 +139,7 @@ function createHarness(opts) {
     appState: { socket: socket, audioPlayerContext: { currentTime: 0 } },
     location: { pathname: '/' },
     showStatusToast(text) { toasts.push(text); },
+    nekoRelayVisitStateToDisplay(frame) { relayFrames.push(JSON.parse(JSON.stringify(frame))); },
     visitEnabled: true,
     nekoLocalMutationSecurity: { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'tok' }) },
     appChat: {
@@ -213,7 +215,7 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
 }
 
 const report = {};
@@ -538,6 +540,7 @@ const report = {};
     report.race_detail_active = (bound[0] || {}).active;
     report.race_pacer_armed = h.win.nekoVisitPacer.isArmed();
     report.race_chat_phase = h.chat._test.state().visit.phase;
+    report.race_relay_actions = h.relayFrames.map((frame) => frame.action);
   }
   // ── 页面在串门进行中重载 → active:true；没有串门 → active:false ──
   {
@@ -1693,6 +1696,7 @@ def test_state_probe_racing_a_started_frame_keeps_the_visit_active(report):
     assert report["race_detail_active"] is True
     assert report["race_pacer_armed"] is True
     assert report["race_chat_phase"] == "active"
+    assert report["race_relay_actions"] == ["started"]
 
 
 def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):

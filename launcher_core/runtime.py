@@ -436,8 +436,17 @@ def _resolve_storage_layout_for_launch() -> dict:
     reset_config_manager_cache()
     resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
     if isolated_runtime_dir and isolated_selected_root:
-        selected_root = Path(resolved_config_manager.app_docs_dir).resolve(strict=False)
-        anchor_root = Path(resolved_config_manager.anchor_root).resolve(strict=False)
+        # The inherited selected-root override intentionally pins an isolated instance,
+        # but a migration completed above has just committed a newer selected root.  The
+        # cached manager still reflects the old override, so prefer the authoritative
+        # migration target for this launch while retaining the instance's policy anchor.
+        committed_target = (
+            str(migration_result.get("target_root") or "").strip()
+            if migration_result.get("completed") is True
+            else ""
+        )
+        selected_root = Path(committed_target or resolved_config_manager.app_docs_dir).resolve(strict=False)
+        anchor_root = Path(isolated_anchor_root or resolved_config_manager.anchor_root).resolve(strict=False)
         layout = {
             "selected_root": str(selected_root),
             "anchor_root": str(anchor_root),

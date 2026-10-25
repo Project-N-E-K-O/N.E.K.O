@@ -2395,7 +2395,9 @@
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
         // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；bind 后的
         // 权威快照也同步给 Pet，确保传输 iframe 最终一定会被创建。
-        if (snapshotVisit) relayStateSnapshotToDisplay(state, snapshotVisit);
+        // 读 state 期间若已经收到更新的生命周期帧，旧快照只用于补对端资料与台词，
+        // 不能再转发给 Pet；否则 pending 会倒灌并停掉已经开始的访客视频。
+        if (snapshotVisit && !stale) relayStateSnapshotToDisplay(state, snapshotVisit);
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
         // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
         if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {
