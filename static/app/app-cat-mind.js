@@ -1602,7 +1602,8 @@
         var intentCooldownRelief = ACTION_INTENT_POLICY.cooldownRankRelief * intent.curveFactor;
         var cooldownSortRank = cooldown.curveFactor * (1 - intentCooldownRelief);
         var baseEligibilityScore = needContribution + cadence.adjustment + intent.contribution + petCareBias;
-        // Need, cadence and intent decide whether the action is warranted.
+        // Need, cadence, intent and the bounded PetCare projection decide
+        // whether the action is warranted.
         // Cooldown stays out of this gate and remains a relative selection
         // signal, so using an action once cannot erase it for several minutes.
         var eligibilityScore = baseEligibilityScore;
