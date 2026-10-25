@@ -1457,10 +1457,16 @@
         var activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
         if (I.getCurrentChatSurfaceMode() !== 'minimized' || I.isMinimizeTransitioning) return false;
         if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
-        var toggled = I.toggleMinimized();
-        if (toggled !== true) return false;
+        var previousActivationId = window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID || '';
         if (activationId) {
             window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;
+        }
+        var toggled = I.toggleMinimized();
+        if (toggled !== true) {
+            if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) {
+                window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = previousActivationId;
+            }
+            return false;
         }
         return true;
     }

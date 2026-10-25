@@ -270,8 +270,11 @@ test('non-native desktop provider changes may wake one retained explicit intent'
 
 test('provider-ready presentation wakes retained yarn intent without waiting for clock', () => {
   const runtime = createRuntime('cat1_play_yarn', { providerReady: false });
+  const stateChanges = [];
+  runtime.win.addEventListener('neko:cat-mind:state-change', event => stateChanges.push(event.detail));
   runtime.enter();
   runtime.observe('chat_yarn_drag_completed', {
+    activityId: 'yarn-activity-provider-ready',
     userInitiated: true,
     startedFarFromCat: true,
     endedNearCat: true,
@@ -288,9 +291,14 @@ test('provider-ready presentation wakes retained yarn intent without waiting for
   runtime.observe('cat1_stretch_done_near_chat', { reason: 'stretch-settled' });
   assert.equal(runtime.requests.length, 1);
   assert.equal(runtime.requests[0].actionId, 'cat1_play_yarn');
+  assert.equal(runtime.requests[0].detail.activityId, 'yarn-activity-provider-ready');
   assert.ok(runtime.win.nekoCatMind.getDebugSnapshot().actionIntentEvidence.cat1_play_yarn);
 
   startRequest(runtime, runtime.requests[0], 'provider-ready-yarn');
+  const started = stateChanges.find(change => change.reason === 'action-started');
+  assert.ok(started);
+  assert.equal(started.detail.activityId, 'yarn-activity-provider-ready');
+  assert.equal(started.detail.runId, 'provider-ready-yarn');
   assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().actionIntentEvidence.cat1_play_yarn, undefined);
 });
 
@@ -413,6 +421,58 @@ test('request lease deadlines release pending state and reconsider retained inpu
     'accepted_not_started_timeout'
   );
   assert.equal(accepted.requests.length, 1, 'accepted timeout must not invent a terminal or retry');
+
+  const deferred = createRuntime('cat1_play_yarn');
+  deferred.enter();
+  deferred.advanceNeed();
+  const deferredRequest = deferred.requests[0];
+  assert.equal(deferred.win.nekoCatMind.acknowledgeActionRequest({
+    requestId: deferredRequest.requestId,
+    actionId: deferredRequest.actionId,
+    status: 'deferred',
+    reason: 'pet-care-play-authorization-pending',
+    timestamp: deferred.now(),
+  }), true);
+  deferred.advanceTime(16999);
+  assert.ok(deferred.win.nekoCatMind.getState().pendingActionRequest);
+  deferred.advanceTime(1);
+  assert.equal(deferred.win.nekoCatMind.getState().pendingActionRequest, null);
+  assert.equal(
+    deferred.win.nekoCatMind.getDebugSnapshot().scheduler.lastProtocolFailure.type,
+    'deferred_authorization_timeout'
+  );
+});
+
+test('a deferred request can still be accepted and started with the same run identity', () => {
+  const runtime = createRuntime('cat1_play_yarn');
+  runtime.enter();
+  runtime.advanceNeed();
+  const request = runtime.requests[0];
+  assert.equal(runtime.win.nekoCatMind.acknowledgeActionRequest({
+    requestId: request.requestId,
+    actionId: request.actionId,
+    status: 'deferred',
+    timestamp: runtime.now(),
+  }), true);
+  runtime.advanceTime(6000);
+  assert.ok(runtime.win.nekoCatMind.getState().pendingActionRequest);
+  assert.equal(runtime.win.nekoCatMind.acknowledgeActionRequest({
+    requestId: request.requestId,
+    actionId: request.actionId,
+    status: 'accepted',
+    runId: 'authorized-yarn-run',
+    timestamp: runtime.now(),
+  }), true);
+  assert.equal(runtime.win.nekoCatMind.acknowledgeActionRequest({
+    requestId: request.requestId,
+    actionId: request.actionId,
+    status: 'started',
+    runId: 'authorized-yarn-run',
+    timestamp: runtime.now(),
+  }), true);
+  const active = runtime.win.nekoCatMind.getState().activeAction;
+  assert.equal(active.requestId, request.requestId);
+  assert.equal(active.runId, 'authorized-yarn-run');
 });
 
 test('Cat Mind follows the actual cat appearance instead of raw goodbye and return clicks', () => {

@@ -20,6 +20,26 @@ test('stage 9.1 surface keeps overview actions separate from long-term rail', ()
   assert.match(app, /ui\.actions\.hidden = !loggedInSurface \|\| view !== 'overview'/);
 });
 
+test('stage 9.1 uses the selected image assets for navigation and overview actions', () => {
+  for (const name of [
+    'overview', 'tasks', 'letters', 'inventory', 'profile',
+    'feeding', 'cleaning', 'play', 'exploration',
+  ]) {
+    assert.match(app, new RegExp(name + ": '" + name + "\\.png'"));
+    assert.equal(fs.existsSync(path.join(
+      root, 'static', 'assets', 'neko-idle', 'pet-care-ui-icon', name + '.png'
+    )), true);
+  }
+  assert.match(app, /function petCareUiIcon\(name, className\)/);
+  assert.match(app, /document\.createElement\('img'\)/);
+  assert.match(app, /petCareUiIcon\(actionCategories\[index\], 'neko-pet-care-action-icon'\)/);
+  assert.match(app, /petCareUiIcon\(entry\[0\], 'neko-pet-care-nav-icon'\)/);
+  assert.doesNotMatch(app, /var actionIcons = \['♨', '⌁', '✦', '↗'\]/);
+  assert.doesNotMatch(app, /\['overview','总览','⌂'\]/);
+  assert.match(css, /\.neko-pet-care-nav-icon \{[\s\S]*width: 30px;[\s\S]*height: 30px;[\s\S]*object-fit: contain;/);
+  assert.match(css, /\.neko-pet-care-action-icon \{[\s\S]*width: 34px;[\s\S]*height: 34px;[\s\S]*object-fit: contain;/);
+});
+
 test('stage 9.1 uses the shared semantic anchor and does not embed a cat asset', () => {
   assert.match(app, /function anchorState\(/);
   assert.match(app, /function adoptCatFactFromAnchor\(/);
@@ -67,6 +87,8 @@ test('stage 9.1 overview follows the selected demo block hierarchy', () => {
   assert.match(app, /neko-pet-care-action-icon/);
   assert.match(app, /neko-pet-care-nav-icon/);
   assert.match(app, /neko-pet-care-stat-unit/);
+  assert.doesNotMatch(app, /选择具体操作/);
+  assert.match(css, /\.neko-pet-care-stat-bar i \{[\s\S]*linear-gradient\(90deg, #83d3ee 0%, #5aaee3 52%, #498ed6 100%\)/);
   assert.match(app, /neko-pet-care-inventory-item/);
   assert.match(app, /neko-pet-care-task-tick/);
   assert.match(app, /function renderProgressUnlocks\(/);
@@ -96,7 +118,7 @@ test('stage 9.1 overview follows the selected demo block hierarchy', () => {
   assert.match(css, /\.neko-pet-care-panel-footer \{[\s\S]*right: 16px;[\s\S]*bottom: 168px/);
 });
 
-test('stage 9.1 keeps one clean surface rule set and marker-only hit targets', () => {
+test('stage 9.1 keeps transparent layout passthrough and opaque blocks hittable', () => {
   assert.equal((css.match(/#neko-pet-care-entry-overlay \.neko-pet-care-surface \{/g) || []).length, 1);
   assert.equal((css.match(/#neko-pet-care-entry-overlay \.neko-pet-care-rail \{/g) || []).length, 1);
   assert.equal((css.match(/#neko-pet-care-entry-overlay \.neko-pet-care-stats \{/g) || []).length, 1);
@@ -104,15 +126,29 @@ test('stage 9.1 keeps one clean surface rule set and marker-only hit targets', (
   assert.doesNotMatch(css, /\.neko-pet-care-scene\[data-exploration="active"\] ~ \.neko-pet-care-action-details/);
   assert.doesNotMatch(css, /\.neko-pet-care-scene\[data-exploration="active"\] ~ \.neko-pet-care-action-error/);
   assert.match(css, /\.neko-pet-care-surface > \*,\n#neko-pet-care-entry-overlay \.neko-pet-care-surface \.neko-pet-care-module/);
-  assert.match(css, /\.neko-pet-care-surface \[data-neko-pet-care-interactive="true"\] \{\n    pointer-events: auto/);
+  assert.match(css, /\.neko-pet-care-surface \[data-neko-pet-care-interactive="true"\],[\s\S]*data-neko-pet-care-input-surface="true"\] \{\n    pointer-events: auto/);
   assert.doesNotMatch(css, /猫形态自由区|猫咪自由区|场景层|free scene|自由区/);
 });
 
-test('stage 9.1 marks only controls for the PC hit-region bridge', () => {
+test('stage 9.1 keeps a visible close affordance outside the content cards', () => {
+  assert.match(app, /ui\.closeButton\.hidden = !state\.panelOpen;/);
+  assert.doesNotMatch(app, /ui\.closeButton\.hidden = [^;]*explorationActive/);
+  assert.match(css, /data-expanded="true"\] \.neko-pet-care-close-button:not\(\[hidden\]\)/);
+  assert.match(css, /\.neko-pet-care-close-button:hover/);
+  assert.match(css, /\.neko-pet-care-close-button:focus-visible/);
+});
+
+test('stage 9.1 publishes controls and opaque surfaces without claiming the transparent canvas', () => {
   assert.match(app, /data-neko-pet-care-interactive/);
+  assert.match(app, /data-neko-pet-care-input-surface/);
   assert.match(app, /value\.setAttribute\('data-neko-pet-care-interactive', 'true'\)/);
+  assert.match(app, /function markPetCareInputSurface/);
+  for (const target of ['explorationStatus', 'grid', 'actionDetails', 'actionError', 'task', 'nav', 'lettersModule', 'inventoryModule', 'profileModule']) {
+    assert.match(app, new RegExp('markPetCareInputSurface\\(' + target + '\\)'));
+  }
   assert.doesNotMatch(app, /root\.setAttribute\(['"]data-neko-pet-care-interactive/);
   assert.doesNotMatch(app, /panel\.setAttribute\(['"]data-neko-pet-care-interactive/);
+  assert.doesNotMatch(app, /markPetCareInputSurface\((?:root|panel|scene|content|actions|footer)\)/);
 });
 
 test('stage 9.1 keeps an independent nest scene while exploration owns the activity card', () => {
@@ -147,9 +183,12 @@ test('stage 9.1 keeps an independent nest scene while exploration owns the activ
 });
 
 test('stage 9.1 keeps exploration letters in the inbox module only', () => {
-  assert.match(app, /var availableLetters = \[\]/);
-  assert.match(app, /availableLetters = explorationLetters\(currentExploration\(\)\)/);
+  assert.match(app, /function availableServiceLetters\(\)/);
+  assert.match(app, /return Array\.isArray\(snapshotLetters\) \? snapshotLetters : explorationLetters\(currentExploration\(\)\)/);
+  assert.match(app, /var availableLetters = availableServiceLetters\(\)/);
   assert.match(app, /ui\.lettersList/);
+  assert.match(app, /safePetCareImageUrl/);
+  assert.match(app, /neko-pet-care-letter-thumbnail/);
   assert.doesNotMatch(app, /mailPreview|neko-pet-care-mail-line/);
   assert.doesNotMatch(css, /neko-pet-care-mail-preview|neko-pet-care-mail-line/);
   assert.match(css, /neko-pet-care-nav-item\.has-alert::after/);
@@ -157,12 +196,45 @@ test('stage 9.1 keeps exploration letters in the inbox module only', () => {
 
 test('stage 9.1 renders server-backed empty states for secondary modules', () => {
   assert.match(app, /暂无来信/);
-  assert.match(app, /背包暂无已确认道具/);
+  assert.match(app, /暂无可用道具/);
+  assert.match(app, /if \(!Number\.isFinite\(confirmedCount\) \|\| confirmedCount <= 0\) return;/);
   assert.match(app, /ui\.lettersList/);
   assert.match(app, /ui\.inventoryList/);
   assert.match(app, /ui\.profileBody/);
   assert.doesNotMatch(app, /小鱼干.*×\s*0/);
-  assert.match(css, /\.neko-pet-care-inventory-list \{[\s\S]*grid-template-columns: repeat\(3/);
+  assert.match(css, /\.neko-pet-care-inventory-list \{[\s\S]*grid-template-columns: repeat\(4, 44px\)/);
+  assert.match(css, /\.neko-pet-care-inventory-empty \{[\s\S]*grid-column: 1 \/ -1;[\s\S]*text-align: center;/);
   assert.match(css, /\.neko-pet-care-inventory-item \{/);
   assert.match(css, /\.neko-pet-care-inventory-icon \{/);
+  assert.match(css, /\.neko-pet-care-module \{[\s\S]*box-sizing: border-box;[\s\S]*width: 100%;/);
+});
+
+test('stage 9.1 uses compact inventory images with bottom-right counts and hover names', () => {
+  assert.match(app, /small_fish:\s*'\/static\/assets\/neko-idle\/pet-care-tool\/eat\/small-fish\.png'/);
+  assert.match(app, /teaser_wand:\s*'\/static\/assets\/neko-idle\/pet-care-tool\/play\/cat-teaser\.png'/);
+  assert.doesNotMatch(app, /bell_teaser/);
+  assert.match(app, /className = 'neko-pet-care-inventory-image'/);
+  assert.match(app, /contentButton\.dataset\.itemId = item\.action && item\.action\.inventory_item \|\| item\.id/);
+  assert.match(app, /toyButton\.dataset\.itemId = item\.action && item\.action\.inventory_item \|\| item\.id/);
+  assert.equal(fs.existsSync(path.join(root, 'static', 'assets', 'neko-idle', 'pet-care-tool', 'eat', 'small-fish.png')), true);
+  assert.equal(fs.existsSync(path.join(root, 'static', 'assets', 'neko-idle', 'pet-care-tool', 'play', 'cat-teaser.png')), true);
+  assert.match(app, /card\.title = presentation\.description[\s\S]*presentation\.label \+ '：' \+ presentation\.description : presentation\.label/);
+  assert.match(app, /itemDirectoryAssetForItem\(itemId\)/);
+  assert.doesNotMatch(app, /className = 'neko-pet-care-inventory-label'/);
+  assert.match(app, /className = 'neko-pet-care-inventory-count'/);
+  assert.match(app, /quantity\.textContent = '×' \+ String\(entry\.count\)/);
+  assert.match(css, /\.neko-pet-care-inventory-item \{[\s\S]*position: relative;[\s\S]*width: 44px;[\s\S]*height: 44px;[\s\S]*border: 0;[\s\S]*background: transparent;/);
+  assert.match(css, /\.neko-pet-care-inventory-image \{[\s\S]*position: absolute;[\s\S]*left: 50%;[\s\S]*top: 50%;[\s\S]*width: 62px;[\s\S]*height: 62px;[\s\S]*transform: translate\(-50%, -50%\);/);
+  assert.match(css, /inventory-icon\[data-item-id="teaser_wand"\][\s\S]*width: 112px;[\s\S]*height: 112px;/);
+  assert.doesNotMatch(css, /bell_teaser/);
+  assert.match(css, /\.neko-pet-care-inventory-count \{[\s\S]*right: -3px;[\s\S]*bottom: -3px;[\s\S]*font-size: 10px;/);
+});
+
+test('stage 9.1 shows each care tool image in its complete action row', () => {
+  assert.match(app, /contentButton\.dataset\.itemId = item\.action && item\.action\.inventory_item \|\| item\.id/);
+  assert.match(app, /className = 'neko-pet-care-content-image'/);
+  assert.equal(fs.existsSync(path.join(root, 'static', 'assets', 'neko-idle', 'pet-care-tool', 'wash', 'wool-comb.png')), true);
+  assert.match(css, /content-action\[data-item-id="small_fish"\]::before[\s\S]*small-fish\.png[\s\S]*background-size: 50px 50px/);
+  assert.match(css, /content-action\[data-item-id="brushing"\]::before[\s\S]*wool-comb\.png[\s\S]*background-size: 72px 72px/);
+  assert.match(css, /content-action\[data-item-id="teaser_wand"\]::before[\s\S]*cat-teaser\.png[\s\S]*background-size: 86px 86px/);
 });

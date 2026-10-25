@@ -2511,6 +2511,19 @@ async function workshopDeleteCatgirl(name, options = {}) {
     });
     if (!confirmed) return false;
 
+    // Bind the deletion event to the account that is verified immediately
+    // before the local directory commit.  The value is only an expectation;
+    // the local gateway checks it against the OAuth session again before
+    // forwarding and Verse derives all account/install authority itself.
+    let petCareAccountId = '';
+    if (window.NekoPetCareRoleAliasSync?.captureAccount) {
+        try {
+            petCareAccountId = await window.NekoPetCareRoleAliasSync.captureAccount();
+        } catch (error) {
+            console.warn('删除角色前无法确认 PetCare 账号，将仅使用已记录归属排队退役:', error);
+        }
+    }
+
     try {
         const useBodyDelete = isUnsafeCharacterPathSegment(name);
         const resp = await fetch(
@@ -2523,16 +2536,28 @@ async function workshopDeleteCatgirl(name, options = {}) {
                 }
                 : { method: 'DELETE' }
         );
+        let responseData = null;
+        try {
+            responseData = await resp.json();
+        } catch (_) { /* 响应不是 JSON 就由既有错误路径处理 */ }
         if (!resp.ok) {
-            let serverMsg = '';
-            try {
-                const data = await resp.json();
-                serverMsg = data?.error || data?.message || '';
-            } catch (_) { /* 响应不是 JSON 就退回到默认文案 */ }
+            const serverMsg = responseData?.error || responseData?.message || '';
             const msg = serverMsg || (window.t ? window.t('character.deleteError') : '删除猫娘时发生错误');
             showMessage(msg, 'error', 6000);
             await showAlertDialog(msg, { type: 'error' });
             return false;
+        }
+        const retirement = responseData?.pet_care_role_alias_retirement;
+        if (retirement && window.NekoPetCareRoleAliasSync?.retire) {
+            try {
+                await window.NekoPetCareRoleAliasSync.retire(retirement, petCareAccountId);
+            } catch (error) {
+                // retire() persists before network I/O.  A service outage or
+                // account-session race therefore keeps the exact event for an
+                // event-driven retry and must not roll back a committed local
+                // character deletion.
+                console.warn('PetCare 角色别名退役同步待重试:', error);
+            }
         }
         if (typeof window.clearConversationLanguagePreference === 'function') {
             window.clearConversationLanguagePreference(name);

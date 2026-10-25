@@ -905,7 +905,6 @@ async def oauth_logout_endpoint(request: Request):
 
 async def _oauth_logout() -> dict:
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
-    await mark_pet_care_session_invalid(snapshot)
     client_id = (
         str(auth.get("client_id") or "").strip()
         or str(social.get("client_id") or "").strip()
@@ -927,36 +926,6 @@ async def _oauth_logout() -> dict:
     if not await asyncio.to_thread(C._clear_auth):
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"ok": True}
-
-
-async def mark_pet_care_session_invalid(snapshot: dict[str, Any] | None = None) -> bool:
-    """Record the trusted logout edge before local OAuth credentials are cleared.
-
-    This is a best-effort bridge from the unified account adapter to the local
-    PetCare mirror.  It passes only the verified account/session identifiers;
-    if the local PetCare store is unavailable, the frontend keeps its
-    presentation lease and the next verified login remains the fallback.
-    """
-    if snapshot is None:
-        snapshot, _auth, _social = await asyncio.to_thread(_load_oauth_logout_records)
-    snapshot = snapshot if isinstance(snapshot, dict) else {}
-    account_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
-    session_id = str(snapshot.get("session_id") or "").strip()
-    if not account_id or not session_id:
-        return False
-    try:
-        from services.pet_care import LocalPetCareBindingService
-        from utils.config_manager import get_config_manager
-
-        service = LocalPetCareBindingService(get_config_manager())
-        return await asyncio.to_thread(
-            service.mark_session_invalid,
-            account_id,
-            session_id=session_id,
-        )
-    except Exception as exc:  # noqa: BLE001 - logout must retain its own authority
-        logger.warning("community_oauth: pet-care logout marker unavailable: %s", exc)
-        return False
 
 
 @router.get("/oauth/completion")

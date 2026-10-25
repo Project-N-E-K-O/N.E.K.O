@@ -523,6 +523,13 @@
     });
     window.addEventListener('neko:pet-care:exploration-gate', function (event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        var activityId = String(
+            detail.activityId || detail.explorationId || detail.exploration_id || ''
+        ).trim();
+        var mode = window.nekoPetCareMode;
+        if (!activityId) return;
+        if (mode && typeof mode.shouldApplyExplorationGate === 'function'
+            && !mode.shouldApplyExplorationGate(detail)) return;
         if (detail.active === true) {
             clearReplyWork();
             publishSnapshot('cat-local-chat-exploration-gate');

@@ -13,6 +13,18 @@ const petCareSource = fs.readFileSync(
   path.join(root, 'static', 'app', 'app-pet-care.js'),
   'utf8',
 );
+const actionAdapterSource = fs.readFileSync(
+  path.join(root, 'static', 'avatar', 'avatar-ui-buttons', 'idle-actions-and-audio.js'),
+  'utf8',
+);
+const returnMethodsSource = fs.readFileSync(
+  path.join(root, 'static', 'avatar', 'avatar-ui-buttons', 'methods-return.js'),
+  'utf8',
+);
+const idleCssSource = fs.readFileSync(
+  path.join(root, 'static', 'css', 'index.css'),
+  'utf8',
+);
 
 class EventTargetLike {
   constructor() {
@@ -255,7 +267,50 @@ test('stage 3 leaving compatibility requests source-filtered cleanup for prior C
   assert.deepEqual(Array.from(cleanups[0].actionIds), ACTION_IDS);
   assert.deepEqual(Array.from(cleanups[1].actionIds), ACTION_IDS);
   assert.equal(cleanups[1].source, 'cat_mind');
+  assert.equal(cleanups[1].suppressed, false);
   assert.equal(window.nekoPetCareMode.getState().catMindSuppressed, false);
+});
+
+test('stage 3 cleanup restores audio providers only after suppression is released', () => {
+  const window = new EventTargetLike();
+  let explorationAway = false;
+  const stopped = [];
+  const synced = [];
+  window.nekoPetCareMode = { isExplorationAway: () => explorationAway };
+  const context = {
+    window,
+    _NEKO_CAT_MIND_ACTION_IDS: {
+      CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
+      CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback',
+    },
+    _nekoIdleSleepSoundState: { catMindActionId: 'cat2_nap_feedback' },
+    _forEachNekoIdleReturnButton: () => {},
+    _stopNekoIdleSleepSound: () => stopped.push('sleep'),
+    _stopNekoIdleCat1AmbientSound: () => stopped.push('ambient'),
+    _getActiveNekoIdleReturnTier: () => 'cat1',
+    _syncNekoIdleSleepSoundForTier: tier => synced.push(['sleep', tier]),
+    _syncNekoIdleCat1AmbientSoundForTier: tier => synced.push(['ambient', tier]),
+  };
+  const marker = '// Stage 0 pet-care compatibility cleanup.';
+  vm.createContext(context);
+  vm.runInContext(actionAdapterSource.slice(actionAdapterSource.indexOf(marker)), context);
+
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:cleanup-request', {
+    detail: { source: 'cat_mind', suppressed: true, actionIds: ACTION_IDS },
+  }));
+  assert.deepEqual(stopped, ['sleep', 'ambient']);
+  assert.deepEqual(synced, []);
+
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:cleanup-request', {
+    detail: { source: 'cat_mind', suppressed: false, actionIds: ACTION_IDS },
+  }));
+  assert.deepEqual(synced, [['sleep', 'cat1'], ['ambient', 'cat1']]);
+
+  explorationAway = true;
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:cleanup-request', {
+    detail: { source: 'cat_mind', suppressed: false, actionIds: ACTION_IDS },
+  }));
+  assert.equal(synced.length, 2);
 });
 
 test('stage 3 mode exit cleans a running Cat Mind compatibility set', () => {
@@ -302,6 +357,65 @@ test('stage 3 rejects a late old-context response after a new account generation
   }).blocked, false);
 });
 
+test('negative presentation is context fenced, supports coexistence and clears on identity change', () => {
+  const runtime = createRuntime();
+  const { window } = runtime;
+  const changes = [];
+  window.addEventListener('neko:pet-care:negative-presentation-change', event => {
+    changes.push(event.detail);
+  });
+  enterAvailablePet(runtime);
+  const accountAContext = window.nekoPetCareMode.captureContext();
+
+  window.nekoPetCareMode.setNegativePresentation({
+    sick: true,
+    sulk: true,
+    context: accountAContext,
+    reason: 'complete-authoritative-snapshot',
+  });
+  let state = window.nekoPetCareMode.getState();
+  assert.equal(state.negativePresentation.sick, true);
+  assert.equal(state.negativePresentation.sulk, true);
+  assert.equal(window.nekoPetCareMode.shouldSuppressHoverResponse(), true);
+
+  window.nekoPetCareMode.updateContext({
+    accountId: 'account-b',
+    currentCharacterUid: 'role-b',
+    boundRoleId: 'server-role-b',
+    reason: 'account-switch',
+  });
+  state = window.nekoPetCareMode.getState();
+  assert.equal(state.negativePresentation.sick, false);
+  assert.equal(state.negativePresentation.sulk, false);
+  assert.equal(window.nekoPetCareMode.shouldSuppressHoverResponse(), false);
+
+  window.nekoPetCareMode.setNegativePresentation({
+    sick: true,
+    sulk: true,
+    context: accountAContext,
+    reason: 'late-account-a-snapshot',
+  });
+  state = window.nekoPetCareMode.getState();
+  assert.equal(state.negativePresentation.sick, false);
+  assert.equal(state.negativePresentation.sulk, false);
+  assert.equal(changes.length, 2);
+  assert.equal(changes[0].current.sick, true);
+  assert.equal(changes[0].current.sulk, true);
+  assert.equal(changes[1].current.sick, false);
+  assert.equal(changes[1].current.sulk, false);
+});
+
+test('negative presentation affects only avatar feedback and keeps the PetCare entry independent', () => {
+  assert.match(petCareSource, /function syncNegativePresentation\(reason\)/);
+  assert.match(petCareSource, /negative\.sick\.active === true/);
+  assert.match(petCareSource, /negative\.sulk\.active === true/);
+  assert.match(actionAdapterSource, /neko:pet-care:negative-presentation-change/);
+  assert.match(actionAdapterSource, /data-neko-pet-care-sick/);
+  assert.match(actionAdapterSource, /data-neko-pet-care-sulk/);
+  assert.match(returnMethodsSource, /shouldSuppressHoverResponse/);
+  assert.match(idleCssSource, /data-neko-pet-care-sick="true"/);
+});
+
 test('stage 3 app integration requires account, bound role, complete snapshot and cat form', () => {
   assert.match(petCareSource, /function isPetCareCompatibilityReady\(\)/);
   assert.match(petCareSource, /state\.authStatus\s*===\s*['"]logged-in['"]/);
@@ -313,10 +427,11 @@ test('stage 3 app integration requires account, bound role, complete snapshot an
   assert.match(petCareSource, /CAT_MIND_ACTION_IDS/);
 });
 
-test('stage 3 keeps the feature hint device-local and informational', () => {
+test('stage 3 keeps the feature hint device-local, visible and informational', () => {
   assert.match(petCareSource, /FEATURE_HINT_STORAGE_KEY/);
   assert.match(petCareSource, /window\.localStorage\.getItem\(FEATURE_HINT_STORAGE_KEY\)/);
   assert.match(petCareSource, /window\.localStorage\.setItem\(FEATURE_HINT_STORAGE_KEY,\s*['"]1['"]\)/);
-  assert.match(petCareSource, /neko:pet-care:feature-hint/);
+  assert.match(petCareSource, /showPetCareToast\(['"]已开启养宠功能/);
+  assert.doesNotMatch(petCareSource, /emit\(['"]neko:pet-care:feature-hint/);
   assert.match(petCareSource, /已开启养宠功能/);
 });

@@ -82,6 +82,7 @@ from utils.config_manager import (
     flatten_reserved,
     get_character_uid,
     get_reserved,
+    is_valid_character_uid,
     set_reserved,
 )
 from utils.asyncio_retirement import await_retirement
@@ -95,6 +96,11 @@ from utils.external_route_registry import (
 )
 from utils.recent_file import capture_recent_generation, write_recent_payload
 from utils.language_utils import normalize_language_code
+from main_routers.pet_care_role_alias_outbox import (
+    PetCareRoleAliasOutboxError,
+    finish_retirement as finish_pet_care_role_alias_retirement,
+    prepare_retirement as prepare_pet_care_role_alias_retirement,
+)
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
     remove_pending as remove_new_character_greeting_pending,
@@ -146,6 +152,24 @@ EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"
 
 VISIT_DATA_BUSY = "VISIT_DATA_BUSY"
 """``error_code`` (409) while the visit data of an earlier rename / delete is not settled, or is unreadable."""
+
+
+def _pet_care_role_alias_retirement(character_uid: str | None) -> dict[str, str] | None:
+    """Describe the exact alias retirement caused by a committed local delete.
+
+    This is transport evidence only.  It contains no account, stable role, pet,
+    or binding identity; the Verse edge derives account/install authority and
+    the PetCare service retires only an already-known alias in that namespace.
+    """
+
+    uid = str(character_uid or "").strip()
+    if not is_valid_character_uid(uid):
+        return None
+    return {
+        "character_uid": uid,
+        "source_revision": f"delete:{uid}",
+        "status": "retired",
+    }
 
 
 async def _mark_new_character_greeting_pending_safe(config_manager, character_name: str, source: str) -> tuple[bool, str]:
@@ -2083,9 +2107,53 @@ async def _delete_catgirl_by_name_serialized(name: str):
                              'error': '串门数据正在整理或无法读取，请稍后再删除'}, status_code=409)
     visit_settled = True
     settle_cancelled = False
+    retirement_prepared = False
+    retirement_finish_cancelled = False
+    character_uid = get_character_uid(characters["猫娘"][name])
     try:
-        result = await _delete_catgirl_transaction(_config_manager, characters, name)
+        if is_valid_character_uid(character_uid):
+            try:
+                _, prepare_cancelled = await _await_thread_call_to_completion(
+                    prepare_pet_care_role_alias_retirement,
+                    _config_manager,
+                    character_uid,
+                )
+                retirement_prepared = True
+                if prepare_cancelled:
+                    raise asyncio.CancelledError
+            except PetCareRoleAliasOutboxError as exc:
+                logger.warning(
+                    "删除前写 PetCare 角色退役 outbox 失败，已阻止删除: %s: %r",
+                    name,
+                    exc,
+                )
+                result = JSONResponse(
+                    {
+                        "success": False,
+                        "error_code": "PET_CARE_RETIREMENT_OUTBOX_UNAVAILABLE",
+                        "error": "角色绑定退役记录暂时无法保存，请稍后再删除。",
+                    },
+                    status_code=503,
+                )
+            else:
+                result = await _delete_catgirl_transaction(_config_manager, characters, name)
+        else:
+            result = await _delete_catgirl_transaction(_config_manager, characters, name)
     finally:
+        if retirement_prepared:
+            try:
+                _, retirement_finish_cancelled = await _await_thread_call_to_completion(
+                    finish_pet_care_role_alias_retirement,
+                    _config_manager,
+                    character_uid,
+                )
+            except PetCareRoleAliasOutboxError as exc:
+                # The prepared record is already durable. Keep it for startup /
+                # lifecycle reconciliation rather than turning a committed
+                # character deletion into a false failure response.
+                logger.warning(
+                    "PetCare 角色退役 outbox 收口待重试: %s: %r", name, exc
+                )
         if visit_item is not None:
             visit_settled, settle_cancelled = await _await_coroutine_to_completion(
                 visit_hooks.settle_retire(_config_manager, visit_item),
@@ -2094,7 +2162,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
         # 角色已删除，串门残留没退役完：不回滚角色，标记保留，下次启动补完
         result["partial_success"] = True
         result["visit_data_retire_pending"] = True
-    if settle_cancelled:
+    if settle_cancelled or retirement_finish_cancelled:
         # 收尾期间来了取消：标记已处理完，照常把取消传出去（与其它收尾调用一致）
         raise asyncio.CancelledError
     return result
@@ -2205,7 +2273,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         retire_character_runtime_caches(name)
 
         avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
-        return {
+        result = {
             "success": True,
             "unsafe_name_rescue": True,
             "memory_deleted": False,
@@ -2213,6 +2281,10 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             "memory_server_reloaded": memory_server_reloaded,
             **({"partial_success": True, "chat_avatar_cleanup_failed": True} if not avatar_cleanup_ok else {}),
         }
+        retirement = _pet_care_role_alias_retirement(deleted_character_uid)
+        if retirement is not None:
+            result["pet_care_role_alias_retirement"] = retirement
+        return result
 
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
@@ -2468,6 +2540,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         logger.exception("remove new character greeting pending failed: %s", name)
 
     result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
+    retirement = _pet_care_role_alias_retirement(deleted_character_uid)
+    if retirement is not None:
+        result["pet_care_role_alias_retirement"] = retirement
     if not avatar_cleanup_ok:
         result.update({"partial_success": True, "chat_avatar_cleanup_failed": True})
     if not pending_remove_ok:

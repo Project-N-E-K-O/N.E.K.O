@@ -1372,22 +1372,41 @@
                 return { visible: false, busy: false, rect: null };
             }
             const busySelector = [
-                '.is-cat1-edge-peek-peeking', '.is-cat1-edge-peek-walking',
-                '.is-cat1-desktop-window-edge-peek-peeking',
-                '.is-cat1-desktop-window-edge-peek-walking',
                 '.is-cat1-walking',
                 '.is-cat1-dropping-from-compact-top-edge',
-                '[data-neko-dragging="true"]', '[data-neko-gravity="true"]',
+                '.is-cat1-edge-peek-left', '.is-cat1-edge-peek-right',
+                '.is-cat1-edge-peek-top', '.is-cat1-edge-peek-bottom',
+                '.is-cat1-edge-peek-top-left', '.is-cat1-edge-peek-top-right',
+                '.is-cat1-edge-peek-bottom-left', '.is-cat1-edge-peek-bottom-right',
+                '.is-cat1-desktop-window-edge-peek-walking',
+                '.is-cat1-desktop-window-edge-peeking',
+                '.is-cat1-desktop-window-top-edge-walking',
+                '.is-cat1-desktop-window-top-edge-dropping',
+                '[data-dragging="pending"]', '[data-dragging="true"]',
+                '[data-neko-cat1-playground-dragging]',
             ].join(',');
             const busy = (container.matches && container.matches(busySelector)) ||
                 (container.querySelector && container.querySelector(busySelector));
+            // Gravity keeps its active class after landing.  Resolve its real
+            // owner, then use the public motion contract so a resting cat does
+            // not suppress the launcher for the whole gravity session.
+            const gravityButton = (container.matches && container.matches('.is-desktop-window-gravity'))
+                ? container
+                : (container.querySelector && container.querySelector('.is-desktop-window-gravity'));
+            const gravityController = window.NekoDesktopWindowGravity;
+            let gravityMoving = false;
+            if (gravityButton && gravityController && typeof gravityController.isMoving === 'function') {
+                try {
+                    gravityMoving = gravityController.isMoving(gravityButton) === true;
+                } catch (_) {}
+            }
             // Stretch/eat/play are presentation actions on the existing cat
             // entity.  They must not make the independent pet-care launcher
             // disappear.  Some older action adapters briefly mark the shared
             // return container busy while those classes are active, so only
             // treat the generic attribute as a gate when no such action is
-            // being presented.  Movement, drag, gravity and edge-peek remain
-            // hard gates through busySelector above.
+            // being presented.  Movement, drag and edge-peek remain hard
+            // selector gates; gravity uses its motion contract above.
             const actionPresentationSelector = [
                 '.is-cat1-stretching', '.is-cat1-eating', '.is-cat1-playing',
                 '[data-neko-cat1-play-finishing="true"]',
@@ -1397,7 +1416,7 @@
             const markedBusy = container.getAttribute('data-neko-return-busy') === 'true';
             return {
                 visible: true,
-                busy: !!busy || (markedBusy && !actionPresentation),
+                busy: !!busy || gravityMoving || (markedBusy && !actionPresentation),
                 rect: { left: rect.left, top: rect.top, right: rect.right,
                     bottom: rect.bottom, width: rect.width, height: rect.height },
             };

@@ -349,9 +349,11 @@ function _beginNekoCatMindStateAction(state, actionId, tier, detail = {}) {
     state.catMindStartedAt = Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now();
     state.catMindSource = detail.source || 'avatar-ui-buttons';
     state.catMindRequestId = detail.requestId || '';
+    state.catMindActivityId = typeof detail.activityId === 'string' ? detail.activityId.slice(0, 128) : '';
     state.catMindTier = _normalizeNekoIdleReturnTier(tier);
     state.catMindResultReported = false;
     return { actionId: state.catMindActionId, runId: state.catMindRunId, requestId: state.catMindRequestId,
+        activityId: state.catMindActivityId,
         startedAt: state.catMindStartedAt, source: state.catMindSource, tier: state.catMindTier };
 }
 
@@ -362,6 +364,7 @@ function _clearNekoCatMindStateAction(state) {
     state.catMindStartedAt = 0;
     state.catMindSource = '';
     state.catMindRequestId = '';
+    state.catMindActivityId = '';
     state.catMindTier = _NEKO_IDLE_TIER_NONE;
     state.catMindResultReported = false;
 }
@@ -376,6 +379,7 @@ function _dispatchNekoCatMindActionResult(actionId, result, detail = {}) {
         reason: detail.reason || result,
         detail: _sanitizeNekoCatIdleObservationDetail(Object.assign({}, detail.detail || {}, {
             runId: detail.runId || '', requestId: detail.requestId || '',
+            activityId: detail.activityId || '',
             durationMs: Number.isFinite(startedAt) && startedAt > 0 ? Math.max(0, endedAt - startedAt) : 0
         }))
     };
@@ -391,6 +395,7 @@ function _reportNekoCatMindStateActionResult(state, result, detail = {}) {
     const reported = _dispatchNekoCatMindActionResult(state.catMindActionId, result, Object.assign({}, detail, {
         source: detail.source || state.catMindSource, tier: detail.tier || state.catMindTier,
         runId: detail.runId || state.catMindRunId, requestId: detail.requestId || state.catMindRequestId,
+        activityId: detail.activityId || state.catMindActivityId,
         startedAt: detail.startedAt || state.catMindStartedAt
     }));
     _clearNekoCatMindStateAction(state);
@@ -405,7 +410,8 @@ function _isNekoCatMindStateActionRunCurrent(state, run, audio = null) {
 function _reportNekoCatMindStateActionRunResult(state, run, audio, result, detail = {}) {
     if (!_isNekoCatMindStateActionRunCurrent(state, run, audio)) return false;
     return _reportNekoCatMindStateActionResult(state, result, Object.assign({
-        source: run.source, tier: run.tier, runId: run.runId, requestId: run.requestId, startedAt: run.startedAt
+        source: run.source, tier: run.tier, runId: run.runId, requestId: run.requestId,
+        activityId: run.activityId, startedAt: run.startedAt
     }, detail));
 }
 
@@ -723,20 +729,76 @@ function _runNekoCatMindActionRequest(request) {
     const expectedTier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
         (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
     if (request.tier !== expectedTier) { _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: 'request_tier_mismatch' }); return; }
-    const provider = _dryRunNekoCatMindActionProvider(actionId, { source: 'cat-mind-action-adapter' });
-    if (!provider.allowed) { _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: provider.reason }); return; }
-    let bound = false;
-    const options = { source: 'cat_mind', requestId: request.requestId,
-        onAccepted(run) { bound = _acknowledgeNekoCatMindActionRequest(request, 'accepted', { reason: 'runner_accepted', runId: run && run.runId }) || bound; },
-        onStarted(run) { _acknowledgeNekoCatMindActionRequest(request, 'started', { reason: 'runner_started', runId: run && run.runId }); } };
-    const button = _findNekoCatMindVisibleButtonForTier(expectedTier);
-    let accepted = false;
-    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) accepted = _playNekoIdleCat1EatAction(button, options);
-    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) accepted = _startNekoIdleCat1PairMove(button, options);
-    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) accepted = _playNekoIdleCat1PlayAction(button, options);
-    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) accepted = _playNekoIdleCat1AmbientSound(_nekoIdleCat1AmbientSoundState.token, options);
-    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) accepted = _playNekoIdleSleepSound(expectedTier, _nekoIdleSleepSoundState.token, options);
-    if (!accepted && !bound) _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: 'runner_not_started' });
+    const activityId = request.detail && typeof request.detail.activityId === 'string'
+        ? request.detail.activityId.slice(0, 128) : '';
+    const runRequest = (authorization = null) => {
+        const provider = _dryRunNekoCatMindActionProvider(actionId, { source: 'cat-mind-action-adapter' });
+        if (!provider.allowed) {
+            _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: provider.reason });
+            return false;
+        }
+        let bound = false;
+        const options = { source: 'cat_mind', requestId: request.requestId, activityId,
+            onAccepted(run) { bound = _acknowledgeNekoCatMindActionRequest(request, 'accepted', { reason: 'runner_accepted', runId: run && run.runId }) || bound; },
+            onStarted(run) { _acknowledgeNekoCatMindActionRequest(request, 'started', { reason: 'runner_started', runId: run && run.runId }); } };
+        if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && authorization &&
+            typeof authorization === 'object') {
+            const minimumDurationMs = Number(authorization.minimumDurationMs);
+            if (Number.isInteger(minimumDurationMs) && minimumDurationMs > 0 &&
+                minimumDurationMs <= 0x7fffffff) {
+                options.minimumDurationMs = minimumDurationMs;
+            }
+        }
+        const button = _findNekoCatMindVisibleButtonForTier(expectedTier);
+        let accepted = false;
+        if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) accepted = _playNekoIdleCat1EatAction(button, options);
+        else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) accepted = _startNekoIdleCat1PairMove(button, options);
+        else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) accepted = _playNekoIdleCat1PlayAction(button, options);
+        else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) accepted = _playNekoIdleCat1AmbientSound(_nekoIdleCat1AmbientSoundState.token, options);
+        else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) accepted = _playNekoIdleSleepSound(expectedTier, _nekoIdleSleepSoundState.token, options);
+        if (!accepted && !bound) _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: 'runner_not_started' });
+        return accepted;
+    };
+    const initialProvider = _dryRunNekoCatMindActionProvider(actionId, { source: 'cat-mind-action-adapter' });
+    if (!initialProvider.allowed) {
+        _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: initialProvider.reason });
+        return;
+    }
+    const petCare = typeof window !== 'undefined' ? window.nekoPetCareEntry : null;
+    const authorize = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && activityId &&
+        petCare && typeof petCare.authorizeCatMindYarnAction === 'function'
+        ? petCare.authorizeCatMindYarnAction(request) : null;
+    if (!authorize || typeof authorize.then !== 'function') {
+        runRequest();
+        return;
+    }
+    if (!_acknowledgeNekoCatMindActionRequest(request, 'deferred', {
+        reason: 'pet-care-play-authorization-pending'
+    })) return;
+    Promise.resolve(authorize).then((authorization) => {
+        // Re-acknowledging the deferred state is an ownership check: a timed
+        // out or replaced Cat Mind request must never start a late runner.
+        if (!_acknowledgeNekoCatMindActionRequest(request, 'deferred', {
+            reason: 'pet-care-play-authorization-confirmed'
+        })) return;
+        const structuredAuthorization = authorization && typeof authorization === 'object' &&
+            authorization.authorized === true;
+        const structuredMinimumDurationMs = Number(structuredAuthorization &&
+            authorization.minimumDurationMs);
+        if (authorization !== true && (!structuredAuthorization ||
+            !Number.isInteger(structuredMinimumDurationMs) || structuredMinimumDurationMs <= 0 ||
+            structuredMinimumDurationMs > 0x7fffffff)) {
+            _acknowledgeNekoCatMindActionRequest(request, 'rejected', {
+                reason: 'pet-care-play-authorization-rejected'
+            });
+            return;
+        }
+        runRequest(authorization);
+    }, () => {
+        _acknowledgeNekoCatMindActionRequest(request, 'rejected', {
+            reason: 'pet-care-play-authorization-failed'
+        });
+    });
 }
 function _isNekoCatMindAudioActionActive() {
     return !!(_nekoIdleCat1AmbientSoundState.catMindActionId || _nekoIdleSleepSoundState.catMindActionId);

@@ -321,6 +321,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.pet_care"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"

@@ -49,14 +49,27 @@ def test_pet_care_stage0_gate_and_cleanup_contracts_are_present():
     assert "_forceNekoIdleCat1LayerCleanup" in journey_source
     assert 'static/app/app-pet-care-mode.js' in pages_source
 
-    busy_block = anchor_source.split("const busySelector", 1)[1].split("].join", 1)[0]
+    anchor_block = anchor_source.split("window.nekoCatInteractionAnchor", 1)[1].split(
+        "function isPetCareExplorationAway", 1
+    )[0]
+    busy_block = anchor_block.split("const busySelector", 1)[1].split("].join", 1)[0]
     for blocked_state in (
         ".is-cat1-walking",
         ".is-cat1-dropping-from-compact-top-edge",
-        '[data-neko-dragging="true"]',
-        '[data-neko-gravity="true"]',
+        '[data-dragging="pending"]',
+        '[data-dragging="true"]',
+        "[data-neko-cat1-playground-dragging]",
+        ".is-cat1-desktop-window-edge-peek-walking",
+        ".is-cat1-desktop-window-edge-peeking",
+        ".is-cat1-desktop-window-top-edge-walking",
+        ".is-cat1-desktop-window-top-edge-dropping",
     ):
         assert blocked_state in busy_block
+    assert "data-neko-dragging" not in busy_block
+    assert "data-neko-gravity" not in busy_block
+    assert "NekoDesktopWindowGravity" in anchor_block
+    assert "gravityController.isMoving(gravityButton) === true" in anchor_block
+    assert "!!busy || gravityMoving ||" in anchor_block
     # The lock document only gates the launcher for movement, drag, gravity,
     # and edge-peek states. Presentation actions must not hide the entry.
     for presentation_state in (
@@ -65,3 +78,35 @@ def test_pet_care_stage0_gate_and_cleanup_contracts_are_present():
         ".is-cat1-eating",
     ):
         assert presentation_state not in busy_block
+
+
+def test_official_client_keeps_only_the_pet_care_gateway() -> None:
+    """The distributable client must not regain a second PetCare authority."""
+
+    for obsolete_source in (
+        "main_routers/pet_care_router.py",
+        "services/pet_care/__init__.py",
+        "services/pet_care/account_session.py",
+        "services/pet_care/binding_service.py",
+    ):
+        assert not (PROJECT_ROOT / obsolete_source).exists()
+
+    web_app_source = _read("app/main_server/web_app.py")
+    gateway_source = _read("main_routers/pet_care_gateway.py")
+    assert "from main_routers.pet_care_gateway import router as pet_care_router" in web_app_source
+    assert "app.include_router(pet_care_router)" in web_app_source
+    assert 'APIRouter(prefix="/api/pet-care"' in gateway_source
+    for forbidden_authority in (
+        "LocalPetCareBindingService",
+        "sqlite3",
+        "CREATE TABLE",
+        "last_settled_at =",
+    ):
+        assert forbidden_authority not in gateway_source
+
+    packaging = _read("pyproject.toml")
+    desktop_workflow = _read(".github/workflows/build-desktop.yml")
+    linux_workflow = _read(".github/workflows/build-desktop-linux.yml")
+    assert packaging.count('"services/pet_care"') == 2
+    assert desktop_workflow.count("--nofollow-import-to=services.pet_care") == 2
+    assert linux_workflow.count("--nofollow-import-to=services.pet_care") == 1

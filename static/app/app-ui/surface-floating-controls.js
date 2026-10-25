@@ -1408,6 +1408,24 @@
                             4000
                         );
                     }
+                    // In a browser the reserved popup is still about:blank here.
+                    // A native_sync ticket is already sufficient for Verse to
+                    // bootstrap the same verified OAuth account; native_delegate
+                    // only adds the narrower local facts capability.  Do not keep
+                    // the account handoff hidden behind that optional proof's
+                    // longer validation deadline.  social-session-init returns a
+                    // delegate from the same verified snapshot when redemption
+                    // succeeds, so this navigation does not lose that capability.
+                    if (!isElectron && initialSyncTicket) {
+                        const browserTargetUrl = attachNativeDelegate(
+                            new URL(url, window.location.href),
+                            initialNativeHandoff.nativeDelegate
+                        );
+                        if (!navigateBrowserPopup(browserTargetUrl.toString())) {
+                            throw new Error('community navigation failed');
+                        }
+                        return;
+                    }
                     await completeInitialCommunityHandoff(
                         url,
                         initialNativeHandoff.nativeDelegate,

@@ -1843,6 +1843,16 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
+    # The one-time ticket already authorizes delivery of the Desktop OAuth
+    # bearer to this allowlisted community origin.  Return the narrower facts
+    # delegate from the exact same verified session as part of that response,
+    # so the browser can open as soon as native_sync is ready instead of
+    # keeping its reserved popup blank while a second validation finishes.
+    native_delegate = _issue_native_delegate(
+        local_user_id=local_user_id,
+        audience=_social_base_url(),
+        session_fingerprint=_desktop_session_fingerprint(snapshot),
+    )
     return JSONResponse(
         {
             "access_token": access_token,
@@ -1858,6 +1868,8 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
                 or _co._desktop_client_id()
             ),
             "bind": bind,
+            "native_delegate": native_delegate,
+            "native_delegate_expires_in": _NATIVE_DELEGATE_TTL_SEC,
         },
         headers={**cors, "Cache-Control": "no-store", "Pragma": "no-cache"},
     )
@@ -2469,7 +2481,6 @@ async def logout_endpoint(request: Request, payload: dict | None = Body(default=
 
     # 在飞的串门先收尾、封存上传文件，清登录态期间不准入新串门
     async with community_oauth.visit_account_change():
-        await community_oauth.mark_pet_care_session_invalid()
         cleared = await asyncio.to_thread(_clear_auth)
     if not cleared:
         raise HTTPException(status_code=500, detail="local_clear_failed")

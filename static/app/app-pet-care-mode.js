@@ -22,16 +22,17 @@
         MODE_CHANGE: 'neko:pet-care:mode-change',
         CONTEXT_CHANGE: 'neko:pet-care:context-change',
         COMPATIBILITY_CHANGE: 'neko:pet-care:compatibility-change',
+        NEGATIVE_PRESENTATION_CHANGE: 'neko:pet-care:negative-presentation-change',
         CLEANUP_REQUEST: 'neko:pet-care:cleanup-request',
         CAT_LOCAL_ACTIVE_CHANGE: 'neko:cat-local-active-change',
         EXPLORATION_GATE: 'neko:pet-care:exploration-gate',
         CONTEXT_CHANGE_REQUEST: 'neko:pet-care:context-change-request',
     });
 
-    // These are the Cat Mind autonomous actions that can conflict with a
-    // future server-confirmed care operation.  The compatibility boundary
-    // deliberately knows action ids only; it does not own Cat Mind scoring,
-    // values, or action execution.
+    // These are the Cat Mind autonomous actions that can conflict while a
+    // user-owned PetCare care/play presentation owns the cat. The lifecycle
+    // owner opens and closes that short conflict window; this boundary only
+    // knows action ids and does not own Cat Mind scoring, values or execution.
     var CAT_MIND_ACTION_IDS = Object.freeze([
         'cat1_social_ping',
         'cat1_eat_snack',
@@ -40,6 +41,7 @@
         'cat2_nap_feedback',
         'cat3_sleep_feedback',
     ]);
+    var TERMINAL_EXPLORATION_ACTIVITY_LIMIT = 32;
 
     var VALID_MODES = Object.freeze(Object.keys(MODES).reduce(function (result, key) {
         result[MODES[key]] = true;
@@ -55,11 +57,12 @@
         catLocalActive: false,
         catMindSuppressed: false,
         blockedCatMindActionIds: null,
+        negativePresentation: { sick: false, sulk: false },
         updatedAt: Date.now(),
         reason: 'initial',
         explorationAway: null,
         explorationGeneration: 0,
-        lastExplorationActivityId: '',
+        terminalExplorationActivityIds: [],
     };
 
     function normalizeString(value) {
@@ -88,6 +91,10 @@
             blockedCatMindActionIds: state.blockedCatMindActionIds
                 ? state.blockedCatMindActionIds.slice()
                 : null,
+            negativePresentation: Object.freeze({
+                sick: state.negativePresentation.sick === true,
+                sulk: state.negativePresentation.sulk === true,
+            }),
             updatedAt: state.updatedAt,
             reason: state.reason,
             explorationAway: state.explorationAway
@@ -134,6 +141,7 @@
                 activityId: state.explorationAway.activityId,
                 activityGeneration: state.explorationAway.generation,
                 reason: 'pet-care-context-changed',
+                confirmedTerminal: false,
             });
         }
         state.generation += 1;
@@ -141,7 +149,17 @@
         state.currentCharacterUid = nextCharacterUid;
         state.boundRoleId = nextBoundRoleId;
         state.updatedAt = Date.now();
-        state.reason = normalizeString(next.reason) || 'context-change';
+        var contextReason = normalizeString(next.reason) || 'context-change';
+        state.reason = contextReason;
+        // Negative status is a presentation fact scoped to the exact
+        // account/binding generation. Never let the previous pet's visible
+        // state survive while the new authoritative snapshot is loading.
+        setNegativePresentation({
+            sick: false,
+            sulk: false,
+            reason: 'pet-care-context-changed',
+        });
+        state.reason = contextReason;
         // A changed account, role, or binding invalidates any old autonomous
         // action gate before a later service response can re-enable it.
         if (state.catMindSuppressed) {
@@ -164,8 +182,8 @@
         var next = detail && typeof detail === 'object' ? detail : {};
         var previous = snapshot();
         // Exploration is an activity gate layered over the existing pet mode.
-        // It must not release the Stage 3 Cat Mind compatibility gate merely
-        // because the visual cat is temporarily away.
+        // It must not release a currently active care/play conflict window
+        // merely because the visual cat is temporarily away.
         if (normalizedMode !== MODES.PET_AVAILABLE &&
             normalizedMode !== MODES.EXPLORATION_AWAY && state.catMindSuppressed) {
             setCatMindCompatibility({
@@ -213,9 +231,38 @@
                 reason: state.reason,
                 actionIds: cleanupActionIds,
                 source: 'cat_mind',
+                suppressed: nextSuppressed,
             });
         }
         return current;
+    }
+
+    function setNegativePresentation(detail) {
+        var next = detail && typeof detail === 'object' ? detail : {};
+        if (next.context && !isCurrentContext(next.context)) return snapshot();
+        var sick = next.sick === true;
+        var sulk = next.sulk === true;
+        if (state.negativePresentation.sick === sick &&
+            state.negativePresentation.sulk === sulk) return snapshot();
+        var previous = Object.freeze({
+            sick: state.negativePresentation.sick === true,
+            sulk: state.negativePresentation.sulk === true,
+        });
+        state.negativePresentation = { sick: sick, sulk: sulk };
+        state.updatedAt = Date.now();
+        state.reason = normalizeString(next.reason) || 'negative-presentation-change';
+        var current = Object.freeze({ sick: sick, sulk: sulk });
+        emit(EVENT_NAMES.NEGATIVE_PRESENTATION_CHANGE, {
+            previous: previous,
+            current: current,
+            generation: state.generation,
+            reason: state.reason,
+        });
+        return snapshot();
+    }
+
+    function shouldSuppressHoverResponse() {
+        return state.negativePresentation.sulk === true;
     }
 
     function setCatLocalActive(active, detail) {
@@ -277,10 +324,6 @@
 
     function shouldBlockEntityOutput(detail) {
         if (!isExplorationAway()) return { blocked: false, reason: '' };
-        var next = detail && typeof detail === 'object' ? detail : {};
-        if (next.allowDuringExploration === true || next.source === 'pet-care-exploration') {
-            return { blocked: false, reason: 'pet-care-exploration-allowed' };
-        }
         return {
             blocked: true,
             reason: 'pet-care-exploration-away',
@@ -307,7 +350,7 @@
         state.updatedAt = Date.now();
         state.reason = state.explorationAway.reason;
         // This is deliberately independent from setMode(): changing mode
-        // would release the Stage 3 Cat Mind gate as a side effect.
+        // would release an active care/play conflict window as a side effect.
         var current = snapshot();
         if (next.emit !== false) {
             emit(EVENT_NAMES.EXPLORATION_GATE, {
@@ -316,16 +359,37 @@
                 activityId: activityId,
                 generation: state.explorationAway.generation,
                 reason: state.explorationAway.reason,
+                context: captureContext(),
                 current: current,
             });
-            requestCleanup({
-                source: 'exploration',
-                reason: state.explorationAway.reason,
-                activityId: activityId,
-                activityGeneration: state.explorationAway.generation,
-            });
         }
+        // `emit: false` only prevents this adapter from re-broadcasting an
+        // external gate event.  The first accepted active activity still owns
+        // the cat entity and must cancel any work that was already in flight.
+        // The same-activity early return above keeps this cleanup idempotent.
+        requestCleanup({
+            source: 'exploration',
+            reason: state.explorationAway.reason,
+            activityId: activityId,
+            activityGeneration: state.explorationAway.generation,
+        });
         return current;
+    }
+
+    function rememberTerminalExplorationActivity(activityId) {
+        var normalized = normalizeString(activityId);
+        if (!normalized) return;
+        var terminalIds = state.terminalExplorationActivityIds;
+        var existingIndex = terminalIds.indexOf(normalized);
+        if (existingIndex >= 0) terminalIds.splice(existingIndex, 1);
+        terminalIds.push(normalized);
+        if (terminalIds.length > TERMINAL_EXPLORATION_ACTIVITY_LIMIT) {
+            terminalIds.splice(0, terminalIds.length - TERMINAL_EXPLORATION_ACTIVITY_LIMIT);
+        }
+    }
+
+    function isTerminalExplorationActivity(activityId) {
+        return state.terminalExplorationActivityIds.indexOf(activityId) >= 0;
     }
 
     function endExplorationAway(detail) {
@@ -339,7 +403,8 @@
         if (Number.isFinite(activityGeneration) && activityGeneration !== currentAway.generation) {
             return snapshot();
         }
-        state.lastExplorationActivityId = currentAway.activityId;
+        var confirmedTerminal = next.confirmedTerminal !== false;
+        if (confirmedTerminal) rememberTerminalExplorationActivity(currentAway.activityId);
         state.explorationAway = null;
         state.updatedAt = Date.now();
         state.reason = normalizeString(next.reason) || 'exploration-ended';
@@ -351,6 +416,8 @@
                 activityId: currentAway.activityId,
                 generation: currentAway.generation,
                 reason: state.reason,
+                confirmedTerminal: confirmedTerminal,
+                context: captureContext(),
                 current: current,
             });
         }
@@ -367,26 +434,27 @@
             (!Number.isFinite(activityGeneration) || activityGeneration === currentAway.generation);
     }
 
-    // Cross-module gate events can arrive after a newer server snapshot has
-    // already been applied.  Only the same activity may change the local
-    // renderer gate; an active event is accepted while no activity is active
-    // so script load order does not drop the first departure notification.
+    // Cross-module gate events can arrive after a newer account/role context
+    // has already been applied.  The captured context generation rejects that
+    // stale event; within the current context only the same activity may
+    // change the local renderer gate.
     function shouldApplyExplorationGate(detail) {
         var next = detail && typeof detail === 'object' ? detail : {};
         var activityId = normalizeString(next.activityId || next.explorationId || next.exploration_id);
         var currentAway = state.explorationAway;
-        if (!activityId) return false;
+        if (!activityId || !isCurrentContext(next.context)) return false;
         if (next.active === true) {
             if (!currentAway || !currentAway.active) {
-                // Do not resurrect a terminal/context-invalidated activity
-                // when its delayed active event arrives after the gate ended.
-                return state.lastExplorationActivityId !== activityId;
+                // Do not resurrect a confirmed terminal activity when its
+                // delayed active event arrives after the gate ended.
+                return !isTerminalExplorationActivity(activityId);
             }
             return currentAway.activityId === activityId;
         }
         if (next.active !== false) return false;
         return !!((currentAway && currentAway.active && currentAway.activityId === activityId) ||
-            (!currentAway && state.lastExplorationActivityId === activityId));
+            (!currentAway && (isTerminalExplorationActivity(activityId) ||
+                next.confirmedTerminal === false)));
     }
 
     function captureContext() {
@@ -454,7 +522,9 @@
             captureContext: captureContext,
             isCurrentContext: isCurrentContext,
             setCatMindCompatibility: setCatMindCompatibility,
+            setNegativePresentation: setNegativePresentation,
             setCatLocalActive: setCatLocalActive,
+            shouldSuppressHoverResponse: shouldSuppressHoverResponse,
             shouldBlockCatMindActionRequest: shouldBlockCatMindActionRequest,
             shouldBlockEntityOutput: shouldBlockEntityOutput,
             isExplorationAway: isExplorationAway,

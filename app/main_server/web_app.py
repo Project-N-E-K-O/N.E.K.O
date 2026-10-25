@@ -410,7 +410,8 @@ from main_routers.community_oauth import (  # noqa
     router as community_oauth_router,
 )
 from main_routers.community_remote_proxy import router as community_remote_proxy_router
-from main_routers.pet_care_router import router as pet_care_router
+from main_routers.pet_care_gateway import router as pet_care_router
+from main_routers.pet_care_role_alias_outbox import router as pet_care_role_alias_outbox_router
 app.include_router(community_remote_proxy_router)
 from main_routers.debug_router import (
     router as debug_router,
@@ -799,6 +800,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 app.include_router(config_router)
 app.include_router(proactive_router)
 app.include_router(characters_router)
+app.include_router(pet_care_role_alias_outbox_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)

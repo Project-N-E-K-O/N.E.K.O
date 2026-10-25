@@ -23,8 +23,16 @@ ITEM_ID = 4242
 class _Config:
     def __init__(self, app_docs_dir: Path, characters: dict):
         self.app_docs_dir = str(app_docs_dir)
+        self.local_state_dir = app_docs_dir / "state"
         self.characters = characters
         self.saved: list[dict] = []
+
+    def ensure_local_state_directory(self):
+        self.local_state_dir.mkdir(parents=True, exist_ok=True)
+        return True
+
+    def load_characters(self, *, require_authoritative=False):
+        return json.loads(json.dumps(self.characters))
 
     async def aload_characters(self):
         return json.loads(json.dumps(self.characters))
@@ -38,6 +46,7 @@ def _workshop_character(character_id: str) -> dict:
     return {
         "_reserved": {
             "character_id": character_id,
+            "character_uid": hashlib.sha256(character_id.encode("utf-8")).hexdigest()[:32],
             "character_origin": {"source": "steam_workshop", "source_id": str(ITEM_ID)},
         },
     }
@@ -147,6 +156,12 @@ async def test_workshop_unsubscribe_cascades_theater_data(tmp_path, monkeypatch)
 
     assert result["success"] is True, result
     assert result["cleanup_summary"]["cleaned_characters"] == ["Lan"]
+    deleted_uid = hashlib.sha256(binding["character_id"].encode("utf-8")).hexdigest()[:32]
+    assert result["cleanup_summary"]["pet_care_role_alias_retirements"] == [{
+        "character_uid": deleted_uid,
+        "source_revision": f"delete:{deleted_uid}",
+        "status": "retired",
+    }]
     assert result["cleanup_summary"]["errors"] == []
     assert "Lan" not in config.characters["猫娘"]
     assert steam_calls == [ITEM_ID]

@@ -122,6 +122,11 @@ function _getNekoIdleCat1PlaygroundDropState(button) {
             pointerSampleSession: null,
             pendingYarnActivationId: '',
             pendingYarnActivationTimer: 0,
+            confirmedYarnActivationId: '',
+            pendingYarnAuthorizationId: '',
+            pendingYarnAuthorizationTimer: 0,
+            pendingYarnResponseId: '',
+            pendingYarnResponseTimer: 0,
             gravityPxPerSecond2: _NEKO_IDLE_CAT1_PLAYGROUND_GRAVITY_PX_PER_SECOND2,
             floorY: 0,
             wallLeft: 0,
@@ -162,6 +167,20 @@ function _dispatchNekoIdleCat1PlaygroundState(button, active, reason) {
     } catch (_) {}
 }
 
+function _clearNekoIdleCat1PlaygroundYarnPendingState(state) {
+    if (!state) return;
+    state.pendingYarnActivationId = '';
+    if (state.pendingYarnActivationTimer) clearTimeout(state.pendingYarnActivationTimer);
+    state.pendingYarnActivationTimer = 0;
+    state.confirmedYarnActivationId = '';
+    state.pendingYarnAuthorizationId = '';
+    if (state.pendingYarnAuthorizationTimer) clearTimeout(state.pendingYarnAuthorizationTimer);
+    state.pendingYarnAuthorizationTimer = 0;
+    state.pendingYarnResponseId = '';
+    if (state.pendingYarnResponseTimer) clearTimeout(state.pendingYarnResponseTimer);
+    state.pendingYarnResponseTimer = 0;
+}
+
 function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     const state = _getNekoIdleCat1PlaygroundDropState(button);
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -183,11 +202,7 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     state.end = null;
     state.bodies = new Map();
     state.draggingBodyId = '';
-    state.pendingYarnActivationId = '';
-    if (state.pendingYarnActivationTimer) {
-        clearTimeout(state.pendingYarnActivationTimer);
-        state.pendingYarnActivationTimer = 0;
-    }
+    _clearNekoIdleCat1PlaygroundYarnPendingState(state);
     state.lastPointerSamples = [];
     state.pointerSampleSession = null;
     state.entryQuestionBlockElement = _consumeNekoIdleCat1PlaygroundQuestionBlockClone(button);
@@ -221,6 +236,8 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
     _cancelNekoIdleCat1StretchAction(button, { restoreArt: false });
     _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1PlayTeaserWandAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1PettingAction(button, { restoreArt: false });
     _finishNekoIdleReturnDragAction(button, { restoreArt: false });
     _stopNekoIdleCat1AmbientSound();
     _fadeOutNekoIdleCat1DragSound();
@@ -255,11 +272,7 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     state.draggingBodyId = '';
     state.pointerBodyId = '';
     state.pointerId = null;
-    state.pendingYarnActivationId = '';
-    if (state.pendingYarnActivationTimer) {
-        clearTimeout(state.pendingYarnActivationTimer);
-        state.pendingYarnActivationTimer = 0;
-    }
+    _clearNekoIdleCat1PlaygroundYarnPendingState(state);
     state.lastPointerSamples = [];
     state.pointerSampleSession = null;
     state.start = null;
@@ -310,6 +323,81 @@ function _removeNekoIdleCat1PlaygroundYarnBody(button) {
     return true;
 }
 
+function _completeNekoIdleCat1PlaygroundYarnClickResponse(button, detail) {
+    const state = button && button.__nekoIdleCat1PlaygroundDropState;
+    if (!state || !state.active || state.released || !state.bodies) return false;
+    const catBody = state.bodies.get('cat');
+    const yarnBody = state.bodies.get('yarn') || state.bodies.get('desktop-yarn');
+    // A click is only a PetCare play fact after the visible cat actually
+    // responds. Never synthesize a completion while either body is missing or
+    // while the user owns the cat through another drag.
+    if (!catBody || !yarnBody || catBody.dragging) return false;
+
+    const catCenterX = Number(catBody.x || 0) + Number(catBody.width || 0) / 2;
+    const yarnCenterX = Number(yarnBody.x || 0) + Number(yarnBody.width || 0) / 2;
+    const direction = yarnCenterX < catCenterX ? -1 : 1;
+    const responseSpeed = Math.max(
+        1,
+        Number(_NEKO_IDLE_CAT1_PLAYGROUND_BODY_PUSH_VELOCITY_PX_PER_SEC) || 220
+    );
+    catBody.vx = direction * responseSpeed;
+    catBody.vy = Math.min(Number(catBody.vy) || 0, -responseSpeed * 0.45);
+    catBody.grounded = false;
+    state.phase = 'ballistic';
+    state.lastTickAt = 0;
+    _startNekoIdleCat1PlaygroundPhysics(button);
+
+    const activationId = detail && typeof detail.activationId === 'string'
+        ? detail.activationId.trim()
+        : '';
+    const requestedMinimumDurationMs = Number(detail && detail.minimumDurationMs);
+    const hasMinimumDuration = !!(detail &&
+        Object.prototype.hasOwnProperty.call(detail, 'minimumDurationMs') &&
+        Number.isFinite(requestedMinimumDurationMs) && requestedMinimumDurationMs > 0);
+    const petCareAuthorized = detail && detail.petCareAuthorized === true && hasMinimumDuration;
+    const minimumDurationMs = petCareAuthorized
+        ? Math.min(0x7fffffff, requestedMinimumDurationMs)
+        : 0;
+    const dispatchTerminal = () => {
+        const latestState = button && button.__nekoIdleCat1PlaygroundDropState;
+        if (!latestState || !latestState.active || latestState.released) return false;
+        if (activationId && latestState.pendingYarnResponseId &&
+            latestState.pendingYarnResponseId !== activationId) return false;
+        latestState.pendingYarnResponseId = '';
+        latestState.pendingYarnResponseTimer = 0;
+        try {
+            window.dispatchEvent(new CustomEvent('neko:pet-care:yarn-click-response', {
+                detail: {
+                    type: 'playground_yarn_click_responded',
+                    source: 'cat-yarn-observation-adapter',
+                    timestamp: Date.now(),
+                    detail: {
+                        activityId: activationId
+                            ? `playground-yarn-click:${activationId}`
+                            : `playground-yarn-click:${Date.now()}`,
+                        originSource: detail && detail.source ? detail.source : 'cat1-playground',
+                        userInitiated: true,
+                        catResponded: true,
+                        terminalStatus: 'done',
+                        petCareAuthorized,
+                        minimumDurationMs
+                    }
+                }
+            }));
+        } catch (_) {
+            return false;
+        }
+        return true;
+    };
+    if (minimumDurationMs > 0) {
+        if (state.pendingYarnResponseTimer) clearTimeout(state.pendingYarnResponseTimer);
+        state.pendingYarnResponseId = activationId;
+        state.pendingYarnResponseTimer = setTimeout(dispatchTerminal, minimumDurationMs);
+        return true;
+    }
+    return dispatchTerminal();
+}
+
 function _handleNekoIdleCat1PlaygroundYarnActivationAck(event) {
     const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
     const activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
@@ -324,7 +412,13 @@ function _handleNekoIdleCat1PlaygroundYarnActivationAck(event) {
             state.pendingYarnActivationTimer = 0;
         }
         handled = true;
-        if (detail.confirmed === true) _removeNekoIdleCat1PlaygroundYarnBody(button);
+        if (detail.confirmed === true) {
+            if (state.pendingYarnAuthorizationId === activationId) {
+                state.confirmedYarnActivationId = activationId;
+            } else {
+                _removeNekoIdleCat1PlaygroundYarnBody(button);
+            }
+        }
     });
     return handled;
 }
@@ -452,6 +546,18 @@ function _dispatchNekoIdleCat1PlaygroundYarnActivate(detail) {
         trigger: 'yarn-click',
         timestamp: Date.now()
     };
+    const authorizationWaits = [];
+    try {
+        Object.defineProperty(activateDetail, 'waitUntil', {
+            configurable: false,
+            enumerable: false,
+            value(value) {
+                if (value && typeof value.then === 'function') {
+                    authorizationWaits.push(Promise.resolve(value));
+                }
+            }
+        });
+    } catch (_) {}
     let dispatched = false;
     try {
         window.dispatchEvent(new CustomEvent('neko:idle-cat1-playground-yarn-activate', {
@@ -473,6 +579,36 @@ function _dispatchNekoIdleCat1PlaygroundYarnActivate(detail) {
                     error && error.message ? error.message : error);
             } catch (_) {}
         }
+    }
+    if (authorizationWaits.length) {
+        return {
+            activationId,
+            desktop: window.__NEKO_DESKTOP_RUNTIME__ === true,
+            dispatched,
+            authorization: Promise.all(authorizationWaits).then((results) => {
+                let minimumDurationMs = 0;
+                let hasStructuredAuthorization = false;
+                for (const result of results) {
+                    if (result === true) continue;
+                    if (!result || typeof result !== 'object' || result.authorized !== true) {
+                        return { authorized: false, minimumDurationMs: 0 };
+                    }
+                    const requestedMinimumDurationMs = Number(result.minimumDurationMs);
+                    if (!Object.prototype.hasOwnProperty.call(result, 'minimumDurationMs') ||
+                        !Number.isFinite(requestedMinimumDurationMs) || requestedMinimumDurationMs <= 0) {
+                        return { authorized: false, minimumDurationMs: 0 };
+                    }
+                    hasStructuredAuthorization = true;
+                    minimumDurationMs = Math.max(
+                        minimumDurationMs,
+                        Math.min(0x7fffffff, requestedMinimumDurationMs)
+                    );
+                }
+                return hasStructuredAuthorization
+                    ? { authorized: true, minimumDurationMs }
+                    : { authorized: false, minimumDurationMs: 0 };
+            }, () => ({ authorized: false, minimumDurationMs: 0 }))
+        };
     }
     // The desktop Pet renderer only owns the transport leg. Its companion
     // bridge must acknowledge the restore before the yarn affordance is
@@ -1566,11 +1702,72 @@ function _handleNekoIdleCat1PlaygroundPointerUp(button, event) {
         state.pointerSampleSession = null;
         body.dragging = false;
         if (body.id === 'cat') window.NekoDesktopWindowGravity?.releaseBody(button, body, { admit: false });
-        if (!cancelled && !state.pendingYarnActivationId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {
+        if (!cancelled && !state.pendingYarnActivationId && !state.pendingYarnAuthorizationId &&
+            !state.pendingYarnResponseId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {
             const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate({
                 reason: 'cat1-playground-yarn-click',
                 source: body.id
             });
+            if (activationResult && typeof activationResult === 'object' &&
+                activationResult.authorization &&
+                typeof activationResult.authorization.then === 'function') {
+                const pendingActivationId = activationResult.activationId;
+                state.pendingYarnAuthorizationId = pendingActivationId;
+                const timeout = new Promise(resolve => {
+                    state.pendingYarnAuthorizationTimer = setTimeout(
+                        () => resolve({ authorized: false, minimumDurationMs: 0 }),
+                        4000
+                    );
+                });
+                if (activationResult.desktop === true) {
+                    state.pendingYarnActivationId = pendingActivationId;
+                    state.pendingYarnActivationTimer = setTimeout(() => {
+                        if (state.pendingYarnActivationId !== pendingActivationId) return;
+                        state.pendingYarnActivationId = '';
+                        state.pendingYarnActivationTimer = 0;
+                    }, 4000);
+                }
+                Promise.race([activationResult.authorization, timeout]).then(authorization => {
+                    if (state.pendingYarnAuthorizationId !== pendingActivationId) return;
+                    state.pendingYarnAuthorizationId = '';
+                    if (state.pendingYarnAuthorizationTimer) clearTimeout(state.pendingYarnAuthorizationTimer);
+                    state.pendingYarnAuthorizationTimer = 0;
+                    const authorized = !!(authorization && typeof authorization === 'object' &&
+                        authorization.authorized === true);
+                    _completeNekoIdleCat1PlaygroundYarnClickResponse(button, {
+                        activationId: pendingActivationId,
+                        source: body.id,
+                        petCareAuthorized: authorized,
+                        minimumDurationMs: authorized ? authorization.minimumDurationMs : 0
+                    });
+                    if (activationResult.dispatched === true && activationResult.desktop !== true) {
+                        _removeNekoIdleCat1PlaygroundYarnBody(button);
+                    } else if (activationResult.desktop === true &&
+                        state.confirmedYarnActivationId === pendingActivationId) {
+                        state.confirmedYarnActivationId = '';
+                        _removeNekoIdleCat1PlaygroundYarnBody(button);
+                    }
+                }, () => {
+                    if (state.pendingYarnAuthorizationId !== pendingActivationId) return;
+                    state.pendingYarnAuthorizationId = '';
+                    if (state.pendingYarnAuthorizationTimer) clearTimeout(state.pendingYarnAuthorizationTimer);
+                    state.pendingYarnAuthorizationTimer = 0;
+                    _completeNekoIdleCat1PlaygroundYarnClickResponse(button, {
+                        activationId: pendingActivationId,
+                        source: body.id,
+                        petCareAuthorized: false,
+                        minimumDurationMs: 0
+                    });
+                });
+            } else {
+                _completeNekoIdleCat1PlaygroundYarnClickResponse(button, {
+                    activationId: typeof activationResult === 'string'
+                        ? activationResult
+                        : `${Date.now().toString(36)}-${(++_nekoIdleCat1PlaygroundActivationSequence).toString(36)}`,
+                    source: body.id,
+                    petCareAuthorized: false
+                });
+            }
             if (activationResult === true) {
                 _removeNekoIdleCat1PlaygroundYarnBody(button);
             } else if (typeof activationResult === 'string') {

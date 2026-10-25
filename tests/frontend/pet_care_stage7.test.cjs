@@ -5,6 +5,10 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..', '..');
 const source = fs.readFileSync(path.join(root, 'static', 'app', 'app-pet-care.js'), 'utf8');
+const clientSource = fs.readFileSync(
+  path.join(root, 'static', 'app', 'app-pet-care-client.js'),
+  'utf8',
+);
 const css = fs.readFileSync(path.join(root, 'static', 'css', 'pet-care.css'), 'utf8');
 const assetAdapter = fs.readFileSync(
   path.join(root, 'static', 'avatar', 'avatar-ui-buttons', 'idle-actions-and-audio.js'),
@@ -32,7 +36,8 @@ const questionSource = fs.readFileSync(
 );
 
 test('stage 7 uses service exploration endpoints and stable activity identity', () => {
-  assert.match(source, /\/explorations/);
+  assert.match(clientSource, /\/explorations/);
+  assert.match(source, /\.explorationStatus\(/);
   assert.match(source, /exploration_id/);
   assert.match(source, /idempotency_key/);
   assert.match(source, /startExploration/);
@@ -46,6 +51,13 @@ test('stage 7 keeps the exploration gate separate from Cat Mind and preserves th
   assert.match(source, /neko:pet-care:exploration-recall-request/);
   assert.match(source, /neko:pet-care:exploration-gate/);
   assert.match(source, /panel and nest controls available/);
+});
+
+test('releasing Cat Mind compatibility restores audio providers outside exploration', () => {
+  assert.match(assetAdapter, /detail\.source === 'cat_mind' && detail\.suppressed === false/);
+  assert.match(assetAdapter, /!window\.nekoPetCareMode\?\.isExplorationAway\?\.\(\)/);
+  assert.match(assetAdapter, /_syncNekoIdleSleepSoundForTier\(tier\)/);
+  assert.match(assetAdapter, /_syncNekoIdleCat1AmbientSoundForTier\(tier\)/);
 });
 
 test('stage 7 keeps the shared transparent pet asset in the desktop adapter, not the panel', () => {
@@ -128,7 +140,7 @@ test('stage 7 only exposes rewards after a confirmed exploration envelope', () =
   assert.match(source, /applyExplorationEnvelope\(body/);
   assert.match(source, /explorationReward/);
   assert.match(source, /function notifyExplorationTerminal\(/);
-  assert.match(source, /showPetCareNotice\(message, 'success'\)/);
+  assert.match(source, /showPetCareToast\(message, 5000, \{ priority: 10 \}\)/);
   const detailsStart = source.indexOf('function renderExplorationDetails');
   const detailsEnd = source.indexOf('function render()', detailsStart);
   assert.ok(detailsStart >= 0 && detailsEnd > detailsStart);
@@ -139,7 +151,14 @@ test('stage 7 only exposes rewards after a confirmed exploration envelope', () =
   assert.match(source, /showAlertDialog|showAlert/);
   assert.match(source, /EXPLORATION_NOTICE_STORAGE_KEY/);
   assert.match(source, /AUTH_PRESENCE_STORAGE_KEY/);
-  assert.doesNotMatch(source, /showStatusToast/);
+  const terminalStart = source.indexOf('function notifyExplorationTerminal');
+  const terminalEnd = source.indexOf('\n    function str(', terminalStart);
+  assert.ok(terminalStart >= 0 && terminalEnd > terminalStart);
+  assert.match(source.slice(terminalStart, terminalEnd), /showPetCareToast/);
+  assert.doesNotMatch(
+    source.slice(terminalStart, terminalEnd),
+    /showPetCareNotice|showAlertDialog|showAlert\(/,
+  );
 });
 
 test('stage 7 does not expose the unrevealed letter pool while away', () => {
@@ -149,7 +168,7 @@ test('stage 7 does not expose the unrevealed letter pool while away', () => {
 
 test('stage 7 closes refresh, nest visibility and bounded return presentation', () => {
   assert.match(source, /requestContextExplorationRecall/);
-  assert.match(source, /pet-exploration-recall-/);
+  assert.match(source, /executeNewPendingWrite\('exploration-' \+ operation/);
   assert.match(source, /exploration-return-request/);
   assert.match(source, /exploration-return-complete/);
   assert.match(source, /exploration-start-recovery/);
@@ -193,17 +212,85 @@ test('exploration owns the visual tier and rejects stale or unfinished nest tran
   assert.match(adoptAnchorBlock, /nekoPetCareMode\.isExplorationAway\(\)/);
 });
 
-test('pet-care anchor does not treat stretch, eat, or play presentation as launcher busy', () => {
+test('pet-care anchor follows runtime movement markers without treating presentation actions as busy', () => {
   const anchorStart = returnTransitions.indexOf('window.nekoCatInteractionAnchor');
   assert.ok(anchorStart >= 0, 'semantic cat interaction anchor is missing');
   const anchorSource = returnTransitions.slice(anchorStart, anchorStart + 5000);
+  const busyStart = anchorSource.indexOf('const busySelector');
+  const busyEnd = anchorSource.indexOf('const busy =', busyStart);
+  assert.ok(busyStart >= 0 && busyEnd > busyStart, 'busy selector is missing');
+  const busySource = anchorSource.slice(busyStart, busyEnd);
+
+  assert.match(busySource, /\[data-dragging="pending"\]/);
+  assert.match(busySource, /\[data-dragging="true"\]/);
+  assert.match(busySource, /\[data-neko-cat1-playground-dragging\]/);
+  assert.doesNotMatch(busySource, /is-desktop-window-gravity/);
+  assert.match(busySource, /is-cat1-edge-peek-(?:left|right)/);
+  assert.match(busySource, /is-cat1-desktop-window-edge-peek-walking/);
+  assert.match(busySource, /is-cat1-desktop-window-edge-peeking/);
+  assert.match(busySource, /is-cat1-desktop-window-top-edge-walking/);
+  assert.match(busySource, /is-cat1-desktop-window-top-edge-dropping/);
+  assert.doesNotMatch(busySource, /data-neko-(?:dragging|gravity)/);
+  assert.doesNotMatch(busySource, /is-cat1-(?:stretching|eating|playing)/);
+
   assert.match(anchorSource, /actionPresentationSelector/);
   assert.match(anchorSource, /is-cat1-stretching/);
   assert.match(anchorSource, /is-cat1-eating/);
   assert.match(anchorSource, /is-cat1-playing/);
   assert.match(anchorSource, /markedBusy && !actionPresentation/);
-  assert.match(anchorSource, /data-neko-dragging/);
-  assert.match(anchorSource, /data-neko-gravity/);
+  assert.match(anchorSource, /NekoDesktopWindowGravity/);
+  assert.match(anchorSource, /gravityController\.isMoving\(gravityButton\) === true/);
+  assert.match(anchorSource, /!!busy \|\| gravityMoving \|\|/);
+});
+
+test('pet-care anchor distinguishes moving gravity from a resting gravity session', () => {
+  const anchorStart = returnTransitions.indexOf('window.nekoCatInteractionAnchor');
+  const anchorEndMarker = '\n    });';
+  const anchorEnd = returnTransitions.indexOf(anchorEndMarker, anchorStart);
+  assert.ok(anchorStart >= 0 && anchorEnd > anchorStart, 'semantic cat interaction anchor is missing');
+
+  let gravityMoving = false;
+  let actionPresentation = false;
+  let markedBusy = false;
+  const gravityButton = {};
+  const container = {
+    getAttribute(name) {
+      if (name === 'data-neko-idle-tier') return 'cat1';
+      if (name === 'data-neko-return-busy') return markedBusy ? 'true' : null;
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 10, top: 20, right: 74, bottom: 84, width: 64, height: 64 };
+    },
+    matches() { return false; },
+    querySelector(selector) {
+      if (selector === '.is-desktop-window-gravity') return gravityButton;
+      if (actionPresentation && selector.includes('.is-cat1-stretching')) return {};
+      return null;
+    },
+  };
+  const anchorWindow = {
+    NekoDesktopWindowGravity: {
+      isMoving(owner) {
+        assert.equal(owner, gravityButton);
+        return gravityMoving;
+      },
+    },
+  };
+  const anchorParts = { getVisibleIdleReturnBallContainer: () => container };
+  const anchorDefinition = returnTransitions.slice(
+    anchorStart,
+    anchorEnd + anchorEndMarker.length,
+  );
+  Function('window', 'I', anchorDefinition)(anchorWindow, anchorParts);
+
+  gravityMoving = true;
+  assert.equal(anchorWindow.nekoCatInteractionAnchor.getState().busy, true);
+  gravityMoving = false;
+  assert.equal(anchorWindow.nekoCatInteractionAnchor.getState().busy, false);
+  markedBusy = true;
+  actionPresentation = true;
+  assert.equal(anchorWindow.nekoCatInteractionAnchor.getState().busy, false);
 });
 
 test('stage 7 gates late play and independent entity drag/question outputs', () => {

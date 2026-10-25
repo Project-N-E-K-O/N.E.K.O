@@ -434,6 +434,12 @@ function _applyNekoIdleGifPlaybackRate(art, baseSrc, rate) {
 
 function _getNekoIdleReturnCurrentArtUrl(button, tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier || (button && button.getAttribute('data-neko-idle-tier')));
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PettingActionActive(button)) {
+        return _NEKO_IDLE_CAT1_PETTING_ASSET_URL;
+    }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PlayTeaserWandActionActive(button)) {
+        return _NEKO_IDLE_CAT1_PLAY_TEASER_WAND_ASSET_URL;
+    }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PlayActionActive(button)) {
         return _NEKO_IDLE_CAT1_PLAY_ASSET_URL;
     }
@@ -1004,6 +1010,14 @@ function _startNekoIdleReturnDragActionForContainer(container) {
         reason: 'return-ball-drag-active'
     });
     _cancelNekoIdleCat1PlayAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
+    _cancelNekoIdleCat1PlayTeaserWandAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
+    _cancelNekoIdleCat1PettingAction(button, {
         restoreArt: false,
         reason: 'return-ball-drag-active'
     });
@@ -1805,7 +1819,7 @@ if (typeof window !== 'undefined') {
                 // Exploration owns the whole cat entity for its duration. The
                 // journey owner therefore cancels any current pair movement,
                 // regardless of whether it came from Cat Mind or the user.
-                if (state && state.phase !== 'idle' && state.paused !== true) {
+                if (state) {
                     _cancelNekoIdleCat1Journey(button, {
                         resetArt: false,
                         preserveObservers: false,

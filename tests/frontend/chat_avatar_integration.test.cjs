@@ -13,14 +13,31 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
-function harness() {
+function harness({ pathname = '/chat' } = {}) {
     const listeners = new Map();
     const timers = new Map();
     let timerId = 0;
     const window = {
         appState: { incomingAudioEpoch: 0 },
         lanlan_config: { lanlan_name: 'A', model_type: 'live2d' },
-        location: { pathname: '/chat' },
+        location: { pathname },
+        live2dManager: {
+            _goodbyeClicked: false,
+            pixi_app: {
+                renderer: {},
+                stage: { removeChildren() {} },
+                ticker: {
+                    started: true,
+                    stop() { this.started = false; },
+                    start() { this.started = true; },
+                    update() {}
+                }
+            },
+            async removeModel() {},
+            async loadUserPreferences() { return []; },
+            async loadModel() {},
+            getCurrentModel() { return { internalModel: { coreModel: {} } }; }
+        },
         invalidatePendingMusicSearch() {},
         connectWebSocket() {},
         showStatusToast() {},
@@ -42,6 +59,25 @@ function harness() {
         querySelectorAll() { return []; },
         addEventListener() {}
     };
+    const defaultFetch = async (url) => {
+        const target = String(url);
+        if (target === '/api/characters') {
+            return { ok: true, json: async () => ({ '猫娘': {
+                A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
+                B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
+            } }) };
+        }
+        if (target.startsWith('/api/characters/current_live2d_model?')) {
+            return { ok: true, json: async () => ({
+                success: true,
+                model_info: { path: '/test/model-b.model3.json' }
+            }) };
+        }
+        if (target === '/test/model-b.model3.json') {
+            return { ok: true, json: async () => ({ Version: 3 }) };
+        }
+        throw new Error('unexpected fetch in character-switch fixture: ' + target);
+    };
     const context = vm.createContext({
         window, document, console: { log() {}, info() {}, warn() {}, error() {} },
         Event: class { constructor(type) { this.type = type; } },
@@ -56,13 +92,10 @@ function harness() {
         clearTimeout(id) { timers.delete(id); },
         clearInterval() {},
         cancelAnimationFrame() {},
-        fetch: async () => ({ ok: true, json: async () => ({ '猫娘': {
-            A: { model_type: 'live2d', _reserved: { character_uid: UID_A } },
-            B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
-        } }) })
+        fetch: defaultFetch
     });
     return {
-        window, context, listeners, timers,
+        window, context, listeners, timers, defaultFetch,
         load(relative) { vm.runInContext(fs.readFileSync(path.join(root, relative), 'utf8'), context, { filename: relative }); }
     };
 }
@@ -118,7 +151,7 @@ for (const action of ['cancel', 'replace']) {
 }
 
 test('same-model character switch commits authoritative UID after switch succeeds', async () => {
-    const h = harness(); const calls = avatarCalls(h);
+    const h = harness({ pathname: '/' }); const calls = avatarCalls(h);
     h.load('static/app/app-character.js');
     await h.window.handleCatgirlSwitch('B', 'A');
     assert.deepEqual(calls, [['begin', 1], ['commit', 1, { uid: UID_B, name: 'B' }]]);
@@ -126,7 +159,7 @@ test('same-model character switch commits authoritative UID after switch succeed
 });
 
 test('failed role fetch restores previous avatar ownership', async () => {
-    const h = harness(); const calls = avatarCalls(h);
+    const h = harness({ pathname: '/' }); const calls = avatarCalls(h);
     h.context.fetch = async () => { throw new Error('offline'); };
     h.load('static/app/app-character.js');
     await h.window.handleCatgirlSwitch('B', 'A');
@@ -135,20 +168,28 @@ test('failed role fetch restores previous avatar ownership', async () => {
 });
 
 test('watchdog retires pending switch and late response cannot reclaim avatar identity', async () => {
-    const h = harness(); const calls = avatarCalls(h); const pending = deferred();
+    const h = harness({ pathname: '/' }); const calls = avatarCalls(h); const pending = deferred();
     h.context.fetch = () => pending.promise;
     h.load('static/app/app-character.js');
     const first = h.window.handleCatgirlSwitch('B', 'A');
     const watchdog = [...h.timers.values()].find(timer => timer.delay === 45000);
     assert.ok(watchdog); watchdog.callback();
     assert.deepEqual(calls, [['begin', 1], ['rollback', 1]]);
-    h.context.fetch = async () => ({ ok: true, json: async () => ({ '猫娘': {
-        B: { model_type: 'live2d', _reserved: { character_uid: UID_B } }
-    } }) });
+    h.context.fetch = h.defaultFetch;
     await h.window.handleCatgirlSwitch('B', 'A');
     pending.resolve({ ok: true, json: async () => { throw new Error('stale body must not be consumed'); } });
     await first;
     assert.deepEqual(calls, [['begin', 1], ['rollback', 1], ['begin', 2], ['commit', 2, { uid: UID_B, name: 'B' }]]);
+});
+
+test('chat follower accepts a character broadcast without starting the model-owner transaction', async () => {
+    const h = harness({ pathname: '/chat' }); const calls = avatarCalls(h);
+    h.load('static/app/app-character.js');
+    const result = await h.window.handleCatgirlSwitch('B', 'A');
+    assert.equal(result.success, true);
+    assert.equal(result.follower, true);
+    assert.deepEqual(calls, []);
+    assert.equal(h.window.lanlan_config.lanlan_name, 'A');
 });
 
 test('display update refreshes existing assistant avatars without changing user messages', () => {
@@ -287,7 +328,7 @@ test('socket reopen re-reads persistent avatars after missed notifications', asy
 
 
 test('postcommit UI failure cannot roll back character and avatar ownership', async () => {
-    const h = harness(); const calls = avatarCalls(h);
+    const h = harness({ pathname: '/' }); const calls = avatarCalls(h);
     h.window.showStatusToast = message => { if (message.startsWith('已切换到')) throw new Error('toast unavailable'); };
     h.load('static/app/app-character.js');
     await h.window.handleCatgirlSwitch('B', 'A');
@@ -297,7 +338,7 @@ test('postcommit UI failure cannot roll back character and avatar ownership', as
 
 
 test('late switch failure restores character name before publishing rollback avatar', async () => {
-    const h = harness(); const calls = avatarCalls(h);
+    const h = harness({ pathname: '/' }); const calls = avatarCalls(h);
     const rollback = h.window.appChatAvatarState.rollbackCharacterSwitch;
     h.window.appChatAvatarState.rollbackCharacterSwitch = id => {
         assert.equal(h.window.lanlan_config.lanlan_name, 'A');

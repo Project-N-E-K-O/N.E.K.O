@@ -6,6 +6,14 @@ const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..', '..');
 const modeSource = fs.readFileSync(path.join(root, 'static', 'app', 'app-pet-care-mode.js'), 'utf8');
+const catLocalChatLexiconSource = fs.readFileSync(
+  path.join(root, 'static', 'app', 'app-react-chat-window', 'cat-local-chat-lexicon.js'),
+  'utf8',
+);
+const catLocalChatSource = fs.readFileSync(
+  path.join(root, 'static', 'app', 'app-react-chat-window', 'cat-local-chat.js'),
+  'utf8',
+);
 const returnSource = fs.readFileSync(
   path.join(root, 'static', 'app', 'app-ui', 'surface-floating-controls.js'),
   'utf8',
@@ -20,6 +28,7 @@ const gateListenerSources = [
   'static/app/app-auto-goodbye.js',
   'static/avatar/avatar-ui-buttons/idle-actions-and-audio.js',
   'static/avatar/avatar-ui-buttons/idle-assets-and-question.js',
+  'static/app/app-react-chat-window/cat-local-chat.js',
 ].map(file => fs.readFileSync(path.join(root, file), 'utf8'));
 
 class EventTargetLike {
@@ -47,6 +56,45 @@ function createRuntime() {
   return window;
 }
 
+function gateDetail(window, detail, context = window.nekoPetCareMode.captureContext()) {
+  return { ...detail, context };
+}
+
+function createCatLocalChatRuntime() {
+  const window = new EventTargetLike();
+  const timers = new Map();
+  let timerSequence = 0;
+  window.location = { pathname: '/', href: 'http://localhost/' };
+  window.__appReactChatWindowParts = {};
+  window.setTimeout = callback => {
+    timerSequence += 1;
+    timers.set(timerSequence, callback);
+    return timerSequence;
+  };
+  window.clearTimeout = timerId => timers.delete(timerId);
+  window.nekoCatMind = {
+    getState() {
+      return { active: true, tier: 'cat1', enteredAt: 1 };
+    },
+    observe() { return true; },
+  };
+  const deterministicMath = Object.create(Math);
+  deterministicMath.random = () => 0.5;
+  const context = {
+    window,
+    CustomEvent: CustomEventLike,
+    Date,
+    Math: deterministicMath,
+    console,
+    document: { currentScript: null },
+  };
+  vm.createContext(context);
+  vm.runInContext(modeSource, context, { filename: 'app-pet-care-mode.js' });
+  vm.runInContext(catLocalChatLexiconSource, context, { filename: 'cat-local-chat-lexicon.js' });
+  vm.runInContext(catLocalChatSource, context, { filename: 'cat-local-chat.js' });
+  return { window, timers };
+}
+
 test('exploration gate is independent from the Stage 3 Cat Mind compatibility gate', () => {
   const window = createRuntime();
   const cleanups = [];
@@ -66,7 +114,12 @@ test('exploration gate is independent from the Stage 3 Cat Mind compatibility ga
     source: 'cat_mind', actionId: 'cat1_small_move',
   }).reason, 'pet-care-exploration-away');
   assert.equal(window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'journey' }).blocked, true);
-  assert.equal(window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'pet-care-exploration' }).blocked, false);
+  assert.equal(window.nekoPetCareMode.shouldBlockEntityOutput({
+    source: 'journey', allowDuringExploration: true,
+  }).blocked, true);
+  assert.equal(window.nekoPetCareMode.shouldBlockEntityOutput({
+    source: 'pet-care-exploration',
+  }).blocked, true);
   assert.equal(cleanups.at(-1).source, 'exploration');
   assert.equal(cleanups.at(-1).activityId, 'explore-1');
   assert.equal(gates.at(-1).active, true);
@@ -123,13 +176,27 @@ test('display context change does not release exploration gate before lifecycle 
 
 test('an external server-confirmed exploration gate event activates the shared adapter', () => {
   const window = createRuntime();
+  const cleanups = [];
+  window.addEventListener('neko:pet-care:cleanup-request', event => cleanups.push(event.detail));
+  const active = gateDetail(window, {
+    active: true, exploration_id: 'server-activity', generation: 'server-generation',
+  });
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: true, exploration_id: 'server-activity', generation: 'server-generation' },
+    detail: active,
   }));
   assert.equal(window.nekoPetCareMode.isExplorationAway(), true);
   assert.equal(window.nekoPetCareMode.getState().explorationAway.activityId, 'server-activity');
+  assert.equal(cleanups.length, 1);
+  assert.equal(cleanups[0].source, 'exploration');
+  assert.equal(cleanups[0].activityId, 'server-activity');
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: false, exploration_id: 'server-activity', generation: 'server-generation' },
+    detail: active,
+  }));
+  assert.equal(cleanups.length, 1);
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, {
+      active: false, exploration_id: 'server-activity', generation: 'server-generation',
+    }),
   }));
   assert.equal(window.nekoPetCareMode.isExplorationAway(), false);
 });
@@ -137,27 +204,122 @@ test('an external server-confirmed exploration gate event activates the shared a
 test('late exploration gate events from an older activity are ignored', () => {
   const window = createRuntime();
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: true, activityId: 'activity-current' },
+    detail: gateDetail(window, { active: true, activityId: 'activity-current' }),
   }));
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: true, activityId: 'activity-stale' },
+    detail: gateDetail(window, { active: true, activityId: 'activity-stale' }),
   }));
   assert.equal(window.nekoPetCareMode.getState().explorationAway.activityId, 'activity-current');
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: false, activityId: 'activity-stale' },
+    detail: gateDetail(window, { active: false, activityId: 'activity-stale' }),
   }));
   assert.equal(window.nekoPetCareMode.isExplorationAway(), true);
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: false, activityId: 'activity-current' },
+    detail: gateDetail(window, { active: false, activityId: 'activity-current' }),
   }));
   assert.equal(window.nekoPetCareMode.isExplorationAway(), false);
   assert.equal(window.nekoPetCareMode.shouldApplyExplorationGate({
     active: false, activityId: 'activity-current',
+    context: window.nekoPetCareMode.captureContext(),
   }), true);
   window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
-    detail: { active: true, activityId: 'activity-current' },
+    detail: gateDetail(window, { active: true, activityId: 'activity-current' }),
   }));
   assert.equal(window.nekoPetCareMode.isExplorationAway(), false);
+});
+
+test('a terminal activity remains fenced after a newer activity also finishes', () => {
+  const window = createRuntime();
+  for (const activityId of ['activity-a', 'activity-b']) {
+    window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+      detail: gateDetail(window, { active: true, activityId }),
+    }));
+    window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+      detail: gateDetail(window, { active: false, activityId }),
+    }));
+  }
+
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, { active: true, activityId: 'activity-a' }),
+  }));
+  assert.equal(window.nekoPetCareMode.isExplorationAway(), false);
+  assert.equal(window.nekoPetCareMode.getState().explorationAway, null);
+});
+
+test('cat local reply work ignores a stale active gate but current exploration still cancels it', () => {
+  const { window, timers } = createCatLocalChatRuntime();
+  const oldActivity = window.nekoPetCareMode.beginExplorationAway({ activityId: 'activity-old' });
+  window.nekoPetCareMode.endExplorationAway({
+    activityId: 'activity-old',
+    activityGeneration: oldActivity.explorationAway.generation,
+  });
+
+  assert.equal(window.nekoCatLocalChatManager.submit({
+    text: 'hello', requestId: 'request-1', enteredAt: 1,
+  }), true);
+  assert.equal(timers.size, 1);
+  const firstReply = timers.values().next().value;
+
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, { active: true, activityId: 'activity-old' }),
+  }));
+  assert.equal(timers.size, 1);
+  firstReply();
+  assert.deepEqual(
+    Array.from(window.nekoCatLocalChatManager.getSnapshot().items, item => item.role),
+    ['user', 'assistant'],
+  );
+
+  timers.clear();
+  assert.equal(window.nekoCatLocalChatManager.submit({
+    text: 'again', requestId: 'request-2', enteredAt: 1,
+  }), true);
+  assert.equal(timers.size, 1);
+  window.nekoPetCareMode.beginExplorationAway({ activityId: 'activity-current' });
+  assert.equal(timers.size, 0);
+});
+
+test('a context release does not retire the authoritative activity for the same account login', () => {
+  const window = createRuntime();
+  const accountA = {
+    accountId: 'account-a', currentCharacterUid: 'role-a', boundRoleId: 'role-a',
+  };
+  window.nekoPetCareMode.updateContext(accountA);
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, { active: true, activityId: 'activity-a' }),
+  }));
+  assert.equal(window.nekoPetCareMode.isExplorationAway(), true);
+
+  window.nekoPetCareMode.updateContext({
+    accountId: '', currentCharacterUid: '', boundRoleId: '', forceNewGeneration: true,
+  });
+  assert.equal(window.nekoPetCareMode.isExplorationAway(), false);
+  window.nekoPetCareMode.updateContext({ ...accountA, forceNewGeneration: true });
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, { active: true, activityId: 'activity-a' }),
+  }));
+  assert.equal(window.nekoPetCareMode.isExplorationAway(), true);
+  assert.equal(window.nekoPetCareMode.getState().explorationAway.activityId, 'activity-a');
+});
+
+test('an old account event cannot restore its activity after the context moves to another account', () => {
+  const window = createRuntime();
+  window.nekoPetCareMode.updateContext({
+    accountId: 'account-a', currentCharacterUid: 'role-a', boundRoleId: 'role-a',
+  });
+  const oldAccountContext = window.nekoPetCareMode.captureContext();
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, { active: true, activityId: 'activity-a' }, oldAccountContext),
+  }));
+  window.nekoPetCareMode.updateContext({
+    accountId: 'account-b', currentCharacterUid: 'role-b', boundRoleId: 'role-b',
+  });
+
+  window.dispatchEvent(new CustomEventLike('neko:pet-care:exploration-gate', {
+    detail: gateDetail(window, { active: true, activityId: 'activity-a' }, oldAccountContext),
+  }));
+  assert.equal(window.nekoPetCareMode.isExplorationAway(), false);
+  assert.equal(window.nekoPetCareMode.getState().explorationAway, null);
 });
 
 test('renderer exploration listeners validate the shared activity identity', () => {

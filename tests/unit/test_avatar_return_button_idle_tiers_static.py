@@ -576,12 +576,23 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "state.pointerBodyId = '';" in pointer_up_block
     _assert_source_order(
         pointer_up_block,
-        "playground yarn only activates on a completed click and waits for desktop confirmation",
+        "playground yarn only activates on a completed click and waits for PetCare authorization",
         "const cancelled = !!(event && event.type === 'pointercancel');",
-        "if (!cancelled && !state.pendingYarnActivationId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {",
+        "if (!cancelled && !state.pendingYarnActivationId && !state.pendingYarnAuthorizationId &&",
+        "!state.pendingYarnResponseId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {",
         "const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate",
-        "if (activationResult === true) {",
-        "_removeNekoIdleCat1PlaygroundYarnBody(button);",
+        "activationResult.authorization",
+        "Promise.race([activationResult.authorization, timeout]).then(authorization => {",
+        "authorization.authorized === true",
+        "petCareAuthorized: authorized",
+        "minimumDurationMs: authorized ? authorization.minimumDurationMs : 0",
+    )
+    _assert_source_order(
+        pointer_up_block,
+        "playground yarn keeps the prior web and desktop transport fallbacks",
+        "const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate",
+        "if (activationResult === true) {\n                _removeNekoIdleCat1PlaygroundYarnBody(button);",
+        "else if (typeof activationResult === 'string') {",
         "state.pendingYarnActivationId = activationResult;",
     )
     assert "state.phase = 'ballistic';" in pointer_up_block
@@ -629,7 +640,20 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "activationId," in source
     assert "neko:idle-cat1-playground-yarn-activate" in source
     assert "neko:idle-cat1-playground-yarn-activation-ack" in source
-    assert "if (detail.confirmed === true) _removeNekoIdleCat1PlaygroundYarnBody(button);" in source
+    activation_ack_block = _source_slice_between(
+        source,
+        "function _handleNekoIdleCat1PlaygroundYarnActivationAck(event)",
+        "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason)",
+        "cat1 playground yarn activation acknowledgement",
+    )
+    _assert_source_order(
+        activation_ack_block,
+        "desktop confirmation waits for the same PetCare authorization before consuming yarn",
+        "if (detail.confirmed === true) {",
+        "if (state.pendingYarnAuthorizationId === activationId) {",
+        "state.confirmedYarnActivationId = activationId;",
+        "} else {\n                _removeNekoIdleCat1PlaygroundYarnBody(button);",
+    )
     assert "return window.__NEKO_DESKTOP_RUNTIME__ ? activationId : dispatched;" in source
     assert "action: 'idle_cat1_playground_yarn_activate'" in source
     assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
@@ -788,6 +812,17 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "setChatSurfaceMode('minimized')" in app_block
     assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
     assert "window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel'" in app_block
+    assert (
+        "var previousActivationId = "
+        "window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID || '';"
+    ) in app_block
+    assert app_block.index(
+        "window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;"
+    ) < app_block.index("var toggled = toggleMinimized();")
+    assert (
+        "window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = "
+        "previousActivationId;"
+    ) in app_block
     assert "detail.reason" not in app_block
     assert "cat1-playground-entry" not in app_block
 
@@ -839,11 +874,18 @@ def test_model_cat_transition_contract_is_present():
     assert "NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out'" in source
     assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS = 1160" in source
     assert "1450" not in source
+    cleanup_duration_block = source[
+        source.index("function getModelReturnEnterCleanupMs()"):
+        source.index("async function waitForModelReturnEnterToSettle()")
+    ]
+    assert "window.__nekoExplorationRecallTransitionActive" in cleanup_duration_block
+    assert "Math.min(760, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS)" in cleanup_duration_block
+    assert ": NEKO_MODEL_RETURN_ENTER_CLEANUP_MS" in cleanup_duration_block
     return_enter_block = source[
         source.index("function playModelReturnEnter(container, rect)"):
         source.index("function mergeNekoTransitionAnchorRect(anchorRect, coverRect)")
     ]
-    assert "}, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS)" in return_enter_block
+    assert "}, getModelReturnEnterCleanupMs())" in return_enter_block
     assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS" not in return_enter_block
     _assert_source_order(
         return_enter_block,
@@ -1113,7 +1155,17 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     )
     _assert_source_order(
         app_auto_goodbye_listener_block,
-        "breathing ball state change sends one desktop bridge payload",
+        "exploration-away visual tier publishes its bridge fact before touching the nest surface",
+        "if (isPetCareExplorationAway()) {",
+        "scheduleIdleReturnBallDesktopBridge('pet-care-exploration-away');",
+        "return;\n        }\n        const container = getVisibleIdleReturnBallContainer();",
+    )
+    regular_visual_tier_block = app_auto_goodbye_listener_block[
+        app_auto_goodbye_listener_block.index("const container = getVisibleIdleReturnBallContainer();"):
+    ]
+    _assert_source_order(
+        regular_visual_tier_block,
+        "ordinary visual tier preserves the existing ball and cat bridge order",
         "const container = getVisibleIdleReturnBallContainer();",
         "if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
         "syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');",

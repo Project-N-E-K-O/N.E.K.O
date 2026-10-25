@@ -1552,13 +1552,21 @@ def test_social_session_init_hands_desktop_oauth_to_community_origin(client, mon
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://community.example"
     assert response.headers["cache-control"] == "no-store"
-    assert response.json() == {
+    payload = response.json()
+    delegate = payload.pop("native_delegate")
+    assert payload.pop("native_delegate_expires_in") == C._NATIVE_DELEGATE_TTL_SEC
+    assert payload == {
         "access_token": "desktop-token-a",
         "local_user_id": USER_A_ID,
         "auth_public_url": "https://auth.example",
         "client_id": "neko-servers-desktop-dev",
         "bind": {"bound": True, "error": None},
     }
+    delegate_entry = C._native_delegate_entry(delegate)
+    assert delegate_entry is not None
+    assert delegate_entry["local_user_id"] == USER_A_ID
+    assert delegate_entry["audience"] == "https://community.example"
+    assert delegate_entry["session_fingerprint"] == C._desktop_session_fingerprint(snapshot)
     # Desktop stays the sole owner of the refresh-token family.
     assert "desktop-refresh-a" not in response.text
 

@@ -2,6 +2,7 @@
 .git
 .gitignore
 .gitattributes
+.agent/
 
 # Python
 __pycache__

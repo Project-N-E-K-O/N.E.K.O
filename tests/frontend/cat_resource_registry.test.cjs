@@ -97,6 +97,12 @@ test('static cat manifests and registry stay slot-compatible', () => {
   const registry = loadRegistry();
 
   assert.equal(registry.getAppearance('action.cat1.play_yarn', { random: false }).metadata.wideArt, true);
+  assert.equal(registry.getAppearance('action.cat1.play_teaser_wand', { random: false }).available, true);
+  assert.equal(loadRegistry(undefined, {}, 'yui_neko')
+    .getAppearance('action.cat1.play_teaser_wand', { random: false }).available, true);
+  assert.equal(registry.getAppearance('action.cat1.petting', { random: false }).available, true);
+  assert.equal(loadRegistry(undefined, {}, 'yui_neko')
+    .getAppearance('action.cat1.petting', { random: false }).available, true);
   for (const actionId of [
     'cat1_social_ping',
     'cat1_eat_snack',
@@ -105,6 +111,8 @@ test('static cat manifests and registry stay slot-compatible', () => {
     'cat2_nap_feedback',
     'cat3_sleep_feedback',
     'cat1_hiss_stretch',
+    'play_teaser_wand',
+    'cat1_petting',
   ]) {
     assert.equal(registry.getActionCapabilities(actionId).available, true, actionId);
   }
