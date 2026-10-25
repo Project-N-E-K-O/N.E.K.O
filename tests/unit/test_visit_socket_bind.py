@@ -359,10 +359,10 @@ async def test_desktop_restart_cleanup_releases_lock_and_preserves_run_order(mon
     assert not display_socket._desktop_lock().locked()
     # The next run's bind only waits for its own local reset; its remote cancel queues behind the previous one.
     await asyncio.wait_for(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-c")), 1.0)
-    await asyncio.sleep(0)
-    assert order == ["local", "remote:start", "local"]
     admission = asyncio.create_task(display_socket.wait_desktop_restart_reset())
-    await asyncio.sleep(0)
+    # Give C's chain ample time: a remote cancel that did not queue behind B's would start here.
+    await asyncio.sleep(0.05)
+    assert order == ["local", "remote:start", "local"]
     assert not admission.done()
     release.set()
     assert await admission is None
