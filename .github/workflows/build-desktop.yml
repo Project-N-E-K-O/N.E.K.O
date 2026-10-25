@@ -919,7 +919,7 @@ jobs:
               # Bounded: if taskkill could not end it, fall back to a tree-wide
               # Kill rather than let the cleanup path hang the job.
               if (-not $wakeCheck.WaitForExit(15000)) {
-                try { $wakeCheck.Kill($true) } catch { Write-Host "(kill after taskkill failed: $($_.Exception.Message))" }
+                try { $wakeCheck.Kill($true); [void]$wakeCheck.WaitForExit(5000) } catch { Write-Host "(kill after taskkill failed: $($_.Exception.Message))" }
               }
               throw 'Frozen wake smoke timed out'
             }
