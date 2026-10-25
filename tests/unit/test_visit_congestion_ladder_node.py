@@ -91,6 +91,28 @@ def test_loopback_livekit_locks_the_highest_quality():
     assert out == {"restored": 0, "afterBad": None, "level": 0, "local": True, "remote": False}
 
 
+def test_loopback_lock_keeps_the_pack_level_at_zero_on_a_snapshot():
+    out = run_visit_js(
+        """
+        const h = makeController('guest');
+        const loopback = { transport: 'livekit', vendor: { livekit: { url: 'ws://127.0.0.1:7880', token: 't', ttl_s: 600 } } };
+        h.c.onCredentials(credsFor('guest', Object.assign({ crop: 'full' }, loopback)));
+        // A snapshot carrying a lowered level (saved by an earlier, unlocked page) must not lower the locked pack.
+        h.c.applyMedia({ type: 'media', publish: false, crop: 'full', ladder: 2 });
+        const locked = [h.c.lockHighestQuality, h.c.media.ladder, h.c.packer.dims.level, h.c.ladder.level];
+        const lockedFed = h.c.ladder.feed({ nowMs: 60000, rxFps: 30, lossPct: 0 });
+        // Without the lock the snapshot level is still a floor.
+        const g = makeController('guest');
+        g.c.onCredentials(credsFor('guest', { crop: 'full' }));
+        g.c.applyMedia({ type: 'media', publish: false, crop: 'full', ladder: 2 });
+        return { locked, lockedFed, unlocked: [g.c.lockHighestQuality, g.c.media.ladder, g.c.packer.dims.level] };
+        """
+    )
+    assert out["locked"] == [True, 0, 0, 0]
+    assert out["lockedFed"] is None  # The locked ladder never corrects the pack level by itself.
+    assert out["unlocked"] == [False, 2, 2]
+
+
 def test_controller_steps_the_ladder_from_peer_stats_in_place():
     out = run_visit_js(
         """

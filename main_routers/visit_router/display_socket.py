@@ -66,7 +66,10 @@ _replays: set[asyncio.Task] = set()
 
 _desktop_run_id: Optional[str] = None
 _desktop_run_lock: Optional[asyncio.Lock] = None
-_desktop_run_reset_task: Optional[asyncio.Task[bool]] = None
+_desktop_run_local_task: Optional[asyncio.Task[int]] = None
+"""Local half of the current restart cleanup (what ``visit_bind`` waits for)."""
+_desktop_run_reset_task: Optional[asyncio.Task[Optional[Exception]]] = None
+"""The whole current restart cleanup, local then remote (what room admission waits for)."""
 
 
 def _desktop_lock() -> asyncio.Lock:
@@ -76,34 +79,76 @@ def _desktop_lock() -> asyncio.Lock:
     return _desktop_run_lock
 
 
-async def _perform_desktop_run_reset(previous: Optional[asyncio.Task[bool]]) -> bool:
-    """Run one restart cleanup after the preceding run's cleanup has retired."""
+def _unfinished_reset() -> Exception:
+    from main_routers.visit_router.credentials import VisitServersUnreachable
+
+    return VisitServersUnreachable("desktop_restart_reset")
+
+
+async def _reset_local_invites(previous: Optional[asyncio.Task]) -> int:
+    """End this backend's unused host invitations once the preceding run's local reset retired."""
     if previous is not None:
-        await asyncio.shield(previous)
-    from main_routers.visit_router import credentials, runtime
+        await asyncio.wait([previous])
+    from main_routers.visit_router import runtime
+
+    return await runtime.reset_pending_host_invites_for_desktop_restart()
+
+
+async def _perform_desktop_run_reset(local: asyncio.Task[int], previous: Optional[asyncio.Task]) -> Optional[Exception]:
+    """Finish one restart cleanup: ``local``, then the remote bulk cancel once the preceding cleanup retired.
+
+    Returns None once both are done, else the failure: a Servers error as
+    raised (login required, banned, unreachable), anything else as an
+    unfinished reset -- the same contract as the startup invitation reset.
+    """
+    from main_routers.visit_router import credentials
 
     try:
-        reset = await runtime.reset_pending_host_invites_for_desktop_restart()
+        reset = await asyncio.shield(local)
+        if previous is not None:
+            # Remote cancels stay in run order: an older one landing late could void a fresh invitation.
+            await asyncio.wait([previous])
         # Connect scopes this bulk reset by both the authenticated account and
         # X-Client-Id, the stable local installation id (not the public OAuth client id).
         cancelled = await credentials.cancel_pending_host_invites()
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001 - A later bind for this run retries the cleanup.
+    except Exception as exc:  # noqa: BLE001 - Returned to the admission fence, which retries it.
         logger.warning("visit display: desktop restart invitation reset failed: %s", type(exc).__name__)
-        return False
+        return exc if isinstance(exc, credentials.VisitServersError) else _unfinished_reset()
     if reset or cancelled:
         logger.info(
             "visit display: desktop restart reset %d local and %d remote pending invitation(s)",
             reset,
             cancelled,
         )
-    return True
+    return None
+
+
+def _start_desktop_run_reset(name: str) -> None:
+    """Start a cleanup chained behind the current one (call under the ordering lock)."""
+    global _desktop_run_local_task, _desktop_run_reset_task
+    local = asyncio.create_task(_reset_local_invites(_desktop_run_local_task), name=f"{name}-local")
+    previous = _desktop_run_reset_task
+    _desktop_run_local_task = local
+    _desktop_run_reset_task = asyncio.create_task(_perform_desktop_run_reset(local, previous), name=name)
+
+
+def _reset_failure(cleanup: asyncio.Task[Optional[Exception]]) -> Optional[Exception]:
+    """The failure of a finished cleanup (a cancelled one counts as unfinished)."""
+    return _unfinished_reset() if cleanup.cancelled() else cleanup.result()
 
 
 async def _reset_for_new_desktop_run(message: Any) -> None:
-    """Invalidate unused invites once per Electron process, without holding the ordering lock during I/O."""
-    global _desktop_run_id, _desktop_run_reset_task
+    """Invalidate unused invites once per Electron process, without holding the ordering lock during I/O.
+
+    Only the local reset is awaited: it must retire before the bind replays
+    the live visit, or the old invitation would reach the new page.  The
+    remote bulk cancel (up to the Servers timeout) keeps running in the
+    background so it never stalls the display socket's receive loop;
+    :func:`wait_desktop_restart_reset` fences room creation on it.
+    """
+    global _desktop_run_id, _desktop_run_local_task, _desktop_run_reset_task
     run_id = message.get("desktop_run_id") if isinstance(message, dict) else None
     if not isinstance(run_id, str) or not run_id or len(run_id) > 128:
         return
@@ -112,57 +157,45 @@ async def _reset_for_new_desktop_run(message: Any) -> None:
         cleanup = _desktop_run_reset_task
         if previous is None:
             _desktop_run_id = run_id
-            _desktop_run_reset_task = None
+            _desktop_run_local_task = _desktop_run_reset_task = None
             return
         if previous == run_id and cleanup is None:
             return
         if previous != run_id:
-            cleanup = asyncio.create_task(
-                _perform_desktop_run_reset(cleanup),
-                name="visit-desktop-restart-reset",
-            )
             _desktop_run_id = run_id
-            _desktop_run_reset_task = cleanup
-        elif cleanup.done() and cleanup.result() is False:
-            cleanup = asyncio.create_task(
-                _perform_desktop_run_reset(None),
-                name="visit-desktop-restart-reset-retry",
-            )
-            _desktop_run_reset_task = cleanup
-    await asyncio.shield(cleanup)
+            _start_desktop_run_reset("visit-desktop-restart-reset")
+        elif cleanup.done() and _reset_failure(cleanup) is not None:
+            _start_desktop_run_reset("visit-desktop-restart-reset-retry")
+        local = _desktop_run_local_task
+    if local is not None:
+        await asyncio.wait([local])
 
 
-async def wait_desktop_restart_reset() -> bool:
+async def wait_desktop_restart_reset() -> Optional[Exception]:
     """Before minting a room, finish (and once retry) the current desktop-run cleanup.
 
+    Returns None once it is done, else the Servers error to answer with
+    (signed out -> ``409 VISIT_LOGIN_REQUIRED``, like the startup reset).
     This is the admission fence that prevents a delayed bulk cancel from
     invalidating an invitation created after the new renderer already bound.
     """
-    global _desktop_run_reset_task
     retried = False
     while True:
         async with _desktop_lock():
             cleanup = _desktop_run_reset_task
             if cleanup is None:
-                return True
+                return None
             if cleanup.done():
-                try:
-                    if cleanup.result() is True:
-                        return True
-                except asyncio.CancelledError:
-                    pass
-                if retried:
-                    return False
-                cleanup = asyncio.create_task(
-                    _perform_desktop_run_reset(None),
-                    name="visit-desktop-restart-reset-admission-retry",
-                )
-                _desktop_run_reset_task = cleanup
+                failure = _reset_failure(cleanup)
+                if failure is None or retried:
+                    return failure
+                _start_desktop_run_reset("visit-desktop-restart-reset-admission-retry")
+                cleanup = _desktop_run_reset_task
                 retried = True
-        if await asyncio.shield(cleanup):
-            return True
-        if retried:
-            return False
+        await asyncio.wait([cleanup])
+        failure = _reset_failure(cleanup)
+        if failure is None or retried:
+            return failure
 
 
 def is_bound(websocket: Any) -> bool:
@@ -475,12 +508,13 @@ async def end_visits_with_peer(peer_uid: str) -> int:
 
 
 def _reset_for_tests() -> None:
-    global _desktop_run_id, _desktop_run_lock, _desktop_run_reset_task
+    global _desktop_run_id, _desktop_run_lock, _desktop_run_local_task, _desktop_run_reset_task
     for task in list(_replays):
         task.cancel()
     _replays.clear()
     _desktop_run_id = None
     _desktop_run_lock = None
-    if _desktop_run_reset_task is not None and not _desktop_run_reset_task.done():
-        _desktop_run_reset_task.cancel()
-    _desktop_run_reset_task = None
+    for task in (_desktop_run_local_task, _desktop_run_reset_task):
+        if task is not None and not task.done():
+            task.cancel()
+    _desktop_run_local_task = _desktop_run_reset_task = None

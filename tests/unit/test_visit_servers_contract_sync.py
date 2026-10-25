@@ -56,6 +56,7 @@ ENDPOINTS = (
     "身份票 identity_ticket（claims 全表）",  # Identity ticket identity_ticket (complete claims table)
     "GET /api/visit/pubkeys",
     "GET /api/visit/invites/{invite_code}/preview",
+    "POST /api/visit/rooms/pending/cancel",
     "POST /api/visit/reports",
     "POST /api/visit/transcripts",
     "GET /api/visit/history",

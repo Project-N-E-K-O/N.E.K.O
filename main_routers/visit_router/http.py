@@ -381,8 +381,9 @@ async def create_room(request: Request):
     # otherwise a delayed bulk cancel can invalidate the fresh invitation.
     from main_routers.visit_router import display_socket
 
-    if not await display_socket.wait_desktop_restart_reset():
-        return _servers_error(cr.VisitServersUnreachable("desktop_restart_reset"))
+    restart_failure = await display_socket.wait_desktop_restart_reset()
+    if restart_failure is not None:
+        return _servers_error(restart_failure)
     admitted = await _admit(name, "host", crop=crop)
     if isinstance(admitted, JSONResponse):
         return admitted

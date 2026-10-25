@@ -287,8 +287,47 @@ async def test_new_desktop_process_resets_pending_invite_but_renderer_reconnect_
     assert resets == [] and remote_cancels == []
 
     await run(VisitSocket([bind(desktop_run_id="desktop-b")]), manager)
-    assert resets == [True] and remote_cancels == [True]
+    assert resets == [True]
     assert rt.replayed[-1] == []
+    assert await display_socket.wait_desktop_restart_reset() is None
+    assert remote_cancels == [True]
+
+
+async def test_new_desktop_bind_does_not_wait_for_the_remote_cancel(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def reset_pending():
+        rt.frames = []
+        return 1
+
+    async def cancel_pending():
+        entered.set()
+        await release.wait()
+        return 1
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    socket = VisitSocket([bind(desktop_run_id="desktop-b")])
+    # The remote cancel is still in flight: the receive loop finishes the bind anyway,
+    # after the local reset (the old invitation is not replayed to the new page).
+    await asyncio.wait_for(run(socket, manager), 1.0)
+    await asyncio.wait_for(entered.wait(), 1.0)
+    assert getattr(socket, VISIT_SOCKET_BOUND_ATTR) is True
+    assert rt.replayed[-1] == []
+    # Room admission is what waits for the remote cancel.
+    admission = asyncio.create_task(display_socket.wait_desktop_restart_reset())
+    await asyncio.sleep(0.05)
+    assert not admission.done()
+    release.set()
+    assert await asyncio.wait_for(admission, 1.0) is None
 
 
 async def test_desktop_restart_cleanup_releases_lock_and_preserves_run_order(monkeypatch):
@@ -314,15 +353,20 @@ async def test_desktop_restart_cleanup_releases_lock_and_preserves_run_order(mon
     monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
 
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
-    second = asyncio.create_task(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b")))
+    # wait_for: a bind that waited for the blocked remote cancel would hang here instead of failing.
+    await asyncio.wait_for(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b")), 1.0)
     await entered.wait()
     assert not display_socket._desktop_lock().locked()
-    third = asyncio.create_task(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-c")))
+    # The next run's bind only waits for its own local reset; its remote cancel queues behind the previous one.
+    await asyncio.wait_for(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-c")), 1.0)
     await asyncio.sleep(0)
-    assert order == ["local", "remote:start"]
+    assert order == ["local", "remote:start", "local"]
+    admission = asyncio.create_task(display_socket.wait_desktop_restart_reset())
+    await asyncio.sleep(0)
+    assert not admission.done()
     release.set()
-    await asyncio.gather(second, third)
-    assert order == ["local", "remote:start", "remote:end", "local", "remote:start", "remote:end"]
+    assert await admission is None
+    assert order == ["local", "remote:start", "local", "remote:end", "remote:start", "remote:end"]
 
 
 async def test_failed_desktop_restart_cleanup_retries_for_the_same_run(monkeypatch):
@@ -345,8 +389,46 @@ async def test_failed_desktop_restart_cleanup_retries_for_the_same_run(monkeypat
 
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
-    assert await display_socket.wait_desktop_restart_reset() is True
+    assert await display_socket.wait_desktop_restart_reset() is None
     await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
+    assert attempts == 2
+
+
+@pytest.mark.parametrize("raised, expected, reason", [
+    ("login", "VisitLoginRequired", None),
+    ("banned", "VisitBanned", "banned"),
+    ("offline", "VisitServersUnreachable", "network"),
+    ("bug", "VisitServersUnreachable", "desktop_restart_reset"),
+])
+async def test_desktop_restart_cleanup_returns_the_servers_error(monkeypatch, raised, expected, reason):
+    from main_routers.visit_router import credentials
+
+    attempts = 0
+
+    async def reset_pending():
+        return 0
+
+    async def cancel_pending():
+        nonlocal attempts
+        attempts += 1
+        if raised == "login":
+            raise credentials.VisitLoginRequired()
+        if raised == "banned":
+            raise credentials.VisitBanned("banned")
+        if raised == "offline":
+            raise credentials.VisitServersUnreachable("network")
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
+    failure = await display_socket.wait_desktop_restart_reset()
+    # Same contract as the startup reset: Servers errors reach the room endpoint as raised, anything else is
+    # an unfinished reset; one admission retries once.
+    assert type(failure).__name__ == expected
+    assert failure.reason == reason
     assert attempts == 2
 
 

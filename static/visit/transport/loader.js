@@ -706,8 +706,10 @@
     if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') this.media.peerCrop = msg.peer_crop;
     if (this.side === 'guest') {
       var crop = msg.crop === 'full' || msg.crop === 'upper' ? msg.crop : this.media.crop;
-      // 后端快照里的 ladder 只当下限：级别由本页的拥塞阶梯决定，快照不能把已降的级别抬回去
-      var level = Math.max(Number.isInteger(msg.ladder) ? msg.ladder : 0, crop === this.media.crop ? this.media.ladder : 0);
+      // 后端快照里的 ladder 只当下限：级别由本页的拥塞阶梯决定，快照不能把已降的级别抬回去。
+      // 本机 LiveKit 锁最高画质时级别固定 0（同入房时）：锁定的阶梯停在 0 级、feed() 不会再把打包级别纠正回来
+      var level = this.lockHighestQuality ? 0
+        : Math.max(Number.isInteger(msg.ladder) ? msg.ladder : 0, crop === this.media.crop ? this.media.ladder : 0);
       if (crop !== this.media.crop || level !== this.media.ladder) this.ladder.reset(crop, level);
       this.setGeometry(crop, level);
       if (msg.publish === true) {

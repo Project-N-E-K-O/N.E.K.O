@@ -67,14 +67,14 @@ OTHER_OWN = "e" * 24
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
     rtm.register_visit_route_kind()
     monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
     yield
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
 
 
@@ -986,13 +986,32 @@ async def test_create_room_after_restart_always_mints_a_fresh_local_visit_id(env
 
 async def test_create_room_waits_for_desktop_restart_cleanup(env, monkeypatch):
     async def cleanup_failed():
-        return False
+        return cr.VisitServersUnreachable("desktop_restart_reset")
 
     monkeypatch.setattr(display_socket, "wait_desktop_restart_reset", cleanup_failed)
     async with env.client() as c:
         response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
     assert response.status_code == 503
     assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_desktop_restart_cleanup_needs_it(env, monkeypatch):
+    async def no_local_invites():
+        return 0
+
+    async def signed_out():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(rtm, "reset_pending_host_invites_for_desktop_restart", no_local_invites)
+    monkeypatch.setattr(cr, "cancel_pending_host_invites", signed_out)
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-a"})
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-b"})
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    # Symmetric with the startup reset: signed out is a login prompt, not "servers unreachable".
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert env.host.rt is None
 
 
