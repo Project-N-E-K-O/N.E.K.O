@@ -551,6 +551,26 @@
         return openStandaloneVisitPersonaPreview(catgirl, options);
     };
 
+    // 独立窗口里 window.t 要等 i18n-i18next.js 异步加载完语言包才有；抢先开面板，正文会定格在中文兜底。
+    // 初始化成功 / 失败都会派发 localechange；超时兜底，初始化卡住时窗口也不会一直空着
+    var I18N_READY_TIMEOUT_MS = 2000;
+
+    function whenI18nReady(run) {
+        if (typeof window.t === 'function') {
+            run();
+            return;
+        }
+        var done = false;
+        function go() {
+            if (done) return;
+            done = true;
+            window.removeEventListener('localechange', go);
+            run();
+        }
+        window.addEventListener('localechange', go);
+        window.setTimeout(go, I18N_READY_TIMEOUT_MS);
+    }
+
     function bootstrapStandaloneWindow() {
         if (window.__NEKO_VISIT_PERSONA_STANDALONE__ !== true) return;
         var params = new URLSearchParams(window.location.search || '');
@@ -574,17 +594,19 @@
 
         window.nekoBeforeWindowClose = function () { sendResult(false); };
         window.addEventListener('beforeunload', function () { sendResult(false); });
-        openInlineVisitPersonaPreview(catgirl, {
-            requireConfirm: params.get('require_confirm') === '1'
-        }).then(async function (confirmed) {
-            sendResult(confirmed === true);
-            try {
-                if (window.nekoHost && typeof window.nekoHost.closeWindow === 'function') {
-                    var result = await window.nekoHost.closeWindow();
-                    if (result && result.ok) return;
-                }
-            } catch (_) { /* browser fallback below */ }
-            try { window.close(); } catch (_) { /* noop */ }
+        whenI18nReady(function () {
+            openInlineVisitPersonaPreview(catgirl, {
+                requireConfirm: params.get('require_confirm') === '1'
+            }).then(async function (confirmed) {
+                sendResult(confirmed === true);
+                try {
+                    if (window.nekoHost && typeof window.nekoHost.closeWindow === 'function') {
+                        var result = await window.nekoHost.closeWindow();
+                        if (result && result.ok) return;
+                    }
+                } catch (_) { /* browser fallback below */ }
+                try { window.close(); } catch (_) { /* noop */ }
+            });
         });
     }
 

@@ -562,6 +562,21 @@ const report = {};
     report.idle_active = bound2[0].active;
     report.idle_bar_entry = h2.I.getVisitChatView().bar.actions.map((a) => a.id);
   }
+  // ── 重载快照中继给 Pet 窗：阶段帧之后带上出门样式与对端显隐（中继可能抢在 Pet 自己的恢复之前建 iframe） ──
+  {
+    const snapRelay = async (body) => {
+      const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body }) };
+      const h = createHarness({ routes });
+      await h.chat.afterBind(h.socket, '咪咪');
+      return h.relayFrames.map((frame) => frame.action + ':' + frame.side + ':' + frame.visit_id);
+    };
+    report.reload_relay_guest_hidden = await snapRelay({ active: true, visit_id: VID, phase: 'active', side: 'guest', enabled: true,
+      peer: { cat_name: '小白', hidden: true }, room: { peer_crop: 'upper' }, transcript: [] });
+    report.reload_relay_host_visible = await snapRelay({ active: true, visit_id: VID, phase: 'wrap_up', side: 'host', enabled: true,
+      peer: { cat_name: '小白', hidden: false }, room: { peer_crop: 'full' }, transcript: [] });
+    report.reload_relay_guest_waiting = await snapRelay({ active: true, visit_id: VID, phase: 'joining', side: 'guest', enabled: true,
+      transcript: [] });
+  }
   // ── 旧的未开始 ending 快照迟到：不能结束读 state 期间已经打开的新场次 ──
   {
     let release;
@@ -1744,6 +1759,21 @@ def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):
     assert report["reload_relay_crop"] == "full"
     assert report["idle_active"] is False
     assert report["idle_bar_entry"] == ["invite", "go"]
+
+
+def test_reload_snapshot_relay_carries_away_and_peer_visibility_after_the_phase(report):
+    # The relayed phase frame can create the Pet iframe before Pet's own reload recovery,
+    # which then bails out; the relay itself must restore what that recovery would have.
+    assert report["reload_relay_guest_hidden"] == [
+        "started:guest:AAAAAAAAAAAAAAAAAAAAAA",
+        "departed:guest:AAAAAAAAAAAAAAAAAAAAAA",
+        "peer_hidden:guest:AAAAAAAAAAAAAAAAAAAAAA",
+    ]
+    assert report["reload_relay_host_visible"] == [
+        "wrap_up:host:AAAAAAAAAAAAAAAAAAAAAA",
+        "peer_visible:host:AAAAAAAAAAAAAAAAAAAAAA",
+    ]
+    assert report["reload_relay_guest_waiting"] == ["joining:guest:AAAAAAAAAAAAAAAAAAAAAA"]
 
 
 def test_stale_unstarted_ending_snapshot_does_not_close_the_newer_visit(report):

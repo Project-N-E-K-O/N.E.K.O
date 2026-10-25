@@ -2379,6 +2379,19 @@
             : (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full') ? state.peer.crop : '');
         if (peerCrop) frame.peer_crop = peerCrop;
         window.nekoRelayVisitStateToDisplay(frame);
+        // 这一帧可能先于 Pet 窗自己的重载恢复建出 iframe，恢复随即作废，它本该套上的出门样式 / 对端显隐
+        // 也就没了：按后端 started → departed 的顺序补上出门，再按快照同步对端显隐（建 iframe 会清掉这两样，必须排在阶段帧之后）
+        if (frame.side === 'guest' && (phase === 'active' || phase === 'wrap_up')) {
+            window.nekoRelayVisitStateToDisplay({
+                type: 'visit_state_change', action: 'departed', side: frame.side, visit_id: visitId
+            });
+        }
+        if (state.peer && typeof state.peer.hidden === 'boolean') {
+            window.nekoRelayVisitStateToDisplay({
+                type: 'visit_state_change', action: state.peer.hidden ? 'peer_hidden' : 'peer_visible',
+                side: frame.side, visit_id: visitId
+            });
+        }
     }
 
     // 快照里的对端信息与重载前的台词并进这一场；onlyFill：只填空缺字段（帧带来的更新不覆盖）

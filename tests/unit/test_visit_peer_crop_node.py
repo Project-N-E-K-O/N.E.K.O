@@ -537,6 +537,42 @@ def test_auxiliary_state_events_do_not_void_the_reload_snapshot():
     assert out == {"result": True, "frame": True}
 
 
+def test_chat_snapshot_relay_ahead_of_reload_recovery_keeps_away_and_peer_hidden():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        for (const side of ['guest', 'host']) {
+          const h = makeBridge();
+          const box = h.ctx.document.createElement('div');
+          box.id = 'live2d-container';
+          h.ctx.document.body.appendChild(box);
+          let respond;
+          h.ctx.fetch = () => new Promise((r) => { respond = r; });
+          let result;
+          h.bridge.recoverAfterReload('Neko').then((r) => { result = r; });   // Pet 窗自己的重载恢复还在路上
+          await settle();
+          h.side = side;
+          // chat 窗读到快照后的中继顺序：阶段帧（建 iframe、恢复作废）→ 出门 → 对端显隐
+          change(h, 'started', { peer_crop: 'full' });
+          if (side === 'guest') change(h, 'departed');
+          change(h, 'peer_hidden');
+          respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side, phase: 'active',
+                                                             room: { peer_crop: 'full' }, peer: { hidden: true } }) });
+          await settle();
+          await settle();
+          const f = h.ctx.document.getElementById('visit-frame');
+          runs[side] = { result, frame: !!f, away: box.classList.contains('visiting-away'),
+                         hidden: h.bridge._state.peerHidden === true, dim: f ? (f.style.opacity || '') : null };
+          change(h, 'ended'); await advance(15100);
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["guest"] == {"result": False, "frame": True, "away": True, "hidden": True, "dim": ""}
+    assert out["host"] == {"result": False, "frame": True, "away": False, "hidden": True, "dim": "0.6"}
+
+
 def test_recovery_waits_for_page_config_within_the_overall_deadline():
     out = run_visit_js(
         _BRIDGE_JS + """
