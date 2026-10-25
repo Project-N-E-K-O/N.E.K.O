@@ -394,6 +394,43 @@ async def test_failed_desktop_restart_cleanup_retries_for_the_same_run(monkeypat
     assert attempts == 2
 
 
+async def test_failed_local_reset_keeps_the_display_socket_and_is_retried_by_admission(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    local_attempts = []
+    remote_cancels = []
+
+    async def reset_pending():
+        local_attempts.append(True)
+        raise RuntimeError("local reset bug")
+
+    async def cancel_pending():
+        remote_cancels.append(True)
+        return 0
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    socket = VisitSocket([bind(desktop_run_id="desktop-b"), {"action": "visit_bind_probe"}])
+    await asyncio.wait_for(run(socket, manager), 1.0)
+    # The failure never escapes into the receive loop (that would end the whole chat socket with
+    # SERVER_ERROR): the bind completes and shows the visit that is in fact still live.
+    codes = [status.get("code") for status in manager.statuses]
+    assert getattr(socket, VISIT_SOCKET_BOUND_ATTR) is True
+    assert "SERVER_ERROR" not in codes and "SERVER_ERROR" not in socket.statuses()
+    assert "UNKNOWN_ACTION" in codes  # The next frame after the bind was still received.
+    assert rt.replayed[-1] == [INVITE]
+    # Room admission reruns the whole cleanup once and refuses while it keeps failing.
+    failure = await display_socket.wait_desktop_restart_reset()
+    assert isinstance(failure, credentials.VisitServersUnreachable)
+    assert failure.reason == "desktop_restart_reset"
+    assert len(local_attempts) == 2 and remote_cancels == []
+
+
 @pytest.mark.parametrize("raised, expected, reason", [
     ("login", "VisitLoginRequired", None),
     ("banned", "VisitBanned", "banned"),
