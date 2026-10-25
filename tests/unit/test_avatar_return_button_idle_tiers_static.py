@@ -573,7 +573,7 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "pointer.x - state.pointerOffsetX" in pointer_move_block
     assert "pointer.y - state.pointerOffsetY" in pointer_move_block
     assert "const clampedX = Math.max(body.wallLeft, Math.min(nextX, body.wallRight));" in pointer_move_block
-    assert "const clampedY = Math.min(nextY, body.floorY);" in pointer_move_block
+    assert "const clampedY = Math.max(body.ceilingY, Math.min(nextY, body.floorY));" in pointer_move_block
     assert "x: clampedX + state.pointerOffsetX" in pointer_move_block
     assert "y: clampedY + state.pointerOffsetY" in pointer_move_block
 
