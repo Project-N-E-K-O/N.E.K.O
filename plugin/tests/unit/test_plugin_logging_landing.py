@@ -417,3 +417,23 @@ def test_bootstrap_failure_does_not_lock_root_initialised(
         h.flush()
     text = _read_logs(isolated_log_dir, "PluginServer")
     assert "post-retry-success" in text
+
+
+@pytest.mark.parametrize("template", ["external={}", "external=%s"])
+def test_plugin_controls_are_escaped_after_interpolation(
+    isolated_log_dir, monkeypatch, capsys, template
+):
+    monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
+    from utils.logger_config import setup_logging as bootstrap_setup_logging
+
+    bootstrap_setup_logging(service_name="PluginServer", silent=True)
+    plogging = importlib.import_module("plugin.logging_config")
+    adapter = plogging.get_logger("external-plugin").bind(plugin_id="demo")
+    adapter.error(template, "response\x07\x1b[2J")
+
+    console = capsys.readouterr().out
+    output = _read_logs(isolated_log_dir, "PluginServer")
+    for text in (console, output):
+        assert r"external=response\x07\x1b[2J" in text
+        assert "\x07" not in text
+        assert "\x1b" not in text
