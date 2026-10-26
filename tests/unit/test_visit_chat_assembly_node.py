@@ -1085,6 +1085,25 @@ const report = {};
     h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:2', lp: 9, text: '最新一句', final: true, truncated: false, speaker: own });
     report.lamport_order = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0).map((m) => m.blocks[0].text);
   }
+  // ── 气泡头已有作者名：去掉模型 / 旧端误放在正文开头的说话人或收话人名称标记 ──
+  {
+    const h = createHarness();
+    h.state('started', { side: 'host', peer_name: '11' });
+    const peer = { side: 'guest', kind: 'cat', name: '小白', self: false };
+    const own = { side: 'host', kind: 'cat', name: '咪咪', self: true };
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:p1', lp: 1, text: '[小白] 你好呀', final: true, truncated: false, speaker: peer });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:p2', lp: 2, text: '【小白】：又见面了', final: true, truncated: false, speaker: peer });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'g:p3', lp: 3, text: '[别人] 这不是我的标记', final: true, truncated: false, speaker: peer });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:p4', lp: 4, text: '[11] 哟，又来了？', final: true, truncated: false,
+      speaker: own, addressee: { side: 'guest', kind: 'cat' } });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:p5', lp: 5, text: '[11]，你也来了。', final: true, truncated: false,
+      speaker: own, addressee: { side: 'guest', kind: 'cat' } });
+    h.frame({ type: 'visit_line', visit_id: VID, line_id: 'h:p6', lp: 6, text: '我刚才听见【11】叫我。', final: true, truncated: false,
+      speaker: own, addressee: { side: 'guest', kind: 'cat' } });
+    report.repeated_speaker_prefix = [h.lineText('g:p1'), h.lineText('g:p2'), h.lineText('g:p3'), h.lineText('h:p4'),
+      h.lineText('h:p5'), h.lineText('h:p6')];
+    report.repeated_speaker_author = h.lineMessage('g:p1').author;
+  }
   // ── 读快照期间提交、快照里已有这句、实时终稿后到：认领并撤掉本地气泡，不留重复 ──
   {
     let release;
@@ -1971,6 +1990,18 @@ def test_ack_only_text_session_is_released_when_the_visit_ends(report):
 
 def test_lines_are_ordered_by_lamport_key_with_host_first(report):
     assert report["lamport_order"] == ["更早一句", "东家这句", "客人这句", "最新一句"]
+
+
+def test_repeated_speaker_prefix_is_hidden_but_the_author_remains(report):
+    assert report["repeated_speaker_prefix"] == [
+        "你好呀",
+        "又见面了",
+        "[别人] 这不是我的标记",
+        "哟，又来了？",
+        "11，你也来了。",
+        "我刚才听见11叫我。",
+    ]
+    assert report["repeated_speaker_author"] == "小白"
 
 
 def test_live_final_after_snapshot_claims_and_removes_the_local_bubble(report):

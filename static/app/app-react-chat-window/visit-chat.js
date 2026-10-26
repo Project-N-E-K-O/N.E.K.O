@@ -798,11 +798,60 @@
         return name || peerCatName();
     }
 
+    function participantName(participant) {
+        participant = participant || {};
+        var explicit = String(participant.name || '').trim();
+        if (explicit) return explicit;
+        var own = participant.side && participant.side === visit.side;
+        if (participant.kind === 'cat') return own ? ownCatName() : peerCatName();
+        if (participant.kind === 'human') {
+            return own ? userName() : (visit.peerHumanLabel || t('visit.speaker.peerHuman', '对方的家里人'));
+        }
+        return '';
+    }
+
+    /**
+     * 人名已由气泡头展示；兼容旧端或模型偶发模仿历史标记而输出的
+     * ``[名字] 正文`` / ``【名字】：正文``。句首名称后是空白、冒号或横线时，按无意义
+     * 标签整体去掉；名称在句中，或句首后直接跟逗号等有语义标点时，只拆掉括号、保留
+     * 名字。其它方括号内容保留。流式首片只到 ``[na`` 时先不上屏，避免前缀闪一下。
+     */
+    function withoutRepeatedSpeakerPrefix(text, speaker, addressee) {
+        var raw = String(text || '');
+        var candidate = raw.replace(/^\s+/, '');
+        var names = [participantName(speaker), participantName(addressee)].filter(function (name, index, all) {
+            return !!name && all.indexOf(name) === index;
+        });
+        for (var n = 0; n < names.length; n++) {
+            var prefixes = ['[' + names[n] + ']', '【' + names[n] + '】'];
+            for (var i = 0; i < prefixes.length; i++) {
+                var prefix = prefixes[i];
+                if (candidate.indexOf(prefix) === 0) {
+                    var rest = candidate.slice(prefix.length);
+                    if (!rest) return '';
+                    if (/^[\s:：\-—]+/.test(rest)) return rest.replace(/^[\s:：\-—]+/, '');
+                    return names[n] + rest;
+                }
+                if (candidate && prefix.indexOf(candidate) === 0) return '';
+            }
+        }
+        var normalized = raw;
+        names.forEach(function (name) {
+            normalized = normalized.split('[' + name + ']').join(name);
+            normalized = normalized.split('【' + name + '】').join(name);
+        });
+        return normalized;
+    }
+
     function renderLine(entry) {
         if (!isUiWindow()) return;
         // 协议偶尔会在上游模型失败时收到空的 delta / final。空内容不是一条可见消息，
         // 不应占出一个只有作者和时间的气泡；带“被打断”提示的空行仍保留提示。
-        if (relayCleanIsEmpty(entry.text) && !entry.truncated) return;
+        var visibleText = withoutRepeatedSpeakerPrefix(entry.text, entry.speaker, entry.addressee);
+        if (relayCleanIsEmpty(visibleText) && !entry.truncated) {
+            if (entry.final) removeRenderedLine(entry);
+            return;
+        }
         var adapter = window.appChat;
         if (!adapter || typeof adapter.renderVisitLine !== 'function') return;
         var notice = entry.truncated ? t('visit.stream.truncated', '（被打断）') : '';
@@ -821,7 +870,7 @@
             speaker: entry.speaker,
             author: speakerAuthor(entry.speaker, entry.addressee),
             avatarUrl: entry.speaker && entry.speaker.self !== true && entry.speaker.kind === 'cat' ? peerAvatarUrl : '',
-            text: entry.text,
+            text: visibleText,
             notice: notice,
             replace: !!claimed
         });
