@@ -7034,6 +7034,8 @@
         "visitingAway": "놀러 가는 중"
     },
     "feedbackDevices": {
+        "comingSoonTitle": "아직 준비 중이에요",
+        "comingSoonMessage": "조금만 기다려 주세요",
         "title": "추천 기록 기기 관리",
         "description": "추천 기록 업로드만 관리합니다. 음악 재생과 추천 기능은 계속 사용할 수 있습니다.",
         "name": "기기 이름(선택)",

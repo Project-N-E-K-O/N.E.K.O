@@ -7034,6 +7034,8 @@
         "visitingAway": "Out visiting"
     },
     "feedbackDevices": {
+        "comingSoonTitle": "Coming soon",
+        "comingSoonMessage": "Please stay tuned",
         "title": "Recommendation history devices",
         "description": "Manage recommendation history uploads. Listening and recommendations keep working.",
         "name": "Device name (optional)",

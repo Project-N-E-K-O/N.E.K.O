@@ -7034,6 +7034,8 @@
         "visitingAway": "在串门中"
     },
     "feedbackDevices": {
+        "comingSoonTitle": "暂未开放",
+        "comingSoonMessage": "敬请等待",
         "title": "推荐历史设备管理",
         "description": "这里只管理推荐历史上传，不影响听歌和正常推荐。",
         "name": "设备名称（选填）",

@@ -7034,6 +7034,8 @@
         "visitingAway": "Visitando"
     },
     "feedbackDevices": {
+        "comingSoonTitle": "Em breve",
+        "comingSoonMessage": "Aguarde as novidades",
         "title": "Dispositivos do histórico de recomendações",
         "description": "Gerencie o envio do histórico. A música e as recomendações continuam funcionando.",
         "name": "Nome do dispositivo (opcional)",

@@ -1,11 +1,16 @@
 (function () {
     'use strict';
     const base = '/api/proactive/feedback';
-    const nodes = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices'].map(id => [id, document.getElementById(id)]));
+    const nodes = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','management-content'].map(id => [id, document.getElementById(id)]));
     let view = 0, disposed = false, busy = false, mutation = null, current = null, csrf = null, statusKey = '';
     let replacementChoice = null;
     const t = key => typeof window.t === 'function' ? window.t('feedbackDevices.' + key) : key;
-    const status = key => { statusKey = key; nodes.status.textContent = t(key); };
+    const status = key => {
+        statusKey = key;
+        nodes.status.textContent = t(key);
+        nodes['coming-soon'].hidden = key !== 'notEnabled';
+        nodes['management-content'].hidden = key === 'notEnabled';
+    };
     async function request(path, body, retry = true, epoch = view) {
         if (disposed || epoch !== view) throw Error('session_changed');
         if (!csrf) {

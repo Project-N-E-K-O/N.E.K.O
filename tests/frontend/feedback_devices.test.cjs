@@ -15,7 +15,7 @@ class Element {
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
 }
 async function fixture(options = {}) {
-    const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices'].map(id => [id, new Element()]));
+    const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','management-content'].map(id => [id, new Element()]));
     const events = {}, timeouts = [];
     const data = { owner: 'account-a', protocol: 2, upgrade: false, calls: [], devices: Array.from({ length: 5 }, (_, i) => ({
         registration_id: 'old-' + i, registration_version: 1, display_name: 'Laptop ' + i, active: true, is_current: false })) };
@@ -166,6 +166,42 @@ test('default v1 explains unavailable capability and does not request devices', 
     assert.equal(s.elements.status.textContent, 'feedbackDevices.notEnabled');
     assert.equal(s.elements.refresh.disabled, false);
     assert.equal(s.data.calls.filter(row => row.url.endsWith('/devices')).length, before);
+});
+
+test('unopened state shows Yui notice and hides management actions, then recovers on pageshow', async () => {
+    const s = await fixture();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    s.data.protocol = 1;
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, false);
+    assert.equal(s.elements['management-content'].hidden, true);
+    s.events.localechange();
+    assert.equal(s.elements['coming-soon'].hidden, false);
+    s.events.pagehide();
+    s.data.protocol = 2;
+    s.events.pageshow(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    assert.equal(s.elements.devices.children.length, 5);
+});
+
+test('upgrade and read errors remain actionable after an unopened notice', async () => {
+    const s = await fixture();
+    s.data.protocol = 1;
+    s.elements.refresh.click(); await settle();
+    s.data.upgrade = true;
+    s.events.pagehide(); s.events.pageshow(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    assert.equal(s.elements.upgrade.hidden, false);
+    assert.equal(s.elements.refresh.disabled, false);
+    s.setIntercept(() => { throw Error('offline'); });
+    s.elements.refresh.click(); await settle();
+    assert.equal(s.elements['coming-soon'].hidden, true);
+    assert.equal(s.elements['management-content'].hidden, false);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.unavailable');
+    assert.equal(s.elements.refresh.disabled, false);
 });
 
 test('failed mutation and failed follow-up read still leave a usable retry button', async () => {

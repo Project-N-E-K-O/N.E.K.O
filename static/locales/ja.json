@@ -7034,6 +7034,8 @@
         "visitingAway": "おでかけ中"
     },
     "feedbackDevices": {
+        "comingSoonTitle": "近日公開",
+        "comingSoonMessage": "公開までお待ちください",
         "title": "おすすめ履歴の端末管理",
         "description": "履歴のアップロードのみを管理します。音楽再生やおすすめ機能はそのまま使えます。",
         "name": "端末名（任意）",

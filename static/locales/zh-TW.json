@@ -7034,6 +7034,8 @@
         "visitingAway": "串門中"
     },
     "feedbackDevices": {
+        "comingSoonTitle": "暫未開放",
+        "comingSoonMessage": "敬請期待",
         "title": "推薦歷史裝置管理",
         "description": "這裡只管理推薦歷史上傳，不影響聽歌和正常推薦。",
         "name": "裝置名稱（選填）",
