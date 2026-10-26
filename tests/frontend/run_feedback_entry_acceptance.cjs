@@ -2,7 +2,8 @@
  * Product HTML, device script and Electron preload/controller run unchanged.
  * OAuth/identity/device responses are fixtures; this does not test a real IdP.
  * Set NEKO_TEST_PLAYWRIGHT_MODULE, NEKO_TEST_CHROME, NEKO_TEST_ELECTRON,
- * NEKO_TEST_PC_ROOT and NEKO_TEST_OUTPUT before running with Node.
+ * NEKO_TEST_PC_ROOT, NEKO_TEST_OUTPUT and NEKO_TEST_BASE_REF before running.
+ * The baseline is required so committed PR checkouts cannot silently use HEAD.
  */
 'use strict';
 const assert = require('node:assert/strict');
@@ -12,12 +13,14 @@ const http = require('node:http');
 const { execFileSync } = require('node:child_process');
 const { chromium, _electron } = require(process.env.NEKO_TEST_PLAYWRIGHT_MODULE);
 const root = path.resolve(__dirname, '../..');
+assert.ok(process.env.NEKO_TEST_BASE_REF, 'NEKO_TEST_BASE_REF must identify the before-change baseline commit');
+const baseline = execFileSync('git', ['rev-parse', '--verify', '--end-of-options', process.env.NEKO_TEST_BASE_REF + '^{commit}'], { cwd: root, encoding: 'utf8' }).trim();
 const output = path.resolve(process.env.NEKO_TEST_OUTPUT);
 fs.mkdirSync(output, { recursive: true });
 const copy = JSON.parse(fs.readFileSync(path.join(root, 'static/locales/zh-CN.json'))).feedbackDevices;
-const beforeCopy = JSON.parse(execFileSync('git', ['show', 'HEAD:static/locales/zh-CN.json'], { cwd: root, encoding: 'utf8' })).feedbackDevices;
-const beforeTemplate = execFileSync('git', ['show', 'HEAD:templates/feedback_devices.html'], { cwd: root, encoding: 'utf8' });
-const beforeDevices = execFileSync('git', ['show', 'HEAD:static/feedback-devices.js'], { cwd: root });
+const beforeCopy = JSON.parse(execFileSync('git', ['show', baseline + ':static/locales/zh-CN.json'], { cwd: root, encoding: 'utf8' })).feedbackDevices;
+const beforeTemplate = execFileSync('git', ['show', baseline + ':templates/feedback_devices.html'], { cwd: root, encoding: 'utf8' });
+const beforeDevices = execFileSync('git', ['show', baseline + ':static/feedback-devices.js'], { cwd: root });
 let origin, account = null, protocol = 1, sequence = 0;
 const completed = new Set(), calls = [], pendingReplies = [];
 let holdStatus = false;
@@ -86,7 +89,7 @@ const server = http.createServer(async (req, res) => {
     } catch (error) { res.writeHead(500); res.end(error.message); }
 });
 function releaseReads() { holdStatus = false; for (const reply of pendingReplies.splice(0)) reply(); }
-const results = { fixture: 'synthetic HTTP APIs; real product renderers; no real credentials or cloud writes', stages: [] };
+const results = { fixture: 'synthetic HTTP APIs; real product renderers; no real credentials or cloud writes', baseline, stages: [] };
 const record = name => results.stages.push(name);
 async function noOverflow(page) { assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); }
 async function waitDevices(page, owner) { await page.locator('#devices').getByText('Device ' + owner, { exact: false }).waitFor(); }
