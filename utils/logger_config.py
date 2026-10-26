@@ -122,7 +122,7 @@ def format_log_message(message, args):
         return f"{text} | args={args!r}"
 
 
-def _install_message_formatting():
+def install_message_formatting():
     """Startup owns the process-wide hook; SDK calls share its pure formatter."""
     if getattr(logging, "_neko_brace_compat_installed", False):
         return
@@ -398,7 +398,7 @@ class EnhancedLogger:
 
 
 def setup_logging(app_name=None, service_name=None, log_level=None, silent=False,
-                  log_subdir=None, *, capture_root=False, shared_parent=True):
+                  log_subdir=None, *, capture_root=None, shared_parent=True):
     """
     Convenience function: set up logging configuration
 
@@ -407,8 +407,10 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         service_name: service name, distinguishing log files of different services (e.g. Main, Memory, Agent)
         log_level: log level
         silent: silent mode, no init message printed (for subprocesses, avoiding duplicate output)
-        capture_root: own ordinary stdlib records in a dedicated process. Only
-            handlers installed by this backend are replaced; unrelated handlers remain.
+        capture_root: own ordinary stdlib records. None preserves the existing
+            Agent startup call as the designated host/root owner; other services
+            configure only their namespaces unless they explicitly request True.
+            False always opts out. Unrelated handlers remain untouched.
         shared_parent: also own shared APP_NAME module records. Embedded services
             set False so the containing application's shared logger stays intact.
         log_subdir: log subdirectory. Plugin subprocesses pass ``"plugin"`` to tuck
@@ -423,10 +425,15 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         The returned logger automatically includes the traceback on error() calls (when in an exception context)
         logger.exception() can also be used to record exception info explicitly
     """
+    # Agent is the plugin-host process, including direct-run imports. Keep that
+    # ownership explicit in this policy instead of letting Memory/Main import
+    # order choose the root sink. Dedicated plugin processes pass True themselves.
+    if capture_root is None:
+        capture_root = service_name == "Agent" and shared_parent
     # A forked child owns its log lifecycle; remove inherited project handlers
     # from all namespaces before building its own service logger.
     _release_inherited_handlers()
-    _install_message_formatting()
+    install_message_formatting()
     config = RobustLoggerConfig(
         app_name=app_name,
         service_name=service_name,
@@ -826,6 +833,7 @@ __all__ = [
     'EnhancedLogger', 
     'setup_logging',
     'format_log_message',
+    'install_message_formatting',
     'get_module_logger',
     # Rate limiting.
     'RateLimitedEndpointFilter',

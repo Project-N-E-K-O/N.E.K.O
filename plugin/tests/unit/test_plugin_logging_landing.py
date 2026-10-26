@@ -105,7 +105,7 @@ def test_writer_reader_and_public_file_path_share_product_name(isolated_log_dir,
 
 
 def test_embedded_service_keeps_agent_handlers_and_routes_its_namespace(isolated_log_dir):
-    agent, _ = setup_logging(service_name="Agent", silent=True, capture_root=True)
+    agent, _ = setup_logging(service_name="Agent", silent=True)
     root = logging.getLogger()
     before = list(root.handlers)
     app_before = list(logging.getLogger("N.E.K.O").handlers)

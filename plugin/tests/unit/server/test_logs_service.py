@@ -135,6 +135,27 @@ def test_requested_snapshot_size_is_not_overwritten(service, tmp_path):
     assert session.poll() is None
 
 
+def test_snapshot_parses_only_the_requested_history_window(service, tmp_path, monkeypatch):
+    path = write_log(tmp_path)
+    path.write_text(''.join(f'message {i}\n' for i in range(50000)), encoding='utf-8')
+    original = service_module.parse_log_line
+    parsed = []
+
+    def record_parse(line):
+        parsed.append(line)
+        return original(line)
+
+    monkeypatch.setattr(service_module, 'parse_log_line', record_parse)
+    session = service.open_session('demo', lines=500)
+    result = session.snapshot()
+    assert messages(result) == [f'message {i}' for i in range(49500, 50000)]
+    assert len(parsed) == 500
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write('next\n')
+    assert messages(session.poll()) == ['next']
+    assert len(parsed) == 501
+
+
 @pytest.mark.parametrize("change", ["truncate", "replace", "rotate"])
 def test_file_lifecycle_resets_session(service, tmp_path, change):
     path = write_log(tmp_path, "old long content")

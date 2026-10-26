@@ -298,33 +298,6 @@ def _reload_runtime_config_from_env() -> None:
     )
 
 
-def _install_logging_brace_compat() -> None:
-    if getattr(logging, "_neko_brace_compat_installed", False):
-        return
-
-    original_get_message = logging.LogRecord.getMessage
-
-    def _compat_get_message(record: logging.LogRecord) -> str:
-        try:
-            return original_get_message(record)
-        except TypeError:
-            msg = str(record.msg)
-            args = record.args
-            if not args or "%" in msg or "{" not in msg or "}" not in msg:
-                raise
-            try:
-                if isinstance(args, dict):
-                    return msg.format(**args)
-                if not isinstance(args, tuple):
-                    args = (args,)
-                return msg.format(*args)
-            except Exception:
-                return f"{msg} | args={record.args!r}"
-
-    logging.LogRecord.getMessage = _compat_get_message
-    logging._neko_brace_compat_installed = True
-
-
 def _patch_http_user_agents() -> None:
     """Globally patch HTTP clients' default User-Agent to prevent CF blocking custom APIs."""
     try:
@@ -365,7 +338,8 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
         sys.path.insert(0, project_dir)
     os.chdir(project_dir)
     _configure_multiprocessing_executable(project_dir)
-    _install_logging_brace_compat()
+    from utils.logger_config import install_message_formatting
+    install_message_formatting()
     _initialize_launcher_context()
     # Globally patch requests' default User-Agent to avoid CF blocking.
     _patch_http_user_agents()
@@ -1245,6 +1219,12 @@ def run_merged_servers() -> int:
                 typeguard._decorators.typechecked = _dummy
         except Exception:
             pass
+
+    # The merged process hosts plugins through Agent. Declare root ownership
+    # before importing any application so dependency import order cannot decide
+    # where ordinary library records are persisted.
+    from utils.logger_config import setup_logging
+    setup_logging(service_name="Agent", silent=True, capture_root=True)
 
     _proxy_kw = uvicorn_proxy_options()
 

@@ -138,7 +138,7 @@ class LogSession:
 
     def _read(self, stream: BinaryIO, *, snapshot: bool) -> list[dict[str, object]]:
         assert self.identity is not None
-        entries: deque[dict[str, object]] = deque(maxlen=self.lines if snapshot else None)
+        tail: deque[tuple[int, bytes]] = deque(maxlen=self.lines if snapshot else None)
         if not snapshot:
             stream.seek(self.position)
         while True:
@@ -148,14 +148,19 @@ class LogSession:
                 # Do not consume a half-written line, including split UTF-8.
                 stream.seek(offset)
                 break
-            entry = parse_log_line(raw.decode("utf-8", errors="replace"))
-            if entry is not None:
-                entry["id"] = f"{self.identity[0]}:{self.identity[1]}:{offset}"
-                entries.append(entry)
+            if raw.strip():
+                tail.append((offset, raw))
         self.position = stream.tell()
         stream.seek(max(0, self.position - 64))
         self.anchor = stream.read(self.position - stream.tell())
-        result = list(entries)
+        # Only retained history needs parsing. The cursor still follows the
+        # completed input, so an append cannot replay rows outside the window.
+        result: list[dict[str, object]] = []
+        for offset, raw in tail:
+            entry = parse_log_line(raw.decode("utf-8", errors="replace"))
+            if entry is not None:
+                entry["id"] = f"{self.identity[0]}:{self.identity[1]}:{offset}"
+                result.append(entry)
         self.total_lines = len(result) if snapshot else self.total_lines + len(result)
         filtered = filter_logs(result, *self.filters)
         self.returned_lines = len(filtered) if snapshot else self.returned_lines + len(filtered)

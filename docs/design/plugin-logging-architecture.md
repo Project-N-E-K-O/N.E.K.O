@@ -36,6 +36,14 @@ loading plugin code and makes its ordinary Python loggers use the same target.
 Only logging handlers owned by this logging system may be replaced or detached.
 Initialization and inherited handler cleanup account for process identity.
 
+The launcher uses the public backend formatter installer; it has no private
+formatting hook or competing initialization marker. The merged launcher declares
+Agent as process root owner before importing applications. For existing direct-run
+Agent code, the shared backend treats an omitted `capture_root` as host ownership
+when `service_name` is `Agent`; explicit `False` always opts out. Other namespaces
+do not implicitly claim root. This compatibility policy is independent of whether
+Memory or Main happens to be imported first, and requires no Agent source edits.
+
 Importing the SDK or obtaining an SDK logger does not initialize logging.
 Existing logger objects continue to work when a parent process forks a plugin
 child; their service resolution must follow the explicit runtime configuration.
@@ -60,6 +68,9 @@ The existing `initial` and `append` message names and query response fields are
 retained. Subscription query parameters add line count and filters. Read errors
 are distinct from a connected transport and from a successful empty result.
 UI counts describe displayed records rather than claiming a whole-file total.
+Snapshots retain their bounded raw history before parsing, so requesting N
+records does not parse the entire historical file. The same cursor then follows
+new content without replaying discarded history.
 
 ## Compatibility contract
 
@@ -98,6 +109,10 @@ Behavior tests cover the actual startup order and the public read/session seams:
 5. Requested history is not overwritten by a second initializer; independent
    viewers, refresh and reconnect retain one state owner each.
 6. Existing text data and transport entrypoints retain their supported behavior.
+7. Subprocess tests run actual launcher bootstrap and Agent imports, including
+   direct-run and merged startup ordering; they do not supply root ownership that
+   the production entrypoint omitted. A separate history-window regression checks
+   that parser work is bounded by the requested snapshot, not total file length.
 
 Tests of removed private helpers are replaced by observable behavior tests at the
 new owning interface. Final review includes an import/reference audit for the
