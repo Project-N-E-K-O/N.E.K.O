@@ -27,7 +27,7 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
 </style>
 <link rel="stylesheet" href="/static/css/window_controls.css?v=20261026-feedback-window-controls">
 <script src="/static/js/window_controls.js?v=20261026-feedback-window-controls" defer></script>
-<script src="/static/feedback-devices.js?v=20261026-feedback-coming-soon" defer></script></head>
+<script src="/static/feedback-devices.js?v=20261026-feedback-focus-recovery" defer></script></head>
 <body class="feedback-devices-page">
 <header class="feedback-devices-header page-title-bar">
     <div class="feedback-devices-brand">
@@ -55,7 +55,7 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
 <section id="coming-soon" class="coming-soon" hidden role="status" aria-live="polite" aria-labelledby="coming-soon-title">
     <p class="coming-soon-label" data-i18n="feedbackDevices.title">Recommendation history devices</p>
     <img src="/static/images/cookies/yui-credential-idle-light.webp" alt="Yui" width="208" height="208" draggable="false">
-    <h1 id="coming-soon-title" data-i18n="feedbackDevices.comingSoonTitle">Coming soon</h1>
+    <h1 id="coming-soon-title" tabindex="-1" data-i18n="feedbackDevices.comingSoonTitle">Coming soon</h1>
     <p class="coming-soon-message" data-i18n="feedbackDevices.comingSoonMessage">Please stay tuned</p>
 </section>
 <div id="management-content" hidden>

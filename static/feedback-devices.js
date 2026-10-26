@@ -1,15 +1,18 @@
 (function () {
     'use strict';
     const base = '/api/proactive/feedback';
-    const nodes = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','management-content'].map(id => [id, document.getElementById(id)]));
+    const nodes = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','coming-soon-title','management-content'].map(id => [id, document.getElementById(id)]));
     let view = 0, disposed = false, busy = false, mutation = null, current = null, csrf = null, statusKey = '';
     let replacementChoice = null;
     const t = key => typeof window.t === 'function' ? window.t('feedbackDevices.' + key) : key;
     const status = key => {
+        const moveFocus = key === 'notEnabled' && !nodes['management-content'].hidden
+            && nodes['management-content'].contains(document.activeElement);
         statusKey = key;
         nodes.status.textContent = t(key);
         nodes['coming-soon'].hidden = key !== 'notEnabled';
         nodes['management-content'].hidden = key === 'notEnabled';
+        if (moveFocus) nodes['coming-soon-title'].focus({ preventScroll: true });
     };
     async function request(path, body, retry = true, epoch = view) {
         if (disposed || epoch !== view) throw Error('session_changed');
@@ -82,9 +85,11 @@
             if (disposed || epoch !== view) return;
             nodes.upgrade.hidden = !state.upgrade_required;
             if (state.upgrade_required || state.protocol_version !== 2) {
+                // Transfer focus before clearing or hiding its current control.
+                status(state.upgrade_required ? 'upgrade' : 'notEnabled');
                 current = null; nodes.devices.replaceChildren(); nodes.activate.disabled = true;
                 nodes['device-controls'].hidden = true;
-                status(state.upgrade_required ? 'upgrade' : 'notEnabled'); return;
+                return;
             }
             const value = await request('/devices');
             if (disposed || epoch !== view) return;

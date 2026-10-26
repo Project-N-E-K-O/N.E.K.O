@@ -6,8 +6,10 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '../..');
 
 class Element {
-    constructor() { this.children = []; this.listeners = {}; this.value = ''; this.hidden = false; this.disabled = false; this.style = {}; }
+    constructor(ownerDocument) { this.ownerDocument = ownerDocument; this.children = []; this.listeners = {}; this.value = ''; this.hidden = false; this.disabled = false; this.style = {}; }
     appendChild(child) { child.parent = this; this.children.push(child); }
+    contains(child) { return child === this || this.children.some(element => element.contains(child)); }
+    focus(options) { this.ownerDocument.activeElement = this; this.focusOptions = options; }
     replaceChildren(...children) { this.children = children; this.value = ''; }
     addEventListener(type, callback) { this.listeners[type] = callback; }
     click() { if (!this.disabled && this.listeners.click) this.listeners.click(); }
@@ -15,7 +17,15 @@ class Element {
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); }
 }
 async function fixture(options = {}) {
-    const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','management-content'].map(id => [id, new Element()]));
+    const document = { getElementById: id => elements[id], createElement: () => new Element(document) };
+    document.body = new Element(document);
+    document.activeElement = document.body;
+    const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','coming-soon-title','management-content'].map(id => [id, new Element(document)]));
+    for (const id of ['status', 'upgrade', 'refresh', 'device-controls']) elements['management-content'].appendChild(elements[id]);
+    for (const id of ['device-name', 'replacement', 'activate', 'devices']) elements['device-controls'].appendChild(elements[id]);
+    elements.replacement.appendChild(elements['replacement-id']);
+    elements['coming-soon'].appendChild(elements['coming-soon-title']);
+    const headerControl = new Element(document);
     const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
     for (const id of ['coming-soon', 'management-content']) {
         const tag = template.match(new RegExp('<[^>]*\\bid="' + id + '"[^>]*>'));
@@ -49,11 +59,11 @@ async function fixture(options = {}) {
     const window = { t: key => key, addEventListener(name, callback) { events[name] = callback; } };
     let intercept = options.intercept;
     vm.runInNewContext(fs.readFileSync(path.join(root, 'static/feedback-devices.js'), 'utf8'), {
-        window, document: { getElementById: id => elements[id], createElement: () => new Element() }, fetch,
+        window, document, fetch,
         AbortSignal: { timeout(ms) { const controller = new AbortController(); timeouts.push({ms,controller}); return controller.signal; } },
     });
     await settle();
-    return { elements, data, events, timeouts, setIntercept(value) { intercept = value; } };
+    return { elements, data, events, timeouts, document, headerControl, setIntercept(value) { intercept = value; } };
 }
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); }
 
@@ -73,8 +83,56 @@ for (const outcome of ['notEnabled', 'ready', 'upgrade', 'unavailable']) {
         assert.equal(s.elements['management-content'].hidden, outcome === 'notEnabled');
         assert.equal(s.elements.status.textContent, 'feedbackDevices.' + outcome);
         assert.equal(s.elements.refresh.disabled, false);
+        assert.equal(s.document.activeElement, s.document.body, 'initial status must not steal focus');
         if (outcome === 'ready') assert.equal(s.elements.devices.children.length, 5);
         if (outcome === 'upgrade') assert.equal(s.elements.upgrade.hidden, false);
+    });
+}
+
+for (const target of ['refresh', 'device-name', 'remove']) {
+    test(`coming-soon transition moves focus from ${target} to its visible heading`, async () => {
+        const s = await fixture();
+        const control = target === 'remove' ? s.elements.devices.children[0].children[1] : s.elements[target];
+        control.focus();
+        s.data.protocol = 1;
+        s.elements.refresh.click();
+        await settle();
+        assert.equal(s.elements['management-content'].hidden, true);
+        assert.equal(s.elements['coming-soon'].hidden, false);
+        assert.equal(s.document.activeElement, s.elements['coming-soon-title']);
+        assert.equal(s.elements['coming-soon-title'].focusOptions.preventScroll, true);
+        const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
+        assert.match(template, /<h1\b[^>]*id="coming-soon-title"[^>]*tabindex="-1"/);
+    });
+}
+
+test('focus moved to the header during a pending refresh is preserved, including locale changes', async () => {
+    const s = await fixture();
+    let releaseStatus;
+    s.setIntercept(url => url.endsWith('/status') ? new Promise(resolve => { releaseStatus = resolve; }) : undefined);
+    s.elements.refresh.focus();
+    s.elements.refresh.click();
+    await settle();
+    assert.equal(typeof releaseStatus, 'function');
+    s.headerControl.focus();
+    releaseStatus({ ok: true, json: async () => ({ success: true, protocol_version: 1 }) });
+    await settle();
+    assert.equal(s.elements['coming-soon'].hidden, false);
+    assert.equal(s.document.activeElement, s.headerControl);
+    s.events.localechange();
+    assert.equal(s.document.activeElement, s.headerControl);
+});
+
+for (const outcome of ['ready', 'upgrade', 'unavailable']) {
+    test(`${outcome} refresh keeps focus on the visible refresh button`, async () => {
+        const s = await fixture();
+        s.elements.refresh.focus();
+        if (outcome === 'upgrade') s.data.upgrade = true;
+        if (outcome === 'unavailable') s.setIntercept(() => { throw Error('offline'); });
+        s.elements.refresh.click();
+        await settle();
+        assert.equal(s.elements['management-content'].hidden, false);
+        assert.equal(s.document.activeElement, s.elements.refresh);
     });
 }
 
