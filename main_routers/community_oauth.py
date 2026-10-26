@@ -853,6 +853,9 @@ async def oauth_profile_endpoint(request: Request):
             status = await resolve_saved_oauth_status()
             snapshot = status.get("snapshot") or {}
             if not status.get("logged_in") or not snapshot.get("local_user_id"):
+                if snapshot.get("access_token") and not status.get("rejected"):
+                    # Unverified saved credentials are not a confirmed logout.
+                    return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
                 return JSONResponse({"local_user_id": None, "avatar_url": None}, headers=headers)
             base = str(snapshot.get("base_url") or C._social_base_url()).rstrip("/")
             lookup = await C._lookup_cloud_identity(base, snapshot.get("access_token") or "")

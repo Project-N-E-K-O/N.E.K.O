@@ -118,6 +118,28 @@ async def test_signed_out_profile_does_not_contact_cloud(profile_state, monkeypa
     lookup.assert_not_awaited()
 
 
+@pytest.mark.parametrize("failure,expected", [("unavailable", 503), ("rejected", 200)])
+async def test_profile_distinguishes_validation_outage_from_rejected_credentials(
+    profile_state, monkeypatch, failure, expected,
+):
+    state, lookup = profile_state
+    # Exercise the real status resolver: an outage retains credentials, while a
+    # definite rejection can also leave them on disk if conditional cleanup fails.
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", O._resolve_saved_oauth_status)
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: (dict(state), {}))
+    monkeypatch.setattr(O, "_clear_rejected_oauth_snapshot", lambda _: False)
+    lookup.return_value = C._CloudIdentityLookup(None, 503 if failure == "unavailable" else 401, failure)
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == expected
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.body) == (
+        {"detail": "profile_unavailable"} if expected == 503
+        else {"local_user_id": None, "avatar_url": None}
+    )
+    lookup.assert_awaited_once_with("https://community.example", "private-token")
+    assert state["access_token"] == "private-token"
+
+
 @pytest.mark.parametrize("origin_allowed", [False, True])
 async def test_profile_requires_allowed_source_and_account_authorization(profile_state, monkeypatch, origin_allowed):
     _, lookup = profile_state
