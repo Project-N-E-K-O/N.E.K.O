@@ -60,3 +60,16 @@ export function getPluginLogExportUrl(pluginId: string): string {
   return `${baseUrl}/plugin/${encodeURIComponent(pluginId)}/logs/export`
 }
 
+
+/** A log viewer starts and refreshes its snapshot through this one stream. */
+export function getPluginLogStreamUrl(
+  pluginId: string,
+  query: { lines: number; level?: string; search?: string }
+): string {
+  const url = new URL(`/ws/logs/${encodeURIComponent(pluginId)}`, API_BASE_URL || window.location.origin)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.searchParams.set('lines', String(query.lines))
+  if (query.level) url.searchParams.set('level', query.level)
+  if (query.search) url.searchParams.set('search', query.search)
+  return url.toString()
+}

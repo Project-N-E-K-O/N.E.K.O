@@ -1,25 +1,7 @@
-"""
-Plugin logger utilities (thin stdlib wrapper)
+"""Published plugin file-logger compatibility facade.
 
-╔══════════════════════════════════════════════════════════════════════════╗
-║                        ⚠⚠⚠  WARNING  ⚠⚠⚠                              ║
-║                                                                          ║
-║   Previous versions of this module:                                     ║
-║     - Derived log directories from Path.cwd(), crashing when AppImage  ║
-║       attempted to write into read-only squashfs;                        ║
-║     - Invented loguru sinks alongside RobustLoggerConfig;               ║
-║     - Swallowed PermissionError through numerous silent fallbacks.     ║
-║                                                                          ║
-║   All plugin logs now use utils.logger_config.RobustLoggerConfig,      ║
-║   with setup_logging(service_name=f"Plugin_{plugin_id}") writing to    ║
-║   Documents/N.E.K.O/logs/N.E.K.O_Plugin_{plugin_id}_*.log.                ║
-║                                                                          ║
-║   If anyone, here or anywhere in this repository, again:                ║
-║     - Reintroduces loguru                                               ║
-║     - Derives log directories from cwd / __file__.parent                ║
-║     - Invents FileHandler paths bypassing RobustLoggerConfig           ║
-║   The maintainer says: **kill them.** See scripts/check_no_loguru.py.   ║
-╚══════════════════════════════════════════════════════════════════════════╝
+The host owns persistence. These helpers bind plugin context and expose the
+shared layout without installing a second logger or creating local log paths.
 """
 from __future__ import annotations
 
@@ -88,27 +70,15 @@ class PluginFileLogger:
         return self._logger
 
     def get_log_file_path(self) -> Path:
-        """Return this process's log-file path (determined by the host's RobustLoggerConfig)."""
-        try:
-            from utils.logger_config import RobustLoggerConfig
-            cfg = RobustLoggerConfig(
-                service_name=f"Plugin_{self.plugin_id}",
-                log_subdir="plugin",
-            )
-            return Path(cfg.get_log_file_path())
-        except Exception:
-            return self.plugin_dir / "logs" / f"{self.plugin_id}.log"
+        """Inspect the shared layout without initializing logging or cleaning files."""
+        from datetime import datetime
+        from config import APP_NAME
+        from utils.logging_layout import plugin_log_service_name
+        return self.get_log_directory() / f"{APP_NAME}_{plugin_log_service_name(self.plugin_id)}_{datetime.now():%Y%m%d}.log"
 
     def get_log_directory(self) -> Path:
-        try:
-            from utils.logger_config import RobustLoggerConfig
-            cfg = RobustLoggerConfig(
-                service_name=f"Plugin_{self.plugin_id}",
-                log_subdir="plugin",
-            )
-            return Path(cfg.get_log_directory_path())
-        except Exception:
-            return self.plugin_dir / "logs"
+        from utils.logging_layout import resolve_log_directory
+        return resolve_log_directory(log_subdir="plugin")
 
     def cleanup(self) -> None:
         self._logger = None

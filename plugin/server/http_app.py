@@ -18,7 +18,6 @@ from starlette.responses import RedirectResponse, Response
 
 from plugin.logging_config import get_logger
 from utils.host_origin_guard import HostOriginGuardMiddleware
-from utils.logger_config import get_module_logger
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
@@ -47,12 +46,7 @@ from plugin.server.routes import (
 from plugin.server.routes.frontend import mount_static_files
 from plugin.server.routes.security import router as security_router
 
-_EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
-
-if _EMBEDDED_BY_AGENT:
-    logger = get_module_logger(__name__, "Agent")
-else:
-    logger = get_logger("server.user_plugin_server")
+logger = get_logger("server.user_plugin_server")
 
 
 def _can_register_faulthandler_signal() -> bool:

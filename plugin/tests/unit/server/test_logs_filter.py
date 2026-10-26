@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from plugin.server.logs import filter_logs
+from plugin.server.application.logs.text import filter_logs
 
 
 @pytest.mark.plugin_unit

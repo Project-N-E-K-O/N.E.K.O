@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -72,16 +71,7 @@ from plugin.settings import (
 )
 
 
-def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
-    s = str(raw)
-    safe = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in s)
-    safe = safe.strip("_-")
-    if not safe:
-        safe = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    if len(safe) > max_len:
-        digest = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:12]
-        safe = f"{safe[:max_len - 13]}_{digest}"
-    return safe
+from utils.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
@@ -259,38 +249,13 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
     Returns:
         PluginLoggerAdapter bound to plugin_id.
     """
-    safe_pid = _sanitize_plugin_id(plugin_id)
-    # Let plugin/logging_config.get_logger() derive the correct service namespace.
-    os.environ["NEKO_PLUGIN_SERVICE_NAME"] = f"Plugin_{safe_pid}"
-
-    # Children first add project roots to sys.path, or utils.logger_config imports fail below.
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
+    from plugin.logging_config import get_logger, setup_plugin_logging
+    from utils.logging_layout import plugin_log_service_name
 
-    try:
-        from utils.logger_config import setup_logging as _bootstrap_setup_logging
-        _bootstrap_setup_logging(
-            service_name=f"Plugin_{safe_pid}",
-            silent=True,
-            # Collect child-plugin logs under logs/plugin/, separate from PluginServer/
-            # Main/Memory/Agent host logs at logs/ top level.
-            log_subdir="plugin",
-        )
-    except Exception:
-        # RobustLoggerConfig provides multilevel fallback; this is last resort, never hide root causes.
-        pass
-
-    from plugin.logging_config import get_logger
-    return get_logger(f"plugin.{safe_pid}").bind(plugin_id=plugin_id)
-
-
-def _setup_logging_interception(logger: Any, project_root: Path) -> None:
-    """Compatibility noop: host logging already uses stdlib, requiring no interception.
-
-    Preserve signatures for old callers; ensure project_root is on sys.path only.
-    """
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    setup_plugin_logging(plugin_log_service_name(plugin_id), own_root=True)
+    return get_logger(f"plugin.{_sanitize_plugin_id(plugin_id)}").bind(plugin_id=plugin_id)
 
 
 # Parent UI-context default wait budget, matching CommManager.get_ui_context.
@@ -924,12 +889,6 @@ def _plugin_process_runner(
     project_root = _find_project_root(config_path)
     logger = _setup_plugin_logger(plugin_id, project_root)
     
-    # Configure logging interception.
-    try:
-        _setup_logging_interception(logger, project_root)
-    except Exception as e:
-        logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
-
     # Fork inherited the host descriptor table; hooks already dropped HTTP sockets
     # (see _close_inherited_host_sockets above). Leave one observable trace here.
     released_sockets = inherited_host_sockets_closed()

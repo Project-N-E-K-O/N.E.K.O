@@ -3,21 +3,22 @@ Log routes
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable, Iterator
+from contextlib import suppress
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, ParamSpec, TypeVar
 
-from fastapi import APIRouter, Query, WebSocket
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from plugin.logging_config import get_logger
 from plugin.server.application.logs import LogQueryService
-from plugin.server.logs import list_plugin_log_files_for_export
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
-from plugin.server.logs import log_stream_endpoint
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter()
@@ -25,14 +26,28 @@ logger = get_logger("server.routes.logs")
 log_query_service = LogQueryService()
 
 
-def file_iterator(file_path: Path, chunk_size: int = 65536):
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+async def _log_io(operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    try:
+        return await asyncio.to_thread(operation, *args, **kwargs)
+    except OSError as error:
+        raise ServerDomainError(
+            code="LOG_READ_FAILED", status_code=500,
+            message="Failed to read log files", details={"error_type": type(error).__name__},
+        ) from error
+
+
+def file_iterator(file_path: Path, chunk_size: int = 65536) -> Iterator[bytes]:
     """Stream the file rather than loading it all into memory."""
     with open(file_path, 'rb') as f:
         while chunk := f.read(chunk_size):
             yield chunk
 
 
-def cleanup_temp_path(path: str):
+def cleanup_temp_path(path: str) -> None:
     """Clean up a temporary file or directory."""
     try:
         p = Path(path)
@@ -42,7 +57,6 @@ def cleanup_temp_path(path: str):
             shutil.rmtree(p, ignore_errors=True)
     except Exception as e:
         logger.warning(f"Failed to cleanup temp path {path}: {e}")
-
 
 
 @router.get("/plugin/{plugin_id}/logs")
@@ -56,7 +70,7 @@ async def get_plugin_logs_endpoint(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return log_query_service.get_plugin_logs(
+        return await _log_io(log_query_service.get_plugin_logs,
             plugin_id=plugin_id,
             lines=lines,
             level=level,
@@ -67,22 +81,19 @@ async def get_plugin_logs_endpoint(
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
-
 @router.get("/plugin/{plugin_id}/logs/files")
 async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return log_query_service.get_plugin_log_files(plugin_id)
+        return await _log_io(log_query_service.get_plugin_log_files, plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
-
 
 @router.get("/plugin/{plugin_id}/logs/directory")
 async def get_plugin_log_directory_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return log_query_service.get_plugin_log_directory(plugin_id)
+        return await _log_io(log_query_service.get_plugin_log_directory, plugin_id)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
-
 
 @router.get("/plugin/{plugin_id}/logs/export")
 async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> StreamingResponse:
@@ -96,9 +107,7 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                 details={"plugin_id": plugin_id}
             )
 
-        # Get the log directory.
-        result = log_query_service.get_plugin_log_directory(plugin_id)
-        log_dir = Path(result["directory"])
+        log_files = await _log_io(log_query_service.files_for_export, plugin_id)
 
         # Create a temporary packaging directory.
         temp_dir = Path(tempfile.mkdtemp())
@@ -109,10 +118,6 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
         temp_needs_cleanup = True
 
         try:
-            # Collect only this plugin's own logs: logs/plugin/ is shared by all plugins,
-            # so packaging the whole directory would leak other plugins' logs too.
-            log_files = list_plugin_log_files_for_export(log_dir, plugin_id)
-
             if not log_files:
                 raise ServerDomainError(
                     code="NO_LOG_FILES",
@@ -121,16 +126,10 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                     details={"plugin_id": plugin_id}
                 )
 
-            # Copy and package files in the thread pool to avoid blocking the event loop.
-            import asyncio
-            loop = asyncio.get_event_loop()
-
-            def _copy_and_archive():
+            def _copy_and_archive() -> str:
                 """Run synchronous file operations in the thread pool."""
-                copied_count = 0
                 for log_file in log_files:
                     shutil.copy2(log_file, temp_log_dir / log_file.name)
-                    copied_count += 1
 
                 # Package the temporary log directory.
                 # Use a fixed filename so very long plugin_id values cannot exceed filesystem NAME_MAX.
@@ -142,7 +141,7 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                 )
                 return archive_path
 
-            archive_path = await loop.run_in_executor(None, _copy_and_archive)
+            archive_path = await _log_io(_copy_and_archive)
 
             # Response created successfully; transfer cleanup responsibility to BackgroundTask.
             temp_needs_cleanup = False
@@ -163,5 +162,41 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
 
 
 @router.websocket("/ws/logs/{plugin_id}")
-async def websocket_log_stream(websocket: WebSocket, plugin_id: str) -> None:
-    await log_stream_endpoint(websocket, plugin_id)
+async def websocket_log_stream(
+    websocket: WebSocket, plugin_id: str,
+    lines: int = Query(default=100, ge=1, le=10000),
+    level: str | None = None, start_time: str | None = None,
+    end_time: str | None = None, search: str | None = None,
+) -> None:
+    """One socket owns one snapshot/follow session; no shared watcher state."""
+    await websocket.accept()
+    receiver = None
+    try:
+        session = log_query_service.open_session(plugin_id, lines, level, start_time, end_time, search)
+        await websocket.send_json(await _log_io(session.snapshot))
+        receiver = asyncio.create_task(websocket.receive())
+        heartbeat = asyncio.get_running_loop().time()
+        while True:
+            done, _ = await asyncio.wait({receiver}, timeout=0.5)
+            if done:
+                if receiver.result()["type"] == "websocket.disconnect":
+                    break
+                receiver = asyncio.create_task(websocket.receive())
+            packet = await _log_io(session.poll)
+            if packet is not None:
+                await websocket.send_json(packet)
+            now = asyncio.get_running_loop().time()
+            if now - heartbeat >= 30:
+                await websocket.send_json({"type": "ping"})
+                heartbeat = now
+    except (WebSocketDisconnect, ConnectionError):
+        pass
+    except (ServerDomainError, OSError, ValueError) as error:
+        # A failed read must not be indistinguishable from an empty log.
+        await websocket.send_json({"type": "error", "error": str(error)})
+        await websocket.close(code=1011)
+    finally:
+        if receiver is not None:
+            receiver.cancel()
+            with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                await receiver

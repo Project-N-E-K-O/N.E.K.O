@@ -1,50 +1,14 @@
-"""
-Plugin logging configuration: thin stdlib wrapper.
+"""Plugin-facing stdlib adapter and explicit host bootstrap.
 
-╔══════════════════════════════════════════════════════════════════════════╗
-║                                                                          ║
-║                          WARNING                                         ║
-║                                                                          ║
-║   Third-party logging libraries such as loguru/structlog/logbook are       ║
-║   completely forbidden throughout Python code, including plugin/utils/    ║
-║   main/agent/memory modules. Use utils.logger_config.RobustLoggerConfig,   ║
-║   automatically writing to Documents/N.E.K.O/logs/.                       ║
-║                                                                          ║
-║   Repeated unauthorized loguru additions previously caused:               ║
-║     1. AppImage's read-only squashfs cwd crashed default relative          ║
-║        loguru paths.                                                     ║
-║     2. Separate main/loguru systems made troubleshooting logs elusive.    ║
-║     3. Loguru-to-stdlib bridges complicated simple logging.                ║
-║                                                                          ║
-║   Anyone adding loguru, writing plugin logs to cwd, or inventing paths,    ║
-║   in the maintainer's words: **will be killed.**                           ║
-║                                                                          ║
-║   scripts/check_no_loguru.py enforces this in analyze.yml CI;              ║
-║   imports fail PRs and prevent merging.                                   ║
-║                                                                          ║
-╚══════════════════════════════════════════════════════════════════════════╝
-
-Public APIs, all using stdlib logging:
-  - get_logger(component) / logger     — Get plugin-namespaced loggers.
-  - setup_logging(...)                 — Forward to utils.logger_config.setup_logging.
-  - configure_default_logger(level)    — Compatibility no-op; main logging owns sinks.
-  - intercept_standard_logging()       — Compatibility no-op; main logging is stdlib.
-  - format_log_text(...)               — Truncation/wrapping helpers.
-
-PluginLoggerAdapter:
-  Supports existing plugin bind/opt/braces/keyword-extra calls by forwarding internally to
-  stdlib logging.Logger. This does not authorize new loguru-style code; it merely avoids
-  changing 1000+ calls. New code uses stdlib logger.info(f"...") directly.
-
-Environment variables, preserving NEKO_LOG_* compatibility; new code uses logger_config:
-  NEKO_LOG_LEVEL          Global level: TRACE/DEBUG/INFO/WARNING/ERROR/CRITICAL.
+Host entrypoints install handlers through the shared logging backend. SDK lookup
+is side-effect-free. Historical bind/opt/brace calling conventions are adapted
+here, so plugins keep one public interface and one persistence implementation.
 """
 from __future__ import annotations
 
 import logging
 import os
 import re
-import sys
 import threading
 from enum import Enum
 from pathlib import Path
@@ -88,7 +52,6 @@ def _install_logging_brace_compat() -> None:
     setattr(logging, "_neko_brace_compat_installed", True)
 
 
-_install_logging_brace_compat()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -184,105 +147,48 @@ def _redact_sensitive(message: str) -> str:
     return message
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Lazy main-logger initialization avoids import cycles.
-# ──────────────────────────────────────────────────────────────────────────
+# Explicit bootstrap belongs to process/service entrypoints. Merely importing
+# the SDK or requesting an adapter never creates files or installs handlers.
+_runtime_pid: int | None = None
+_runtime_service: str | None = None
+_runtime_result: Any = None
+_runtime_owns_root = False
 
-_setup_lock = threading.Lock()
-_root_initialised = False
 
+def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool = False):
+    """Install plugin-owned sinks once for this process and service.
 
-def _ensure_root_logger() -> None:
-    """Ensure plugin namespaces use main RobustLoggerConfig.
-
-    Idempotent, but set _root_initialised=True only after successful setup.
-    Early imports lacking utils in sys.path or transient bootstrap failures must
-    not permanently disable retries and short-circuit later viable setup,
-    leaving logging disconnected forever.
+    Embedded services own only their namespace. Dedicated servers and plugin
+    subprocesses also capture ordinary stdlib records through root. A PID check
+    makes an inherited fork state unusable until the child's explicit bootstrap.
     """
-    global _root_initialised
-    if _root_initialised:
-        return
-    with _setup_lock:
-        if _root_initialised:
-            return
-        # Use utils.logger_config's main persistence path.
-        try:
-            from utils.logger_config import (
-                install_httpx_filter as _install_httpx_filter,
-                setup_logging as _bootstrap_setup_logging,
-            )
-        except ModuleNotFoundError:
-            # Very early SDK-test imports may lack utils in sys.path;
-            # return silently without freezing _root_initialised, allowing later retry.
-            return
+    global _runtime_pid, _runtime_service, _runtime_result, _runtime_owns_root
+    from utils.logger_config import install_httpx_filter, setup_logging as bootstrap
 
-        service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
-
-        try:
-            from config import APP_NAME as _app_name
-        except Exception:
-            _app_name = "N.E.K.O"
-
-        service_logger = logging.getLogger(f"{_app_name}.{service_name}")
-
-        # Short-circuit if user_plugin_server/_setup_plugin_logger already called
-        # setup_logging for service_name and attached file/console handlers.
-        # Repeating RobustLoggerConfig.setup_logger triggers idempotent teardown/rebuild,
-        # wasting IO and adding another initialized-log message.
-        if not service_logger.handlers:
-            # Plugin_<id> subprocesses use logs/plugin/;
-            # PluginServer hosts remain under top-level logs/.
-            # Match Plugin_ including underscore to avoid misrouting PluginServer.
-            log_subdir = "plugin" if service_name.startswith("Plugin_") else None
-            try:
-                _bootstrap_setup_logging(
-                    service_name=service_name,
-                    log_level=_level_to_int(LOG_LEVEL),
-                    silent=True,
-                    log_subdir=log_subdir,
-                )
-            except Exception:
-                # Bootstrap failure likewise leaves flags retryable for later success.
-                return
-            # Bootstrap should have attached service_logger handlers; retrieve again.
-            service_logger = logging.getLogger(f"{_app_name}.{service_name}")
-
-        # Bridge root loggers to service handlers so uvicorn/aiohttp/urllib3 and others
-        # using logging.getLogger("xxx") persist when propagating to root.
-        # Loguru's intercept_standard_logging previously installed root forwarding;
-        # removing loguru removed that bridge, requiring explicit restoration.
-        _install_root_bridge(service_logger)
-        # The bridge is what lands httpx client records in this service's log
-        # (standalone PluginServer and the server embedded in the Agent
-        # process alike), so it brings the shared httpx filter with it.
-        _install_httpx_filter()
-
-        _root_initialised = True
+    if (_runtime_pid == os.getpid() and _runtime_service == service_name
+            and _runtime_result is not None and _runtime_owns_root == own_root
+            and any(getattr(h, "_neko_owned", False)
+                    for h in _runtime_result[0].handlers)):
+        return _runtime_result
+    _install_logging_brace_compat()
+    result = bootstrap(
+        service_name=service_name, log_level=_level_to_int(LOG_LEVEL), silent=True,
+        log_subdir="plugin" if service_name.startswith("Plugin_") else None,
+        capture_root=own_root, shared_parent=own_root,
+    )
+    _runtime_pid, _runtime_service, _runtime_result = os.getpid(), service_name, result
+    _runtime_owns_root = own_root
+    # Preserve the public environment convention for external SDK consumers;
+    # internal routing uses the explicit runtime identity above.
+    os.environ["NEKO_PLUGIN_SERVICE_NAME"] = service_name
+    install_httpx_filter()
+    return result
 
 
-def _install_root_bridge(service_logger: logging.Logger) -> None:
-    """Copy root records into service_logger handlers.
-
-    Run once for the first genuinely configured service; idempotent.
-
-    N.E.K.O.<service> loggers set propagate=False, so plugin logs reach service
-    handlers once without root duplication; only propagating third-party
-    loggers reach this bridge through root.
-    """
-    if not service_logger.handlers:
-        return
-    root = logging.getLogger()
-    if getattr(root, "_neko_plugin_root_bridged", False):
-        return
-    for h in service_logger.handlers:
-        if h not in root.handlers:
-            root.addHandler(h)
-    # Root defaults to WARNING; lower to service level or it drops INFO before
-    # handlers see records.
-    if root.level == logging.NOTSET or root.level > service_logger.level:
-        root.setLevel(service_logger.level or logging.INFO)
-    setattr(root, "_neko_plugin_root_bridged", True)
+def _service_name() -> str:
+    if _runtime_pid == os.getpid() and _runtime_service:
+        return _runtime_service
+    return os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "PluginServer"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -330,21 +236,8 @@ def _format_brace_msg(msg: Any, args: tuple) -> tuple[str, tuple]:
 class PluginLoggerAdapter:
     """Public logger adapter.
 
-    Lazy resolution stores component names, not bound loggers; every call
-    reads current NEKO_PLUGIN_SERVICE_NAME to resolve
-    N.E.K.O.<service>.<component> through stdlib.
-
-    Why not bind logging.Logger at initialization:
-      Shared child-process modules import
-      ``from plugin.logging_config import logger``,
-      invoking get_logger("plugin") before host _setup_plugin_logger
-      has configured NEKO_PLUGIN_SERVICE_NAME as
-      Plugin_<id>. Bound loggers freeze to default Plugin namespaces,
-      unrecoverable by later setup_logging: logs land in N.E.K.O_Plugin_*.log
-      while new N.E.K.O_Plugin_<id>_*.log stays empty.
-
-      logging.getLogger caches by name, retrieving the same instance
-      in O(1), so lazy resolution adds no performance cost.
+    Adapters created before host bootstrap resolve the explicit current service
+    when used, so module-level SDK loggers follow child-process initialization.
     """
 
     __slots__ = ("_component", "_extra", "_opt_exc_info")
@@ -365,7 +258,7 @@ class PluginLoggerAdapter:
             from config import APP_NAME as _app_name
         except Exception:
             _app_name = "N.E.K.O"
-        service_name = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
+        service_name = _service_name()
         return logging.getLogger(f"{_app_name}.{service_name}.{self._component}")
 
     # -- Internal dispatch --
@@ -485,23 +378,21 @@ def setup_logging(
     level: Optional[Any] = None,  # noqa: ARG001 — Same rationale.
     force: bool = False,  # noqa: ARG001 — Same rationale.
 ) -> None:
-    """Configure component logging with legacy signatures.
+    """Compatibility entrypoint; host startup owns persistence configuration.
 
-    RobustLoggerConfig owns actual setup; this only ensures main logging
-    initialized. Component names specify namespaces, never separate sinks.
+    Component/force historically did not select independent sinks. Retain that
+    contract without allowing SDK calls to take ownership of host handlers.
     """
-    _ensure_root_logger()
+    if level is not None:
+        get_logger(component)._resolve_logger().setLevel(_level_to_int(level))
 
 
 def get_logger(component: str) -> PluginLoggerAdapter:
     """Get component-namespaced loggers.
 
-    Resolve N.E.K.O.<service>.<component> dynamically from current
-    NEKO_PLUGIN_SERVICE_NAME on each call; see PluginLoggerAdapter.
-    Thus module-level logger=get_logger(...) follows later
-    host service_name assignments.
+    Resolve the current explicit host identity when used, so module-level
+    adapters follow later child bootstrap without freezing the parent namespace.
     """
-    _ensure_root_logger()
     safe = component.strip(".") or "plugin"
     return PluginLoggerAdapter(safe)
 
@@ -512,7 +403,7 @@ def configure_default_logger(level: str = "INFO") -> None:
     Main RobustLoggerConfig already sets up logging at entrypoints such as user_plugin_server;
     retain signatures for legacy imports without configuring sinks again.
     """
-    _ensure_root_logger()
+    return None
 
 
 def intercept_standard_logging() -> None:

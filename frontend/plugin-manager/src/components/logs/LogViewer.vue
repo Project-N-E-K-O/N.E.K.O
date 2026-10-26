@@ -1,7 +1,7 @@
 <template>
   <div class="log-viewer" :style="viewerStyle" data-yui-guide-id="log-viewer">
     <div class="toolbar" data-yui-guide-id="log-viewer-toolbar">
-      <el-select v-model="levelFilter" class="toolbar-item level-select" data-yui-guide-id="log-filter-level" :placeholder="$t('logs.allLevels')" clearable>
+      <el-select v-model="levelFilter" class="toolbar-item level-select" data-yui-guide-id="log-filter-level" :placeholder="$t('logs.allLevels')" clearable @change="refreshLogs">
         <el-option :label="$t('logs.allLevels')" value="" />
         <el-option v-for="level in levels" :key="level" :label="$t(`logLevel.${level}`)" :value="level" />
       </el-select>
@@ -13,9 +13,10 @@
         clearable
         :placeholder="$t('logs.search')"
         @keyup.enter="refreshLogs"
+        @clear="refreshLogs"
       />
 
-      <el-input-number v-model="lines" class="toolbar-item lines-input" data-yui-guide-id="log-lines" :min="50" :max="5000" :step="50" />
+      <el-input-number v-model="lines" class="toolbar-item lines-input" data-yui-guide-id="log-lines" :min="50" :max="5000" :step="50" @change="refreshLogs" />
 
       <el-button :loading="loading" data-yui-guide-id="log-refresh" @click="refreshLogs">{{ $t('common.refresh') }}</el-button>
 
@@ -37,10 +38,8 @@
         <el-tag size="small" data-yui-guide-id="log-connection-status" :type="isConnected ? 'success' : 'warning'">
           {{ isConnected ? $t('logs.connected') : $t('logs.disconnected') }}
         </el-tag>
-        <span class="meta-text">{{ $t('logs.totalLogs', { count: filteredLogs.length }) }}</span>
-        <span v-if="logFileInfo?.log_file" class="meta-text">{{ $t('logs.logFile') }}: {{ logFileInfo.log_file }}</span>
-        <span v-if="typeof logFileInfo?.total_lines === 'number'" class="meta-text">{{ $t('logs.totalLines') }}: {{ logFileInfo.total_lines }}</span>
-        <span v-if="typeof logFileInfo?.returned_lines === 'number'" class="meta-text">{{ $t('logs.returnedLines') }}: {{ logFileInfo.returned_lines }}</span>
+        <span class="meta-text">{{ $t('logs.totalLogs', { count: logs.length }) }}</span>
+        <span v-if="logFile" class="meta-text">{{ $t('logs.logFile') }}: {{ logFile }}</span>
       </el-space>
     </div>
 
@@ -55,8 +54,8 @@
     />
 
     <div ref="logContainerRef" class="log-list" data-yui-guide-id="log-list">
-      <template v-if="filteredLogs.length > 0">
-        <div v-for="(log, index) in filteredLogs" :key="`${log.timestamp}-${index}`" class="log-item">
+      <template v-if="logs.length > 0">
+        <div v-for="(log, index) in logs" :key="log.id || `${log.timestamp}-${index}`" class="log-item">
           <span class="log-time">{{ formatTimestamp(log.timestamp) }}</span>
           <el-tag size="small" :type="levelTagType(log.level)" class="log-level">{{ log.level || 'UNKNOWN' }}</el-tag>
           <span class="log-source">{{ log.file }}:{{ log.line }}</span>
@@ -73,8 +72,7 @@ import { computed, nextTick, onMounted, ref, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Download, Folder } from '@element-plus/icons-vue'
-import { useLogsStore } from '@/stores/logs'
-import { useLogStream } from '@/composables/useLogStream'
+import { useLogSession } from '@/composables/useLogSession'
 import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
 import { API_BASE_URL, PANEL_FILL_HEIGHT } from '@/utils/constants'
@@ -93,9 +91,8 @@ const viewerStyle = computed(() => ({
 }))
 
 const { t } = useI18n()
-const logsStore = useLogsStore()
-const pluginIdRef = toRef(props, 'pluginId')
-const { isConnected } = useLogStream(pluginIdRef)
+const { logs, logFile, level: levelFilter, search, lines, loading, isConnected, error, connectionFailed, refresh: refreshLogs } = useLogSession(toRef(props, 'pluginId'))
+defineExpose({ refresh: refreshLogs, loading })
 
 // 检测是否有桌面桥接（Electron 环境）
 // 只有在桌面环境中才能打开本地路径；即使后端是本地的，
@@ -152,38 +149,10 @@ const isLocalBackend = computed(() => {
 const canOpenDirectory = computed(() => hasDesktopBridge.value && isLocalBackend.value)
 
 const levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-const levelFilter = ref('')
-const search = ref('')
-const lines = ref(500)
 const autoScroll = ref(true)
 const logContainerRef = ref<HTMLElement | null>(null)
-
-const loading = computed(() => logsStore.loading)
-const rawLogs = computed(() => logsStore.getLogs(props.pluginId))
-const logFileInfo = computed(() => logsStore.getLogFileInfo(props.pluginId))
-const effectiveError = computed(() => logFileInfo.value?.error || logsStore.error || '')
-
-const filteredLogs = computed(() => {
-  const keyword = search.value.trim().toLowerCase()
-  return rawLogs.value.filter((log) => {
-    if (levelFilter.value && String(log.level || '').toUpperCase() !== levelFilter.value) {
-      return false
-    }
-    if (!keyword) return true
-    const source = `${log.file}:${log.line}`.toLowerCase()
-    return (
-      String(log.message || '').toLowerCase().includes(keyword) ||
-      String(log.level || '').toLowerCase().includes(keyword) ||
-      String(log.timestamp || '').toLowerCase().includes(keyword) ||
-      source.includes(keyword)
-    )
-  })
-})
-
-const emptyText = computed(() => {
-  if (rawLogs.value.length === 0) return t('logs.noLogs')
-  return t('logs.noMatches')
-})
+const effectiveError = computed(() => error.value || (connectionFailed.value ? t('logs.connectionFailed') : ''))
+const emptyText = computed(() => t(loading.value ? 'common.loading' : 'logs.noLogs'))
 
 function formatTimestamp(value: string) {
   if (!value) return ''
@@ -198,15 +167,6 @@ function levelTagType(level: string) {
   if (normalized === 'WARNING') return 'warning'
   if (normalized === 'DEBUG') return 'info'
   return 'success'
-}
-
-async function refreshLogs() {
-  if (!props.pluginId) return
-  await logsStore.fetchLogs(props.pluginId, {
-    lines: lines.value,
-    level: levelFilter.value || undefined,
-    search: search.value.trim() || undefined
-  })
 }
 
 async function scrollToBottom() {
@@ -269,16 +229,7 @@ function handleOpenDirectory() {
 }
 
 watch(
-  () => props.pluginId,
-  async (newId) => {
-    if (!newId) return
-    await refreshLogs()
-  },
-  { immediate: true }
-)
-
-watch(
-  () => filteredLogs.value.length,
+  () => logs.value,
   async () => {
     await scrollToBottom()
   }

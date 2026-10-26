@@ -151,6 +151,11 @@ async def _start_embedded_user_plugin_server() -> None:
     if _plugin_package_root not in sys.path:
         sys.path.insert(1, _plugin_package_root)
 
+    # Configure before importing server modules. This namespace belongs to the
+    # plugin service; the Agent retains ownership of root/shared-module logging.
+    from plugin.logging_config import setup_plugin_logging
+    setup_plugin_logging("PluginServer", own_root=False)
+
     try:
         from plugin.server.http_app import build_plugin_server_app
         from plugin.server.infrastructure.mutation_auth import TRUSTED_PROXY_IPS

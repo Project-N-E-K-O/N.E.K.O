@@ -289,6 +289,7 @@ export interface PluginMessage {
 
 // 日志条目
 export interface LogEntry {
+  id?: string
   timestamp: string
   level: string
   file: string
