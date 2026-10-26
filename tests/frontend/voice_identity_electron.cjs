@@ -178,6 +178,28 @@ app.whenReady().then(async () => {
     await waitFor("!document.getElementById('voice-identity-test').disabled");
     assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-start').disabled"), true);
     await waitFor("typeof window.changeLanguage === 'function' && window.i18n?.isInitialized && window.i18n.language === 'zh-CN' && window.t('voiceIdentity.resourcesReady') !== 'voiceIdentity.resourcesReady' && document.getElementById('voice-identity-resource-summary').textContent === window.t('voiceIdentity.resourcesReady')");
+    const usageGuide = await win.webContents.executeJavaScript(`({
+        open: document.getElementById('voice-identity-guide').open,
+        focused: document.activeElement.id,
+        inlineSteps: Boolean(document.querySelector('.resource-card .voice-identity-guide-steps')),
+        notesInDialog: document.querySelectorAll('#voice-identity-guide [data-i18n="voiceIdentity.privacyBody"], #voice-identity-guide [data-i18n="voiceIdentity.recordingRule"]').length,
+        inlineNotes: document.querySelectorAll('#voice-identity-enrollment [data-i18n="voiceIdentity.privacyBody"], #voice-identity-enrollment [data-i18n="voiceIdentity.recordingRule"]').length,
+        idleRecordingHelpHidden: document.getElementById('voice-identity-step-body').hidden,
+        firstStep: document.querySelector('.voice-identity-guide-steps li').textContent
+    })`);
+    assert.equal(usageGuide.open, true);
+    assert.equal(usageGuide.focused, 'voice-identity-guide-confirm');
+    assert.equal(usageGuide.inlineSteps, false);
+    assert.equal(usageGuide.notesInDialog, 2);
+    assert.equal(usageGuide.inlineNotes, 0);
+    assert.equal(usageGuide.idleRecordingHelpHidden, true);
+    assert.match(usageGuide.firstStep, /首次使用.*检查并加载资源/);
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide-confirm').click(); true;");
+    await waitFor("!document.getElementById('voice-identity-guide').open && document.activeElement.id === 'voice-identity-guide-open'");
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide-open').click(); true;");
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide').open"), true);
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide-close').click(); true;");
+    await waitFor("!document.getElementById('voice-identity-guide').open && document.activeElement.id === 'voice-identity-guide-open'");
     const setup = await win.webContents.executeJavaScript("({ hint: document.getElementById('voice-identity-start-hint').textContent, describedBy: document.getElementById('voice-identity-start').getAttribute('aria-describedby'), detailsOpen: document.querySelector('.resource-details').open, summaryVisible: document.getElementById('voice-identity-resource-summary').getBoundingClientRect().height > 0, downloadDisabled: document.getElementById('voice-identity-download').disabled, downloadHelpVisible: !document.getElementById('voice-identity-download-help').hidden, downloadHelp: document.getElementById('voice-identity-download-help').textContent })");
     assert.match(setup.hint, /请先完成试录/);
     assert.equal(setup.describedBy, 'voice-identity-start-hint');

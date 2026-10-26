@@ -154,7 +154,6 @@
         elements.stepTitle = document.getElementById('voice-identity-step-title');
         elements.stepBody = document.getElementById('voice-identity-step-body');
         elements.eyebrow = document.getElementById('voice-identity-eyebrow');
-        elements.ruleNote = document.getElementById('voice-identity-rule-note');
         elements.actions = document.getElementById('voice-identity-actions');
         elements.result = document.getElementById('voice-identity-result');
         elements.resultTitle = document.getElementById('voice-identity-result-title');
@@ -668,10 +667,9 @@
             && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
         if (elements.result) elements.result.hidden = !resultVisible;
         if (elements.eyebrow) elements.eyebrow.hidden = resultVisible;
-        if (elements.ruleNote) elements.ruleNote.hidden = resultVisible;
         if (elements.actions) elements.actions.hidden = resultVisible;
         if (elements.stepTitle) elements.stepTitle.hidden = resultVisible;
-        if (elements.stepBody) elements.stepBody.hidden = resultVisible;
+        if (elements.stepBody) elements.stepBody.hidden = !active || resultVisible;
         if (elements.resultTitle && resultVisible) {
             elements.resultTitle.textContent = translate(
                 'voiceIdentity.verificationResultTitle',
@@ -750,7 +748,7 @@
             else item.textContent = String(index + 1);
         });
         if (elements.stepTitle) elements.stepTitle.textContent = active ? translate('voiceIdentity.readingPromptLabel', '朗读提示语') : translate('voiceIdentity.privacyTitle', '录入 3 段声纹和 1 段验证语音');
-        if (elements.stepBody) elements.stepBody.textContent = active ? translate('voiceIdentity.activeRecordingBody', '请按平时的音量和语速朗读下面的完整句子。实际采集满 1.5 秒后可提交，是否接受由后端人声与声纹校验决定。') : translate('voiceIdentity.privacyBody', '使用同一麦克风，以自然音量朗读完整句子，完成三段参考录音和一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务处理，仅在后端人声与声纹校验通过后加密保存声纹。');
+        if (elements.stepBody) elements.stepBody.textContent = translate('voiceIdentity.activeRecordingBody', '请按平时的音量和语速朗读下面的完整句子。实际采集满 1.5 秒后可提交，是否接受由后端人声与声纹校验决定。');
         if (elements.prompt) {
             let promptIndex = 0;
             if (!resultVisible && active) {
@@ -1938,8 +1936,47 @@
         }
     }
 
+    function initializeUsageGuide() {
+        const dialog = document.getElementById('voice-identity-guide');
+        const trigger = document.getElementById('voice-identity-guide-open');
+        if (!dialog || typeof dialog.showModal !== 'function' || !trigger) return;
+        const closeButton = document.getElementById('voice-identity-guide-close');
+        const confirmButton = document.getElementById('voice-identity-guide-confirm');
+
+        trigger.addEventListener('click', function () {
+            if (!dialog.open) dialog.showModal();
+        });
+        closeButton.addEventListener('click', function () {
+            dialog.close();
+        });
+        confirmButton.addEventListener('click', function () {
+            dialog.close();
+        });
+        dialog.addEventListener('keydown', function (event) {
+            if (event.key === 'Tab') {
+                event.stopPropagation();
+                if (event.shiftKey && document.activeElement === closeButton) {
+                    event.preventDefault();
+                    confirmButton.focus();
+                } else if (!event.shiftKey && document.activeElement === confirmButton) {
+                    event.preventDefault();
+                    closeButton.focus();
+                }
+            }
+            if (event.key === 'Escape') {
+                event.stopPropagation();
+                if (event.isComposing) event.preventDefault();
+            }
+        });
+        dialog.addEventListener('close', function () {
+            trigger.focus({ preventScroll: true });
+        });
+        dialog.showModal();
+    }
+
     async function initialize() {
         cacheElements();
+        initializeUsageGuide();
         if (typeof window.createVoiceIdentityReadiness === 'function') readiness = window.createVoiceIdentityReadiness({
             translate, request: apiRequest, status: reconcileStatus, render,
             error: enrollmentErrorMessage,

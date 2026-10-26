@@ -173,6 +173,37 @@ async function main() {
         assert.equal(await page.locator('html').getAttribute('lang'), expectedPageLanguage);
         await page.waitForFunction(() => !document.getElementById('voice-identity-test').disabled);
         assert.equal(await page.locator('#voice-identity-start').isDisabled(), true);
+        const guide = page.locator('#voice-identity-guide');
+        assert.equal(await guide.evaluate(el => el.matches(':modal')), true);
+        const guideTitles = {
+            en: ['How to use', 'About voice profiles'],
+            'zh-CN': ['使用说明', '声纹说明'],
+        }[expectedPageLanguage];
+        assert.equal(await guide.locator('h2').textContent(), guideTitles[0]);
+        assert.equal(await guide.locator('h3').textContent(), guideTitles[1]);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-confirm');
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-close');
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.className), 'voice-identity-guide-body');
+        await page.keyboard.press('Shift+Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-close');
+        await page.keyboard.press('Shift+Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-confirm');
+        assert.equal(await page.evaluate(() => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', isComposing: true, bubbles: true, cancelable: true,
+        }))), false, 'IME Escape is consumed without dismissing the guide');
+        assert.equal(await guide.evaluate(el => el.open), true);
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.getElementById('voice-identity-guide').open
+            && document.activeElement.id === 'voice-identity-guide-open');
+        await page.keyboard.press('Enter');
+        assert.equal(await guide.evaluate(el => el.open), true);
+        await page.locator('#voice-identity-guide-confirm').click();
+        await page.waitForFunction(() => !document.getElementById('voice-identity-guide').open
+            && document.activeElement.id === 'voice-identity-guide-open');
+        assert.equal(await page.evaluate(() => window.__durationEvidence.streams.length), 0,
+            'opening and closing help must not capture microphone input');
         await page.locator('#voice-identity-test').click();
         await page.waitForFunction(() => !document.getElementById('voice-identity-start').disabled);
         const check = requests.find(entry => entry.path.endsWith('/audio/check'));

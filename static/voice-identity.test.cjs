@@ -826,7 +826,8 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(harness.elements.get('voice-identity-eyebrow').hidden, true);
     assert.equal(harness.elements.get('voice-identity-step-title').hidden, true);
     assert.equal(harness.elements.get('voice-identity-step-body').hidden, true);
-    assert.equal(harness.elements.get('voice-identity-rule-note').hidden, true);
+    // The static recording rules remain available in the explanation dialog.
+    assert.equal(harness.elements.get('voice-identity-rule-note').hidden, false);
     assert.equal(harness.elements.get('voice-identity-actions').hidden, true);
     assert.equal(harness.progressSteps.length, 4);
     assert.equal(harness.progressSteps.every(step => step.classList.contains('completed')), true);
