@@ -6,13 +6,14 @@
     let replacementChoice = null;
     const t = key => typeof window.t === 'function' ? window.t('feedbackDevices.' + key) : key;
     const status = key => {
-        const moveFocus = key === 'notEnabled' && !nodes['management-content'].hidden
-            && nodes['management-content'].contains(document.activeElement);
+        const showComingSoon = key === 'notEnabled';
+        const outgoing = nodes[showComingSoon ? 'management-content' : 'coming-soon'];
+        const moveFocus = !outgoing.hidden && outgoing.contains(document.activeElement);
         statusKey = key;
         nodes.status.textContent = t(key);
-        nodes['coming-soon'].hidden = key !== 'notEnabled';
-        nodes['management-content'].hidden = key === 'notEnabled';
-        if (moveFocus) nodes['coming-soon-title'].focus({ preventScroll: true });
+        nodes['coming-soon'].hidden = !showComingSoon;
+        nodes['management-content'].hidden = showComingSoon;
+        if (moveFocus) nodes[showComingSoon ? 'coming-soon-title' : 'refresh'].focus({ preventScroll: true });
     };
     async function request(path, body, retry = true, epoch = view) {
         if (disposed || epoch !== view) throw Error('session_changed');

@@ -136,6 +136,43 @@ for (const outcome of ['ready', 'upgrade', 'unavailable']) {
     });
 }
 
+for (const outcome of ['ready', 'upgrade', 'unavailable', 'conflict', 'notEnabled']) {
+    for (const focus of ['notice', 'header', 'body']) {
+        test(`pageshow from coming-soon to ${outcome} preserves focus ownership: ${focus}`, async () => {
+            const s = await fixture();
+            s.elements.refresh.focus();
+            s.data.protocol = 1;
+            s.elements.refresh.click();
+            await settle();
+            assert.equal(s.document.activeElement, s.elements['coming-soon-title']);
+            s.events.pagehide();
+            let releaseStatus;
+            s.setIntercept(url => url.endsWith('/status') ? new Promise(resolve => { releaseStatus = resolve; }) : undefined);
+            s.events.pageshow();
+            await settle();
+            assert.equal(typeof releaseStatus, 'function');
+            if (focus === 'header') s.headerControl.focus();
+            if (focus === 'body') s.document.activeElement = s.document.body;
+            const failed = outcome === 'unavailable' || outcome === 'conflict';
+            releaseStatus({ ok: !failed, status: failed ? 503 : 200, json: async () => failed
+                ? { success: false, error_code: outcome === 'conflict' ? 'cloud_conflict' : 'offline' }
+                : { success: true, owner_key: s.data.owner, protocol_version: outcome === 'notEnabled' ? 1 : 2,
+                    upgrade_required: outcome === 'upgrade' } });
+            await settle();
+            const expected = focus === 'header' ? s.headerControl : focus === 'body' ? s.document.body
+                : outcome === 'notEnabled' ? s.elements['coming-soon-title'] : s.elements.refresh;
+            assert.equal(s.elements['coming-soon'].hidden, outcome !== 'notEnabled');
+            assert.equal(s.elements['management-content'].hidden, outcome === 'notEnabled');
+            assert.equal(s.elements.status.textContent, 'feedbackDevices.' + outcome);
+            assert.equal(s.document.activeElement, expected);
+            assert.equal(s.elements.refresh.disabled, false);
+            if (expected === s.elements.refresh) assert.equal(expected.focusOptions.preventScroll, true);
+            s.events.localechange();
+            assert.equal(s.document.activeElement, expected, 'retranslation must not move focus');
+        });
+    }
+}
+
 test('sixth device requires an explicit choice and a click; names are only user supplied', async () => {
     const { elements, data } = await fixture();
     assert.equal(elements.activate.disabled, true);
