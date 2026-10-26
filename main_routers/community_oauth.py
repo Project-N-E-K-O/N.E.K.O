@@ -843,6 +843,38 @@ async def oauth_status_endpoint(request: Request):
     }
 
 
+@router.get("/oauth/profile", summary="读取当前社区账号头像")
+async def oauth_profile_endpoint(request: Request):
+    headers = {"Cache-Control": "no-store"}
+    if not C._local_request_source_allowed(request) or await _account_request_identity(request) is None:
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403, headers=headers)
+    try:
+        async with asyncio.timeout(6):
+            status = await resolve_saved_oauth_status()
+            snapshot = status.get("snapshot") or {}
+            if not status.get("logged_in") or not snapshot.get("local_user_id"):
+                return JSONResponse({"local_user_id": None, "avatar_url": None}, headers=headers)
+            base = str(snapshot.get("base_url") or C._social_base_url()).rstrip("/")
+            lookup = await C._lookup_cloud_identity(base, snapshot.get("access_token") or "")
+            current = await asyncio.to_thread(C._desktop_session_snapshot)
+            # An account switch/logout during the cloud request retires this result.
+            if not current or any(current.get(key) != snapshot.get(key) for key in (
+                "local_user_id", "access_token", "base_url", "auth_source",
+            )):
+                return JSONResponse({"detail": "session_changed"}, status_code=409, headers=headers)
+            identity = lookup.identity
+            if identity is None or identity.local_user_id != snapshot["local_user_id"]:
+                return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
+            avatar = identity.user.get("avatar_url")
+            return JSONResponse({
+                "local_user_id": identity.local_user_id,
+                "avatar_url": avatar if isinstance(avatar, str) else None,
+                "community_base_url": base,
+            }, headers=headers)
+    except TimeoutError:
+        return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
+
+
 @contextlib.asynccontextmanager
 async def visit_account_change(new_local_user_id: str | None = None):
     """Wrap a credential change: logout (``None``) or a login as ``new_local_user_id``.
