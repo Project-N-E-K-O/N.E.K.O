@@ -200,7 +200,9 @@ async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None,
             message = parent.recv()
             if not message["ok"]:
                 raise VoiceResourceError(message["reason"])
-            return message["result"]
+            # Return after the finally below: Nuitka 4.3 drops a value returned
+            # from a try whose finally contains a while loop (frozen gets None).
+            result = message["result"]
         except (EOFError, OSError, ValueError, KeyError, TypeError) as exc:
             raise VoiceResourceError("resource_worker_failed") from exc
     finally:
@@ -214,6 +216,7 @@ async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None,
                 except asyncio.CancelledError:
                     continue
             cleanup.result()
+    return result
 
 
 @dataclass

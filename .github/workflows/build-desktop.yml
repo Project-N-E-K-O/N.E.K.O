@@ -165,7 +165,11 @@ jobs:
           # selected dev SDK.
           uv pip uninstall --python .venv bilibili-api-python || true
           uv sync --group galgame --reinstall-package bilibili-api-dev
-          uv pip install --python .venv nuitka ordered-set zstandard
+          # Nuitka pinned: 4.3.1 drops values returned from a try whose finally
+          # contains a while loop (frozen _run_worker got None, wake smoke red
+          # 10-13 onward). 4.2.2 is the last version a green nightly used.
+          # Keep build-desktop-linux.yml and local build_nuitka.bat in step.
+          uv pip install --python .venv nuitka==4.2.2 ordered-set zstandard
 
       - name: Build and install compatible Windows wake-word runtime
         if: matrix.platform == 'win'
