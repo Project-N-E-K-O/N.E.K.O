@@ -7036,8 +7036,8 @@
     "feedbackDevices": {
         "comingSoonTitle": "Próximamente",
         "comingSoonMessage": "Espera las novedades",
-        "title": "Dispositivos del historial de recomendaciones",
-        "description": "Administra el envío del historial. La música y las recomendaciones siguen funcionando.",
+        "title": "Dispositivos de envío de recomendaciones",
+        "description": "Gestiona los dispositivos que envían tus elecciones sobre recomendaciones. La música y las recomendaciones normales siguen funcionando.",
         "name": "Nombre del dispositivo (opcional)",
         "chooseReplacement": "Hay 5 dispositivos activados. Elige el dispositivo antiguo que quieres sustituir.",
         "selectDevice": "Elige un dispositivo",
@@ -7052,7 +7052,15 @@
         "upgrade": "Actualiza la aplicación para reanudar el envío del historial. El uso normal no se ve afectado.",
         "update": "Obtener actualización",
         "conflict": "El estado de los dispositivos cambió. Actualiza la lista y vuelve a elegir.",
-        "notEnabled": "La gestión de dispositivos del historial de recomendaciones no está activada. El uso normal no se ve afectado.",
-        "unavailable": "No se pudieron cargar los dispositivos. Revisa el inicio de sesión en la comunidad y la conexión y actualiza la lista."
+        "notEnabled": "El protocolo de envío actual no habilita la gestión de dispositivos. Esto no indica si los envíos se completaron.",
+        "unavailable": "No se pudieron cargar los dispositivos. Revisa el inicio de sesión en la comunidad y la conexión y actualiza la lista.",
+        "loading": "Actualizando el estado de los envíos…",
+        "signedOut": "Inicia sesión en tu cuenta de la comunidad N.E.K.O para gestionar los dispositivos de envío.",
+        "identityPending": "Sesión guardada. La identidad de envío aún no se ha verificado; actualiza o inicia sesión de nuevo.",
+        "paused": "Los envíos están pausados por la configuración en ejecución.",
+        "uploadPending": "Algunos registros o ajustes esperan el envío o la confirmación necesaria.",
+        "uploadError": "Los envíos requieren atención. Revisa la cuenta y la conexión y actualiza.",
+        "fullySynced": "La cola actual está vacía y hay un acuse de recibo de la nube verificado.",
+        "awaitingEnable": "Habilita este dispositivo explícitamente para iniciar sus envíos."
     }
 }

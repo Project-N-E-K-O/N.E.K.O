@@ -7036,8 +7036,8 @@
     "feedbackDevices": {
         "comingSoonTitle": "暫未開放",
         "comingSoonMessage": "敬請期待",
-        "title": "推薦歷史裝置管理",
-        "description": "這裡只管理推薦歷史上傳，不影響聽歌和正常推薦。",
+        "title": "推薦記錄上傳裝置",
+        "description": "管理上傳推薦選擇記錄的裝置，不影響聽歌和正常推薦。",
         "name": "裝置名稱（選填）",
         "chooseReplacement": "已啟用5台裝置，請選擇要替換的舊裝置。",
         "selectDevice": "請選擇裝置",
@@ -7052,7 +7052,15 @@
         "upgrade": "請更新桌面用戶端以恢復歷史上傳，正常使用不受影響。",
         "update": "取得更新",
         "conflict": "裝置狀態已變更，請重新整理後再選擇。",
-        "notEnabled": "推薦歷史裝置管理尚未啟用，正常使用不受影響。",
-        "unavailable": "暫時無法讀取裝置，請檢查社群登入和網路後重新整理。"
+        "notEnabled": "目前上傳協定尚未啟用裝置管理，這不代表記錄是否已上傳成功。",
+        "unavailable": "暫時無法讀取裝置，請檢查社群登入和網路後重新整理。",
+        "loading": "正在重新整理上傳狀態…",
+        "signedOut": "請登入 N.E.K.O 社群帳號以管理上傳裝置。",
+        "identityPending": "已儲存登入狀態，上傳身分尚未驗證；請重新整理或重新登入。",
+        "paused": "目前執行設定已暫停上傳。",
+        "uploadPending": "部分記錄或設定正在等待上傳或必要的確認。",
+        "uploadError": "上傳尚未完成，請檢查帳號和網路後重新整理。",
+        "fullySynced": "目前佇列已清空，且已有通過驗證的雲端回執。",
+        "awaitingEnable": "請明確啟用本機，才會開始本機上傳。"
     }
 }
