@@ -59,6 +59,7 @@ async function resizeViewport(width, height) {
             cancelAnimationFrame(frame);
             reject(new Error('Viewport styles did not settle: ' + JSON.stringify({
                 width: innerWidth,
+                height: innerHeight,
                 display: getComputedStyle(document.querySelector('.readiness-card')).display,
                 margin: getComputedStyle(document.querySelector('.input-level-panel')).marginTop
             })));
@@ -68,7 +69,8 @@ async function resizeViewport(width, height) {
             const level = getComputedStyle(document.querySelector('.input-level-panel'));
             const twoColumns = ${width} > 560 && ${width} <= 860;
             const expectedMargin = ${width} <= 560 ? '20px' : twoColumns ? '0px' : '16px';
-            if (innerWidth === ${width} && card.display === (twoColumns ? 'grid' : 'block')
+            if (innerWidth === ${width} && innerHeight === ${height}
+                && card.display === (twoColumns ? 'grid' : 'block')
                 && level.marginTop === expectedMargin) {
                 clearTimeout(timer);
                 resolve(true);
@@ -198,6 +200,51 @@ app.whenReady().then(async () => {
     await waitFor("!document.getElementById('voice-identity-guide').open && document.activeElement.id === 'voice-identity-guide-open'");
     await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide-open').click(); true;");
     assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide').open"), true);
+    let guideLayout;
+    try {
+        await resizeViewport(320, 360);
+        guideLayout = await win.webContents.executeJavaScript(`(() => {
+            const dialog = document.getElementById('voice-identity-guide');
+            const body = dialog.querySelector('.voice-identity-guide-body');
+            const confirm = document.getElementById('voice-identity-guide-confirm');
+            body.scrollTop = 0;
+            const initialRule = document.getElementById('voice-identity-rule-note').getBoundingClientRect().toJSON();
+            body.scrollTop = body.scrollHeight;
+            const confirmRect = confirm.getBoundingClientRect().toJSON();
+            const x = Math.floor(confirmRect.left + confirmRect.width / 2);
+            const y = Math.floor(confirmRect.top + confirmRect.height / 2);
+            return {
+                viewport: { width: innerWidth, height: innerHeight },
+                dialog: dialog.getBoundingClientRect().toJSON(),
+                body: body.getBoundingClientRect().toJSON(),
+                close: document.getElementById('voice-identity-guide-close').getBoundingClientRect().toJSON(),
+                confirm: confirmRect,
+                initialRule,
+                finalRule: document.getElementById('voice-identity-rule-note').getBoundingClientRect().toJSON(),
+                scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, scrollTop: body.scrollTop,
+                confirmReceivesClick: confirm.contains(document.elementFromPoint(x, y)), x, y
+            };
+        })()`);
+        const label = `320x360 usage guide: ${JSON.stringify(guideLayout)}`;
+        assert.deepEqual(guideLayout.viewport, { width: 320, height: 360 }, label);
+        assert.ok(guideLayout.clientHeight > 0 && guideLayout.scrollHeight > guideLayout.clientHeight, `${label}: content requires scrolling`);
+        assert.ok(guideLayout.initialRule.bottom > guideLayout.body.bottom, `${label}: final note starts below the visible body`);
+        assert.ok(guideLayout.scrollTop > 0, `${label}: body scroll reaches the final note`);
+        assert.ok(guideLayout.finalRule.bottom <= guideLayout.body.bottom + 1
+            && guideLayout.finalRule.bottom > guideLayout.body.top, `${label}: final note is visible after scrolling`);
+        for (const control of ['dialog', 'close', 'confirm']) {
+            const rect = guideLayout[control];
+            assert.ok(rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0
+                && rect.right <= 320 && rect.bottom <= 360, `${label}: ${control} remains within the viewport`);
+        }
+        assert.equal(guideLayout.confirmReceivesClick, true, `${label}: confirm is not clipped or covered`);
+        win.webContents.sendInputEvent({ type: 'mouseDown', x: guideLayout.x, y: guideLayout.y, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({ type: 'mouseUp', x: guideLayout.x, y: guideLayout.y, button: 'left', clickCount: 1 });
+        await waitFor("!document.getElementById('voice-identity-guide').open && document.activeElement.id === 'voice-identity-guide-open'");
+    } finally {
+        await resizeViewport(960, 900);
+    }
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide-open').click(); true;");
     await win.webContents.executeJavaScript("document.getElementById('voice-identity-guide-close').click(); true;");
     await waitFor("!document.getElementById('voice-identity-guide').open && document.activeElement.id === 'voice-identity-guide-open'");
     const setup = await win.webContents.executeJavaScript("({ hint: document.getElementById('voice-identity-start-hint').textContent, describedBy: document.getElementById('voice-identity-start').getAttribute('aria-describedby'), detailsOpen: document.querySelector('.resource-details').open, summaryVisible: document.getElementById('voice-identity-resource-summary').getBoundingClientRect().height > 0, downloadDisabled: document.getElementById('voice-identity-download').disabled, downloadHelpVisible: !document.getElementById('voice-identity-download-help').hidden, downloadHelp: document.getElementById('voice-identity-download-help').textContent })");
