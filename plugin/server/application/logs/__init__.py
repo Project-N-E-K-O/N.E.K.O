@@ -1,3 +1,3 @@
-from plugin.server.application.logs.query_service import LogQueryService
+from plugin.server.application.logs.service import LogReadResult, LogService
 
-__all__ = ["LogQueryService"]
+__all__ = ["LogReadResult", "LogService"]

@@ -31,12 +31,12 @@ def test_logger_config_keeps_plugin_logs_under_selected_storage_root(tmp_path, m
 
 @pytest.mark.unit
 def test_plugin_log_reader_uses_selected_storage_root(tmp_path, monkeypatch):
-    from plugin.server.application.logs import LogQueryService
+    from plugin.server.application.logs import LogService
 
     selected_root = tmp_path / "selected-root"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
 
-    service = LogQueryService()
-    assert Path(service.get_plugin_log_directory("_server")["directory"]) == selected_root / "logs"
-    assert Path(service.get_plugin_log_directory("demo")["directory"]) == selected_root / "logs" / "plugin"
+    service = LogService()
+    assert service.get_plugin_log_directory("_server") == selected_root / "logs"
+    assert service.get_plugin_log_directory("demo") == selected_root / "logs" / "plugin"
     assert not selected_root.exists(), "A log-directory query must not initialize storage"

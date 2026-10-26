@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from plugin.server.application.logs import LogQueryService
-from plugin.server.application.logs import query_service
+from plugin.server.application.logs import LogService
+from plugin.server.application.logs import service as service_module
 from plugin.server.domain.errors import ServerDomainError
 from utils.logging_layout import sanitize_log_identifier
 
@@ -16,8 +16,8 @@ pytestmark = pytest.mark.plugin_unit
 
 @pytest.fixture
 def service(monkeypatch, tmp_path):
-    monkeypatch.setattr(query_service, "resolve_log_directory", lambda **_: tmp_path)
-    return LogQueryService()
+    monkeypatch.setattr(service_module, "resolve_log_directory", lambda **_: tmp_path)
+    return LogService()
 
 
 def write_log(tmp_path, message="regular", plugin_id="demo", suffix="20261026.log"):
@@ -27,17 +27,17 @@ def write_log(tmp_path, message="regular", plugin_id="demo", suffix="20261026.lo
 
 
 def messages(packet):
-    return [entry["message"] for entry in packet["logs"]]
+    return [entry["message"] for entry in packet.logs]
 
 
 def test_read_does_not_create_directory(monkeypatch, tmp_path):
     missing = tmp_path / "missing" / "plugin"
-    monkeypatch.setattr(query_service, "resolve_log_directory", lambda **_: missing)
-    service = LogQueryService()
-    assert service.get_plugin_logs(plugin_id="demo")["logs"] == []
-    assert service.get_plugin_log_files("demo")["log_files"] == []
+    monkeypatch.setattr(service_module, "resolve_log_directory", lambda **_: missing)
+    service = LogService()
+    assert service.get_plugin_logs(plugin_id="demo").logs == []
+    assert service.get_plugin_log_files("demo") == []
     assert service.files_for_export("demo") == []
-    assert service.get_plugin_log_directory("demo")["directory"] == str(missing)
+    assert service.get_plugin_log_directory("demo") == missing
     assert not missing.exists()
 
 
@@ -61,7 +61,7 @@ def test_query_and_export_share_exact_ownership(service, tmp_path):
     write_log(tmp_path, "invalid", plugin_id="foo", suffix="20261026.log.tmp")
     assert messages(service.get_plugin_logs(plugin_id="foo")) == ["mine"]
     assert set(service.files_for_export("foo")) == {daily, error, rotation}
-    assert {entry["filename"] for entry in service.get_plugin_log_files("foo")["log_files"]} == {
+    assert {entry["filename"] for entry in service.get_plugin_log_files("foo")} == {
         daily.name, error.name, rotation.name}
 
 
@@ -85,14 +85,14 @@ def test_server_legacy_is_labelled_and_never_assigned_to_plugin(service, tmp_pat
     legacy = tmp_path / "N.E.K.O_Plugin_20261026.log"
     legacy.write_text("shared history\n", encoding="utf-8")
     result = service.get_plugin_logs(plugin_id="_server")
-    assert result["legacy_source"] is True
+    assert result.legacy_source is True
     assert messages(result) == ["shared history"]
-    assert service.get_plugin_logs(plugin_id="demo")["logs"] == []
+    assert service.get_plugin_logs(plugin_id="demo").logs == []
     canonical = tmp_path / "N.E.K.O_PluginServer_20261026.log"
     canonical.write_text("server\n", encoding="utf-8")
     os.utime(canonical, (1, 1))
     result = service.get_plugin_logs(plugin_id="_server")
-    assert result["legacy_source"] is False
+    assert result.legacy_source is False
     assert messages(result) == ["server"]
     assert set(service.files_for_export("_server")) == {canonical, legacy}
 
@@ -107,7 +107,7 @@ def test_snapshot_follow_and_second_subscriber_have_independent_progress(service
     assert messages(second.snapshot()) == ["first", "second"]
     appended = first.poll()
     assert messages(appended) == ["second"]
-    assert initial["logs"][0]["id"] != appended["logs"][0]["id"]
+    assert initial.logs[0]["id"] != appended.logs[0]["id"]
     assert first.poll() is None
     assert second.poll() is None
 
@@ -121,14 +121,14 @@ def test_snapshot_and_increment_share_same_query(service, tmp_path):
         stream.write("2026-10-26 12:00:02 - INFO - irrelevant\n")
         stream.write("2026-10-26 12:00:03 - INFO - hello again\n")
     assert messages(session.poll()) == ["hello again"]
-    assert session.snapshot()["returned_lines"] == 2
+    assert session.snapshot().returned_lines == 2
 
 
 def test_requested_snapshot_size_is_not_overwritten(service, tmp_path):
     path = write_log(tmp_path)
     path.write_text("".join(f"message {i}\n" for i in range(600)))
     session = service.open_session("demo", lines=500)
-    assert len(session.snapshot()["logs"]) == 500
+    assert len(session.snapshot().logs) == 500
     with path.open("a") as stream:
         stream.write("last\n")
     assert messages(session.poll()) == ["last"]
@@ -150,17 +150,16 @@ def test_file_lifecycle_resets_session(service, tmp_path, change):
     else:
         path.write_text("new\n")
     packet = session.poll()
-    assert packet["type"] == "initial"
-    assert packet["reset"] is True
+    assert packet.reset is True
     assert messages(packet) == ["new"]
     assert session.poll() is None
 
 
 def test_file_appearing_and_partial_utf8_are_followed(service, tmp_path):
     session = service.open_session("demo")
-    assert session.snapshot()["logs"] == []
+    assert session.snapshot().logs == []
     path = write_log(tmp_path)
-    assert session.poll()["reset"] is True
+    assert session.poll().reset is True
     encoded = "猫娘\n".encode()
     with path.open("ab") as stream:
         stream.write(encoded[:2])

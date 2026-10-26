@@ -23,6 +23,9 @@ storage backend, or a second implementation behind a migration flag.
 The shared utilities do not import the plugin host or plugin server. File naming
 and target normalization are shared by readers and writers. Reading a directory
 or log never installs handlers, creates directories, or cleans up historical data.
+Filename generation and exact file-ownership recognition both live in the shared
+layout module. SDK records and ordinary Python records use the backend's single
+message-formatting policy; adapters do not maintain another interpolation rule.
 
 ## Write lifecycle
 
@@ -39,10 +42,13 @@ child; their service resolution must follow the explicit runtime configuration.
 
 ## Reading and viewing
 
-`LogQueryService` owns file access for the existing query, files, directory and
+`LogService` owns file access for the existing query, files, directory and
 export endpoints. Each live subscription owns its snapshot and subsequent read
 position. Subscriptions do not advance another viewer's progress. File identity
 changes and truncation cause an explicit new snapshot rather than silent skips.
+The application returns `LogReadResult` data, while routes construct HTTP payloads
+and WebSocket message types. The implementation lives in `logs/service.py` because
+its responsibility includes subscriptions and file selection as well as queries.
 
 The viewer uses one WebSocket session for both initial history and appends.
 Its requested line count and filters are sent when opening or refreshing that
@@ -74,6 +80,9 @@ Public compatibility is maintained at the SDK and transport edges. Private
 helpers, implicit initialization, the global mutable watcher registry, duplicate
 frontend loading paths and `plugin.server.logs` are not compatibility contracts:
 their callers are migrated and their old implementations are removed.
+Unused frontend HTTP helper functions are not published client contracts; removing
+them does not remove the server endpoints. ASGI HTTP/archive/WebSocket behavior is
+tested under `plugin/tests/integration`, separately from direct application tests.
 
 ## Acceptance
 

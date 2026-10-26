@@ -59,9 +59,6 @@ class PluginFileLogger:
 
         if isinstance(logger_instance, PluginLoggerAdapter):
             self._logger = logger_instance
-        elif logger_instance is not None:
-            # Externally supplied stdlib logger / other adapter: wrap with the plugin namespace.
-            self._logger = get_logger(f"plugin.{self.plugin_id}").bind(plugin_id=self.plugin_id)
         else:
             self._logger = get_logger(f"plugin.{self.plugin_id}").bind(plugin_id=self.plugin_id)
         return self._logger
@@ -71,10 +68,8 @@ class PluginFileLogger:
 
     def get_log_file_path(self) -> Path:
         """Inspect the shared layout without initializing logging or cleaning files."""
-        from datetime import datetime
-        from config import APP_NAME
-        from utils.logging_layout import plugin_log_service_name
-        return self.get_log_directory() / f"{APP_NAME}_{plugin_log_service_name(self.plugin_id)}_{datetime.now():%Y%m%d}.log"
+        from utils.logging_layout import log_filename, plugin_log_service_name
+        return self.get_log_directory() / log_filename(plugin_log_service_name(self.plugin_id))
 
     def get_log_directory(self) -> Path:
         from utils.logging_layout import resolve_log_directory

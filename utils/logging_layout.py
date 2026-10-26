@@ -9,11 +9,36 @@ import hashlib
 import os
 import sys
 import tempfile
+import re
+from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from config import APP_NAME
 
 NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
+_LOG_SUFFIX = re.compile(r"(?:\d{8}|error)\.log(?:\.\d+|\.\d{4}-\d{2}-\d{2})?\Z")
+
+
+def _log_prefix(service_name: str | None, app_name: str | None) -> str:
+    name = APP_NAME if app_name is None else app_name
+    return f"{name}_{service_name}_" if service_name else f"{name}_"
+
+
+def log_filename(
+    service_name: str | None, *, app_name: str | None = None,
+    kind: Literal["regular", "error", "debug"] = "regular", day: date | None = None,
+) -> str:
+    """Canonical writer names, also used by published file-path inspectors."""
+    stamp = (day or date.today()).strftime("%Y%m%d")
+    suffix = {"regular": stamp, "error": "error", "debug": f"debug_{stamp}"}[kind]
+    return f"{_log_prefix(service_name, app_name)}{suffix}.log"
+
+
+def is_service_log_file(filename: str, service_name: str, *, app_name: str | None = None) -> bool:
+    """Match exact service ownership, including error copies and rotations."""
+    prefix = _log_prefix(service_name, app_name)
+    return filename.startswith(prefix) and _LOG_SUFFIX.fullmatch(filename[len(prefix):]) is not None
 
 
 def sanitize_log_identifier(plugin_id: str, max_len: int = 64) -> str:

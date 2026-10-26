@@ -16,45 +16,6 @@ from typing import Any, Optional
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Brace compatibility enables loguru-style logger.info("msg {}",x) in stdlib.
-# Moved from plugin/user_plugin_server.py to share across processes.
-# ──────────────────────────────────────────────────────────────────────────
-
-def _install_logging_brace_compat() -> None:
-    """Patch stdlib LogRecord.getMessage to support brace formatting without errors.
-
-    Default percent formatting raises TypeError for logger.info("msg {}",x);
-    fall back to str.format(*args), supporting both styles.
-    """
-    if getattr(logging, "_neko_brace_compat_installed", False):
-        return
-
-    original_get_message = logging.LogRecord.getMessage
-
-    def _compat_get_message(self: logging.LogRecord) -> str:
-        try:
-            return original_get_message(self)
-        except TypeError:
-            msg = str(self.msg)
-            args = self.args
-            if not args or "%" in msg or "{" not in msg or "}" not in msg:
-                raise
-            try:
-                if isinstance(args, dict):
-                    return msg.format(**args)
-                if not isinstance(args, tuple):
-                    args = (args,)
-                return msg.format(*args)
-            except Exception:
-                return f"{msg} | args={self.args!r}"
-
-    setattr(logging.LogRecord, "getMessage", _compat_get_message)
-    setattr(logging, "_neko_brace_compat_installed", True)
-
-
-
-
-# ──────────────────────────────────────────────────────────────────────────
 # LogLevel enum preserves legacy SDK APIs, mapping to stdlib integer levels.
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -115,11 +76,9 @@ LOG_COMPRESSION = os.getenv("NEKO_LOG_COMPRESSION", "gz")
 FORMAT_CONSOLE = (
     "{asctime} | {levelname:<8} | {name:<20} | {message}"
 )
-FORMAT_FILE = (
-    "{asctime} | {levelname:<8} | {name:<20} | {message}"
-)
+FORMAT_FILE = FORMAT_CONSOLE
 FORMAT_CONSOLE_SIMPLE = "{asctime} | {levelname:<8} | {message}"
-FORMAT_FILE_SIMPLE = "{asctime} | {levelname:<8} | {message}"
+FORMAT_FILE_SIMPLE = FORMAT_CONSOLE_SIMPLE
 
 
 def get_plugin_format_console(plugin_id: str) -> str:
@@ -127,7 +86,7 @@ def get_plugin_format_console(plugin_id: str) -> str:
 
 
 def get_plugin_format_file(plugin_id: str) -> str:
-    return f"{{asctime}} | {{levelname:<8}} | [{plugin_id}] {{message}}"
+    return get_plugin_format_console(plugin_id)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -170,7 +129,6 @@ def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool =
             and any(getattr(h, "_neko_owned", False)
                     for h in _runtime_result[0].handlers)):
         return _runtime_result
-    _install_logging_brace_compat()
     result = bootstrap(
         service_name=service_name, log_level=_level_to_int(LOG_LEVEL), silent=True,
         log_subdir="plugin" if service_name.startswith("Plugin_") else None,
@@ -196,7 +154,7 @@ def _service_name() -> str:
 #  -------------------------------------------------------------------------
 # Preserve 1000+ legacy loguru-style plugin calls:
 #    .info / .warning / .error / .debug / .critical / .exception
-#   info("msg {}",x) -> internal format.
+#   info("msg {}",x) -> the shared backend's formatting policy.
 #   info("msg",key=value) -> stdlib extra.
 #   bind(plugin_id=...) -> new adapter with extra.
 #   opt(exception=True) -> temporary next-log exc_info wrapper.
@@ -211,26 +169,6 @@ def _service_name() -> str:
 
 _LOGGER_KWARGS = {"exc_info", "stack_info", "stacklevel"}
 _LOGURU_KW_BLACKLIST = {"colors", "lazy", "raw", "capture", "depth"}
-
-
-def _format_brace_msg(msg: Any, args: tuple) -> tuple[str, tuple]:
-    """If msg contains braces and args exist, try format(*args); otherwise return unchanged."""
-    if not args:
-        return msg, args
-    text = msg if isinstance(msg, str) else str(msg)
-    if "{" not in text or "}" not in text:
-        return msg, args
-    # Prefer stdlib percent formatting, falling back to format on failure.
-    try:
-        text % args
-        return msg, args
-    except (TypeError, ValueError):
-        pass
-    try:
-        formatted = text.format(*args)
-        return formatted, ()
-    except Exception:
-        return msg, args
 
 
 class PluginLoggerAdapter:
@@ -263,7 +201,19 @@ class PluginLoggerAdapter:
 
     # -- Internal dispatch --
     def _log(self, level: int, msg: Any, args: tuple, kwargs: dict) -> None:
-        msg, args = _format_brace_msg(msg, args)
+        resolved_logger = self._resolve_logger()
+        if not resolved_logger.isEnabledFor(level):
+            self._opt_exc_info = None
+            return
+        from utils.logger_config import format_log_message
+
+        # Public adapters work before host startup too; interpolation still has
+        # one implementation, shared with the backend's stdlib hook.
+        if args:
+            try:
+                msg, args = format_log_message(msg, args), ()
+            except (TypeError, ValueError):
+                pass  # Leave malformed percent templates to stdlib handling.
 
         std_kwargs: dict[str, Any] = {}
         for key in list(kwargs):
@@ -292,7 +242,7 @@ class PluginLoggerAdapter:
         # Skip adapter frames for caller filename/lineno.
         std_kwargs.setdefault("stacklevel", 2)
 
-        self._resolve_logger().log(level, msg, *args, **std_kwargs)
+        resolved_logger.log(level, msg, *args, **std_kwargs)
 
     # -- Standard methods --
     def trace(self, msg: Any, *args, **kwargs) -> None:

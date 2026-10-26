@@ -297,13 +297,6 @@ export interface LogEntry {
   message: string
 }
 
-// 日志文件信息
-export interface LogFile {
-  filename: string
-  size: number
-  modified: number
-}
-
 // 插件配置
 export interface PluginConfig {
   config_schema?: ConfigEditorSchema | null

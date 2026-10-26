@@ -57,6 +57,7 @@ from utils.logging_layout import (
     application_directory,
     documents_directory,
     log_directory_candidates,
+    log_filename,
     log_subdirectory,
     select_log_directory,
 )
@@ -92,6 +93,45 @@ def _release_inherited_handlers():
                  and getattr(handler, "_neko_pid", None) != os.getpid()}
     for handler in inherited:
         _detach_handler(handler)
+
+
+def format_log_message(message, args):
+    """One interpolation policy for SDK records and ordinary stdlib records."""
+    text = str(message)
+    if not args:
+        return text
+    # Match LogRecord's normalization when an adapter passes one mapping.
+    if isinstance(args, tuple) and len(args) == 1 and isinstance(args[0], dict) and args[0]:
+        args = args[0]
+    braces = "{" in text and "}" in text
+    named_braces = isinstance(args, dict) and braces and "%" not in text
+    if not named_braces:
+        try:
+            return text % args
+        except (TypeError, ValueError):
+            if not braces:
+                raise
+    try:
+        if isinstance(args, dict):
+            try:
+                return text.format(**args)
+            except IndexError:
+                return text.format(args)
+        return text.format(*(args if isinstance(args, tuple) else (args,)))
+    except Exception:
+        return f"{text} | args={args!r}"
+
+
+def _install_message_formatting():
+    """Startup owns the process-wide hook; SDK calls share its pure formatter."""
+    if getattr(logging, "_neko_brace_compat_installed", False):
+        return
+
+    def get_message(record):
+        return format_log_message(record.msg, record.args)
+
+    logging.LogRecord.getMessage = get_message
+    logging._neko_brace_compat_installed = True
 
 
 class RobustLoggerConfig:
@@ -135,11 +175,7 @@ class RobustLoggerConfig:
         self.log_dir = self.log_dir / log_subdirectory(log_subdir)
 
         # Log filename includes service_name when present; otherwise use only app_name.
-        if self.service_name:
-            log_filename = f"{self.app_name}_{self.service_name}_{datetime.now().strftime('%Y%m%d')}.log"
-        else:
-            log_filename = f"{self.app_name}_{datetime.now().strftime('%Y%m%d')}.log"
-        self.log_file = self.log_dir / log_filename
+        self.log_file = self.log_dir / log_filename(self.service_name, app_name=self.app_name)
         
         # Ensure the log directory exists.
         self._ensure_log_directory()
@@ -294,10 +330,7 @@ class RobustLoggerConfig:
             try:
                 dev_debug_dir = _get_application_root() / "logs"
                 dev_debug_dir.mkdir(parents=True, exist_ok=True)
-                if self.service_name:
-                    debug_filename = f"{self.app_name}_{self.service_name}_debug_{datetime.now().strftime('%Y%m%d')}.log"
-                else:
-                    debug_filename = f"{self.app_name}_debug_{datetime.now().strftime('%Y%m%d')}.log"
+                debug_filename = log_filename(self.service_name, app_name=self.app_name, kind="debug")
                 debug_handler = RotatingFileHandler(
                     dev_debug_dir / debug_filename,
                     maxBytes=self.max_bytes,
@@ -315,10 +348,7 @@ class RobustLoggerConfig:
 
         # 3. Error-log handler (separate ERROR-and-above output).
         try:
-            if self.service_name:
-                error_filename = f"{self.app_name}_{self.service_name}_error.log"
-            else:
-                error_filename = f"{self.app_name}_error.log"
+            error_filename = log_filename(self.service_name, app_name=self.app_name, kind="error")
             error_log_file = self.log_dir / error_filename
             error_handler = RotatingFileHandler(
                 error_log_file,
@@ -396,6 +426,7 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
     # A forked child owns its log lifecycle; remove inherited project handlers
     # from all namespaces before building its own service logger.
     _release_inherited_handlers()
+    _install_message_formatting()
     config = RobustLoggerConfig(
         app_name=app_name,
         service_name=service_name,
@@ -794,6 +825,7 @@ __all__ = [
     'RobustLoggerConfig', 
     'EnhancedLogger', 
     'setup_logging',
+    'format_log_message',
     'get_module_logger',
     # Rate limiting.
     'RateLimitedEndpointFilter',

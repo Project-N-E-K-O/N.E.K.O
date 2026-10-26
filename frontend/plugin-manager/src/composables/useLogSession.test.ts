@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { useLogSession } from './useLogSession'
-import * as logsApi from '@/api/logs'
+import { get as httpGet } from '@/api/index'
 import Logs from '@/views/Logs.vue'
 import type { LogEntry } from '@/types/api'
 
@@ -51,7 +51,7 @@ afterEach(() => {
 
 describe('one log session per viewer', () => {
   it('requests 500 records through one stream and never overwrites them with an HTTP snapshot', async () => {
-    const http = vi.spyOn(logsApi, 'getPluginLogs')
+    const http = vi.mocked(httpGet)
     const { session, root } = mountSession()
     expect(new URL(latest().url).searchParams.get('lines')).toBe('500')
     latest().open()

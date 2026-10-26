@@ -16,18 +16,37 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from plugin.logging_config import get_logger
-from plugin.server.application.logs import LogQueryService
+from plugin.server.application.logs import LogReadResult, LogService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.utils.time_utils import now_iso
 
 router = APIRouter()
 logger = get_logger("server.routes.logs")
-log_query_service = LogQueryService()
+log_service = LogService()
 
 
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+def _log_payload(result: LogReadResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "plugin_id": result.plugin_id, "logs": result.logs,
+        "total_lines": result.total_lines, "returned_lines": result.returned_lines,
+    }
+    if result.log_file is not None:
+        payload.update(log_file=result.log_file, legacy_source=result.legacy_source)
+    return payload
+
+
+def _stream_payload(result: LogReadResult, *, initial: bool = False) -> dict[str, object]:
+    payload = _log_payload(result)
+    payload["type"] = "initial" if initial or result.reset else "append"
+    if result.reset:
+        payload["reset"] = True
+    return payload
 
 
 async def _log_io(operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
@@ -70,7 +89,7 @@ async def get_plugin_logs_endpoint(
     _: str = require_admin,
 ) -> dict[str, object]:
     try:
-        return await _log_io(log_query_service.get_plugin_logs,
+        result = await _log_io(log_service.get_plugin_logs,
             plugin_id=plugin_id,
             lines=lines,
             level=level,
@@ -78,20 +97,23 @@ async def get_plugin_logs_endpoint(
             end_time=end_time,
             search=search,
         )
+        return _log_payload(result)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 @router.get("/plugin/{plugin_id}/logs/files")
 async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await _log_io(log_query_service.get_plugin_log_files, plugin_id)
+        files = await _log_io(log_service.get_plugin_log_files, plugin_id)
+        return {"plugin_id": plugin_id, "log_files": files, "count": len(files), "time": now_iso()}
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
 @router.get("/plugin/{plugin_id}/logs/directory")
 async def get_plugin_log_directory_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await _log_io(log_query_service.get_plugin_log_directory, plugin_id)
+        directory = await _log_io(log_service.get_plugin_log_directory, plugin_id)
+        return {"plugin_id": plugin_id, "directory": str(directory), "time": now_iso()}
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -107,7 +129,7 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
                 details={"plugin_id": plugin_id}
             )
 
-        log_files = await _log_io(log_query_service.files_for_export, plugin_id)
+        log_files = await _log_io(log_service.files_for_export, plugin_id)
 
         # Create a temporary packaging directory.
         temp_dir = Path(tempfile.mkdtemp())
@@ -172,8 +194,8 @@ async def websocket_log_stream(
     await websocket.accept()
     receiver = None
     try:
-        session = log_query_service.open_session(plugin_id, lines, level, start_time, end_time, search)
-        await websocket.send_json(await _log_io(session.snapshot))
+        session = log_service.open_session(plugin_id, lines, level, start_time, end_time, search)
+        await websocket.send_json(_stream_payload(await _log_io(session.snapshot), initial=True))
         receiver = asyncio.create_task(websocket.receive())
         heartbeat = asyncio.get_running_loop().time()
         while True:
@@ -184,7 +206,7 @@ async def websocket_log_stream(
                 receiver = asyncio.create_task(websocket.receive())
             packet = await _log_io(session.poll)
             if packet is not None:
-                await websocket.send_json(packet)
+                await websocket.send_json(_stream_payload(packet))
             now = asyncio.get_running_loop().time()
             if now - heartbeat >= 30:
                 await websocket.send_json({"type": "ping"})

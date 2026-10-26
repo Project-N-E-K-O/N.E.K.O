@@ -65,6 +65,45 @@ def test_standalone_sdk_and_standard_logging_share_service(isolated_log_dir):
     assert not list(isolated_log_dir.glob("N.E.K.O_Plugin_*.log"))
 
 
+@pytest.mark.parametrize("message,args,expected", [
+    ("progress {} at 50%", ("ready",), "progress ready at 50%"),
+    ("named {state}", ({"state": "ready"},), "named ready"),
+    ("standard %(state)s", ({"state": "ready"},), "standard ready"),
+])
+def test_sdk_and_standard_logging_share_format_policy(isolated_log_dir, message, args, expected):
+    plogging.setup_plugin_logging("PluginServer", own_root=True)
+    plogging.get_logger("format-contract").info(message, *args)
+    logging.getLogger("format-contract.standard").info(message, *args)
+    assert _read(isolated_log_dir, "PluginServer").count(expected) == 2
+
+
+def test_disabled_sdk_records_do_not_interpolate_arguments(isolated_log_dir):
+    plogging.setup_plugin_logging("PluginServer", own_root=True)
+
+    class Unrenderable:
+        def __str__(self):
+            pytest.fail("Disabled log arguments must stay lazy")
+
+    adapter = plogging.get_logger("disabled-format")
+    adapter.debug("unused %s", Unrenderable())
+    adapter.debug("unused {}", Unrenderable())
+
+
+def test_writer_reader_and_public_file_path_share_product_name(isolated_log_dir, monkeypatch):
+    from plugin.core.plugin_logger import PluginFileLogger
+    from plugin.server.application.logs import LogService
+    from utils import logging_layout
+    from utils.logger_config import RobustLoggerConfig
+
+    monkeypatch.setattr(logging_layout, "APP_NAME", "TestProduct")
+    writer = RobustLoggerConfig(app_name="TestProduct", service_name="Plugin_demo", log_subdir="plugin")
+    writer.log_file.write_text("2026-10-27 12:00:00 - INFO - shared-name\n", encoding="utf-8")
+    reader = LogService()
+    assert [row["message"] for row in reader.get_plugin_logs(plugin_id="demo").logs] == ["shared-name"]
+    assert reader.files_for_export("demo") == [writer.log_file]
+    assert PluginFileLogger("demo", isolated_log_dir).get_log_file_path() == writer.log_file
+
+
 def test_embedded_service_keeps_agent_handlers_and_routes_its_namespace(isolated_log_dir):
     agent, _ = setup_logging(service_name="Agent", silent=True, capture_root=True)
     root = logging.getLogger()
