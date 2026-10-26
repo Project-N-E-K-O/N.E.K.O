@@ -113,6 +113,7 @@ async def transcribe_file(
         )
         async with websockets.connect(
             REGION_URLS[region],
+            additional_headers={"Authorization": f"Bearer {api_key}"},
             open_timeout=timeout_s,
             close_timeout=1.0,
             max_size=None,
@@ -120,7 +121,6 @@ async def transcribe_file(
             await websocket.send(
                 json.dumps(
                     {
-                        "api_key": api_key,
                         "model": "stt-rt-v5",
                         "audio_format": "pcm_s16le",
                         "sample_rate": sample_rate,
