@@ -53,6 +53,15 @@ async function fixture(options = {}) {
             if (old) old.active = false;
             data.devices.push({ registration_id: 'current', registration_version: 1, display_name: body.display_name, active: true, is_current: true });
             value = { success: true };
+        } else if (/\/devices\/[^/]+\/remove$/.test(url)) {
+            const body = JSON.parse(options.body);
+            const id = decodeURIComponent(url.split('/').at(-2));
+            const device = data.devices.find(row => row.registration_id === id && row.active);
+            assert.ok(device, 'remove must address an active registration');
+            assert.equal(body.expected_owner_key, data.owner);
+            assert.equal(body.expected_registration_version, device.registration_version);
+            device.active = false;
+            value = { success: true };
         } else throw Error(url);
         return { ok: true, json: async () => JSON.parse(JSON.stringify(value)) };
     };
@@ -193,6 +202,36 @@ test('sixth device requires an explicit choice and a click; names are only user 
     assert.equal(call.options.headers['X-CSRF-Token'], 'fixture-csrf');
     assert.equal(data.devices.filter(row => row.active).length, 5);
     assert.equal(elements.activate.disabled, true);
+});
+
+test('removing a rendered device pins its owner and version and refreshes retired controls', async () => {
+    const s = await fixture();
+    const device = s.data.devices[2];
+    device.registration_id = 'desktop /测试#1';
+    device.registration_version = 7;
+    s.elements.refresh.click(); await settle();
+    const button = s.elements.devices.children[2].children[1];
+    const oldRemove = button.listeners.click;
+    const before = s.data.calls.length;
+    button.click(); await settle();
+    const calls = s.data.calls.slice(before);
+    const mutations = calls.filter(row => row.options.method === 'POST');
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0].url, '/api/proactive/feedback/devices/desktop%20%2F%E6%B5%8B%E8%AF%95%231/remove');
+    assert.deepEqual(JSON.parse(mutations[0].options.body), { expected_owner_key: 'account-a', expected_registration_version: 7 });
+    assert.equal(mutations[0].options.headers['X-CSRF-Token'], 'fixture-csrf');
+    assert.equal(device.active, false);
+    assert.equal(s.data.devices.filter(row => row.active).length, 4);
+    assert.ok(calls.some(row => row.url.endsWith('/status')));
+    assert.ok(calls.some(row => row.url.endsWith('/devices')));
+    const removed = s.elements.devices.children[2];
+    assert.equal(removed.children.length, 1, 'the refreshed inactive device has no remove button');
+    assert.equal(removed.children[0].textContent, 'Laptop 2 · feedbackDevices.removed');
+    assert.equal(s.elements.replacement.hidden, true);
+    assert.equal(s.elements.activate.disabled, false, 'removing a device frees an activation slot');
+    assert.equal(s.elements.refresh.disabled, false);
+    oldRemove(); await settle();
+    assert.equal(s.data.calls.filter(row => row.options.method === 'POST').length, 1, 'the retired button cannot repeat the removal');
 });
 
 test('upgrade state hides stale devices and keeps refresh available for recovery', async () => {
