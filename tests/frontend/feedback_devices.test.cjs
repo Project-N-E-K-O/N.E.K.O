@@ -16,6 +16,12 @@ class Element {
 }
 async function fixture(options = {}) {
     const elements = Object.fromEntries(['status','upgrade','device-controls','device-name','replacement','replacement-id','activate','refresh','devices','coming-soon','management-content'].map(id => [id, new Element()]));
+    const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
+    for (const id of ['coming-soon', 'management-content']) {
+        const tag = template.match(new RegExp('<[^>]*\\bid="' + id + '"[^>]*>'));
+        assert.ok(tag, `template must define ${id}`);
+        elements[id].hidden = /\shidden(?:\s|=|>)/.test(tag[0]);
+    }
     const events = {}, timeouts = [];
     const data = { owner: 'account-a', protocol: 2, upgrade: false, calls: [], devices: Array.from({ length: 5 }, (_, i) => ({
         registration_id: 'old-' + i, registration_version: 1, display_name: 'Laptop ' + i, active: true, is_current: false })) };
@@ -50,6 +56,27 @@ async function fixture(options = {}) {
     return { elements, data, events, timeouts, setIntercept(value) { intercept = value; } };
 }
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); }
+
+for (const outcome of ['notEnabled', 'ready', 'upgrade', 'unavailable']) {
+    test(`initial status read hides management controls, then renders ${outcome}`, async () => {
+        let releaseStatus, rejectStatus;
+        const statusRead = new Promise((resolve, reject) => { releaseStatus = resolve; rejectStatus = reject; });
+        const s = await fixture({ intercept: url => url.endsWith('/status') ? statusRead : undefined });
+        assert.ok(s.data.calls.some(row => row.url.endsWith('/status')));
+        assert.equal(s.elements['coming-soon'].hidden, true);
+        assert.equal(s.elements['management-content'].hidden, true, 'management controls must stay hidden while capability is unknown');
+        if (outcome === 'unavailable') rejectStatus(Error('offline'));
+        else releaseStatus({ ok: true, json: async () => ({ success: true, owner_key: s.data.owner,
+            protocol_version: outcome === 'notEnabled' ? 1 : 2, upgrade_required: outcome === 'upgrade' }) });
+        await settle();
+        assert.equal(s.elements['coming-soon'].hidden, outcome !== 'notEnabled');
+        assert.equal(s.elements['management-content'].hidden, outcome === 'notEnabled');
+        assert.equal(s.elements.status.textContent, 'feedbackDevices.' + outcome);
+        assert.equal(s.elements.refresh.disabled, false);
+        if (outcome === 'ready') assert.equal(s.elements.devices.children.length, 5);
+        if (outcome === 'upgrade') assert.equal(s.elements.upgrade.hidden, false);
+    });
+}
 
 test('sixth device requires an explicit choice and a click; names are only user supplied', async () => {
     const { elements, data } = await fixture();
