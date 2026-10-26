@@ -13,7 +13,8 @@ import re
 from typing import BinaryIO
 
 from plugin.server.domain.errors import ServerDomainError
-from utils.logging_layout import is_service_log_file, plugin_log_service_name, resolve_log_directory
+from plugin.logging_config import resolve_plugin_log_directory
+from utils.logging_layout import is_service_log_file, plugin_log_service_name
 
 from .text import filter_logs, parse_log_line
 
@@ -53,7 +54,7 @@ class LogService:
 
     def _directory(self, plugin_id: str) -> Path:
         _validate_target(plugin_id)
-        return resolve_log_directory(log_subdir=None if plugin_id == SERVER_LOG_ID else "plugin")
+        return resolve_plugin_log_directory(log_subdir=None if plugin_id == SERVER_LOG_ID else "plugin")
 
     def _files(self, plugin_id: str) -> list[_LogFile]:
         directory = self._directory(plugin_id)

@@ -54,7 +54,7 @@ def parse_log_line(line: str) -> dict[str, object] | None:
         }
 
     # Pattern 2, server: 2024-01-01 00:00:00,123 - user_plugin_server - INFO - message.
-    pattern2 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?) - ([^-]+) - (\w+) - (.+)'
+    pattern2 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?) - (.+?) - (\w+) - (.+)'
     match = re.match(pattern2, line)
     if match:
         timestamp, name, level, message = match.groups()

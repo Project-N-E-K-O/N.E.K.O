@@ -1,6 +1,8 @@
 """Shared log identity and directory policy, without initialization side effects.
 
-Startup creates the selected directory; readers resolve the same pure policy.
+Writers perform writable-directory probes; cold readers only inspect candidates.
+The plugin runtime exposes its actual configured directory after startup, so a
+writer fallback is authoritative rather than guessed from filesystem access.
 Importing this module never installs handlers, creates directories or cleans logs.
 """
 from __future__ import annotations
@@ -63,28 +65,58 @@ def application_directory() -> Path:
 
 
 def documents_directory() -> Path:
+    """Get the system's user documents directory (via system APIs)"""
     if sys.platform == "win32":
+        # Windows: use the system API to find the actual Documents path.
         try:
             import ctypes
-            from ctypes import wintypes
+            from ctypes import windll, wintypes
+
+            # Use SHGetFolderPath to get the Documents path.
+            CSIDL_PERSONAL = 5  # My Documents
+            SHGFP_TYPE_CURRENT = 0
+
             buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
-            if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
-                return Path(buf.value)
-        except (AttributeError, OSError):
-            pass
+            windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+            docs_dir = Path(buf.value)
+
+            if docs_dir.exists():
+                return docs_dir
+        except Exception as e:
+            print(f"Warning: Failed to get Documents path via API: {e}", file=sys.stderr)
+
+        # Fallback: try reading the registry.
         try:
             import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
-                return Path(os.path.expandvars(winreg.QueryValueEx(key, "Personal")[0]))
-        except (ImportError, OSError):
-            pass
-        directory = Path.home() / "Documents"
-        return directory if directory.exists() else Path.home() / "文档"
-    if sys.platform == "darwin":
-        return Path.home() / "Documents"
-    return Path(os.path.expandvars(os.getenv("XDG_DOCUMENTS_DIR", "~/Documents"))).expanduser()
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            )
+            docs_dir = Path(winreg.QueryValueEx(key, "Personal")[0])
+            winreg.CloseKey(key)
 
+            # Expand environment variables.
+            docs_dir = Path(os.path.expandvars(str(docs_dir)))
+            if docs_dir.exists():
+                return docs_dir
+        except Exception as e:
+            print(f"Warning: Failed to get Documents path from registry: {e}", file=sys.stderr)
+
+        # Final fallback.
+        docs_dir = Path.home() / "Documents"
+        if not docs_dir.exists():
+            docs_dir = Path.home() / "文档"
+        return docs_dir
+
+    elif sys.platform == "darwin":
+        # macOS
+        return Path.home() / "Documents"
+    else:
+        # Linux: try XDG.
+        xdg_docs = os.getenv('XDG_DOCUMENTS_DIR')
+        if xdg_docs:
+            return Path(xdg_docs)
+        return Path.home() / "Documents"
 
 def log_directory_candidates(app_name: str | None = None, *, documents: Path | None = None) -> list[Path]:
     name = APP_NAME if app_name is None else app_name
@@ -122,7 +154,7 @@ def log_subdirectory(log_subdir: str | None) -> Path:
 
 
 def select_log_directory(candidates: list[Path]) -> Path:
-    """One side-effect-free selection policy shared by writers and readers."""
+    """Best-effort cold inspection; active callers use their writer's directory."""
     return next((candidate for candidate in candidates if _can_use(candidate)), candidates[-1])
 
 

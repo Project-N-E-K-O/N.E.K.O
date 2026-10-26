@@ -13,7 +13,7 @@ def log_client(monkeypatch, tmp_path):
     from plugin.server.routes import logs
     from plugin.server.application.logs import service as service_module
 
-    monkeypatch.setattr(service_module, "resolve_log_directory", lambda **_: tmp_path)
+    monkeypatch.setattr(service_module, "resolve_plugin_log_directory", lambda **_: tmp_path)
     monkeypatch.setattr(logs, "log_service", service_module.LogService())
     app = FastAPI()
     app.include_router(logs.router)

@@ -32,7 +32,11 @@ from utils.logging_layout import plugin_log_service_name
 
 target, mode = sys.argv[1:]
 service = 'PluginServer' if target == '_server' else plugin_log_service_name(target)
-setup_plugin_logging(service_name=service, own_root=mode == 'standalone')
+if mode == 'embedded':
+    from plugin.server.http_app import build_plugin_server_app
+    build_plugin_server_app()
+else:
+    setup_plugin_logging(service_name=service, own_root=True)
 
 expected = ['sdk-contract-marker']
 get_logger('contract').info(expected[0])

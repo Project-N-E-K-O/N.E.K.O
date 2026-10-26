@@ -1220,12 +1220,6 @@ def run_merged_servers() -> int:
         except Exception:
             pass
 
-    # The merged process hosts plugins through Agent. Declare root ownership
-    # before importing any application so dependency import order cannot decide
-    # where ordinary library records are persisted.
-    from utils.logger_config import setup_logging
-    setup_logging(service_name="Agent", silent=True, capture_root=True)
-
     _proxy_kw = uvicorn_proxy_options()
 
     # Stage and time imports to control memory peaks and show progress: all three serial imports

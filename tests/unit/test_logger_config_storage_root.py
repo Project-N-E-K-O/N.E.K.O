@@ -31,10 +31,13 @@ def test_logger_config_keeps_plugin_logs_under_selected_storage_root(tmp_path, m
 
 @pytest.mark.unit
 def test_plugin_log_reader_uses_selected_storage_root(tmp_path, monkeypatch):
+    from plugin import logging_config
     from plugin.server.application.logs import LogService
 
     selected_root = tmp_path / "selected-root"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    monkeypatch.setattr(logging_config, "_runtime_pid", None)
+    monkeypatch.setattr(logging_config, "_runtime_result", None)
 
     service = LogService()
     assert service.get_plugin_log_directory("_server") == selected_root / "logs"

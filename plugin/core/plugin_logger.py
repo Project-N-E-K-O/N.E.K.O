@@ -72,8 +72,8 @@ class PluginFileLogger:
         return self.get_log_directory() / log_filename(plugin_log_service_name(self.plugin_id))
 
     def get_log_directory(self) -> Path:
-        from utils.logging_layout import resolve_log_directory
-        return resolve_log_directory(log_subdir="plugin")
+        from plugin.logging_config import resolve_plugin_log_directory
+        return resolve_plugin_log_directory(log_subdir="plugin")
 
     def cleanup(self) -> None:
         self._logger = None

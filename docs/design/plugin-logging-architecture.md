@@ -1,119 +1,68 @@
 # Plugin logging ownership and compatibility
 
-## Purpose
+## Scope
 
-Plugin logging has one write backend, one read implementation, and one owner of
-each viewer session. The work fixes missing server logs in embedded operation,
-plugin records reaching the parent process's file after fork, and competing
-history/realtime updates. It does not introduce a logging platform, alternate
-storage backend, or a second implementation behind a migration flag.
+This change fixes plugin log ownership, querying, subscriptions and the plugin
+manager viewer. Main, Memory and Agent keep their existing logging defaults.
+Agent/brain source and merged-process root ownership are unchanged from upstream.
+The launcher only delegates its existing formatting hook to the shared backend.
 
 ## Ownership
 
 | Responsibility | Owner |
 | --- | --- |
-| File layout, writable-directory policy, handlers and rotation | Shared logging utilities |
-| Selecting a service identity and installing its logging | Process/service startup |
-| Plugin-facing logger methods and historical calling conventions | SDK logging facade |
-| File discovery, query, subscription and export selection | Plugin logs application module |
-| HTTP/WebSocket serialization and archive delivery | Log routes |
-| Query, connection, records and loading/error state for one viewer | Frontend log session |
-| Layout and user actions | Shared viewer and its two page hosts |
+| Existing writable-directory probes, handlers and rotation | Shared logger backend |
+| Filename generation and exact service-file matching | Shared logging layout |
+| Plugin identity, explicit initialization and child root capture | Plugin logging runtime |
+| Query, subscription and export selection | Plugin logs application module |
+| HTTP/WebSocket envelopes and archive delivery | Plugin log routes |
+| Query, connection and records for one viewer | Frontend log session |
 
-The shared utilities do not import the plugin host or plugin server. File naming
-and target normalization are shared by readers and writers. Reading a directory
-or log never installs handlers, creates directories, or cleans up historical data.
-Filename generation and exact file-ownership recognition both live in the shared
-layout module. SDK records and ordinary Python records use the backend's single
-message-formatting policy; adapters do not maintain another interpolation rule.
+The plugin HTTP app factory initializes the `PluginServer` namespace itself.
+Agent does not need a logging-specific call. A standalone entrypoint can claim
+root before importing the server; app construction preserves that explicit claim.
+Embedding configures only the plugin namespace and preserves host root/shared
+handlers and levels. Plugin children explicitly rebind their inherited project
+handlers so standard logging and SDK logging use the same plugin file.
 
-## Write lifecycle
+Public host `setup_logging()` defaults remain unchanged: no automatic root claim,
+no Agent-name policy and no global formatter installation. Plugin initialization
+requests optional ownership explicitly. Importing the SDK or obtaining an adapter
+never initializes files or handlers.
 
-Standalone and embedded plugin servers explicitly configure the `PluginServer`
-namespace. Embedding configures that namespace without taking ownership of the
-Agent root logger. A plugin child configures `Plugin_<normalized id>` before
-loading plugin code and makes its ordinary Python loggers use the same target.
-Only logging handlers owned by this logging system may be replaced or detached.
-Initialization and inherited handler cleanup account for process identity.
+## Directory and format compatibility
 
-The launcher uses the public backend formatter installer; it has no private
-formatting hook or competing initialization marker. The merged launcher declares
-Agent as process root owner before importing applications. For existing direct-run
-Agent code, the shared backend treats an omitted `capture_root` as host ownership
-when `service_name` is `Agent`; explicit `False` always opts out. Other namespaces
-do not implicitly claim root. This compatibility policy is independent of whether
-Memory or Main happens to be imported first, and requires no Agent source edits.
+The existing backend retains its original write probes and platform fallback
+behavior. The plugin runtime retains the actual directory selected by that writer;
+queries and published path inspectors use it rather than guessing with `os.access`.
+The pure layout resolver is only a cold inspection fallback before initialization.
+Directory queries do not instantiate a writer, create directories or clean logs.
 
-Importing the SDK or obtaining an SDK logger does not initialize logging.
-Existing logger objects continue to work when a parent process forks a plugin
-child; their service resolution must follow the explicit runtime configuration.
+SDK adapters and the launcher's existing stdlib hook share one formatter. Public
+SDK helpers, legacy calling conventions and file-logger names remain delegating
+interfaces rather than independent implementations.
 
 ## Reading and viewing
 
-`LogService` owns file access for the existing query, files, directory and
-export endpoints. Each live subscription owns its snapshot and subsequent read
-position. Subscriptions do not advance another viewer's progress. File identity
-changes and truncation cause an explicit new snapshot rather than silent skips.
-The application returns `LogReadResult` data, while routes construct HTTP payloads
-and WebSocket message types. The implementation lives in `logs/service.py` because
-its responsibility includes subscriptions and file selection as well as queries.
+`LogService` owns file selection, snapshots, independent subscription cursors and
+export selection. It returns read data; routes alone construct the existing HTTP
+and WebSocket payloads. File replacement/truncation produces a new snapshot.
+Snapshots retain bounded raw history before parsing, avoiding whole-file parsing.
 
-The viewer uses one WebSocket session for both initial history and appends.
-Its requested line count and filters are sent when opening or refreshing that
-session. Responses from obsolete connections cannot replace its current state.
-The outer page's refresh action delegates to that same session. HTTP queries
-remain available to existing clients but no longer race a viewer's subscription.
+Each viewer uses one WebSocket session for initial history, appends and refresh.
+Old sockets cannot replace a current session. Both pages reuse the same viewer;
+HTTP endpoints remain for existing clients without competing for the page state.
 
-The existing `initial` and `append` message names and query response fields are
-retained. Subscription query parameters add line count and filters. Read errors
-are distinct from a connected transport and from a successful empty result.
-UI counts describe displayed records rather than claiming a whole-file total.
-Snapshots retain their bounded raw history before parsing, so requesting N
-records does not parse the entire historical file. The same cursor then follows
-new content without replaying discarded history.
-
-## Compatibility contract
-
-- Preserve published Python exports, including `PluginFileLogger`,
-  `enable_plugin_file_logging`, `plugin_file_logger`, SDK logger helpers and
-  `enable_file_logging`. Their adapters delegate to the single implementation.
-- Keep existing log HTTP paths, download behavior, and ordinary WebSocket clients
-  that do not supply the new query parameters.
-- Read existing text log formats, date files, error files and rotated files.
-  Online viewing excludes separate error copies; export includes them.
-- Match exact plugin identities, including normalized long identifiers, so a
-  plugin cannot select another plugin's files through a shared prefix.
-- Shared historical `Plugin` files may be exposed as legacy server history with
-  their real filename. They must never be assigned wholesale to a plugin.
-- Do not move, rewrite or delete user logs as a migration step.
-
-Public compatibility is maintained at the SDK and transport edges. Private
-helpers, implicit initialization, the global mutable watcher registry, duplicate
-frontend loading paths and `plugin.server.logs` are not compatibility contracts:
-their callers are migrated and their old implementations are removed.
-Unused frontend HTTP helper functions are not published client contracts; removing
-them does not remove the server endpoints. ASGI HTTP/archive/WebSocket behavior is
-tested under `plugin/tests/integration`, separately from direct application tests.
+Keep existing endpoint paths, initial/append messages, historical text formats,
+error/rotated exports and exact plugin-file isolation. Shared legacy Plugin files
+may appear as labelled server history, never as an individual plugin's records.
+No migration moves or rewrites user logs. Removed private reader/watcher/store
+implementations have no surviving alternate paths.
 
 ## Acceptance
 
-Behavior tests cover the actual startup order and the public read/session seams:
-
-1. Standalone and embedded service identities agree, while Agent handlers remain
-   intact.
-2. Parent initialization followed by a real fork routes standard and SDK child
-   records to the plugin, without child business records leaking to the parent.
-3. Published plugin imports and calling conventions use that same backend.
-4. Queries, export and subscriptions agree on file ownership; read operations are
-   free of write-side initialization and cleanup.
-5. Requested history is not overwritten by a second initializer; independent
-   viewers, refresh and reconnect retain one state owner each.
-6. Existing text data and transport entrypoints retain their supported behavior.
-7. Subprocess tests run actual launcher bootstrap and Agent imports, including
-   direct-run and merged startup ordering; they do not supply root ownership that
-   the production entrypoint omitted. A separate history-window regression checks
-   that parser work is bounded by the requested snapshot, not total file length.
-
-Tests of removed private helpers are replaced by observable behavior tests at the
-new owning interface. Final review includes an import/reference audit for the
-deleted implementation paths, not only green tests.
+Tests cover real forked children, plugin app-factory initialization without Agent
+changes, standalone ownership preservation, unchanged host defaults, the launcher
+formatter entrypoint, actual writer fallback, HTTP/ZIP/WebSocket compatibility,
+independent viewers and bounded snapshot parsing. ASGI transport tests live in
+plugin integration tests; unrelated host logging policy is outside this change.

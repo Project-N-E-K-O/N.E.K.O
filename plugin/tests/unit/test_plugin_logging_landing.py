@@ -117,7 +117,8 @@ def test_embedded_service_keeps_agent_handlers_and_routes_its_namespace(isolated
     assert logging.getLogger("N.E.K.O").handlers == app_before
     assert "embedded-plugin-marker" in _read(isolated_log_dir, "PluginServer")
     assert "embedded-plugin-marker" not in _read(isolated_log_dir, "Agent")
-    assert "agent-library-marker" in _read(isolated_log_dir, "Agent")
+    # Host root policy is outside plugin ownership; embedding must preserve it.
+    assert "agent-library-marker" not in _read(isolated_log_dir, "PluginServer")
     assert "agent-marker" not in _read(isolated_log_dir, "PluginServer")
 
 
@@ -199,33 +200,38 @@ def test_explicit_bootstrap_can_take_root_after_namespace_bootstrap(isolated_log
     assert "captured-after-upgrade" in _read(isolated_log_dir, "PluginServer")
 
 
-def test_repeated_setup_rebinds_shared_parent_and_preserves_foreign_handlers(isolated_log_dir):
+def test_plugin_bootstrap_preserves_foreign_handlers(isolated_log_dir):
     app = logging.getLogger("N.E.K.O")
     foreign = logging.NullHandler()
     app.addHandler(foreign)
     try:
-        setup_logging(service_name="Agent", silent=True)
-        setup_logging(service_name="Agent", silent=True)
+        plogging.setup_plugin_logging("Plugin_demo", own_root=True)
+        plogging.setup_plugin_logging("Plugin_demo", own_root=True)
         logging.getLogger("N.E.K.O.runtime-test.shared").info("shared-after-repeat")
         assert foreign in app.handlers
-        assert _read(isolated_log_dir, "Agent").count("shared-after-repeat") == 1
+        assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("shared-after-repeat") == 1
     finally:
         app.removeHandler(foreign)
 
 
 def test_reader_and_writer_use_identical_directory_fallback(isolated_log_dir, monkeypatch):
-    from utils import logging_layout
+    from plugin.core.plugin_logger import PluginFileLogger
+    from plugin.server.application.logs import LogService
     from utils.logger_config import RobustLoggerConfig
-    original_can_use = logging_layout._can_use
-    monkeypatch.setattr(logging_layout, "_can_use", lambda path: path != isolated_log_dir and original_can_use(path))
-    # Both take the next candidate, without a writer-only probe redirecting logs.
+    original_probe = RobustLoggerConfig._test_directory_writable
+    monkeypatch.setattr(RobustLoggerConfig, "_test_directory_writable",
+                        lambda self, path: path != isolated_log_dir and original_probe(self, path))
+    # A real writer probe can reject a path that a read-only access estimate
+    # considers writable (for example a protected Documents directory).
     fallback_documents = isolated_log_dir.parent / "fallback-documents"
-    monkeypatch.setattr(logging_layout, "documents_directory", lambda: fallback_documents)
     monkeypatch.setattr(RobustLoggerConfig, "_get_documents_directory", lambda self: fallback_documents)
-    directory = resolve_log_directory(log_subdir="plugin")
-    config = RobustLoggerConfig(service_name="Plugin_demo", log_subdir="plugin")
-    assert config.log_dir == directory
-    assert directory == fallback_documents / "N.E.K.O" / "logs" / "plugin"
+    _, config = plogging.setup_plugin_logging("PluginServer", own_root=False)
+    plogging.get_logger("fallback-contract").info("fallback-marker")
+    service = LogService()
+    assert service.get_plugin_log_directory("_server") == config.log_dir
+    assert config.log_dir == fallback_documents / "N.E.K.O" / "logs"
+    assert "fallback-marker" in [row["message"] for row in service.get_plugin_logs(plugin_id="_server").logs]
+    assert PluginFileLogger("demo", isolated_log_dir).get_log_directory() == config.log_dir / "plugin"
 
 
 def test_macos_documents_ignores_linux_xdg_override(monkeypatch):

@@ -52,21 +52,39 @@ from datetime import datetime, timedelta
 
 from config import APP_NAME
 
-from utils.logging_layout import (
-    NEKO_STORAGE_SELECTED_ROOT_ENV,
-    application_directory,
-    documents_directory,
-    log_directory_candidates,
-    log_filename,
-    log_subdirectory,
-    select_log_directory,
-)
+from utils.logging_layout import log_filename, log_subdirectory
+
+NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
 
 
 def _get_application_root() -> Path:
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS)
-    return application_directory()
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _get_writable_application_directory() -> Path:
+    """Return a writable path suitable as the base directory for log files."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return _get_application_root()
+
+
+def _get_selected_storage_root_from_env() -> Path | None:
+    raw_root = str(os.environ.get(NEKO_STORAGE_SELECTED_ROOT_ENV) or "").strip()
+    if not raw_root:
+        return None
+
+    try:
+        selected_root = Path(raw_root).expanduser()
+    except Exception:
+        return None
+
+    if not selected_root.is_absolute():
+        return None
+    return selected_root
 
 
 def _mark_handler(handler):
@@ -184,14 +202,182 @@ class RobustLoggerConfig:
         self._cleanup_old_logs()
     
     def _get_log_directory(self):
-        """Use the same pure candidate selection as readers; startup creates it."""
-        return select_log_directory(log_directory_candidates(
-            self.app_name, documents=self._get_documents_directory(),
-        ))
+        """
+        Get a suitable log directory
+        Priority:
+        1. selected runtime storage directory/logs (injected by the launcher via environment variables)
+        2. user documents directory/{APP_NAME}/logs (compatible with old versions and direct runs)
+        3. application directory/logs
+        4. user data directory (AppData etc.)
+        5. user home directory
+        6. temp directory (last-resort fallback)
+        
+        Returns:
+            Path: log directory path
+        """
+        # Attempt 1: current storage root. Do not migrate old logs; new logs follow the new root.
+        try:
+            selected_root = _get_selected_storage_root_from_env()
+            if selected_root is not None:
+                log_dir = selected_root / "logs"
+                if self._test_directory_writable(log_dir):
+                    return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use selected storage log directory: {e}", file=sys.stderr)
 
+        # Attempt 2: user Documents directory (compatible with older versions and direct non-launcher runs).
+        try:
+            docs_dir = self._get_documents_directory()
+            # Use the configured application-name directory.
+            log_dir = docs_dir / self.app_name / "logs"
+            if self._test_directory_writable(log_dir):
+                return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use Documents directory: {e}", file=sys.stderr)
+        
+        # Attempt 2: application directory.
+        try:
+            app_dir = _get_writable_application_directory()
+            log_dir = app_dir / "logs"
+            if self._test_directory_writable(log_dir):
+                return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use application directory: {e}", file=sys.stderr)
+        
+        # Attempt 3: system user-data directory.
+        try:
+            if sys.platform == "win32":
+                # Windows: %APPDATA%\AppName\logs
+                base_dir = os.getenv('APPDATA')
+                if base_dir:
+                    log_dir = Path(base_dir) / self.app_name / "logs"
+                    if self._test_directory_writable(log_dir):
+                        return log_dir
+            elif sys.platform == "darwin":
+                # macOS: ~/Library/Application Support/AppName/logs
+                base_dir = Path.home() / "Library" / "Application Support"
+                log_dir = base_dir / self.app_name / "logs"
+                if self._test_directory_writable(log_dir):
+                    return log_dir
+            else:
+                # Linux: ~/.local/share/AppName/logs
+                xdg_data_home = os.getenv('XDG_DATA_HOME')
+                if xdg_data_home:
+                    log_dir = Path(xdg_data_home) / self.app_name / "logs"
+                else:
+                    log_dir = Path.home() / ".local" / "share" / self.app_name / "logs"
+                if self._test_directory_writable(log_dir):
+                    return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to get system data directory: {e}", file=sys.stderr)
+        
+        # Attempt 4: user home directory.
+        try:
+            log_dir = Path.home() / f".{self.app_name}" / "logs"
+            if self._test_directory_writable(log_dir):
+                return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use home directory: {e}", file=sys.stderr)
+        
+        # Attempt 5: temporary directory (last-resort fallback).
+        try:
+            import tempfile
+            log_dir = Path(tempfile.gettempdir()) / self.app_name / "logs"
+            if self._test_directory_writable(log_dir):
+                return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use temp directory: {e}", file=sys.stderr)
+        
+        # If every method fails, return the current directory.
+        print("Warning: All log directory attempts failed, using application directory", file=sys.stderr)
+        return _get_writable_application_directory() / "logs"
+    
     def _get_documents_directory(self):
-        return documents_directory()
-
+        """Get the system's user documents directory (via system APIs)"""
+        if sys.platform == "win32":
+            # Windows: use the system API to find the actual Documents path.
+            try:
+                import ctypes
+                from ctypes import windll, wintypes
+                
+                # Use SHGetFolderPath to get the Documents path.
+                CSIDL_PERSONAL = 5  # My Documents
+                SHGFP_TYPE_CURRENT = 0
+                
+                buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+                windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+                docs_dir = Path(buf.value)
+                
+                if docs_dir.exists():
+                    return docs_dir
+            except Exception as e:
+                print(f"Warning: Failed to get Documents path via API: {e}", file=sys.stderr)
+            
+            # Fallback: try reading the registry.
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+                )
+                docs_dir = Path(winreg.QueryValueEx(key, "Personal")[0])
+                winreg.CloseKey(key)
+                
+                # Expand environment variables.
+                docs_dir = Path(os.path.expandvars(str(docs_dir)))
+                if docs_dir.exists():
+                    return docs_dir
+            except Exception as e:
+                print(f"Warning: Failed to get Documents path from registry: {e}", file=sys.stderr)
+            
+            # Final fallback.
+            docs_dir = Path.home() / "Documents"
+            if not docs_dir.exists():
+                docs_dir = Path.home() / "文档"
+            return docs_dir
+        
+        elif sys.platform == "darwin":
+            # macOS
+            return Path.home() / "Documents"
+        else:
+            # Linux: try XDG.
+            xdg_docs = os.getenv('XDG_DOCUMENTS_DIR')
+            if xdg_docs:
+                return Path(xdg_docs)
+            return Path.home() / "Documents"
+    
+    def _test_directory_writable(self, directory):
+        """
+        Test whether a directory is writable
+        
+        Args:
+            directory: directory to test
+            
+        Returns:
+            bool: whether it is writable
+        """
+        try:
+            # Create directories incrementally to avoid possible packaged-app problems with parents=True.
+            # Collect all parent directories needing creation.
+            dirs_to_create = []
+            current = directory
+            while current and not current.exists():
+                dirs_to_create.append(current)
+                current = current.parent
+            
+            # Create directories from the top down.
+            for dir_path in reversed(dirs_to_create):
+                if not dir_path.exists():
+                    dir_path.mkdir(exist_ok=True)
+            
+            # Try creating a test file.
+            test_file = directory / ".write_test"
+            test_file.write_text("test", encoding="utf-8")
+            test_file.unlink()
+            return True
+        except Exception:
+            return False
+    
     def _ensure_log_directory(self):
         """Ensure the log directory exists"""
         try:
@@ -398,7 +584,7 @@ class EnhancedLogger:
 
 
 def setup_logging(app_name=None, service_name=None, log_level=None, silent=False,
-                  log_subdir=None, *, capture_root=None, shared_parent=True):
+                  log_subdir=None, *, capture_root=False, shared_parent=True):
     """
     Convenience function: set up logging configuration
 
@@ -407,10 +593,9 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         service_name: service name, distinguishing log files of different services (e.g. Main, Memory, Agent)
         log_level: log level
         silent: silent mode, no init message printed (for subprocesses, avoiding duplicate output)
-        capture_root: own ordinary stdlib records. None preserves the existing
-            Agent startup call as the designated host/root owner; other services
-            configure only their namespaces unless they explicitly request True.
-            False always opts out. Unrelated handlers remain untouched.
+        capture_root: opt in to root ownership for dedicated plugin processes.
+            Default False preserves host startup behavior. Unrelated handlers
+            remain untouched.
         shared_parent: also own shared APP_NAME module records. Embedded services
             set False so the containing application's shared logger stays intact.
         log_subdir: log subdirectory. Plugin subprocesses pass ``"plugin"`` to tuck
@@ -425,15 +610,9 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         The returned logger automatically includes the traceback on error() calls (when in an exception context)
         logger.exception() can also be used to record exception info explicitly
     """
-    # Agent is the plugin-host process, including direct-run imports. Keep that
-    # ownership explicit in this policy instead of letting Memory/Main import
-    # order choose the root sink. Dedicated plugin processes pass True themselves.
-    if capture_root is None:
-        capture_root = service_name == "Agent" and shared_parent
-    # A forked child owns its log lifecycle; remove inherited project handlers
-    # from all namespaces before building its own service logger.
-    _release_inherited_handlers()
-    install_message_formatting()
+    if capture_root:
+        # Dedicated plugin children explicitly replace inherited project sinks.
+        _release_inherited_handlers()
     config = RobustLoggerConfig(
         app_name=app_name,
         service_name=service_name,
@@ -796,7 +975,7 @@ def _ensure_shared_parent_logger(config, service_logger, *, replace=False):
         for handler in list(app_logger.handlers):
             if getattr(handler, "_neko_owned", False):
                 app_logger.removeHandler(handler)
-    elif any(getattr(handler, "_neko_owned", False) for handler in app_logger.handlers):
+    elif app_logger.handlers:
         return
     app_logger.setLevel(service_logger.level)
     app_logger.propagate = False

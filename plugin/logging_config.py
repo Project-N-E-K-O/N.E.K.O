@@ -114,7 +114,7 @@ _runtime_result: Any = None
 _runtime_owns_root = False
 
 
-def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool = False):
+def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool | None = None):
     """Install plugin-owned sinks once for this process and service.
 
     Embedded services own only their namespace. Dedicated servers and plugin
@@ -122,13 +122,20 @@ def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool =
     makes an inherited fork state unusable until the child's explicit bootstrap.
     """
     global _runtime_pid, _runtime_service, _runtime_result, _runtime_owns_root
-    from utils.logger_config import install_httpx_filter, setup_logging as bootstrap
+    from utils.logger_config import install_httpx_filter, install_message_formatting, setup_logging as bootstrap
+
+    # App construction defaults to namespace-only ownership and preserves an
+    # explicit standalone bootstrap performed before importing server modules.
+    if own_root is None:
+        own_root = (_runtime_pid == os.getpid() and _runtime_service == service_name
+                    and _runtime_owns_root)
 
     if (_runtime_pid == os.getpid() and _runtime_service == service_name
             and _runtime_result is not None and _runtime_owns_root == own_root
             and any(getattr(h, "_neko_owned", False)
                     for h in _runtime_result[0].handlers)):
         return _runtime_result
+    install_message_formatting()
     result = bootstrap(
         service_name=service_name, log_level=_level_to_int(LOG_LEVEL), silent=True,
         log_subdir="plugin" if service_name.startswith("Plugin_") else None,
@@ -141,6 +148,18 @@ def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool =
     os.environ["NEKO_PLUGIN_SERVICE_NAME"] = service_name
     install_httpx_filter()
     return result
+
+
+def resolve_plugin_log_directory(*, log_subdir: str | None = None) -> Path:
+    """Use the configured writer's actual fallback; cold SDK inspection is pure."""
+    from utils.logging_layout import log_subdirectory, resolve_log_directory
+
+    if _runtime_pid == os.getpid() and _runtime_result is not None:
+        directory = Path(_runtime_result[1].get_log_directory_path())
+        if _runtime_service and _runtime_service.startswith("Plugin_"):
+            directory = directory.parent
+        return directory / log_subdirectory(log_subdir)
+    return resolve_log_directory(log_subdir=log_subdir)
 
 
 def _service_name() -> str:

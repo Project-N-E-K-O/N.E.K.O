@@ -16,7 +16,7 @@ pytestmark = pytest.mark.plugin_unit
 
 @pytest.fixture
 def service(monkeypatch, tmp_path):
-    monkeypatch.setattr(service_module, "resolve_log_directory", lambda **_: tmp_path)
+    monkeypatch.setattr(service_module, "resolve_plugin_log_directory", lambda **_: tmp_path)
     return LogService()
 
 
@@ -32,7 +32,7 @@ def messages(packet):
 
 def test_read_does_not_create_directory(monkeypatch, tmp_path):
     missing = tmp_path / "missing" / "plugin"
-    monkeypatch.setattr(service_module, "resolve_log_directory", lambda **_: missing)
+    monkeypatch.setattr(service_module, "resolve_plugin_log_directory", lambda **_: missing)
     service = LogService()
     assert service.get_plugin_logs(plugin_id="demo").logs == []
     assert service.get_plugin_log_files("demo") == []
@@ -201,6 +201,7 @@ def test_io_errors_are_not_reported_as_empty_logs(service, monkeypatch):
 @pytest.mark.parametrize("line", [
     "2026-10-26 12:00:00 - [plugin.demo] - INFO - file.py:12 - historical",
     "2026-10-26 12:00:00,123 - plugin.demo - INFO - historical",
+    "2026-10-26 12:00:00 - N.E.K.O.Plugin_demo-game.server - INFO - historical",
     "2026-10-26 12:00:00 - INFO - historical",
     "2026-10-26 12:00:00 INFO historical",
     "2026-10-26 12:00:00 | INFO | module:function:12 | historical",
