@@ -36,6 +36,16 @@
     function isPetCareOwnerSurface() { return PET_CARE_SURFACE.ownsLifecycle === true; }
 
     var HOVER_DELAY_MS = 400;
+    var PANEL_OPEN_MODES = Object.freeze({
+        HOVER: 'hover', MANUAL: 'manual', SHORTCUT: 'shortcut',
+    });
+    function normalizePanelOpenMode(value) {
+        value = typeof value === 'string' ? value.trim().toLowerCase() : '';
+        return value === PANEL_OPEN_MODES.MANUAL || value === PANEL_OPEN_MODES.SHORTCUT
+            ? value : PANEL_OPEN_MODES.HOVER;
+    }
+    var initialPanelOpenMode = normalizePanelOpenMode(window.__nekoPetCarePanelOpenMode);
+    window.__nekoPetCarePanelOpenMode = initialPanelOpenMode;
     var HIDE_DELAY_MS = 180;
     // Presentation-only grace period. It prevents the surface from vanishing
     // while the pointer crosses a transparent gap between its visible cards.
@@ -118,6 +128,7 @@
         snapshot: null, settlement: null, careActions: null, optimisticSnapshot: null,
         clientProjection: null, serverClockAnchor: null,
         generation: 0, reason: 'initial', panelOpen: false,
+        panelOpenMode: initialPanelOpenMode,
         hoverVisible: false, oauthPending: false, bindingPending: false,
         catLocalActive: false, catMindCompatibilityEnabled: false,
         featureHintVisible: false, loginHintVisible: false,
@@ -892,6 +903,7 @@
             careActions: state.careActions, optimisticSnapshot: state.optimisticSnapshot,
             generation: state.generation,
             reason: state.reason, panelOpen: state.panelOpen,
+            panelOpenMode: state.panelOpenMode,
             hoverVisible: state.hoverVisible, oauthPending: state.oauthPending,
             loginHintVisible: state.loginHintVisible,
             loginHintShownForCatEpisode: state.loginHintShownForCatEpisode,
@@ -2113,20 +2125,38 @@
         panelPointerActive = false;
         panelPointerInside = false;
     }
+    function cancelPendingHoverOpen() {
+        if (!hoverTimer) return;
+        window.clearTimeout(hoverTimer);
+        hoverTimer = 0;
+    }
+    function setPanelOpenMode(value) {
+        var previous = state.panelOpenMode;
+        var next = normalizePanelOpenMode(value);
+        state.panelOpenMode = next;
+        window.__nekoPetCarePanelOpenMode = next;
+        if (previous === PANEL_OPEN_MODES.HOVER && next !== PANEL_OPEN_MODES.HOVER) {
+            // A preference change only cancels an uncommitted dwell. An
+            // already-open surface remains under the user's control.
+            cancelPendingHoverOpen();
+        }
+        return next;
+    }
     function dismissLoginHint() {
         if (loginHintTimer) { window.clearTimeout(loginHintTimer); loginHintTimer = 0; }
         state.loginHintVisible = false;
         if (ui) ui.root.dataset.loginHint = 'false';
         render();
     }
-    function loginHintEntryAvailable() {
+    function loginHintEntryAvailable(options) {
+        var explicit = !!(options && options.explicit === true);
         if (!state.catLocalActive || state.authStatus !== 'logged-out' ||
-            state.loginHintShownForCatEpisode || state.oauthPending) return false;
+            (!explicit && state.loginHintShownForCatEpisode) || state.oauthPending) return false;
         var current = anchorState();
         return !!(current && current.visible && current.rect && !current.busy);
     }
-    function maybeShowLoginHint() {
-        if (!loginHintEntryAvailable()) return false;
+    function showLoginHint(options) {
+        if (!loginHintEntryAvailable(options)) return false;
         state.loginHintShownForCatEpisode = true;
         state.loginHintVisible = true;
         if (ui) ui.root.dataset.loginHint = 'true';
@@ -2139,6 +2169,9 @@
         if (loginHintTimer && typeof loginHintTimer.unref === 'function') loginHintTimer.unref();
         render();
         return true;
+    }
+    function maybeShowLoginHint() {
+        return showLoginHint({ explicit: false });
     }
     function visible(value) {
         state.hoverVisible = !!value;
@@ -2228,7 +2261,32 @@
         panelPointerActive = false;
         if ((wasActive || lostWindow) && !panelPointerInside) schedulePanelAutoClose();
     }
+    function openPetCarePanelImmediately(reason, options) {
+        options = options && typeof options === 'object' ? options : {};
+        // Every entry path shares the same semantic cat/nest, authentication
+        // and activity gates. In particular, an explicit desktop request is
+        // never permission to render a stale snapshot after session loss.
+        if (state.authStatus !== 'logged-in' || !semanticAnchorEntryAvailable()) return false;
+        var current = anchorState();
+        if (!current || !current.visible || !current.rect || current.busy) return false;
+        var wasOpen = state.panelOpen === true;
+        cancelPendingHoverOpen();
+        cancelPanelAutoClose();
+        if (hideTimer) { window.clearTimeout(hideTimer); hideTimer = 0; }
+        state.dismissedExplorationId = '';
+        state.panelOpen = true;
+        visible(true);
+        render();
+        positionOverlay(current.rect);
+        recoverDegradedSurface(reason || 'panel-open-retry');
+        if (!wasOpen) loadTasksWhenPanelOpens();
+        if (options.autoCloseIfPointerOutside === true && !panelPointerInside) {
+            schedulePanelAutoClose();
+        }
+        return true;
+    }
     function showSoon() {
+        if (state.panelOpenMode !== PANEL_OPEN_MODES.HOVER) return;
         if (!semanticAnchorEntryAvailable()) return;
         cancelPanelAutoClose();
         if (hideTimer) { window.clearTimeout(hideTimer); hideTimer = 0; }
@@ -2236,20 +2294,30 @@
         if (state.hoverVisible || hoverTimer) return;
         hoverTimer = window.setTimeout(function () {
             hoverTimer = 0;
-            var current = anchorState();
-            if (semanticAnchorEntryAvailable() && current && current.visible &&
-                current.rect && !current.busy) {
-                // The demo's surface is the entry itself. There is no
-                // separate "养宠·已绑定" launcher in front of it.
-                state.dismissedExplorationId = '';
-                state.panelOpen = true;
-                visible(true);
-                render();
-                positionOverlay(current.rect);
-                recoverDegradedSurface('panel-open-retry');
-                loadTasksWhenPanelOpens();
-            }
+            if (state.panelOpenMode !== PANEL_OPEN_MODES.HOVER) return;
+            // The surface is the entry itself. There is no separate launcher.
+            openPetCarePanelImmediately('panel-open-hover');
         }, HOVER_DELAY_MS);
+    }
+    function handlePanelOpenModeChange(event) {
+        var detail = event && event.detail && typeof event.detail === 'object'
+            ? event.detail : {};
+        setPanelOpenMode(detail.mode);
+    }
+    function handlePanelOpenRequest(event) {
+        var detail = event && event.detail && typeof event.detail === 'object'
+            ? event.detail : {};
+        var source = str(detail.source).toLowerCase();
+        if ((source !== PANEL_OPEN_MODES.MANUAL && source !== PANEL_OPEN_MODES.SHORTCUT) ||
+            source !== state.panelOpenMode) return false;
+        if (state.authStatus === 'logged-out') {
+            // A deliberate request may reopen the existing account hint after
+            // its once-per-episode automatic presentation was dismissed.
+            return showLoginHint({ explicit: true });
+        }
+        return openPetCarePanelImmediately('panel-open-' + source, {
+            autoCloseIfPointerOutside: true,
+        });
     }
     function anchorState() {
         var anchor = window.nekoCatInteractionAnchor;
@@ -2346,7 +2414,7 @@
         panelPointerInside = overAnchor || overEntry;
         if (overAnchor || overEntry) {
             cancelPanelAutoClose();
-            if (!state.hoverVisible) showSoon();
+            if (!state.hoverVisible && state.panelOpenMode === PANEL_OPEN_MODES.HOVER) showSoon();
         } else if (state.panelOpen) {
             schedulePanelAutoClose();
         } else if (!state.panelOpen) {
@@ -2899,11 +2967,13 @@
             emitExplorationGate(true, 'exploration-recovery-lease');
         }
         var dismissed = !!activityId && state.dismissedExplorationId === activityId;
-        if (!dismissed) state.panelOpen = true;
+        var shouldOpen = !dismissed && (state.panelOpen ||
+            state.panelOpenMode === PANEL_OPEN_MODES.HOVER);
+        state.panelOpen = shouldOpen;
         clearExplorationLetterRefreshTimer(true);
         scheduleExplorationTimer();
         if (ui) ui.root.dataset.available = 'true';
-        if (!dismissed) visible(true);
+        visible(shouldOpen);
         render();
         return true;
     }
@@ -3059,14 +3129,17 @@
                 state.dismissedExplorationId = '';
             }
             var dismissed = !!activityId && state.dismissedExplorationId === activityId;
-            // Restore a server-confirmed activity once after refresh/login.
-            // Once the user closes that activity's surface, later snapshot
-            // refreshes leave it collapsed; the shared desktop nest remains
-            // the semantic hover anchor for reopening it.
-            if (!dismissed) state.panelOpen = true;
+            // Preserve an already-open activity. The default hover mode also
+            // restores a confirmed activity once after refresh/login for
+            // backward compatibility. Manual and shortcut modes stay closed
+            // until their configured entry is explicitly requested; the
+            // shared desktop nest remains the semantic anchor in every mode.
+            var shouldOpen = !dismissed && (state.panelOpen ||
+                state.panelOpenMode === PANEL_OPEN_MODES.HOVER);
+            state.panelOpen = shouldOpen;
             if (ui) {
                 ui.root.dataset.available = 'true';
-                if (!dismissed) visible(true);
+                visible(shouldOpen);
             }
             scheduleExplorationTimer();
             scheduleExplorationLetterRefresh();
@@ -7308,6 +7381,8 @@
         document.addEventListener('pointerup', releasePanelPointer, { passive: true });
         document.addEventListener('pointercancel', releasePanelPointer, { passive: true });
         window.addEventListener('blur', releasePanelPointer);
+        window.addEventListener('neko:pet-care:panel-open-mode', handlePanelOpenModeChange);
+        window.addEventListener('neko:pet-care:panel-open-request', handlePanelOpenRequest);
         window.addEventListener('resize', positionOverlay);
         window.addEventListener('scroll', positionOverlay, true);
         window.addEventListener('neko:idle-return-ball-state', function (event) {
@@ -7393,7 +7468,7 @@
                     // are gated by the exploration adapter.
                     clearTimers(); clearPlayActivity('exploration-away');
                     if (ui) ui.root.dataset.available = 'true';
-                    visible(true); render();
+                    visible(state.panelOpen); render();
                 } else {
                     clearTimers();
                     clearPlayActivity('cat-form-left');
@@ -7523,7 +7598,8 @@
                 // remains available as the reopen anchor.
                 if (explorationActive(currentExploration())) {
                     if (ui) ui.root.dataset.available = 'true';
-                    if (state.dismissedExplorationId !== explorationId(currentExploration())) visible(true);
+                    if (state.panelOpen &&
+                        state.dismissedExplorationId !== explorationId(currentExploration())) visible(true);
                     render();
                 }
             }

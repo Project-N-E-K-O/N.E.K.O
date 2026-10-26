@@ -109,6 +109,9 @@ function createHarness(fetchImpl, identityValue = { uid: 'local-role-a', name: '
   // avoid keeping the test process alive for its real 30-second interval.
   window.setInterval = () => 0;
   window.clearInterval = () => {};
+  if (storage && storage.panelOpenMode !== undefined) {
+    window.__nekoPetCarePanelOpenMode = storage.panelOpenMode;
+  }
   if (storage && typeof storage.monotonicNow === 'function') {
     window.performance = { now: storage.monotonicNow };
   }
@@ -421,7 +424,7 @@ async function openPanel(h) {
   await new Promise(resolve => setTimeout(resolve, 450));
 }
 
-async function createReadyHarness() {
+async function createReadyHarness(storage = null) {
   const snapshot = stage4Snapshot();
   const h = createHarness(async url => {
     if (url.includes('/api/card-drop/oauth/status')) {
@@ -437,7 +440,7 @@ async function createReadyHarness() {
       return { ok: true, status: 200, json: async () => ({ snapshot }) };
     }
     throw new Error('unexpected request: ' + url);
-  });
+  }, { uid: 'local-role-a', name: '小猫 A' }, '/', storage);
   await waitFor(() => h.window.nekoPetCareEntry.getState().snapshot !== null);
   return h;
 }
@@ -590,6 +593,7 @@ test('unknown account state never claims that the user is logged out', async () 
 
 test('stage 1 only floats beside the visible cat anchor after the hover delay', async () => {
   const h = await createReadyHarness();
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpenMode, 'hover');
   h.window.nekoCatInteractionAnchor = {
     getState: () => ({ visible: true, busy: false,
       rect: { left: 100, top: 100, right: 300, bottom: 300, width: 200, height: 200 } }),
@@ -607,6 +611,134 @@ test('stage 1 only floats beside the visible cat anchor after the hover delay', 
   assert.equal(entry.style.left, '8px');
   assert.equal(entry.style.top, '8px');
   assert.equal(entry.style.transform, 'none');
+});
+
+test('invalid panel mode falls back to the default hover dwell', async () => {
+  const h = await createReadyHarness({ panelOpenMode: 'unsupported-mode' });
+  installVisibleCatAnchor(h);
+  enterCatForm(h);
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpenMode, 'hover');
+  assert.equal(h.window.__nekoPetCarePanelOpenMode, 'hover');
+  h.document.dispatchEvent({
+    type: 'pointermove', clientX: 200, clientY: 200, pointerType: 'mouse',
+  });
+  await waitFor(() => h.window.nekoPetCareEntry.getState().panelOpen === true, 600);
+});
+
+test('manual and shortcut modes reject hover and mismatched open requests', async () => {
+  for (const mode of ['manual', 'shortcut']) {
+    const h = await createReadyHarness({ panelOpenMode: mode });
+    installVisibleCatAnchor(h);
+    enterCatForm(h);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    h.document.dispatchEvent({
+      type: 'pointermove', clientX: 200, clientY: 200, pointerType: 'mouse',
+    });
+    await new Promise(resolve => setTimeout(resolve, 430));
+    assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, false, `${mode} must ignore hover`);
+
+    const mismatch = mode === 'manual' ? 'shortcut' : 'manual';
+    h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-request', {
+      detail: { source: mismatch },
+    }));
+    assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, false,
+      `${mode} must reject ${mismatch}`);
+
+    h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-request', {
+      detail: { source: mode },
+    }));
+    assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, true,
+      `${mode} must accept its matching request`);
+  }
+});
+
+test('an explicit panel request closes after the existing pointer-leave grace', async () => {
+  const h = await createReadyHarness({ panelOpenMode: 'manual' });
+  installVisibleCatAnchor(h);
+  enterCatForm(h);
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-request', {
+    detail: { source: 'manual' },
+  }));
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, true);
+  await waitFor(() => h.window.nekoPetCareEntry.getState().panelOpen === false, 900);
+});
+
+test('changing away from hover cancels only the pending dwell, not an open panel', async () => {
+  const h = await createReadyHarness();
+  installVisibleCatAnchor(h);
+  enterCatForm(h);
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  h.document.dispatchEvent({
+    type: 'pointermove', clientX: 200, clientY: 200, pointerType: 'mouse',
+  });
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-mode', {
+    detail: { mode: 'manual' },
+  }));
+  await new Promise(resolve => setTimeout(resolve, 430));
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, false);
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpenMode, 'manual');
+
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-request', {
+    detail: { source: 'manual' },
+  }));
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, true);
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-mode', {
+    detail: { mode: 'shortcut' },
+  }));
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpenMode, 'shortcut');
+  assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, true);
+});
+
+test('explicit requests after confirmed logout show only the account hint', async () => {
+  let loggedIn = true;
+  const snapshot = stage4Snapshot();
+  const h = createHarness(async url => {
+    if (url.includes('/api/card-drop/oauth/status')) {
+      return { ok: true, status: 200, json: async () => loggedIn
+        ? { logged_in: true, local_user_id: 'account-a' }
+        : { logged_in: false, local_user_id: null } };
+    }
+    if (url.includes('/api/pet-care/pets/')) {
+      return { ok: true, status: 200, json: async () => ({
+        account_id: 'account-a', current_character_uid: 'local-role-a',
+        binding_status: 'bound', pet_id: 'pet-a', bound_role_id: 'server-role-a', snapshot,
+      }) };
+    }
+    if (url.includes('/api/pet-care/tasks')) {
+      return { ok: true, status: 200, json: async () => ({ snapshot }) };
+    }
+    throw new Error('unexpected request: ' + url);
+  }, { uid: 'local-role-a', name: '小猫 A' }, '/', { panelOpenMode: 'manual' });
+  installVisibleCatAnchor(h);
+  enterCatForm(h);
+  await waitFor(() => h.window.nekoPetCareEntry.getState().snapshot !== null);
+
+  loggedIn = false;
+  await h.window.nekoPetCareEntry.refreshAuthStatus('test-confirmed-logout');
+  let state = h.window.nekoPetCareEntry.getState();
+  assert.equal(state.authStatus, 'logged-out');
+  assert.equal(state.snapshot, null);
+  assert.equal(state.panelOpen, false);
+
+  const hint = loginHintOf(h);
+  if (state.loginHintVisible) {
+    hint.children[2].dispatchEvent({ type: 'click', stopPropagation() {} });
+  }
+  assert.equal(h.window.nekoPetCareEntry.getState().loginHintVisible, false);
+  h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-request', {
+    detail: { source: 'manual' },
+  }));
+  state = h.window.nekoPetCareEntry.getState();
+  assert.equal(state.panelOpen, false);
+  assert.equal(state.snapshot, null);
+  assert.equal(state.loginHintVisible, true);
+  assert.equal(entryOf(h).dataset.expanded, 'false');
 });
 
 test('stage 1 opens the single surface after the semantic cat hover delay', async () => {
@@ -791,6 +923,50 @@ test('active exploration can collapse and reopen from the shared nest anchor wit
   assert.equal(h.window.nekoPetCareEntry.getState().exploration.exploration_id, nextActive.exploration_id);
   assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, true);
   assert.equal(businessPostCount(calls), 0);
+});
+
+test('manual and shortcut modes do not auto-open a recovered exploration', async () => {
+  for (const mode of ['manual', 'shortcut']) {
+    const active = {
+      exploration_id: `explore-${mode}-recovery`, status: 'active', active: true,
+      started_at: new Date(Date.now() - 1000).toISOString(),
+      ends_at: new Date(Date.now() + 60000).toISOString(),
+    };
+    const snapshot = stage4Snapshot({ exploration: active });
+    const h = createHarness(async url => {
+      if (url.includes('/api/card-drop/oauth/status')) {
+        return { ok: true, status: 200, json: async () => ({
+          logged_in: true, local_user_id: 'account-a',
+        }) };
+      }
+      if (url.includes('/api/pet-care/pets/')) {
+        return { ok: true, status: 200, json: async () => ({
+          account_id: 'account-a', current_character_uid: 'local-role-a',
+          binding_status: 'bound', pet_id: 'pet-a', bound_role_id: 'server-role-a', snapshot,
+        }) };
+      }
+      if (url.endsWith('/tasks')) {
+        return { ok: true, status: 200, json: async () => ({ snapshot }) };
+      }
+      throw new Error('unexpected request: ' + url);
+    }, { uid: 'local-role-a', name: '小猫 A' }, '/', { panelOpenMode: mode });
+    installVisibleCatAnchor(h);
+    await waitFor(() => h.window.nekoPetCareEntry.getState().snapshot !== null);
+
+    assert.equal(h.window.nekoPetCareEntry.getState().exploration.exploration_id,
+      active.exploration_id);
+    assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, false,
+      `${mode} recovery must stay collapsed`);
+    assert.equal(entryOf(h).dataset.visible, 'false');
+
+    h.window.dispatchEvent(new h.window.CustomEvent('neko:pet-care:panel-open-request', {
+      detail: { source: mode },
+    }));
+    assert.equal(h.window.nekoPetCareEntry.getState().panelOpen, true,
+      `${mode} request must reopen from the nest anchor`);
+    entryOf(h).dispatchEvent({ type: 'mouseenter' });
+    panelOf(h).children[0].dispatchEvent({ type: 'click', stopPropagation() {} });
+  }
 });
 
 test('active exploration details never overlap a selected long-term module', async () => {
