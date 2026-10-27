@@ -19,13 +19,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Everything else under the repo root can end up in a Nuitka bundle.
 _SKIPPED_TOP_LEVEL = frozenset({"tests", "frontend", "node_modules", "build", "dist", "docs"})
+# Local environments and caches at any depth hold third-party code, not ours.
+_SKIPPED_ANY_LEVEL = frozenset({"node_modules", "site-packages", "__pycache__", "venv", "env"})
 
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
 def _own_nodes(statements):
-    """Walk statements without entering nested function or class bodies."""
-    stack = list(statements)
+    """Walk statements without entering nested function or class bodies.
+
+    A nested def's own return never passes through the enclosing finally, so
+    the def is skipped whether it sits directly in the try or deeper.
+    """
+    stack = [node for node in statements if not isinstance(node, _NESTED_SCOPES)]
     while stack:
         node = stack.pop()
         yield node
@@ -44,10 +50,13 @@ def _offending_lines(tree: ast.Module) -> list[int]:
     return lines
 
 
-def _packaged_sources():
-    for path in sorted(REPO_ROOT.rglob("*.py")):
-        top = path.relative_to(REPO_ROOT).parts[0]
-        if top.startswith(".") or top in _SKIPPED_TOP_LEVEL:
+def _packaged_sources(root: Path = REPO_ROOT):
+    for path in sorted(root.rglob("*.py")):
+        parts = path.relative_to(root).parts
+        if parts[0] in _SKIPPED_TOP_LEVEL:
+            continue
+        dirs = parts[:-1]
+        if any(part.startswith(".") or part in _SKIPPED_ANY_LEVEL for part in dirs):
             continue
         yield path
 
@@ -75,6 +84,37 @@ def test_detector_accepts_return_after_finally():
         "    return result\n"
     )
     assert _offending_lines(tree) == []
+
+
+def test_detector_ignores_return_inside_nested_def():
+    tree = ast.parse(
+        "def f():\n"
+        "    try:\n"
+        "        def helper():\n"
+        "            return 1\n"
+        "        class Box:\n"
+        "            def get(self):\n"
+        "                return 2\n"
+        "        register(helper, Box)\n"
+        "    finally:\n"
+        "        while busy():\n"
+        "            tick()\n"
+    )
+    assert _offending_lines(tree) == []
+
+
+def test_packaged_sources_skip_local_environments(tmp_path):
+    kept = ["launcher.py", "main_logic/worker.py", "plugin/plugins/demo/main.py"]
+    dropped = [
+        "venv/Lib/site.py", "env/lib/x.py", ".venv/Lib/y.py",
+        "plugin/plugins/demo/.venv/Lib/z.py", "plugin/vendor/site-packages/pkg/a.py",
+        "utils/__pycache__/b.py", "tests/unit/test_c.py",
+    ]
+    for rel in kept + dropped:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x = 1\n", encoding="utf-8")
+    found = sorted(p.relative_to(tmp_path).as_posix() for p in _packaged_sources(tmp_path))
+    assert found == sorted(kept)
 
 
 def test_repository_has_no_return_through_looping_finally():
