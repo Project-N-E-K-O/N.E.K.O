@@ -548,12 +548,13 @@
       } else if (data.t === 'voice' || data.t === 'remote_audio') {
         var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!voice || !voiceSink) return;
+        // 收尾后迟到的 on:true 一律不处理：不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间），也不再播对端；关的照常处理
+        var ending = state.phase === 'ending' || state.phase === 'ended';
+        var wantOn = data.on === true && !ending;
         if (data.t === 'voice') {
-          // 收尾后迟到的 voice{on:true} 不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间）；关的照常处理
-          var ending = state.phase === 'ending' || state.phase === 'ended';
-          voice.setLocalWanted(data.on === true && !ending, voiceSink);
+          voice.setLocalWanted(wantOn, voiceSink);
         } else {
-          var peerTrack = data.on === true && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
+          var peerTrack = wantOn && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
           voice.setRemoteTrack(peerTrack);
         }
       } else if (data.t === 'geometry') {

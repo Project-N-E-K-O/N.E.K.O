@@ -1244,6 +1244,7 @@ def test_voice_messages_drive_the_tts_tap_and_peer_playback_and_ended_closes_bot
         await settle();
         const atEnding = calls.slice();
         msg({ t: 'voice', on: true });               // a late voice-on queued before ending: must not reopen the tap
+        msg({ t: 'remote_audio', on: true });        // nor may a late remote-audio-on start the peer voice again
         await settle();
         const lateOn = calls.slice(atEnding.length);
         change(h, 'ended');
