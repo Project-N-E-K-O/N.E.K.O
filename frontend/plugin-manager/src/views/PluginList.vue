@@ -37,6 +37,8 @@
       data-yui-guide-id="plugin-list-main"
     >
       <div class="plugin-list-shell" data-yui-guide-id="plugin-list-card-shell">
+        <div class="plugin-list-shell__skin" data-motion="skin" aria-hidden="true" />
+        <div class="plugin-list-shell__edge" data-motion="move" aria-hidden="true" />
         <div class="plugin-list-shell__header">
           <div
             ref="workbenchHeaderRef"
@@ -1541,19 +1543,43 @@ onUnmounted(() => {
 
 /* 列表外壳：原先的 el-card 外观（无边框、无圆角、工作区底色），头部与主体各自分区。 */
 .plugin-list-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  background: var(--surface-workspace);
   color: var(--el-text-color-primary);
+}
+
+/* 外壳的底色画在绝对定位的 skin 上：抽屉开关时 skin 从旧边缘滑到新边缘（transitionLayout 的 skin），
+   外壳本身一步到位。外壳不能裁剪，否则 skin 滑动时会被裁掉。 */
+.plugin-list-shell__skin {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-workspace);
+}
+
+/* 过渡期间在左缘画出边界，跟着抽屉一起移动。它单独做平移，不随 skin 横向缩放，所以始终是 1px。 */
+.plugin-list-shell__edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  visibility: hidden;
+  background: var(--surface-border);
+}
+
+.plugin-workbench[data-motion-running] .plugin-list-shell__edge {
+  visibility: visible;
+}
+
+.plugin-list-shell > :not(.plugin-list-shell__skin, .plugin-list-shell__edge) {
+  position: relative;
 }
 
 /* 头部内边距与 el-card 默认一致；底边不用 border，改由绝对定位的 rule 画在同一位置。 */
 .plugin-list-shell__header {
-  position: relative;
   padding: 18px 20px 19px;
   box-sizing: border-box;
-  background: var(--surface-workspace);
 }
 
 .plugin-list-shell__rule {

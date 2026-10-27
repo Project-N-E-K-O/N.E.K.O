@@ -178,6 +178,23 @@ it('keeps a held leave held when a second transition supersedes its slide-out', 
   expect(done).toHaveBeenCalledOnce()
 })
 
+it('draws a skin from its old box with a translate and scale, counter-scaling its corners', async () => {
+  const scope = scopeOf()
+  const skin = document.createElement('div')
+  skin.dataset.motion = 'skin'
+  scope.append(skin)
+  styles.set(skin, { borderTopLeftRadius: '12px' })
+  place(skin, 400, 20, 400, 100)
+  const { animate } = animatable(skin)
+
+  await transitionLayout(scope, () => { place(skin, 0, 20, 800, 50) })
+
+  expect(animate.mock.calls[0]?.[0]).toEqual([
+    { transformOrigin: '0 0', transform: 'translate(400px, 0px) scale(0.5, 2)', borderRadius: '24px / 6px' },
+    { transformOrigin: '0 0', transform: 'translate(0px, 0px) scale(1, 1)', borderRadius: '12px / 12px' },
+  ])
+})
+
 it('marks the scope while its animations run and clears the mark when they end', async () => {
   const scope = scopeOf()
   const atom = document.createElement('div')

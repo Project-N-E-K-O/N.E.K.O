@@ -78,16 +78,17 @@
         </Transition>
       </Teleport>
 
-      <el-input
-        ref="inputRef"
-        :model-value="filterText"
-        clearable
-        class="wb-filter-bar__input"
-        data-motion="resize"
-        :data-yui-guide-id="guideIds?.input"
-        :placeholder="placeholder"
-        @update:model-value="(v: string) => $emit('update:filterText', v)"
-      />
+      <!-- el-input 不继承属性（inheritAttrs: false），data-motion 落不到可见的输入框上，由外层承担。 -->
+      <div class="wb-filter-bar__input" data-motion="resize">
+        <el-input
+          ref="inputRef"
+          :model-value="filterText"
+          clearable
+          :data-yui-guide-id="guideIds?.input"
+          :placeholder="placeholder"
+          @update:model-value="(v: string) => $emit('update:filterText', v)"
+        />
+      </div>
     </div>
     <!-- 分组筛选与视图切换属于同一个“筛选什么、怎么看”的块，共用这一块底色。 -->
     <div v-if="$slots.footer" class="wb-filter-bar__footer">

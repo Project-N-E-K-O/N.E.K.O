@@ -1,6 +1,6 @@
 import { onBeforeUnmount } from 'vue'
 import {
-  cancelMotion, measurePinBox, motionSuppressed, pinInPlace, playFrames, playMotion, releasePin,
+  cancelMotion, counterScaledRadius, measurePinBox, motionSuppressed, pinInPlace, playFrames, playMotion, releasePin,
   type FrameTiming, type MotionOptions, type PinBox,
 } from './runtime'
 import { motionPolicy } from './policy'
@@ -159,7 +159,7 @@ export function useGridMotionController(options: {
         item: `translate(${box.x - laid.x}px, ${box.y - laid.y}px)`,
         end: `translateX(${box.width - laid.width}px)`,
         bottom: `translateY(${box.height - laid.height}px)`,
-        surface: { transform: `scale(${sx}, ${sy})`, borderRadius: `${radius / sx}px / ${radius / sy}px` },
+        surface: { transform: `scale(${sx}, ${sy})`, borderRadius: counterScaledRadius(radius, sx, sy) },
         content: {
           clipPath: `inset(0 ${laid.width - box.width + border}px ${laid.height - box.height + border}px 0 round ${radius}px)`,
         },

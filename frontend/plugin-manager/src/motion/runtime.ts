@@ -88,6 +88,11 @@ export function motionSuppressed() {
 
 export type FrameTiming = { duration: number; delay?: number; easing: string }
 
+/** Border radius that draws as `radius` on an element scaled by `sx`, `sy`. */
+export function counterScaledRadius(radius: number, sx: number, sy: number) {
+  return `${radius / sx}px / ${radius / sy}px`
+}
+
 /** Preset entrances and exits. A replacement samples only an already-running
  * element, never an entire grid. */
 export function playMotion(element: HTMLElement, options: MotionOptions) {

@@ -1,8 +1,7 @@
 import { motionPolicy } from './policy'
-import { cancelMotion, motionSuppressed, playFrames } from './runtime'
+import { cancelMotion, counterScaledRadius, motionSuppressed, playFrames } from './runtime'
 
 type Box = Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom' | 'width' | 'height'>
-type Rect = Pick<Box, 'left' | 'top' | 'width' | 'height'>
 /** Values read from one element in one pass, copied out of live computed style. */
 type Metrics = {
   box: Box
@@ -267,20 +266,24 @@ function labelFrames(first: Metrics, last: Metrics): Keyframe[] | undefined {
   ]
 }
 
+/** A skin stays laid in its end box and is drawn from its old box by a
+ * translate and scale from its top-left corner, so the compositor runs it
+ * without a layout per frame. Borders and corners scale with it while it moves. */
 function planSkin(element: HTMLElement, drawn: Box, box: Box): Plan[] {
-  const parent = element.offsetParent
-  if (!(parent instanceof HTMLElement)) return []
-  const origin = parent.getBoundingClientRect()
-  const x = origin.left + parent.clientLeft
-  const y = origin.top + parent.clientTop
-  const from = { left: drawn.left - x, top: drawn.top - y, width: drawn.width, height: drawn.height }
-  const to = { left: box.left - x, top: box.top - y, width: box.width, height: box.height }
-  if (near(from.left, to.left) && near(from.top, to.top) && near(from.width, to.width) && near(from.height, to.height)) {
-    return []
-  }
-  return [{ element, frames: [skinFrame(from), skinFrame(to)] }]
-}
-
-function skinFrame({ left, top, width, height }: Rect): Keyframe {
-  return { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` }
+  if (!box.width || !box.height) return []
+  const dx = drawn.left - box.left
+  const dy = drawn.top - box.top
+  const sx = drawn.width / box.width
+  const sy = drawn.height / box.height
+  if (near(dx, 0) && near(dy, 0) && near(drawn.width, box.width) && near(drawn.height, box.height)) return []
+  // Corners keep their drawn radius; animating it costs a repaint, not a layout.
+  const radius = pixels(getComputedStyle(element).borderTopLeftRadius)
+  const corners = (x: number, y: number): Keyframe => (radius ? { borderRadius: counterScaledRadius(radius, x, y) } : {})
+  return [{
+    element,
+    frames: [
+      { transformOrigin: '0 0', transform: `${offset(dx, dy)} scale(${sx}, ${sy})`, ...corners(sx, sy) },
+      { transformOrigin: '0 0', transform: 'translate(0px, 0px) scale(1, 1)', ...corners(1, 1) },
+    ],
+  }]
 }
