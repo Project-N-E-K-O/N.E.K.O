@@ -363,7 +363,17 @@ async def _resolve_saved_oauth_status(
         str(snapshot["access_token"]),
     )
     if lookup.identity is not None:
-        return {"logged_in": True, "snapshot": snapshot, "auth": auth}
+        # Keep only the verified avatar projection for the profile endpoint.
+        # Other consumers still use the same auth/snapshot fields; no user
+        # payload or credentials are added to their public responses.
+        avatar = lookup.identity.user.get("avatar_url")
+        return {
+            "logged_in": True, "snapshot": snapshot, "auth": auth,
+            "verified_profile": {
+                "local_user_id": lookup.identity.local_user_id,
+                "avatar_url": avatar if isinstance(avatar, str) else None,
+            },
+        }
     if lookup.failure != "rejected":
         # Do not erase a usable offline session on network/service failures, but
         # also do not claim that an unvalidated bearer is currently logged in.
@@ -858,19 +868,25 @@ async def oauth_profile_endpoint(request: Request):
                     return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
                 return JSONResponse({"local_user_id": None, "avatar_url": None}, headers=headers)
             base = str(snapshot.get("base_url") or C._social_base_url()).rstrip("/")
-            lookup = await C._lookup_cloud_identity(base, snapshot.get("access_token") or "")
+            profile = status.get("verified_profile")
+            if profile is None:
+                # Token refresh can succeed before a user profile was fetched.
+                lookup = await C._lookup_cloud_identity(base, snapshot.get("access_token") or "")
+                profile = None if lookup.identity is None else {
+                    "local_user_id": lookup.identity.local_user_id,
+                    "avatar_url": lookup.identity.user.get("avatar_url"),
+                }
             current = await asyncio.to_thread(C._desktop_session_snapshot)
-            # An account switch/logout during the cloud request retires this result.
+            # Validation and a fallback lookup can both race a session change.
             if not current or any(current.get(key) != snapshot.get(key) for key in (
                 "local_user_id", "access_token", "base_url", "auth_source",
             )):
                 return JSONResponse({"detail": "session_changed"}, status_code=409, headers=headers)
-            identity = lookup.identity
-            if identity is None or identity.local_user_id != snapshot["local_user_id"]:
+            if profile is None or profile["local_user_id"] != snapshot["local_user_id"]:
                 return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
-            avatar = identity.user.get("avatar_url")
+            avatar = profile["avatar_url"]
             return JSONResponse({
-                "local_user_id": identity.local_user_id,
+                "local_user_id": profile["local_user_id"],
                 "avatar_url": avatar if isinstance(avatar, str) else None,
                 "community_base_url": base,
             }, headers=headers)

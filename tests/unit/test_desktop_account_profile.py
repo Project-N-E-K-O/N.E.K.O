@@ -15,6 +15,7 @@ from main_routers import community_oauth as O
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 USER_ID = "11111111-1111-4111-8111-111111111111"
+REAL_STATUS_RESOLVER = O.resolve_saved_oauth_status
 
 
 @pytest.fixture
@@ -163,3 +164,125 @@ async def test_profile_route_uses_real_source_guards(monkeypatch, peer, origin, 
         response = await client.get("/api/card-drop/oauth/profile", headers={"Origin": origin} if origin else {})
     assert response.status_code == expected
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.fixture
+def validated_profile_state(profile_state, monkeypatch):
+    state, lookup = profile_state
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", REAL_STATUS_RESOLVER)
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: (dict(state), {}))
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(O, "_oauth_status_lock", asyncio.Lock())
+    return state, lookup
+
+
+@pytest.mark.parametrize("avatar", ["/static/avatars/current.webp", None, {"invalid": "type"}])
+async def test_profile_reuses_validated_avatar_without_a_second_cloud_request(validated_profile_state, avatar):
+    _, lookup = validated_profile_state
+    lookup.side_effect = [
+        C._CloudIdentityLookup(C._CloudIdentity(USER_ID, "oauth", {
+            "avatar_url": avatar, "email": "private@example.com", "phone": "private-phone",
+        }), 200),
+        # A second request could fail even though validation already succeeded.
+        C._CloudIdentityLookup(None, 503, "unavailable"),
+    ]
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "local_user_id": USER_ID,
+        "avatar_url": avatar if isinstance(avatar, str) else None,
+        "community_base_url": "https://community.example",
+    }
+    lookup.assert_awaited_once_with("https://community.example", "private-token")
+
+
+@pytest.mark.parametrize("change", ["logout", "switch", "refresh"])
+async def test_reused_profile_still_rejects_a_session_replaced_during_validation(validated_profile_state, change):
+    state, lookup = validated_profile_state
+    started, release = asyncio.Event(), asyncio.Event()
+    result = lookup.return_value
+
+    async def delayed(*_):
+        started.set()
+        await release.wait()
+        return result
+
+    lookup.side_effect = delayed
+    task = asyncio.create_task(O.oauth_profile_endpoint(SimpleNamespace()))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        if change == "logout":
+            state.clear()
+        elif change == "switch":
+            state["local_user_id"] = "other"
+        else:
+            state["access_token"] = "new-token"
+        release.set()
+        response = await asyncio.wait_for(task, 1)
+        assert response.status_code == 409
+        assert b"avatar_url" not in response.body
+        assert lookup.await_count == 1
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*O._oauth_status_tasks.values(), return_exceptions=True)
+
+
+async def test_reused_profile_rejects_a_different_verified_cloud_user(validated_profile_state):
+    _, lookup = validated_profile_state
+    lookup.side_effect = [
+        C._CloudIdentityLookup(C._CloudIdentity("other", "oauth", {"avatar_url": "secret"}), 200),
+        C._CloudIdentityLookup(C._CloudIdentity(USER_ID, "oauth", {"avatar_url": "wrong-retry"}), 200),
+    ]
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == 503
+    assert b"avatar_url" not in response.body
+    assert lookup.await_count == 1
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_refreshed_session_fetches_profile_with_the_new_token(validated_profile_state, monkeypatch, available):
+    state, lookup = validated_profile_state
+    state.update(refresh_token="old-refresh", auth_public_url="https://auth.example", client_id="desktop")
+    refresh = AsyncMock(return_value=("ok", {"access_token": "fresh-token", "refresh_token": "fresh-refresh"}))
+    monkeypatch.setattr(O, "_refresh_oauth_token", refresh)
+
+    def persist(expected, access, refresh_token):
+        assert expected["access_token"] == "private-token"
+        state.update(access_token=access, refresh_token=refresh_token)
+        return True
+
+    monkeypatch.setattr(O, "_persist_refreshed_oauth_tokens", persist)
+    lookup.side_effect = [
+        C._CloudIdentityLookup(None, 401, "rejected"),
+        lookup.return_value if available else C._CloudIdentityLookup(None, 503, "unavailable"),
+    ]
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == (200 if available else 503)
+    assert json.loads(response.body) == (
+        {"local_user_id": USER_ID, "avatar_url": "/static/avatars/me.webp",
+         "community_base_url": "https://community.example"}
+        if available else {"detail": "profile_unavailable"}
+    )
+    assert [call.args for call in lookup.await_args_list] == [
+        ("https://community.example", "private-token"),
+        ("https://community.example", "fresh-token"),
+    ]
+    refresh.assert_awaited_once()
+
+
+async def test_status_endpoints_do_not_publish_the_internal_verified_profile(validated_profile_state, monkeypatch):
+    _, lookup = validated_profile_state
+    monkeypatch.setattr(O, "_account_request_identity", AsyncMock(return_value="remote-instance"))
+    for endpoint in (O.oauth_status_endpoint, C.auth_status_endpoint):
+        response = await endpoint(SimpleNamespace())
+        assert response["logged_in"] is True
+        assert response["user"] == {"display_name": None, "email": None}
+        assert "verified_profile" not in response
+        serialized = json.dumps(response)
+        assert "private-token" not in serialized
+        assert "private@example.com" not in serialized
+        assert "/static/avatars/me.webp" not in serialized
+    assert lookup.await_count == 2
