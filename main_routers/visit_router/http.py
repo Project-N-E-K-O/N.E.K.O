@@ -294,6 +294,7 @@ async def _generate_direct_invite_question(
             logger.warning("visit: direct invite memory unavailable: %s", type(exc).__name__)
     try:
         prompt = build_visit_direct_invite_question_prompt(
+            name=catgirl,
             persona_text=await atruncate_to_tokens(
                 persona_text, _DIRECT_QUESTION_PERSONA_MAX_TOKENS,
             ),

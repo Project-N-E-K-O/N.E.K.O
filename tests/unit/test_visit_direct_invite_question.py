@@ -57,6 +57,7 @@ async def test_direct_question_uses_only_this_pair_last_summary(monkeypatch, tmp
 
     assert memory_used is True
     assert question == "她又叫我去看那盆薄荷啦，要让我去吗？"
+    assert captured["prompt"].startswith("你是小雨。")
     assert "上次一起聊了阳台上的薄荷" in captured["prompt"]
     assert "Community Test" in captured["prompt"]
     assert captured["kwargs"]["model_type"] == "conversation"
@@ -129,3 +130,15 @@ async def test_direct_invite_question_uses_normal_assistant_reply_path(monkeypat
     assert kwargs["speech_correlation_id"] == kwargs["request_id"]
     assert kwargs["metadata"]["mirror"]["kind"] == "visit_direct_invite_question"
     assert kwargs["metadata"]["mirror"]["event"]["memory_enabled"] is False
+
+
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_direct_question_prompt_addresses_the_catgirl_in_second_person(lang):
+    from config.prompts import prompts_visit as pv
+
+    assert "{name}" in pv.VISIT_DIRECT_INVITE_QUESTION_INSTRUCTION[lang]
+    prompt = pv.build_visit_direct_invite_question_prompt(
+        name="小雨", persona_text="", peer_display="", memory_block="", lang=lang,
+    )
+    assert "小雨" in prompt
+    assert "{name}" not in prompt
