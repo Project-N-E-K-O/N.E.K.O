@@ -1027,8 +1027,10 @@ watch(
   max-width: max-content;
 }
 
+/* 不随标题伸缩；窄屏下最多占满一行，按钮组在这个宽度内自行换行，不伸出卡片。 */
 .header-actions {
   flex: none;
+  max-width: 100%;
   margin-left: auto;
 }
 

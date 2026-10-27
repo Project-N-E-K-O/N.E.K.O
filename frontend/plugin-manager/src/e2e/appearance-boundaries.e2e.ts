@@ -447,7 +447,8 @@ appearanceTest('workbench header keeps one action row and collapses labels when 
   await expect(packageToggle.locator('[data-motion-label]')).toBeHidden()
   await expect(packageToggle).toHaveAccessibleName('Package Manager')
   await expect(actions.locator('[data-yui-guide-id="plugin-list-refresh"]')).toHaveAccessibleName('Refresh')
-  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]')).toContainText('Import')
+  // 收起的文字仍在 DOM 里，只是宽度为零；必须查可见性，不能只查文本。
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]').getByText('Import')).toBeVisible()
   expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
 })
 

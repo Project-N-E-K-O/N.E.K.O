@@ -44,6 +44,12 @@ export function holdLeave(element: Element, done: () => void) {
   else queueMicrotask(done)
 }
 
+/** A held panel shown again before its slide-out ended (Vue's leave-cancelled):
+ * it is no longer leaving, so the next plan moves it back instead of out. */
+export function cancelLeave(element: Element) {
+  held.delete(element)
+}
+
 /** Runs `mutate` and animates every atom in `scope` from where it was drawn to its laid place. */
 export async function transitionLayout(scope: HTMLElement, mutate: () => void | Promise<void>) {
   const laidOut = [...hooks].flatMap(hook => hook() ?? [])

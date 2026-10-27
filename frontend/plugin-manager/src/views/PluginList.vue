@@ -15,7 +15,7 @@
       :aria-hidden="!drawers.market.visible"
       :inert="!drawers.market.visible"
     >
-      <Transition :css="false" @leave="holdLeave">
+      <Transition :css="false" @leave="holdLeave" @leave-cancelled="cancelLeave">
         <div
           v-show="drawers.market.visible"
           class="plugin-workbench__rail-inner"
@@ -266,7 +266,8 @@
                 @click="importDialogVisible = true"
               >
                 <el-icon><Upload /></el-icon>
-                <span class="motion-label" data-motion-label>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
+                <!-- 主操作在窄头部也保留文字，不参与收起。 -->
+                <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
               </el-button>
             </div>
 
@@ -355,7 +356,7 @@
       :aria-hidden="!drawers.package.visible"
       :inert="!drawers.package.visible"
     >
-      <Transition :css="false" @leave="holdLeave">
+      <Transition :css="false" @leave="holdLeave" @leave-cancelled="cancelLeave">
         <div
           v-show="drawers.package.visible"
           class="plugin-workbench__rail-inner"
@@ -377,7 +378,7 @@
       :aria-hidden="!drawers.mirror.visible"
       :inert="!drawers.mirror.visible"
     >
-      <Transition :css="false" @leave="holdLeave">
+      <Transition :css="false" @leave="holdLeave" @leave-cancelled="cancelLeave">
         <div
           v-show="drawers.mirror.visible"
           class="plugin-workbench__rail-inner"
@@ -550,7 +551,7 @@ import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useBatchActions } from '@/composables/useBatchActions'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { useCollapsibleLabels } from '@/composables/useCollapsibleLabels'
-import { transitionLayout, holdLeave } from '@/motion/scheduler'
+import { transitionLayout, holdLeave, cancelLeave } from '@/motion/scheduler'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -985,11 +986,15 @@ function toggleMultiSelectMode() {
 const workbenchRef = ref<HTMLElement | null>(null)
 
 const DRAWER_PANELS = { package: PackageManagerPanel, mirror: GithubMirrorSourcePanel, market: MarketPanel } as const
+// 每次请求递增；等加载期间来了新请求，旧请求作废，不能覆盖用户最后的选择。
+let drawerRequest = 0
 
 async function setOpenDrawer(key: DrawerKey | null): Promise<void> {
+  const request = ++drawerRequest
   // 首次打开先等面板模块加载完，否则面板在滑入途中从加载占位换成真实内容。
   // 加载失败不拦截打开：面板自己会显示错误和重试。
   if (key) await Promise.allSettled([DRAWER_PANELS[key].preload()])
+  if (request !== drawerRequest) return
   const apply = async () => {
     for (const other of DRAWER_KEYS) {
       drawers[other].visible = other === key
