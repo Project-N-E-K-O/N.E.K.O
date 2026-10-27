@@ -158,7 +158,8 @@
   }
 
   function invitationExpired(invitation) {
-    return invitation && invitation.expiresAt > 0 && invitation.expiresAt <= Date.now() / 1000;
+    return invitation && invitation.phase === 'invite_ready' &&
+      invitation.expiresAt > 0 && invitation.expiresAt <= Date.now() / 1000;
   }
 
   function saveInvitations() {

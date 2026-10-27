@@ -1063,6 +1063,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             creds,
             display_name=self.lanlan_name,
             invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
             direct=self.direct,
         )
         try:

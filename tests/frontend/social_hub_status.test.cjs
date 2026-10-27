@@ -7,6 +7,7 @@ const vm = require('node:vm');
 function loadHub(options = {}) {
   const listeners = new Map();
   const storage = new Map();
+  const intervals = [];
   const window = {
     addEventListener(name, handler) { listeners.set(name, handler); },
     dispatchEvent() {},
@@ -27,7 +28,7 @@ function loadHub(options = {}) {
       getItem(key) { return storage.get(key) || null; },
       setItem(key, value) { storage.set(key, value); },
     },
-    setInterval() { return 0; },
+    setInterval(callback, delay) { intervals.push({ callback, delay }); return intervals.length; },
     setTimeout(callback) { callback(); return 1; },
     clearTimeout() {},
     requestAnimationFrame(callback) { callback(); },
@@ -37,7 +38,7 @@ function loadHub(options = {}) {
   });
   const source = fs.readFileSync(path.join(__dirname, '../../static/social-hub.js'), 'utf8');
   vm.runInContext(source, context);
-  return { hub: window.nekoSocialHub, listeners };
+  return { hub: window.nekoSocialHub, listeners, intervals };
 }
 
 test('friend invitation follows the visit and clears when it ends', () => {
@@ -56,6 +57,22 @@ test('friend invitation follows the visit and clears when it ends', () => {
     detail: { visitId: 'visit-1', action: 'ended', phase: 'ended' },
   });
   assert.equal(hub._state.invitations.has('friend-1'), false);
+});
+
+test('an active visit remains visible after its invitation deadline', () => {
+  const { hub, intervals } = loadHub({
+    visitChat: {
+      getState() { return { visitId: 'visit-1', phase: 'active' }; },
+    },
+  });
+  hub._state.accountId = 'account-1';
+  hub._state.invitations.set('friend-1', {
+    visitId: 'visit-1', phase: 'active', expiresAt: 1,
+  });
+
+  intervals.find((entry) => entry.delay === 5000).callback();
+
+  assert.equal(hub._state.invitations.get('friend-1').phase, 'active');
 });
 
 test('an incoming direct invitation is delivered to chat while the hub stays closed', async () => {

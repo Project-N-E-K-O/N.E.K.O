@@ -991,6 +991,22 @@ async def test_direct_guest_grant_renews_without_an_invite_code(servers):
 
 
 @pytest.mark.asyncio
+async def test_direct_host_grant_keeps_target_account_when_it_renews(servers):
+    first = await _host(target_user_id=TARGET_USER_ID, direct=True)
+    grant = cr.VisitGrant(
+        first, target_user_id=TARGET_USER_ID, direct=True,
+    )
+
+    await grant.renew()
+
+    body = servers.bodies("/api/visit/credentials")[-1]
+    assert body["role"] == "host"
+    assert body["target_user_id"] == TARGET_USER_ID
+    assert body["direct"] is True
+    assert "invite_code" not in body
+
+
+@pytest.mark.asyncio
 async def test_host_renewal_after_the_invite_was_redeemed_keeps_the_invite(servers):
     first = await _host()
     grant = cr.VisitGrant(first)
