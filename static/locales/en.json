@@ -6408,6 +6408,7 @@
     "checking": "Checking video…",
     "longWarning": "This video is longer than 5 minutes. Preparation may take longer and use more API tokens and speech synthesis. Continue?",
     "cancelled": "Cancelled; no preparation started.",
+    "preparingInBackground": "Stopped waiting. The video keeps preparing in the background and will show up in the library when it's done.",
     "searching": "Looking for relevant popular videos…",
     "noCandidates": "No qualifying video found. Try another topic; the limits remain unchanged.",
     "density": "danmaku/min",

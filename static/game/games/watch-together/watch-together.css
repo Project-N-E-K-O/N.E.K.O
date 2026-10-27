@@ -129,7 +129,8 @@ main.wt:has(#title:empty):not(:has(#automatic-enabled:checked)) .upnext { displa
 .dock { grid-area: dock; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--wt-chrome); border-top: 1px solid #ffffff0d; }
 .rate { display: inline-flex; align-items: center; gap: 6px; color: var(--wt-muted); font-size: 13px; }
 .rate select { min-height: 32px; padding: 4px 8px; }
-.stage:not(:has(#automatic-enabled:checked, #video[controls])) #watch-stop { display: none; }
+/* Stop only hides on an idle empty stage: it stays reachable while a video is found, prepared, loaded or starting. */
+.stage:not(:has(#automatic-enabled:checked, #video[controls], #prep-card:not([hidden]), #title:not(:empty))) #watch-stop { display: none; }
 @media (max-width: 699px) {
   .dock .btn.icon { width: 36px; padding: 0; font-size: 0; }
   .rate > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

@@ -976,8 +976,30 @@ console.log('watch-together scene: presentation hooks, asynchronous confirmation
   await waitFor(()=>typeof release==='function');
   await stopping.elements.get('watch-stop').onclick();
   assert.equal(hooks.preparation.at(-1),null,'stopping hides the preparation card at once');
+  assert.equal(stopping.elements.get('status').textContent,'watchTogether.choose','no stale searching stage is left behind');
   release({video:null});await searching;
   assert.equal(hooks.preparation.at(-1),null,'the stale search never shows its card again');
+}
+{
+  // Stopping after the job started: the job cannot be cancelled and still lands in the library,
+  // so the status says so instead of freezing on its last stage, and clears once the job ends.
+  const hooks=deferredConfirm();
+  const leaving=await fixture(false,false,null,null,hooks.ui);
+  const request=leaving.game.media.request;let finish;
+  leaving.game.media.request=async(action,payload)=>{
+    if(action==='prepare')return {id:'running'};
+    if(action==='preparation')return new Promise(resolve=>{finish=resolve;});
+    return request(action,payload);
+  };
+  leaving.elements.get('url').value='BV1GJ411x7h7';
+  const submitted=leaving.elements.get('prepare').onsubmit({preventDefault(){}});
+  await waitFor(()=>typeof finish==='function');
+  await leaving.elements.get('watch-stop').onclick();
+  assert.equal(leaving.elements.get('status').textContent,'watchTogether.preparingInBackground');
+  assert.equal(leaving.elements.get('prepare-button').disabled,true,'one preparation runs at a time');
+  finish({status:'error',stage_key:'prepareFailed'});await submitted;
+  assert.equal(leaving.elements.get('status').textContent,'watchTogether.choose','the notice clears when the job ends');
+  assert.equal(leaving.elements.get('prepare-button').disabled,false);
 }
 {
   // A failed first page is not an empty library: a retry button replaces the skeleton.

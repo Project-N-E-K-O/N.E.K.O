@@ -37,7 +37,9 @@ audio assets also retain their original names and hashes in a local manifest.
 Listing a library page still probes every referenced video and reaction file, but
 first checks the page's uncached objects in batches of up to 128 per spawn worker;
 objects whose batch failed, or whose own probe raised, are then probed one per
-worker as before. Library rows carry the validated cover, duration, BV ID and the
+worker as before. Rows are checked and validated a chunk at a time (up to 1024
+distinct uncached objects), so a page never outgrows the probe cache before its
+rows are validated. Library rows carry the validated cover, duration, BV ID and the
 number of reactions (never their text); viewing rows carry the video title.
 
 Analysis history and actual viewing history are separate tables. Legacy
@@ -160,7 +162,11 @@ the single prepared next item; missing results and failures retry with exponenti
 backoff capped at 60 seconds. Failed candidates are excluded from subsequent
 searches in this page. Browser autoplay denial stops automatic mode and requires
 a new user gesture. Stop watching cancels automatic transitions, pauses media and
-releases the game route, including when startup is still pending.
+releases the game route, including when startup is still pending. It is shown
+whenever something can be stopped: automatic mode, a manual search or
+preparation, or a selected video. A preparation job that already started
+cannot be cancelled; stopping says it keeps preparing in the background and
+will appear in the library, and that notice clears when the job ends.
 
 The same game route stays active during preparation and automatic transitions,
 so ordinary proactive speech stays behind the SessionManager takeover gate.

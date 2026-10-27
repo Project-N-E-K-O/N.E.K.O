@@ -6408,6 +6408,7 @@
     "checking": "Verificando o vídeo…",
     "longWarning": "Este vídeo dura mais de 5 minutos. A preparação pode demorar mais e consumir mais tokens e síntese de voz. Continuar?",
     "cancelled": "Cancelado; a preparação não começou.",
+    "preparingInBackground": "Você parou de esperar. O vídeo continua sendo preparado em segundo plano e aparecerá na biblioteca quando estiver pronto.",
     "searching": "Procurando vídeos populares relacionados…",
     "noCandidates": "Nenhum vídeo atende aos critérios. Tente outro tema; os limites não serão alterados.",
     "density": "danmaku/min",

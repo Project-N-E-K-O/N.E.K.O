@@ -27,7 +27,8 @@ export async function run(game, character, ui = {}) {
   let progressTimer = null, liveTimer = null, liveFlight = null, intermission = null, heldLines = [], heldEpoch = 0;
   // The media whose automatic-mode intermission has started; until then its end belongs to the intermission.
   let intermissionMedia = null;
-  let nextRow=null, queuedFor=null, preparing=false;
+  // preparingJob: the backend job a manual preparation is polling; it keeps running if the page stops waiting.
+  let nextRow=null, queuedFor=null, preparing=false, preparingJob=null;
   let automaticPending=false;
   const automatic=createAutomatic({
     report:error=>{status(error.message);if(error.name==='NotAllowedError')void stopAutomatic();},
@@ -68,6 +69,8 @@ export async function run(game, character, ui = {}) {
     automatic.stop();automaticPending=false;$('automatic-enabled').checked=false;
     $('automatic-enabled').disabled=true;
     // Like a new selection: a running preparation stops reporting, so its card goes too.
+    // Its stage text would go stale, so say where a started job ends up instead.
+    if(preparing)status(t(preparingJob ? 'preparingInBackground' : 'choose'));
     selectionGeneration++;nextQueue.clear();queuedFor=null;ui.preparation?.(null);
     try {await end();$('video').src=selected?.video || '';$('play').disabled=!selected;}
     finally {$('automatic-enabled').disabled=false;updatePrepareButtons();}
@@ -387,6 +390,7 @@ export async function run(game, character, ui = {}) {
         }
         result = await game.media.request('prepare',{url:info.url,source,lanlan_name:character,confirmed_duration:info.duration,render_language:renderLanguage()});
       }
+      preparingJob=result.id;
       if(selection===selectionGeneration)await end();
       while (!game.disposed) {
         const state = await game.media.request('preparation',{job:result.id});
@@ -421,7 +425,11 @@ export async function run(game, character, ui = {}) {
       }
     } catch(error) {if(selection===selectionGeneration)status(error.message);}
     // One preparation runs at a time (`preparing`), so the card always belongs to this one.
-    finally {preparing=false;updatePrepareButtons();ui.preparation?.(null);}
+    finally {
+      preparing=false;preparingJob=null;updatePrepareButtons();ui.preparation?.(null);
+      // The job left running after a stop has ended and the library is refreshed: the notice is done.
+      if($('status').textContent===t('preparingInBackground'))status(t('choose'));
+    }
   }
   $('prepare').onsubmit = event => {
     event.preventDefault(); return prepareVideo($('url').value);

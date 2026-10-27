@@ -123,6 +123,67 @@ def test_history_prewarms_page_probes_in_one_batch_worker(tmp_path, monkeypatch)
     module._probe_cache.clear()
 
 
+def test_history_prewarms_pages_larger_than_the_cache_in_chunks(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from main_logic.watch_together import library as module, media
+    monkeypatch.setattr(module, '_probe_media', REAL_PROBE_MEDIA)
+    monkeypatch.setattr(module, '_prewarm_probes', REAL_PREWARM_PROBES)
+    # Four jobs of three objects each: the page names 12 objects, the cache holds 8.
+    monkeypatch.setattr(module, '_PROBE_CACHE_SIZE', 8)
+    monkeypatch.setattr(module, '_PREWARM_CHUNK', 6)
+    module._probe_cache.clear()
+    module._prewarm_raised.clear()
+    library = Library(tmp_path / 'data')
+    for index in range(4):
+        job = f'{index + 1:032x}'
+        folder = tmp_path / f'source{index}' / job
+        folder.mkdir(parents=True)
+        for file in ('video.mp4', 'a.wav', 'b.wav'):
+            (folder / file).write_bytes(f'{job}/{file}'.encode())
+        (folder / 'timeline.json').write_text(json.dumps({
+            'status': 'ready', 'video': f'/media/{job}/video.mp4',
+            'events': [{'at': 1, 'duration': 1, 'audio': f'/media/{job}/a.wav'},
+                       {'at': 5, 'duration': 1, 'audio': f'/media/{job}/b.wav'}]}))
+        library.import_sources([folder.parent])
+    run = Mock(side_effect=lambda operation, *args, timeout: [True] * len(args[0]) if operation == 'probe_many' else True)
+    monkeypatch.setattr(media, 'run', run)
+    assert [row['status'] for row in library.history()] == ['ready'] * 4
+    # Each chunk is validated before the next one is prewarmed, so no object costs its own worker.
+    assert [call.args[0] for call in run.call_args_list if call.args[0] != 'probe_many'] == []
+    assert [len(call.args[1]) for call in run.call_args_list] == [6, 6]
+    module._probe_cache.clear()
+
+
+def test_history_chunks_count_only_objects_still_to_probe(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from main_logic.watch_together import library as module, media
+    monkeypatch.setattr(module, '_probe_media', REAL_PROBE_MEDIA)
+    monkeypatch.setattr(module, '_prewarm_probes', REAL_PREWARM_PROBES)
+    monkeypatch.setattr(module, '_PREWARM_CHUNK', 3)
+    module._probe_cache.clear()
+    module._prewarm_raised.clear()
+    library = Library(tmp_path / 'data')
+    library.import_sources([playable_source(tmp_path, 'shared')])
+    # Repaired imports add versions that reuse most objects and add one of their own each.
+    with library.connect() as db:
+        manifest = json.loads(db.execute('SELECT manifest FROM versions').fetchone()[0])
+        versions = []
+        for index in range(3):
+            content = f'repaired-{index}'.encode()
+            digest = hashlib.sha256(content).hexdigest()
+            (library.objects / digest).write_bytes(content)
+            repaired = {**manifest, f'repaired-{index}.wav': {'sha256': digest, 'bytes': len(content)}}
+            versions.append((JOB, f'repair-{index}', 'archive', json.dumps(repaired)))
+        db.executemany('INSERT INTO versions(job,version,source,manifest) VALUES(?,?,?,?)', versions)
+    run = Mock(side_effect=lambda operation, *args, timeout: [True] * len(args[0]) if operation == 'probe_many' else True)
+    monkeypatch.setattr(media, 'run', run)
+    assert [row['status'] for row in library.history()] == ['ready'] * 4
+    # Shared objects count once: 3 shared + 1 own, then the other two own objects together.
+    assert [call.args[0] for call in run.call_args_list] == ['probe_many', 'probe_many']
+    assert [len(call.args[1]) for call in run.call_args_list] == [4, 2]
+    module._probe_cache.clear()
+
+
 def test_failed_batch_falls_back_to_individual_probes(tmp_path, monkeypatch):
     from unittest.mock import Mock
     from main_logic.watch_together import library as module, media

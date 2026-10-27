@@ -32,6 +32,10 @@ _PLAYABLE_ROLES = {'.mp4': 'video', '.webm': 'video',
 # Objects probed per batch worker; a failed batch falls back to one worker per object.
 _PROBE_BATCH = 128
 _PROBE_CACHE_SIZE = 4096
+# Objects prewarmed before their rows are validated. A history page can name more objects
+# than the cache holds (every ready job may carry MAX_REACTION_AUDIO_FILES reaction files),
+# so pages are prewarmed and validated a chunk at a time, well inside the cache.
+_PREWARM_CHUNK = 1024
 
 
 _library_lock = Lock()
@@ -417,22 +421,41 @@ class Library:
                 targets.append((path, stat.st_size, stat.st_mtime_ns, role))
         return targets
 
+    def _prewarmed_rows(self, rows):
+        """Yield rows once their objects are prewarmed, a chunk at a time.
+
+        A chunk gathers rows until their distinct uncached objects would exceed
+        _PREWARM_CHUNK (a single larger row forms its own chunk). Prewarming a whole
+        page up front could evict its first results before those rows are validated,
+        costing one worker per evicted object on top of the batch.
+        """
+        chunk, pending = [], {}
+        for row in rows:
+            try:
+                row_targets = self._probe_targets(json.loads(row["manifest"]))
+            except ValueError:
+                row_targets = []
+            # Versions of one job share objects; only objects still to probe count toward the chunk.
+            fresh = {key: None for key in row_targets if key not in pending and _cached_probe(key) is None}
+            if chunk and len(pending) + len(fresh) > _PREWARM_CHUNK:
+                _prewarm_probes(pending)
+                yield from chunk
+                chunk, pending = [], {}
+            chunk.append(row)
+            pending.update(fresh)
+        if chunk:
+            _prewarm_probes(pending)
+            yield from chunk
+
     def history_page(self, limit=50, offset=0) -> dict:
         limit = max(1, min(100, int(limit)))
         offset = max(0, int(offset))
         with self.connect() as db:
             rows = db.execute("SELECT job, version, manifest FROM versions ORDER BY rowid DESC LIMIT ? OFFSET ?",
                               (limit + 1, offset)).fetchall()
-        targets = []
-        for row in rows[:limit]:
-            try:
-                targets += self._probe_targets(json.loads(row["manifest"]))
-            except ValueError:
-                continue
-        # Validation below still probes each reference; prewarming only makes those probes cache hits.
-        _prewarm_probes(targets)
         result = []
-        for row in rows[:limit]:
+        # Validation below still probes each reference; prewarming only makes those probes cache hits.
+        for row in self._prewarmed_rows(rows[:limit]):
             try:
                 timeline = self.timeline(row["job"], row["version"])
             except (KeyError, ValueError, OSError):
