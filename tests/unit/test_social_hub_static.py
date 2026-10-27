@@ -125,6 +125,8 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     assert "pending.busy = false" in direct_action
     assert "resolvedDirectInvitationIds.has(notificationId)" in present_direct
     assert "!releaseEnabled || !userSwitchOn()" in present_direct
+    assert "if (inVisit())" in present_direct
+    assert "if (visit.visitId === visitId)" in present_direct
     poll_direct = chat[chat.index("async function pollDirectInvitations") : chat.index(
         "async function startJoin"
     )]

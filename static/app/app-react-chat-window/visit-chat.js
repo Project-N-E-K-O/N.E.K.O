@@ -902,9 +902,10 @@
 
     function renderLine(entry) {
         if (!isUiWindow()) return;
-        // 自家猫娘的台词由后端提交到标准 gemini_response 链路；这里仍保留
-        // visit_line 作为房间排序、记忆和对端传输协议，但不再画第二个专用气泡。
-        if (entry.speaker && entry.speaker.self === true && entry.speaker.kind === 'cat') return;
+        // 实时的自家猫娘台词已由后端提交到标准 gemini_response 链路，不再画第二个
+        // 专用气泡。页面重载时普通助手消息不会恢复，必须用 transcript 快照补回历史台词。
+        if (!entry.fromSnapshot && entry.speaker
+                && entry.speaker.self === true && entry.speaker.kind === 'cat') return;
         // 协议偶尔会在上游模型失败时收到空的 delta / final。空内容不是一条可见消息，
         // 不应占出一个只有作者和时间的气泡；带“被打断”提示的空行仍保留提示。
         var visibleText = withoutRepeatedSpeakerPrefix(entry.text, entry.speaker, entry.addressee);
@@ -2167,9 +2168,14 @@
             await markDirectInviteRead(notificationId);
             return true;
         }
-        if (inVisit() && visit.visitId === visitId) {
-            await markDirectInviteRead(notificationId);
-            return true;
+        if (inVisit()) {
+            if (visit.visitId === visitId) {
+                await markDirectInviteRead(notificationId);
+                return true;
+            }
+            // 正在另一场串门（含邀请方等待回应）时保留未读通知。等当前场结束后，
+            // 轮询会再次展示；此时不能打断语音，因为串门栏也没有接受/拒绝按钮。
+            return false;
         }
         var messageId = directInviteMessageId(notificationId);
         if (directInvitationPresenting.has(messageId)) return true;

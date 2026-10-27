@@ -1139,6 +1139,18 @@ const report = {};
       h.lineText('h:p5'), h.lineText('h:p6')];
     report.repeated_speaker_author = h.lineMessage('g:p1').author;
   }
+  // ── 实时自家猫娘走普通助手气泡；重载时则由 transcript 补回，不能丢历史 ──
+  {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: {
+      active: true, visit_id: VID, phase: 'active', side: 'host', enabled: true,
+      transcript: [{ type: 'visit_line', visit_id: VID, line_id: 'h:reload', lp: 4,
+        text: '重载后还在', final: true, truncated: false,
+        speaker: { side: 'host', kind: 'cat', name: '咪咪', self: true } }],
+    } }) };
+    const h = createHarness({ routes });
+    await h.chat.afterBind(h.socket, '咪咪');
+    report.snapshot_own_cat_restored = h.lineText('h:reload');
+  }
   // ── 读快照期间提交、快照里已有这句、实时终稿后到：认领并撤掉本地气泡，不留重复 ──
   {
     let release;
@@ -1682,6 +1694,17 @@ const report = {};
     await h.chat._test.pollDirectInvitations();
     report.direct_invite_delivery_retries = deliveries;
   }
+  // ── 已在另一场串门中：新邀请不打断语音、不发出无法回答的问句，通知保持未读 ──
+  {
+    const h = createHarness();
+    h.chat.applyState({ enabled: true, active: false });
+    h.state('started');
+    const shown = await h.chat._test.presentDirectInvitation({
+      id: 'notif-during-visit', visit_id: VID2, actor_id: 'friend-2', expires_at: 9e9,
+    });
+    report.direct_invite_deferred_during_visit = shown;
+    report.direct_invite_deferred_fetches = h.fetches.length;
+  }
   // ── 同一邀请还在时切换猫娘：轮询必须为新角色重新生成并投递问句 ──
   {
     const questionUrls = [];
@@ -2098,10 +2121,19 @@ def test_repeated_speaker_prefix_is_hidden_but_the_author_remains(report):
     assert report["repeated_speaker_author"] == "小白"
 
 
+def test_reload_restores_own_cat_lines_from_the_visit_snapshot(report):
+    assert report["snapshot_own_cat_restored"] == "重载后还在"
+
+
 def test_live_final_after_snapshot_claims_and_removes_the_local_bubble(report):
     assert report["snapshot_then_live_local"] is False
     assert report["snapshot_then_live_lines"] == 1
     assert report["snapshot_then_live_pending"] == 0
+
+
+def test_direct_invitation_is_deferred_while_another_visit_is_active(report):
+    assert report["direct_invite_deferred_during_visit"] is False
+    assert report["direct_invite_deferred_fetches"] == 0
 
 
 def test_cancel_before_start_leaves_no_ended_message(report):
