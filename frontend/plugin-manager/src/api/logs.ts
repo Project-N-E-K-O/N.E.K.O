@@ -28,7 +28,8 @@ export function getPluginLogStreamUrl(
   pluginId: string,
   query: { lines: number; level?: string; search?: string }
 ): string {
-  const url = new URL(`/ws/logs/${encodeURIComponent(pluginId)}`, API_BASE_URL || window.location.origin)
+  const base = new URL(API_BASE_URL || window.location.origin, window.location.origin)
+  const url = new URL(`/ws/logs/${encodeURIComponent(pluginId)}`, base)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('lines', String(query.lines))
   url.searchParams.set('search_scope', 'all')

@@ -133,11 +133,19 @@ export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
     const id = toValue(pluginId)
     loading.value = !!id
     if (!id) return
-    connect(generation, getPluginLogStreamUrl(id, {
-      lines: lines.value,
-      level: level.value || undefined,
-      search: search.value.trim() || undefined,
-    }))
+    let url: string
+    try {
+      url = getPluginLogStreamUrl(id, {
+        lines: lines.value,
+        level: level.value || undefined,
+        search: search.value.trim() || undefined,
+      })
+    } catch {
+      loading.value = false
+      connectionFailed.value = true
+      return
+    }
+    connect(generation, url)
   }
 
   watch(() => toValue(pluginId), refresh, { immediate: true })

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { useLogSession } from './useLogSession'
 import { get as httpGet } from '@/api/index'
+import * as logApi from '@/api/logs'
 import Logs from '@/views/Logs.vue'
 import type { LogEntry } from '@/types/api'
 
@@ -50,6 +51,20 @@ afterEach(() => {
 })
 
 describe('one log session per viewer', () => {
+  it('keeps the viewer mounted when URL construction fails and allows an explicit retry', () => {
+    vi.spyOn(logApi, 'getPluginLogStreamUrl').mockImplementationOnce(() => {
+      throw new TypeError('Invalid URL')
+    })
+    const { session } = mountSession()
+    expect(ControlledSocket.instances).toHaveLength(0)
+    expect(session.loading.value).toBe(false)
+    expect(session.connectionFailed.value).toBe(true)
+    session.refresh()
+    expect(ControlledSocket.instances).toHaveLength(1)
+    latest().open()
+    expect(session.connectionFailed.value).toBe(false)
+  })
+
   it('requests 500 records through one stream and never overwrites them with an HTTP snapshot', async () => {
     const http = vi.mocked(httpGet)
     const { session, root } = mountSession()
