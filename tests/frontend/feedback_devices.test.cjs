@@ -449,13 +449,14 @@ test('native account notifications refresh immediately and subscription follows 
     s.events.pageshow(); await settle(); assert.equal(subscriptions,2);
 });
 
-test('device management keeps the API-settings anchor and uses the existing account entry without a duplicate card', () => {
+test('settings hide the feedback entry and the internal page has no duplicate account card or disclosure', () => {
     const api = fs.readFileSync(path.join(root, 'templates/api_key_settings.html'), 'utf8');
-    assert.match(api, /href="\/api\/proactive\/feedback\/manage" target="neko-feedback-devices"/);
+    assert.doesNotMatch(api, /href="\/api\/proactive\/feedback\/manage"/);
     const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
     for (const id of ['account-panel','account-status','account-action','account-message']) assert.ok(!template.includes('id="' + id + '"'));
     assert.ok(!template.includes('feedback-account.js'));
     assert.ok(template.includes('feedback-devices.js?'));
+    assert.doesNotMatch(template, /feedback-disclosure|disclosure-open/);
 });
 
 test('management copy has the same complete keys in all eight locales', () => {

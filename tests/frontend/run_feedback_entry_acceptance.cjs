@@ -69,9 +69,9 @@ const server = http.createServer(async (req, res) => {
         if (route === '/api_key') {
             const source = fs.readFileSync(path.join(root, 'templates/api_key_settings.html'), 'utf8');
             const anchor = source.match(/<a\b[^>]*id="feedback-devices-link"[\s\S]*?<\/a>/);
-            assert.ok(anchor, 'real API-settings markup contains the navigation link');
+            assert.equal(anchor, null, 'real API settings must not expose the withdrawn feedback entry');
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            return res.end('<!doctype html><meta charset="utf-8"><title>Fixture settings navigation</title>' + anchor[0]);
+            return res.end('<!doctype html><meta charset="utf-8"><title>Fixture settings navigation</title>' + '<p>Settings</p>');
         }
         if (route === '/api/proactive/feedback/manage' || route === '/untrusted') {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -108,30 +108,19 @@ async function main() {
         assert.equal(await settings.locator('#status').textContent(), beforeCopy.notEnabled);
         await settings.screenshot({ path: path.join(output, 'browser-before.png'), fullPage: true });
         await settings.goto(origin + '/api_key');
-        const popup = settings.waitForEvent('popup');
-        await settings.locator('#feedback-devices-link').click();
-        const page = await popup;
+        assert.equal(await settings.locator('#feedback-devices-link').count(), 0);
+        const page = await context.newPage();
+        await page.goto(origin + '/api/proactive/feedback/manage');
         assert.equal(await page.locator('#account-panel').count(), 0);
         assert.equal(await page.locator('script[src*="feedback-account.js"]').count(), 0);
         await page.locator('#device-controls').waitFor({ state: 'hidden' });
         await page.locator('#coming-soon').waitFor({ state: 'visible' });
         await noOverflow(page);
-        const disclosure = page.locator('#feedback-disclosure');
-        await disclosure.waitFor({ state: 'visible' });
-        await page.waitForFunction(() => document.querySelector('#disclosure-start').dataset.i18n === 'feedbackDevices.disclosureStartAutomatic');
-        assert.equal(await page.locator('#disclosure-start').textContent(), copy.disclosureStartAutomatic);
-        assert.equal(await page.locator('#disclosure-stop').textContent(), copy.disclosureStopAccount);
-        await disclosure.screenshot({ path: path.join(output, 'browser-disclosure-375.png') });
-        await page.keyboard.press('Escape');
-        await disclosure.waitFor({ state: 'hidden' });
-        assert.equal(await page.evaluate(() => document.activeElement.id), 'disclosure-open');
-        await page.locator('#disclosure-open').click();
-        await disclosure.waitFor({ state: 'visible' });
-        await page.locator('#disclosure-close').click();
-        assert.equal(calls.some(c => c.method === 'POST'), false, 'reading and dismissing the explanation never authorizes an upload');
+        assert.equal(await page.locator('dialog, #disclosure-open').count(), 0, 'direct internal page never opens or offers the withdrawn explanation');
+        assert.equal(calls.some(c => c.method === 'POST'), false);
         assert.equal(calls.some(c => c.route === '/api/proactive/feedback/devices'), false);
         await page.screenshot({ path: path.join(output, 'browser-signed-out.png'), fullPage: true });
-        record('browser: actual API-settings anchor reaches management without a duplicate account card; v1 device controls remain hidden');
+        record('browser: settings omit feedback entry; direct internal page has no account card or disclosure and keeps v1 device controls hidden');
         assert.equal(sequence, 0);
         assert.equal(protocol, 1);
         assert.equal(calls.some(c => c.route.includes('/activate')), false);
@@ -162,7 +151,6 @@ async function main() {
         account = null;
         await page.evaluate(() => window.dispatchEvent(new Event('neko:account-changed')));
         await page.waitForFunction(() => document.querySelector('#devices').children.length === 0 && document.querySelector('#device-controls').hidden);
-        await page.locator('#disclosure-open').click();
         for (const locale of ['en','ja','ko','zh-CN','zh-TW','ru','pt','es']) {
             const translations = JSON.parse(fs.readFileSync(path.join(root, 'static/locales', locale + '.json'), 'utf8')).feedbackDevices;
             await page.evaluate(translations => {
@@ -170,19 +158,13 @@ async function main() {
                 for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = window.t(node.dataset.i18n);
                 window.dispatchEvent(new Event('localechange'));
             }, translations);
-            assert.equal(await page.locator('#disclosure-start').textContent(), translations.disclosureStartDevice);
+            assert.equal(await page.locator('dialog, #disclosure-open').count(), 0);
             for (const height of [850, 360]) {
                 await page.setViewportSize({width: 375, height});
                 await noOverflow(page);
-                assert.equal(await page.evaluate(() => {
-                    const modal = document.querySelector('#feedback-disclosure').getBoundingClientRect();
-                    const button = document.querySelector('#disclosure-close').getBoundingClientRect();
-                    return modal.left >= 0 && modal.right <= innerWidth && modal.top >= 0 && modal.bottom <= innerHeight
-                        && button.top >= modal.top && button.bottom <= innerHeight;
-                }), true, locale + ': the explanation and its exit remain inside the viewport');
             }
         }
-        record('browser: explanation translates in eight languages; modal and close button fit narrow and short viewports without granting upload permission');
+        record('browser: eight languages and narrow/short viewports retain no disclosure or upload permission request');
         await context.close();
     } finally { releaseReads(); await browser.close(); }
 
@@ -211,26 +193,13 @@ async function main() {
     try {
         const page = await electronApp.firstWindow();
         await waitDevices(page, 'A');
-        await page.locator('#feedback-disclosure').waitFor({ state: 'visible' });
-        await page.waitForFunction(() => document.querySelector('#disclosure-start').dataset.i18n === 'feedbackDevices.disclosureStartDevice');
-        assert.equal(await page.locator('#disclosure-start').textContent(), copy.disclosureStartDevice);
-        assert.equal(await page.locator('#disclosure-stop').textContent(), copy.disclosureStopDevice);
-        await electronApp.evaluate(async (_electron, file) => {
-            const rect = await global.page.webContents.executeJavaScript(`(() => {
-                const rect = document.querySelector('#feedback-disclosure').getBoundingClientRect();
-                return {x: Math.floor(rect.x), y: Math.floor(rect.y), width: Math.ceil(rect.width), height: Math.ceil(rect.height)};
-            })()`);
-            const image = await global.page.webContents.capturePage(rect);
-            if (image.isEmpty()) throw Error('Feedback explanation did not paint');
-            global.fixtureFs.writeFileSync(file, image.toPNG());
-        }, path.join(output, 'electron-disclosure.png'));
-        await page.locator('#disclosure-close').click();
+        assert.equal(await page.locator('dialog, #disclosure-open').count(), 0);
         const settingsOpened = electronApp.waitForEvent('window');
         assert.equal(await page.locator('#account-panel').count(), 0);
         assert.deepEqual(await page.evaluate(() => window.electronShell.openAccountSettings()), { ok: true });
         const settings = await settingsOpened;
         const settingWindow = await electronApp.evaluate(() => global.controller.getWindow().id);
-        await settings.locator('[data-settings-section="management"]').waitFor();
+        await settings.locator('[data-patch="desktopAccountLogout"]').waitFor();
         await settings.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         results.settingsGeneral = await electronApp.evaluate(async ({ BrowserWindow }, data) => {
             const image = await BrowserWindow.fromId(data.id).webContents.capturePage();
@@ -242,22 +211,13 @@ async function main() {
         assert.equal(await electronApp.evaluate(() => global.controller.getWindow().id), settingWindow);
         assert.equal(sequence, 0, 'native account navigation never starts browser OAuth');
         record('electron: settings account window stays accessible while management omits the duplicate account card');
-        await settings.locator('[data-settings-section="management"]').click();
-        await settings.locator('[data-settings-section="general"]').waitFor();
-        assert.equal(await settings.locator('[data-open-page="feedbackDevices"]').isDisabled(), true);
-        await settings.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        results.settingsManagement = await electronApp.evaluate(async ({ BrowserWindow }, data) => {
-            const image = await BrowserWindow.fromId(data.id).webContents.capturePage();
-            if (image.isEmpty()) throw Error('Settings did not paint');
-            global.fixtureFs.writeFileSync(data.file, image.toPNG());
-            return { bounds: BrowserWindow.fromId(data.id).getBounds(), image: image.getSize() };
-        }, { id: settingWindow, file: path.join(output, 'electron-settings-management.png') });
+        assert.equal(await settings.locator('[data-settings-section="management"], [data-section="management"], [data-open-page="feedbackDevices"]').count(), 0);
+        assert.equal(await settings.getByText('帮助改进推荐', {exact: true}).count(), 0);
+        assert.equal(await settings.locator('[data-patch="desktopAccountLogout"]').count(), 1);
         await electronApp.evaluate(() => { global.fixtureSnapshot.petPrefs = { available: true, loaded: true }; global.settingsChanged(); });
-        await settings.waitForFunction(() => !document.querySelector('[data-open-page="feedbackDevices"]').disabled);
-        record('electron: actual settings renderer explains unavailable pet page and enables navigation after a fresh readiness snapshot');
-        await settings.locator('[data-settings-section="general"]').click();
-        await settings.locator('[data-settings-section="management"]').waitFor();
-        record('electron: actual settings renderer navigates account to management and back');
+        await settings.locator('[data-patch="desktopAccountLogout"]').waitFor();
+        assert.equal(await settings.locator('[data-open-page="feedbackDevices"]').count(), 0, 'pet readiness must not restore the hidden entry');
+        record('electron: ordinary account login/logout remains, feedback entry and management navigation stay absent across readiness refresh');
         await electronApp.evaluate(async (_electron, file) => {
             const image = await global.page.webContents.capturePage();
             if (image.isEmpty()) throw Error('Management did not paint');
