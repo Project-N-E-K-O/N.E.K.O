@@ -4358,3 +4358,40 @@ async def test_voice_stays_off_while_servers_gives_no_audio_gate(tmp_path, monke
         assert guest.rt.media_snapshot()["audio_subscribe"] is False
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_renewal_turning_voice_off_stops_it_for_the_rest_of_the_visit(tmp_path, monkeypatch):
+    # Servers' emergency stop: a renewal with publish.audio false stops both directions now and for good;
+    # a later renewal back to true is ignored (next visit).
+    import dataclasses
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        await wait_for(lambda: [m for m in media("host") if m["audio_publish"]])
+        rt = host.rt
+        renewed_to = {"audio": False}
+
+        async def renew(*, wall_now=None):
+            rt.grant._current = dataclasses.replace(rt.grant.current, audio=renewed_to["audio"])
+            return True
+
+        rt.grant.ensure_fresh = renew
+        before = len(media("host"))
+        await rt._renew_grant()
+        await wait_for(lambda: len(media("host")) > before)
+        assert media("host")[-1]["audio_publish"] is False and media("host")[-1]["audio_subscribe"] is False
+        refresh = [m for m in wire.downlinks["host"] if m.get("type") == "credentials" and m.get("refresh")]
+        assert refresh and refresh[-1]["publish"]["audio"] is False
+        renewed_to["audio"] = True                         # Back on: ignored for this visit.
+        await rt._renew_grant()
+        await settle()
+        assert rt.media_snapshot()["audio_publish"] is False
+        refresh = [m for m in wire.downlinks["host"] if m.get("type") == "credentials" and m.get("refresh")]
+        assert refresh[-1]["publish"]["audio"] is False
+        assert guest.rt.media_snapshot()["audio_publish"] is True   # The other side decides for itself.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

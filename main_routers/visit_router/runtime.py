@@ -777,6 +777,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._memory_off_unsaved = False
         self._state_writing: Optional[asyncio.Future] = None  # State write still running after activation cancellation; finalization awaits completion first.
         self._renew_task: Optional[asyncio.Task] = None
+        self._audio_gate: Optional[bool] = None
+        """Servers' ``publish.audio`` latched for this visit (OD-15 v4): the first issue decides, a renewal can only
+        turn it off (emergency stop, never back on); ``None`` until the first credentials."""
         self._renew_failures = 0
         self._renew_retry_at: Optional[float] = None
         self._exit_task: Optional[asyncio.Task] = None
@@ -1025,8 +1028,31 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def _credentials_message(self, *, refresh: bool) -> dict:
         creds = self.grant.current  # type: ignore[union-attr]
         peer_vid = self.peer.vid if self.peer is not None else None
+        audio = self._voice_gate()
         return build_credentials_message(creds, side=self.side, crop=self.crop, codec=self._codec(),
-                                         peer_vid=peer_vid, refresh=refresh)
+                                         peer_vid=peer_vid, refresh=refresh, audio=audio)
+
+    def _voice_gate(self) -> bool:
+        """Servers' voice gate for this visit, latched (OD-15 v4).
+
+        The first credentials decide. A renewal answering ``publish.audio``
+        anything but true while it was on is Servers' emergency stop: the
+        gate stays off for the rest of the visit and a fresh ``media``
+        snapshot stops sending and playing voice at once. Off to on is
+        ignored (it takes effect next visit).
+        """
+        creds = self.creds
+        if creds is None:
+            return False
+        on = creds.audio is True
+        if self._audio_gate is None:
+            self._audio_gate = on
+        elif self._audio_gate and not on:
+            self._audio_gate = False
+            logger.info("visit %s: Servers turned the voice tracks off", self.visit_id[:6])
+            if self.ready_exchanged:
+                self.spawn(self.send_media(), name="voice-revoked")
+        return bool(self._audio_gate)
 
     async def _obtain_credentials(self) -> bool:
         """Main turn interrupt → Servers credentials → takeover (§3.2.1 steps 4–6)."""
@@ -1441,12 +1467,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         Voice is symmetric (OD-15 v4): both sides publish their own TTS output
         and play the peer's, only after ``ready``, only while
         ``visitVoiceEnabled`` is on and only when the current credentials carry
-        Servers' ``audio`` gate as a literal true (older Servers: no audio at
-        all). With voice off this side neither sends nor plays catgirl audio. A
+        Servers' ``publish.audio`` as a literal true (latched, see
+        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays catgirl audio. A
         TTS fallback keeps the track published but silent.
         """
-        creds = self.creds
-        voice = bool(self.ready_exchanged and self.voice.enabled and creds is not None and creds.audio is True)
+        voice = bool(self.ready_exchanged and self.voice.enabled and self._voice_gate())
         snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
             snap["publish"] = bool(self.ready_exchanged and self.video_ok)

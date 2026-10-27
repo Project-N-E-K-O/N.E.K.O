@@ -111,7 +111,7 @@ class FakeServers:
         self.pubkeys_status = 200
         self.key_window = (int(time.time()) - 86400, int(time.time()) + 30 * 86400)
         self.revoked: list[str] = []
-        self.audio: Any = _OMIT   # OD-15 v4 voice gate in the credentials response; _OMIT = pre-v4 Servers
+        self.publish: Any = _OMIT   # OD-15 v4 voice gate ``publish:{audio}``; _OMIT = pre-v4 Servers
 
     # —— Routes ——
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -193,8 +193,8 @@ class FakeServers:
             "cross_region": False,
             "entitlement": {"tier": "sd600", "free_minutes_left_today": 70, "concurrent_rooms_left": 1},
         }
-        if self.audio is not _OMIT:
-            out["audio"] = self.audio
+        if self.publish is not _OMIT:
+            out["publish"] = self.publish
         if role == "guest":
             out["peer_vid"] = HOST_VID
         else:
@@ -263,18 +263,29 @@ async def _guest(**kw) -> cr.VisitCredentials:
 # ── Voice gate (OD-15 v4, plan A) ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("gate", [_OMIT, False, None, "true", 1, {"on": True}])
-async def test_voice_gate_is_off_unless_servers_sends_literal_true(servers, gate):
-    # Missing (pre-v4 Servers) or anything but a literal true: not an error, just no voice.
-    servers.audio = gate
+@pytest.mark.parametrize("publish", [
+    _OMIT, None, True, "audio", ["audio"], {}, {"audio": False}, {"audio": None}, {"audio": "true"}, {"audio": 1},
+])
+async def test_voice_gate_is_off_unless_publish_audio_is_literally_true(servers, publish):
+    # Missing (pre-v4 Servers), not an object, or ``audio`` anything but a literal true: not an error, just no voice.
+    servers.publish = publish
     assert (await _host()).audio is False
     assert (await _guest()).audio is False
 
 
 async def test_voice_gate_true_is_kept_for_both_sides(servers):
-    servers.audio = True
+    servers.publish = {"audio": True}
     assert (await _host()).audio is True
     assert (await _guest()).audio is True
+
+
+async def test_renewal_carries_the_voice_gate(servers):
+    # Servers' emergency stop rides on renewal: with_renewed_vendor must not keep the old gate.
+    servers.publish = {"audio": True}
+    first = await _host()
+    servers.publish = {"audio": False}
+    renewed = await _host()
+    assert first.with_renewed_vendor(renewed).audio is False
 
 
 # ── Request body and char_tag ──────────────────────────────────────────────────

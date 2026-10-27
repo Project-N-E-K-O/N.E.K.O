@@ -222,6 +222,7 @@
     this.audioRetries = 0;
     this.audioRetryTimer = null;
     this.voiceAnnounced = false;
+    this.audioRevoked = false;   // 续期时 Servers 关了语音闸门：本场之后一律不碰音频
     this.remoteAudio = null;
     this.voice = NVT.voice ? new NVT.voice.VoiceBridge(env.window) : null;
     this.profileRetries = 0;
@@ -300,7 +301,19 @@
       // 续期：只替换本地保存的凭证，不重新入房、不重跑能力门
       if (this.creds && msg.transport === this.creds.transport) {
         this.applyCodecOverride(msg);
+        // 续期把语音闸门关了（Servers 紧急关停）：立刻停发、停播，本场不再恢复；关→开不处理（下一场生效）
+        var wasAllowed = this.audioAllowed();
+        if (!(msg.publish && msg.publish.audio === true)) {
+          if (wasAllowed) this.audioRevoked = true;
+        } else if (!wasAllowed && msg.publish) {
+          msg.publish.audio = false;
+        }
         this.creds = msg;
+        if (wasAllowed && this.audioRevoked) {
+          this.log('warn', 'voice turned off by Servers', 'audio_revoked');
+          this.setAudioPublish(false);
+          this.setAudioSubscribe(false);
+        }
         if (this.adapter) this.adapter.updateCredentials(msg);
       }
       return;
@@ -632,6 +645,7 @@
 
   /** Servers 放开了猫娘语音（凭证 publish.audio 严格为 true，方案 A 闸门）；没放开时两个方向都不碰音频。 */
   P.audioAllowed = function () {
+    if (this.audioRevoked) return false;
     return !!(this.creds && this.creds.publish && this.creds.publish.audio === true);
   };
 

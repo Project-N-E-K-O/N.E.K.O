@@ -3063,3 +3063,37 @@ def test_parent_voice_relay_opens_the_tap_on_demand_and_closes_late_results():
     assert out["lateClosed"] is True
     assert out["handed"] == [None, "tap2", None]
     assert out["calls"] == ["open", "open", ["play", "peer"], "close2", ["stop", "peer"]]
+
+
+def test_renewal_turning_the_voice_gate_off_stops_voice_for_good():
+    # Servers' emergency stop arrives on a renewal: stop sending and playing now; back on later is ignored.
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest', VOICE_ON);
+        h.ctx.NekoVisitTransport.controller = h.c;
+        const media = { type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: true };
+        h.ws.serverSend(media);
+        await settle();
+        h.c.onLocalVoice(new FakeMediaStream([{ id: 'parent-tap', kind: 'audio' }]));
+        h.trtc.emit('REMOTE_AUDIO_AVAILABLE', { userId: 'h_peer' });
+        await settle();
+        const before = kinds(h.log).filter((k) => /Audio/.test(k));
+        h.ws.serverSend(credsFor('guest', { refresh: true, publish: { codec: 'h264', bitrate_kbps: 528, audio: false, audio_kbps: 32, fps: 30 } }));
+        await settle();
+        const stopped = { kinds: kinds(h.log).filter((k) => /Audio/.test(k)).slice(before.length), media: Object.assign({}, h.c.media) };
+        h.ws.serverSend(credsFor('guest', { refresh: true, publish: { codec: 'h264', bitrate_kbps: 528, audio: true, audio_kbps: 32, fps: 30 } }));
+        h.ws.serverSend(media);                       // a stale snapshot still saying on
+        await settle();
+        return {
+          before, stopped, after: kinds(h.log).filter((k) => /Audio/.test(k)).length,
+          voice: h.posted.filter((m) => m.t === 'voice').map((m) => m.on),
+          remote: h.posted.filter((m) => m.t === 'remote_audio').map((m) => m.on),
+        };
+        """
+    )
+    assert out["before"] == ["startLocalAudio", "muteRemoteAudio", "setRemoteAudioVolume"]
+    assert out["stopped"]["kinds"] == ["stopLocalAudio", "muteRemoteAudio"]
+    assert out["stopped"]["media"]["audioPublish"] is False and out["stopped"]["media"]["audioSubscribe"] is False
+    assert out["after"] == 5                          # Nothing more after the gate went off.
+    assert out["voice"] == [True, False]
+    assert out["remote"] == [True, False]

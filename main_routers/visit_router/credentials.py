@@ -652,7 +652,7 @@ class VisitCredentials:
     invite_expires_at: Optional[float] = None
     cross_region: bool = False
     audio: bool = False
-    """Servers allows the catgirl voice tracks (OD-15 v4); only a literal ``true`` turns them on."""
+    """Servers' ``publish.audio`` (OD-15 v4): only a literal ``true`` allows the catgirl voice tracks."""
     entitlement: Optional[Mapping[str, Any]] = None
     account: str = ""
     """Community ``local_user_id`` that fetched these credentials (owns the room side)."""
@@ -666,12 +666,14 @@ class VisitCredentials:
         return (time.time() if wall_now is None else wall_now) > self.expires_at
 
     def with_renewed_vendor(self, renewed: "VisitCredentials") -> "VisitCredentials":
-        """Take the vendor grant of ``renewed``; keep the identity ticket and invite fields.
+        """Take the vendor grant and the voice gate of ``renewed``; keep the identity ticket and invite fields.
 
         The ticket is replayed as is on reconnects (same ``jti``), so a
-        renewal only swaps what the iframe needs to re-enter the room.
+        renewal only swaps what the iframe needs to re-enter the room. The
+        voice gate travels with the grant so Servers can turn voice off mid
+        visit; the runtime latches it (only on -> off takes effect).
         """
-        return replace(self, vendor=renewed.vendor, vendor_expires_at=renewed.vendor_expires_at)
+        return replace(self, vendor=renewed.vendor, vendor_expires_at=renewed.vendor_expires_at, audio=renewed.audio)
 
 
 class _BadResponse(ValueError):
@@ -844,8 +846,10 @@ def _parse_credentials(
 
     cross_region = payload.get("cross_region", False)
     _need(isinstance(cross_region, bool), "cross_region")
-    # Voice gate (OD-15 v4): Servers older than v4 omit it, and anything but a literal true keeps the visit silent.
-    audio = payload.get("audio") is True
+    # Voice gate (OD-15 v4): ``publish.audio``; older Servers omit it, and a non-mapping ``publish`` or anything but a
+    # literal true keeps the visit silent (never a malformed response).
+    publish = payload.get("publish")
+    audio = isinstance(publish, Mapping) and publish.get("audio") is True
     entitlement = payload.get("entitlement")
     if entitlement is not None:
         _need(isinstance(entitlement, Mapping) and len(entitlement) <= _ENTITLEMENT_MAX_KEYS, "entitlement")
