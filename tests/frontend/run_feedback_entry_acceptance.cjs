@@ -246,13 +246,21 @@ async function main() {
         assert.equal(await electronApp.evaluate(() => global.controller.getWindow().id), settingWindow);
         assert.equal(sequence, 0, 'native account navigation never starts browser OAuth');
         record('electron: settings account window stays accessible while management omits the duplicate account card');
-        assert.equal(await settings.locator('[data-settings-section="management"], [data-section="management"], [data-open-page="feedbackDevices"]').count(), 0);
+        assert.equal(await settings.locator('[data-settings-section="management"], [data-open-page="feedbackDevices"]').count(), 0);
+        assert.equal(await settings.locator('[data-section="management"]').count(), 1, 'ordinary management section remains available');
         assert.equal(await settings.getByText('帮助改进推荐', {exact: true}).count(), 0);
         assert.equal(await settings.locator('[data-patch="desktopAccountLogout"]').count(), 1);
+        await settings.locator('[data-section="management"]').click();
+        await settings.locator('[data-settings-section="general"]').waitFor();
+        assert.equal(await settings.locator('[data-open-page="feedbackDevices"]').count(), 0);
+        assert.equal(await settings.getByText('推荐记录上传设备', {exact: true}).count(), 0);
+        assert.equal(await settings.getByText('推荐记录上传使用常规设置中的 N.E.K.O 账号。', {exact: false}).count(), 0);
+        await settings.locator('[data-settings-section="general"]').click();
+        await settings.locator('[data-patch="desktopAccountLogout"]').waitFor();
         await electronApp.evaluate(() => { global.fixtureSnapshot.petPrefs = { available: true, loaded: true }; global.settingsChanged(); });
         await settings.locator('[data-patch="desktopAccountLogout"]').waitFor();
         assert.equal(await settings.locator('[data-open-page="feedbackDevices"]').count(), 0, 'pet readiness must not restore the hidden entry');
-        record('electron: ordinary account login/logout remains, feedback entry and management navigation stay absent across readiness refresh');
+        record('electron: only the three feedback UI positions are hidden; account login and ordinary management navigation survive readiness refresh');
         await electronApp.evaluate(async (_electron, file) => {
             const image = await global.page.webContents.capturePage();
             if (image.isEmpty()) throw Error('Management did not paint');
