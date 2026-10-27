@@ -1366,7 +1366,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             self._personalization_error_code = ''
         return (await self.filter_playable_tracks(combined))[:bounded_limit]
 
-    async def filter_playable_tracks(self, tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def filter_playable_tracks(self, tracks: List[Dict[str, Any]], *, allow_unverified=False) -> List[Dict[str, Any]]:
         """Authorize a bounded batch at the playback route's bitrate, excluding trials."""
         candidates = []
         seen_ids = set()
@@ -1390,10 +1390,14 @@ class NeteaseCrawler(BaseMusicCrawler):
         if not candidates:
             return []
 
+        # An unavailable authorization service does not erase public search
+        # metadata. Recommendations always leave this fallback disabled.
+        unverified = [{key: value for key, value in track.items() if key != '_audio_url'}
+                      for _, track in candidates] if allow_unverified else []
         cookies = dict(self._cookies)
         cookie_mtime = self._cookie_file_mtime
         if await asyncio.to_thread(self._get_cookie_file_mtime) != cookie_mtime:
-            return []
+            return unverified
         try:
             response = await asyncio.wait_for(
                 self.client.post(
@@ -1408,7 +1412,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict) or payload.get('code') != 200 or not isinstance(payload.get('data'), list):
-                return []
+                return unverified
             playable_urls = {}
             for item in payload['data']:
                 if not isinstance(item, dict) or item.get('code') != 200:
@@ -1427,13 +1431,13 @@ class NeteaseCrawler(BaseMusicCrawler):
                 playable_urls[song_id] = str(item['url'])
             current_mtime = await asyncio.to_thread(self._get_cookie_file_mtime)
             if self._cookies != cookies or self._cookie_file_mtime != cookie_mtime or current_mtime != cookie_mtime:
-                return []
+                return unverified
             return [{**track, '_audio_url': playable_urls[song_id]} for song_id, track in candidates if song_id in playable_urls]
         except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
             logger.debug('[%s] 音源授权检查失败，跳过本批候选', self.platform_name)
-            return []
+            return unverified
 
-    async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
+    async def search(self, keyword: str, limit: int = 1, *, allow_unverified=False) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
         if not keyword:
             logger.debug(f"[{self.platform_name}] 因关键词为空而跳过")
@@ -1541,6 +1545,8 @@ class NeteaseCrawler(BaseMusicCrawler):
                     cover=cover_url,
                     duration_seconds=duration_seconds,
                 ))
+            if allow_unverified:
+                return (await self.filter_playable_tracks(final_results, allow_unverified=True))[:limit]
             return (await self.filter_playable_tracks(final_results))[:limit]
 
         except httpx.TimeoutException:
@@ -2574,7 +2580,7 @@ async def fetch_music_content(
         # 2. Mandarin/pop routing: Chinese-language singers or keywords.
         elif is_chinese_query:
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
-            primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            primary_tasks.append(all_crawlers['netease'].search(keyword, limit, allow_unverified=not verify_audio))
             netease_used = True
 
         # 3. Indie/electronic/lofi routing.
@@ -2588,7 +2594,7 @@ async def fetch_music_content(
         # 4. Default fallback: regional preferences.
         else:
             if china:
-                primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+                primary_tasks.append(all_crawlers['netease'].search(keyword, limit, allow_unverified=not verify_audio))
                 netease_used = True
             else:
                 # Default first choice outside Chinese regions.
@@ -2720,7 +2726,7 @@ async def fetch_music_content(
             if source == 'musopen':
                 tasks.append(all_crawlers['musopen'].search(limit=limit))
             elif source == 'netease':
-                tasks.append(all_crawlers['netease'].search(kw, limit))
+                tasks.append(all_crawlers['netease'].search(kw, limit, allow_unverified=not verify_audio))
                 netease_used = True
             else:
                 tasks.append(all_crawlers[source].search(kw, limit))

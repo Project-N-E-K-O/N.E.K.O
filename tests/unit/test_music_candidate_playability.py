@@ -650,3 +650,111 @@ async def test_proactive_queue_deferral_retains_metadata_and_recovers_without_re
     result = await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='queued')
     assert result['data'] == [row]
     providers['netease'].search.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['timeout', 'http', 'code'])
+async def test_public_search_preserves_metadata_on_unknown_authorization_but_recommendations_do_not(crawler, providers, failure):
+    providers['netease'] = crawler
+    def handler(request):
+        if request.url.path == '/api/search/get/web':
+            return httpx.Response(200, json={'code': 200, 'result': {'songs': [song(1)]}})
+        if failure == 'timeout':
+            raise httpx.ReadTimeout('authorization temporarily unavailable', request=request)
+        if failure == 'http':
+            return httpx.Response(503)
+        return httpx.Response(200, json={'code': 503})
+    transport(crawler, handler)
+    result = await music.fetch_music_content('pop', bypass_recommendation_dedupe=True)
+    assert result['success'] and result['data'][0]['url'] == track(1)['url']
+    assert '_audio_url' not in result['data'][0]
+    strict = await music.fetch_music_content('pop', personalized=True, verify_audio=True)
+    assert not strict['success'] and not strict['data']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('temporary_auth_failure', [False, True])
+async def test_expired_cached_netease_token_is_renewed_without_repeating_search(crawler, monkeypatch, temporary_auth_failure):
+    from main_logic import music_requests
+    from main_logic.proactive_chat import music_pool as pool
+    from utils import music_audio as audio
+    clock = [1000.0]
+    monkeypatch.setattr(pool, '_pools', pool.OrderedDict())
+    monkeypatch.setattr(pool, '_pool_lock', asyncio.Lock())
+    monkeypatch.setattr(pool, '_owner', AsyncMock(return_value='same-account'))
+    monkeypatch.setattr(pool, '_should_skip_source', lambda key: False)
+    monkeypatch.setattr(pool, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(audio, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_unavailable_hosts', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_probe_slots', asyncio.Semaphore(3))
+    monkeypatch.setattr(music_requests, '_recent_music_queries', {})
+    monkeypatch.setattr(music, 'get_music_crawlers', lambda: {'netease': crawler})
+    old_url, new_url = 'https://m7.music.126.net/expired.mp3', 'https://m7.music.126.net/refreshed.mp3'
+    authorization_calls = []
+    def authorize(request):
+        authorization_calls.append(request)
+        if temporary_auth_failure and len(authorization_calls) == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, json={'code': 200, 'data': [authorized(1, url=new_url)]})
+    transport(crawler, authorize)
+    real_client = httpx.AsyncClient
+    def audio_response(request):
+        if str(request.url) == old_url and clock[0] > 1000:
+            return httpx.Response(403)
+        return httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=b'ID3' + b'\0' * 300)
+    monkeypatch.setattr(audio.httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(audio_response), **kwargs))
+    row = {**track(1), '_audio_url': old_url}
+    fetch = AsyncMock(return_value={'success': True, 'data': [row]})
+    request = music_requests.MusicRequest()
+    assert await pool.fetch_candidates('token', request, fetch)
+    clock[0] += 301
+    result = await pool.fetch_candidates('token', request, fetch)
+    if temporary_auth_failure:
+        assert result is None
+        assert next(iter(pool._pools.values()))[1]['data'] == [row]
+        assert await pool.fetch_candidates('token', request, fetch) is None
+        assert len(authorization_calls) == 1
+        clock[0] += 61
+        result = await pool.fetch_candidates('token', request, fetch)
+    assert result and result['data'][0]['_audio_url'] == new_url
+    fetch.assert_awaited_once()
+    assert len(authorization_calls) == (2 if temporary_auth_failure else 1)
+
+
+@pytest.mark.asyncio
+async def test_public_search_still_excludes_explicitly_denied_authorization(crawler, providers):
+    providers['netease'] = crawler
+    def handler(request):
+        if request.url.path == '/api/search/get/web':
+            return httpx.Response(200, json={'code': 200, 'result': {'songs': [song(1)]}})
+        return httpx.Response(200, json={'code': 200, 'data': [authorized(1, code=403, url=None)]})
+    transport(crawler, handler)
+    result = await music.fetch_music_content('pop', bypass_recommendation_dedupe=True)
+    assert not result['success'] and not result['data']
+
+
+@pytest.mark.asyncio
+async def test_cached_playback_failure_does_not_trigger_token_renewal(crawler, monkeypatch):
+    from main_logic import music_requests
+    from main_logic.proactive_chat import music_pool as pool
+    from utils import music_audio as audio
+    monkeypatch.setattr(pool, '_pools', pool.OrderedDict())
+    monkeypatch.setattr(pool, '_pool_lock', asyncio.Lock())
+    monkeypatch.setattr(pool, '_owner', AsyncMock(return_value='same-account'))
+    monkeypatch.setattr(pool, '_should_skip_source', lambda key: False)
+    monkeypatch.setattr(music_requests, '_recent_music_queries', {})
+    monkeypatch.setattr(music, 'get_music_crawlers', lambda: {'netease': crawler})
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_unavailable_hosts', audio.OrderedDict())
+    monkeypatch.setattr(audio, 'probe_audio_url', AsyncMock(return_value=True))
+    authorization = AsyncMock(side_effect=AssertionError('confirmed playback failure must back off'))
+    monkeypatch.setattr(crawler, 'filter_playable_tracks', authorization)
+    row = {**track(1), '_audio_url': 'https://m7.music.126.net/blocked.mp3'}
+    fetch = AsyncMock(return_value={'success': True, 'data': [row]})
+    request = music_requests.MusicRequest()
+    assert await pool.fetch_candidates('blocked', request, fetch)
+    audio.mark_audio_unavailable(row['_audio_url'], candidate_url=row['url'])
+    assert await pool.fetch_candidates('blocked', request, fetch) is None
+    authorization.assert_not_awaited()
+    fetch.assert_awaited_once()

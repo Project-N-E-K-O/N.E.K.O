@@ -147,7 +147,7 @@ def _is_allowed_music_url(url: str) -> bool:
     return is_allowed_audio_url(url)
 
 
-async def _probe_audio_url(url: str) -> bool:
+async def _probe_audio_url(url: str) -> bool | None:
     """Verify that a fallback URL resolves to an allowed, playable audio response."""
     return await probe_audio_url(url, referer='https://music.163.com/')
 
@@ -466,9 +466,12 @@ async def play_netease_music(song_id: str):
 
     if not _ensure_pyncm():
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
-        if await _probe_audio_url(fallback_url):
+        probed = await _probe_audio_url(fallback_url)
+        if probed:
             logger.warning("[音乐播放] pyncm_async 不可用，使用已验证的公开外链")
             return _netease_proxy_redirect(fallback_url, song_id_int)
+        if probed is None:
+            return JSONResponse(content={"success": False, "error": "AUDIO_CHECK_BUSY"}, status_code=503)
         mark_audio_unavailable(fallback_url, candidate_url=f'/api/music/play/netease/{song_id_int}')
         return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)
 
@@ -498,9 +501,12 @@ async def play_netease_music(song_id: str):
 
     # Fallback: if parsing fails or cookies are absent, use login-free outer/url external links
     fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
-    if await _probe_audio_url(fallback_url):
+    probed = await _probe_audio_url(fallback_url)
+    if probed:
         logger.warning(f"[音乐播放] 无法获取歌曲 {song_id_int} 的真实链接，使用已验证的公开外链")
         return _netease_proxy_redirect(fallback_url, song_id_int)
+    if probed is None:
+        return JSONResponse(content={"success": False, "error": "AUDIO_CHECK_BUSY"}, status_code=503)
     mark_audio_unavailable(fallback_url, candidate_url=f'/api/music/play/netease/{song_id_int}')
     logger.warning(f"[音乐播放] 歌曲 {song_id_int} 没有可用音源")
     return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)

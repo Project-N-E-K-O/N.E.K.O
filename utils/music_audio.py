@@ -90,7 +90,7 @@ def is_allowed_audio_url(url):
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or '').lower()
-        return parsed.scheme == 'https' and not parsed.username and not parsed.password and any(
+        return parsed.scheme == 'https' and parsed.port in (None, 443) and not parsed.username and not parsed.password and any(
             host == domain or host.endswith('.' + domain) for domain in MUSIC_SOURCE_DOMAINS
         )
     except ValueError:

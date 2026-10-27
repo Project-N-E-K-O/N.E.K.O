@@ -587,6 +587,23 @@ async def test_public_search_strips_internal_audio_url_without_mutating_candidat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('pyncm_available', [False, True])
+async def test_fallback_probe_queue_pressure_does_not_mark_song_unavailable(monkeypatch, pyncm_available):
+    from unittest.mock import AsyncMock
+    from utils import music_audio as audio
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(music_router, '_ensure_pyncm', lambda: pyncm_available)
+    monkeypatch.setattr(music_router, 'pyncm_async', SimpleNamespace(GetCurrentSession=lambda: SimpleNamespace(cookies=CookieRecorder())))
+    monkeypatch.setattr(music_router, 'load_cookies_from_file', lambda platform: {})
+    monkeypatch.setattr(music_router, 'GetTrackAudio', AsyncMock(return_value={'data': [{'url': None}]}))
+    monkeypatch.setattr(music_router, '_probe_audio_url', AsyncMock(return_value=None))
+    response = await music_router.play_netease_music('123')
+    assert response.status_code == 503
+    assert not audio._availability
+    assert not audio._unavailable_hosts
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['denied', 'connect', 'success'])
 async def test_netease_playback_failure_invalidates_checked_song_and_only_its_owner(monkeypatch, failure):
     import asyncio

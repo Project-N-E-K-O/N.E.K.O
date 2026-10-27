@@ -303,3 +303,15 @@ async def test_refreshed_netease_playback_failure_wins_over_late_old_token_probe
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('port', ['444', '0', '65536', 'invalid'])
+async def test_nonstandard_port_cannot_poison_default_https_host(monkeypatch, port):
+    invalid = f'https://freemusicarchive.org:{port}/failed.mp3'
+    assert not audio.is_allowed_audio_url(invalid)
+    audio.mark_audio_unavailable(invalid, connection_failure=True)
+    assert not audio._unavailable_hosts
+    transport(monkeypatch, lambda request: httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=MP3))
+    assert await audio.probe_audio_url(URL)
+    assert audio.is_allowed_audio_url('https://freemusicarchive.org:443/audio.mp3')

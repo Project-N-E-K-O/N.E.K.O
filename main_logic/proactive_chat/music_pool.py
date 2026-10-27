@@ -1,4 +1,4 @@
-"""Reuse proactive music metadata without retaining short-lived playback tokens."""
+"""Reuse proactive candidates, renewing short-lived audio URLs when needed."""
 
 import asyncio
 from collections import OrderedDict
@@ -11,7 +11,7 @@ import time
 from main_logic.music_requests import mark_music_request_query, was_music_request_recent
 from utils import music_crawlers
 from utils.logger_config import get_module_logger
-from utils.music_audio import filter_playable_candidates
+from utils.music_audio import _playback_failed_recently, filter_playable_candidates
 
 from .decisions import _should_skip_source
 from .state import _source_hash
@@ -49,7 +49,7 @@ def _available(result):
     return {**deepcopy(result), 'data': deepcopy(available[:5])} if available else None
 
 
-async def _verified(result, payload, owner):
+async def _verified(result, payload, owner, *, renew=False):
     # Try at most two small batches, so a broken leading source can yield to
     # another cached candidate without starting a fresh provider search.
     deferred = set()
@@ -60,7 +60,33 @@ async def _verified(result, payload, owner):
         valid = await filter_playable_candidates(tracks, deferred_urls=deferred)
         if await _owner() != owner:
             return None
-        failed = {track.get('url') for track in tracks if track not in valid and track.get('url') not in deferred}
+        expired = [track for track in tracks if track not in valid and track.get('_audio_url')
+                   and str(track.get('url', '')).startswith('/api/music/play/netease/')
+                   and not _playback_failed_recently(track['url'])
+                   and track.get('url') not in deferred] if renew else []
+        if expired:
+            if payload.get('_authorization_retry_after', 0) > time.monotonic():
+                deferred.update(track['url'] for track in expired)
+            else:
+                crawler = await asyncio.to_thread(lambda: music_crawlers.get_music_crawlers()['netease'])
+                if await _owner() != owner:
+                    return None
+                refreshed = await crawler.filter_playable_tracks(expired)
+                if await _owner() != owner:
+                    return None
+                if not refreshed:
+                    # A renewal outage must not delete reusable song metadata or
+                    # hit authorization again every proactive round.
+                    payload['_authorization_retry_after'] = time.monotonic() + FAILURE_TTL_SECONDS
+                    deferred.update(track['url'] for track in expired)
+                else:
+                    renewed = {track['url']: track for track in refreshed}
+                    payload['data'] = [renewed.get(track.get('url'), track) for track in payload['data']]
+                    valid.extend(await filter_playable_candidates(refreshed, deferred_urls=deferred))
+                    if await _owner() != owner:
+                        return None
+        valid_urls = {track.get('url') for track in valid}
+        failed = {track.get('url') for track in tracks if track.get('url') not in valid_urls and track.get('url') not in deferred}
         payload['data'] = [track for track in payload.get('data', []) if track.get('url') not in failed]
         result['data'] = valid
         if valid:
@@ -84,7 +110,7 @@ async def fetch_candidates(scope, request, fetch):
             if cached:
                 _pools.move_to_end(key)
                 available = _available(cached[1])
-                result = await _verified(available, cached[1], owner)
+                result = await _verified(available, cached[1], owner, renew=True)
                 if await _owner() != owner:
                     return None
                 if result or not cached[1].get('success') or (available and cached[1].get('data')):
