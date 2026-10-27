@@ -2244,12 +2244,22 @@
         try {
             var result = await api('GET', '/api/community/visit-hub');
             var incoming = result.status === 200 && result.body && result.body.incoming_invite;
-            if (!incoming || !incoming.visit_id || !incoming.id) {
-                if (result.status === 200 && pendingDirectInvitation) {
-                    var payload = pendingDirectInvitation.payload || {};
-                    await markDirectInviteRead(String(payload.notification_id || ''));
-                    clearPendingDirectInvitation(payload, false);
+            var notificationIds = result.status === 200 && result.body
+                && Array.isArray(result.body.incoming_invite_ids)
+                ? result.body.incoming_invite_ids.map(String) : [];
+            if (pendingDirectInvitation) {
+                var pendingPayload = pendingDirectInvitation.payload || {};
+                var pendingNotificationId = String(pendingPayload.notification_id || '');
+                if (pendingNotificationId && notificationIds.indexOf(pendingNotificationId) !== -1) {
+                    return true;
                 }
+                if (result.status === 200 && result.body && result.body.notifications_ok === true) {
+                    clearPendingDirectInvitation(pendingPayload, false);
+                } else {
+                    return false;
+                }
+            }
+            if (!incoming || !incoming.visit_id || !incoming.id) {
                 return false;
             }
             return await presentDirectInvitation(incoming);

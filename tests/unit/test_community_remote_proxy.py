@@ -238,6 +238,79 @@ def test_visit_hub_reads_mutual_friends_after_the_first_page(proxy, monkeypatch)
     assert [friend["id"] for friend in response.json()["friends"]] == [later_id]
 
 
+def test_visit_hub_does_not_claim_notifications_are_authoritative_on_failure(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/notifications":
+            return httpx.Response(503, json={"detail": "unavailable"})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    body = proxy.get("/api/community/visit-hub").json()
+    assert body["notifications_ok"] is False
+    assert body["incoming_invite_ids"] == []
+    assert body["incoming_invite"] is None
+
+
+def test_visit_hub_pages_all_unread_invitation_ids(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    notification_ids = [f"00000000-0000-4000-8000-{index:012d}" for index in range(101)]
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/notifications":
+            offset = int(request.url.params["offset"])
+            ids = notification_ids[offset:offset + 100]
+            return httpx.Response(200, json={
+                "items": [{
+                    "id": notification_id,
+                    "payload": {"type": "visit_invite", "visit_id": "A" * 22},
+                } for notification_id in ids],
+                "total": len(notification_ids),
+            })
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    body = proxy.get("/api/community/visit-hub").json()
+    assert body["notifications_ok"] is True
+    assert body["incoming_invite_ids"] == notification_ids
+    assert body["incoming_invite"]["id"] == notification_ids[0]
+
+
 def test_presence_update_relays_only_supported_status(proxy, monkeypatch):
     seen = []
 
