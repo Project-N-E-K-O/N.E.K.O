@@ -356,7 +356,7 @@ VISIT_CHARACTER_CARD_BLOCK = {
 
 VISIT_PUBLIC_PERSONA_BLOCK = {
     "zh": "======以下为已确认的公开串门人设======\n{content}\n======以上为已确认的公开串门人设======",
-    "zh-TW": "======以下為已確認的公開串門人設======\n{content}\n======以上为已確認的公開串門人設======",
+    "zh-TW": "======以下為已確認的公開串門人設======\n{content}\n======以上為已確認的公開串門人設======",
     "en": "======以下为 the reviewed public visit persona======\n{content}\n======以上为 the reviewed public visit persona======",
     "ja": "======以下为 確認済みの公開訪問用設定======\n{content}\n======以上为 確認済みの公開訪問用設定======",
     "ko": "======以下为 검토된 공개 방문 페르소나======\n{content}\n======以上为 검토된 공개 방문 페르소나======",

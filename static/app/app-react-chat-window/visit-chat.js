@@ -393,6 +393,7 @@
     var starting = false;
     var pendingDirectInvitation = null; // {messageId, payload, busy}
     var directInvitationPresenting = new Set();
+    var resolvedDirectInvitationIds = new Set();
     var typing = null;           // {name, until}
     var typingTimer = 0;
     var reconnectTimer = 0;
@@ -528,8 +529,8 @@
             return {
                 tone: 'waiting',
                 actions: [
-                    barAction('direct_decline', '拒绝', 'secondary', { disabled: pendingDirectInvitation.busy === true }),
-                    barAction('direct_accept', '接受', 'primary', { disabled: pendingDirectInvitation.busy === true })
+                    barAction('direct_decline', t('visit.directInvite.decline', '拒绝'), 'secondary', { disabled: pendingDirectInvitation.busy === true }),
+                    barAction('direct_accept', t('visit.directInvite.accept', '接受'), 'primary', { disabled: pendingDirectInvitation.busy === true })
                 ]
             };
         }
@@ -1883,23 +1884,33 @@
         }
         var started = await startInvite(targetUserId);
         if (started && started.ok === false) throw new Error(started.error || '没能创建定向串门房间，请稍后再试');
-        return new Promise(function (resolve, reject) {
-            var deadline = now() + 15000;
-            var timer = setInterval(function () {
-                if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
-                    clearInterval(timer);
-                    resolve({
-                        target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
-                        visit_id: visit.visitId, phase: visit.phase
-                    });
-                    return;
-                }
-                if (now() >= deadline) {
-                    clearInterval(timer);
-                    reject(new Error('定向串门房间没有准备好，请稍后再试'));
-                }
-            }, 120);
-        });
+        try {
+            return await new Promise(function (resolve, reject) {
+                var deadline = now() + 15000;
+                var timer = setInterval(function () {
+                    if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
+                        clearInterval(timer);
+                        resolve({
+                            target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
+                            visit_id: visit.visitId, phase: visit.phase
+                        });
+                        return;
+                    }
+                    if (now() >= deadline) {
+                        clearInterval(timer);
+                        reject(new Error('定向串门房间没有准备好，请稍后再试'));
+                    }
+                }, 120);
+            });
+        } catch (error) {
+            // The local room may have been created even if its invite_ready frame
+            // missed the 15 s UI deadline. Retire that room before unlocking the hub.
+            if (visit.targetUserId === targetUserId && visit.visitId
+                    && WAITING_PHASES.indexOf(visit.phase) !== -1) {
+                await endRoute('route_end');
+            }
+            throw error;
+        }
     }
 
     function normalizeInviteCode(raw) {
@@ -2035,18 +2046,29 @@
 
     async function reportDirectInviteDecision(payload, accepted) {
         var notificationId = String(payload.notification_id || '');
-        if (!notificationId) return false;
-        var result = await api('POST', '/api/community/visit-invitations/'
+        if (!notificationId) return { status: 400, body: {} };
+        return api('POST', '/api/community/visit-invitations/'
             + encodeURIComponent(notificationId) + '/respond', { accepted: accepted === true });
-        return result.status >= 200 && result.status < 300;
     }
 
     function clearPendingDirectInvitation(payload, accepted) {
         if (!pendingDirectInvitation || pendingDirectInvitation.payload !== payload) return;
+        var notificationId = String(payload.notification_id || '');
+        if (notificationId) {
+            resolvedDirectInvitationIds.add(notificationId);
+            while (resolvedDirectInvitationIds.size > 128) {
+                resolvedDirectInvitationIds.delete(resolvedDirectInvitationIds.values().next().value);
+            }
+        }
         pendingDirectInvitation = null;
         notifyDirectInviteResolved(payload, accepted);
         render();
         refreshCompactGeometry();
+    }
+
+    function directInvitationExpired(payload) {
+        var expiresAt = Number(payload && payload.expires_at) || 0;
+        return expiresAt > 0 && expiresAt <= now() / 1000;
     }
 
     async function decideDirectInvitation(decision) {
@@ -2055,33 +2077,75 @@
         var payload = pending.payload || {};
         var visitId = String(payload.visit_id || '');
         if (!VISIT_ID_RE.test(visitId) || (decision !== 'accept' && decision !== 'decline')) return;
+        if (payload.catgirl && payload.catgirl !== currentCatgirl()) {
+            pendingDirectInvitation = null;
+            render();
+            refreshCompactGeometry();
+            await presentDirectInvitation({
+                id: payload.notification_id,
+                actor_id: payload.actor_id,
+                visit_id: payload.visit_id,
+                expires_at: payload.expires_at
+            });
+            return;
+        }
+        if (directInvitationExpired(payload)) {
+            await markDirectInviteRead(String(payload.notification_id || ''));
+            clearPendingDirectInvitation(payload, false);
+            toast(t('visit.directInvite.expired', '这次邀请已经失效了'), 5000);
+            return;
+        }
         pending.busy = true;
         render();
         if (decision === 'decline') {
             try {
-                if (!await reportDirectInviteDecision(payload, false)) throw new Error('response_failed');
+                var declined = await reportDirectInviteDecision(payload, false);
+                if (declined.status === 404 || declined.status === 410) {
+                    await markDirectInviteRead(String(payload.notification_id || ''));
+                    clearPendingDirectInvitation(payload, false);
+                    toast(t('visit.directInvite.expired', '这次邀请已经失效了'), 5000);
+                    return;
+                }
+                if (declined.status < 200 || declined.status >= 300) throw new Error('response_failed');
             } catch (_) {
                 pending.busy = false;
                 render();
-                toast('拒绝结果没有发出去，请再试一次', 5000);
+                toast(t('visit.directInvite.responseFailed', '拒绝结果没有发出去，请再试一次'), 5000);
                 return;
             }
             clearPendingDirectInvitation(payload, false);
             return;
         }
-        var result = await joinDirect(visitId, true);
+        var result;
+        try {
+            result = await joinDirect(visitId, true);
+        } catch (_) {
+            pending.busy = false;
+            render();
+            toast(t('visit.directInvite.unavailable', '现在还出不了门，可以再试一次'), 5000);
+            return;
+        }
         if (result && result.status === 202) {
             clearPendingDirectInvitation(payload, true);
             // 房间连接本身已经让邀请方知道“接受”；社区结果只负责把通知收口，失败不反悔这次串门。
-            reportDirectInviteDecision(payload, true).catch(function () {
+            reportDirectInviteDecision(payload, true).then(function (response) {
+                if (!response || response.status < 200 || response.status >= 300) {
+                    markDirectInviteRead(String(payload.notification_id || ''));
+                }
+            }).catch(function () {
                 markDirectInviteRead(String(payload.notification_id || ''));
             });
             return;
         }
         pending.busy = false;
         render();
-        toast(result && (result.status === 404 || result.status === 410)
-            ? '这次邀请已经失效了' : '现在还出不了门，可以再试一次', 5000);
+        if (result && (result.status === 404 || result.status === 410)) {
+            await markDirectInviteRead(String(payload.notification_id || ''));
+            clearPendingDirectInvitation(payload, false);
+            toast(t('visit.directInvite.expired', '这次邀请已经失效了'), 5000);
+            return;
+        }
+        toast(t('visit.directInvite.unavailable', '现在还出不了门，可以再试一次'), 5000);
     }
 
     async function onDirectInviteAction(_message, action) {
@@ -2097,7 +2161,16 @@
         incoming = incoming && typeof incoming === 'object' ? incoming : {};
         var visitId = String(incoming.visit_id || incoming.visitId || '');
         var notificationId = String(incoming.notification_id || incoming.id || '');
-        if (!isUiWindow() || !VISIT_ID_RE.test(visitId) || !notificationId) return false;
+        if (!isUiWindow() || !releaseEnabled || !userSwitchOn()
+                || !VISIT_ID_RE.test(visitId) || !notificationId) return false;
+        if (resolvedDirectInvitationIds.has(notificationId)) {
+            await markDirectInviteRead(notificationId);
+            return true;
+        }
+        if (inVisit() && visit.visitId === visitId) {
+            await markDirectInviteRead(notificationId);
+            return true;
+        }
         var messageId = directInviteMessageId(notificationId);
         if (directInvitationPresenting.has(messageId)) return true;
         var host = getHost();
@@ -2105,29 +2178,37 @@
         if (!host || !catgirl) return false;
         if (pendingDirectInvitation && pendingDirectInvitation.payload
                 && String(pendingDirectInvitation.payload.visit_id || '') === visitId) {
-            render();
-            if (!pendingDirectInvitation.questionDelivered) {
-                var retried = await api('POST', '/api/visit/direct/' + encodeURIComponent(visitId) + '/deliver-question', {
-                    catgirl: catgirl
-                });
-                pendingDirectInvitation.questionDelivered = retried.status === 200
-                    && retried.body && retried.body.delivered === true;
+            if (pendingDirectInvitation.payload.catgirl !== catgirl) {
+                pendingDirectInvitation = null;
+                render();
+                refreshCompactGeometry();
+            } else {
+                render();
+                if (!pendingDirectInvitation.questionDelivered) {
+                    var retried = await api('POST', '/api/visit/direct/' + encodeURIComponent(visitId) + '/deliver-question', {
+                        catgirl: catgirl
+                    });
+                    pendingDirectInvitation.questionDelivered = retried.status === 200
+                        && retried.body && retried.body.delivered === true;
+                }
+                return true;
             }
-            return true;
         }
         directInvitationPresenting.add(messageId);
         try {
             // 先由 Connect 用当前登录账号核验定向房间；聊天里不展示伪造或已失效的通知。
             var preview = await api('GET', '/api/visit/direct/' + encodeURIComponent(visitId) + '/preview');
             if (preview.status !== 200 || !preview.body || String(preview.body.visit_id || '') !== visitId) {
-                if (preview.status === 404 || preview.status === 410) await markDirectInviteRead(notificationId);
+                if (preview.status === 410) await markDirectInviteRead(notificationId);
                 return false;
             }
+            if (currentCatgirl() !== catgirl) return false;
             var payload = {
                 notification_id: notificationId,
                 actor_id: String(incoming.actor_id || incoming.actorId || ''),
                 visit_id: visitId,
-                expires_at: Number(incoming.expires_at || incoming.expiresAt) || Number(preview.body.expires_at) || 0
+                expires_at: Number(incoming.expires_at || incoming.expiresAt) || Number(preview.body.expires_at) || 0,
+                catgirl: catgirl
             };
             // 先把最终问句生成好，再交给标准助手回复链路；该链路统一负责
             // 气泡、语音、口型、自动展开与 turn 生命周期。
@@ -2136,6 +2217,7 @@
             if (generated.status !== 200 || !generated.body || !String(generated.body.question || '').trim()) {
                 return false;
             }
+            if (currentCatgirl() !== catgirl) return false;
             pendingDirectInvitation = {
                 messageId: messageId, payload: payload, busy: false, questionDelivered: false
             };
@@ -2157,12 +2239,19 @@
     // 轮询负责覆盖本地 Verse 断流、窗口晚启动和通知重放丢失。
     var directInvitationPollInFlight = false;
     async function pollDirectInvitations() {
-        if (!isUiWindow() || directInvitationPollInFlight) return false;
+        if (!isUiWindow() || !releaseEnabled || !userSwitchOn() || directInvitationPollInFlight) return false;
         directInvitationPollInFlight = true;
         try {
             var result = await api('GET', '/api/community/visit-hub');
             var incoming = result.status === 200 && result.body && result.body.incoming_invite;
-            if (!incoming || !incoming.visit_id || !incoming.id) return false;
+            if (!incoming || !incoming.visit_id || !incoming.id) {
+                if (result.status === 200 && pendingDirectInvitation) {
+                    var payload = pendingDirectInvitation.payload || {};
+                    await markDirectInviteRead(String(payload.notification_id || ''));
+                    clearPendingDirectInvitation(payload, false);
+                }
+                return false;
+            }
             return await presentDirectInvitation(incoming);
         } finally {
             directInvitationPollInFlight = false;
@@ -2329,6 +2418,15 @@
             toast(t('visit.error.generic', '没能完成，请稍后再试'));
         }
         return result;
+    }
+
+    async function cancelDirectInvitation(visitId) {
+        visitId = String(visitId || '');
+        if (!VISIT_ID_RE.test(visitId) || visit.visitId !== visitId
+                || visit.side !== 'host' || !visit.targetUserId
+                || WAITING_PHASES.indexOf(visit.phase) === -1) return false;
+        var result = await endRoute('route_end');
+        return !!result && (result.status === 200 || result.status === 404);
     }
 
     I.handleVisitBarAction = function handleVisitBarAction(actionId) {
@@ -2837,6 +2935,10 @@
     function applyState(state, stale) {
         if (!state || typeof state !== 'object') return;
         releaseEnabled = state.enabled === true;
+        if (!releaseEnabled && pendingDirectInvitation) {
+            pendingDirectInvitation = null;
+            refreshCompactGeometry();
+        }
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
@@ -3056,6 +3158,10 @@
         var on = userSwitchOn();
         if (on !== lastSwitch) {
             lastSwitch = on;
+            if (!on && pendingDirectInvitation) {
+                pendingDirectInvitation = null;
+                refreshCompactGeometry();
+            }
             render();
         }
     }, 1500);
@@ -3075,6 +3181,7 @@
         pollDirectInvitations: pollDirectInvitations,
         createInviteCode: createInviteCode,
         createDirectInvitation: createDirectInvitation,
+        cancelDirectInvitation: cancelDirectInvitation,
         // 测试用：只读快照与内部入口
         _test: {
             assembleClauses: assembleClauses,
@@ -3086,6 +3193,7 @@
             joinDirect: joinDirect,
             presentDirectInvitation: presentDirectInvitation,
             pollDirectInvitations: pollDirectInvitations,
+            cancelDirectInvitation: cancelDirectInvitation,
             onDirectInviteAction: onDirectInviteAction,
             startInvite: startInvite,
             exportTranscript: exportTranscript,

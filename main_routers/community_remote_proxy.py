@@ -51,6 +51,32 @@ async def _community_json(client: httpx.AsyncClient, session: dict, method: str,
     return response.status_code, body
 
 
+async def _community_following(client: httpx.AsyncClient, session: dict, user_id: str):
+    """Read every following page so mutual friends are not truncated at 100."""
+    items = []
+    offset = 0
+    # The community API caps a page at 100. Keep a generous finite ceiling so
+    # a malformed upstream cannot make this desktop relay loop forever.
+    for _ in range(100):
+        status, body = await _community_json(
+            client,
+            session,
+            "GET",
+            f"/api/users/{user_id}/following?limit=100&offset={offset}",
+        )
+        if status != 200 or not isinstance(body, dict):
+            return status, body
+        page = body.get("items")
+        if not isinstance(page, list):
+            return 502, {"detail": "community_invalid_response"}
+        items.extend(page)
+        offset += len(page)
+        total = body.get("total")
+        if not page or len(page) < 100 or (isinstance(total, int) and offset >= total):
+            return 200, {**body, "items": items}
+    return 502, {"detail": "community_invalid_response"}
+
+
 def _absolute_community_url(base_url: str, value) -> str | None:
     text = str(value or "").strip()
     return urljoin(base_url + "/", text) if text else None
@@ -70,7 +96,7 @@ async def visit_hub(request: Request):
                 return JSONResponse(me, status_code=me_status)
             user_id = str(profile["id"])
             (following_status, following), (notification_status, notifications), (presence_status_code, presence_body) = await asyncio.gather(
-                _community_json(client, session, "GET", f"/api/users/{user_id}/following?limit=100&offset=0"),
+                _community_following(client, session, user_id),
                 _community_json(client, session, "GET", "/api/notifications?unread=true&limit=100"),
                 _community_json(client, session, "GET", "/api/users/me/presence"),
             )

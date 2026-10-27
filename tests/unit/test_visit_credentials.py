@@ -978,6 +978,19 @@ async def test_grant_renews_vendor_and_keeps_identity_ticket(servers):
 
 
 @pytest.mark.asyncio
+async def test_direct_guest_grant_renews_without_an_invite_code(servers):
+    first = await _guest(direct=True, invite_code=None)
+    grant = cr.VisitGrant(first, direct=True)
+
+    await grant.renew()
+
+    body = servers.bodies("/api/visit/credentials")[-1]
+    assert body["role"] == "guest"
+    assert body["direct"] is True
+    assert "invite_code" not in body
+
+
+@pytest.mark.asyncio
 async def test_host_renewal_after_the_invite_was_redeemed_keeps_the_invite(servers):
     first = await _host()
     grant = cr.VisitGrant(first)

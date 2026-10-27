@@ -1059,8 +1059,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: credentials failed: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("servers_unreachable")
             return False
-        self.grant = cr.VisitGrant(creds, display_name=self.lanlan_name,
-                                   invite_code=self.invite_code if self.side == "guest" else None)
+        self.grant = cr.VisitGrant(
+            creds,
+            display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+            direct=self.direct,
+        )
         try:
             # Bound local file-lock/disk accounting so pending visits cannot hold routing forever.
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)

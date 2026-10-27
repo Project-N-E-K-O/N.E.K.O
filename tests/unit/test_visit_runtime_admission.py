@@ -429,6 +429,33 @@ async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, mo
         await teardown(side, wire=wire, clock=clocks[0])
 
 
+async def test_direct_host_auto_accept_does_not_block_the_receive_pipeline(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    release = asyncio.Event()
+    activation_started = asyncio.Event()
+
+    async def slow_activation():
+        activation_started.set()
+        await release.wait()
+
+    rt.direct = True
+    rt.target_user_id = "22222222-2222-4222-8222-222222222222"
+    rt.activate = slow_activation
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        await asyncio.wait_for(
+            rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(activation_started.wait(), timeout=0.5)
+        assert rt.accepted is True
+        assert rt.phase == "awaiting_accept"
+    finally:
+        release.set()
+        await settle()
+        await teardown(side, wire=wire, clock=clocks[0])
+
+
 async def test_peer_card_name_installed_as_another_local_card_stays_visible(tmp_path, monkeypatch, clocks):
     from main_routers.visit_router.local_context import CharacterContext
 

@@ -1324,6 +1324,9 @@
 
     function isVisitAssistantMirrorResponse(response) {
         var metadata = response && response.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = response && response.meta;
+        }
         if (!metadata || typeof metadata !== 'object' || metadata.source !== 'neko_visit') {
             return false;
         }
@@ -5522,7 +5525,8 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant turn_end after session ended by server');
                         clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();

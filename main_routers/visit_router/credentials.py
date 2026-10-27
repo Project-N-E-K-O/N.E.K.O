@@ -1004,12 +1004,14 @@ class VisitGrant:
         *,
         display_name: str | None = None,
         invite_code: str | None = None,
+        direct: bool = False,
         refresh_margin_s: float = VISIT_VENDOR_REFRESH_MARGIN_S,
         fetch: Callable[..., Awaitable[VisitCredentials]] | None = None,
     ) -> None:
         self._current = credentials
         self._display_name = display_name
         self._invite_code = invite_code if credentials.role == "guest" else None
+        self._direct = bool(direct) if credentials.role == "guest" else False
         self._margin = float(refresh_margin_s)
         self._fetch = fetch or fetch_visit_credentials
         self._renewing: asyncio.Task | None = None
@@ -1061,6 +1063,7 @@ class VisitGrant:
             tier=cur.tier,
             display_name=self._display_name,
             invite_code=self._invite_code,
+            direct=self._direct,
         )
         # tier comes from the request (renewal passes cur.tier); the response has no comparable field, so do not compare it here
         if (fresh.vid, fresh.visit_uid, fresh.transport) != (cur.vid, cur.visit_uid, cur.transport):

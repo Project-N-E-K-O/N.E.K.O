@@ -82,8 +82,8 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
 
     assert "DIRECT_INVITE_ACTION = 'visit_direct_invite_decision'" in chat
     assert "/question?catgirl=" in chat
-    assert "barAction('direct_accept', '接受'" in chat
-    assert "barAction('direct_decline', '拒绝'" in chat
+    assert "barAction('direct_accept', t('visit.directInvite.accept'" in chat
+    assert "barAction('direct_decline', t('visit.directInvite.decline'" in chat
     assert "barAction('invite'," not in chat
     assert "barAction('go'," not in chat
     assert "barAction('cancel'," not in chat
@@ -101,7 +101,7 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     )]
     assert "/respond'" in chat
     assert "reportDirectInviteDecision(payload, false)" in direct_action
-    assert "pendingDirectInvitation = null" not in direct_action
+    assert "clearPendingDirectInvitation(payload, false)" in direct_action
     legacy_action = chat[chat.index("async function onDirectInviteAction") : chat.index(
         "async function presentDirectInvitation"
     )]
@@ -116,7 +116,15 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     assert "host.updateMessage(" not in present_direct
     assert "host.openWindow()" not in present_direct
     assert "messageId: messageId, payload: payload, busy: false, questionDelivered: false" in present_direct
+    assert "catgirl: catgirl" in present_direct
+    assert "currentCatgirl() !== catgirl" in present_direct
     assert present_direct.index("/question?catgirl=") < present_direct.rindex("/deliver-question")
+    assert "directInvitationExpired(payload)" in direct_action
+    assert "result.status === 404 || result.status === 410" in direct_action
+    assert "try {\n            result = await joinDirect(visitId, true);" in direct_action
+    assert "pending.busy = false" in direct_action
+    assert "resolvedDirectInvitationIds.has(notificationId)" in present_direct
+    assert "!releaseEnabled || !userSwitchOn()" in present_direct
 
 
 def test_friend_invitation_status_follows_the_real_visit_lifecycle():
@@ -187,9 +195,9 @@ def test_social_hub_renders_own_community_identity_and_presence_picker():
     assert "function setOwnPresence(selected)" in source
     assert "fetch('/api/community/presence'" in source
     assert "['online', 'away', 'invisible']" in source
-    assert "['online', '在线', '好友能看到你在线']" in source
-    assert "['away', '离开', '保留在线，但显示暂时离开']" in source
-    assert "['invisible', '隐身', '好友会看到你处于离线状态']" in source
+    assert "visit.socialHub.presenceOnlineHint" in source
+    assert "visit.socialHub.presenceAwayHint" in source
+    assert "visit.socialHub.presenceInvisibleHint" in source
     assert ".neko-social-hub-self" in styles
     assert ".neko-social-hub-presence-menu" in styles
     assert "neko-social-hub-self-title-row" in source
@@ -212,12 +220,38 @@ def test_only_friend_area_scrolls_while_current_account_stays_fixed():
 
     assert "neko-social-hub-friend-scroller" in source
     assert "renderOwnAccount(panel)" in source
-    assert "renderFriendGroup('在线好友', onlineFriends, friendScroller)" in source
-    assert "renderFriendGroup('离线好友', offlineFriends, friendScroller)" in source
+    assert "renderFriendGroup(tr('visit.socialHub.onlineFriends'" in source
+    assert "renderFriendGroup(tr('visit.socialHub.offlineFriends'" in source
     assert ".neko-social-hub-panel" in styles
     assert "overflow: hidden" in styles
     assert ".neko-social-hub-friend-scroller" in styles
     assert "overflow-y: auto" in styles
+
+
+def test_hub_preserves_friend_scroll_and_focus_across_renders():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+
+    assert "var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0" in source
+    assert "friendScroller.scrollTop = oldScrollTop" in source
+    assert "data-neko-focus-key" in source
+    assert "node.focus({ preventScroll: true })" in source
+    assert "if (invitation.phase !== phase)" in source
+
+
+def test_waiting_direct_invitation_can_be_cancelled():
+    hub = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    chat = (
+        ROOT / "static" / "app" / "app-react-chat-window" / "visit-chat.js"
+    ).read_text(encoding="utf-8")
+
+    assert "canCancel: true" in hub
+    assert "async function cancelInvitation(friendId, invitation)" in hub
+    assert "bridge.cancelDirectInvite(visitId)" in hub
+    assert "visit.cancelDirectInvitation(visitId)" in hub
+    assert "async function cancelDirectInvitation(visitId)" in chat
+    assert "cancelDirectInvitation: cancelDirectInvitation" in chat
+    assert "await cancelDirectVisit(createdVisitId)" in hub
+    assert "!restoredVisitId" in hub
 
 
 def test_friend_area_has_no_group_or_row_dividers():

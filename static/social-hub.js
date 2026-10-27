@@ -71,6 +71,15 @@
   function host() { return window.nekoSocialHubHost || null; }
   function social() { return window.nekoSocial || null; }
   async function json(response) { try { return await response.json(); } catch (_) { return {}; } }
+  function tr(key, fallback, params) {
+    if (typeof window.t !== 'function') return fallback;
+    var value = window.t(key, params || {});
+    return !value || value === key ? fallback : value;
+  }
+  function focusKey(node, key) {
+    node.setAttribute('data-neko-focus-key', key);
+    return node;
+  }
 
   function avatarManagers() {
     return [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager]
@@ -94,10 +103,10 @@
   }
 
   function detailText(body, fallback) {
-    if (body && body.detail === 'community_login_required') return '请先在 Neko 设置里登录喵宇宙';
-    if (body && body.detail === 'mutual_follow_required') return '你们已不再互相关注，无法发送邀请';
-    if (body && body.detail === 'target_offline') return '对方当前离线，暂时不能邀请';
-    if (body && body.detail === 'community_unavailable') return '暂时连不上喵宇宙，请稍后重试';
+    if (body && body.detail === 'community_login_required') return tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
+    if (body && body.detail === 'mutual_follow_required') return tr('visit.socialHub.mutualRequired', '你们已不再互相关注，无法发送邀请');
+    if (body && body.detail === 'target_offline') return tr('visit.socialHub.targetOffline', '对方当前离线，暂时不能邀请');
+    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后重试');
     return fallback;
   }
   function normalizeFriend(item) {
@@ -140,7 +149,7 @@
   }
 
   var INVITATION_STORAGE_KEY = 'nekoSocialHubInvitationsV1';
-  var VISIT_PHASES = ['sending', 'pending', 'invite_ready', 'joining', 'awaiting_accept', 'active', 'wrap_up', 'ending'];
+  var VISIT_PHASES = ['sending', 'pending', 'invite_ready', 'cancelling', 'joining', 'awaiting_accept', 'active', 'wrap_up', 'ending'];
 
   function normalizePhase(value) {
     var phase = String(value || '');
@@ -174,9 +183,10 @@
       stored.items.forEach(function (item) {
         var friendId = String(item && item.friendId || '');
         var phase = normalizePhase(item && item.phase);
-        if (!friendId || !phase || invitationExpired(item)) return;
+        var restoredVisitId = String(item && item.visitId || '');
+        if (!friendId || !phase || !restoredVisitId || invitationExpired(item)) return;
         state.invitations.set(friendId, {
-          visitId: String(item.visitId || ''), phase: phase,
+          visitId: restoredVisitId, phase: phase,
           expiresAt: Number(item.expiresAt) || 0
         });
       });
@@ -201,13 +211,14 @@
 
   function invitationView(invitation) {
     var phase = invitation && invitation.phase;
-    if (phase === 'sending' || phase === 'pending') return { status: '正在准备邀请', action: '发送中', tone: 'waiting' };
-    if (phase === 'invite_ready') return { status: '等待回应', action: '已邀请', tone: 'waiting' };
-    if (phase === 'joining') return { status: '正在连接', action: '连接中', tone: 'connecting' };
-    if (phase === 'awaiting_accept') return { status: '等待接待', action: '门口等候', tone: 'connecting' };
-    if (phase === 'active') return { status: '正在串门', action: '串门中', tone: 'active' };
-    if (phase === 'wrap_up') return { status: '正在道别', action: '串门中', tone: 'ending' };
-    if (phase === 'ending') return { status: '正在收尾', action: '即将结束', tone: 'ending' };
+    if (phase === 'sending' || phase === 'pending') return { status: tr('visit.socialHub.preparing', '正在准备邀请'), action: tr('visit.socialHub.sending', '发送中'), tone: 'waiting' };
+    if (phase === 'invite_ready') return { status: tr('visit.socialHub.waitingResponse', '等待回应'), action: tr('visit.socialHub.cancelInvite', '取消邀请'), tone: 'waiting', canCancel: true };
+    if (phase === 'cancelling') return { status: tr('visit.socialHub.cancelling', '正在取消'), action: tr('visit.socialHub.cancelling', '正在取消'), tone: 'waiting' };
+    if (phase === 'joining') return { status: tr('visit.socialHub.connecting', '正在连接'), action: tr('visit.socialHub.connectingAction', '连接中'), tone: 'connecting' };
+    if (phase === 'awaiting_accept') return { status: tr('visit.socialHub.waitingHost', '等待接待'), action: tr('visit.socialHub.atDoor', '门口等候'), tone: 'connecting' };
+    if (phase === 'active') return { status: tr('visit.socialHub.visiting', '正在串门'), action: tr('visit.socialHub.inVisit', '串门中'), tone: 'active' };
+    if (phase === 'wrap_up') return { status: tr('visit.socialHub.sayingGoodbye', '正在道别'), action: tr('visit.socialHub.inVisit', '串门中'), tone: 'ending' };
+    if (phase === 'ending') return { status: tr('visit.socialHub.ending', '正在收尾'), action: tr('visit.socialHub.endingSoon', '即将结束'), tone: 'ending' };
     return null;
   }
 
@@ -220,10 +231,11 @@
       if (!invitation || !visitId || invitation.visitId !== visitId) return;
       if (!phase || detail.action === 'ended' || detail.phase === 'ended') {
         state.invitations.delete(friendId);
+        changed = true;
       } else if (invitation.phase !== phase) {
         invitation.phase = phase;
+        changed = true;
       }
-      changed = true;
     });
     if (changed) {
       saveInvitations();
@@ -256,7 +268,9 @@
         state.invitations.forEach(function (invitation, friendId) {
           if (invitation && invitation.visitId === visitId) state.invitations.delete(friendId);
         });
-        state.toast = String(item.actor_display_name || '对方') + '这次不能来串门';
+        state.toast = tr('visit.socialHub.declined', '{{name}}这次不能来串门', {
+          name: String(item.actor_display_name || tr('visit.socialHub.otherParty', '对方'))
+        });
         state.toastError = false;
       }
       try {
@@ -322,7 +336,7 @@
     try {
       var response = await fetch('/api/community/visit-hub', { credentials: 'same-origin' });
       var body = await json(response);
-      if (!response.ok) throw new Error(detailText(body, '读取互关好友失败'));
+      if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取互关好友失败')));
       state.loggedIn = body.logged_in === true;
       state.accountId = String(body.account && body.account.id || '');
       state.account = normalizeAccount(body.account);
@@ -342,7 +356,7 @@
         state.account = null;
         state.friends = [];
         state.incoming = null;
-        state.toast = error && error.message || '读取互关好友失败';
+        state.toast = error && error.message || tr('visit.socialHub.readFailed', '读取互关好友失败');
         state.toastError = true;
       }
     } finally {
@@ -370,7 +384,11 @@
     return wrap;
   }
   function presenceLabel(status) {
-    return { online: '在线', away: '离开', invisible: '隐身' }[status] || '在线';
+    return {
+      online: tr('visit.socialHub.presenceOnline', '在线'),
+      away: tr('visit.socialHub.presenceAway', '离开'),
+      invisible: tr('visit.socialHub.presenceInvisible', '隐身')
+    }[status] || tr('visit.socialHub.presenceOnline', '在线');
   }
   async function setOwnPresence(selected) {
     if (!state.account || state.presenceSaving) return;
@@ -385,12 +403,12 @@
         body: JSON.stringify({ status: selected })
       });
       var body = await json(response);
-      if (!response.ok) throw new Error(detailText(body, '状态设置失败，请稍后重试'));
+      if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.presenceFailed', '状态设置失败，请稍后重试')));
       state.account.presenceStatus = String(body.status || selected);
       state.toast = '';
       state.toastError = false;
     } catch (error) {
-      state.toast = error && error.message || '状态设置失败，请稍后重试';
+      state.toast = error && error.message || tr('visit.socialHub.presenceFailed', '状态设置失败，请稍后重试');
       state.toastError = true;
     } finally {
       state.presenceSaving = false;
@@ -412,7 +430,8 @@
       render();
     });
     toggle.disabled = state.presenceSaving;
-    toggle.setAttribute('aria-label', '设置在线状态');
+    focusKey(toggle, 'presence-toggle');
+    toggle.setAttribute('aria-label', tr('visit.socialHub.setPresence', '设置在线状态'));
     toggle.setAttribute('aria-haspopup', 'menu');
     toggle.setAttribute('aria-expanded', state.presenceMenuOpen ? 'true' : 'false');
     var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -427,20 +446,21 @@
     titleRow.appendChild(toggle);
     picker.appendChild(titleRow);
     picker.appendChild(el('span', 'neko-social-hub-presence-label',
-      state.presenceSaving ? '设置中…' : presenceLabel(account.presenceStatus)));
+      state.presenceSaving ? tr('visit.socialHub.setting', '设置中…') : presenceLabel(account.presenceStatus)));
     if (state.presenceMenuOpen) {
       var menu = el('div', 'neko-social-hub-presence-menu');
       menu.setAttribute('role', 'menu');
       [
-        ['online', '在线', '好友能看到你在线'],
-        ['away', '离开', '保留在线，但显示暂时离开'],
-        ['invisible', '隐身', '好友会看到你处于离线状态']
+        ['online', tr('visit.socialHub.presenceOnline', '在线'), tr('visit.socialHub.presenceOnlineHint', '好友能看到你在线')],
+        ['away', tr('visit.socialHub.presenceAway', '离开'), tr('visit.socialHub.presenceAwayHint', '保留在线，但显示暂时离开')],
+        ['invisible', tr('visit.socialHub.presenceInvisible', '隐身'), tr('visit.socialHub.presenceInvisibleHint', '好友会看到你处于离线状态')]
       ].forEach(function (option) {
         var item = button('', 'neko-social-hub-presence-option' +
           (account.presenceStatus === option[0] ? ' is-selected' : ''), function () {
           setOwnPresence(option[0]);
         });
         item.setAttribute('role', 'menuitemradio');
+        focusKey(item, 'presence-' + option[0]);
         item.setAttribute('aria-checked', account.presenceStatus === option[0] ? 'true' : 'false');
         item.appendChild(el('span', 'neko-social-hub-presence-dot ' + option[0]));
         var words = el('span', 'neko-social-hub-presence-option-copy');
@@ -457,29 +477,29 @@
   }
   async function joinWithCode(rawCode) {
     var code = String(rawCode || '').trim().toUpperCase();
-    if (!code) return showToast('请输入邀请码', true);
+    if (!code) return showToast(tr('visit.socialHub.enterCode', '请输入邀请码'), true);
     var bridge = host();
     var visit = window.nekoVisitChat;
     var join = bridge && typeof bridge.joinWithCode === 'function'
       ? function () { return bridge.joinWithCode(code); }
       : visit && typeof visit.joinWithCode === 'function'
         ? function () { return visit.joinWithCode(code); } : null;
-    if (!join) return showToast('串门窗口还没有准备好，请稍后再试', true);
-    showToast('正在查看邀请…', false);
+    if (!join) return showToast(tr('visit.socialHub.windowNotReady', '串门窗口还没有准备好，请稍后再试'), true);
+    showToast(tr('visit.socialHub.checkingInvite', '正在查看邀请…'), false);
     try {
       var result = await join();
       if (result === null || result === false || (result && result.status && result.status !== 202)) return false;
       if (standalone) close();
       return result || true;
     } catch (error) {
-      showToast(error && error.message || '邀请码无法使用', true);
+      showToast(error && error.message || tr('visit.socialHub.codeUnavailable', '邀请码无法使用'), true);
       return false;
     }
   }
   async function inviteFriend(friendId) {
     var friend = state.friends.find(function (item) { return item.id === friendId; });
     if (!friend || state.invitations.has(friendId)) return;
-    if (activeInvitation(friendId)) return showToast('请先结束当前的邀请或串门，再邀请其他喵友', true);
+    if (activeInvitation(friendId)) return showToast(tr('visit.socialHub.activeInvite', '请先结束当前的邀请或串门，再邀请其他喵友'), true);
     var bridge = host();
     var visit = window.nekoVisitChat;
     var createInvite = bridge && typeof bridge.createDirectInvite === 'function'
@@ -487,14 +507,16 @@
       : visit && typeof visit.createDirectInvitation === 'function'
         ? function () { return visit.createDirectInvitation(friend.id); } : null;
     if (!createInvite) {
-      return showToast('请在桌面版 Neko 中发送定向邀请', true);
+      return showToast(tr('visit.socialHub.desktopRequired', '请在桌面版 Neko 中发送定向邀请'), true);
     }
     setInvitation(friendId, { visitId: '', phase: 'sending', expiresAt: 0 });
-    showToast('正在为' + friend.displayName + '准备房间…', false);
+    showToast(tr('visit.socialHub.preparingRoom', '正在为 {{name}} 准备房间…', { name: friend.displayName }), false);
+    var createdVisitId = '';
     try {
       var invite = await createInvite();
       var visitId = String(invite && (invite.visit_id || invite.visitId) || '');
-      if (!visitId) throw new Error('没有拿到定向串门房间');
+      if (!visitId) throw new Error(tr('visit.socialHub.roomMissing', '没有拿到定向串门房间'));
+      createdVisitId = visitId;
       var expiresAt = Number(invite.expires_at || invite.expiresAt) || 0;
       var response = await fetch('/api/community/visit-invitations', {
         method: 'POST', credentials: 'same-origin',
@@ -506,13 +528,45 @@
         })
       });
       var body = await json(response);
-      if (!response.ok) throw new Error(detailText(body, '邀请没有发出去，请稍后重试'));
+      if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.sendFailed', '邀请没有发出去，请稍后重试')));
       setInvitation(friendId, { visitId: visitId, phase: 'invite_ready', expiresAt: expiresAt });
-      state.toast = '已向' + friend.displayName + '发出串门邀请';
+      state.toast = tr('visit.socialHub.invited', '已向 {{name}} 发出串门邀请', { name: friend.displayName });
       state.toastError = false;
     } catch (error) {
+      if (createdVisitId) {
+        try { await cancelDirectVisit(createdVisitId); } catch (_) {}
+      }
       setInvitation(friendId, null);
-      state.toast = error && error.message || '邀请没有发出去，请稍后重试';
+      state.toast = error && error.message || tr('visit.socialHub.sendFailed', '邀请没有发出去，请稍后重试');
+      state.toastError = true;
+    }
+    render();
+  }
+
+  async function cancelDirectVisit(visitId) {
+    var bridge = host();
+    var visit = window.nekoVisitChat;
+    if (bridge && typeof bridge.cancelDirectInvite === 'function') {
+      return bridge.cancelDirectInvite(visitId);
+    }
+    if (visit && typeof visit.cancelDirectInvitation === 'function') {
+      return visit.cancelDirectInvitation(visitId);
+    }
+    return false;
+  }
+
+  async function cancelInvitation(friendId, invitation) {
+    if (!invitation || invitation.phase !== 'invite_ready') return;
+    setInvitation(friendId, Object.assign({}, invitation, { phase: 'cancelling' }));
+    render();
+    try {
+      if (!await cancelDirectVisit(invitation.visitId)) throw new Error('cancel_failed');
+      setInvitation(friendId, null);
+      state.toast = '';
+      state.toastError = false;
+    } catch (_) {
+      setInvitation(friendId, Object.assign({}, invitation, { phase: 'invite_ready' }));
+      state.toast = tr('visit.socialHub.cancelFailed', '邀请暂时无法取消，请稍后重试');
       state.toastError = true;
     }
     render();
@@ -533,11 +587,13 @@
     // 离线好友只展示身份与最近在线信息。已有邀请状态仍可显示状态按钮，
     // 但普通离线行不能从 DOM 中触发新的串门邀请。
     if (view || friend.online) {
-      var action = button(view ? view.action : (busyElsewhere ? '稍后再邀' : '邀请来玩'),
+      var action = button(view ? view.action : (busyElsewhere ? tr('visit.socialHub.inviteLater', '稍后再邀') : tr('visit.socialHub.invite', '邀请来玩')),
         'neko-social-hub-button' + (!view && !busyElsewhere ? ' primary' : ''), function () {
-        inviteFriend(friend.id);
+        if (view && view.canCancel) cancelInvitation(friend.id, invitation);
+        else inviteFriend(friend.id);
       });
-      action.disabled = !!view || busyElsewhere;
+      focusKey(action, 'friend-' + friend.id);
+      action.disabled = (!!view && !view.canCancel) || busyElsewhere;
       row.appendChild(action);
     }
     return row;
@@ -547,21 +603,25 @@
     if (!Number.isFinite(timestamp)) return '';
     var elapsed = Math.max(0, Date.now() - timestamp);
     var minutes = Math.floor(elapsed / 60000);
-    if (minutes < 1) return '刚刚';
-    if (minutes < 60) return minutes + ' 分钟前';
+    var locale = document.documentElement.lang || undefined;
+    var formatter;
+    try { formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }); } catch (_) {}
+    if (minutes < 1) return formatter ? formatter.format(0, 'minute') : tr('visit.socialHub.justNow', '刚刚');
+    if (minutes < 60) return formatter ? formatter.format(-minutes, 'minute') : minutes + ' 分钟前';
     var hours = Math.floor(minutes / 60);
-    if (hours < 24) return hours + ' 小时前';
+    if (hours < 24) return formatter ? formatter.format(-hours, 'hour') : hours + ' 小时前';
     var days = Math.floor(hours / 24);
-    if (days < 30) return days + ' 天前';
+    if (days < 30) return formatter ? formatter.format(-days, 'day') : days + ' 天前';
     var months = Math.floor(days / 30);
-    if (months < 12) return months + ' 个月前';
-    return Math.floor(months / 12) + ' 年前';
+    if (months < 12) return formatter ? formatter.format(-months, 'month') : months + ' 个月前';
+    var years = Math.floor(months / 12);
+    return formatter ? formatter.format(-years, 'year') : years + ' 年前';
   }
   function friendStatus(friend) {
-    if (friend.presenceStatus === 'away') return '离开';
-    if (friend.online) return '在线';
+    if (friend.presenceStatus === 'away') return tr('visit.socialHub.presenceAway', '离开');
+    if (friend.online) return tr('visit.socialHub.presenceOnline', '在线');
     var lastSeen = relativeLastSeen(friend.lastSeenAt);
-    return lastSeen ? '上次在线 ' + lastSeen : '离线';
+    return lastSeen ? tr('visit.socialHub.lastSeen', '上次在线 {{time}}', { time: lastSeen }) : tr('visit.socialHub.offline', '离线');
   }
   function renderFriendGroup(title, friends, target) {
     if (!friends.length) return;
@@ -572,23 +632,27 @@
   }
   function renderEmpty(target) {
     var empty = el('section', 'neko-social-hub-empty');
-    if (state.loading) empty.appendChild(el('strong', '', '正在读取当前账号的互关好友…'));
+    if (state.loading) empty.appendChild(el('strong', '', tr('visit.socialHub.loadingFriends', '正在读取当前账号的互关好友…')));
     else if (!state.loggedIn) {
-      empty.appendChild(el('strong', '', '还没有登录喵宇宙'));
-      empty.appendChild(el('span', '', '请先在 Neko 设置中登录社区账号'));
+      empty.appendChild(el('strong', '', tr('visit.socialHub.notLoggedIn', '还没有登录喵宇宙')));
+      empty.appendChild(el('span', '', tr('visit.socialHub.loginHint', '请先在 Neko 设置中登录社区账号')));
     } else {
-      empty.appendChild(el('strong', '', '暂时没有互关喵友'));
-      empty.appendChild(el('span', '', '双方互相关注后，就会出现在这里'));
+      empty.appendChild(el('strong', '', tr('visit.socialHub.noFriends', '暂时没有互关喵友')));
+      empty.appendChild(el('span', '', tr('visit.socialHub.mutualHint', '双方互相关注后，就会出现在这里')));
     }
     target.appendChild(empty);
   }
   function render() {
     if (!panel) return;
+    var oldScroller = panel.querySelector('.neko-social-hub-friend-scroller');
+    var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0;
+    var active = document.activeElement;
+    var activeKey = active && panel.contains(active) ? active.getAttribute('data-neko-focus-key') : '';
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));
     header.appendChild(el('h2', 'neko-social-hub-title', '喵宇宙'));
-    header.appendChild(button('打开完整社区', 'neko-social-hub-community-link', openCommunity));
+    header.appendChild(focusKey(button(tr('visit.socialHub.openCommunity', '打开完整社区'), 'neko-social-hub-community-link', openCommunity), 'open-community'));
     panel.appendChild(header);
     if (state.loggedIn && state.account) renderOwnAccount(panel);
 
@@ -599,10 +663,18 @@
     else {
       var onlineFriends = state.friends.filter(function (friend) { return friend.online; });
       var offlineFriends = state.friends.filter(function (friend) { return !friend.online; });
-      renderFriendGroup('在线好友', onlineFriends, friendScroller);
-      renderFriendGroup('离线好友', offlineFriends, friendScroller);
+      renderFriendGroup(tr('visit.socialHub.onlineFriends', '在线好友'), onlineFriends, friendScroller);
+      renderFriendGroup(tr('visit.socialHub.offlineFriends', '离线好友'), offlineFriends, friendScroller);
     }
     if (state.toast) panel.appendChild(el('div', 'neko-social-hub-toast' + (state.toastError ? ' is-error' : ''), state.toast));
+    friendScroller.scrollTop = oldScrollTop;
+    if (activeKey) {
+      Array.from(panel.querySelectorAll('[data-neko-focus-key]')).some(function (node) {
+        if (node.getAttribute('data-neko-focus-key') !== activeKey) return false;
+        try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
+        return true;
+      });
+    }
     if (state.open && !standalone) requestAnimationFrame(positionPanel);
   }
 

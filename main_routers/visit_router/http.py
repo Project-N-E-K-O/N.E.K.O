@@ -592,6 +592,9 @@ async def direct_invite_question(request: Request, visit_id: str, catgirl: str =
         return _error(400, "visit_id_format")
     if not _valid_name(catgirl):
         return _error(400, "catgirl_required")
+    switch_off = await runtime.visit_switch_refusal()
+    if switch_off is not None:
+        return _refused(switch_off.status, switch_off.body)
     account = await accounts.local_account()
     if not account:
         return _servers_error(cr.VisitLoginRequired())
@@ -645,6 +648,9 @@ async def deliver_direct_invite_question(request: Request, visit_id: str):
     catgirl = payload.get("catgirl")
     if not _valid_name(catgirl):
         return _error(400, "catgirl_required")
+    switch_off = await runtime.visit_switch_refusal()
+    if switch_off is not None:
+        return _refused(switch_off.status, switch_off.body)
     account = await accounts.local_account()
     if not account:
         return _servers_error(cr.VisitLoginRequired())

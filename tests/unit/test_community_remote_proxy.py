@@ -191,6 +191,53 @@ def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
     ]
 
 
+def test_visit_hub_reads_mutual_friends_after_the_first_page(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    later_id = "22222222-2222-4222-8222-222222222222"
+    offsets = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id, "display_name": "Owner"})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/notifications":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            offset = int(request.url.params["offset"])
+            offsets.append(offset)
+            if offset == 0:
+                return httpx.Response(200, json={
+                    "items": [
+                        {"id": f"00000000-0000-4000-8000-{index:012d}", "is_mutual": False}
+                        for index in range(100)
+                    ],
+                    "total": 101,
+                })
+            return httpx.Response(200, json={
+                "items": [{"id": later_id, "display_name": "Later", "is_mutual": True}],
+                "total": 101,
+            })
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/visit-hub")
+    assert response.status_code == 200
+    assert offsets == [0, 100]
+    assert [friend["id"] for friend in response.json()["friends"]] == [later_id]
+
+
 def test_presence_update_relays_only_supported_status(proxy, monkeypatch):
     seen = []
 
