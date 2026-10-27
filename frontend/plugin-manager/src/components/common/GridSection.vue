@@ -22,7 +22,7 @@
         :data-yui-guide-id="headerGuideId"
       >
         <slot name="header">
-          <span class="grid-section__title">
+          <span class="grid-section__title" data-motion="move">
             <el-icon v-if="icon"><component :is="icon" /></el-icon>
             {{ title }}
             <span class="grid-section__title-count">
@@ -150,7 +150,6 @@ const {
   enterItem, leaveItem, cancel, reflowColumns, syncColumns,
 } = useGridMotionController({
   phase: () => props.motionPhase,
-  grid: () => gridElement(),
 })
 
 // Column count changes on resize glide instead of snapping (motion/grid.ts).

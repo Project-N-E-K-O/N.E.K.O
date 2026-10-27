@@ -46,15 +46,21 @@ export function useCollapsibleLabels(
     }
   }
 
+  // 布局过渡期间按钮和文字的宽度是动画中间值，量出来不作数；过渡结束尺寸回落时观察者会再触发一次。
+  function observedUpdate() {
+    if (container.value?.closest('[data-motion-running]')) return
+    update()
+  }
+
   // 只响应宽度变化：收起文字会改变高度，按高度触发会来回切换。
   useResizeObserver(container, (entries) => {
     const width = entries[0]?.contentRect.width ?? 0
     if (width === observedWidth) return
     observedWidth = width
-    update()
+    observedUpdate()
   })
   // 字体晚到、徽标数字变化等会在容器宽度不变时撑宽按钮组；收起状态下 update 只看容器宽度，不会来回切换。
-  useResizeObserver(groups, update)
+  useResizeObserver(groups, observedUpdate)
 
   watch(contentKey, async () => {
     compact.value = false
@@ -63,5 +69,6 @@ export function useCollapsibleLabels(
     update()
   }, { flush: 'post' })
 
-  return { compact: readonly(compact) }
+  // relayout 让调用方在切换到新布局后、测量终态前同步决定收起与否，之后的观察者便无需再改。
+  return { compact: readonly(compact), relayout: update }
 }

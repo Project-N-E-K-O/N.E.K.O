@@ -1,5 +1,6 @@
 <template>
   <div class="wb-filter-bar">
+    <div class="wb-filter-bar__skin" data-motion="skin" aria-hidden="true" />
     <div class="wb-filter-bar__controls">
       <div
         v-if="ruleGroups.length > 0"
@@ -15,6 +16,7 @@
           :aria-expanded="rulesVisible"
           :aria-controls="rulesId"
           :data-yui-guide-id="guideIds?.rulesTrigger"
+          data-motion="resize"
           @click.stop="toggleRules"
           @keydown.down.prevent="openRules()"
         >
@@ -81,6 +83,7 @@
         :model-value="filterText"
         clearable
         class="wb-filter-bar__input"
+        data-motion="resize"
         :data-yui-guide-id="guideIds?.input"
         :placeholder="placeholder"
         @update:model-value="(v: string) => $emit('update:filterText', v)"
@@ -321,13 +324,26 @@ onBeforeUnmount(stopListeners)
 </script>
 
 <style scoped>
-/* A pale inset panel groups search, rules and the footer row on the workspace. */
+/* A pale inset panel groups search, rules and the footer row on the workspace.
+   The surface lives on the skin, so the bar's width can animate under it. */
 .wb-filter-bar {
   --wb-radius-control: var(--radius-control);
+  position: relative;
   padding: 10px 14px;
+}
+
+.wb-filter-bar__skin {
+  position: absolute;
+  inset: 0;
   background: var(--surface-inset);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-panel);
+  pointer-events: none;
+}
+
+/* Content stacks above the skin; the teleported rules dropdown is outside. */
+.wb-filter-bar > :not(.wb-filter-bar__skin) {
+  position: relative;
 }
 
 .wb-filter-bar__controls {
