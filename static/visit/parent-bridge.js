@@ -1078,6 +1078,9 @@
         state.phase = phase;
         post({ t: 'visit_state', phase: phase });
       }
+      // 收尾一开始就收掉语音旁路与对端语音（后端在交还私聊之前已先发关语音的快照，这里再兜一道）：
+      // 旁路接的是共享的 TTS 链，私聊恢复后她的台词不能再进串门房间
+      if (action === 'ending' && voice) voice.reset();
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);
       else if (action === 'peer_visible') setPeerHidden(false);

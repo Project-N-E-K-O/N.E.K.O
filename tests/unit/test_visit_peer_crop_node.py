@@ -1240,14 +1240,18 @@ def test_voice_messages_drive_the_tts_tap_and_peer_playback_and_ended_closes_bot
         msg({ t: 'remote_audio', on: true });
         await settle();
         calls.length = 0;
+        change(h, 'ending');                         // ending already drops both directions (private chat is back)
+        await settle();
+        const atEnding = calls.slice();
         change(h, 'ended');
         await settle();
-        return { during, after: calls };
+        return { during, after: atEnding, afterEnded: calls.slice(atEnding.length) };
         """,
         files=BRIDGE_FILES,
     )
     assert out["during"] == [["open"], ["play", "peer-voice"], ["setLocalVoice", "tap"]]
     assert out["after"] == [["setLocalVoice", None], ["close"], ["stop", "peer-voice"]]
+    assert out["afterEnded"] == []
 
 
 def test_voice_from_another_frame_is_ignored():

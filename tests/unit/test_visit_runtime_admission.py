@@ -4395,3 +4395,30 @@ async def test_renewal_turning_voice_off_stops_it_for_the_rest_of_the_visit(tmp_
         assert guest.rt.media_snapshot()["audio_publish"] is True   # The other side decides for itself.
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_is_off_before_private_chat_gets_the_tts_chain_back(tmp_path, monkeypatch):
+    # The page taps the shared assistant TTS output: the voice-off snapshot must already be written when the takeover
+    # is released, or private replies spoken during the leave / grace window would reach the peer.
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        await wait_for(lambda: [m for m in media("host") if m["audio_publish"]])
+        seen = {}
+        real_release = host.host.release_takeover
+
+        def spy(token):
+            seen["last_media"] = dict(media("host")[-1])
+            return real_release(token)
+
+        host.host.release_takeover = spy
+        host.rt.request_finalize("route_end")
+        assert host.rt.media_snapshot()["audio_publish"] is False      # Off as soon as the visit starts ending.
+        await wait_for(lambda: "last_media" in seen, timeout=10)
+        assert seen["last_media"]["audio_publish"] is False and seen["last_media"]["audio_subscribe"] is False
+        await finish(host.rt, clock)
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

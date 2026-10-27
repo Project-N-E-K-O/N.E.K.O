@@ -139,6 +139,7 @@ _SESSION_CLOSE_S = 5.0
 _RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
+_VOICE_OFF_SEND_S = 1.0  # Bound the voice-off media write that must precede handing the TTS chain back to private chat.
 _ENDED_AFTER_DISPLAY_S = 2.0  # Bound waiting for ended notifications queued behind stubborn display writes, then send best effort.
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
@@ -1469,9 +1470,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         ``visitVoiceEnabled`` is on and only when the current credentials carry
         Servers' ``publish.audio`` as a literal true (latched, see
         :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays catgirl audio. A
-        TTS fallback keeps the track published but silent.
+        TTS fallback keeps the track published but silent. Voice is off from
+        the moment the visit starts ending: the tap carries the shared TTS
+        chain, so once private chat is back nothing more may reach the room.
         """
-        voice = bool(self.ready_exchanged and self.voice.enabled and self._voice_gate())
+        voice = bool(self.ready_exchanged and not self.finalizing and self.voice.enabled and self._voice_gate())
         snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
             snap["publish"] = bool(self.ready_exchanged and self.video_ok)
@@ -1993,6 +1996,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _exit_steps(self, reason: str) -> None:
         # 1. Finish current local line first, placing text{final} before leave and into this transcript.
         await self.close_current_line("visit_end")
+        # 1b. Voice off before private chat gets the TTS chain back (OD-15 v4): the page taps the shared assistant
+        # output, so the voice-off snapshot (finalizing is already true) must be written before takeover is released.
+        if self.ready_exchanged and self._audio_gate and self.transport_alive():
+            # Wait without cancelling the write (a cut-off frame is worse than a late one); a stuck page cannot hold
+            # the exit flow, and the page drops the tap on ending as well.
+            voice_off = self.spawn(self.send_media(), name="voice-off")
+            await asyncio.wait([voice_off], timeout=_VOICE_OFF_SEND_S)
+            if not voice_off.done():
+                logger.warning("visit %s: voice-off media still pending at takeover release", self.visit_id[:6])
         # 2. Close data channels in background: drain -> leave -> retransmission grace, blocking no later steps.
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # 3. Retain callbacks temporarily, immediately release takeover so family resumes ordinary chat.
