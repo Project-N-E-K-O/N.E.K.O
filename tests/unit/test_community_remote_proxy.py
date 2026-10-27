@@ -238,6 +238,24 @@ def test_visit_hub_reads_mutual_friends_after_the_first_page(proxy, monkeypatch)
     assert [friend["id"] for friend in response.json()["friends"]] == [later_id]
 
 
+@pytest.mark.asyncio
+async def test_following_rejects_a_non_object_success_body():
+    async def upstream(_request):
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream),
+    ) as client:
+        status, body = await P._community_following(
+            client,
+            {"base_url": "https://community.example", "access": "cloud-secret"},
+            "11111111-1111-4111-8111-111111111111",
+        )
+
+    assert status == 502
+    assert body == {"detail": "community_invalid_response"}
+
+
 def test_visit_hub_does_not_claim_notifications_are_authoritative_on_failure(proxy, monkeypatch):
     owner_id = "11111111-1111-4111-8111-111111111111"
 

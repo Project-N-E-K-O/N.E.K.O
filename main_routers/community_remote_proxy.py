@@ -64,8 +64,10 @@ async def _community_following(client: httpx.AsyncClient, session: dict, user_id
             "GET",
             f"/api/users/{user_id}/following?limit=100&offset={offset}",
         )
-        if status != 200 or not isinstance(body, dict):
+        if status != 200:
             return status, body
+        if not isinstance(body, dict):
+            return 502, {"detail": "community_invalid_response"}
         page = body.get("items")
         if not isinstance(page, list):
             return 502, {"detail": "community_invalid_response"}

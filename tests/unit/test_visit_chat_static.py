@@ -302,6 +302,16 @@ def test_invite_recovers_an_existing_room_before_creating_and_polls_after_creati
     assert "api('GET', currentHostRoomUrl(catgirl))" in recovery
 
 
+def test_invite_creation_fails_immediately_when_start_does_not_succeed():
+    chat = _read(CHAT)
+    start = _function_body(chat, "startInvite")
+    switched = "return { ok: false, error: t('visit.error.characterSwitched'"
+    assert switched in start
+    for function_name in ("createInviteCode", "createDirectInvitation"):
+        body = _function_body(chat, function_name)
+        assert "if (!started || started.ok !== true)" in body
+
+
 def test_persona_409_opens_the_panel_before_any_retry():
     body = _function_body(_read(CHAT), "withPersonaRetry")
     first = body.index("await request()")

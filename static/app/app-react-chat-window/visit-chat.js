@@ -1770,7 +1770,9 @@
             // 页面错过 invite_ready 或重新载入时，先恢复仍有效的原房间；绝不为同一场再建一个。
             var currentSeq = stateFrameSeq;
             var current = await api('GET', currentHostRoomUrl(catgirl));
-            if (currentCatgirl() !== catgirl) return;
+            if (currentCatgirl() !== catgirl) {
+                return { ok: false, error: t('visit.error.characterSwitched', '角色已切换，请重新邀请') };
+            }
             if (stateFrameSeq !== currentSeq) {
                 if (String(visit.targetUserId || '') !== targetUserId) {
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
@@ -1852,8 +1854,8 @@
             };
         }
         var started = await startInvite();
-        if (started && started.ok === false) {
-            throw new Error(started.error || '没能创建串门房间，请稍后再试');
+        if (!started || started.ok !== true) {
+            throw new Error((started && started.error) || '没能创建串门房间，请稍后再试');
         }
         return new Promise(function (resolve, reject) {
             var deadline = now() + 15000;
@@ -1884,7 +1886,9 @@
             };
         }
         var started = await startInvite(targetUserId);
-        if (started && started.ok === false) throw new Error(started.error || '没能创建定向串门房间，请稍后再试');
+        if (!started || started.ok !== true) {
+            throw new Error((started && started.error) || '没能创建定向串门房间，请稍后再试');
+        }
         try {
             return await new Promise(function (resolve, reject) {
                 var deadline = now() + 15000;
