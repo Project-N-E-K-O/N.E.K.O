@@ -17,6 +17,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from config.prompts.prompts_proactive import (
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -272,7 +273,7 @@ async def _fetch_music_with_fallback(
 
         async def refill(limit):
             return await fetch_music_request(
-                request, limit=limit, fetcher=fetch_music_content,
+                request, limit=limit, fetcher=partial(fetch_music_content, verify_audio=True),
                 allow_keyword_fallback=True,
             )
 
@@ -287,7 +288,7 @@ async def _fetch_music_with_fallback(
     result = await fetch_music_request(
         request,
         limit=5,
-        fetcher=fetch_music_content,
+        fetcher=partial(fetch_music_content, verify_audio=True),
         allow_keyword_fallback=True,
     )
     if result and result.get('success') and result.get('data'):

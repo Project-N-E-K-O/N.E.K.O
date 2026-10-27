@@ -52,19 +52,20 @@ def _available(result):
 async def _verified(result, payload, owner):
     # Try at most two small batches, so a broken leading source can yield to
     # another cached candidate without starting a fresh provider search.
+    deferred = set()
     for _ in range(2):
         if not result:
             return None
         tracks = result['data']
-        valid = await filter_playable_candidates(tracks)
+        valid = await filter_playable_candidates(tracks, deferred_urls=deferred)
         if await _owner() != owner:
             return None
-        failed = {track.get('url') for track in tracks if track not in valid}
+        failed = {track.get('url') for track in tracks if track not in valid and track.get('url') not in deferred}
         payload['data'] = [track for track in payload.get('data', []) if track.get('url') not in failed]
         result['data'] = valid
         if valid:
             return result
-        result = _available(payload)
+        result = _available({**payload, 'data': [track for track in payload['data'] if track.get('url') not in deferred]})
     return None
 
 
@@ -82,10 +83,11 @@ async def fetch_candidates(scope, request, fetch):
             cached = _pools.get(key)
             if cached:
                 _pools.move_to_end(key)
-                result = await _verified(_available(cached[1]), cached[1], owner)
+                available = _available(cached[1])
+                result = await _verified(available, cached[1], owner)
                 if await _owner() != owner:
                     return None
-                if result or not cached[1].get('success'):
+                if result or not cached[1].get('success') or (available and cached[1].get('data')):
                     if result:
                         logger.info('[%s] 命中音乐候选缓存，本轮不重新搜索音乐源', scope)
                     return result
@@ -96,14 +98,18 @@ async def fetch_candidates(scope, request, fetch):
             if await _owner() != owner:
                 return None
             successful = bool(fetched and fetched.get('success') and fetched.get('data'))
-            if successful:
-                mark_music_request_query(scope, request)
             payload = deepcopy(fetched) if successful else {'success': False, 'data': []}
             payload['data'] = payload.get('data', [])[:POOL_SIZE]
-            ttl = POOL_TTL_SECONDS if successful else FAILURE_TTL_SECONDS
+            result = await _verified(_available(payload), payload, owner)
+            if await _owner() != owner:
+                return None
+            if result:
+                mark_music_request_query(scope, request)
+            elif not payload['data']:
+                payload['success'] = False
+            ttl = POOL_TTL_SECONDS if result else FAILURE_TTL_SECONDS
             _pools[key] = (time.monotonic() + ttl, payload)
             _pools.move_to_end(key)
             while len(_pools) > MAX_POOLS:
                 _pools.popitem(last=False)
-            result = await _verified(_available(payload), payload, owner)
-            return result if await _owner() == owner else None
+            return result

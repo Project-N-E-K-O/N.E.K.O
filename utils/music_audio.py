@@ -8,7 +8,40 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from utils.music_crawlers import MUSIC_SOURCE_DOMAINS
+# ==================================================
+# Shared domain pool for whitelisting and crawlers.
+# Manage domains for every music source centrally here.
+# ==================================================
+MUSIC_SOURCE_DOMAINS = {
+    # NetEase Cloud Music.
+    'music.163.com',
+    'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+    'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+    'music.126.net',
+    # SoundCloud
+    'soundcloud.com', 'api.soundcloud.com', 'sndcdn.com',
+    'playback.media-streaming.soundcloud.cloud',
+    # iTunes/Apple Music
+    'itunes.apple.com', 'audio-ssl.itunes.apple.com',
+    'a.scdn.co', 'i.scdn.co', 'p.scdn.co',
+    # QQ Music.
+    'y.qq.com', 'u.y.qq.com', 'dl.stream.qqmusic.com', 'dl.stream.qqmusic.qq.com',
+    'isure.stream.qqmusic.qq.com',
+    # Kugou / others.
+    'kugou.com', 'stream.kugou.com',
+    # FMA (Free Music Archive)
+    'freemusicarchive.org', 'freemusicarchive.imgix.net',
+    # Musopen
+    'musopen.org', 'imslp.org',
+    # Bandcamp
+    'bandcamp.com', 'bcbits.com',
+    # General images.
+    'i.imgur.com',
+    # Bilibili, for some music.
+    'hdslb.com', 'bilivideo.com',
+    'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
+}
+
 
 MAX_AUDIO_BYTES = 50 * 1024 * 1024
 _availability = OrderedDict()
@@ -16,7 +49,7 @@ _probe_slots = asyncio.Semaphore(3)
 _unavailable_hosts = OrderedDict()
 
 
-def mark_audio_unavailable(url, *, connection_failure=False):
+def mark_audio_unavailable(url, *, connection_failure=False, candidate_url=None):
     """Let real playback failures override a recent successful preflight."""
     if not is_allowed_audio_url(url):
         return
@@ -26,6 +59,9 @@ def mark_audio_unavailable(url, *, connection_failure=False):
     # Record failures even when a concurrent preflight has not cached anything yet.
     _availability[(url, None)] = (time.monotonic() + 60, False)
     _availability.move_to_end((url, None))
+    if candidate_url and is_netease_candidate_url(candidate_url):
+        _availability[(candidate_url, None)] = (time.monotonic() + 60, False)
+        _availability.move_to_end((candidate_url, None))
     while len(_availability) > 256:
         _availability.popitem(last=False)
     if connection_failure:
@@ -42,6 +78,12 @@ def _playback_failed_recently(url):
     return _unavailable_hosts.get(urlparse(url).hostname, 0) > now or bool(
         failed and failed[0] > now and not failed[1]
     )
+
+
+def is_netease_candidate_url(url):
+    prefix = '/api/music/play/netease/'
+    song_id = url.removeprefix(prefix)
+    return url.startswith(prefix) and 0 < len(song_id) <= 20 and song_id.isascii() and song_id.isdecimal()
 
 
 def is_allowed_audio_url(url):
@@ -78,25 +120,27 @@ async def send_audio_request(client, request):
         return await client.send(request, stream=True)
 
 
-async def filter_playable_candidates(tracks):
+async def filter_playable_candidates(tracks, *, deferred_urls=None):
     async def playable(track):
         url = str(track.get('url') or '')
         prefix = '/api/music/play/netease/'
         if url.startswith(prefix):
-            song_id = url[len(prefix):]
             # This trusted candidate path already passed NetEase's batch authorization.
-            if not (bool(song_id) and len(song_id) <= 20 and song_id.isascii() and song_id.isdecimal()):
+            if not is_netease_candidate_url(url) or _playback_failed_recently(url):
                 return False
             audio_url = track.get('_audio_url')
             if audio_url:
                 audio_url = str(audio_url)
                 if audio_url.startswith('http://'):
                     audio_url = 'https://' + audio_url[7:]
-                return await probe_audio_url(audio_url, referer='https://music.163.com/')
+                checked = await probe_audio_url(audio_url, referer='https://music.163.com/')
+                return checked if not _playback_failed_recently(url) else False
             return True
         return await probe_audio_url(url)
     tracks = [track for track in tracks[:20] if isinstance(track, dict)]
     checks = await asyncio.gather(*(playable(track) for track in tracks))
+    if deferred_urls is not None:
+        deferred_urls.update(track.get('url') for track, ok in zip(tracks, checks) if ok is None)
     return [track for track, ok in zip(tracks, checks) if ok]
 
 
@@ -110,9 +154,11 @@ async def probe_audio_url(url, *, referer=None):
     if cached and cached[0] > time.monotonic():
         return cached[1]
     playable = False
+    acquired = False
     try:
         async with asyncio.timeout(8):
             async with _probe_slots:
+                acquired = True
                 client = await asyncio.to_thread(httpx.AsyncClient, timeout=httpx.Timeout(4, connect=2), follow_redirects=False)
                 async with client:
                     current = url
@@ -143,6 +189,9 @@ async def probe_audio_url(url, *, referer=None):
                         finally:
                             await response.aclose()
     except (httpx.HTTPError, TimeoutError, ValueError):
+        if not acquired:
+            # Queue pressure says nothing about this song's availability.
+            return None
         playable = False
     # A real playback failure while this request was awaiting wins over its late result.
     if _playback_failed_recently(url):

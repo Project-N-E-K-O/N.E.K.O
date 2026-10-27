@@ -242,3 +242,27 @@ async def test_bad_first_batch_uses_other_cached_tracks_without_another_search(m
     assert len(result['data'])==5 and all(t['name'].startswith('good') for t in result['data'])
     assert len(requests)==10
     fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unprobed_candidates_stay_in_pool_without_starting_query_cooldown(monkeypatch):
+    from utils import music_audio as audio
+    monkeypatch.setattr(audio, 'probe_audio_url', AsyncMock(return_value=None))
+    row = {'name': 'Queued', 'artist': 'Artist', 'url': 'https://freemusicarchive.org/queued.mp3'}
+    fetch = AsyncMock(return_value={'success': True, 'data': [row]})
+    request = music_requests.MusicRequest()
+    assert await pool.fetch_candidates('queued', request, fetch) is None
+    assert next(iter(pool._pools.values()))[1]['data'] == [row]
+    assert not music_requests.was_music_request_recent('queued', request)
+    assert await pool.fetch_candidates('queued', request, fetch) is None
+    fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_all_failed_audio_does_not_mark_a_successful_query(monkeypatch):
+    from utils import music_audio as audio
+    monkeypatch.setattr(audio, 'probe_audio_url', AsyncMock(return_value=False))
+    row = {'name': 'Broken', 'url': 'https://freemusicarchive.org/broken.mp3'}
+    request = music_requests.MusicRequest()
+    assert await pool.fetch_candidates('broken', request, AsyncMock(return_value={'success': True, 'data': [row]})) is None
+    assert not music_requests.was_music_request_recent('broken', request)

@@ -39,6 +39,7 @@ import urllib.parse
 from typing import List, Dict, Any
 from collections import Counter
 from utils.logger_config import get_module_logger
+from utils.music_audio import MUSIC_SOURCE_DOMAINS as MUSIC_SOURCE_DOMAINS, filter_playable_candidates
 
 
 # bs4 is expensive and needed only for fetch parsing, outside startup: import on first use,
@@ -94,40 +95,6 @@ USER_AGENTS = [
     # Opera - macOS
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0',
 ]
-
-# ==================================================
-# Shared domain pool for whitelisting and crawlers.
-# Manage domains for every music source centrally here.
-# ==================================================
-MUSIC_SOURCE_DOMAINS = {
-    # NetEase Cloud Music.
-    'music.163.com',
-    'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-    'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-    'music.126.net',
-    # SoundCloud
-    'soundcloud.com', 'api.soundcloud.com', 'sndcdn.com',
-    'playback.media-streaming.soundcloud.cloud',
-    # iTunes/Apple Music
-    'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-    'a.scdn.co', 'i.scdn.co', 'p.scdn.co',
-    # QQ Music.
-    'y.qq.com', 'u.y.qq.com', 'dl.stream.qqmusic.com', 'dl.stream.qqmusic.qq.com',
-    'isure.stream.qqmusic.qq.com',
-    # Kugou / others.
-    'kugou.com', 'stream.kugou.com',
-    # FMA (Free Music Archive)
-    'freemusicarchive.org', 'freemusicarchive.imgix.net',
-    # Musopen
-    'musopen.org', 'imslp.org',
-    # Bandcamp
-    'bandcamp.com', 'bcbits.com',
-    # General images.
-    'i.imgur.com',
-    # Bilibili, for some music.
-    'hdslb.com', 'bilivideo.com',
-    'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
-}
 
 # Proactive music recommendations target single tracks. Long DJ collections, podcasts, and whole albums may have covers,
 # but direct audio URLs often face CDN, preview-permission, or file-size limits and do not belong in the song player.
@@ -1332,6 +1299,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         if not snapshot:
             return []
 
+        candidate_limit = min(100, max(20, bounded_limit * 3))
         liked = list(snapshot.get('liked_tracks') or [])
         random.shuffle(liked)
 
@@ -1382,7 +1350,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         }
         combined: List[Dict[str, Any]] = []
         seen_ids = set()
-        while len(combined) < bounded_limit and any(pools.values()):
+        while len(combined) < candidate_limit and any(pools.values()):
             for source in source_order:
                 pool = pools[source]
                 while pool and pool[0].get('id') in seen_ids:
@@ -1392,7 +1360,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 track = pool.pop(0)
                 seen_ids.add(track.get('id'))
                 combined.append(track)
-                if len(combined) >= bounded_limit:
+                if len(combined) >= candidate_limit:
                     break
         if combined:
             self._personalization_error_code = ''
@@ -2505,6 +2473,7 @@ async def fetch_music_content(
     requested_song: str = "",
     requested_artist: str = "",
     bypass_recommendation_dedupe: bool = False,
+    verify_audio: bool = False,
 ) -> Dict[str, Any]:
     """
     Fetch music content with staged fallback and locale-aware source ordering.
@@ -2514,6 +2483,22 @@ async def fetch_music_content(
     logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}, source_locale={source_locale}")
 
     all_results = []
+    deferred_results = []
+
+    async def checked(rows):
+        # Public search keeps metadata behavior; proactive callers require audio
+        # before a provider can win the race and cancel its alternatives.
+        if verify_audio and isinstance(rows, list) and rows:
+            deferred = set()
+            playable = await filter_playable_candidates(rows, deferred_urls=deferred)
+            # Preserve unprobed metadata for the candidate pool without letting
+            # it cancel another provider that may already have usable audio.
+            deferred_results.extend(
+                row for row in rows[:20] if row.get('url') in deferred
+            )
+            del deferred_results[20:]
+            return playable
+        return rows
     
     # Obtain crawler instances through lazy accessors.
     all_crawlers = get_music_crawlers()
@@ -2564,6 +2549,7 @@ async def fetch_music_content(
             personalization_error_code = str(
                 all_crawlers['netease']._personalization_error_code or ''
             )
+        personalized_results = await checked(personalized_results)
         if personalized_results:
             all_results.extend(personalized_results)
             logger.info(f"[个性化推荐] 使用网易云个性化候选 {len(personalized_results)} 首")
@@ -2623,6 +2609,7 @@ async def fetch_music_content(
                             requested_song=requested_song,
                             requested_artist=requested_artist,
                         )
+                    res = await checked(res)
                     if isinstance(res, list) and res:
                         all_results.extend(res)
                         logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
@@ -2660,6 +2647,7 @@ async def fetch_music_content(
                             requested_song=requested_song,
                             requested_artist=requested_artist,
                         )
+                    qq_results = await checked(qq_results)
                     if isinstance(qq_results, list) and qq_results:
                         all_results.extend(qq_results)
                         logger.info("[智能调度] QQ 音乐备用源命中")
@@ -2687,6 +2675,7 @@ async def fetch_music_content(
                                 requested_song=requested_song,
                                 requested_artist=requested_artist,
                             )
+                        res = await checked(res)
                         if isinstance(res, list) and res:
                             all_results.extend(res)
                             logger.info("[智能调度] 兜底源命中，取消其他任务")
@@ -2742,7 +2731,10 @@ async def fetch_music_content(
             for res in crawler_results
             if isinstance(res, list) and res
         ]
-        all_results.extend(_interleave_music_result_groups(result_groups))
+        all_results.extend(await checked(_interleave_music_result_groups(result_groups)))
+
+    if not all_results:
+        all_results.extend(deferred_results)
 
     # Final safeguard: even if a future crawler omits filtering, standardized duration prevents excessively long content
     # entering proactive recommendations or the player.

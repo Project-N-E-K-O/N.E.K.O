@@ -271,3 +271,35 @@ async def test_proxy_html_failure_invalidates_a_successful_preflight(monkeypatch
     assert response.status_code == 502
     assert not await audio.probe_audio_url(URL)
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_queue_timeout_does_not_poison_an_unprobed_song(monkeypatch):
+    monkeypatch.setattr(audio, '_probe_slots', asyncio.Semaphore(0))
+    timeout = asyncio.timeout
+    monkeypatch.setattr(audio, 'asyncio', SimpleNamespace(**{**vars(asyncio), 'timeout': lambda seconds: timeout(0.02)}))
+    monkeypatch.setattr(audio.httpx, 'AsyncClient', lambda **kwargs: pytest.fail('queued probe must not open a client'))
+    assert await audio.probe_audio_url(URL) is None
+    assert (URL, None) not in audio._availability
+
+
+@pytest.mark.asyncio
+async def test_refreshed_netease_playback_failure_wins_over_late_old_token_probe(monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    row = {'url': '/api/music/play/netease/1', '_audio_url': 'https://m7.music.126.net/old.mp3'}
+    async def handler(request):
+        entered.set()
+        await release.wait()
+        return httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=MP3)
+    transport(monkeypatch, handler)
+    task = asyncio.create_task(audio.filter_playable_candidates([row]))
+    try:
+        await entered.wait()
+        audio.mark_audio_unavailable('https://m7.music.126.net/new.mp3', candidate_url=row['url'])
+        release.set()
+        assert await task == []
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

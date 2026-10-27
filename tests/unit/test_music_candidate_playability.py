@@ -544,3 +544,109 @@ async def test_song_identity_survives_url_change_and_history_reload(tmp_path, mo
         lang='en', source_hash=state._source_hash, should_skip_source=_should_skip_source,
     )
     assert result.link is None
+
+
+@pytest.mark.asyncio
+async def test_personalized_authorization_backfills_past_the_return_limit(crawler, monkeypatch):
+    rows = [{**track(i), 'id': i} for i in range(1, 31)]
+    monkeypatch.setattr(crawler, 'get_taste_snapshot', AsyncMock(return_value={
+        'user_id': 7, 'liked_tracks': rows, 'subscribed_artists': []}))
+    monkeypatch.setattr(crawler, 'get_daily_recommendations', AsyncMock(return_value=[]))
+    monkeypatch.setattr(crawler, 'get_daily_playlist_recommendations', AsyncMock(return_value=[]))
+    monkeypatch.setattr(crawler, '_fetch_exploration_tracks', AsyncMock(return_value=[]))
+    monkeypatch.setattr(music.random, 'shuffle', lambda values: None)
+    requested = []
+    def handler(request):
+        requested.extend(json.loads(dict(httpx.QueryParams(request.content.decode()))['ids']))
+        return httpx.Response(200, json={'code': 200, 'data': [authorized(2)]})
+    transport(crawler, handler)
+    result = await crawler.personalized_recommendations(limit=1)
+    assert [row['name'] for row in result] == ['Song 2']
+    assert 2 in requested and len(requested) <= 100
+
+
+@pytest.mark.asyncio
+async def test_proactive_bad_primary_audio_continues_to_working_provider(providers, monkeypatch):
+    from main_logic import music_requests
+    from main_logic.proactive_chat import music_pool as pool
+    from utils import music_audio as audio
+    monkeypatch.setattr(pool, '_pools', pool.OrderedDict())
+    monkeypatch.setattr(pool, '_pool_lock', asyncio.Lock())
+    monkeypatch.setattr(pool, '_owner', AsyncMock(return_value='same-account'))
+    monkeypatch.setattr(pool, '_should_skip_source', lambda key: False)
+    monkeypatch.setattr(music_requests, '_recent_music_queries', {})
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_unavailable_hosts', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_probe_slots', asyncio.Semaphore(3))
+    bad = {**track(1), '_audio_url': 'https://m7.music.126.net/denied.mp3'}
+    good = {'name': 'Playable fallback', 'artist': 'Singer', 'url': 'https://dl.stream.qqmusic.qq.com/good.m4a'}
+    providers['netease'].search.return_value = [bad]
+    providers['qqmusic'].search.return_value = [good]
+    real_client = httpx.AsyncClient
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if request.url.host == 'm7.music.126.net':
+            return httpx.Response(403)
+        return httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=b'ID3' + b'\0' * 300)
+    monkeypatch.setattr(audio.httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    result = await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='fallback-review')
+    assert result and result['data'] == [good]
+    providers['netease'].search.assert_awaited_once()
+    providers['qqmusic'].search.assert_awaited_once()
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['fallback', 'personalized', 'strict'])
+async def test_audio_failures_preserve_provider_and_strict_source_boundaries(providers, monkeypatch, mode):
+    from utils import music_audio as audio
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_unavailable_hosts', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_probe_slots', asyncio.Semaphore(3))
+    bad = {'name': 'Unavailable', 'url': 'https://m7.music.126.net/denied.mp3'}
+    good = {'name': 'Working', 'url': 'https://files.freemusicarchive.org/working.mp3'}
+    if mode == 'fallback':
+        providers['netease'].search.return_value = [bad]
+        providers['qqmusic'].search.return_value = [bad]
+    else:
+        providers['netease'].personalized_recommendations.return_value = [bad]
+        monkeypatch.setattr(music, '_sample_distinct_background_sources', lambda rows: [('fma', 'lofi')])
+    providers['fma'].search.return_value = [good]
+    real_client = httpx.AsyncClient
+    def handler(request):
+        if request.url.host == 'm7.music.126.net':
+            return httpx.Response(403)
+        return httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=b'ID3' + b'\0' * 300)
+    monkeypatch.setattr(audio.httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    result = await music.fetch_music_content(
+        'pop' if mode == 'fallback' else '', personalized=True, verify_audio=True,
+        personalization_source='liked' if mode == 'strict' else 'auto')
+    assert result['data'] == ([] if mode == 'strict' else [good])
+    if mode == 'strict':
+        assert not result['success']
+        for provider in providers.values():
+            provider.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_proactive_queue_deferral_retains_metadata_and_recovers_without_refetch(providers, monkeypatch):
+    from main_logic import music_requests
+    from main_logic.proactive_chat import music_pool as pool
+    from utils import music_audio as audio
+    monkeypatch.setattr(pool, '_pools', pool.OrderedDict())
+    monkeypatch.setattr(pool, '_pool_lock', asyncio.Lock())
+    monkeypatch.setattr(pool, '_owner', AsyncMock(return_value='same-account'))
+    monkeypatch.setattr(pool, '_should_skip_source', lambda key: False)
+    monkeypatch.setattr(music_requests, '_recent_music_queries', {})
+    row = {**track(1), '_audio_url': 'https://m7.music.126.net/queued.mp3'}
+    providers['netease'].search.return_value = [row]
+    probe = AsyncMock(return_value=None)
+    monkeypatch.setattr(audio, 'probe_audio_url', probe)
+    assert await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='queued') is None
+    assert next(iter(pool._pools.values()))[1]['data'] == [row]
+    assert not music_requests._recent_music_queries
+    probe.return_value = True
+    result = await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='queued')
+    assert result['data'] == [row]
+    providers['netease'].search.assert_awaited_once()

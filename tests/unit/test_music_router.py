@@ -211,7 +211,7 @@ async def test_play_netease_music_syncs_cookies_without_session_client(monkeypat
     response = await music_router.play_netease_music("2070160351")
 
     assert response.status_code == 307
-    assert response.headers["location"] == "https://m7.music.126.net/song.mp3"
+    assert response.headers["location"] == "/api/music/proxy?url=https%3A%2F%2Fm7.music.126.net%2Fsong.mp3&netease_id=2070160351"
     assert session.cookies.values == {"MUSIC_U": "token"}
 
 
@@ -240,7 +240,7 @@ async def test_play_netease_music_uses_verified_public_fallback(monkeypatch):
     response = await music_router.play_netease_music("123")
 
     assert response.status_code == 307
-    assert response.headers["location"] == "https://music.163.com/song/media/outer/url?id=123.mp3"
+    assert response.headers["location"] == "/api/music/proxy?url=https%3A%2F%2Fmusic.163.com%2Fsong%2Fmedia%2Fouter%2Furl%3Fid%3D123.mp3&netease_id=123"
 
 
 @pytest.mark.asyncio
@@ -570,3 +570,64 @@ async def test_music_proxy_rejects_unsafe_redirect(monkeypatch, redirect_url):
 )
 def test_playable_audio_content_type_is_shared_across_proxy_and_probe(content_type):
     assert music_router._is_playable_audio_content_type(content_type) is True
+
+
+@pytest.mark.asyncio
+async def test_public_search_strips_internal_audio_url_without_mutating_candidates(monkeypatch):
+    from copy import deepcopy
+    from unittest.mock import AsyncMock
+    row = {'name': 'Song', 'url': '/api/music/play/netease/1', '_audio_url': 'https://m7.music.126.net/private.mp3'}
+    original = {'success': True, 'data': [row], 'best_match': {'status': 'exact', 'resource': row}}
+    snapshot = deepcopy(original)
+    monkeypatch.setattr(music_router, 'fetch_music_content', AsyncMock(return_value=original))
+    result = await music_router.search_music(query='Song', limit=5)
+    assert '_audio_url' not in result['data'][0]
+    assert '_audio_url' not in result['best_match']['resource']
+    assert original == snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['denied', 'connect', 'success'])
+async def test_netease_playback_failure_invalidates_checked_song_and_only_its_owner(monkeypatch, failure):
+    import asyncio
+    import httpx
+    from fastapi import FastAPI
+    from unittest.mock import AsyncMock
+    from urllib.parse import urlparse, parse_qs
+    from utils import music_audio as audio
+    checked = 'https://m7.music.126.net/checked.mp3?token=old'
+    refreshed = 'http://m7.music.126.net/play.mp3?token=new'
+    row = {'url': '/api/music/play/netease/1', '_audio_url': checked}
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_probe_slots', asyncio.Semaphore(3))
+    monkeypatch.setattr(music_router, '_ensure_pyncm', lambda: True)
+    monkeypatch.setattr(music_router, 'pyncm_async', SimpleNamespace(GetCurrentSession=lambda: SimpleNamespace(cookies=CookieRecorder())))
+    monkeypatch.setattr(music_router, 'load_cookies_from_file', lambda platform: {})
+    monkeypatch.setattr(music_router, 'GetTrackAudio', AsyncMock(return_value={'data': [{'url': refreshed}]}))
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if request.url.path == '/play.mp3':
+            assert request.headers['range'] == 'bytes=123-456'
+            if failure == 'connect':
+                raise httpx.ConnectError('offline', request=request)
+            if failure == 'denied':
+                return httpx.Response(403)
+        return httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=b'ID3' + b'\0' * 300)
+    app = FastAPI()
+    app.include_router(music_router.router)
+    real_client = httpx.AsyncClient
+    async with real_client(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as api:
+        monkeypatch.setattr(audio.httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        assert await audio.filter_playable_candidates([row]) == [row]
+        resolved = await api.get('/api/music/play/netease/1')
+        location = resolved.headers['location']
+        assert urlparse(location).path == '/api/music/proxy'
+        assert parse_qs(urlparse(location).query)['url'] == [refreshed.replace('http://', 'https://', 1)]
+        response = await api.get(location, headers={'Range': 'bytes=123-456'})
+        assert response.status_code == {'connect': 502, 'denied': 403, 'success': 206}[failure]
+        assert bool(await audio.filter_playable_candidates([row])) is (failure == 'success')
+        if failure == 'success':
+            assert response.content == b'ID3' + b'\0' * 300
+        other = {'url': '/api/music/play/netease/2', '_audio_url': checked}
+        assert bool(await audio.filter_playable_candidates([other])) is (failure != 'connect')
