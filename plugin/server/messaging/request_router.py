@@ -21,8 +21,9 @@ from plugin.server.messaging.handlers.registry import build_request_handlers
 
 logger = get_logger("server.messaging.request_router")
 
-# Matches the dispatcher's in-flight limit; beyond it callers fall back to their deadline.
+# Reply delivery has its own bounded task budget.
 _MAX_PENDING_BUSY_REPLIES = 256
+_RECEIVE_BATCH_SIZE = 32
 
 
 def _domain_error(exc: Exception) -> object | None:
@@ -81,8 +82,22 @@ class PluginRouter:
         logger.info("Plugin router stopped")
 
     async def _router_loop(self) -> None:
+        received = 0
         while not self._shutdown_event.is_set():
             request = await state.plugin_comm_queue.get()
+            received += 1
+            if received >= _RECEIVE_BATCH_SIZE:
+                received = 0
+                # A nonempty Queue.get() never yields. Give reply tasks time
+                # to deliver and release slots before draining another batch.
+                await asyncio.sleep(0)
+                # Reserve room for the next batch even when a healthy send
+                # takes more than one loop turn. Each send is already bounded
+                # by _send_busy's timeout; never grow the reply task budget.
+                while len(self._busy_replies) > _MAX_PENDING_BUSY_REPLIES - _RECEIVE_BATCH_SIZE:
+                    await asyncio.wait(
+                        tuple(self._busy_replies), return_when=asyncio.FIRST_COMPLETED
+                    )
             if not isinstance(request, Mapping):
                 logger.warning("Discarding malformed plugin control request")
                 continue

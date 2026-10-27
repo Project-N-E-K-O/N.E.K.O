@@ -2590,6 +2590,41 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
 
 
+def test_compact_visit_system_prompts_remain_legible_in_both_themes():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    # The choice layer may dim ordinary history, but it must not dim its two
+    # actionable visit system cards (visit finished / save to diary).
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll," not in styles
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {" in styles
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {" in styles
+    assert "opacity: 1;\n  filter: none;" in styles
+
+    light_system_block = css_block(
+        styles,
+        ".compact-export-history-message.is-system .compact-export-history-bubble {",
+        ".compact-export-history-message.is-system .compact-export-history-meta",
+    )
+    assert "background: rgba(242, 246, 252, 0.96);" in light_system_block
+    assert "color: #2f435e;" in light_system_block
+    assert "border-color:" in light_system_block
+
+    dark_system_block = css_block(
+        styles,
+        '[data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-bubble {',
+        '[data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-meta',
+    )
+    assert "background: rgba(30, 42, 59, 0.96);" in dark_system_block
+    assert "color: #edf4ff;" in dark_system_block
+    assert "border-color:" in dark_system_block
+
+    # The confirmation actions need explicit theme-aware contrast as well.
+    assert ".compact-export-history-message.is-system .message-action-button.variant-secondary {" in styles
+    assert ".compact-export-history-message.is-system .message-action-button.variant-danger {" in styles
+    assert '[data-theme="dark"] .compact-export-history-message.is-system .message-action-button.variant-secondary {' in styles
+    assert '[data-theme="dark"] .compact-export-history-message.is-system .message-action-button.variant-danger {' in styles
+
+
 def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 

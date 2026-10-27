@@ -243,3 +243,29 @@ def test_macos_documents_ignores_linux_xdg_override(monkeypatch):
     monkeypatch.setattr(logging_layout.sys, "platform", "darwin")
     monkeypatch.setenv("XDG_DOCUMENTS_DIR", "/linux-only-documents")
     assert logging_layout.documents_directory() == Path.home() / "Documents"
+
+
+@pytest.mark.parametrize("template", ["external={}", "external=%s"])
+def test_plugin_controls_are_escaped_after_interpolation(isolated_log_dir, capsys, template):
+    plogging.setup_plugin_logging("PluginServer", own_root=True)
+    adapter = plogging.get_logger("external-plugin").bind(plugin_id="demo")
+    adapter.error(template, "response\x07\x1b[2J")
+    console = capsys.readouterr().out
+    output = _read(isolated_log_dir, "PluginServer")
+    for text in (console, output):
+        assert r"external=response\x07\x1b[2J" in text
+        assert "\x07" not in text
+        assert "\x1b" not in text
+
+
+@pytest.mark.parametrize("template", ["external={}", "external=%s"])
+def test_degraded_plugin_logging_escapes_controls(isolated_log_dir, capsys, template):
+    isolated_log_dir.mkdir(parents=True, exist_ok=True)
+    (isolated_log_dir / "plugin").write_text("blocked")
+    _, config = plogging.setup_plugin_logging("Plugin_demo", own_root=True)
+    assert config is None
+    plogging.get_logger("external-plugin").error(template, "response\x07\x1b[2J")
+    output = capsys.readouterr().err
+    assert r"external=response\x07\x1b[2J" in output
+    assert "\x07" not in output
+    assert "\x1b" not in output

@@ -676,6 +676,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         persona_text: str,
         crop: str = VISIT_CROP_DEFAULT,
         invite_code: Optional[str] = None,
+        target_user_id: Optional[str] = None,
+        direct: bool = False,
         deps: Optional[RuntimeDeps] = None,
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
@@ -689,6 +691,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.persona_text = persona_text
         self.crop = crop if crop in ("upper", "full") else VISIT_CROP_DEFAULT
         self.invite_code = invite_code
+        self.target_user_id = target_user_id
+        self.direct = direct
         self.deps = deps or runtime_deps()
         self.clock = clock
         self.wall = wall
@@ -941,7 +945,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _register(self)
         register_transport_session(self.transport)
         self._pump_task = asyncio.ensure_future(self._pump_loop())
-        self.spawn(self.push(PHASE_PENDING, transport=None))
+        self.spawn(self.push(
+            PHASE_PENDING,
+            transport=None,
+            target_user_id=self.target_user_id if self.direct else None,
+        ))
 
     # -- Capability gates and credentials --
 
@@ -1036,6 +1044,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
             tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
             invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
+            direct=self.direct,
             expect_account=self.admitted_account,
         ))
         _credential_requests.add(request)
@@ -1049,8 +1059,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: credentials failed: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("servers_unreachable")
             return False
-        self.grant = cr.VisitGrant(creds, display_name=self.lanlan_name,
-                                   invite_code=self.invite_code if self.side == "guest" else None)
+        self.grant = cr.VisitGrant(
+            creds,
+            display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
+            direct=self.direct,
+        )
         try:
             # Bound local file-lock/disk accounting so pending visits cannot hold routing forever.
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
@@ -1064,7 +1079,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("busy")
             self._cancel_room_once()
             return False
-        if self.side == "host" and not creds.invite_code:
+        if self.side == "host" and not self.direct and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
             return False
@@ -1253,8 +1268,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
             self.liveness.wait_deadline = now + VISIT_INVITE_WAIT_S
             self._set_phase(PHASE_INVITE_READY)
-            await self.push(PHASE_INVITE_READY, invite_code=creds.invite_code,
-                            invite_expires_at=creds.invite_expires_at, transport=creds.transport)
+            invite_frame = {
+                "invite_expires_at": creds.invite_expires_at,
+                "transport": creds.transport,
+            }
+            if not self.direct:
+                invite_frame["invite_code"] = creds.invite_code
+            else:
+                invite_frame["target_user_id"] = self.target_user_id
+            await self.push(PHASE_INVITE_READY, **invite_frame)
         else:
             from config.visit_settings import VISIT_PEER_LOST_S
 
@@ -1384,10 +1406,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         creds = self.creds
         frames: list[dict] = []
         if self.side == "host" and self.phase == PHASE_INVITE_READY and creds is not None:
-            frames.append({"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
-                           "visit_id": self.visit_id, "invite_code": creds.invite_code,
-                           "invite_expires_at": creds.invite_expires_at, "transport": creds.transport,
-                           "ts": self.wall()})
+            frame = {"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
+                     "visit_id": self.visit_id, "invite_expires_at": creds.invite_expires_at,
+                     "transport": creds.transport, "ts": self.wall()}
+            if self.direct:
+                frame["target_user_id"] = self.target_user_id
+            else:
+                frame["invite_code"] = creds.invite_code
+            frames.append(frame)
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
@@ -2810,6 +2836,8 @@ async def start_visit(
     *,
     crop: str = VISIT_CROP_DEFAULT,
     invite_code: Optional[str] = None,
+    target_user_id: Optional[str] = None,
+    direct: bool = False,
     visit_id: Optional[str] = None,
     host: Optional[VisitHost] = None,
     deps: Optional[RuntimeDeps] = None,
@@ -2890,7 +2918,8 @@ async def start_visit(
             raise VisitRefused(403, {"code": "VISIT_BANNED"})
         rt = VisitRuntime(
             lanlan_name=name, side=side, visit_id=vid, host=host, character_uid=gate.character_uid or "",
-            persona_text=gate.text or "", crop=crop, invite_code=invite_code, deps=deps,
+            persona_text=gate.text or "", crop=crop, invite_code=invite_code,
+            target_user_id=target_user_id, direct=direct, deps=deps,
             clock=clock, wall=wall,
         )
     except BaseException:

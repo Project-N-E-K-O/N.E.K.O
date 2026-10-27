@@ -188,7 +188,7 @@ def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool |
     """
     global _runtime_pid, _runtime_service, _runtime_result, _runtime_owns_root
     from config import APP_NAME
-    from utils.logger_config import (EnhancedLogger, RobustLoggerConfig, mark_project_handler,
+    from utils.logger_config import (EnhancedLogger, RobustLoggerConfig, mark_project_handler, create_log_formatter,
                                      install_httpx_filter, install_message_formatting)
     from plugin._logging_runtime import install_namespace_handlers
 
@@ -220,7 +220,7 @@ def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool |
             config = None
             base_logger = logging.getLogger(f"{APP_NAME}.{service_name}")
             handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            handler.setFormatter(create_log_formatter())
             mark_project_handler(handler)
             install_namespace_handlers(base_logger, [handler], log_level)
             base_logger.warning("Plugin file logging unavailable (%s); using stderr", type(error).__name__)

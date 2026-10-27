@@ -31,13 +31,14 @@ from .network import _read_bool_env, _read_str_env
 
 # -- Release master gate and development loopback --
 
-VISIT_ENABLED = _read_bool_env("VISIT_ENABLED", False)
-"""Release gate, read from ``NEKO_VISIT_ENABLED`` (default off).
+VISIT_ENABLED = _read_bool_env("VISIT_ENABLED", True)
+"""Release gate, read from ``NEKO_VISIT_ENABLED`` (default on).
 
 When off only the entry points that start or join a visit return 404 and the
 settings page hides the visit group; data management endpoints and background
 tasks (upload retry, crash recovery, forget replay) keep running. Python code
-must reference this constant, never the env var name."""
+must reference this constant, never the env var name. Operators can still set
+``NEKO_VISIT_ENABLED=0`` for an emergency rollback."""
 
 NEKO_VISIT_ALLOW_NONLOCAL = _read_bool_env("VISIT_ALLOW_NONLOCAL", False)
 """Escape hatch for non-loopback / reverse-proxy deployments (default off).

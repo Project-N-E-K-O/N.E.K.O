@@ -197,6 +197,28 @@ def test_traditional_text_avoids_mainland_terms(mainland_term: str):
     assert mainland_term not in traditional
 
 
+# Names may be meaningful dialogue, but bracketed speaker/addressee labels are
+# transport metadata and must never be copied into model output.
+_PLAIN_PARTICIPANT_NAME = {
+    "zh": "可以直接写名字，但不要加方括号",
+    "zh-TW": "可以直接寫名字，但不要加方括號",
+    "en": "write the name plainly without brackets",
+    "ja": "角括弧を付けず普通に名前を書いてください",
+    "ko": "대괄호 없이 이름을 그대로 쓰세요",
+    "ru": "напиши имя обычно, без скобок",
+    "es": "escribe el nombre normalmente, sin corchetes",
+    "pt": "escreva o nome normalmente, sem colchetes",
+}
+
+
+@pytest.mark.parametrize("lang", LOCALES)
+def test_scene_rules_keep_meaningful_names_but_forbid_brackets(lang: str):
+    marker = _PLAIN_PARTICIPANT_NAME[lang]
+    assert marker in pv._SCENE_RULES[lang]
+    assert marker in pv.VISIT_SCENE_BLOCK_GUEST[lang]
+    assert marker in pv.VISIT_SCENE_BLOCK_HOST[lang]
+
+
 # ---------------------------------------------------------------------------
 # Dehumanizing terms
 # ---------------------------------------------------------------------------

@@ -37,7 +37,6 @@ from config._runtime import (
 from config.prompts._locale import normalize_prompt_locale
 from config.prompts.avatar_interaction_contract import (
     AVATAR_INTERACTION_ROUND_GESTURES as _AVATAR_INTERACTION_ROUND_GESTURES,
-    AVATAR_INTERACTION_TOUCH_ZONE_TOOLS as _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS,
     normalize_avatar_interaction_intensity as _normalize_avatar_interaction_intensity,
     resolve_avatar_interaction_round_result as _resolve_avatar_interaction_round_result,
     LOCAL_AVATAR_TOOL_ID_PATTERN as _LOCAL_AVATAR_TOOL_ID_PATTERN,
@@ -55,56 +54,12 @@ _LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES = {
     "pt": "[{master} interagiu com você usando a ferramenta personalizada “{name}”]",
 }
 
-_AVATAR_INTERACTION_TOUCH_ZONE_FACTS = {
-    "zh": {
-        "ear": "这次互动的位置是你的耳侧。",
-        "head": "这次互动的位置是你的头顶。",
-        "face": "这次互动的位置是你的脸侧或嘴边。",
-        "body": "这次互动的位置是你的身前或肩侧。",
-    },
-    "zh-TW": {
-        "ear": "這次互動的位置是你的耳側。",
-        "head": "這次互動的位置是你的頭頂。",
-        "face": "這次互動的位置是你的臉側或嘴邊。",
-        "body": "這次互動的位置是你的身前或肩側。",
-    },
-    "en": {
-        "ear": "The interaction landed beside your ear.",
-        "head": "The interaction landed on top of your head.",
-        "face": "The interaction landed by your cheek or mouth.",
-        "body": "The interaction landed on the front of your body or shoulder.",
-    },
-    "ja": {
-        "ear": "道具が当たった位置はあなたの耳の横です。",
-        "head": "道具が当たった位置はあなたの頭のてっぺんです。",
-        "face": "道具が当たった位置はあなたの頬または口元です。",
-        "body": "道具が当たった位置はあなたの体の前または肩の横です。",
-    },
-    "ko": {
-        "ear": "도구가 닿은 곳은 네 귀 옆이다.",
-        "head": "도구가 닿은 곳은 네 머리 위다.",
-        "face": "도구가 닿은 곳은 네 볼이나 입가다.",
-        "body": "도구가 닿은 곳은 네 몸 앞이나 어깨 옆이다.",
-    },
-    "ru": {
-        "ear": "Инструмент коснулся области возле твоего уха.",
-        "head": "Инструмент коснулся твоей макушки.",
-        "face": "Инструмент коснулся твоей щеки или области рядом со ртом.",
-        "body": "Инструмент коснулся передней части тела или плеча.",
-    },
-    "es": {
-        "ear": "La interacción fue junto a tu oreja.",
-        "head": "La interacción fue en la parte superior de tu cabeza.",
-        "face": "La interacción fue en tu mejilla o junto a tu boca.",
-        "body": "La interacción fue en la parte frontal de tu cuerpo o en el hombro.",
-    },
-    "pt": {
-        "ear": "A interação aconteceu ao lado da sua orelha.",
-        "head": "A interação aconteceu no topo da sua cabeça.",
-        "face": "A interação aconteceu na sua bochecha ou no canto da boca.",
-        "body": "A interação aconteceu na frente do seu corpo ou no ombro.",
-    },
-}
+# TODO: Restore distinct body-part wording only after touch-zone detection is
+# reliable across model types, poses, and framing. The current bounds-ratio
+# heuristic can misidentify parts, so prompts and memory notes use action facts
+# only, without body-part descriptions or redundant generic contact sentences.
+# Keep touch_zone detection and contract validation unchanged for future use.
+# Follow-up: https://github.com/Project-N-E-K-O/N.E.K.O/issues/3512
 _AVATAR_INTERACTION_REACTION_PROFILES = {
     "zh": {
         "lollipop": {
@@ -1003,21 +958,9 @@ def _build_avatar_interaction_instruction(
         )
 
     actor = _avatar_interaction_prompt_actor(locale, master_name)
-    reaction_focus = str(reaction_profile["reaction_focus"]).format(
+    return str(reaction_profile["reaction_focus"]).format(
         lanlan_name=lanlan_name, master_name=actor, actor=actor
     )
-    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
-    touch_zone_fact = (
-        _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
-            locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
-        ).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
-        else ""
-    )
-    if touch_zone_fact:
-        fact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
-        reaction_focus = f"{reaction_focus}{fact_separator}{touch_zone_fact}"
-    return reaction_focus
 
 
 def _build_avatar_interaction_memory_meta(
@@ -1113,22 +1056,6 @@ def _build_avatar_interaction_memory_meta(
     formatted_note = str(memory_note or "").strip()
     if formatted_note and "{master}" in formatted_note:
         formatted_note = formatted_note.format(master=master)
-    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
-    touch_zone_fact = (
-        _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
-            locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
-        ).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
-        else ""
-    )
-    if formatted_note and touch_zone_fact:
-        fact = touch_zone_fact.rstrip(".。")
-        separator = "；" if locale in {"zh", "zh-TW", "ja"} else "; "
-        if formatted_note.endswith("]"):
-            formatted_note = f"{formatted_note[:-1]}{separator}{fact}]"
-        else:
-            formatted_note = f"{formatted_note}{separator}{fact}"
-
     return {
         "memory_note": formatted_note,
         "memory_dedupe_key": dedupe_key,

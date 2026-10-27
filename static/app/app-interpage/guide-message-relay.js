@@ -117,6 +117,7 @@
                     case 'memory_edited':
                         await I.handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'request_voice_chat_active':
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态

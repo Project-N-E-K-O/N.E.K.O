@@ -793,13 +793,11 @@ def test_an_upload_proceeds_once_the_loop_marks_the_downlink_ready(tmp_path):
 
 
 def test_the_ready_flag_falls_while_the_loop_awaits_a_config_handler():
-    """The flag means "routing right now", not "the loop started once".
+    """Keep image uploads gated throughout configuration changes.
 
-    CONFIG_UPDATE is awaited INLINE by the command loop, so while a slow
-    config_change handler runs the loop cannot route anyone else's
-    IMAGE_UPLOAD_RESULT. A timer upload started in that interval would send
-    into a loop that is not reading and could only time out -- the same
-    failure as the startup window, from the same cause (Codex P2).
+    The temporary lifecycle reader now delivers control replies during this
+    interval, but the image-upload gate retains its existing clear/finally/set
+    contract.
 
     Asserted on the source because the alternative is standing up the whole
     plugin host process; what matters is the ordering of clear/await/set and
@@ -816,7 +814,7 @@ def test_the_ready_flag_falls_while_the_loop_awaits_a_config_handler():
     block = block[: block.index('if msg_type == "TRIGGER_CUSTOM":')]
 
     clear_at = block.index("ctx._downlink_ready.clear()")
-    await_at = block.index("await _handle_config_update_command(")
+    await_at = block.index("_handle_config_update_command(")
     set_at = block.index("ctx._downlink_ready.set()")
 
     assert clear_at < await_at < set_at, "flag must fall before the await and rise after"

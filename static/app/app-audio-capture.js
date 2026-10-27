@@ -2715,6 +2715,40 @@
 
     // ======================== 音量可视化 ========================
 
+    // Live2D / VRM / MMD / PNGTuber 各有自己的麦克风弹窗。音量条画在当前打开的
+    // 那个里面；只认前三种时，PNGTuber 菜单会一直停在「未录音」。
+    var MIC_POPUP_IDS = ['live2d-popup-mic', 'vrm-popup-mic', 'mmd-popup-mic', 'pngtuber-popup-mic'];
+
+    function isMicPopupOpen(popup) {
+        return !!(popup && popup.isConnected && popup.style.display !== 'none' && popup.offsetParent);
+    }
+
+    function findOpenMicPopup() {
+        for (var i = 0; i < MIC_POPUP_IDS.length; i++) {
+            var popup = document.getElementById(MIC_POPUP_IDS[i]);
+            if (isMicPopupOpen(popup)) return popup;
+        }
+        return null;
+    }
+
+    function findDisplayedMicPopup() {
+        for (var i = 0; i < MIC_POPUP_IDS.length; i++) {
+            var popup = document.getElementById(MIC_POPUP_IDS[i]);
+            if (popup && popup.isConnected && popup.style.display === 'flex') return popup;
+        }
+        return null;
+    }
+
+    // 音量条和它的宿主弹窗是一起渲染的。优先从条往上找，避免先命中另一个
+    // 模型里已经 display:none 的同名弹窗。
+    function findMicPopupForVolume(barFill) {
+        if (barFill && typeof barFill.closest === 'function') {
+            var owner = barFill.closest('[id$="-popup-mic"]');
+            if (isMicPopupOpen(owner)) return owner;
+        }
+        return findOpenMicPopup();
+    }
+
     // 时域采样 buffer 提到闭包级复用，避免每帧分配 ~8KB Float32Array
     // 在 60fps 下产生 ~480KB/s 的 GC 抖动。
     let micVolumeSampleBuffer = null;
@@ -2812,7 +2846,6 @@
         let cachedBarFill = document.getElementById('mic-volume-bar-fill');
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
-        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -2820,7 +2853,6 @@
                 cachedBarFill = document.getElementById('mic-volume-bar-fill');
                 cachedStatus = document.getElementById('mic-volume-status');
                 cachedHint = document.getElementById('mic-volume-hint');
-                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
             }
 
             if (!cachedBarFill) {
@@ -2828,9 +2860,11 @@
                 return;
             }
 
-            // 检查弹出框是否仍然可见：不可见时只需低频探测它何时重新出现，
-            // 不必按刷新率排 rAF（弹窗关着也让 Blink 每 vsync 跑主帧）
-            if (!cachedPopup || cachedPopup.style.display === 'none' || !cachedPopup.offsetParent) {
+            // 每帧按当前音量条重新找宿主。PNGTuber 与 Live2D/3D 不会同时打开菜单，
+            // 缓存第一次查到的弹窗会在切模型后盯着已经拆掉的节点。
+            // 不可见时只需低频探测它何时重新出现，不必按刷新率排 rAF。
+            var cachedPopup = findMicPopupForVolume(cachedBarFill);
+            if (!cachedPopup) {
                 scheduleMicVolumeFrame(MIC_VOLUME_HIDDEN_POLL_MS);
                 return;
             }
@@ -3336,10 +3370,12 @@
         style.textContent = [
             '#live2d-popup-mic.neko-mic-popup-surface,',
             '#vrm-popup-mic.neko-mic-popup-surface,',
-            '#mmd-popup-mic.neko-mic-popup-surface{overflow-y:hidden!important;scrollbar-width:none;}',
+            '#mmd-popup-mic.neko-mic-popup-surface,',
+            '#pngtuber-popup-mic.neko-mic-popup-surface{overflow-y:hidden!important;scrollbar-width:none;}',
             '#live2d-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
             '#vrm-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
             '#mmd-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#pngtuber-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
             '.neko-mic-popup-scroll::-webkit-scrollbar{width:0;height:0;}',
             '.neko-mic-popup-scroll{scrollbar-width:none;-ms-overflow-style:none;}',
             '.neko-mic-popup-scrollbar-thumb{position:absolute;right:3px;top:0;width:4px;min-height:18px;border-radius:999px;background:rgba(128,128,128,0.55);opacity:0;transition:opacity 120ms ease;pointer-events:none;z-index:2;}',
@@ -3468,9 +3504,9 @@
                     deviceChangeGeneration !== mediaDeviceChangeGeneration
                     || enumerationResult.generation !== mediaDeviceEnumerationGeneration
                 ) return;
-                var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
-                if (micPopup && micPopup.style.display === 'flex') {
-                    await window.renderFloatingMicList();
+                var micPopup = findDisplayedMicPopup();
+                if (micPopup) {
+                    await window.renderFloatingMicList(micPopup);
                 }
             } catch (error) {
                 console.error('设备变化后更新列表失败:', error);
@@ -3480,7 +3516,7 @@
 
     /** 为浮动弹出框渲染麦克风列表 */
     window.renderFloatingMicList = async function (popupArg) {
-        var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
+        var micPopup = popupArg || findDisplayedMicPopup();
         if (!micPopup) return false;
         var renderGeneration = ++voiceRecognitionPopoverRenderGeneration;
         var coreApiCapabilityRefreshedAt = 0;
@@ -5736,7 +5772,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
     /** 轻量级更新：仅更新选中状态 */
     function updateMicListSelection() {
-        var options = document.querySelectorAll('#live2d-popup-mic .mic-option, #vrm-popup-mic .mic-option, #mmd-popup-mic .mic-option, .neko-mic-device-subwindow .mic-option');
+        var options = document.querySelectorAll('#live2d-popup-mic .mic-option, #vrm-popup-mic .mic-option, #mmd-popup-mic .mic-option, #pngtuber-popup-mic .mic-option, .neko-mic-device-subwindow .mic-option');
         options.forEach(function (option) {
             var deviceId = option.dataset.deviceId;
             var isSelected = (deviceId === undefined && S.selectedMicrophoneId === null) ||

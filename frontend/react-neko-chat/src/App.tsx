@@ -1019,6 +1019,8 @@ function CompactChatApp({
     lastForwardedScreenX?: number;
     lastForwardedScreenY?: number;
     captureTarget: Element | null;
+    // 同一次按下冒泡到外层时 nativeEvent 相同；任务栏松手丢失 pointerup 后的新按下是另一个事件。
+    nativeEvent?: Event;
   } | null>(null);
   const compactToolOriginDocumentCleanupRef = useRef<(() => void) | null>(null);
   // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
@@ -4267,9 +4269,11 @@ function CompactChatApp({
     const eventTarget = event.target instanceof Element ? event.target : null;
     if (eventTarget?.closest('textarea, input, [contenteditable]:not([contenteditable="false"])')) return;
     const existing = compactToolOriginDragRef.current;
-    if (existing && existing.pointerId === event.pointerId) return;
+    // 毛线球和外壳都会收到同一次按下。任务栏上松手时 pointerup 到不了窗口，
+    // 鼠标 pointerId 仍是上一次的，必须把新的按下当成新拖动，否则第一下会被吞掉。
+    if (existing && existing.pointerId === event.pointerId && existing.nativeEvent === event.nativeEvent) return;
     if (existing) {
-      cancelCompactToolOriginDrag('replaced');
+      cancelCompactToolOriginDrag(existing.pointerId === event.pointerId ? 'lost-pointerup' : 'replaced');
     } else {
       clearCompactToolOriginDocumentListeners();
     }
@@ -4291,6 +4295,7 @@ function CompactChatApp({
       startScreenY: event.screenY,
       moved: false,
       captureTarget,
+      nativeEvent: event.nativeEvent,
     };
     const pointerId = event.pointerId;
     const handleDocumentPointerMove = (nativeEvent: PointerEvent) => {

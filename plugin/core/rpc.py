@@ -116,12 +116,13 @@ class RpcRemoteError(RuntimeError):
         super().__init__(self.message)
 
 
-@dataclass(frozen=True)
+@dataclass
 class _CallScope:
     request_id: str
     trace_id: str
     deadline: float | None
     depth: int = 0
+    closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,9 @@ def request_scope(request: Mapping[str, Any]):
     try:
         yield current
     finally:
+        # create_task/to_thread copy the context, but share this scope object.
+        # Retire it for background work that outlives the owning invocation.
+        current.closed = True
         _scope.reset(token)
 
 
@@ -249,6 +253,8 @@ class RpcPeer:
             raise ValueError("timeout must be a positive finite number or None")
         request_id = request_id or str(uuid.uuid4())
         parent = _scope.get()
+        if parent is not None and parent.closed:
+            parent = None
         deadline = request_deadline(payload, timeout)
         if parent and parent.deadline is not None:
             deadline = (
@@ -642,6 +648,7 @@ class RpcDispatcher:
             reply["error"] = mapped
         finally:
             self._active -= 1
+            scope.closed = True
             _scope.reset(token)
         return reply
 

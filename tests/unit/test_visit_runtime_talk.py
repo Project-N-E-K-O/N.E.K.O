@@ -52,6 +52,15 @@ def _texts(wire, role):
     return [p for p in wire.sent[role] if p.get("t") == "text"]
 
 
+def test_normal_assistant_mirror_strips_redundant_visit_speaker_labels():
+    clean = rtm_talk._without_repeated_speaker_prefix
+    assert clean("[咪咪] 你好呀", "咪咪", "11") == "你好呀"
+    assert clean("【11】：又见面了", "咪咪", "11") == "又见面了"
+    assert clean("[11]，你也来了。", "咪咪", "11") == "11，你也来了。"
+    assert clean("我刚才听见【11】叫我。", "咪咪", "11") == "我刚才听见11叫我。"
+    assert clean("[别人] 保留", "咪咪", "11") == "[别人] 保留"
+
+
 async def _gated(tmp_path, monkeypatch, **kw):
     """Both sides active, both opening lines blocked inside the LLM."""
     hgate, ggate = asyncio.Event(), asyncio.Event()
@@ -81,6 +90,9 @@ async def test_one_line_is_one_stream_raw_to_tts_and_redacted_outbound(tmp_path,
         deltas = "".join(p["txt"] for p in wire.sent["host"] if p.get("t") == "line_delta" and p["ln"] == final["ln"])
         assert deltas == final["txt"] and final["truncated"] is False
         assert len([s for s in host.host.streams if s.request_id == final["ln"]]) == 1
+        await wait_for(lambda: final["txt"] in host.host.outputs)
+        output_index = host.host.outputs.index(final["txt"])
+        assert host.host.output_finalized[output_index] is True
         # Local dialogue also enters spool/upload logs with the same prefix.
         lines = host.rt.journal.lines()
         assert any(r["from"] == "own_cat" and r["text"] == final["txt"] for r in lines)

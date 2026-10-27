@@ -1,9 +1,12 @@
 import {createNextVideoQueue} from './next-video.mjs';
 import {createAutomatic} from './automatic.mjs';
+import {clock, when} from './format.mjs';
 
-export async function run(game, character) {
+// `ui` holds optional presentation hooks from the trusted host page (confirmLong,
+// decorateAnalysis, preparation, next, selected); the scene works without them.
+export async function run(game, character, ui = {}) {
   const $ = id => document.getElementById(id);
-  const t = key => window.i18n?.t?.(`watchTogether.${key}`) || key;
+  const t = (key, params) => window.i18n?.t?.(`watchTogether.${key}`, params) || key;
   const renderLanguage = () => document.documentElement?.lang || window.i18n?.language || new URLSearchParams(location.search).get('ui_lang') || '';
   const discoveryTopic = () => $('topic').value.trim() || Array.from(String(selected?.title || '').trim()).slice(0,200).join('');
   let media = null, watch = null, selected = null, writing = Promise.resolve();
@@ -24,7 +27,8 @@ export async function run(game, character) {
   let progressTimer = null, liveTimer = null, liveFlight = null, intermission = null, heldLines = [], heldEpoch = 0;
   // The media whose automatic-mode intermission has started; until then its end belongs to the intermission.
   let intermissionMedia = null;
-  let nextRow=null, queuedFor=null, preparing=false;
+  // preparingJob: the backend job a manual preparation is polling; it keeps running if the page stops waiting.
+  let nextRow=null, queuedFor=null, preparing=false, preparingJob=null;
   let automaticPending=false;
   const automatic=createAutomatic({
     report:error=>{status(error.message);if(error.name==='NotAllowedError')void stopAutomatic();},
@@ -64,7 +68,10 @@ export async function run(game, character) {
   async function stopAutomatic() {
     automatic.stop();automaticPending=false;$('automatic-enabled').checked=false;
     $('automatic-enabled').disabled=true;
-    selectionGeneration++;nextQueue.clear();queuedFor=null;
+    // Like a new selection: a running preparation stops reporting, so its card goes too.
+    // Its stage text would go stale, so say where a started job ends up instead.
+    if(preparing)status(t(preparingJob ? 'preparingInBackground' : 'choose'));
+    selectionGeneration++;nextQueue.clear();queuedFor=null;ui.preparation?.(null);
     try {await end();$('video').src=selected?.video || '';$('play').disabled=!selected;}
     finally {$('automatic-enabled').disabled=false;updatePrepareButtons();}
   }
@@ -84,6 +91,7 @@ export async function run(game, character) {
       if(state.row)nextRow=state.row;
       if(state.row && automatic.enabled && (!media || $('video').ended))automatic.next();
       $('next-video').disabled=!nextRow;
+      ui.next?.(state);
     }
     updatePrepareButtons();
     if(state.released && media && !$('video').paused)prefetchNext();
@@ -94,6 +102,10 @@ export async function run(game, character) {
     void nextQueue.start({topic:discoveryTopic(),exclude:[...seenVideos].slice(-128),character,render_language:renderLanguage()});
   }
   const status = message => { $('status').textContent = message; };
+  const confirmLong = info => ui.confirmLong ? ui.confirmLong(info)
+    : window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`);
+  // job -> title, for viewing rows the backend could not title.
+  const titles = new Map();
   const warn = (message, error) => { try { game.logger?.warn?.(message, {error: String(error?.message || error)}); } catch (_) { /* Logging never blocks playback. */ } };
   // Real seconds until the next reaction (or the video end); 0 while one is playing.
   function reactionGap(time) {
@@ -197,11 +209,11 @@ export async function run(game, character) {
   }
   function renderUsage(stats) {
     if (!stats) { $('usage').textContent=t('unrecorded');return; }
-    const value={...stats};
-    for(const key of ['input_tokens','output_tokens','total_tokens']) {
-      if(stats[key]==null || (Array.isArray(stats.calls) && !stats.calls.some(call=>call[key]!=null))) value[key]=t('unrecorded');
-    }
-    $('usage').textContent=`${t('usageNote')}\n\n${JSON.stringify(value,null,2)}`;
+    const value=key=>stats[key]==null || (Array.isArray(stats.calls) && !stats.calls.some(call=>call[key]!=null)) ? t('unrecorded') : String(stats[key]);
+    const lines=[t('usageInput',{value:value('input_tokens')}),t('usageOutput',{value:value('output_tokens')}),t('usageTotal',{value:value('total_tokens')})];
+    if(Array.isArray(stats.calls))lines.push(t('usageCalls',{value:stats.calls.length}));
+    if(stats.missing_usage_calls)lines.push(t('usageMissingCalls',{value:stats.missing_usage_calls}));
+    $('usage').textContent=`${lines.join('\n')}\n\n${t('usageNote')}`;
   }
   game.runtime.configure({payload:()=>({lanlan_name:character}),pageExit:true});
   let pendingProgress=null;
@@ -258,6 +270,7 @@ export async function run(game, character) {
   async function load(row,keepRoute=false) {
     if(!keepRoute){automatic.stop();automaticPending=false;$('automatic-enabled').checked=false;}
     const selection = ++selectionGeneration;
+    ui.preparation?.(null);
     nextQueue.clear();queuedFor=null;
     $('play').disabled = true;
     const previous = selected;
@@ -270,6 +283,7 @@ export async function run(game, character) {
     if(loaded.status!=='ready')throw Error('Media is not ready');
     selected = loaded;
     if(selected.bvid)seenVideos.add(selected.bvid);
+    if(selected.title)titles.set(selected.id,selected.title);
     const address = new URL(location.href);
     address.searchParams.set('job',selected.id);address.searchParams.set('version',selected.version);
     history.replaceState(null,'',address);
@@ -282,12 +296,13 @@ export async function run(game, character) {
     $('events').replaceChildren();
     for (const cue of selected.events || []) {
       const button = document.createElement('button');
-      button.textContent = `${cue.at.toFixed(1)}s · ${cue.text}`;
+      button.textContent = `${clock(cue.at)} · ${cue.text}`;
       button.title = cue.reason || '';
       button.onclick = () => { $('video').currentTime = Math.max(0,cue.at-1); };
       $('events').append(button);
     }
     status(t('ready')); $('play').disabled = false;
+    ui.selected?.(selected);
     return true;
     } catch(error) {
       if(selection!==selectionGeneration)return false;
@@ -362,21 +377,27 @@ export async function run(game, character) {
     preparing=true;updatePrepareButtons();
     try {
       status(t('checking'));
+      ui.preparation?.({stage_key:'checking'});
       let result = await game.media.request('prepare',{url,source,lanlan_name:character,render_language:renderLanguage()});
       while (result.confirmation_required) {
         if(selection!==selectionGeneration)return;
         const info = result.video;
-        if (!window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`)) {
+        const accepted = await confirmLong(info);
+        // An in-page dialog does not block like window.confirm: re-check the selection after it.
+        if(selection!==selectionGeneration || game.disposed)return;
+        if (!accepted) {
           status(t('cancelled')); return;
         }
         result = await game.media.request('prepare',{url:info.url,source,lanlan_name:character,confirmed_duration:info.duration,render_language:renderLanguage()});
       }
+      preparingJob=result.id;
       if(selection===selectionGeneration)await end();
       while (!game.disposed) {
         const state = await game.media.request('preparation',{job:result.id});
         if(selection===selectionGeneration) {
           status(state.stage_key ? t(state.stage_key) : state.stage);
           if (state.usage) renderUsage(state.usage);
+          ui.preparation?.(state);
         }
         if (state.status === 'awaiting_confirmation' && state.confirmation_required) {
           const info = state.confirmation_video;
@@ -384,9 +405,12 @@ export async function run(game, character) {
             await game.media.request('prepare',{confirmation_job:result.id,lanlan_name:character,accepted:false,confirmed_duration:info.duration});
             return;
           }
-          const accepted = window.confirm(`${info.title}\n${t('longWarning')}\n${Math.ceil(info.duration)}s`);
-          await game.media.request('prepare',{confirmation_job:result.id,lanlan_name:character,accepted,confirmed_duration:info.duration});
-          if (!accepted) {if(selection===selectionGeneration)status(t('cancelled'));return;}
+          const accepted = await confirmLong(info);
+          // A selection made while the dialog was open releases the paid job instead of resuming it.
+          const current = selection===selectionGeneration && !game.disposed;
+          await game.media.request('prepare',{confirmation_job:result.id,lanlan_name:character,accepted:accepted && current,confirmed_duration:info.duration});
+          if(!current)return;
+          if (!accepted) {status(t('cancelled'));return;}
           continue;
         }
         if (['error','cancelled'].includes(state.status)) throw Error(state.stage_key ? t(state.stage_key) : (state.error || state.stage));
@@ -400,7 +424,12 @@ export async function run(game, character) {
         await new Promise(resolve=>setTimeout(resolve,1000));
       }
     } catch(error) {if(selection===selectionGeneration)status(error.message);}
-    finally {preparing=false;updatePrepareButtons();}
+    // One preparation runs at a time (`preparing`), so the card always belongs to this one.
+    finally {
+      preparing=false;preparingJob=null;updatePrepareButtons();ui.preparation?.(null);
+      // The job left running after a stop has ended and the library is refreshed: the notice is done.
+      if($('status').textContent===t('preparingInBackground'))status(t('choose'));
+    }
   }
   $('prepare').onsubmit = event => {
     event.preventDefault(); return prepareVideo($('url').value);
@@ -411,16 +440,18 @@ export async function run(game, character) {
     preparing=true;updatePrepareButtons();
     try {
       status(t('searching'));
+      ui.preparation?.({stage_key:'searching'});
       const topic = discoveryTopic();
       const result = await game.media.request('discover',{topic,exclude:[...seenVideos].slice(-128)});
       if(generation!==selectionGeneration || game.disposed)return;
       if (!result.video) {status(t('noCandidates'));return;}
       const info = result.video;
       $('url').value=info.url;
-      $('discovery-result').textContent=`${info.title} · ${info.duration}s · ${info.danmaku_per_minute.toFixed(1)} ${t('density')}`;
+      $('discovery-result').textContent=[info.title,clock(info.duration),`${Math.round(Number(info.danmaku_per_minute) || 0)} ${t('density')}`].filter(Boolean).join(' · ');
+      ui.preparation?.({stage_key:'checking',title:info.title});
       await prepareVideo(info.url,'discovery');
     } catch(error) {if(generation===selectionGeneration && !game.disposed)status(error.message);}
-    finally {preparing=false;updatePrepareButtons();}
+    finally {preparing=false;updatePrepareButtons();ui.preparation?.(null);}
   };
   $('prefetch-enabled').onchange=()=>{
     if(!$('prefetch-enabled').checked){nextQueue.clear();queuedFor=null;}
@@ -474,7 +505,11 @@ export async function run(game, character) {
     }
   }
   function renderWatches(rows) {
-    $('watches').textContent = rows.length ? rows.map(row=>`${row.job} · ${row.progress ?? t('unknown')}s · ${row.last_watched ?? t('unknown')}`).join('\n') : t('noWatches');
+    $('watches').textContent = rows.length ? rows.map(row=>[
+      row.title || titles.get(row.job) || row.job,
+      row.completed ? t('watchCompleted') : row.progress==null ? t('unknown') : `${t('watchedTo')} ${clock(row.progress)}`,
+      when(row.last_watched, renderLanguage()) || t('unknown'),
+    ].join(' · ')).join('\n') : t('noWatches');
   }
   let historyOffset=0, historyNext=null, historyGeneration=0, historyLoading=false, historyRefreshPending=false;
   $('history-previous').onclick=()=>refreshHistory(Math.max(0,historyOffset-50));
@@ -486,6 +521,7 @@ export async function run(game, character) {
     }
     const generation=++historyGeneration;
     historyLoading=true;
+    $('history').ariaBusy='true';
     $('history-previous').disabled=true;$('history-next').disabled=true;
     try {
       const page=await game.media.request('history',{offset});
@@ -496,6 +532,7 @@ export async function run(game, character) {
     finally {
       if(generation===historyGeneration) {
         historyLoading=false;
+        $('history').ariaBusy='false';
         $('history-previous').disabled=historyOffset===0;$('history-next').disabled=historyNext===null;
         if(historyRefreshPending){historyRefreshPending=false;void refreshHistory();}
       }
@@ -505,12 +542,40 @@ export async function run(game, character) {
     $('history').replaceChildren();
     for (const row of rows) {
       const button = document.createElement('button');
-      button.textContent = `${row.title} · ${row.job.slice(0,8)} · ${row.version.slice(0,8)}`;
+      button.textContent = row.title || row.job;
+      button.title = row.title || '';
       button.disabled = row.status !== 'ready';
       button.onclick = () => load(row).catch(error=>status(error.message));
+      if(row.title)titles.set(row.job,row.title);
+      ui.decorateAnalysis?.(button, row);
       $('history').append(button);
     }
   }
+  // A failed load is not an empty library: a retry takes the rows' place.
+  function showHistoryFailure() {
+    const retry = document.createElement('button');
+    retry.className = 'library-retry';
+    retry.textContent = t('libraryFailed');
+    retry.onclick = () => refreshHistory(historyOffset);
+    $('history').replaceChildren();$('history').append(retry);$('history').ariaBusy = 'false';
+  }
+  status(t('choose'));
+  // The first library page can take a while on a cold cache. It renders on its own while the
+  // avatar mounts, and the finder stays usable meanwhile.
+  const historyBoot = historyGeneration;
+  $('history').ariaBusy = 'true';
+  const firstPage = game.media.request('history').then(data => {
+    // A refresh started meanwhile (a finished preparation) already rendered newer rows.
+    if(historyGeneration===historyBoot) {
+      renderHistory(data.analyses);$('history').ariaBusy='false';
+      historyNext=data.next_offset ?? null;$('history-next').disabled=historyNext===null;
+    }
+    return data;
+  }, error => {
+    if(historyGeneration===historyBoot)showHistoryFailure();
+    throw error;
+  });
+  firstPage.catch(() => { /* Awaited below. */ });
   try {
     const info = await game.media.request('character',{name:character});
     character = info.lanlan_name || character;
@@ -520,11 +585,12 @@ export async function run(game, character) {
       try { avatar = await game.avatar.mount({slot:'companion',model:{type,path},viewport:{mode:'container'},resize:{mode:'container'}}); }
       catch(error) { $('avatar').textContent = error.message; }
     }
-    const data = await game.media.request('history');
-    renderHistory(data.analyses);
-    historyNext=data.next_offset ?? null;$('history-next').disabled=historyNext===null;
+  } catch(error) { status(error.message); }
+  try {
+    const data = await firstPage;
     await refreshWatches();
-    status(t('choose'));
+    // The user may already have chosen, prepared or started automatic watching while the library loaded.
+    if(selectionGeneration!==0 || preparing || automatic.enabled)return;
     const job = new URLSearchParams(location.search).get('job');
     const version = new URLSearchParams(location.search).get('version');
     const match = data.analyses.find(row=>row.job===job && (!version || row.version===version) && row.status==='ready');

@@ -9,7 +9,7 @@ async function waitFor(predicate, diagnostics=()=> '') {
   }
 }
 
-async function fixture(confirm, afterDownload=false, usage=null, discover=null) {
+async function fixture(confirm, afterDownload=false, usage=null, discover=null, ui=undefined, failures={}) {
   const elements = new Map();
   globalThis.document = {createElement(){return {};},getElementById(id) {
     if (!elements.has(id)) elements.set(id,{value:'',textContent:'',disabled:false,children:[],replaceChildren(){this.children=[];},append(child){this.children.push(child);}});
@@ -19,7 +19,8 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
   globalThis.location = {search:usage?'?job=selected':'',href:'http://localhost/watch_together'};
   globalThis.history = {replaceState(){}};
   const prompts = [];
-  globalThis.window = {i18n:{t:key=>key},confirm:message=>{prompts.push(message);return confirm;}};
+  // Interpolation values are appended, so assertions can see them.
+  globalThis.window = {i18n:{t:(key,params)=>params?[key,...Object.values(params)].join(' '):key},confirm:message=>{prompts.push(message);return confirm;}};
   const calls = [];
   let watches = [], record;
   const handlers = {};
@@ -28,8 +29,11 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
     speech:{onState(){}},voice:{onState(){},onTranscript(){}},events:{on(name,fn){handlers[name]=fn;}},
     media:{async mount(options){record=options.onEvent;return {async play(){},dispose(){}};},async request(action,payload) {
       calls.push({action,payload});
-      if(action==='character')return {lanlan_name:'cat'};
-      if(action==='history')return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches};
+      if(action==='character'){if(failures.character)throw Error('character down');return {lanlan_name:'cat'};}
+      if(action==='history'){
+        if(failures.history>0){failures.history--;throw Error('history down');}
+        return {analyses:usage?[{job:'selected',version:'v',status:'ready'}]:[],watches};
+      }
       if(action==='watches')return {watches};
       if(action==='watch'){watches=[{job:'selected',progress:payload.position || 0,last_watched:'now'}];return {id:'watch-1'};}
       if(action==='load')return {status:'ready',video:'/video',id:'selected',version:'v',bvid:'BV1GJ411x7h7',title:'Cats',usage,events:[]};
@@ -46,7 +50,7 @@ async function fixture(confirm, afterDownload=false, usage=null, discover=null) 
       throw Error(action);
     }}
   };
-  await run(game,'cat');
+  await run(game,'cat',ui);
   return {game,elements,calls,prompts,handlers,record:event=>record(event)};
 }
 const cancel = await fixture(false);
@@ -90,10 +94,10 @@ console.log('watch-together scene: legacy totals and manual discovery exclusions
 const watching = await fixture(false,false,{total_tokens:1});
 assert.match(watching.elements.get('watches').textContent,/noWatches/);
 await watching.elements.get('play').onclick();
-assert.match(watching.elements.get('watches').textContent,/selected.*0s/);
+assert.match(watching.elements.get('watches').textContent,/Cats.*0:00/);
 watching.record({type:'ended',position:122});
 await new Promise(resolve=>setTimeout(resolve,0));
-assert.match(watching.elements.get('watches').textContent,/selected.*122s/);
+assert.match(watching.elements.get('watches').textContent,/Cats.*2:02/);
 watching.handlers['runtime-inactive']();
 console.log('watch-together scene: persisted watch start and completion refresh without reload');
 const mediaFailure=await fixture(false,false,{total_tokens:1});
@@ -417,7 +421,7 @@ assert.match(pagingDuringPlayback.elements.get('watches').textContent,/Requested
 assert.equal(pageRequests,2,'final progress refresh must run after navigation');
 finishPage({watches:[{job:'Requested page',progress:125}],next_offset:null});
 await new Promise(resolve=>setTimeout(resolve,0));
-assert.match(pagingDuringPlayback.elements.get('watches').textContent,/125s/);
+assert.match(pagingDuringPlayback.elements.get('watches').textContent,/2:05/);
 pagingDuringPlayback.handlers['runtime-inactive']();
 const analysisPaging=await fixture(false);
 const analysisRequest=analysisPaging.game.media.request;
@@ -913,3 +917,103 @@ try {
   globalThis.setInterval=realInterval;
 }
 console.log('watch-together scene: gap lines and automatic intermission ordering passed');
+// Presentation hooks: an in-page confirmation resolves asynchronously, so the scene re-checks
+// the selection after it and releases a downloaded job instead of resuming it for a stale page.
+function deferredConfirm() {
+  const hooks={asked:[],resolve:null,preparation:[],decorated:[],selected:[]};
+  hooks.ui={
+    confirmLong:info=>{hooks.asked.push(info);return new Promise(resolve=>{hooks.resolve=resolve;});},
+    preparation:state=>hooks.preparation.push(state),
+    decorateAnalysis:(button,row)=>hooks.decorated.push({text:button.textContent,row}),
+    selected:row=>hooks.selected.push(row),
+  };
+  return hooks;
+}
+{
+  const hooks=deferredConfirm();
+  const stale=await fixture(false,true,{total_tokens:1},null,hooks.ui);
+  stale.elements.get('url').value='BV1GJ411x7h7';
+  const submitted=stale.elements.get('prepare').onsubmit({preventDefault(){}});
+  await waitFor(()=>hooks.asked.length===1,()=>JSON.stringify(stale.calls.map(call=>call.action)));
+  assert.equal(hooks.asked[0].duration,300.04);
+  const switching=stale.elements.get('history').children[0].onclick();
+  hooks.resolve(true);
+  await submitted;await switching;
+  const decision=stale.calls.filter(call=>call.action==='prepare').at(-1).payload;
+  assert.equal(decision.confirmation_job,'downloaded');
+  assert.equal(decision.accepted,false,'a newer selection releases the paid job');
+  assert.equal(stale.prompts.length,0,'window.confirm is not used when the host supplies a dialog');
+  assert.deepEqual(hooks.preparation.filter(Boolean).map(state=>state.stage_key || state.status).slice(0,2),['checking','awaiting_confirmation']);
+  assert.equal(hooks.preparation.at(-1),null,'the newer selection hides the preparation card');
+  assert.ok(hooks.decorated.length>0 && hooks.decorated.every(item=>!item.text.includes('·')),'cards carry the title only');
+  assert.equal(hooks.selected[0].title,'Cats');
+}
+{
+  const hooks=deferredConfirm();
+  const expiring=await fixture(false,false,{total_tokens:1},null,hooks.ui);
+  expiring.elements.get('url').value='BV1GJ411x7h7';
+  const submitted=expiring.elements.get('prepare').onsubmit({preventDefault(){}});
+  await waitFor(()=>hooks.asked.length===1);
+  const switching=expiring.elements.get('history').children[0].onclick();
+  hooks.resolve(true);
+  await submitted;await switching;
+  assert.equal(expiring.calls.filter(call=>call.action==='prepare').length,1,'a stale confirmation starts no download');
+  assert.equal(expiring.prompts.length,0);
+}
+{
+  const usage=await fixture(false,false,{input_tokens:24652,output_tokens:918,total_tokens:25570,calls:[{input_tokens:24652,output_tokens:918,total_tokens:25570}]});
+  assert.match(usage.elements.get('usage').textContent,/usageInput 24652/);
+  assert.match(usage.elements.get('usage').textContent,/usageCalls 1/);
+  assert.doesNotMatch(usage.elements.get('usage').textContent,/[{}]/,'usage is no longer a JSON dump');
+  assert.equal(usage.elements.get('history').ariaBusy,'false');
+}
+console.log('watch-together scene: presentation hooks, asynchronous confirmation and readable usage passed');
+{
+  // Stopping while a manual pick is still searching ends that preparation's card with it.
+  const hooks=deferredConfirm();let release;
+  const stopping=await fixture(false,false,null,()=>new Promise(resolve=>{release=resolve;}),hooks.ui);
+  const searching=stopping.elements.get('discover').onsubmit({preventDefault(){}});
+  await waitFor(()=>typeof release==='function');
+  await stopping.elements.get('watch-stop').onclick();
+  assert.equal(hooks.preparation.at(-1),null,'stopping hides the preparation card at once');
+  assert.equal(stopping.elements.get('status').textContent,'watchTogether.choose','no stale searching stage is left behind');
+  release({video:null});await searching;
+  assert.equal(hooks.preparation.at(-1),null,'the stale search never shows its card again');
+}
+{
+  // Stopping after the job started: the job cannot be cancelled and still lands in the library,
+  // so the status says so instead of freezing on its last stage, and clears once the job ends.
+  const hooks=deferredConfirm();
+  const leaving=await fixture(false,false,null,null,hooks.ui);
+  const request=leaving.game.media.request;let finish;
+  leaving.game.media.request=async(action,payload)=>{
+    if(action==='prepare')return {id:'running'};
+    if(action==='preparation')return new Promise(resolve=>{finish=resolve;});
+    return request(action,payload);
+  };
+  leaving.elements.get('url').value='BV1GJ411x7h7';
+  const submitted=leaving.elements.get('prepare').onsubmit({preventDefault(){}});
+  await waitFor(()=>typeof finish==='function');
+  await leaving.elements.get('watch-stop').onclick();
+  assert.equal(leaving.elements.get('status').textContent,'watchTogether.preparingInBackground');
+  assert.equal(leaving.elements.get('prepare-button').disabled,true,'one preparation runs at a time');
+  finish({status:'error',stage_key:'prepareFailed'});await submitted;
+  assert.equal(leaving.elements.get('status').textContent,'watchTogether.choose','the notice clears when the job ends');
+  assert.equal(leaving.elements.get('prepare-button').disabled,false);
+}
+{
+  // A failed first page is not an empty library: a retry button replaces the skeleton.
+  const failed=await fixture(false,false,{total_tokens:1},null,undefined,{history:1});
+  const retry=failed.elements.get('history').children[0];
+  assert.equal(failed.elements.get('history').children.length,1);
+  assert.equal(retry.textContent,'watchTogether.libraryFailed');
+  assert.equal(failed.elements.get('history').ariaBusy,'false');
+  assert.match(failed.elements.get('status').textContent,/history down/);
+  await retry.onclick();
+  assert.match(failed.elements.get('history').children[0].textContent,/selected/,'retry renders the library');
+  // A failed character lookup no longer discards the library that already loaded.
+  const orphan=await fixture(false,false,{total_tokens:1},null,undefined,{character:true});
+  assert.equal(orphan.elements.get('history').children.length,1);
+  assert.equal(orphan.elements.get('title').textContent,'Cats','the ?job= selection still loads');
+}
+console.log('watch-together scene: stop hides preparation, failed library offers retry, character failure keeps library');

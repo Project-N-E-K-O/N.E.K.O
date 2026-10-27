@@ -511,6 +511,16 @@ async def get_chat_page(request: Request):
     })
 
 
+@router.get("/social_hub", response_class=HTMLResponse)
+async def get_social_hub_page(request: Request):
+    """Standalone mutual-friend visit panel for the desktop floating window."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/social_hub.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 # Behind the same NEKO_VISIT_ENABLED release switch as the transport WebSocket: 404 while visits are off
 @router.get("/visit/transport", response_class=HTMLResponse, dependencies=[Depends(require_visit_enabled)])
 async def get_visit_transport_page(request: Request):

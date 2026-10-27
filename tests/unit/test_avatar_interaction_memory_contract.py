@@ -1,7 +1,6 @@
 import pytest
 
 from config.prompts.prompts_avatar_interaction import (
-    _AVATAR_INTERACTION_TOUCH_ZONE_FACTS,
     _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
@@ -111,37 +110,98 @@ def test_rps_memory_window_dedupes_different_round_results_under_one_key():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("tool_id", ["fist", "hammer"])
-def test_avatar_prompt_and_memory_preserve_touch_zone_facts_in_all_locales(tool_id):
-    locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
-    action_id = "poke" if tool_id == "fist" else "bonk"
+@pytest.mark.parametrize(("tool_id", "action_id"), [("fist", "poke"), ("hammer", "bonk")])
+@pytest.mark.parametrize(
+    ("locale", "fist_instruction", "fist_memory", "hammer_instruction", "hammer_memory"),
+    [
+        (
+            "zh",
+            f"{MASTER}刚刚用猫爪轻轻碰了你一下。",
+            f"[{MASTER}用猫爪轻轻碰了你]",
+            f"{MASTER}刚刚用锤子敲中了你一次。",
+            f"[{MASTER}用锤子敲了你一下]",
+        ),
+        (
+            "zh-TW",
+            f"{MASTER}剛剛用貓爪輕輕碰了你一下。",
+            f"[{MASTER}用貓爪輕輕碰了你]",
+            f"{MASTER}剛剛用槌子敲中了你一次。",
+            f"[{MASTER}用槌子敲了你一下]",
+        ),
+        (
+            "en",
+            f"{MASTER} just lightly touched you once with the cat paw.",
+            f"[{MASTER} lightly touched you with the cat paw]",
+            f"{MASTER} just hit you once with the hammer.",
+            f"[{MASTER} bonked you once with a hammer]",
+        ),
+        (
+            "ja",
+            f"{MASTER}が今、猫の肉球で一度だけ軽く触れた。",
+            f"[{MASTER}が猫の手であなたにそっと触れた]",
+            f"{MASTER}が今、ハンマーで一度当てた。",
+            f"[{MASTER}がハンマーであなたを一度叩いた]",
+        ),
+        (
+            "ko",
+            f"{MASTER} 방금 고양이 발로 한 번 가볍게 건드렸다.",
+            f"[{MASTER}이 고양이 발로 너를 살짝 건드렸다]",
+            f"{MASTER} 방금 망치로 한 번 맞혔다.",
+            f"[{MASTER}이 망치로 너를 한 번 쳤다]",
+        ),
+        (
+            "ru",
+            f"{MASTER} только что один раз легко коснулся тебя кошачьей лапкой.",
+            f"[{MASTER} слегка коснулся тебя кошачьей лапкой]",
+            f"{MASTER} только что один раз попал по тебе молотком.",
+            f"[{MASTER} один раз стукнул тебя молотком]",
+        ),
+        (
+            "es",
+            f"{MASTER} acaba de tocarte una vez con la patita de gato.",
+            f"[{MASTER} te tocó suavemente con la pata de gato]",
+            f"{MASTER} acaba de golpearte una vez con el martillo.",
+            f"[{MASTER} te dio un golpe con un martillo]",
+        ),
+        (
+            "pt",
+            f"{MASTER} acabou de tocar em você uma vez com a patinha de gato.",
+            f"[{MASTER} tocou você de leve com a patinha de gato]",
+            f"{MASTER} acabou de bater em você uma vez com o martelo.",
+            f"[{MASTER} bateu em você uma vez com um martelo]",
+        ),
+    ],
+)
+def test_avatar_prompt_and_memory_only_describe_actions_for_all_touch_zones(
+    tool_id, action_id, locale,
+    fist_instruction, fist_memory, hammer_instruction, hammer_memory,
+):
+    expected_instruction, expected_memory_note = (
+        (fist_instruction, fist_memory)
+        if tool_id == "fist"
+        else (hammer_instruction, hammer_memory)
+    )
+    payload = {
+        "tool_id": tool_id,
+        "action_id": action_id,
+        "intensity": "normal",
+    }
+    instruction_without_zone = _build_avatar_interaction_instruction(
+        locale, "YUI", MASTER, payload
+    )
+    expected_memory = _build_avatar_interaction_memory_meta(locale, payload, MASTER)
+    assert instruction_without_zone == expected_instruction
+    assert expected_memory["memory_note"] == expected_memory_note
 
-    for locale in locales:
-        instructions = []
-        memory_notes = []
-        for touch_zone, expected_fact in _AVATAR_INTERACTION_TOUCH_ZONE_FACTS[
-            locale
-        ].items():
-            payload = {
-                "tool_id": tool_id,
-                "action_id": action_id,
-                "intensity": "normal",
-                "touch_zone": touch_zone,
-            }
-            instruction = _build_avatar_interaction_instruction(
-                locale, "YUI", MASTER, payload
-            )
-            memory_note = _build_avatar_interaction_memory_meta(
-                locale, payload, MASTER
-            )["memory_note"]
+    for touch_zone in ("ear", "head", "face", "body"):
+        zone_payload = {**payload, "touch_zone": touch_zone}
+        instruction = _build_avatar_interaction_instruction(
+            locale, "YUI", MASTER, zone_payload
+        )
+        memory = _build_avatar_interaction_memory_meta(locale, zone_payload, MASTER)
 
-            assert expected_fact in instruction
-            assert expected_fact.rstrip(".。") in memory_note
-            instructions.append(instruction)
-            memory_notes.append(memory_note)
-
-        assert len(set(instructions)) == 4
-        assert len(set(memory_notes)) == 4
+        assert instruction == expected_instruction
+        assert memory == expected_memory
 
 
 @pytest.mark.unit
@@ -169,10 +229,10 @@ def test_avatar_touch_zone_is_not_invented_when_missing_or_unsupported():
         "memory_note"
     ]
 
-    assert "这次互动的位置" not in fist_instruction
-    assert "这次互动的位置" not in fist_memory
-    assert "这次互动的位置" not in lollipop_instruction
-    assert "这次互动的位置" not in lollipop_memory
+    assert fist_instruction == f"{MASTER}刚刚用猫爪轻轻碰了你一下。"
+    assert fist_memory == f"[{MASTER}用猫爪轻轻碰了你]"
+    assert "这次互动" not in lollipop_instruction
+    assert "这次互动" not in lollipop_memory
 
 
 @pytest.mark.unit

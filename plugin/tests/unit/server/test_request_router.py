@@ -106,3 +106,94 @@ async def test_blocked_overload_reply_does_not_stall_other_requests(
     reply = await asyncio.wait_for(replies.get(), 0.2)
     assert reply["request_id"] == "fast"
     assert reply["error"]["code"] == "BUSY"
+
+
+async def test_healthy_downlink_answers_every_request_in_a_queued_burst(router, monkeypatch):
+    replies = asyncio.Queue()
+
+    async def good(ctx, request):
+        return "ok"
+
+    router._handlers["GOOD"] = good
+    monkeypatch.setattr(state, "get_downlink_sender", lambda _: replies.put)
+    for index in range(600):
+        state.plugin_comm_queue.put_nowait(
+            {"type": "GOOD", "request_id": str(index), "from_plugin": "healthy"}
+        )
+    await router.start()
+    async with asyncio.timeout(2):
+        received = [await replies.get() for _ in range(600)]
+    assert {reply["request_id"] for reply in received} == {str(i) for i in range(600)}
+    assert all(
+        reply["result"] == "ok" or reply["error"]["code"] == "BUSY"
+        for reply in received
+    )
+
+
+@pytest.mark.parametrize("reply_delay", [0, 0.01])
+async def test_saturated_dispatcher_delivers_busy_replies_for_the_whole_burst(
+    router, monkeypatch, reply_delay
+):
+    replies = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def held(ctx, request):
+        await release.wait()
+        return "ok"
+
+    async def send(reply):
+        await asyncio.sleep(reply_delay)
+        await replies.put(reply)
+
+    router._handlers["HELD"] = held
+    monkeypatch.setattr(state, "get_downlink_sender", lambda _: send)
+    for index in range(600):
+        state.plugin_comm_queue.put_nowait(
+            {"type": "HELD", "request_id": str(index), "from_plugin": "healthy"}
+        )
+    await router.start()
+    try:
+        async with asyncio.timeout(2):
+            busy = [await replies.get() for _ in range(344)]
+            assert all(reply["error"]["code"] == "BUSY" for reply in busy)
+            release.set()
+            completed = [await replies.get() for _ in range(256)]
+    finally:
+        release.set()
+    assert all(reply["result"] == "ok" for reply in completed)
+    assert {reply["request_id"] for reply in busy + completed} == {str(i) for i in range(600)}
+
+
+@pytest.mark.parametrize("control", ["RPC_CANCEL", "RPC_DISCONNECT"])
+async def test_full_overload_reply_budget_still_allows_control_messages(router, monkeypatch, control):
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def held(ctx, request):
+        entered.set()
+        try:
+            await blocked.wait()
+        finally:
+            cancelled.set()
+
+    router._handlers["HELD"] = held
+
+    async def blocked_send(reply):
+        await blocked.wait()
+
+    monkeypatch.setattr(state, "get_downlink_sender", lambda _: blocked_send)
+    await router.start()
+    router._dispatcher._limit = 1
+    state.plugin_comm_queue.put_nowait(
+        {"type": "HELD", "request_id": "active", "from_plugin": "slow"}
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    for index in range(300):
+        state.plugin_comm_queue.put_nowait(
+            {"type": "HELD", "request_id": str(index), "from_plugin": "slow"}
+        )
+    state.plugin_comm_queue.put_nowait(
+        {"type": control, "request_id": "active", "from_plugin": "slow"}
+    )
+    await asyncio.wait_for(cancelled.wait(), timeout=1)

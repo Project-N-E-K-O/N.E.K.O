@@ -16,6 +16,26 @@ class Query(BaseModel):
 
 
 class RpcFixturePlugin(NekoPluginBase):
+    @plugin_entry(id="start_background")
+    async def start_background(self, target: str) -> str:
+        self._background_release = asyncio.Event()
+        self._background_result = None
+
+        async def work():
+            await self._background_release.wait()
+            self._background_result = await self.call(target)
+
+        self._background_task = asyncio.create_task(work())
+        return "scheduled"
+
+    @plugin_entry(id="release_background")
+    async def release_background(self) -> None:
+        self._background_release.set()
+
+    @plugin_entry(id="background_result")
+    async def background_result(self) -> dict:
+        return {"ready": self._background_result is not None, "result": self._background_result}
+
     @plugin_entry(id="wire_value")
     async def wire_value(self, kind: str) -> object:
         if kind == "integer_keys":

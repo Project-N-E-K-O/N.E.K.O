@@ -252,6 +252,56 @@ test('raw socket invalidation is independent of assistant stream gating and igno
 });
 
 
+test('session-end suppression still renders authenticated visit assistant messages', () => {
+    const h = harness(); const appended = [];
+    h.window.t = key => key;
+    h.window.location.protocol = 'http:'; h.window.location.host = 'fixture.test';
+    h.window.appConst = { HEARTBEAT_INTERVAL: 30000 };
+    h.window.appState.suppressAssistantStreamUntilNextSession = true;
+    h.window.appendMessage = (text, role, isNewMessage) => {
+        appended.push({ text, role, isNewMessage });
+        return true;
+    };
+    h.context.Blob = Blob;
+    h.context.WebSocket = class {
+        static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+        constructor(url) { this.url = url; this.readyState = 0; }
+        send() {}
+        close() { this.readyState = 3; }
+    };
+    h.load('static/app/app-websocket.js');
+    h.window.connectWebSocket();
+    const socket = h.window.appState.socket;
+    const send = response => socket.onmessage({ data: JSON.stringify(response) });
+    const visitResponse = (kind, text) => ({
+        type: 'gemini_response', text, isNewMessage: true,
+        turn_id: `${kind}:visit-1`, request_id: `${kind}:visit-1`,
+        metadata: {
+            source: 'neko_visit', kind, session_id: 'visit-1',
+            mirror: { kind, session_id: 'visit-1', event: { memory_enabled: false } }
+        }
+    });
+
+    send({ type: 'gemini_response', text: '迟到的普通回复', isNewMessage: true });
+    send(visitResponse('visit_line', '迟到的串门过程台词'));
+    send({ ...visitResponse('visit_ritual', '伪造的不完整身份'), metadata: {
+        source: 'neko_visit', kind: 'visit_ritual', session_id: 'visit-1',
+        mirror: { kind: 'visit_ritual', session_id: 'another-visit' }
+    } });
+    assert.deepEqual(appended.map(item => item.text), ['迟到的串门过程台词']);
+
+    send(visitResponse('visit_direct_invite_question', '要去串门吗？'));
+    send(visitResponse('visit_ritual', '我回来啦。'));
+    send(visitResponse('visit_debrief', '这次串门很开心。'));
+    assert.deepEqual(appended.map(item => item.text), [
+        '迟到的串门过程台词', '要去串门吗？', '我回来啦。', '这次串门很开心。'
+    ]);
+    assert.ok(appended.every(item => item.role === 'gemini' && item.isNewMessage === true));
+    assert.equal(h.window.appState.suppressAssistantStreamUntilNextSession, true,
+        'allowing homecoming messages must not reopen the ended voice session');
+});
+
+
 test('socket reopen re-reads persistent avatars after missed notifications', async () => {
     const h = harness(); const reasons = [];
     h.window.t = key => key;

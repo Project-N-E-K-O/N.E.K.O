@@ -61,13 +61,13 @@
         }
     }
 
-    function getVoiceChatComposerHiddenElectronBridge() {
+    I.getVoiceChatComposerHiddenElectronBridge = function getVoiceChatComposerHiddenElectronBridge() {
         var bridge = window.nekoElectronVoiceChatComposerHidden;
         return bridge && typeof bridge.send === 'function' ? bridge : null;
     }
 
     I.postVoiceChatComposerHiddenElectron = function postVoiceChatComposerHiddenElectron(payload) {
-        var bridge = getVoiceChatComposerHiddenElectronBridge();
+        var bridge = I.getVoiceChatComposerHiddenElectronBridge();
         if (!bridge) return false;
         try {
             bridge.send(payload || {});
@@ -79,8 +79,19 @@
     }
 
     function postVoiceChatComposerHiddenPayload(payload) {
-        I.postInterpageMessage(payload);
-        I.postVoiceChatComposerHiddenElectron(payload);
+        var posted = I.postInterpageMessage(payload);
+        var electronPosted = I.postVoiceChatComposerHiddenElectron(payload);
+        return posted || electronPosted;
+    }
+
+    I.requestVoiceChatComposerHiddenState = function requestVoiceChatComposerHiddenState() {
+        var lanlanName = I.getCurrentLanlanName();
+        if (!lanlanName) return false;
+        return postVoiceChatComposerHiddenPayload({
+            action: 'request_voice_chat_active',
+            lanlan_name: lanlanName,
+            timestamp: Date.now()
+        });
     }
 
     function getVoiceChatComposerHiddenMessageTimestamp(data) {
@@ -132,6 +143,15 @@
     }
 
     I.handleVoiceChatComposerHiddenMessage = function handleVoiceChatComposerHiddenMessage(data) {
+        if (data && data.action === 'request_voice_chat_active') {
+            // Only the main page owns the current voice state. Chat mirrors can
+            // be newly created or hidden with an outdated local snapshot.
+            if (!I.isStandaloneChatPage() && data.lanlan_name
+                && isVoiceChatComposerHiddenMessageForCurrentLanlan(data)) {
+                I.syncVoiceChatComposerHidden(I.shouldKeepVoiceComposerHidden());
+            }
+            return true;
+        }
         if (!data || data.action !== 'voice_chat_active') return false;
         if (data.lanlan_name && !I.getCurrentLanlanName()) {
             rememberPendingVoiceChatComposerHiddenMessage(data);

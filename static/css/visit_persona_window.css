@@ -54,6 +54,8 @@ body {
     scrollbar-gutter: stable;
     scrollbar-width: thin;
     scrollbar-color: rgba(64, 197, 241, 0.55) transparent;
+    /* 原生 no-drag 命中区不会按滚动容器裁剪，须放在不随正文滚动的容器上。 */
+    -webkit-app-region: no-drag;
 }
 
 /* 与角色卡管理器页面全局滚动条一致，并让滚动轨道贴在窗口最右侧。 */
@@ -93,7 +95,6 @@ body {
     color: #273042;
     background: rgba(255, 255, 255, 0.97);
     box-shadow: 0 16px 42px rgba(25, 106, 150, 0.16);
-    -webkit-app-region: no-drag;
 }
 
 .visit-persona-content {

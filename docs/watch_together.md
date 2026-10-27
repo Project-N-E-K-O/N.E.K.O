@@ -34,6 +34,13 @@ maps legacy `/media/{job}/...` references only when serving a timeline. All
 resource paths resolve through the manifest, and the media route supports HTTP
 Range requests. Incomplete jobs stay visible but cannot be played. Imported
 audio assets also retain their original names and hashes in a local manifest.
+Listing a library page still probes every referenced video and reaction file, but
+first checks the page's uncached objects in batches of up to 128 per spawn worker;
+objects whose batch failed, or whose own probe raised, are then probed one per
+worker as before. Rows are checked and validated a chunk at a time (up to 1024
+distinct uncached objects), so a page never outgrows the probe cache before its
+rows are validated. Library rows carry the validated cover, duration, BV ID and the
+number of reactions (never their text); viewing rows carry the video title.
 
 Analysis history and actual viewing history are separate tables. Legacy
 watching timestamps, progress and completion remain unknown. New viewing
@@ -78,6 +85,10 @@ the SDK route.
 Live2D and VRM have symmetric trusted avatar providers mounted through
 `game.avatar`. Mouth opening uses the actual reaction waveform. Available happy
 expressions are best-effort; missing model expressions do not block playback.
+Both idle: Live2D through pixi-live2d-display's idle motions, VRM through the
+desktop default idle clip (`wait03.vrma.gz`, its mouth track removed so speech
+owns the mouth), falling back to a relaxed pose with breathing and blinking. The
+VRM camera frames the posed upper body and refits on every container resize.
 The scene avatar is distinct from the desktop renderer. Historical audio keeps
 its original voice and is labelled accordingly; it is never mirrored through
 desktop speech a second time.
@@ -151,7 +162,11 @@ the single prepared next item; missing results and failures retry with exponenti
 backoff capped at 60 seconds. Failed candidates are excluded from subsequent
 searches in this page. Browser autoplay denial stops automatic mode and requires
 a new user gesture. Stop watching cancels automatic transitions, pauses media and
-releases the game route, including when startup is still pending.
+releases the game route, including when startup is still pending. It is shown
+whenever something can be stopped: automatic mode, a manual search or
+preparation, or a selected video. A preparation job that already started
+cannot be cancelled; stopping says it keeps preparing in the background and
+will appear in the library, and that notice clears when the job ends.
 
 The same game route stays active during preparation and automatic transitions,
 so ordinary proactive speech stays behind the SessionManager takeover gate.
@@ -191,3 +206,23 @@ acceptance test. Ordinary mode still pauses when its document becomes hidden.
 Drag the character container to move either Live2D or VRM. Drag its bottom-right
 handle to resize, or focus that handle and use arrow keys. Bounds are clamped on
 window resize/fullscreen changes; the SDK ResizeObserver resizes either renderer.
+The container stays within the picture; its reaction bubble opens toward the
+roomier side, next to the companion's head, clear of bottom-burned subtitles.
+
+## Page layout
+
+`host.mjs` passes presentation hooks to `run(game, character, ui)`; the scene keeps
+all playback state and works without them (the regression suite runs it bare).
+The stage (title, status, picture, dock) leads; the finder and the cover-card
+library sit in a sticky side column, or below the stage under 900px. An empty
+stage offers the same three entries (let the companion pick, paste a link, the
+library); preparations show a card with the stage name and a progress bar; a
+manual video that ends offers watch next, watch again or pick another. Reaction
+lines, viewing history and model usage are collapsed below, and the poster shows
+only how many reactions are prepared. Selecting or playing never maximizes the
+stage; maximize and fullscreen are the viewer's choice, and while playing in
+either the title row and dock fade after 2.5 seconds without input. The
+long-video confirmation is an in-page dialog that cancels itself after 290
+seconds; a selection made while it is open releases the job instead of resuming
+it. The chat invitation card for this scene uses its own title, hint, video icon
+and accept/decline labels; the later option and every other game are unchanged.

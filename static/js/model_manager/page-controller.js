@@ -5632,6 +5632,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     function applyVrmOutlineWidth(scale) {
         const label = document.getElementById('vrm-outline-width-value');
         if (label) label.textContent = scale.toFixed(2);
+        if (vrmManager?.core?.applyOutlineWidth) {
+            vrmManager.core.applyOutlineWidth(scale);
+            return;
+        }
         if (!vrmManager?.currentModel?.vrm?.scene) return;
         vrmManager.currentModel.vrm.scene.traverse((object) => {
             if (!object.isMesh && !object.isSkinnedMesh) return;

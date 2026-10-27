@@ -1322,6 +1322,24 @@
         );
     }
 
+    function isVisitAssistantMirrorResponse(response) {
+        var metadata = response && response.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = response && response.meta;
+        }
+        if (!metadata || typeof metadata !== 'object' || metadata.source !== 'neko_visit') {
+            return false;
+        }
+        var kind = String(metadata.kind || '');
+        var sessionId = String(metadata.session_id || '');
+        var mirror = metadata.mirror && typeof metadata.mirror === 'object'
+            ? metadata.mirror : {};
+        return !!sessionId
+            && ['visit_direct_invite_question', 'visit_line', 'visit_ritual', 'visit_debrief'].indexOf(kind) >= 0
+            && mirror.kind === kind
+            && String(mirror.session_id || '') === sessionId;
+    }
+
     function allocateAssistantTurnId(serverTurnId) {
         var normalized = normalizeAssistantTurnId(serverTurnId);
         if (normalized) {
@@ -2169,13 +2187,25 @@
     // CSRF token 与本机 HTTP 变更端点同一个：nekoLocalMutationSecurity 只对外给 getMutationHeaders / refreshToken
     async function _visitCsrfToken(refresh) {
         var security = window.nekoLocalMutationSecurity;
-        if (!security) return '';
+        if (security) {
+            try {
+                if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
+                if (typeof security.getMutationHeaders === 'function') {
+                    var headers = await security.getMutationHeaders();
+                    var token = headers && headers['X-CSRF-Token'];
+                    if (typeof token === 'string' && token) return token;
+                }
+            } catch (_) { /* fall through to direct same-origin refresh */ }
+        }
+        // index.html 里主 WebSocket 可能比公共安全 helper 更早连上；后端重启后
+        // helper 也可能仍握着旧 token。直接同源读取一次，避免 display bind
+        // 永久未授权，后续 pending 帧无法驱动 Pet 窗创建传输 iframe。
         try {
-            if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
-            if (typeof security.getMutationHeaders !== 'function') return '';
-            var headers = await security.getMutationHeaders();
-            var token = headers && headers['X-CSRF-Token'];
-            return typeof token === 'string' ? token : '';
+            var response = await fetch('/api/config/page_config', { cache: 'no-store' });
+            if (!response.ok) return '';
+            var data = await response.json();
+            return data && typeof data.autostart_csrf_token === 'string'
+                ? data.autostart_csrf_token : '';
         } catch (_) {
             return '';
         }
@@ -3352,7 +3382,11 @@
                     return;
                 }
                 if (response.type === 'gemini_response') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    // 串门期间普通会话可能已关闭，但邀请询问、自家猫娘台词、回家仪式语
+                    // 和复盘语都通过正式助手消息链路送达。仅按完整的服务端 mirror 身份
+                    // 放行这些串门回复；suppression 锁不解除，其他迟到回复仍会被丢弃。
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant chunk after session ended by server');
                         return;
                     }
@@ -5491,7 +5525,8 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant turn_end after session ended by server');
                         clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();

@@ -50,7 +50,11 @@ own event coordinates while sharing lifetime and result handling.
 - Image normalization's event-loop deadline is transferred as a remaining budget
   before entering RPC; an event loop's clock epoch is not a protocol timestamp.
 - Nested calls inherit trace identity, parent request identity and the remaining
-  deadline. Call depth is bounded and malformed metadata receives an error.
+  deadline while their parent invocation is active. After that invocation ends,
+  new requests from surviving background tasks use their own deadline and trace;
+  requests already started retain their original budget. This applies to both
+  plugin entry scopes and host dispatcher scopes, including failure/cancellation.
+  Call depth is bounded and malformed metadata receives an error.
 - Host operations from the same plugin run concurrently and can complete in any
   order; the previous router handled them one at a time. A plugin that needs
   one operation's effect before the next (write a value, then read it) must
