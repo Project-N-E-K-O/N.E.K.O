@@ -1158,6 +1158,8 @@
             break;
         case 'video_reconnecting':
             break;
+        case 'voice_off':
+            return;   // 只给父页收语音旁路用（OD-15 v4），聊天面不变
         case 'ending_soon':
             visit.endingSoonAt = typeof frame.ends_at === 'number' ? frame.ends_at : now() / 1000;
             break;

@@ -140,6 +140,7 @@ _RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
 _VOICE_OFF_SEND_S = 1.0  # Bound the voice-off media write that must precede handing the TTS chain back to private chat.
+_VOICE_OFF_PAGE_S = 2.5  # The voice-off display frame: a little over the frame write timeout (host_port._FRAME_TIMEOUT_S).
 _ENDED_AFTER_DISPLAY_S = 2.0  # Bound waiting for ended notifications queued behind stubborn display writes, then send best effort.
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
@@ -1997,14 +1998,26 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 1. Finish current local line first, placing text{final} before leave and into this transcript.
         await self.close_current_line("visit_end")
         # 1b. Voice off before private chat gets the TTS chain back (OD-15 v4): the page taps the shared assistant
-        # output, so the voice-off snapshot (finalizing is already true) must be written before takeover is released.
-        if self.ready_exchanged and self._audio_gate and self.transport_alive():
-            # Wait without cancelling the write (a cut-off frame is worse than a late one); a stuck page cannot hold
-            # the exit flow, and the page drops the tap on ending as well.
-            voice_off = self.spawn(self.send_media(), name="voice-off")
-            await asyncio.wait([voice_off], timeout=_VOICE_OFF_SEND_S)
-            if not voice_off.done():
-                logger.warning("visit %s: voice-off media still pending at takeover release", self.visit_id[:6])
+        # output. Two writes, both before the takeover is released:
+        #   - ``visit_state_change{voice_off}`` straight on the display socket (not via the queue): private replies'
+        #     TTS audio reaches the page over this same connection afterwards, so the page drops the tap before any
+        #     private audio can arrive (one connection keeps order). It is bounded by the frame write timeout; if it
+        #     failed, that connection cannot carry private audio either.
+        #   - the voice-off ``media`` snapshot (finalizing is already true), so the iframe unpublishes as well.
+        # Writes are awaited, never cancelled (a cut-off frame is worse than a late one).
+        if self.ready_exchanged and self._audio_gate:
+            page_off = self.spawn(self.host.send_frame({
+                "type": "visit_state_change", "action": "voice_off", "side": self.side,
+                "visit_id": self.visit_id, "ts": self.wall(),
+            }), name="voice-off-page")
+            media_off = self.spawn(self.send_media(), name="voice-off") if self.transport_alive() else None
+            await asyncio.wait([page_off], timeout=_VOICE_OFF_PAGE_S)
+            if media_off is not None:
+                await asyncio.wait([media_off], timeout=_VOICE_OFF_SEND_S)
+            confirmed = page_off.done() and not page_off.cancelled() and page_off.exception() is None and page_off.result()
+            if not confirmed:
+                logger.warning("visit %s: voice-off frame not confirmed on the page before takeover release",
+                               self.visit_id[:6])
         # 2. Close data channels in background: drain -> leave -> retransmission grace, blocking no later steps.
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # 3. Retain callbacks temporarily, immediately release takeover so family resumes ordinary chat.

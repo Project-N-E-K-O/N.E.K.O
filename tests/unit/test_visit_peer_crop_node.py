@@ -1273,3 +1273,38 @@ def test_voice_from_another_frame_is_ignored():
         files=BRIDGE_FILES,
     )
     assert out == []
+
+
+def test_voice_off_frame_closes_voice_before_ending_and_latches():
+    # The backend writes visit_state_change{voice_off} on the main connection before handing private chat back;
+    # private TTS audio follows on that same connection, so the tap must be gone and stay gone from here on.
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'guest', false);
+        change(h, 'started');
+        const calls = [];
+        h.child.__nekoVisitFrameSink.setLocalVoice = (s) => calls.push(['setLocalVoice', s ? s.id : null]);
+        h.child.__nekoVisitFrameSink.remoteAudioTrack = () => ({ id: 'peer-voice' });
+        h.ctx.appAudioPlayback = {
+          openAssistantVoiceTap: () => { calls.push(['open']); return Promise.resolve({ stream: { id: 'tap' }, close() { calls.push(['close']); } }); },
+          playExternalVoiceTrack: (t) => { calls.push(['play', t.id]); return Promise.resolve({ stop() { calls.push(['stop', t.id]); } }); },
+        };
+        const msg = (data) => h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data });
+        msg({ t: 'voice', on: true });
+        msg({ t: 'remote_audio', on: true });
+        await settle();
+        calls.length = 0;
+        change(h, 'voice_off');
+        await settle();
+        const atVoiceOff = calls.slice();
+        msg({ t: 'voice', on: true });
+        msg({ t: 'remote_audio', on: true });
+        await settle();
+        return { atVoiceOff, late: calls.slice(atVoiceOff.length), phase: h.bridge._state.phase };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["atVoiceOff"] == [["setLocalVoice", None], ["close"], ["stop", "peer-voice"]]
+    assert out["late"] == []
+    assert out["phase"] == "active"                  # voice_off is not a phase: the visit view stays as it was

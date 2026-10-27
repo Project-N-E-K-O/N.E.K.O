@@ -148,6 +148,7 @@
       peerBadge: null,
       firstFrame: null,
       publishing: false,
+      voiceClosed: false,    // 这一场的语音已被收尾关掉（voice_off / ending）：之后的开启请求一律不理
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       authRetryVisitId: null,  // 已经因 4403 重取 token 重建过一次的场次（同一场只重来一次）
       forceTokenRefresh: false,  // 下一次鉴权跳过缓存的 token、直接重取
@@ -316,6 +317,7 @@
       state.place = null;
       state.firstFrame = null;
       state.publishing = false;
+      state.voiceClosed = false;
       state.captureFps = isCompatMode() ? CAPTURE_FPS_COMPAT : CAPTURE_FPS_DIRECT;
       state.sampler.setTarget(state.captureFps);
       state.sampler.reset();
@@ -549,7 +551,7 @@
         var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!voice || !voiceSink) return;
         // 收尾后迟到的 on:true 一律不处理：不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间），也不再播对端；关的照常处理
-        var ending = state.phase === 'ending' || state.phase === 'ended';
+        var ending = state.voiceClosed || state.phase === 'ending' || state.phase === 'ended';
         var wantOn = data.on === true && !ending;
         if (data.t === 'voice') {
           voice.setLocalWanted(wantOn, voiceSink);
@@ -1081,9 +1083,13 @@
         state.phase = phase;
         post({ t: 'visit_state', phase: phase });
       }
-      // 收尾一开始就收掉语音旁路与对端语音（后端在交还私聊之前已先发关语音的快照，这里再兜一道）：
-      // 旁路接的是共享的 TTS 链，私聊恢复后她的台词不能再进串门房间
-      if (action === 'ending' && voice) voice.reset();
+      // 收掉语音旁路与对端语音并锁住，本场不再开：voice_off 是后端交还私聊之前直接写在主连接上的
+      // （私聊的 TTS 音频随后走同一条连接，这一帧一定先到），ending 再兜一道。旁路接的是共享的 TTS 链，
+      // 私聊恢复后她的台词不能再进串门房间
+      if (action === 'voice_off' || action === 'ending') {
+        state.voiceClosed = true;
+        if (voice) voice.reset();
+      }
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);
       else if (action === 'peer_visible') setPeerHidden(false);

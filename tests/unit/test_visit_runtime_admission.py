@@ -4412,6 +4412,8 @@ async def test_voice_is_off_before_private_chat_gets_the_tts_chain_back(tmp_path
 
         def spy(token):
             seen["last_media"] = dict(media("host")[-1])
+            seen["voice_off_frames"] = [f for f in host.host.frames
+                                        if f.get("type") == "visit_state_change" and f.get("action") == "voice_off"]
             return real_release(token)
 
         host.host.release_takeover = spy
@@ -4419,6 +4421,8 @@ async def test_voice_is_off_before_private_chat_gets_the_tts_chain_back(tmp_path
         assert host.rt.media_snapshot()["audio_publish"] is False      # Off as soon as the visit starts ending.
         await wait_for(lambda: "last_media" in seen, timeout=10)
         assert seen["last_media"]["audio_publish"] is False and seen["last_media"]["audio_subscribe"] is False
+        # The page-side voice_off frame was written on the display socket before the release, too.
+        assert len(seen["voice_off_frames"]) == 1 and seen["voice_off_frames"][0]["visit_id"] == host.rt.visit_id
         await finish(host.rt, clock)
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
