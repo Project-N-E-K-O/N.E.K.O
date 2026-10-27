@@ -170,7 +170,8 @@ def test_export_skips_rotated_sources_and_removes_partial_copies(log_client, tmp
     gone = tmp_path / "N.E.K.O_Plugin_demo_20261026.log.1"
     gone.write_text("old\n")
     kept = tmp_path / "N.E.K.O_Plugin_demo_20261026.log"
-    kept.write_text("ready\n")
+    contents = b"ready\r\n"
+    kept.write_bytes(contents)
     export_dir = tmp_path / "export-temp"
     export_dir.mkdir()
     monkeypatch.setattr(logs.tempfile, "mkdtemp", lambda: str(export_dir))
@@ -192,7 +193,7 @@ def test_export_skips_rotated_sources_and_removes_partial_copies(log_client, tmp
         assert response.status_code == 200
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
             assert archive.namelist() == [kept.name]
-            assert archive.read(kept.name) == b"ready\n"
+            assert archive.read(kept.name) == contents
     assert not export_dir.exists()
 
 

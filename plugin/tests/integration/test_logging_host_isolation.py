@@ -37,7 +37,7 @@ elif scenario == 'standalone':
     before = list(logging.getLogger().handlers)
     build_plugin_server_app()
     assert logging.getLogger().handlers == before, 'app factory downgraded explicit standalone ownership'
-    assert 'standalone-library-marker' in user_plugin_server._log_config.log_file.read_text()
+    assert 'standalone-library-marker' in user_plugin_server._log_config.log_file.read_text(encoding="utf-8")
 else:
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
@@ -66,7 +66,7 @@ else:
     assert 'host-library-marker' in output.getvalue()
     assert 'plugin-namespace-marker' not in output.getvalue()
     files = resolve_plugin_log_directory().glob('N.E.K.O_PluginServer_*.log')
-    assert 'plugin-namespace-marker' in '\n'.join(path.read_text() for path in files)
+    assert 'plugin-namespace-marker' in '\n'.join(path.read_text(encoding="utf-8") for path in files)
 print('host isolation contract passed')
 '''
 

@@ -86,10 +86,10 @@ def test_plugin_child_keeps_host_named_loggers_and_parent_files_separate(tmp_pat
         _, status = os.waitpid(pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0
         main.info('parent-after-marker')
-        parent = config.log_file.read_text()
+        parent = config.log_file.read_text(encoding="utf-8")
         assert 'parent-after-marker' in parent
         assert 'child-' not in parent
-        child = '\\n'.join(p.read_text() for p in (config.log_dir / 'plugin').glob('*.log'))
+        child = '\\n'.join(p.read_text(encoding="utf-8") for p in (config.log_dir / 'plugin').glob('*.log'))
         for marker in ['child-main-marker', 'child-shared-marker', 'child-sdk-marker', 'child-library-marker']:
             assert child.count(marker) == 1, child
         assert child.count('child-reconfigured-marker') == 1
@@ -143,7 +143,7 @@ def test_logging_directory_failure_degrades_and_explicit_retry_recovers(tmp_path
         (base / 'plugin').unlink()
         _, config = setup_plugin_logging('Plugin_demo', own_root=True)
         get_logger('contract').info('recovered-marker')
-        assert config.log_file.read_text().count('recovered-marker') == 1
+        assert config.log_file.read_text(encoding="utf-8").count('recovered-marker') == 1
     '''.replace("CREATE_OBSTRUCTION", (
         "(base / 'plugin').symlink_to(base / 'missing', target_is_directory=True)"
         if obstruction == "symlink" else "(base / 'plugin').write_text('blocked')")))
@@ -176,7 +176,7 @@ def test_spawned_sdk_worker_initializes_without_a_host_runner(tmp_path, method):
             child.join(15)
             assert not child.is_alive()
             assert child.exitcode == 0
-            text = '\\n'.join(p.read_text() for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
+            text = '\\n'.join(p.read_text(encoding="utf-8") for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
             assert text.count('spawn-worker-marker') == 1, text
             assert text.count('spawn-library-marker') == 1, text
             assert text.count('before-sdk-marker') == 1, text
@@ -192,7 +192,7 @@ def test_explicit_sdk_setup_preserves_legacy_level_behavior(tmp_path):
         assert logging.getLogger('N.E.K.O.Plugin_demo').level == logging.INFO
         setup_sdk_logging('contract', level=LogLevel.WARNING)
         get_logger('contract').info('legacy-info-marker')
-        assert 'legacy-info-marker' in config.log_file.read_text()
+        assert 'legacy-info-marker' in config.log_file.read_text(encoding="utf-8")
     ''')
 
 
@@ -203,7 +203,7 @@ def test_legacy_sdk_setup_initializes_files_without_a_host(tmp_path):
         from plugin.sdk.shared.logging import setup_sdk_logging, get_sdk_logger
         setup_sdk_logging()
         get_sdk_logger().info('standalone-sdk-marker')
-        text = '\\n'.join(p.read_text() for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
+        text = '\\n'.join(p.read_text(encoding="utf-8") for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
         assert text.count('standalone-sdk-marker') == 1
     ''')
 
@@ -226,7 +226,7 @@ def test_embedded_collection_preserves_existing_host_file_output(tmp_path):
         assert (root.handlers, root.level) == before
         assert shared.handlers == shared_before
         logging.getLogger('library').error('host-file-marker')
-        assert 'host-file-marker' in Path(foreign.baseFilename).read_text()
+        assert 'host-file-marker' in Path(foreign.baseFilename).read_text(encoding="utf-8")
     ''')
 
 
@@ -259,7 +259,7 @@ def test_sdk_lazy_initialization_keeps_legacy_third_party_collection(tmp_path):
         get_logger('sdk').info('sdk-only-marker')
         logging.getLogger('library').info('unmanaged-library-marker')
         assert all(h in root.handlers for h in before[0])
-        text = '\\n'.join(p.read_text() for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
+        text = '\\n'.join(p.read_text(encoding="utf-8") for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
         assert 'sdk-only-marker' in text
         assert text.count('unmanaged-library-marker') == 1
     ''')
@@ -292,8 +292,8 @@ def test_plugin_reconfiguration_preserves_external_partial_subscription(tmp_path
         borrowed.info('external-info-marker')
         borrowed.error('restricted-marker')
         borrowed.error('external-error-marker')
-        regular = config.log_file.read_text()
-        errors = (config.log_dir / 'N.E.K.O_Plugin_demo_error.log').read_text()
+        regular = config.log_file.read_text(encoding="utf-8")
+        errors = (config.log_dir / 'N.E.K.O_Plugin_demo_error.log').read_text(encoding="utf-8")
         assert 'external-info-marker' not in regular + errors
         assert 'restricted-marker' not in regular + errors
         assert errors.count('external-error-marker') == 1
@@ -327,7 +327,7 @@ def test_reconfiguration_does_not_attach_unfinished_handlers(tmp_path):
             release.set()
             worker.join(5)
         assert not worker.is_alive()
-        assert config.log_file.read_text().count('during-reconfiguration-marker') == 1
+        assert config.log_file.read_text(encoding="utf-8").count('during-reconfiguration-marker') == 1
     ''')
 
 
@@ -354,7 +354,7 @@ def test_log_queries_follow_the_active_writer_after_public_reconfiguration(tmp_p
         get_logger('writer').info('after-retry-marker')
         assert retried.log_file != old.log_file
         assert reader.get_plugin_log_directory('TARGET_ID') == retried.log_dir
-        assert 'after-retry-marker' in retried.log_file.read_text()
+        assert 'after-retry-marker' in retried.log_file.read_text(encoding="utf-8")
     '''.replace('SERVICE_NAME', service).replace('TARGET_ID', target))
 
 
@@ -386,7 +386,7 @@ def test_concurrent_plugin_initializers_keep_the_final_configuration_coherent(tm
         namespace.warning('final-service-marker')
         get_module_logger('contract').warning('final-shared-marker')
         from plugin.logging_config import resolve_plugin_log_directory
-        text = '\\n'.join(p.read_text() for p in resolve_plugin_log_directory(log_subdir='plugin').glob('*.log'))
+        text = '\\n'.join(p.read_text(encoding="utf-8") for p in resolve_plugin_log_directory(log_subdir='plugin').glob('*.log'))
         assert text.count('final-service-marker') == 1
         assert text.count('final-shared-marker') == 1
     ''')
@@ -430,7 +430,7 @@ def test_official_metadata_worker_captures_import_logs(tmp_path):
         assert child.returncode == 0, child.stdout + child.stderr
         packet = next(line for line in child.stdout.splitlines() if line.startswith('NEKO_PLUGIN_METADATA_RESULT:'))
         assert json.loads(packet.split(':', 1)[1])['ok'] is True
-        text = '\\n'.join(p.read_text() for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
+        text = '\\n'.join(p.read_text(encoding="utf-8") for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
         assert text.count('metadata-sdk-marker') == 1, text
         assert text.count('metadata-library-marker') == 1, text
     ''')
@@ -448,7 +448,7 @@ def test_embedded_agent_keeps_httpx_failure_logs(tmp_path):
         with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(503))) as client:
             client.get('https://example.invalid/logging-contract')
         from plugin.logging_config import resolve_plugin_log_directory
-        text = '\\n'.join(p.read_text() for p in resolve_plugin_log_directory().glob('*.log'))
+        text = '\\n'.join(p.read_text(encoding="utf-8") for p in resolve_plugin_log_directory().glob('*.log'))
         assert '503' in text and 'logging-contract' in text
     ''')
 
@@ -459,7 +459,7 @@ def test_standalone_keeps_preconfigured_uvicorn_errors(tmp_path):
         logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)
         from plugin import user_plugin_server
         logging.getLogger('uvicorn.error').error('uvicorn-file-marker')
-        assert 'uvicorn-file-marker' in user_plugin_server._log_config.log_file.read_text()
+        assert 'uvicorn-file-marker' in user_plugin_server._log_config.log_file.read_text(encoding="utf-8")
     ''')
 
 
@@ -506,7 +506,7 @@ def test_legacy_sdk_workers_keep_third_party_collection(tmp_path, method):
                 child.join(5)
                 raise AssertionError('worker did not exit')
             assert child.exitcode == 0
-            text = '\\n'.join(p.read_text() for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
+            text = '\\n'.join(p.read_text(encoding="utf-8") for p in Path(os.environ['NEKO_STORAGE_SELECTED_ROOT']).rglob('*.log'))
             assert text.count('legacy-worker-sdk-marker') == 1
             assert text.count('legacy-worker-library-marker') == 1
     '''.replace('METHOD', method))
@@ -564,9 +564,9 @@ def test_compatibility_bridge_yields_to_host_file_output(tmp_path, host_first):
         logging.getLogger('library').error('host-before-factory-marker')
         build_plugin_server_app()
         logging.getLogger('library').error('host-after-factory-marker')
-        assert host_file.read_text().count('host-before-factory-marker') == 1
-        assert host_file.read_text().count('host-after-factory-marker') == 1
-        text = '\\n'.join(p.read_text() for p in host_file.parent.rglob('N.E.K.O_*.log'))
+        assert host_file.read_text(encoding="utf-8").count('host-before-factory-marker') == 1
+        assert host_file.read_text(encoding="utf-8").count('host-after-factory-marker') == 1
+        text = '\\n'.join(p.read_text(encoding="utf-8") for p in host_file.parent.rglob('N.E.K.O_*.log'))
         assert 'host-before-factory-marker' not in text
         assert 'host-after-factory-marker' not in text
     '''.replace('HOST_FIRST', repr(host_first)))
@@ -583,8 +583,8 @@ def test_compatibility_bridge_follows_public_writer_reconfiguration(tmp_path):
         os.environ['NEKO_STORAGE_SELECTED_ROOT'] = str(old_root / 'new')
         _, actual = setup_logging(service_name='PluginServer', silent=True)
         logging.getLogger('library').error('new-writer-library-marker')
-        assert actual.log_file.read_text().count('new-writer-library-marker') == 1
-        assert 'new-writer-library-marker' not in '\\n'.join(p.read_text() for p in (old_root / 'logs').glob('*.log'))
+        assert actual.log_file.read_text(encoding="utf-8").count('new-writer-library-marker') == 1
+        assert 'new-writer-library-marker' not in '\\n'.join(p.read_text(encoding="utf-8") for p in (old_root / 'logs').glob('*.log'))
     ''')
 
 
