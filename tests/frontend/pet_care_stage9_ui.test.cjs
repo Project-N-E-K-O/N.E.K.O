@@ -80,7 +80,24 @@ test('stage 9.1 uses the shared semantic anchor and does not embed a cat asset',
   const hoverStart = app.indexOf('function showSoon');
   const hoverEnd = app.indexOf('function anchorState', hoverStart);
   assert.ok(hoverStart >= 0 && hoverEnd > hoverStart);
-  assert.match(app.slice(hoverStart, hoverEnd), /state\.panelOpen\s*=\s*true/);
+  assert.doesNotMatch(app.slice(hoverStart, hoverEnd), /state\.panelOpen\s*=\s*true/);
+  assert.match(app.slice(hoverStart, hoverEnd), /openPetCarePanelImmediately\('panel-open-hover'\)/);
+  const immediateStart = app.indexOf('function openPetCarePanelImmediately');
+  assert.ok(immediateStart >= 0 && immediateStart < hoverStart);
+  assert.match(app.slice(immediateStart, hoverStart), /semanticAnchorEntryAvailable\(\)/);
+  assert.match(app.slice(immediateStart, hoverStart), /current\.visible/);
+  assert.match(app.slice(immediateStart, hoverStart), /current\.busy/);
+  assert.match(app.slice(immediateStart, hoverStart), /state\.panelOpen\s*=\s*true/);
+  assert.match(app, /window\.__nekoPetCarePanelOpenMode = initialPanelOpenMode/);
+  assert.match(app, /window\.addEventListener\('neko:pet-care:panel-open-mode', handlePanelOpenModeChange\)/);
+  assert.match(app, /window\.addEventListener\('neko:pet-care:panel-open-request', handlePanelOpenRequest\)/);
+  const requestStart = app.indexOf('function handlePanelOpenRequest');
+  const requestEnd = app.indexOf('function anchorState', requestStart);
+  assert.ok(requestStart >= 0 && requestEnd > requestStart);
+  assert.match(app.slice(requestStart, requestEnd), /source !== state\.panelOpenMode/);
+  assert.match(app.slice(requestStart, requestEnd), /showLoginHint\(\{ explicit: true \}\)/);
+  assert.match(app.slice(requestStart, requestEnd),
+    /openPetCarePanelImmediately\('panel-open-' \+ source,\s*\{\s*autoCloseIfPointerOutside: true,/);
 });
 
 test('stage 9.1 overview follows the selected demo block hierarchy', () => {
@@ -175,12 +192,17 @@ test('stage 9.1 keeps an independent nest scene while exploration owns the activ
   const activeStart = app.indexOf('if (active)', reconcileStart);
   const timerStart = app.indexOf('scheduleExplorationTimer()', activeStart);
   assert.ok(reconcileStart >= 0 && activeStart > reconcileStart && timerStart > activeStart);
-  assert.match(app.slice(activeStart, timerStart), /state\.panelOpen\s*=\s*true/);
-  assert.match(app.slice(activeStart, timerStart), /visible\(true\)/);
+  assert.match(app.slice(activeStart, timerStart),
+    /state\.panelOpenMode === PANEL_OPEN_MODES\.HOVER/);
+  assert.match(app.slice(activeStart, timerStart), /state\.panelOpen\s*=\s*shouldOpen/);
+  assert.match(app.slice(activeStart, timerStart), /visible\(shouldOpen\)/);
   const leaseStart = app.indexOf('function applyExplorationRecoveryLease');
   const leaseEnd = app.indexOf('function scheduleExplorationTimer', leaseStart);
   assert.ok(leaseStart >= 0 && leaseEnd > leaseStart);
-  assert.match(app.slice(leaseStart, leaseEnd), /state\.panelOpen\s*=\s*true/);
+  assert.match(app.slice(leaseStart, leaseEnd),
+    /state\.panelOpenMode === PANEL_OPEN_MODES\.HOVER/);
+  assert.match(app.slice(leaseStart, leaseEnd), /state\.panelOpen\s*=\s*shouldOpen/);
+  assert.match(app.slice(leaseStart, leaseEnd), /visible\(shouldOpen\)/);
   assert.match(app.slice(leaseStart, leaseEnd), /scheduleExplorationTimer\(\)/);
 });
 
