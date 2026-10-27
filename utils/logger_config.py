@@ -857,6 +857,11 @@ HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS = [
     # Plugin Server -> Market update check; market_bridge logs its own
     # "[market-update-check]" line with the status, so the httpx line is a duplicate.
     "/api/v1/plugins/latest-versions",
+    # Main Server -> community: visit-hub poll (every ~5s) plus the bearer identity
+    # check in front of it. "/api/users/me" also covers "/api/users/me/presence".
+    "/api/users/me",
+    "/following?limit=",
+    "/api/notifications?unread=true",
 ]
 
 # HTTPX client rate limits (display once every N seconds).
