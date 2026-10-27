@@ -135,7 +135,9 @@ function loadHubWithFailedSend(cancelResult) {
       : { ok: true, json: async () => ({}) }),
   });
   loaded.hub._state.accountId = 'account-1';
-  loaded.hub._state.friends = [{ id: 'friend-1', displayName: 'Community Test' }];
+  loaded.hub._state.friends = [{
+    id: 'friend-1', displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
+  }];
   return { ...loaded, cancelled };
 }
 
@@ -147,6 +149,7 @@ for (const [label, cancelResult] of [['returns false', false], ['throws', new Er
     assert.deepEqual(cancelled, ['visit-1']);
     assert.equal(JSON.stringify(hub._state.invitations.get('friend-1')), JSON.stringify({
       visitId: 'visit-1', phase: 'invite_ready', expiresAt: 456,
+      displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
     }));
     assert.equal(hub._state.toastError, true);
   });
@@ -159,4 +162,28 @@ test('a failed send clears the invitation once its room is cancelled', async () 
   assert.deepEqual(cancelled, ['visit-1']);
   assert.equal(hub._state.invitations.has('friend-1'), false);
   assert.equal(hub._state.toastError, true);
+});
+
+test('an invitation remains cancellable after its friend leaves the current list', () => {
+  const { hub } = loadHub();
+  hub._state.friends = [];
+  hub._state.invitations.set('friend-1', {
+    visitId: 'visit-1', phase: 'invite_ready', expiresAt: 0,
+    displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
+  });
+
+  assert.equal(JSON.stringify(hub._orphanInvitationFriends()), JSON.stringify([{
+    id: 'friend-1', displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
+    online: false, presenceStatus: 'offline', lastSeenAt: '',
+  }]));
+});
+
+test('an invitation still attached to a friend is not rendered twice', () => {
+  const { hub } = loadHub();
+  hub._state.friends = [{ id: 'friend-1', displayName: 'Community Test' }];
+  hub._state.invitations.set('friend-1', {
+    visitId: 'visit-1', phase: 'invite_ready', expiresAt: 0,
+  });
+
+  assert.equal(hub._orphanInvitationFriends().length, 0);
 });

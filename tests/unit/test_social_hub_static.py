@@ -261,6 +261,8 @@ def test_waiting_direct_invitation_can_be_cancelled():
     assert "cancelDirectInvitation: cancelDirectInvitation" in chat
     assert "await cancelDirectVisit(createdVisitId)" in hub
     assert "!restoredVisitId" in hub
+    assert "function orphanInvitationFriends()" in hub
+    assert "renderFriendGroup(tr('visit.socialHub.waitingResponse'" in hub
 
 
 def test_friend_area_has_no_group_or_row_dividers():

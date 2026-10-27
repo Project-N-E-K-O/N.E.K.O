@@ -188,7 +188,9 @@
         if (!friendId || !phase || !restoredVisitId || invitationExpired(item)) return;
         state.invitations.set(friendId, {
           visitId: restoredVisitId, phase: phase,
-          expiresAt: Number(item.expiresAt) || 0
+          expiresAt: Number(item.expiresAt) || 0,
+          displayName: String(item.displayName || ''),
+          avatarUrl: String(item.avatarUrl || '')
         });
       });
     } catch (_) {}
@@ -510,7 +512,10 @@
     if (!createInvite) {
       return showToast(tr('visit.socialHub.desktopRequired', '请在桌面版 Neko 中发送定向邀请'), true);
     }
-    setInvitation(friendId, { visitId: '', phase: 'sending', expiresAt: 0 });
+    setInvitation(friendId, {
+      visitId: '', phase: 'sending', expiresAt: 0,
+      displayName: friend.displayName, avatarUrl: friend.avatarUrl
+    });
     showToast(tr('visit.socialHub.preparingRoom', '正在为 {{name}} 准备房间…', { name: friend.displayName }), false);
     var createdVisitId = '';
     try {
@@ -530,7 +535,10 @@
       });
       var body = await json(response);
       if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.sendFailed', '邀请没有发出去，请稍后重试')));
-      setInvitation(friendId, { visitId: visitId, phase: 'invite_ready', expiresAt: expiresAt });
+      setInvitation(friendId, {
+        visitId: visitId, phase: 'invite_ready', expiresAt: expiresAt,
+        displayName: friend.displayName, avatarUrl: friend.avatarUrl
+      });
       state.toast = tr('visit.socialHub.invited', '已向 {{name}} 发出串门邀请', { name: friend.displayName });
       state.toastError = false;
     } catch (error) {
@@ -539,7 +547,10 @@
         try { cancelled = await cancelDirectVisit(createdVisitId); } catch (_) {}
         if (!cancelled) {
           // The room is still waiting; keep the cancel button so it can be closed later.
-          setInvitation(friendId, { visitId: createdVisitId, phase: 'invite_ready', expiresAt: Number(expiresAt) || 0 });
+          setInvitation(friendId, {
+            visitId: createdVisitId, phase: 'invite_ready', expiresAt: Number(expiresAt) || 0,
+            displayName: friend.displayName, avatarUrl: friend.avatarUrl
+          });
           state.toast = tr('visit.socialHub.cancelFailed', '邀请暂时无法取消，请稍后重试');
           state.toastError = true;
           render();
@@ -608,6 +619,23 @@
     }
     return row;
   }
+  function orphanInvitationFriends() {
+    var friendIds = new Set(state.friends.map(function (friend) { return friend.id; }));
+    var orphans = [];
+    state.invitations.forEach(function (invitation, friendId) {
+      if (friendIds.has(friendId) || !invitation ||
+          (invitation.phase !== 'invite_ready' && invitation.phase !== 'cancelling')) return;
+      orphans.push({
+        id: friendId,
+        displayName: String(invitation.displayName || tr('visit.socialHub.otherParty', '对方')),
+        avatarUrl: String(invitation.avatarUrl || ''),
+        online: false,
+        presenceStatus: 'offline',
+        lastSeenAt: ''
+      });
+    });
+    return orphans;
+  }
   function relativeLastSeen(value) {
     var timestamp = Date.parse(String(value || ''));
     if (!Number.isFinite(timestamp)) return '';
@@ -669,10 +697,12 @@
     // 账号区固定在顶部，好友分组独立滚动，避免滚动好友时丢失自己的头像和状态入口。
     var friendScroller = el('div', 'neko-social-hub-friend-scroller');
     panel.appendChild(friendScroller);
-    if (state.loading || !state.loggedIn || !state.friends.length) renderEmpty(friendScroller);
+    var orphanInvitations = orphanInvitationFriends();
+    if (state.loading || !state.loggedIn || (!state.friends.length && !orphanInvitations.length)) renderEmpty(friendScroller);
     else {
       var onlineFriends = state.friends.filter(function (friend) { return friend.online; });
       var offlineFriends = state.friends.filter(function (friend) { return !friend.online; });
+      renderFriendGroup(tr('visit.socialHub.waitingResponse', '等待回应'), orphanInvitations, friendScroller);
       renderFriendGroup(tr('visit.socialHub.onlineFriends', '在线好友'), onlineFriends, friendScroller);
       renderFriendGroup(tr('visit.socialHub.offlineFriends', '离线好友'), offlineFriends, friendScroller);
     }
@@ -829,7 +859,9 @@
       setInvitation(incoming.actorId, {
         visitId: String(detail.visitId || incoming.visitId || ''),
         phase: 'joining',
-        expiresAt: Number(detail.expiresAt || incoming.expiresAt) || 0
+        expiresAt: Number(detail.expiresAt || incoming.expiresAt) || 0,
+        displayName: incoming.displayName,
+        avatarUrl: incoming.avatarUrl
       });
     }
     render();
@@ -867,7 +899,8 @@
   window.nekoSocialHub = {
     open: open, close: close, toggle: toggle, handlePrimaryClick: toggle,
     openFullCommunity: openCommunity, refresh: refresh, _state: state,
-    _applyVisitStatus: applyVisitStatus, _inviteFriend: inviteFriend
+    _applyVisitStatus: applyVisitStatus, _inviteFriend: inviteFriend,
+    _orphanInvitationFriends: orphanInvitationFriends
   };
   if (standalone) requestAnimationFrame(open);
   else requestAnimationFrame(refresh);
