@@ -28,7 +28,14 @@ function mountViewer(locale = 'zh-CN') {
   const root = document.createElement('div')
   const app = createApp(LogViewer, { pluginId: 'demo' })
   const container = defineComponent({ setup: (_, { attrs, slots }) => () => h('div', attrs, slots.default?.()) })
-  for (const name of ['ElSpace', 'ElTag', 'ElSwitch', 'ElSelect', 'ElOption', 'ElInputNumber', 'ElIcon', 'ElButton']) app.component(name, container)
+  for (const name of ['ElSpace', 'ElTag', 'ElSelect', 'ElOption', 'ElInputNumber', 'ElIcon', 'ElButton']) app.component(name, container)
+  app.component('ElSwitch', defineComponent({
+    props: ['modelValue'], emits: ['update:modelValue'],
+    setup: (props, { attrs, emit }) => () => h('input', {
+      ...attrs, type: 'checkbox', checked: props.modelValue,
+      onChange: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).checked),
+    }),
+  }))
   app.component('ElAlert', defineComponent({
     props: ['title'], setup: (props, { attrs }) => () => h('div', attrs, props.title),
   }))
@@ -125,5 +132,85 @@ describe('log search compatibility', () => {
     latest().receive({ type: 'initial', logs: [], total_lines: 0, returned_lines: 0 })
     await nextTick()
     expect(root.querySelector('[data-test="empty"]')!.textContent).toBe('暂无日志')
+  })
+})
+
+describe('log scroll following', () => {
+  const entry = (id: string) => ({ id, timestamp: '2026-10-28 12:00:00', level: 'INFO', file: 'server.py', line: 1, message: id })
+
+  async function scrollableViewer() {
+    const { root } = mountViewer()
+    const list = root.querySelector<HTMLElement>('[data-yui-guide-id="log-list"]')!
+    // happy-dom does not lay out elements; model a growing list explicitly.
+    Object.defineProperties(list, {
+      clientHeight: { value: 200 },
+      scrollHeight: { get: () => list.querySelectorAll('.log-item').length * 1000 },
+    })
+    latest().receive({ type: 'initial', logs: [entry('initial')] })
+    await nextTick()
+    await nextTick()
+    const scroll = (top: number) => {
+      list.scrollTop = top
+      list.dispatchEvent(new Event('scroll'))
+    }
+    const append = async (id = 'appended') => {
+      latest().receive({ type: 'append', logs: [entry(id)] })
+      await nextTick()
+      await nextTick()
+    }
+    const toggle = async (enabled: boolean) => {
+      const input = root.querySelector<HTMLInputElement>('[data-yui-guide-id="log-auto-scroll"]')!
+      input.checked = enabled
+      input.dispatchEvent(new Event('change'))
+      await nextTick()
+      await nextTick()
+    }
+    return { list, scroll, append, toggle }
+  }
+
+  it('shows the latest initial logs and follows new logs while at the bottom', async () => {
+    const { list, scroll, append } = await scrollableViewer()
+    expect(list.scrollTop).toBe(1000)
+    scroll(800)
+    await append()
+    expect(list.scrollTop).toBe(2000)
+  })
+
+  it('keeps the reading position across new batches after scrolling up', async () => {
+    const { list, scroll, append } = await scrollableViewer()
+    scroll(300)
+    await append('second')
+    await append('third')
+    expect(list.querySelectorAll('.log-item')).toHaveLength(3)
+    expect(list.scrollTop).toBe(300)
+  })
+
+  it('resumes following when the user scrolls back to the bottom', async () => {
+    const { list, scroll, append } = await scrollableViewer()
+    scroll(300)
+    await append('second')
+    scroll(1800)
+    await append('third')
+    expect(list.scrollTop).toBe(3000)
+  })
+
+  it('tolerates fractional scroll positions near the bottom', async () => {
+    const { list, scroll, append } = await scrollableViewer()
+    scroll(799.5)
+    await append()
+    expect(list.scrollTop).toBe(2000)
+  })
+
+  it('honors the switch and resumes immediately when enabled again', async () => {
+    const { list, scroll, append, toggle } = await scrollableViewer()
+    await toggle(false)
+    scroll(800)
+    await append('second')
+    expect(list.scrollTop).toBe(800)
+    scroll(300)
+    await toggle(true)
+    expect(list.scrollTop).toBe(2000)
+    await append('third')
+    expect(list.scrollTop).toBe(3000)
   })
 })

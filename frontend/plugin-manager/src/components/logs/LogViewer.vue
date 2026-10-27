@@ -53,7 +53,7 @@
       :title="$t('logs.loadError', { error: effectiveError })"
     />
 
-    <div ref="logContainerRef" class="log-list" data-yui-guide-id="log-list">
+    <div ref="logContainerRef" class="log-list" data-yui-guide-id="log-list" @scroll="handleLogScroll">
       <template v-if="filteredLogs.length > 0">
         <div v-for="(log, index) in filteredLogs" :key="log.id || `${log.timestamp}-${index}`" class="log-item">
           <span class="log-time">{{ formatTimestamp(log.timestamp) }}</span>
@@ -151,6 +151,7 @@ const canOpenDirectory = computed(() => hasDesktopBridge.value && isLocalBackend
 const levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
 const autoScroll = ref(true)
 const logContainerRef = ref<HTMLElement | null>(null)
+let followingTail = true
 const logErrorKeys = new Map([
   ['LOG_READ_FAILED', 'logs.readFailed'],
   ['INVALID_PLUGIN_ID', 'logs.invalidPluginId'],
@@ -185,10 +186,17 @@ function levelTagType(level: string) {
   return 'success'
 }
 
+function handleLogScroll() {
+  const container = logContainerRef.value
+  if (!container) return
+  followingTail = container.scrollHeight - container.clientHeight - container.scrollTop <= 4
+}
+
 async function scrollToBottom() {
-  if (!autoScroll.value) return
+  if (!autoScroll.value || !followingTail) return
   await nextTick()
-  if (logContainerRef.value) {
+  // The user may scroll up or disable following while the DOM is updating.
+  if (autoScroll.value && followingTail && logContainerRef.value) {
     logContainerRef.value.scrollTop = logContainerRef.value.scrollHeight
   }
 }
@@ -250,6 +258,13 @@ watch(
     await scrollToBottom()
   }
 )
+
+watch(autoScroll, enabled => {
+  if (enabled) {
+    followingTail = true
+    void scrollToBottom()
+  }
+})
 
 onMounted(async () => {
   await scrollToBottom()
