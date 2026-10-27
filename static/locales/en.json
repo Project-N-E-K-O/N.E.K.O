@@ -6872,12 +6872,17 @@
             "offline": "Offline",
             "loadingFriends": "Loading mutual friends…",
             "notLoggedIn": "Not signed in to Neko Universe",
-            "loginHint": "Sign in to your community account in Neko Settings",
+            "loginHint": "Sign in to invite mutual friends over for a visit",
             "noFriends": "No mutual friends yet",
-            "mutualHint": "Friends appear here after you follow each other",
+            "mutualHint": "Follow each other to invite them over for a visit",
             "onlineFriends": "Online friends",
             "offlineFriends": "Offline friends",
-            "openCommunity": "Open full community"
+            "openCommunity": "Cards · Forge · DMs",
+            "openCommunityHint": "Open the full Neko Universe community: view cards, forge (draw cards) and read messages",
+            "loginAction": "Sign in to Neko Universe",
+            "findFriends": "Find friends in Neko Universe",
+            "loadFailedTitle": "Couldn't load your friends",
+            "retry": "Retry"
         },
         "debrief": {
             "question": "Keep this visit in her diary?",

@@ -6872,12 +6872,17 @@
             "offline": "오프라인",
             "loadingFriends": "현재 계정의 맞팔로우 친구를 불러오는 중…",
             "notLoggedIn": "먀오 우주에 로그인하지 않았습니다",
-            "loginHint": "먼저 Neko 설정에서 커뮤니티 계정에 로그인해 주세요",
+            "loginHint": "로그인하면 맞팔로우 친구를 초대할 수 있어요",
             "noFriends": "아직 맞팔로우 친구가 없습니다",
-            "mutualHint": "서로 팔로우하면 여기에 표시됩니다",
+            "mutualHint": "서로 팔로우하면 놀러 오라고 초대할 수 있어요",
             "onlineFriends": "온라인 친구",
             "offlineFriends": "오프라인 친구",
-            "openCommunity": "전체 커뮤니티 열기"
+            "openCommunity": "카드 · 주조 · DM",
+            "openCommunityHint": "먀오 우주 전체 커뮤니티 열기: 카드 보기, 주조(뽑기), 메시지 확인",
+            "loginAction": "먀오 우주 로그인",
+            "findFriends": "먀오 우주에서 친구 찾기",
+            "loadFailedTitle": "친구 목록을 불러오지 못했습니다",
+            "retry": "다시 시도"
         },
         "debrief": {
             "question": "이번 방문을 일기로 남길까요?",

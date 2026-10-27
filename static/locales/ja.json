@@ -6872,12 +6872,17 @@
             "offline": "オフライン",
             "loadingFriends": "このアカウントの相互フォローの友達を読み込んでいます…",
             "notLoggedIn": "ミャオ宇宙にログインしていません",
-            "loginHint": "先に Neko の設定でコミュニティアカウントにログインしてください",
+            "loginHint": "ログインすると相互フォローの友達を招待できます",
             "noFriends": "まだ相互フォローの友達がいません",
-            "mutualHint": "お互いにフォローすると、ここに表示されます",
+            "mutualHint": "お互いにフォローすると、遊びに招待できます",
             "onlineFriends": "オンラインの友達",
             "offlineFriends": "オフラインの友達",
-            "openCommunity": "コミュニティ全体を開く"
+            "openCommunity": "カード・鋳造・DM",
+            "openCommunityHint": "ミャオ宇宙のコミュニティ全体を開く：カード閲覧、鋳造（ガチャ）、DM",
+            "loginAction": "ミャオ宇宙にログイン",
+            "findFriends": "ミャオ宇宙で友達を探す",
+            "loadFailedTitle": "友達リストを読み込めませんでした",
+            "retry": "再試行"
         },
         "debrief": {
             "question": "今回の訪問を日記に残しますか？",

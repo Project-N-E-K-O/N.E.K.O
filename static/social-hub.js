@@ -5,7 +5,7 @@
 
   var standalone = window.__NEKO_SOCIAL_HUB_STANDALONE__ === true;
   var state = {
-    open: standalone, loading: true, loggedIn: false,
+    open: standalone, loading: true, loggedIn: false, loadFailed: false, loadError: '',
     toast: '', toastError: false, incoming: null, friends: [], accountId: '', account: null,
     presenceMenuOpen: false, presenceSaving: false,
     invitations: new Map(), restoredAccountId: ''
@@ -71,10 +71,29 @@
   function host() { return window.nekoSocialHubHost || null; }
   function social() { return window.nekoSocial || null; }
   async function json(response) { try { return await response.json(); } catch (_) { return {}; } }
+  function interpolate(text, params) {
+    return String(text).replace(/\{\{\s*(\w+)\s*\}\}/g, function (match, name) {
+      return params && params[name] !== undefined ? String(params[name]) : match;
+    });
+  }
   function tr(key, fallback, params) {
-    if (typeof window.t !== 'function') return fallback;
+    if (typeof window.t !== 'function') return interpolate(fallback, params);
     var value = window.t(key, params || {});
-    return !value || value === key ? fallback : value;
+    return !value || value === key ? interpolate(fallback, params) : value;
+  }
+  function svgIcon(className, paths) {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('class', className);
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('focusable', 'false');
+    svg.setAttribute('aria-hidden', 'true');
+    paths.forEach(function (d) {
+      var path = document.createElementNS(ns, 'path');
+      path.setAttribute('d', d);
+      svg.appendChild(path);
+    });
+    return svg;
   }
   function focusKey(node, key) {
     node.setAttribute('data-neko-focus-key', key);
@@ -339,7 +358,11 @@
     try {
       var response = await fetch('/api/community/visit-hub', { credentials: 'same-origin' });
       var body = await json(response);
-      if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取互关好友失败')));
+      // 登录态失效按“未登录”处理，引导重新登录，而不是显示成加载失败。
+      if (!response.ok && body && body.detail === 'community_login_required') body = { logged_in: false };
+      else if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取互关好友失败')));
+      state.loadFailed = false;
+      state.loadError = '';
       state.loggedIn = body.logged_in === true;
       state.accountId = String(body.account && body.account.id || '');
       state.account = normalizeAccount(body.account);
@@ -355,12 +378,15 @@
       }
     } catch (error) {
       if (!silent) {
+        state.loadFailed = true;
         state.loggedIn = false;
         state.account = null;
         state.friends = [];
         state.incoming = null;
-        state.toast = error && error.message || tr('visit.socialHub.readFailed', '读取互关好友失败');
-        state.toastError = true;
+        // 失败原因直接写进空状态卡片（带重试按钮），不再额外弹一条重复的红色提示。
+        state.loadError = error && error.message || tr('visit.socialHub.readFailed', '读取互关好友失败');
+        state.toast = '';
+        state.toastError = false;
       }
     } finally {
       if (!silent) state.loading = false;
@@ -668,16 +694,51 @@
     friends.forEach(function (friend) { list.appendChild(friendRow(friend)); });
     target.appendChild(list);
   }
+  var EMPTY_ICONS = {
+    login: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4.5 20a7.5 7.5 0 0 1 15 0'],
+    friends: ['M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z', 'M2.5 20a6.5 6.5 0 0 1 13 0',
+      'M16 4.3a3.5 3.5 0 0 1 0 6.4', 'M18 14.2a6.5 6.5 0 0 1 3.5 5.8'],
+    offline: ['M7 18h10.5a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.6 9.1 4.5 4.5 0 0 0 7 18z', 'M12 9.5v4', 'M12 16.2v.1']
+  };
   function renderEmpty(target) {
     var empty = el('section', 'neko-social-hub-empty');
-    if (state.loading) empty.appendChild(el('strong', '', tr('visit.socialHub.loadingFriends', '正在读取当前账号的互关好友…')));
-    else if (!state.loggedIn) {
-      empty.appendChild(el('strong', '', tr('visit.socialHub.notLoggedIn', '还没有登录喵宇宙')));
-      empty.appendChild(el('span', '', tr('visit.socialHub.loginHint', '请先在 Neko 设置中登录社区账号')));
-    } else {
-      empty.appendChild(el('strong', '', tr('visit.socialHub.noFriends', '暂时没有互关喵友')));
-      empty.appendChild(el('span', '', tr('visit.socialHub.mutualHint', '双方互相关注后，就会出现在这里')));
+    if (state.loading) {
+      empty.classList.add('is-loading');
+      empty.appendChild(el('span', 'neko-social-hub-spinner'));
+      empty.appendChild(el('span', 'neko-social-hub-empty-hint', tr('visit.socialHub.loadingFriends', '正在读取当前账号的互关好友…')));
+      target.appendChild(empty);
+      return;
     }
+    var kind, title, hint, actionLabel, actionHandler, actionKey;
+    if (state.loadFailed) {
+      kind = 'offline';
+      title = tr('visit.socialHub.loadFailedTitle', '好友列表没能加载出来');
+      hint = state.loadError || tr('visit.socialHub.readFailed', '读取互关好友失败');
+      actionLabel = tr('visit.socialHub.retry', '重试');
+      actionHandler = function () { refresh(); };
+      actionKey = 'empty-retry';
+    } else if (!state.loggedIn) {
+      kind = 'login';
+      title = tr('visit.socialHub.notLoggedIn', '还没有登录喵宇宙');
+      hint = tr('visit.socialHub.loginHint', '登录后就能邀请互关好友来串门');
+      actionLabel = tr('visit.socialHub.loginAction', '登录喵宇宙');
+      actionHandler = openCommunity;
+      actionKey = 'empty-login';
+    } else {
+      kind = 'friends';
+      title = tr('visit.socialHub.noFriends', '还没有互关喵友');
+      hint = tr('visit.socialHub.mutualHint', '和别人互相关注后，就能邀请 TA 来串门');
+      actionLabel = tr('visit.socialHub.findFriends', '去喵宇宙找喵友');
+      actionHandler = openCommunity;
+      actionKey = 'empty-find-friends';
+    }
+    empty.classList.add('is-' + kind);
+    var badge = el('span', 'neko-social-hub-empty-badge');
+    badge.appendChild(svgIcon('neko-social-hub-empty-icon', EMPTY_ICONS[kind]));
+    empty.appendChild(badge);
+    empty.appendChild(el('strong', 'neko-social-hub-empty-title', title));
+    empty.appendChild(el('span', 'neko-social-hub-empty-hint', hint));
+    empty.appendChild(focusKey(button(actionLabel, 'neko-social-hub-button primary neko-social-hub-empty-action', actionHandler), actionKey));
     target.appendChild(empty);
   }
   function render() {
@@ -690,7 +751,11 @@
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));
     header.appendChild(el('h2', 'neko-social-hub-title', '喵宇宙'));
-    header.appendChild(focusKey(button(tr('visit.socialHub.openCommunity', '打开完整社区'), 'neko-social-hub-community-link', openCommunity), 'open-community'));
+    // 完整社区里实际是看卡、铸造和私信；直接写出来，比“打开完整社区”更好懂。
+    var communityLink = button(tr('visit.socialHub.openCommunity', '卡牌 · 铸造 · 私信'), 'neko-social-hub-community-link', openCommunity);
+    communityLink.title = tr('visit.socialHub.openCommunityHint', '打开喵宇宙完整社区：看卡、铸造（抽卡）和查看私信');
+    communityLink.appendChild(svgIcon('neko-social-hub-community-arrow', ['M7 17 17 7', 'M8 7h9v9']));
+    header.appendChild(focusKey(communityLink, 'open-community'));
     panel.appendChild(header);
     if (state.loggedIn && state.account) renderOwnAccount(panel);
 
@@ -698,7 +763,7 @@
     var friendScroller = el('div', 'neko-social-hub-friend-scroller');
     panel.appendChild(friendScroller);
     var orphanInvitations = orphanInvitationFriends();
-    if (state.loading || !state.loggedIn || (!state.friends.length && !orphanInvitations.length)) renderEmpty(friendScroller);
+    if (state.loading || state.loadFailed || !state.loggedIn || (!state.friends.length && !orphanInvitations.length)) renderEmpty(friendScroller);
     else {
       var onlineFriends = state.friends.filter(function (friend) { return friend.online; });
       var offlineFriends = state.friends.filter(function (friend) { return !friend.online; });

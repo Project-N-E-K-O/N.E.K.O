@@ -6872,12 +6872,17 @@
             "offline": "Desconectado",
             "loadingFriends": "Cargando los amigos mutuos de esta cuenta…",
             "notLoggedIn": "No has iniciado sesión en Universo Miau",
-            "loginHint": "Inicia sesión con tu cuenta de la comunidad en los ajustes de Neko",
+            "loginHint": "Inicia sesión para invitar a tus amigos mutuos",
             "noFriends": "Aún no tienes amigos mutuos",
-            "mutualHint": "Tus amigos aparecerán aquí cuando se sigan mutuamente",
+            "mutualHint": "Síganse mutuamente para poder invitarse de visita",
             "onlineFriends": "Amigos en línea",
             "offlineFriends": "Amigos desconectados",
-            "openCommunity": "Abrir la comunidad completa"
+            "openCommunity": "Cartas · Forja · MD",
+            "openCommunityHint": "Abrir la comunidad completa de Universo Miau: ver cartas, forjar (sacar cartas) y leer mensajes",
+            "loginAction": "Iniciar sesión en Universo Miau",
+            "findFriends": "Buscar amigos en Universo Miau",
+            "loadFailedTitle": "No se pudo cargar tu lista de amigos",
+            "retry": "Reintentar"
         },
         "debrief": {
             "question": "¿Guardar esta visita en su diario?",
