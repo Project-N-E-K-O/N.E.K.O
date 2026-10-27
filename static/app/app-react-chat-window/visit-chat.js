@@ -1159,7 +1159,11 @@
         case 'video_reconnecting':
             break;
         case 'voice_off':
-            return;   // 只给父页收语音旁路用（OD-15 v4），聊天面不变
+            // 只给父页收语音旁路用（OD-15 v4），聊天面不变；跟随窗收到时同样转给 Pet 窗的父页（重复收到无害）
+            if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+                window.nekoRelayVisitStateToDisplay(frame);
+            }
+            return;
         case 'ending_soon':
             visit.endingSoonAt = typeof frame.ends_at === 'number' ? frame.ends_at : now() / 1000;
             break;
