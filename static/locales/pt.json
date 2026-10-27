@@ -7103,8 +7103,8 @@
     "feedbackDevices": {
         "comingSoonTitle": "Em breve",
         "comingSoonMessage": "Aguarde as novidades",
-        "title": "Dispositivos do histórico de recomendações",
-        "description": "Gerencie o envio do histórico. A música e as recomendações continuam funcionando.",
+        "title": "Dispositivos de envio de recomendações",
+        "description": "Gerencie os dispositivos que enviam suas escolhas de recomendações. A música e as recomendações normais continuam funcionando.",
         "name": "Nome do dispositivo (opcional)",
         "chooseReplacement": "Há 5 dispositivos ativados. Escolha o dispositivo antigo que deseja substituir.",
         "selectDevice": "Escolha um dispositivo",
@@ -7119,7 +7119,20 @@
         "upgrade": "Atualize o aplicativo para retomar o envio do histórico. O uso normal não é afetado.",
         "update": "Obter atualização",
         "conflict": "O estado dos dispositivos mudou. Atualize a lista e escolha novamente.",
-        "notEnabled": "O gerenciamento de dispositivos do histórico de recomendações não está ativado. O uso normal não é afetado.",
-        "unavailable": "Não foi possível carregar os dispositivos. Verifique o login na comunidade e a conexão e atualize a lista."
+        "notEnabled": "O protocolo de envio atual não habilita o gerenciamento de dispositivos. Isso não indica se os envios foram concluídos.",
+        "unavailable": "Não foi possível carregar os dispositivos. Verifique o login na comunidade e a conexão e atualize a lista.",
+        "loading": "Atualizando o estado dos envios…",
+        "signedOut": "Entre na sua conta da comunidade N.E.K.O para gerenciar dispositivos de envio.",
+        "identityPending": "Sessão salva. A identidade de envio ainda não foi verificada; atualize ou entre novamente.",
+        "paused": "Os envios estão pausados pela configuração em execução.",
+        "uploadPending": "Alguns registros ou configurações aguardam envio ou a confirmação necessária.",
+        "uploadError": "Os envios precisam de atenção. Verifique a conta e a conexão e atualize.",
+        "fullySynced": "A fila atual está vazia e há uma confirmação de recebimento da nuvem verificada.",
+        "awaitingEnable": "Habilite este dispositivo explicitamente para iniciar seus envios.",
+        "informationTitle": "Sobre os dados enviados",
+        "informationData": "São enviados exibições, confirmações, recusas e outras respostas às recomendações das conversas proativas, estado e duração da reprodução, informações do conteúdo recomendado, horários e configurações relacionadas. Os registros são vinculados à sua conta da comunidade e ao dispositivo.",
+        "informationExcluded": "Este canal de feedback não envia históricos completos de conversa, gravações de áudio ou capturas de tela.",
+        "informationNote": "“Entendi” apenas fecha esta explicação. Não altera as configurações de envio.",
+        "informationClose": "Entendi"
     }
 }

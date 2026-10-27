@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="feedbackDevices.title">Recommendation history devices</title>
-<script src="/static/i18n-i18next.js?v=20261026-feedback-coming-soon"></script>
+<title data-i18n="feedbackDevices.title">推荐记录上传设备</title>
+<script src="/static/i18n-i18next.js?v=20261027-feedback-information"></script>
 <style>body{font:16px system-ui,sans-serif;background:#eef8ff;color:#183b55;margin:0}main{max-width:680px;margin:32px auto;padding:24px;background:white;border-radius:20px}button,input,select{font:inherit;padding:10px;margin:6px 0}button{cursor:pointer}input,select{box-sizing:border-box;width:100%}button:disabled{cursor:default;opacity:.5}li{padding:12px 0;border-bottom:1px solid #ddeaf3;list-style:none}ul{padding:0}label{display:block}#status{min-height:1.5em}aside{padding:16px;background:#fff4dd;border-radius:12px}[hidden]{display:none!important}@media(max-width:720px){main{margin:12px;padding:20px}}</style>
 <style>
 html, body { height: 100%; }
@@ -18,6 +18,15 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
 .coming-soon img { display: block; width: min(208px, 70%); height: auto; margin: 0 auto 28px; border-radius: 50%; }
 .coming-soon h1 { margin: 0; color: #183b55; font-size: clamp(24px, 4vw, 30px); line-height: 1.4; }
 .coming-soon-message { margin: 12px 0 0; color: #64839a; font-size: 18px; line-height: 1.7; }
+.feedback-information { box-sizing: border-box; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid #c5dfed; border-radius: 20px; background: #fff; color: #183b55; overflow: hidden; overflow-wrap: anywhere; }
+.feedback-information[open] { display: flex; flex-direction: column; }
+.feedback-information::backdrop { background: rgb(12 36 55 / 45%); }
+.feedback-information-body { min-height: 0; overflow: auto; padding: 20px; line-height: 1.65; }
+.feedback-information h2 { margin: 0 0 12px; font-size: 22px; }
+.feedback-information p { margin: 10px 0; }
+.feedback-information-note { color: #47677c; font-size: 14px; }
+.feedback-information form { flex: 0 0 auto; margin: 0; padding: 12px 20px; border-top: 1px solid #ddeaf3; }
+.feedback-information button { width: 100%; margin: 0; border: 0; border-radius: 10px; background: #176a94; color: #fff; }
 @media (max-width: 480px) {
     .feedback-devices-header { padding: 12px; gap: 8px; }
     .feedback-devices-brand svg { width: 22px; }
@@ -27,7 +36,7 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
 </style>
 <link rel="stylesheet" href="/static/css/window_controls.css?v=20261026-feedback-window-controls">
 <script src="/static/js/window_controls.js?v=20261026-feedback-window-controls" defer></script>
-<script src="/static/feedback-devices.js?v=20261026-feedback-focus-transitions" defer></script></head>
+<script src="/static/feedback-devices.js?v=20261027-feedback-account-entry-focus-rebase" defer></script></head>
 <body class="feedback-devices-page">
 <header class="feedback-devices-header page-title-bar">
     <div class="feedback-devices-brand">
@@ -36,7 +45,7 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
             <circle cx="9" cy="12" r="4"></circle><circle cx="18" cy="7" r="4"></circle>
             <circle cx="28" cy="7" r="4"></circle><circle cx="37" cy="12" r="4"></circle>
         </svg>
-        <h2 data-i18n="feedbackDevices.title">Recommendation history devices</h2>
+        <h2 data-i18n="feedbackDevices.title">推荐记录上传设备</h2>
     </div>
     <div class="neko-window-controls">
         <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
@@ -53,14 +62,14 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
 </header>
 <div class="feedback-devices-content"><main>
 <section id="coming-soon" class="coming-soon" hidden role="status" aria-live="polite" aria-labelledby="coming-soon-title">
-    <p class="coming-soon-label" data-i18n="feedbackDevices.title">Recommendation history devices</p>
+    <p class="coming-soon-label" data-i18n="feedbackDevices.title">推荐记录上传设备</p>
     <img src="/static/images/cookies/yui-credential-idle-light.webp" alt="Yui" width="208" height="208" draggable="false">
     <h1 id="coming-soon-title" tabindex="-1" data-i18n="feedbackDevices.comingSoonTitle">Coming soon</h1>
     <p class="coming-soon-message" data-i18n="feedbackDevices.comingSoonMessage">Please stay tuned</p>
 </section>
 <div id="management-content" hidden>
-<h1 data-i18n="feedbackDevices.title">Recommendation history devices</h1>
-<p data-i18n="feedbackDevices.description">Manage recommendation history uploads. Listening and recommendations keep working.</p>
+<h1 data-i18n="feedbackDevices.title">推荐记录上传设备</h1>
+<p data-i18n="feedbackDevices.description">管理上传推荐记录的设备，不影响听歌和正常推荐。</p>
 <p id="status" role="status" aria-live="polite"></p>
 <aside id="upgrade" hidden><p data-i18n="feedbackDevices.upgrade">Update the desktop app to resume history uploads. Normal use is unaffected.</p><a href="https://github.com/Project-N-E-K-O/N.E.K.O/releases" target="_blank" rel="noopener noreferrer" data-i18n="feedbackDevices.update">Get the update</a></aside>
 <button id="refresh" type="button" data-i18n="feedbackDevices.refresh">Refresh</button>
@@ -68,4 +77,15 @@ body.feedback-devices-page { display: flex; flex-direction: column; overflow: hi
 <div id="replacement" hidden><label for="replacement-id" data-i18n="feedbackDevices.chooseReplacement">Five devices are enabled. Choose which old device to replace.</label><select id="replacement-id"></select></div>
 <button id="activate" type="button" data-i18n="feedbackDevices.enable">Enable this device</button>
 <p data-i18n="feedbackDevices.removalNote">Removing a device stops its uploads. Its current settings stay unchanged. It must be enabled manually to join again.</p>
-<ul id="devices"></ul></section></div></main></div></body></html>
+<ul id="devices"></ul></section></div></main></div>
+<dialog id="feedback-information" class="feedback-information" aria-labelledby="feedback-information-title" aria-describedby="feedback-information-data feedback-information-excluded feedback-information-note">
+    <div class="feedback-information-body">
+        <h2 id="feedback-information-title" data-i18n="feedbackDevices.informationTitle">上传内容说明</h2>
+        <p id="feedback-information-data" data-i18n="feedbackDevices.informationData">上传主动搭话的展示、确认／跳过等反馈，以及播放状态／时长、推荐内容信息、时间和相关设置；记录会关联社区账号和设备。</p>
+        <p id="feedback-information-excluded" data-i18n="feedbackDevices.informationExcluded">此反馈通道不上传完整聊天记录、录音文件或屏幕截图。</p>
+        <p id="feedback-information-note" class="feedback-information-note" data-i18n="feedbackDevices.informationNote">“我知道了”仅关闭说明，不改变上传设置。</p>
+    </div>
+    <form method="dialog"><button type="submit" id="feedback-information-close" data-i18n="feedbackDevices.informationClose" autofocus>我知道了</button></form>
+</dialog>
+<script src="/static/feedback-information.js?v=20261027-feedback-information"></script>
+</body></html>

@@ -32,7 +32,7 @@ async function fixture(options = {}) {
         assert.ok(tag, `template must define ${id}`);
         elements[id].hidden = /\shidden(?:\s|=|>)/.test(tag[0]);
     }
-    const events = {}, timeouts = [];
+    const events = {}, documentEvents = {}, timeouts = [], announcements = [];
     const data = { owner: 'account-a', protocol: 2, upgrade: false, calls: [], devices: Array.from({ length: 5 }, (_, i) => ({
         registration_id: 'old-' + i, registration_version: 1, display_name: 'Laptop ' + i, active: true, is_current: false })) };
     const fetch = async (url, options = {}) => {
@@ -44,7 +44,7 @@ async function fixture(options = {}) {
         }
         let value;
         if (url.endsWith('page_config')) value = { autostart_csrf_token: 'fixture-csrf' };
-        else if (url.endsWith('/status')) value = { success: true, owner_key: data.owner, protocol_version: data.protocol, upgrade_required: data.upgrade };
+        else if (url.endsWith('/status')) value = { success: true, owner_key: data.owner, protocol_version: data.protocol, upgrade_required: data.upgrade, ...data.status };
         else if (url.endsWith('/devices')) value = { success: true, owner_key: data.owner, devices: data.devices, max_active_devices: 5, activation_context: "synthetic-activation-context" };
         else if (url.endsWith('/activate')) {
             const body = JSON.parse(options.body);
@@ -53,17 +53,30 @@ async function fixture(options = {}) {
             if (old) old.active = false;
             data.devices.push({ registration_id: 'current', registration_version: 1, display_name: body.display_name, active: true, is_current: true });
             value = { success: true };
+        } else if (/\/devices\/[^/]+\/remove$/.test(url)) {
+            const body = JSON.parse(options.body);
+            const id = decodeURIComponent(url.split('/').at(-2));
+            const device = data.devices.find(row => row.registration_id === id && row.active);
+            assert.ok(device, 'remove must address an active registration');
+            assert.equal(body.expected_owner_key, data.owner);
+            assert.equal(body.expected_registration_version, device.registration_version);
+            device.active = false;
+            value = { success: true };
         } else throw Error(url);
         return { ok: true, json: async () => JSON.parse(JSON.stringify(value)) };
     };
-    const window = { t: key => key, addEventListener(name, callback) { events[name] = callback; } };
+    const window = { t: key => key, electronShell: options.electronShell,
+        addEventListener(name, callback) { events[name] = callback; },
+        dispatchEvent(event) { announcements.push(event); events[event.type]?.(event); } };
+    document.hidden = false;
+    document.addEventListener = (name, callback) => { documentEvents[name] = callback; };
     let intercept = options.intercept;
     vm.runInNewContext(fs.readFileSync(path.join(root, 'static/feedback-devices.js'), 'utf8'), {
-        window, document, fetch,
-        AbortSignal: { timeout(ms) { const controller = new AbortController(); timeouts.push({ms,controller}); return controller.signal; } },
-    });
+        window, document, fetch, AbortController, CustomEvent,
+        AbortSignal: { any: AbortSignal.any.bind(AbortSignal), timeout(ms) { const controller = new AbortController(); timeouts.push({ms,controller}); return controller.signal; } },
+    }, { filename: path.join(root, 'static/feedback-devices.js') });
     await settle();
-    return { elements, data, events, timeouts, document, headerControl, setIntercept(value) { intercept = value; } };
+    return { elements, data, events, document, documentEvents, announcements, timeouts, headerControl, setIntercept(value) { intercept = value; } };
 }
 async function settle() { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); }
 
@@ -191,6 +204,36 @@ test('sixth device requires an explicit choice and a click; names are only user 
     assert.equal(elements.activate.disabled, true);
 });
 
+test('removing a rendered device pins its owner and version and refreshes retired controls', async () => {
+    const s = await fixture();
+    const device = s.data.devices[2];
+    device.registration_id = 'desktop /测试#1';
+    device.registration_version = 7;
+    s.elements.refresh.click(); await settle();
+    const button = s.elements.devices.children[2].children[1];
+    const oldRemove = button.listeners.click;
+    const before = s.data.calls.length;
+    button.click(); await settle();
+    const calls = s.data.calls.slice(before);
+    const mutations = calls.filter(row => row.options.method === 'POST');
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0].url, '/api/proactive/feedback/devices/desktop%20%2F%E6%B5%8B%E8%AF%95%231/remove');
+    assert.deepEqual(JSON.parse(mutations[0].options.body), { expected_owner_key: 'account-a', expected_registration_version: 7 });
+    assert.equal(mutations[0].options.headers['X-CSRF-Token'], 'fixture-csrf');
+    assert.equal(device.active, false);
+    assert.equal(s.data.devices.filter(row => row.active).length, 4);
+    assert.ok(calls.some(row => row.url.endsWith('/status')));
+    assert.ok(calls.some(row => row.url.endsWith('/devices')));
+    const removed = s.elements.devices.children[2];
+    assert.equal(removed.children.length, 1, 'the refreshed inactive device has no remove button');
+    assert.equal(removed.children[0].textContent, 'Laptop 2 · feedbackDevices.removed');
+    assert.equal(s.elements.replacement.hidden, true);
+    assert.equal(s.elements.activate.disabled, false, 'removing a device frees an activation slot');
+    assert.equal(s.elements.refresh.disabled, false);
+    oldRemove(); await settle();
+    assert.equal(s.data.calls.filter(row => row.options.method === 'POST').length, 1, 'the retired button cannot repeat the removal');
+});
+
 test('upgrade state hides stale devices and keeps refresh available for recovery', async () => {
     const { elements, data } = await fixture();
     data.upgrade = true;
@@ -238,15 +281,182 @@ test('replacement pins the viewed version and a changed device requires a fresh 
     assert.equal(s.data.devices[2].active, false);
 });
 
-test('refresh preserves a replacement choice only for the same owner and version', async () => {
+test('every refresh retires the previous replacement choice before reading', async () => {
     const s = await fixture();
     s.elements['replacement-id'].value = 'old-1'; s.elements['replacement-id'].listeners.change();
     s.elements.refresh.click(); await settle();
-    assert.equal(s.elements['replacement-id'].value, 'old-1');
+    assert.equal(s.elements['replacement-id'].value, '');
     s.data.owner = 'account-b';
     s.elements.refresh.click(); await settle();
     assert.equal(s.elements['replacement-id'].value, '');
     assert.equal(s.elements.activate.disabled, true);
+});
+
+test('focus and visible events combine one read and immediately retire old actions and replacement', async () => {
+    const s = await fixture();
+    s.elements['replacement-id'].value = 'old-1'; s.elements['replacement-id'].listeners.change();
+    const oldRemove = s.elements.devices.children[0].children[1].listeners.click;
+    const before = s.data.calls.length;
+    let finishRead, signal;
+    s.setIntercept((url, options) => url.endsWith('/status') ? new Promise(resolve => { finishRead = resolve; signal = options.signal; }) : null);
+    s.events.focus(); s.documentEvents.visibilitychange();
+    assert.equal(s.elements.devices.children.length, 0);
+    assert.equal(s.elements['replacement-id'].value, '');
+    assert.equal(s.elements.activate.disabled, true);
+    oldRemove(); s.elements.activate.listeners.click();
+    await settle();
+    assert.equal(s.data.calls.slice(before).filter(row => row.url.endsWith('/status')).length, 1);
+    assert.equal(s.data.calls.slice(before).filter(row => row.options.method === 'POST').length, 0);
+    assert.equal(signal.aborted, false);
+    finishRead({ok:true,json:async()=>({success:true,owner_key:s.data.owner,protocol_version:2})});
+    await settle();
+    assert.equal(s.elements.devices.children.length, 5);
+    oldRemove(); await settle();
+    assert.equal(s.data.calls.slice(before).filter(row => row.options.method === 'POST').length, 0, 'a retired callback cannot revive for the same owner');
+    const after = s.data.calls.length;
+    s.document.hidden = true; s.documentEvents.visibilitychange(); await settle();
+    assert.equal(s.data.calls.length, after, 'hidden tabs do not refresh');
+});
+
+test('account-changing cancels a queued read and keeps old controls retired until account-changed', async () => {
+    const s = await fixture(), before = s.data.calls.length;
+    s.events.focus(); s.events['neko:account-changing']();
+    s.events.focus(); s.documentEvents.visibilitychange();
+    await settle();
+    assert.equal(s.data.calls.length, before);
+    assert.equal(s.elements.devices.children.length, 0);
+    assert.equal(s.announcements.at(-1).detail, null);
+    s.data.owner = 'account-b'; s.events['neko:account-changed'](); await settle();
+    assert.equal(s.announcements.at(-1).detail.owner_key, 'account-b');
+    assert.equal(s.elements.devices.children.length, 5);
+});
+
+test('A to B to A retires reads even when the transport ignores abort and responds late', async () => {
+    const s = await fixture(); let oldStatus, oldDevices, statusSignal, devicesSignal;
+    s.setIntercept((url, options) => url.endsWith('/status') ? new Promise(resolve => {oldStatus=resolve;statusSignal=options.signal;}) : null);
+    s.events.focus(); await settle();
+    s.setIntercept((url, options) => url.endsWith('/devices') ? new Promise(resolve => {oldDevices=resolve;devicesSignal=options.signal;}) : null);
+    s.data.owner = 'account-b'; s.events['neko:account-changed'](); await settle();
+    assert.equal(statusSignal.aborted, true);
+    s.setIntercept(null); s.data.owner='account-a'; s.events['neko:account-changed'](); await settle();
+    assert.equal(devicesSignal.aborted, true);
+    const before = s.data.calls.length;
+    oldStatus({ok:true,json:async()=>({success:true,owner_key:'account-a',protocol_version:1})});
+    oldDevices({ok:true,json:async()=>({success:true,owner_key:'account-b',devices:[],max_active_devices:5})});
+    await settle();
+    assert.equal(s.data.calls.length, before, 'late status cannot initiate a follow-up devices read');
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.ready');
+    assert.equal(s.elements.devices.children.length, 5);
+    assert.equal(s.announcements.at(-1).detail.owner_key, 'account-a');
+});
+
+test('superseding a read aborts its transport without letting cancellation erase the replacement snapshot', async () => {
+    const s=await fixture(); let aborted=false;
+    s.setIntercept((url,options)=>url.endsWith('/status') ? new Promise((resolve,reject)=>{
+        options.signal.addEventListener('abort',()=>{aborted=true;reject(options.signal.reason);},{once:true});
+    }) : null);
+    s.events.focus(); await settle();
+    s.setIntercept(null); s.data.owner='account-b'; s.events['neko:account-changed'](); await settle();
+    assert.equal(aborted,true);
+    assert.equal(s.elements.status.textContent,'feedbackDevices.ready');
+    assert.equal(s.announcements.at(-1).detail.owner_key,'account-b');
+});
+
+test('an account refresh retains an in-flight mutation owner until it settles', async () => {
+    const s = await fixture(); let finishMutation, mutationSignal;
+    s.setIntercept((url, options) => url.endsWith('/activate') ? new Promise(resolve => {finishMutation=resolve;mutationSignal=options.signal;}) : null);
+    s.elements['replacement-id'].value='old-0'; s.elements['replacement-id'].listeners.change();
+    s.elements.activate.click(); await settle();
+    s.data.owner='account-b'; s.events['neko:account-changed'](); await settle();
+    assert.equal(mutationSignal.aborted, false, 'only read transport is cancelled');
+    assert.equal(s.elements.activate.disabled, true);
+    assert.ok(s.elements.devices.children.every(row => row.children[1].disabled));
+    s.elements.activate.listeners.click(); await settle();
+    assert.equal(s.data.calls.filter(row=>row.url.endsWith('/activate')).length, 1);
+    finishMutation({ok:false,status:409,json:async()=>({error_code:'cloud_conflict'})}); await settle();
+    assert.equal(s.elements.refresh.disabled, false);
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.ready', 'old account failure does not overwrite the new account');
+    assert.equal(s.announcements.at(-1).detail.owner_key, 'account-b');
+});
+
+test('BFCache restore cannot unlock a still-pending remote activation', async () => {
+    const s = await fixture(); let finishMutation;
+    s.setIntercept(url => url.endsWith('/activate') ? new Promise(resolve => {finishMutation=resolve;}) : null);
+    s.elements['replacement-id'].value='old-0'; s.elements['replacement-id'].listeners.change(); s.elements.activate.click(); await settle();
+    s.events.pagehide(); s.events.pageshow(); await settle();
+    assert.equal(s.elements.refresh.disabled, true);
+    s.elements.activate.listeners.click(); await settle();
+    assert.equal(s.data.calls.filter(row=>row.url.endsWith('/activate')).length, 1);
+    finishMutation({ok:true,json:async()=>({success:true})}); await settle();
+    assert.equal(s.elements.refresh.disabled, false);
+});
+
+test('account changes during CSRF recovery never resubmit an old mutation', async () => {
+    const s = await fixture(); let finishConfig, attempts=0;
+    s.setIntercept(url => {
+        if(url.endsWith('/activate')) { attempts++; return {ok:false,status:403,json:async()=>({error_code:'csrf_validation_failed'})}; }
+        if(url.endsWith('page_config')) return new Promise(resolve=>{finishConfig=resolve;});
+        return null;
+    });
+    s.elements['replacement-id'].value='old-0'; s.elements['replacement-id'].listeners.change(); s.elements.activate.click(); await settle();
+    s.setIntercept(null); s.data.owner='account-b'; s.events['neko:account-changed'](); await settle();
+    finishConfig({ok:true,json:async()=>({autostart_csrf_token:'late'})}); await settle();
+    assert.equal(attempts, 1);
+    assert.equal(s.elements.refresh.disabled, false);
+    assert.equal(s.announcements.at(-1).detail.owner_key, 'account-b');
+});
+
+test('signed-out v2 presents login without requesting devices or activating automatically', async () => {
+    const s = await fixture();
+    const before=s.data.calls.length;
+    s.data.status={signed_in:false,identity_verified:false}; s.events['neko:account-changed'](); await settle();
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.signedOut');
+    assert.equal(s.elements['device-controls'].hidden, true);
+    assert.equal(s.data.calls.slice(before).filter(row=>row.url.endsWith('/devices')||row.options.method==='POST').length, 0);
+    assert.equal(s.announcements.at(-1).detail.signed_in, false);
+    s.data.protocol=1; s.events.focus(); await settle();
+    assert.equal(s.elements.status.textContent, 'feedbackDevices.notEnabled');
+    assert.equal(s.announcements.at(-1).detail.signed_in, false, 'v1 still supplies account state to the login card');
+});
+
+test('upload diagnostics use backend identity, configuration and receipt fields without changing capability', async () => {
+    const s = await fixture();
+    for(const [state,key] of [
+        [{upload_paused:true,fully_synced:true},'paused'],
+        [{control_state:'device_activation_required',identity_verified:false},'awaitingEnable'],
+        [{control_state:'registration_removed'},'awaitingEnable'],
+        [{last_sync_error:'offline'},'uploadError'],
+        [{identity_verified:false},'identityPending'],
+        [{fully_synced:true,has_cloud_receipt:true},'fullySynced'],
+        [{pending:1},'uploadPending'],[{settings_journal_pending:1},'uploadPending'],[{held:1},'uploadPending'],
+        [{fully_synced:false,has_cloud_receipt:false,pending:0},'ready'],
+    ]) {
+        s.data.status={signed_in:true,...state}; s.events.focus(); await settle();
+        assert.equal(s.elements.status.textContent,'feedbackDevices.'+key);
+        assert.equal(s.elements['device-controls'].hidden,false,'status does not pretend the runtime setting disables device capability');
+    }
+    assert.equal(s.data.calls.filter(row=>row.options.method==='POST').length,0);
+});
+
+test('native account notifications refresh immediately and subscription follows page lifecycle', async () => {
+    let notify, subscriptions=0, removals=0;
+    const s=await fixture({electronShell:{onAccountChanged(callback){notify=callback;subscriptions++;return()=>{removals++;};}}});
+    s.data.owner='account-b'; notify();
+    assert.equal(s.elements.devices.children.length,0); await settle();
+    assert.equal(s.announcements.at(-1).detail.owner_key,'account-b');
+    s.events.pagehide(); assert.equal(removals,1);
+    const before=s.data.calls.length; notify(); await settle(); assert.equal(s.data.calls.length,before);
+    s.events.pageshow(); await settle(); assert.equal(subscriptions,2);
+});
+
+test('settings hide the feedback entry and the internal page has no duplicate account card or old disclosure entry', () => {
+    const api = fs.readFileSync(path.join(root, 'templates/api_key_settings.html'), 'utf8');
+    assert.doesNotMatch(api, /href="\/api\/proactive\/feedback\/manage"/);
+    const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
+    for (const id of ['account-panel','account-status','account-action','account-message']) assert.ok(!template.includes('id="' + id + '"'));
+    assert.ok(!template.includes('feedback-account.js'));
+    assert.ok(template.includes('feedback-devices.js?'));
+    assert.doesNotMatch(template, /feedback-disclosure|disclosure-open/);
 });
 
 test('management copy has the same complete keys in all eight locales', () => {
@@ -255,6 +465,9 @@ test('management copy has the same complete keys in all eight locales', () => {
         const entries = JSON.parse(fs.readFileSync(path.join(root, 'static/locales', locale + '.json'), 'utf8')).feedbackDevices;
         assert.ok(entries && Object.values(entries).every(value => typeof value === 'string' && value.length));
         assert.equal(typeof entries.notEnabled, 'string');
+        for (const key of ['loading','signedOut','identityPending','paused','uploadPending','uploadError','fullySynced','awaitingEnable']) {
+            assert.equal(typeof entries[key], 'string', locale + ': ' + key);
+        }
         const keys = Object.keys(entries).sort();
         if (expected) assert.deepEqual(keys, expected); else expected = keys;
     }

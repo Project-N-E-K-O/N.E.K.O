@@ -7103,8 +7103,8 @@
     "feedbackDevices": {
         "comingSoonTitle": "暂未开放",
         "comingSoonMessage": "敬请等待",
-        "title": "推荐历史设备管理",
-        "description": "这里只管理推荐历史上传，不影响听歌和正常推荐。",
+        "title": "推荐记录上传设备",
+        "description": "管理上传推荐选择记录的设备，不影响听歌和正常推荐。",
         "name": "设备名称（选填）",
         "chooseReplacement": "已启用5台设备，请选择要替换的旧设备。",
         "selectDevice": "请选择设备",
@@ -7119,7 +7119,20 @@
         "upgrade": "请更新桌面客户端以恢复历史上传，正常使用不受影响。",
         "update": "获取更新",
         "conflict": "设备状态已变化，请刷新后重新选择。",
-        "notEnabled": "推荐历史设备管理尚未启用，正常使用不受影响。",
-        "unavailable": "暂时无法读取设备，请检查社区登录和网络后刷新。"
+        "notEnabled": "当前上传协议尚未启用设备管理，这不代表记录是否已上传成功。",
+        "unavailable": "暂时无法读取设备，请检查社区登录和网络后刷新。",
+        "loading": "正在刷新上传状态…",
+        "signedOut": "请登录 N.E.K.O 社区账号以管理上传设备。",
+        "identityPending": "已保存登录状态，上传身份尚未核验；请刷新或重新登录。",
+        "paused": "当前运行配置已暂停上传。",
+        "uploadPending": "部分记录或设置正在等待上传或必要的确认。",
+        "uploadError": "上传暂未完成，请检查账号和网络后刷新。",
+        "fullySynced": "当前队列已清空，且已有通过核验的云端回执。",
+        "awaitingEnable": "请明确启用本机，才会开始本机上传。",
+        "informationTitle": "上传内容说明",
+        "informationData": "上传主动搭话的展示、确认／跳过等反馈，以及播放状态／时长、推荐内容信息、时间和相关设置；记录会关联社区账号和设备。",
+        "informationExcluded": "此反馈通道不上传完整聊天记录、录音文件或屏幕截图。",
+        "informationNote": "“我知道了”仅关闭说明，不改变上传设置。",
+        "informationClose": "我知道了"
     }
 }
