@@ -549,7 +549,9 @@
         var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!voice || !voiceSink) return;
         if (data.t === 'voice') {
-          voice.setLocalWanted(data.on === true, voiceSink);
+          // 收尾后迟到的 voice{on:true} 不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间）；关的照常处理
+          var ending = state.phase === 'ending' || state.phase === 'ended';
+          voice.setLocalWanted(data.on === true && !ending, voiceSink);
         } else {
           var peerTrack = data.on === true && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
           voice.setRemoteTrack(peerTrack);

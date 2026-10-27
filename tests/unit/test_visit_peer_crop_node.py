@@ -1243,15 +1243,18 @@ def test_voice_messages_drive_the_tts_tap_and_peer_playback_and_ended_closes_bot
         change(h, 'ending');                         // ending already drops both directions (private chat is back)
         await settle();
         const atEnding = calls.slice();
+        msg({ t: 'voice', on: true });               // a late voice-on queued before ending: must not reopen the tap
+        await settle();
+        const lateOn = calls.slice(atEnding.length);
         change(h, 'ended');
         await settle();
-        return { during, after: atEnding, afterEnded: calls.slice(atEnding.length) };
+        return { during, after: atEnding, lateOn, afterEnded: calls.slice(atEnding.length + lateOn.length) };
         """,
         files=BRIDGE_FILES,
     )
     assert out["during"] == [["open"], ["play", "peer-voice"], ["setLocalVoice", "tap"]]
     assert out["after"] == [["setLocalVoice", None], ["close"], ["stop", "peer-voice"]]
-    assert out["afterEnded"] == []
+    assert out["lateOn"] == [] and out["afterEnded"] == []
 
 
 def test_voice_from_another_frame_is_ignored():
