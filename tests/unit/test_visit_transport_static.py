@@ -3097,3 +3097,213 @@ def test_renewal_turning_the_voice_gate_off_stops_voice_for_good():
     assert out["after"] == 5                          # Nothing more after the gate went off.
     assert out["voice"] == [True, False]
     assert out["remote"] == [True, False]
+
+
+# -- Receiver-side bitrate guard (design §4.7, Servers contract item 9) --
+
+
+def test_rx_guard_constants_mirror_the_settings():
+    from config.visit_settings import VISIT_AUDIO_KBPS, VISIT_RX_GUARD_RATIO, VISIT_RX_GUARD_WINDOW_S, VISIT_TIERS
+
+    loader = _src("loader.js")
+    assert f"var RX_GUARD_RATIO = {VISIT_RX_GUARD_RATIO};" in loader
+    assert f"var RX_GUARD_WINDOW_MS = {VISIT_RX_GUARD_WINDOW_S * 1000};" in loader
+    assert f"var AUDIO_KBPS_DEFAULT = {VISIT_AUDIO_KBPS};" in loader
+    assert VISIT_TIERS["sd600"]["video_kbps"] * VISIT_RX_GUARD_RATIO == 792
+    assert VISIT_AUDIO_KBPS * VISIT_RX_GUARD_RATIO == 48
+    # Only LiveKit guards on the receiver; TRTC is checked by Servers' usage reports. Both adapters declare it.
+    assert "rxGuard: true," in _code_only(_src("livekit-transport.js"))
+    assert "rxGuard: false," in _code_only(_src("trtc-transport.js"))
+
+
+_RX_GUARD_HOST = """
+const h = await joinedController('host', VOICE_ON);
+h.c.adapter.rxGuard = true;
+h.ws.serverSend({ type: 'media', subscribe: true, peer_vid: 'g_peer', crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: true });
+await settle();
+// one 5 s stats tick each: video rx_kbps / voice rx_audio_kbps as the adapter measured them
+const feed = (samples, t0 = 0) => samples.map((rx, i) => {
+  const out = {};
+  h.c.checkRxGuard(rx, out, t0 + i * 5000);
+  return [!!out.video_rx_overrun, !!out.audio_rx_overrun];
+});
+// a tick with nothing measured: ends whatever window the previous group left open
+const gap = () => h.c.checkRxGuard(null, {}, 0);
+const V = (kbps) => ({ rx_kbps: kbps, rx_audio_kbps: 20 });
+const A = (kbps) => ({ rx_kbps: 500, rx_audio_kbps: kbps });
+"""
+
+
+def test_rx_guard_trips_after_ten_seconds_over_and_stays_unsubscribed():
+    out = run_visit_js(
+        _RX_GUARD_HOST + """
+        const flags = feed([V(800), V(800), V(800), V(100)]);
+        const after = { subscribe: h.c.media.subscribe, audioSubscribe: h.c.media.audioSubscribe };
+        h.ws.serverSend({ type: 'media', subscribe: true, crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: true });
+        await settle();
+        return { flags, after, resubscribed: h.c.media.subscribe, audioSubscribe: h.c.media.audioSubscribe };
+        """
+    )
+    # 792 is the cap (528 x 1.5): the third over sample spans 10 s; once tripped every tick keeps reporting it
+    assert out["flags"] == [[False, False], [False, False], [True, False], [True, False]]
+    assert out["after"] == {"subscribe": False, "audioSubscribe": True}
+    assert out["resubscribed"] is False and out["audioSubscribe"] is True
+
+
+def test_rx_guard_ignores_short_spikes_and_unmeasured_ticks():
+    out = run_visit_js(
+        _RX_GUARD_HOST + """
+        const atCap = feed([V(792), V(792), V(792)]);
+        const spike = feed([V(5000), V(100), V(5000), V(5000)], 100000);
+        gap();
+        const missed = feed([V(800), V(800), null, V(800), V(800)], 200000);
+        gap();
+        const noKbps = feed([V(800), { rtt_ms: 30 }, V(800), V(800)], 300000);
+        return { atCap, spike, missed, noKbps, subscribe: h.c.media.subscribe };
+        """
+    )
+    none = [False, False]
+    assert out["atCap"] == [none] * 3
+    assert out["spike"] == [none] * 4
+    assert out["missed"] == [none] * 5           # a tick with no sample is not "still over": the window restarts
+    assert out["noKbps"] == [none] * 4
+    assert out["subscribe"] is True
+
+
+def test_rx_guard_window_restarts_after_a_stats_baseline_reset():
+    out = run_visit_js(
+        _RX_GUARD_HOST + """
+        const before = feed([V(800), V(800)]);
+        h.c.onVendorState('reconnecting', {});
+        h.c.onVendorState('joined', {});
+        const afterReconnect = feed([V(800), V(800)], 10000);
+        h.c.resetStatsBaselines();
+        const afterReset = feed([V(800), V(800), V(800)], 20000);
+        return { before, afterReconnect, afterReset };
+        """
+    )
+    none = [False, False]
+    assert out["before"] == [none, none]
+    assert out["afterReconnect"] == [none, none]       # would have tripped at 10 s without the reset
+    assert out["afterReset"] == [none, none, [True, False]]
+
+
+def test_rx_guard_tracks_video_and_voice_independently():
+    out = run_visit_js(
+        _RX_GUARD_HOST + """
+        const flags = feed([A(49), A(49), A(49)]);
+        const afterAudio = { subscribe: h.c.media.subscribe, audioSubscribe: h.c.media.audioSubscribe,
+          remoteAudio: h.posted.filter((m) => m.t === 'remote_audio').map((m) => m.on) };
+        const later = feed([V(800), V(800), V(800)], 100000);
+        return { flags, afterAudio, later, both: { subscribe: h.c.media.subscribe, audioSubscribe: h.c.media.audioSubscribe } };
+        """
+    )
+    # voice over 48 kbps (32 x 1.5) trips voice only; video keeps its own window and trips on its own
+    assert out["flags"] == [[False, False], [False, False], [False, True]]
+    assert out["afterAudio"]["subscribe"] is True and out["afterAudio"]["audioSubscribe"] is False
+    assert out["later"] == [[False, True], [False, True], [True, True]]
+    assert out["both"] == {"subscribe": False, "audioSubscribe": False}
+
+
+def test_rx_guard_voice_cap_is_inclusive():
+    out = run_visit_js(
+        _RX_GUARD_HOST + """
+        return feed([A(48), A(48), A(48), A(48)]);
+        """
+    )
+    assert out == [[False, False]] * 4
+
+
+def test_rx_guard_is_off_for_adapters_without_it_and_for_unsubscribed_tracks():
+    out = run_visit_js(
+        """
+        const h = await joinedController('host', VOICE_ON);
+        h.ws.serverSend({ type: 'media', subscribe: true, peer_vid: 'g_peer', crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: false });
+        await settle();
+        const run = (t0) => [0, 5000, 10000, 15000].map((dt) => {
+          const out = {};
+          h.c.checkRxGuard({ rx_kbps: 5000, rx_audio_kbps: 500 }, out, t0 + dt);
+          return [!!out.video_rx_overrun, !!out.audio_rx_overrun];
+        });
+        const trtc = run(0);                    // TRTC adapter: rxGuard false
+        h.c.adapter.rxGuard = true;
+        const lk = run(100000);                 // voice not subscribed: only video is guarded
+        return { trtc, lk };
+        """
+    )
+    none = [False, False]
+    assert out["trtc"] == [none] * 4
+    assert out["lk"] == [none, none, [True, False], [True, False]]
+
+
+def test_rx_guard_overrun_reaches_the_backend_through_collect_stats():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest', VOICE_ON);
+        h.c.adapter.rxGuard = true;
+        h.ws.serverSend({ type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: false, audio_subscribe: true });
+        await settle();
+        let asked = 0;
+        h.c.adapter.receiverStats = () => { asked += 1; return Promise.resolve({ rx_audio_kbps: 200 }); };
+        for (let i = 0; i < 4; i++) {
+          h.c.collectStats();
+          await settle();
+          await advance(5000);
+        }
+        const sent = h.ws.sent.filter((m) => m.type === 'stats');
+        return { asked, flags: sent.map((m) => !!m.audio_rx_overrun), video: sent.some((m) => m.video_rx_overrun),
+          audioSubscribe: h.c.media.audioSubscribe, remoteAudio: h.posted.filter((m) => m.t === 'remote_audio').map((m) => m.on) };
+        """
+    )
+    # a guest subscribes to voice only: the receiver stats are still sampled so the voice track is guarded
+    assert out["asked"] == 3                  # after the trip nothing is subscribed any more, the flag still goes up
+    assert out["flags"] == [False, False, True, True]
+    assert out["video"] is False and out["audioSubscribe"] is False
+
+
+def test_livekit_receiver_stats_measure_video_and_voice_separately():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const LK = makeFakeLK([]);
+        const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onRemoteAudio() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const a = LKV.createAdapter({ sdk: LK, handlers });
+        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9', audio_kbps: 32 } });
+        const bytes = { video: 0, audio: 0 };
+        const recv = (kind) => ({ getStats: () => Promise.resolve(new Map([
+          ['in', { type: 'inbound-rtp', kind, bytesReceived: bytes[kind], packetsReceived: 0, packetsLost: 0 }],
+          ['cp', { type: 'candidate-pair', nominated: true, currentRoundTripTime: 0.05 }]])) });
+        // voice only (a guest): no video subscription
+        await a.setAudioSubscribe(true);
+        const apub = { kind: 'audio', trackSid: 'TR_a', setSubscribed() {} };
+        LK.Room.last.emit('TrackPublished', apub, { identity: 'h_peer' });
+        LK.Room.last.emit('TrackSubscribed', { kind: 'audio', mediaStreamTrack: {}, receiver: recv('audio') }, apub, { identity: 'h_peer' });
+        const audioFirst = await a.receiverStats(0);
+        bytes.audio = 25000;
+        const audioOnly = await a.receiverStats(5000);
+        // video joins: its own baseline, voice keeps its own
+        await a.setSubscribe(true);
+        const vpub = { kind: 'video', setSubscribed() {} };
+        LK.Room.last.emit('TrackPublished', vpub, { identity: 'h_peer' });
+        LK.Room.last.emit('TrackSubscribed', { kind: 'video', mediaStreamTrack: {}, receiver: recv('video') }, vpub, { identity: 'h_peer' });
+        bytes.audio = 50000;
+        const videoFirst = await a.receiverStats(10000);
+        bytes.audio = 75000; bytes.video = 500000;
+        const both = await a.receiverStats(15000);
+        // a new voice track restarts only the voice baseline
+        LK.Room.last.emit('TrackSubscribed', { kind: 'audio', mediaStreamTrack: {}, receiver: recv('audio') }, apub, { identity: 'h_peer' });
+        bytes.video = 1000000;
+        const newVoice = await a.receiverStats(20000);
+        a.resetStats();
+        const afterReset = await a.receiverStats(25000);
+        return { audioFirst, audioOnly, videoFirst, both, newVoice, afterReset };
+        """
+    )
+    assert out["audioFirst"] == {}
+    assert out["audioOnly"] == {"rx_audio_kbps": 40}
+    assert out["videoFirst"] == {"rtt_ms": 50, "rx_audio_kbps": 40}
+    assert out["both"] == {"rtt_ms": 50, "rx_kbps": 800, "loss_pct": 0, "rx_audio_kbps": 40}
+    assert out["newVoice"] == {"rtt_ms": 50, "rx_kbps": 800, "loss_pct": 0}
+    assert out["afterReset"] == {"rtt_ms": 50}

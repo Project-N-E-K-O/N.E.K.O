@@ -1610,6 +1610,42 @@ async def test_non_finite_transport_stats_are_not_kept(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+@pytest.mark.parametrize("side_name,flag", [
+    ("host", "video_rx_overrun"),
+    ("host", "audio_rx_overrun"),
+    ("guest", "audio_rx_overrun"),
+])
+async def test_receiver_bitrate_overrun_ends_the_visit_as_a_protocol_violation(tmp_path, monkeypatch, side_name, flag):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt if side_name == "host" else guest.rt
+    try:
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
+        before = rt.anomaly_count()
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, "dc_queue": 0})
+        assert rt.exit_task is None                           # Plain stats (even high ones) are only forwarded.
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, flag: "true"})
+        assert rt.exit_task is None                           # Only a literal true counts.
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, flag: True})
+        await finish(rt, clock)
+        assert rt.finalize_reason == "peer_protocol_violation"
+        assert rt.anomaly_count() == before + 1               # Recorded as a local anomaly only (never a ban signal).
+        leaves = [p for p in wire.sent[side_name] if p.get("t") == "leave"]
+        assert leaves and leaves[0]["reason"] == "peer_protocol_violation"
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_receiver_bitrate_overrun_before_ready_is_ignored(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    try:
+        assert not host.rt.ready_exchanged                    # Nothing is subscribed before ready.
+        host.rt.on_transport_stats({"video_rx_overrun": True, "audio_rx_overrun": "yes"})
+        guest.rt.on_transport_stats({"audio_rx_overrun": True})
+        assert host.rt.exit_task is None and guest.rt.exit_task is None
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_shutdown_gives_the_room_cancel_its_floor_even_past_the_budget(tmp_path, monkeypatch, clocks):
     monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 0.1)
     side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
