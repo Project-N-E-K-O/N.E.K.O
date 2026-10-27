@@ -227,7 +227,7 @@ function credsFor(side, extra) {
     type: 'credentials', visit_id: VISIT_ID, side, transport: 'trtc',
     vendor: { trtc: { sdk_app_id: 1, user_id: side[0] + '_self', user_sig: 'sig1', private_map_key: 'pmk1', str_room_id: VISIT_ID, expire: 600 } },
     own_vid: side[0] + '_self', peer_vid: side === 'guest' ? 'h_peer' : null, allowed_hosts: [], tier: 'sd600',
-    crop: 'upper', publish: { codec: 'h264', bitrate_kbps: 560, fps: 30 }, expires_at: 0,
+    crop: 'upper', publish: { codec: 'h264', bitrate_kbps: 528, fps: 30 }, expires_at: 0,
   }, extra || {});
 }
 function makeController(side) {

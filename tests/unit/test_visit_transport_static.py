@@ -138,12 +138,12 @@ def test_sizes_come_only_from_the_framing_tables():
     assert "contentHint = 'motion'" in pack
     for name in ("trtc-transport.js", "unpack.js", "livekit-transport.js", "loader.js"):
         code = _code_only(_src(name))
-        assert not re.search(r"\b(896|448|1120|560|320|256)\b", code.replace("560) * 1000", "")), name
+        assert not re.search(r"\b(896|448|1120|560|528|320|256)\b", code.replace("528) * 1000", "")), name
     # pack.js: size numbers appear only in CROP_GEOMETRY and quality-ladder definitions.
     tables = re.search(r"var CROP_GEOMETRY = \{.*?\};\s*.*?var CONGESTION_LADDER = \{.*?\};", pack, re.S)
     assert tables
     rest = pack.replace(tables.group(0), "")
-    assert not re.search(r"\b(896|448|1120|560|320|256|352|272|208|160|192)\b", rest)
+    assert not re.search(r"\b(896|448|1120|560|528|320|256|352|272|208|160|192)\b", rest)
 
 
 def test_preflight_does_not_touch_vendor_globals():
@@ -476,7 +476,7 @@ function makeFakeLK(log) {
    'TrackUnsubscribed', 'TrackSubscriptionFailed', 'DataReceived', 'Reconnecting', 'Reconnected', 'Disconnected', 'ConnectionQualityChanged']
     .forEach((n) => { RoomEvent[n] = n; });
   const sender = {
-    params: { encodings: [{ maxBitrate: 560000, maxFramerate: 30 }] },
+    params: { encodings: [{ maxBitrate: 528000, maxFramerate: 30 }] },
     getParameters() { return JSON.parse(JSON.stringify(this.params)); },
     setParameters(p) { this.params = p; log.push(['setParameters', p.encodings[0].maxBitrate, p.encodings[0].maxFramerate]); return Promise.resolve(); },
   };
@@ -524,7 +524,7 @@ def test_livekit_ladder_codec_stats_and_loopback():
         const LK = makeFakeLK(log);
         const events = [];
         const handlers = { onPiece() {}, onPeer() {}, onState(s) { events.push(s); }, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
-        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 528, fps: 30 } };
         const a = LKV.createAdapter({ sdk: LK, handlers });
         await a.join(creds);
         await a.publish({ id: 'pack' });
@@ -581,7 +581,7 @@ def test_codec_fallback_is_kept_across_credential_refresh():
         const h = await joinedController('guest');
         h.c.codecOverride = 'vp8';
         h.c.applyCodecOverride(h.c.creds);
-        h.ws.serverSend(credsFor('guest', { refresh: true, publish: { codec: 'vp9', bitrate_kbps: 560, fps: 30 } }));
+        h.ws.serverSend(credsFor('guest', { refresh: true, publish: { codec: 'vp9', bitrate_kbps: 528, fps: 30 } }));
         await settle();
         return h.c.creds.publish.codec;
         """
@@ -777,7 +777,7 @@ def test_livekit_initial_publication_uses_the_supplied_profile():
         const LK = makeFakeLK(log);
         const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
         const a = LKV.createAdapter({ sdk: LK, handlers });
-        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9', bitrate_kbps: 560, fps: 30 } });
+        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9', bitrate_kbps: 528, fps: 30 } });
         await a.publish({ id: 'pack' }, { width: 160, height: 704, frameRate: 15, bitrate: 300 });
         return log.filter((e) => e[0] === 'setParameters');
         """
@@ -1237,12 +1237,12 @@ def test_livekit_republish_of_the_same_track_reapplies_the_profile():
         const LK = makeFakeLK(log);
         const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
         const a = LKV.createAdapter({ sdk: LK, handlers });
-        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } });
+        await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 528, fps: 30 } });
         const track = { id: 'pack' };
         const profile = { width: 256, height: 704, frameRate: 15, bitrate: 400 };
         await a.publish(track, profile);
         // SDK 整体重连按发布选项重发：发送端参数回到默认
-        LK.sender.params = { encodings: [{ maxBitrate: 560000, maxFramerate: 30 }] };
+        LK.sender.params = { encodings: [{ maxBitrate: 528000, maxFramerate: 30 }] };
         const mark = log.length;
         const ok = await a.publish(track, profile);
         return { ok, again: log.slice(mark).filter((e) => e[0] === 'setParameters'), publishes: log.filter((e) => e[0] === 'publishTrack').length };
@@ -1408,7 +1408,7 @@ def test_livekit_publish_treats_an_unready_sender_as_profile_failed():
         const track = { id: 'pack' };
         const first = await a.publish(track, profile);
         const again = await a.publish(track, profile);
-        LK.sender.params = { encodings: [{ maxBitrate: 560000, maxFramerate: 30 }] };
+        LK.sender.params = { encodings: [{ maxBitrate: 528000, maxFramerate: 30 }] };
         return [first, again, await a.publish(track, profile)];
         """
     )
@@ -2460,7 +2460,7 @@ def test_livekit_destroy_waits_for_a_disconnect_still_in_flight():
         const LKV = ctx.NekoVisitTransport.vendors.livekit;
         const LK = makeFakeLK([]);
         const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
-        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 528, fps: 30 } };
         // leave 发出的 disconnect 还没落定时拆适配器：等它做完才算清理完成
         const a = LKV.createAdapter({ sdk: LK, handlers });
         await a.join(creds);
@@ -2752,7 +2752,7 @@ def test_immediate_destroy_exits_without_the_superseded_wait():
           const LKV = ctx.NekoVisitTransport.vendors.livekit;
           const LK = makeFakeLK([]);
           const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
-          const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+          const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 528, fps: 30 } };
           const a = LKV.createAdapter({ sdk: LK, handlers });
           await a.join(creds);
           let disconnects = 0;
@@ -2822,7 +2822,7 @@ def test_livekit_ignores_peer_enter_while_leaving():
         const LK = makeFakeLK([]);
         const peers = [];
         const handlers = { onPiece() {}, onPeer(kind) { peers.push(kind); }, onState() {}, onRemoteTrack() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
-        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 560, fps: 30 } };
+        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp8', bitrate_kbps: 528, fps: 30 } };
         const a = LKV.createAdapter({ sdk: LK, handlers, peerVid: 'h_peer' });
         await a.join(creds);
         LK.Room.last.disconnect = () => new Promise(() => {});    // 离房还没结束

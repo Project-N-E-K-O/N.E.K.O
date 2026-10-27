@@ -134,7 +134,7 @@
 
   /**
    * 拥塞阶梯级别由传输页自己决定（后端不维护），按场次记进 sessionStorage：传输 WS 重连
-   * 或 Pet 页重载（同一标签页）后接着用，不在已经拥塞的连接上先退回 560 kbps 再等一轮。
+   * 或 Pet 页重载（同一标签页）后接着用，不在已经拥塞的连接上先退回顶档（528 kbps）再等一轮。
    */
   function ladderKey(visitId) {
     return 'neko-visit-ladder:' + visitId;
