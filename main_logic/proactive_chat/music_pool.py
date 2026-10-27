@@ -71,10 +71,13 @@ async def _verified(result, payload, owner, *, renew=False):
                 crawler = await asyncio.to_thread(lambda: music_crawlers.get_music_crawlers()['netease'])
                 if await _owner() != owner:
                     return None
-                refreshed = await crawler.filter_playable_tracks(expired)
+                try:
+                    refreshed = await crawler.filter_playable_tracks(expired, raise_on_unavailable=True)
+                except music_crawlers.MusicAuthorizationUnavailable:
+                    refreshed = None
                 if await _owner() != owner:
                     return None
-                if not refreshed:
+                if refreshed is None:
                     # A renewal outage must not delete reusable song metadata or
                     # hit authorization again every proactive round.
                     payload['_authorization_retry_after'] = time.monotonic() + FAILURE_TTL_SECONDS

@@ -758,3 +758,109 @@ async def test_cached_playback_failure_does_not_trigger_token_renewal(crawler, m
     assert await pool.fetch_candidates('blocked', request, fetch) is None
     authorization.assert_not_awaited()
     fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('renewal', ['denied', 'trial', 'outage'])
+async def test_cached_authorization_denials_yield_to_fallback_but_outages_retain_candidates(crawler, providers, monkeypatch, renewal):
+    from main_logic import music_requests
+    from main_logic.proactive_chat import music_pool as pool
+    from utils import music_audio as audio
+    clock = [1000.0]
+    for module in (pool, music_requests, audio):
+        monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(pool, '_pools', pool.OrderedDict())
+    monkeypatch.setattr(pool, '_pool_lock', asyncio.Lock())
+    monkeypatch.setattr(pool, '_owner', AsyncMock(return_value='same-account'))
+    monkeypatch.setattr(pool, '_should_skip_source', lambda key: False)
+    monkeypatch.setattr(music_requests, '_recent_music_queries', {})
+    monkeypatch.setattr(audio, '_availability', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_unavailable_hosts', audio.OrderedDict())
+    monkeypatch.setattr(audio, '_probe_slots', asyncio.Semaphore(3))
+    providers['netease'] = crawler
+    fallback = {'name': 'Working fallback', 'artist': 'Other singer', 'url': 'https://dl.stream.qqmusic.qq.com/fallback.m4a'}
+    providers['qqmusic'].search.return_value = [fallback]
+    old_url, new_url = 'https://m7.music.126.net/expired.mp3', 'https://m7.music.126.net/renewed.mp3'
+    authorization_calls, searches = [], []
+    def authorize(request):
+        if request.url.path == '/api/search/get/web':
+            searches.append(request)
+            return httpx.Response(200, json={'code': 200, 'result': {'songs': [song(1)]}})
+        assert request.url.path == '/api/song/enhance/player/url'
+        authorization_calls.append(request)
+        if len(authorization_calls) == 1:
+            row = authorized(1, url=old_url)
+        elif renewal == 'outage':
+            if len(authorization_calls) == 2:
+                return httpx.Response(503)
+            row = authorized(1, url=new_url)
+        elif renewal == 'trial':
+            row = authorized(1, freeTrialInfo={'end': 30000})
+        else:
+            row = authorized(1, code=403, url=None)
+        return httpx.Response(200, json={'code': 200, 'data': [row]})
+    transport(crawler, authorize)
+    real_client = httpx.AsyncClient
+    def audio_response(request):
+        if str(request.url) == old_url and clock[0] > 1000:
+            return httpx.Response(403)
+        return httpx.Response(206, headers={'content-type': 'audio/mpeg'}, content=b'ID3' + b'\0' * 300)
+    monkeypatch.setattr(audio.httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(audio_response), **kwargs))
+    initial = await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='renewal-result')
+    assert initial and initial['data'][0]['_audio_url'] == old_url
+    clock[0] += 301
+    result = await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='renewal-result')
+    if renewal == 'outage':
+        assert result is None
+        assert next(iter(pool._pools.values()))[1]['data'] == initial['data']
+        assert await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='renewal-result') is None
+        assert len(authorization_calls) == 2 and len(searches) == 1
+        providers['qqmusic'].search.assert_not_awaited()
+        clock[0] += pool.FAILURE_TTL_SECONDS + 1
+        recovered = await music_recommendation._fetch_music_with_fallback('pop', lanlan_name='renewal-result')
+        assert recovered and recovered['data'][0]['_audio_url'] == new_url
+        assert len(searches) == 1
+    else:
+        assert result and result['data'] == [fallback]
+        assert next(iter(pool._pools.values()))[1]['data'] == [fallback]
+        providers['qqmusic'].search.assert_awaited_once_with('pop', 20)
+        assert len(searches) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['http', 'timeout', 'malformed', 'cookie_change'])
+async def test_authorization_unknown_status_is_distinct_from_confirmed_denial(crawler, failure):
+    def handler(request):
+        if failure == 'http':
+            return httpx.Response(503)
+        if failure == 'timeout':
+            raise httpx.ReadTimeout('authorization unavailable', request=request)
+        if failure == 'malformed':
+            return httpx.Response(200, json={'code': 200, 'data': None})
+        crawler._cookies = {'MUSIC_U': 'changed-account'}
+        return httpx.Response(200, json={'code': 200, 'data': [authorized(1)]})
+    transport(crawler, handler)
+    with pytest.raises(music.MusicAuthorizationUnavailable):
+        await crawler.filter_playable_tracks([track(1)], raise_on_unavailable=True)
+
+
+@pytest.mark.asyncio
+async def test_renewal_cancellation_preserves_cancellation_type(crawler):
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    async def handler(request):
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            stopped.set()
+    transport(crawler, handler)
+    pending = asyncio.create_task(crawler.filter_playable_tracks([track(1)], raise_on_unavailable=True))
+    try:
+        await entered.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert stopped.is_set()
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)

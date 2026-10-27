@@ -100,6 +100,11 @@ USER_AGENTS = [
 # but direct audio URLs often face CDN, preview-permission, or file-size limits and do not belong in the song player.
 MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60
 
+
+class MusicAuthorizationUnavailable(RuntimeError):
+    """The authorization request could not establish a usable current result."""
+
+
 # Keep personalized logged-in music data in memory only, with bounded reads.
 NETEASE_TASTE_SNAPSHOT_TTL_SECONDS = 30 * 60
 NETEASE_PLAYLIST_LIST_LIMIT = 100
@@ -1366,8 +1371,8 @@ class NeteaseCrawler(BaseMusicCrawler):
             self._personalization_error_code = ''
         return (await self.filter_playable_tracks(combined))[:bounded_limit]
 
-    async def filter_playable_tracks(self, tracks: List[Dict[str, Any]], *, allow_unverified=False) -> List[Dict[str, Any]]:
-        """Authorize a bounded batch at the playback route's bitrate, excluding trials."""
+    async def filter_playable_tracks(self, tracks: List[Dict[str, Any]], *, allow_unverified=False, raise_on_unavailable=False) -> List[Dict[str, Any]]:
+        """Authorize tracks, optionally distinguishing an unavailable request from denials."""
         candidates = []
         seen_ids = set()
         for track in tracks[:100]:
@@ -1394,10 +1399,16 @@ class NeteaseCrawler(BaseMusicCrawler):
         # metadata. Recommendations always leave this fallback disabled.
         unverified = [{key: value for key, value in track.items() if key != '_audio_url'}
                       for _, track in candidates] if allow_unverified else []
+
+        def unavailable():
+            if raise_on_unavailable:
+                raise MusicAuthorizationUnavailable('Music authorization unavailable')
+            return unverified
+
         cookies = dict(self._cookies)
         cookie_mtime = self._cookie_file_mtime
         if await asyncio.to_thread(self._get_cookie_file_mtime) != cookie_mtime:
-            return unverified
+            return unavailable()
         try:
             response = await asyncio.wait_for(
                 self.client.post(
@@ -1412,7 +1423,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict) or payload.get('code') != 200 or not isinstance(payload.get('data'), list):
-                return unverified
+                return unavailable()
             playable_urls = {}
             for item in payload['data']:
                 if not isinstance(item, dict) or item.get('code') != 200:
@@ -1431,11 +1442,11 @@ class NeteaseCrawler(BaseMusicCrawler):
                 playable_urls[song_id] = str(item['url'])
             current_mtime = await asyncio.to_thread(self._get_cookie_file_mtime)
             if self._cookies != cookies or self._cookie_file_mtime != cookie_mtime or current_mtime != cookie_mtime:
-                return unverified
+                return unavailable()
             return [{**track, '_audio_url': playable_urls[song_id]} for song_id, track in candidates if song_id in playable_urls]
         except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
             logger.debug('[%s] 音源授权检查失败，跳过本批候选', self.platform_name)
-            return unverified
+            return unavailable()
 
     async def search(self, keyword: str, limit: int = 1, *, allow_unverified=False) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
