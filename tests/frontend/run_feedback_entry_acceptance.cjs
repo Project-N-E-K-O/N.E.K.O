@@ -116,6 +116,19 @@ async function main() {
         await page.locator('#device-controls').waitFor({ state: 'hidden' });
         await page.locator('#coming-soon').waitFor({ state: 'visible' });
         await noOverflow(page);
+        const disclosure = page.locator('#feedback-disclosure');
+        await disclosure.waitFor({ state: 'visible' });
+        await page.waitForFunction(() => document.querySelector('#disclosure-start').dataset.i18n === 'feedbackDevices.disclosureStartAutomatic');
+        assert.equal(await page.locator('#disclosure-start').textContent(), copy.disclosureStartAutomatic);
+        assert.equal(await page.locator('#disclosure-stop').textContent(), copy.disclosureStopAccount);
+        await disclosure.screenshot({ path: path.join(output, 'browser-disclosure-375.png') });
+        await page.keyboard.press('Escape');
+        await disclosure.waitFor({ state: 'hidden' });
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'disclosure-open');
+        await page.locator('#disclosure-open').click();
+        await disclosure.waitFor({ state: 'visible' });
+        await page.locator('#disclosure-close').click();
+        assert.equal(calls.some(c => c.method === 'POST'), false, 'reading and dismissing the explanation never authorizes an upload');
         assert.equal(calls.some(c => c.route === '/api/proactive/feedback/devices'), false);
         await page.screenshot({ path: path.join(output, 'browser-signed-out.png'), fullPage: true });
         record('browser: actual API-settings anchor reaches management without a duplicate account card; v1 device controls remain hidden');
@@ -149,6 +162,27 @@ async function main() {
         account = null;
         await page.evaluate(() => window.dispatchEvent(new Event('neko:account-changed')));
         await page.waitForFunction(() => document.querySelector('#devices').children.length === 0 && document.querySelector('#device-controls').hidden);
+        await page.locator('#disclosure-open').click();
+        for (const locale of ['en','ja','ko','zh-CN','zh-TW','ru','pt','es']) {
+            const translations = JSON.parse(fs.readFileSync(path.join(root, 'static/locales', locale + '.json'), 'utf8')).feedbackDevices;
+            await page.evaluate(translations => {
+                window.t = key => translations[key.split('.').pop()] || key;
+                for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = window.t(node.dataset.i18n);
+                window.dispatchEvent(new Event('localechange'));
+            }, translations);
+            assert.equal(await page.locator('#disclosure-start').textContent(), translations.disclosureStartDevice);
+            for (const height of [850, 360]) {
+                await page.setViewportSize({width: 375, height});
+                await noOverflow(page);
+                assert.equal(await page.evaluate(() => {
+                    const modal = document.querySelector('#feedback-disclosure').getBoundingClientRect();
+                    const button = document.querySelector('#disclosure-close').getBoundingClientRect();
+                    return modal.left >= 0 && modal.right <= innerWidth && modal.top >= 0 && modal.bottom <= innerHeight
+                        && button.top >= modal.top && button.bottom <= innerHeight;
+                }), true, locale + ': the explanation and its exit remain inside the viewport');
+            }
+        }
+        record('browser: explanation translates in eight languages; modal and close button fit narrow and short viewports without granting upload permission');
         await context.close();
     } finally { releaseReads(); await browser.close(); }
 
@@ -177,6 +211,20 @@ async function main() {
     try {
         const page = await electronApp.firstWindow();
         await waitDevices(page, 'A');
+        await page.locator('#feedback-disclosure').waitFor({ state: 'visible' });
+        await page.waitForFunction(() => document.querySelector('#disclosure-start').dataset.i18n === 'feedbackDevices.disclosureStartDevice');
+        assert.equal(await page.locator('#disclosure-start').textContent(), copy.disclosureStartDevice);
+        assert.equal(await page.locator('#disclosure-stop').textContent(), copy.disclosureStopDevice);
+        await electronApp.evaluate(async (_electron, file) => {
+            const rect = await global.page.webContents.executeJavaScript(`(() => {
+                const rect = document.querySelector('#feedback-disclosure').getBoundingClientRect();
+                return {x: Math.floor(rect.x), y: Math.floor(rect.y), width: Math.ceil(rect.width), height: Math.ceil(rect.height)};
+            })()`);
+            const image = await global.page.webContents.capturePage(rect);
+            if (image.isEmpty()) throw Error('Feedback explanation did not paint');
+            global.fixtureFs.writeFileSync(file, image.toPNG());
+        }, path.join(output, 'electron-disclosure.png'));
+        await page.locator('#disclosure-close').click();
         const settingsOpened = electronApp.waitForEvent('window');
         assert.equal(await page.locator('#account-panel').count(), 0);
         assert.deepEqual(await page.evaluate(() => window.electronShell.openAccountSettings()), { ok: true });
