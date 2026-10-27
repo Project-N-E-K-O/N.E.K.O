@@ -125,6 +125,17 @@ def test_widget_mode_browser_client_syncs_minimal_state_and_event() -> None:
           if (stealthResult !== true || win.nekoWidgetMode.isStealthEnabled() !== true) {{
             throw new Error('stealth state did not update');
           }}
+          await win.nekoWidgetMode.setEnabled(false, {{ silent: true }});
+          if (win.nekoWidgetMode.isStealthEnabled() !== false) {{
+            throw new Error('stealth must be ineffective while Widget Mode is disabled');
+          }}
+          if (win.nekoWidgetMode.getState().stealthEnabled !== true) {{
+            throw new Error('disabling Widget Mode must preserve the stealth preference');
+          }}
+          await win.nekoWidgetMode.setEnabled(true, {{ silent: true }});
+          if (win.nekoWidgetMode.isStealthEnabled() !== true) {{
+            throw new Error('re-enabling Widget Mode must restore the stealth preference');
+          }}
           const keys = Object.keys(win.nekoWidgetMode).sort().join(',');
           if (keys !== 'getState,isEnabled,isStealthEnabled,refreshState,setEnabled,setStealthEnabled') {{
             throw new Error('unexpected public API: ' + keys);

@@ -5054,6 +5054,15 @@
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     e.preventDefault();
+                    if (config.id === 'mic') {
+                        const isMicStarting = window.isMicStarting || false;
+                        if (isMicStarting) {
+                            if (btn.dataset.active !== 'true') {
+                                this.setButtonActive(config.id, true);
+                            }
+                            return;
+                        }
+                    }
                     if (config.id === 'screen') {
                         const isRecording = window.isRecording || false;
                         const wantToActivate = btn.dataset.active !== 'true';

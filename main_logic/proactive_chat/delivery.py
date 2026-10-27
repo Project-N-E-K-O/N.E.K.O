@@ -508,7 +508,9 @@ async def _record_committed_delivery(
             f"{music_link.get('title', '')} - {music_link.get('artist', '')}"
         ).strip(" -")
         await _record_source_used(
-            url=music_link.get("url", "") or "",
+            # Persist song identity, not an expiring/provider-specific playback URL.
+            # Selection still checks old URL records for rolling compatibility.
+            url="" if music_title else music_link.get("url", "") or "",
             kind="music",
             title=music_title,
             **state_storage_kwargs,

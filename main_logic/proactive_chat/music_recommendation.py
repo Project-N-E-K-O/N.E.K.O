@@ -17,6 +17,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from config.prompts.prompts_proactive import (
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -35,6 +36,7 @@ from main_logic.music_requests import (
 )
 from utils.logger_config import get_module_logger
 from utils.music_crawlers import fetch_music_content
+from utils.music_audio import filter_playable_candidates
 
 from .state import _clear_channel_from_proactive_history
 
@@ -144,7 +146,7 @@ def _select_music_recommendation(
     should_skip_source: Callable[[str], bool],
     lanlan_name: str = "",
 ) -> MusicRecommendationSelection:
-    """Select the first non-suppressed track and keep prompt/link data aligned."""
+    """Filter used songs by identity and legacy URL, keeping prompt/link data aligned."""
     if not music_content or not music_content.get("formatted_content"):
         return MusicRecommendationSelection()
 
@@ -156,30 +158,38 @@ def _select_music_recommendation(
         )
         return MusicRecommendationSelection()
 
-    picked_index = -1
+    eligible_tracks = []
+    seen_identities = set()
     picked_key = ""
-    for index, candidate in enumerate(tracks):
+    for candidate in tracks:
         name = candidate.get("name", "")
-        key = source_hash(
+        title = f"{name} - {candidate.get('artist', '')}".strip(" -")
+        key = source_hash("", title)
+        legacy_key = source_hash(
             candidate.get("url", ""),
-            f"{name} - {candidate.get('artist', '')}",
+            title,
         )
-        if key and should_skip_source(key):
+        identity = key or legacy_key
+        if identity and identity in seen_identities:
+            continue
+        if (key and should_skip_source(key)) or (legacy_key and legacy_key != key and should_skip_source(legacy_key)):
             logger.debug("[%s] 音乐候选去重命中，跳过: %s", lanlan_name, name)
             continue
-        picked_index = index
-        picked_key = key
-        break
+        if identity:
+            seen_identities.add(identity)
+        if not eligible_tracks:
+            picked_key = identity
+        eligible_tracks.append(candidate)
 
-    if picked_index < 0:
+    if not eligible_tracks:
         logger.debug("[%s] 所有音乐候选均被衰减 skip，清空音乐通道", lanlan_name)
         return MusicRecommendationSelection()
 
     selected_content = music_content
     topic = music_content["formatted_content"]
-    if picked_index:
+    if eligible_tracks != tracks:
         raw_data = music_content.get("raw_data") or {}
-        trimmed_raw_data = {**raw_data, "data": tracks[picked_index:]}
+        trimmed_raw_data = {**raw_data, "data": eligible_tracks}
         trimmed_topic = _format_music_content(trimmed_raw_data, lang)
         if trimmed_topic:
             topic = trimmed_topic
@@ -189,7 +199,7 @@ def _select_music_recommendation(
                 "raw_data": trimmed_raw_data,
             }
 
-    track = tracks[picked_index]
+    track = eligible_tracks[0]
     link = {
         "title": track.get("name", ""),
         "artist": track.get("artist", ""),
@@ -258,16 +268,34 @@ async def _fetch_music_with_fallback(
 ) -> dict | None:
     """Resolve a music directive, preserving strict source and song requests."""
     request = _parse_music_request(keyword)
+    if not request.strict:
+        from .music_pool import fetch_candidates
+
+        async def refill(limit):
+            return await fetch_music_request(
+                request, limit=limit, fetcher=partial(fetch_music_content, verify_audio=True),
+                allow_keyword_fallback=True,
+            )
+
+        result = await fetch_candidates(lanlan_name, request, refill)
+        return {**result, '_strict_song_request': False} if result else None
     if was_music_request_recent(lanlan_name, request):
         logger.info("[%s] 跳过近期已搜索的音乐请求: %r", lanlan_name, keyword)
         return None
 
+    from .music_pool import _owner
+    owner = await _owner()
     result = await fetch_music_request(
         request,
         limit=5,
-        fetcher=fetch_music_content,
+        fetcher=partial(fetch_music_content, verify_audio=True),
         allow_keyword_fallback=True,
     )
+    if result and result.get('success') and result.get('data'):
+        valid = await filter_playable_candidates(result['data'])
+        result = {**result, 'data': valid} if valid else None
+    if await _owner() != owner:
+        return None
     if result:
         result = {**result, "_strict_song_request": bool(request.song_name)}
     if result and result.get("success") and result.get("data"):

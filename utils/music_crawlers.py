@@ -39,6 +39,7 @@ import urllib.parse
 from typing import List, Dict, Any
 from collections import Counter
 from utils.logger_config import get_module_logger
+from utils.music_audio import MUSIC_SOURCE_DOMAINS as MUSIC_SOURCE_DOMAINS, filter_playable_candidates
 
 
 # bs4 is expensive and needed only for fetch parsing, outside startup: import on first use,
@@ -95,43 +96,14 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0',
 ]
 
-# ==================================================
-# Shared domain pool for whitelisting and crawlers.
-# Manage domains for every music source centrally here.
-# ==================================================
-MUSIC_SOURCE_DOMAINS = {
-    # NetEase Cloud Music.
-    'music.163.com',
-    'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-    'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-    'music.126.net',
-    # SoundCloud
-    'soundcloud.com', 'api.soundcloud.com', 'sndcdn.com',
-    'playback.media-streaming.soundcloud.cloud',
-    # iTunes/Apple Music
-    'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-    'a.scdn.co', 'i.scdn.co', 'p.scdn.co',
-    # QQ Music.
-    'y.qq.com', 'u.y.qq.com', 'dl.stream.qqmusic.com', 'dl.stream.qqmusic.qq.com',
-    'isure.stream.qqmusic.qq.com',
-    # Kugou / others.
-    'kugou.com', 'stream.kugou.com',
-    # FMA (Free Music Archive)
-    'freemusicarchive.org', 'freemusicarchive.imgix.net',
-    # Musopen
-    'musopen.org', 'imslp.org',
-    # Bandcamp
-    'bandcamp.com', 'bcbits.com',
-    # General images.
-    'i.imgur.com',
-    # Bilibili, for some music.
-    'hdslb.com', 'bilivideo.com',
-    'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
-}
-
 # Proactive music recommendations target single tracks. Long DJ collections, podcasts, and whole albums may have covers,
 # but direct audio URLs often face CDN, preview-permission, or file-size limits and do not belong in the song player.
 MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60
+
+
+class MusicAuthorizationUnavailable(RuntimeError):
+    """The authorization request could not establish a usable current result."""
+
 
 # Keep personalized logged-in music data in memory only, with bounded reads.
 NETEASE_TASTE_SNAPSHOT_TTL_SECONDS = 30 * 60
@@ -797,7 +769,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         tracks: List[Dict[str, Any]] = []
         for song in (payload or {}).get('songs') or []:
             track = self._normalize_library_track(song)
-            if not track or (not self._is_vip and track.get('fee') not in (0, None)):
+            if not track or (not self._is_vip and track.get('fee') not in (0, 8, None)):
                 continue
             tracks.append(track)
             if len(tracks) >= NETEASE_TASTE_TRACKS_PER_PLAYLIST:
@@ -973,7 +945,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 track = self._normalize_library_track(song)
                 if not track or track['id'] in seen_ids:
                     continue
-                if not self._is_vip and track.get('fee') not in (0, None):
+                if not self._is_vip and track.get('fee') not in (0, 8, None):
                     continue
                 track['recommendation_source'] = 'daily'
                 seen_ids.add(track['id'])
@@ -1213,7 +1185,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 track = self._normalize_library_track(song)
                 if not track or track['id'] in familiar_ids:
                     continue
-                if not self._is_vip and track.get('fee') not in (0, None):
+                if not self._is_vip and track.get('fee') not in (0, 8, None):
                     continue
                 track['recommendation_source'] = 'artist'
                 tracks.append(track)
@@ -1264,7 +1236,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                     self.platform_name,
                 )
                 daily_playlist = await self.get_daily_playlist_recommendations(user_id)
-                return daily_playlist[:bounded_limit]
+                return (await self.filter_playable_tracks(daily_playlist))[:bounded_limit]
             tracks = await self._fetch_playlist_tracks(int(requested_playlist['id']))
             for track in tracks:
                 track['recommendation_source'] = 'playlist'
@@ -1273,7 +1245,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             random.shuffle(tracks)
             if not tracks:
                 self._personalization_error_code = 'source_empty'
-            return tracks[:bounded_limit]
+            return (await self.filter_playable_tracks(tracks))[:bounded_limit]
 
         if personalization_source == 'daily':
             user_id = await self._get_personalization_user_id()
@@ -1306,7 +1278,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                     ),
                     'source_empty',
                 )
-            return combined_daily[:bounded_limit]
+            return (await self.filter_playable_tracks(combined_daily))[:bounded_limit]
 
         if personalization_source == 'liked':
             user_id = await self._get_personalization_user_id()
@@ -1326,12 +1298,13 @@ class NeteaseCrawler(BaseMusicCrawler):
             random.shuffle(liked)
             if not liked:
                 self._personalization_error_code = 'source_empty'
-            return liked[:bounded_limit]
+            return (await self.filter_playable_tracks(liked))[:bounded_limit]
 
         snapshot = await self.get_taste_snapshot()
         if not snapshot:
             return []
 
+        candidate_limit = min(100, max(20, bounded_limit * 3))
         liked = list(snapshot.get('liked_tracks') or [])
         random.shuffle(liked)
 
@@ -1382,7 +1355,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         }
         combined: List[Dict[str, Any]] = []
         seen_ids = set()
-        while len(combined) < bounded_limit and any(pools.values()):
+        while len(combined) < candidate_limit and any(pools.values()):
             for source in source_order:
                 pool = pools[source]
                 while pool and pool[0].get('id') in seen_ids:
@@ -1392,20 +1365,97 @@ class NeteaseCrawler(BaseMusicCrawler):
                 track = pool.pop(0)
                 seen_ids.add(track.get('id'))
                 combined.append(track)
-                if len(combined) >= bounded_limit:
+                if len(combined) >= candidate_limit:
                     break
         if combined:
             self._personalization_error_code = ''
-        return combined[:bounded_limit]
+        return (await self.filter_playable_tracks(combined))[:bounded_limit]
 
-    async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
+    async def filter_playable_tracks(self, tracks: List[Dict[str, Any]], *, allow_unverified=False, raise_on_unavailable=False) -> List[Dict[str, Any]]:
+        """Authorize tracks, optionally distinguishing an unavailable request from denials."""
+        candidates = []
+        seen_ids = set()
+        for track in tracks[:100]:
+            if not isinstance(track, dict):
+                continue
+            # Keep the stable local URL: short-lived CDN tokens are not song identities.
+            try:
+                path = urllib.parse.urlsplit(str(track.get('url') or '')).path
+            except ValueError:
+                continue
+            prefix = '/api/music/play/netease/'
+            song_id = path.removeprefix(prefix)
+            if not path.startswith(prefix) or len(song_id) > 20 or not song_id.isascii() or not song_id.isdecimal():
+                continue
+            song_id = int(song_id)
+            if song_id in seen_ids:
+                continue
+            seen_ids.add(song_id)
+            candidates.append((song_id, track))
+        if not candidates:
+            return []
+
+        # An unavailable authorization service does not erase public search
+        # metadata. Recommendations always leave this fallback disabled.
+        unverified = [{key: value for key, value in track.items() if key != '_audio_url'}
+                      for _, track in candidates] if allow_unverified else []
+
+        def unavailable():
+            if raise_on_unavailable:
+                raise MusicAuthorizationUnavailable('Music authorization unavailable')
+            return unverified
+
+        cookies = dict(self._cookies)
+        cookie_mtime = self._cookie_file_mtime
+        if await asyncio.to_thread(self._get_cookie_file_mtime) != cookie_mtime:
+            return unavailable()
+        try:
+            response = await asyncio.wait_for(
+                self.client.post(
+                    'https://music.163.com/api/song/enhance/player/url',
+                    # Match GetTrackAudio's default used by /api/music/play/netease.
+                    data={'ids': json.dumps([song_id for song_id, _ in candidates]), 'br': 320000},
+                    headers={'Cookie': '; '.join(f'{key}={value}' for key, value in cookies.items())},
+                    timeout=5.0,
+                ),
+                timeout=6.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get('code') != 200 or not isinstance(payload.get('data'), list):
+                return unavailable()
+            playable_urls = {}
+            for item in payload['data']:
+                if not isinstance(item, dict) or item.get('code') != 200:
+                    continue
+                if item.get('freeTrialInfo') is not None:
+                    continue
+                song_id = item.get('id')
+                if not isinstance(song_id, int) or isinstance(song_id, bool):
+                    continue
+                try:
+                    url = urllib.parse.urlsplit(str(item.get('url') or ''))
+                except ValueError:
+                    continue
+                if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password:
+                    continue
+                playable_urls[song_id] = str(item['url'])
+            current_mtime = await asyncio.to_thread(self._get_cookie_file_mtime)
+            if self._cookies != cookies or self._cookie_file_mtime != cookie_mtime or current_mtime != cookie_mtime:
+                return unavailable()
+            return [{**track, '_audio_url': playable_urls[song_id]} for song_id, track in candidates if song_id in playable_urls]
+        except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError):
+            logger.debug('[%s] 音源授权检查失败，跳过本批候选', self.platform_name)
+            return unavailable()
+
+    async def search(self, keyword: str, limit: int = 1, *, allow_unverified=False) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
         if not keyword:
             logger.debug(f"[{self.platform_name}] 因关键词为空而跳过")
             return []
 
         # Check cookie-file changes before every search so search and playback states stay consistent.
-        self._check_cookie_freshness()
+        await asyncio.to_thread(self._check_cookie_freshness)
 
         # Lazily check VIP status on first search or credential changes.
         if self._has_cookies and not self._vip_checked:
@@ -1441,7 +1491,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 found_songs = songs
                 logger.info(f"[{self.platform_name}] VIP 会员身份，跳过 fee 过滤，保留完整搜索结果")
             else:
-                found_songs = [song for song in songs if song.get("fee", 1) == 0]
+                found_songs = [song for song in songs if song.get("fee", 1) in (0, 8)]
                 if self._has_cookies:
                     logger.info(f"[{self.platform_name}] 普通已登录用户，仅返回免费歌曲")
                 if len(found_songs) < limit and len(songs) >= search_limit:
@@ -1466,7 +1516,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                         )
                         found_songs.extend(
                             song for song in fallback_songs
-                            if song.get("fee", 1) == 0
+                            if song.get("fee", 1) in (0, 8)
                         )
                     except Exception as exc:
                         logger.warning(
@@ -1506,10 +1556,9 @@ class NeteaseCrawler(BaseMusicCrawler):
                     cover=cover_url,
                     duration_seconds=duration_seconds,
                 ))
-                if len(final_results) >= limit:
-                    break
-            
-            return final_results
+            if allow_unverified:
+                return (await self.filter_playable_tracks(final_results, allow_unverified=True))[:limit]
+            return (await self.filter_playable_tracks(final_results))[:limit]
 
         except httpx.TimeoutException:
             logger.warning(f"[{self.platform_name}] 搜索 '{keyword}' 超时")
@@ -2441,6 +2490,7 @@ async def fetch_music_content(
     requested_song: str = "",
     requested_artist: str = "",
     bypass_recommendation_dedupe: bool = False,
+    verify_audio: bool = False,
 ) -> Dict[str, Any]:
     """
     Fetch music content with staged fallback and locale-aware source ordering.
@@ -2450,6 +2500,22 @@ async def fetch_music_content(
     logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}, source_locale={source_locale}")
 
     all_results = []
+    deferred_results = []
+
+    async def checked(rows):
+        # Public search keeps metadata behavior; proactive callers require audio
+        # before a provider can win the race and cancel its alternatives.
+        if verify_audio and isinstance(rows, list) and rows:
+            deferred = set()
+            playable = await filter_playable_candidates(rows, deferred_urls=deferred)
+            # Preserve unprobed metadata for the candidate pool without letting
+            # it cancel another provider that may already have usable audio.
+            deferred_results.extend(
+                row for row in rows[:20] if row.get('url') in deferred
+            )
+            del deferred_results[20:]
+            return playable
+        return rows
     
     # Obtain crawler instances through lazy accessors.
     all_crawlers = get_music_crawlers()
@@ -2500,6 +2566,7 @@ async def fetch_music_content(
             personalization_error_code = str(
                 all_crawlers['netease']._personalization_error_code or ''
             )
+        personalized_results = await checked(personalized_results)
         if personalized_results:
             all_results.extend(personalized_results)
             logger.info(f"[个性化推荐] 使用网易云个性化候选 {len(personalized_results)} 首")
@@ -2524,7 +2591,7 @@ async def fetch_music_content(
         # 2. Mandarin/pop routing: Chinese-language singers or keywords.
         elif is_chinese_query:
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
-            primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            primary_tasks.append(all_crawlers['netease'].search(keyword, limit, allow_unverified=not verify_audio))
             netease_used = True
 
         # 3. Indie/electronic/lofi routing.
@@ -2538,7 +2605,7 @@ async def fetch_music_content(
         # 4. Default fallback: regional preferences.
         else:
             if china:
-                primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+                primary_tasks.append(all_crawlers['netease'].search(keyword, limit, allow_unverified=not verify_audio))
                 netease_used = True
             else:
                 # Default first choice outside Chinese regions.
@@ -2559,6 +2626,7 @@ async def fetch_music_content(
                             requested_song=requested_song,
                             requested_artist=requested_artist,
                         )
+                    res = await checked(res)
                     if isinstance(res, list) and res:
                         all_results.extend(res)
                         logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
@@ -2596,6 +2664,7 @@ async def fetch_music_content(
                             requested_song=requested_song,
                             requested_artist=requested_artist,
                         )
+                    qq_results = await checked(qq_results)
                     if isinstance(qq_results, list) and qq_results:
                         all_results.extend(qq_results)
                         logger.info("[智能调度] QQ 音乐备用源命中")
@@ -2623,6 +2692,7 @@ async def fetch_music_content(
                                 requested_song=requested_song,
                                 requested_artist=requested_artist,
                             )
+                        res = await checked(res)
                         if isinstance(res, list) and res:
                             all_results.extend(res)
                             logger.info("[智能调度] 兜底源命中，取消其他任务")
@@ -2667,7 +2737,7 @@ async def fetch_music_content(
             if source == 'musopen':
                 tasks.append(all_crawlers['musopen'].search(limit=limit))
             elif source == 'netease':
-                tasks.append(all_crawlers['netease'].search(kw, limit))
+                tasks.append(all_crawlers['netease'].search(kw, limit, allow_unverified=not verify_audio))
                 netease_used = True
             else:
                 tasks.append(all_crawlers[source].search(kw, limit))
@@ -2678,7 +2748,10 @@ async def fetch_music_content(
             for res in crawler_results
             if isinstance(res, list) and res
         ]
-        all_results.extend(_interleave_music_result_groups(result_groups))
+        all_results.extend(await checked(_interleave_music_result_groups(result_groups)))
+
+    if not all_results:
+        all_results.extend(deferred_results)
 
     # Final safeguard: even if a future crawler omits filtering, standardized duration prevents excessively long content
     # entering proactive recommendations or the player.
@@ -2713,13 +2786,21 @@ async def fetch_music_content(
             'netease_cookie_invalid': netease_cookie_invalid,
         }
 
-    # URL-level deduplication.
+    # A song returned by two providers (or with a refreshed CDN token) is one candidate.
     seen_urls = set()
+    seen_tracks = set()
     unique_results = []
     for item in all_results:
-        if item['url'] not in seen_urls:
-            unique_results.append(item)
-            seen_urls.add(item['url'])
+        url = str(item.get('url') or '').strip()
+        title = ' '.join(str(item.get('name') or '').casefold().split())
+        artist = ' '.join(str(item.get('artist') or '').casefold().split())
+        identity = (title, artist) if title and artist else None
+        if not url or url in seen_urls or (identity is not None and identity in seen_tracks):
+            continue
+        unique_results.append(item)
+        seen_urls.add(url)
+        if identity is not None:
+            seen_tracks.add(identity)
     
     # Proactive recommendations need short-term diversity; explicit user requests must allow recently recommended tracks to replay.
     if not bypass_recommendation_dedupe:
@@ -2768,7 +2849,14 @@ async def fetch_music_content(
                 'netease_cookie_invalid': netease_cookie_invalid,
             }
     
-    # Identify the best match immediately after search and reorder results.
+    # Proactive requests opt into personalization; public search keeps match priority.
+    randomize_recommendations = personalized and not (
+        requested_song or requested_artist or bypass_recommendation_dedupe
+    )
+    if randomize_recommendations:
+        random.shuffle(unique_results)
+
+    # Identify the best match immediately after search and reorder explicit requests.
     match_target = " ".join(
         part for part in (requested_song or keyword, requested_artist) if part
     )
@@ -2777,7 +2865,11 @@ async def fetch_music_content(
         search_results=unique_results,
     )
     
-    if best_match['status'] == 'exact' and best_match['resource']:
+    if (
+        not randomize_recommendations
+        and best_match['status'] == 'exact'
+        and best_match['resource']
+    ):
         # Move the best match first so both AI prompts and link cards prioritize it.
         matched_item = best_match['resource']
         if matched_item in unique_results:
