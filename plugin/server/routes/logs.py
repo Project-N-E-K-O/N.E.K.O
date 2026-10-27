@@ -140,18 +140,31 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
         temp_needs_cleanup = True
 
         try:
-            if not log_files:
-                raise ServerDomainError(
-                    code="NO_LOG_FILES",
-                    message="No log files found for this plugin",
-                    status_code=404,
-                    details={"plugin_id": plugin_id}
-                )
-
             def _copy_and_archive() -> str:
                 """Run synchronous file operations in the thread pool."""
+                copied = 0
                 for log_file in log_files:
-                    shutil.copy2(log_file, temp_log_dir / log_file.name)
+                    target = temp_log_dir / log_file.name
+                    try:
+                        shutil.copy2(log_file, target)
+                    except FileNotFoundError as error:
+                        if error.filename is not None and Path(error.filename) != log_file:
+                            raise
+                        if not temp_log_dir.is_dir():
+                            raise
+                        # Rotation may remove the source, even during copy2's
+                        # metadata step. Do not archive a partial destination.
+                        target.unlink(missing_ok=True)
+                        continue
+                    copied += 1
+
+                if not copied:
+                    raise ServerDomainError(
+                        code="NO_LOG_FILES",
+                        message="No log files found for this plugin",
+                        status_code=404,
+                        details={"plugin_id": plugin_id}
+                    )
 
                 # Package the temporary log directory.
                 # Use a fixed filename so very long plugin_id values cannot exceed filesystem NAME_MAX.

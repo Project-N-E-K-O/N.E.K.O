@@ -282,6 +282,144 @@ def test_io_errors_are_not_reported_as_empty_logs(service, monkeypatch):
         service.get_plugin_logs(plugin_id="demo")
 
 
+@pytest.mark.parametrize("stage", ["is_file", "stat"])
+def test_scan_skips_entries_removed_by_rotation(service, tmp_path, monkeypatch, stage):
+    gone = write_log(tmp_path, "gone")
+    kept = write_log(tmp_path, "kept", suffix="20261025.log")
+    info = kept.stat()
+    original_scandir = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self.entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_file(self):
+            if self.name == gone.name and stage == "is_file":
+                raise FileNotFoundError(self.path)
+            return self.entry.is_file()
+
+        def stat(self):
+            if self.name == gone.name and stage == "stat":
+                raise FileNotFoundError(self.path)
+            return self.entry.stat()
+
+    @contextmanager
+    def scandir(path):
+        with original_scandir(path) as entries:
+            yield (Entry(entry) for entry in entries)
+
+    original_stat = Path.stat
+
+    def unexpected_stat(path, *args, **kwargs):
+        if path in (gone, kept):
+            pytest.fail("Listing must use the metadata captured during scandir")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(Path, "stat", unexpected_stat)
+    assert service.get_plugin_log_files("demo") == [{
+        "filename": kept.name, "size": info.st_size, "modified": info.st_mtime,
+        "legacy_source": False,
+    }]
+
+
+def test_snapshot_reselects_a_file_rotated_before_open(service, tmp_path, monkeypatch):
+    path = write_log(tmp_path, "old")
+    original_open = Path.open
+    replacement = None
+
+    def rotate_before_open(selected, mode="r", *args, **kwargs):
+        nonlocal replacement
+        if selected == path and mode == "rb":
+            path.rename(path.with_suffix(".log.1"))
+            replacement = write_log(tmp_path, "new", suffix="20261027.log")
+            raise FileNotFoundError(selected)
+        return original_open(selected, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", rotate_before_open)
+    session = service.open_session("demo")
+    packet = session.snapshot()
+    assert messages(packet) == ["new"]
+    assert packet.log_file == replacement.name
+    with replacement.open("a") as stream:
+        stream.write("appended\n")
+    packet = session.poll()
+    assert messages(packet) == ["appended"]
+    assert packet.reset is False
+
+
+def test_snapshot_retry_is_bounded_and_next_poll_can_recover(service, tmp_path, monkeypatch):
+    path = write_log(tmp_path, "ready")
+    original_open = Path.open
+    attempts = 0
+
+    def disappeared(selected, mode="r", *args, **kwargs):
+        nonlocal attempts
+        if selected == path and mode == "rb":
+            attempts += 1
+            raise FileNotFoundError(selected)
+        return original_open(selected, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", disappeared)
+    session = service.open_session("demo")
+    packet = session.snapshot()
+    assert packet.logs == []
+    assert packet.log_file is None
+    assert attempts == 2
+    monkeypatch.setattr(Path, "open", original_open)
+    recovered = session.poll()
+    assert recovered.reset is True
+    assert messages(recovered) == ["ready"]
+
+
+@pytest.mark.parametrize("new_file", [False, True])
+def test_poll_keeps_its_cursor_if_the_file_disappears_before_open(service, tmp_path, monkeypatch, new_file):
+    path = write_log(tmp_path, "old")
+    session = service.open_session("demo")
+    session.snapshot()
+    state = (session.current, session.identity, session.position, session.anchor,
+             session.total_lines, session.returned_lines)
+    if new_file:
+        path = write_log(tmp_path, "next", suffix="20261027.log")
+    else:
+        with path.open("a") as stream:
+            stream.write("next\n")
+    original_open = Path.open
+
+    def disappeared(selected, mode="r", *args, **kwargs):
+        if selected == path and mode == "rb":
+            raise FileNotFoundError(selected)
+        return original_open(selected, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", disappeared)
+    assert session.poll() is None
+    assert (session.current, session.identity, session.position, session.anchor,
+            session.total_lines, session.returned_lines) == state
+    monkeypatch.setattr(Path, "open", original_open)
+    packet = session.poll()
+    assert messages(packet) == ["next"]
+    assert packet.reset is new_file
+
+
+@pytest.mark.parametrize("operation", ["snapshot", "poll"])
+def test_open_permission_errors_are_still_reported(service, tmp_path, monkeypatch, operation):
+    path = write_log(tmp_path)
+    session = service.open_session("demo")
+    session.snapshot()
+    original_open = Path.open
+
+    def denied(selected, mode="r", *args, **kwargs):
+        if selected == path and mode == "rb":
+            raise PermissionError("denied")
+        return original_open(selected, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    with pytest.raises(PermissionError):
+        getattr(session, operation)()
+
+
 @pytest.mark.parametrize("line", [
     "2026-10-26 12:00:00 - [plugin.demo] - INFO - file.py:12 - historical",
     "2026-10-26 12:00:00,123 - plugin.demo - INFO - historical",

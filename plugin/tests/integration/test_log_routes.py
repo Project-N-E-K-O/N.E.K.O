@@ -113,7 +113,8 @@ def test_viewer_search_scope_applies_to_history_and_appends(log_client, tmp_path
         assert [entry["message"] for entry in socket.receive_json()["logs"]] == ["ready appended"]
 
 
-def test_failed_export_cleans_temporary_files_outside_the_event_loop(log_client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("failure", ["io", "permission", "missing_destination"])
+def test_failed_export_cleans_temporary_files_outside_the_event_loop(log_client, monkeypatch, tmp_path, failure):
     import asyncio
     from plugin.server.routes import logs
 
@@ -122,7 +123,12 @@ def test_failed_export_cleans_temporary_files_outside_the_event_loop(log_client,
     export_dir.mkdir()
     monkeypatch.setattr(logs.tempfile, "mkdtemp", lambda: str(export_dir))
 
-    def fail_copy(*args, **kwargs):
+    def fail_copy(source, destination):
+        if failure == "permission":
+            raise PermissionError("copy denied")
+        if failure == "missing_destination":
+            logs.shutil.rmtree(destination.parent)
+            raise FileNotFoundError(2, "Destination directory disappeared", str(destination))
         raise OSError("copy failed")
 
     original_cleanup = logs.cleanup_temp_path
@@ -136,7 +142,9 @@ def test_failed_export_cleans_temporary_files_outside_the_event_loop(log_client,
 
     monkeypatch.setattr(logs.shutil, "copy2", fail_copy)
     monkeypatch.setattr(logs, "cleanup_temp_path", cleanup)
-    assert log_client.get("/plugin/demo/logs/export").status_code == 500
+    response = log_client.get("/plugin/demo/logs/export")
+    assert response.status_code == 500
+    assert response.headers["x-error-code"] == "LOG_READ_FAILED"
     assert cleaned == [str(export_dir)]
     assert not export_dir.exists()
 
@@ -151,3 +159,70 @@ def test_socket_serializes_a_file_reset_as_a_new_initial_snapshot(log_client, tm
         assert packet["type"] == "initial"
         assert packet["reset"] is True
         assert [entry["message"] for entry in packet["logs"]] == ["new"]
+
+
+@pytest.mark.parametrize("all_gone", [False, True])
+def test_export_skips_rotated_sources_and_removes_partial_copies(log_client, tmp_path, monkeypatch, all_gone):
+    import io
+    import zipfile
+    from plugin.server.routes import logs
+
+    gone = tmp_path / "N.E.K.O_Plugin_demo_20261026.log.1"
+    gone.write_text("old\n")
+    kept = tmp_path / "N.E.K.O_Plugin_demo_20261026.log"
+    kept.write_text("ready\n")
+    export_dir = tmp_path / "export-temp"
+    export_dir.mkdir()
+    monkeypatch.setattr(logs.tempfile, "mkdtemp", lambda: str(export_dir))
+    original_copy = logs.shutil.copy2
+
+    def copy(source, destination):
+        if source == gone or all_gone:
+            source.unlink()
+            destination.write_text("partial copy")
+            raise FileNotFoundError(source)
+        return original_copy(source, destination)
+
+    monkeypatch.setattr(logs.shutil, "copy2", copy)
+    response = log_client.get("/plugin/demo/logs/export")
+    if all_gone:
+        assert response.status_code == 404
+        assert response.headers["x-error-code"] == "NO_LOG_FILES"
+    else:
+        assert response.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            assert archive.namelist() == [kept.name]
+            assert archive.read(kept.name) == b"ready\n"
+    assert not export_dir.exists()
+
+
+@pytest.mark.parametrize("stage", ["snapshot", "poll"])
+def test_socket_survives_a_file_disappearing_before_open(log_client, tmp_path, monkeypatch, stage):
+    from pathlib import Path
+
+    path = tmp_path / "N.E.K.O_Plugin_demo_20261026.log"
+    path.write_text("ready\n")
+    original_open = Path.open
+    armed = stage == "snapshot"
+    failures = 0
+
+    def open_file(selected, mode="r", *args, **kwargs):
+        nonlocal armed, failures
+        if selected == path and mode == "rb" and armed:
+            armed = False
+            failures += 1
+            raise FileNotFoundError(selected)
+        return original_open(selected, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_file)
+    with log_client.websocket_connect("/ws/logs/demo") as socket:
+        initial = socket.receive_json()
+        assert initial["type"] == "initial"
+        assert [entry["message"] for entry in initial["logs"]] == ["ready"]
+        armed = stage == "poll"
+        with path.open("a") as stream:
+            stream.write("next\n")
+        packet = socket.receive_json()
+        assert packet["type"] == "append"
+        assert [entry["message"] for entry in packet["logs"]] == ["next"]
+        assert failures == 1

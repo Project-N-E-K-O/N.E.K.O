@@ -6,7 +6,7 @@ cursor; taking another snapshot cannot change an existing subscription's progres
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import os
 import re
@@ -34,6 +34,9 @@ def _validate_target(plugin_id: str) -> None:
 @dataclass(frozen=True)
 class _LogFile:
     path: Path
+    # Growing files remain the same source for an existing session's cursor.
+    size: int = field(compare=False)
+    modified: float = field(compare=False)
     legacy: bool = False
 
 
@@ -76,10 +79,18 @@ class LogService:
                     # Filter names before any metadata I/O, including files for
                     # other plugins sharing this directory. Scan server history
                     # and canonical files together in one directory traversal.
-                    if is_service_log_file(entry.name, service_name) and entry.is_file():
-                        files.append((entry.stat().st_mtime_ns, entry.name,
-                                      _LogFile(Path(entry.path), legacy)))
+                    if not is_service_log_file(entry.name, service_name):
+                        continue
+                    try:
+                        if not entry.is_file():
+                            break
+                        info = entry.stat()
+                    except FileNotFoundError:
+                        # Rotation can remove an entry after scandir yields it.
                         break
+                    files.append((info.st_mtime_ns, entry.name,
+                                  _LogFile(Path(entry.path), info.st_size, info.st_mtime, legacy)))
+                    break
         files.sort(key=lambda item: item[:2], reverse=True)
         return [item[2] for item in files]
 
@@ -101,8 +112,8 @@ class LogService:
         return self.open_session(plugin_id, lines, level, start_time, end_time, search).snapshot()
 
     def get_plugin_log_files(self, plugin_id: str) -> list[dict[str, object]]:
-        return [{"filename": item.path.name, "size": item.path.stat().st_size,
-                  "modified": item.path.stat().st_mtime, "legacy_source": item.legacy}
+        return [{"filename": item.path.name, "size": item.size,
+                  "modified": item.modified, "legacy_source": item.legacy}
                  for item in self._files(plugin_id)]
 
     def get_plugin_log_directory(self, plugin_id: str) -> Path:
@@ -215,32 +226,47 @@ class LogSession:
         self.returned_lines = len(filtered) if snapshot else self.returned_lines + len(filtered)
         return filtered
 
+    def _snapshot_from_stream(self, latest: _LogFile, stream: BinaryIO, *, reset: bool) -> LogReadResult:
+        info = os.fstat(stream.fileno())
+        self.current = latest
+        self.identity = (info.st_dev, info.st_ino)
+        return self._result(self._read(stream, snapshot=True), reset=reset)
+
     def snapshot(self, *, reset: bool = False) -> LogReadResult:
-        self.current = self.service._latest(self.plugin_id)
+        self.current = None
         self.identity = None
         self.position = 0
         self.anchor = b""
         self.total_lines = self.returned_lines = 0
-        logs: list[dict[str, object]] = []
-        if self.current:
-            with self.current.path.open("rb") as stream:
-                info = os.fstat(stream.fileno())
-                self.identity = (info.st_dev, info.st_ino)
-                logs = self._read(stream, snapshot=True)
-        return self._result(logs, reset=reset)
+        # Re-select once if rotation wins the race between scanning and open.
+        for _ in range(2):
+            latest = self.service._latest(self.plugin_id)
+            if latest is None:
+                break
+            try:
+                stream = latest.path.open("rb")
+            except FileNotFoundError:
+                continue
+            with stream:
+                return self._snapshot_from_stream(latest, stream, reset=reset)
+        return self._result([], reset=reset)
 
     def poll(self) -> LogReadResult | None:
         latest = self.service._latest(self.plugin_id)
-        if latest != self.current:
-            return self.snapshot(reset=True)
         if latest is None:
+            return self.snapshot(reset=True) if self.current is not None else None
+        try:
+            stream = latest.path.open("rb")
+        except FileNotFoundError:
+            # Preserve the cursor and let the next poll observe the new file.
             return None
-        with latest.path.open("rb") as stream:
+        with stream:
             info = os.fstat(stream.fileno())
-            if (info.st_dev, info.st_ino) != self.identity or info.st_size < self.position:
-                return self.snapshot(reset=True)
+            if (latest != self.current or (info.st_dev, info.st_ino) != self.identity
+                    or info.st_size < self.position):
+                return self._snapshot_from_stream(latest, stream, reset=True)
             stream.seek(max(0, self.position - len(self.anchor)))
             if stream.read(len(self.anchor)) != self.anchor:
-                return self.snapshot(reset=True)
+                return self._snapshot_from_stream(latest, stream, reset=True)
             logs = self._read(stream, snapshot=False)
         return self._result(logs) if logs else None
