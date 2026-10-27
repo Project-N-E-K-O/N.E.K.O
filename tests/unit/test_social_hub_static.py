@@ -130,6 +130,7 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     )]
     assert "result.body.notifications_ok === true" in poll_direct
     assert "incoming_invite_ids" in poll_direct
+    assert "return await presentDirectInvitation(pendingPayload);" in poll_direct
     assert "markDirectInviteRead" not in poll_direct
 
 

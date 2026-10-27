@@ -1657,6 +1657,55 @@ const report = {};
     report.late_peer_order = h.messages.filter((m) => m.id.indexOf('visit-line-') === 0 || m.id === 'visit-ended-' + VID)
       .map((m) => (m.id.indexOf('visit-ended-') === 0 ? 'ENDED' : m.blocks[0].text));
   }
+  // ── 邀请通知仍未读：轮询必须重试首次失败的普通助手问句投递 ──
+  {
+    let deliveries = 0;
+    const routes = {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID, expires_at: 9e9 } }),
+      ['/api/visit/direct/' + VID + '/question?catgirl=%E5%92%AA%E5%92%AA']: async () => ({ status: 200, body: { question: '要去串门吗？' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => {
+        deliveries += 1;
+        return deliveries === 1
+          ? { status: 503, body: { error: 'temporary_failure' } }
+          : { status: 200, body: { delivered: true } };
+      },
+      '/api/community/visit-hub': async () => ({ status: 200, body: {
+        incoming_invite: { id: 'notif-retry', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
+        incoming_invite_ids: ['notif-retry'], notifications_ok: true,
+      } }),
+    };
+    const h = createHarness({ routes });
+    h.chat.applyState({ enabled: true, active: false });
+    await h.chat._test.presentDirectInvitation({
+      id: 'notif-retry', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9,
+    });
+    await h.chat._test.pollDirectInvitations();
+    report.direct_invite_delivery_retries = deliveries;
+  }
+  // ── 同一邀请还在时切换猫娘：轮询必须为新角色重新生成并投递问句 ──
+  {
+    const questionUrls = [];
+    const routes = {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID, expires_at: 9e9 } }),
+      '/api/visit/direct/AAAAAAAAAAAAAAAAAAAAAA/question?catgirl=*': async (url) => {
+        questionUrls.push(url);
+        return { status: 200, body: { question: '要去串门吗？' } };
+      },
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
+      '/api/community/visit-hub': async () => ({ status: 200, body: {
+        incoming_invite: { id: 'notif-character', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
+        incoming_invite_ids: ['notif-character'], notifications_ok: true,
+      } }),
+    };
+    const h = createHarness({ routes });
+    h.chat.applyState({ enabled: true, active: false });
+    await h.chat._test.presentDirectInvitation({
+      id: 'notif-character', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9,
+    });
+    h.win.lanlan_config.lanlan_name = '小橘';
+    await h.chat._test.pollDirectInvitations();
+    report.direct_invite_character_questions = questionUrls;
+  }
   process.stdout.write(JSON.stringify(report));
 })().catch((err) => { console.error(err && err.stack || err); process.exit(1); });
 """
@@ -2244,3 +2293,14 @@ def test_late_echo_reclaims_its_failed_local_bubble(report):
 
 def test_late_peer_line_is_placed_before_the_ended_message(report):
     assert report["late_peer_order"] == ["第一句", "最后一句", "ENDED"]
+
+
+def test_pending_direct_invite_retries_failed_question_delivery(report):
+    assert report["direct_invite_delivery_retries"] == 2
+
+
+def test_pending_direct_invite_regenerates_after_character_switch(report):
+    assert report["direct_invite_character_questions"] == [
+        "/api/visit/direct/AAAAAAAAAAAAAAAAAAAAAA/question?catgirl=%E5%92%AA%E5%92%AA",
+        "/api/visit/direct/AAAAAAAAAAAAAAAAAAAAAA/question?catgirl=%E5%B0%8F%E6%A9%98",
+    ]

@@ -2251,7 +2251,9 @@
                 var pendingPayload = pendingDirectInvitation.payload || {};
                 var pendingNotificationId = String(pendingPayload.notification_id || '');
                 if (pendingNotificationId && notificationIds.indexOf(pendingNotificationId) !== -1) {
-                    return true;
+                    // The notification is still authoritative, but presentation may be incomplete:
+                    // retry a failed delivery or regenerate the question after a character switch.
+                    return await presentDirectInvitation(pendingPayload);
                 }
                 if (result.status === 200 && result.body && result.body.notifications_ok === true) {
                     clearPendingDirectInvitation(pendingPayload, false);
