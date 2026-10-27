@@ -26,15 +26,43 @@ let abandonGlide: (() => void) | null = null
  * the boxes the change lays its items out in, and only once all have arrived
  * does `commit` make the change real, so a drawer opening plays as its closing
  * reversed. `apply` and `revert` toggle the change synchronously for measuring
- * (no frame is drawn in between); `commit` applies it through Vue. Returns a
- * cancel that glides the items back and never commits. */
-export function glideToLayout(change: { apply(): void; revert(): void; commit(): void }) {
+ * (no frame is drawn in between); `commit` applies it through Vue. Each of
+ * `frames` (containers the change narrows) is pushed in step until its
+ * leading edge reaches the new one, its trailing overhang clipped, so its
+ * contents travel with it unscaled. Returns a cancel that glides everything
+ * back and never commits. */
+export function glideToLayout(change: {
+  apply(): void
+  revert(): void
+  commit(): void
+  /** A container whose left edge moves with the change while its right edge
+   * stays: it is clipped from the left in step, and its `header` (outside the
+   * grids, laid out live) narrows with it, so right-aligned content holds. */
+  shell?: { element: HTMLElement; header: HTMLElement }
+}) {
   abandonGlide?.()
   let settled = false
   abandonGlide = () => { settled = true }
+  // Settle the shell first, so the grids inside measure from where it is laid
+  // out; it continues from where it is drawn.
+  const shell = change.shell && (() => {
+    const { element, header } = change.shell
+    const clip = getComputedStyle(element).clipPath
+    const margin = getComputedStyle(header).marginLeft
+    cancelMotion(element)
+    cancelMotion(header)
+    return {
+      element, header,
+      drawn: { clip: clip === 'none' ? 'inset(0px)' : clip, margin },
+      rest: Number.parseFloat(getComputedStyle(header).marginLeft) || 0,
+      from: element.getBoundingClientRect(),
+      to: new DOMRect(),
+    }
+  })()
   const previews = [...previewers].map(begin => begin()).filter(preview => preview !== null)
   change.apply()
   for (const preview of previews) preview.target()
+  if (shell) shell.to = shell.element.getBoundingClientRect()
   change.revert()
   // Held at one until every glide has started, so a glide that ends at once
   // cannot commit early.
@@ -49,12 +77,23 @@ export function glideToLayout(change: { apply(): void; revert(): void; commit():
     pending++
     return arrive
   }
+  // The cards' timing, without stagger, so the shell and items move as one.
+  const timing = { duration: motionPolicy.reflowDuration, easing: motionPolicy.reflowEasing }
   for (const preview of previews) preview.play(depart)
+  if (shell) {
+    const inset = Math.max(shell.to.left - shell.from.left, 0)
+    playFrames(shell.element, [{ clipPath: shell.drawn.clip }, { clipPath: `inset(0px 0px 0px ${inset}px)` }], timing, depart())
+    playFrames(shell.header, [{ marginLeft: shell.drawn.margin }, { marginLeft: `${shell.rest + inset}px` }], timing, depart())
+  }
   arrive()
   return () => {
     if (settled) return
     settled = true
     for (const preview of previews) preview.cancel()
+    if (!shell) return
+    const { element, header, rest } = shell
+    playFrames(element, [{ clipPath: getComputedStyle(element).clipPath }, { clipPath: 'inset(0px)' }], timing)
+    playFrames(header, [{ marginLeft: getComputedStyle(header).marginLeft }, { marginLeft: `${rest}px` }], timing)
   }
 }
 

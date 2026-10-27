@@ -31,7 +31,7 @@
       class="plugin-workbench__main"
       data-yui-guide-id="plugin-list-main"
     >
-      <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
+      <el-card ref="listShellRef" class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
           <div
             ref="workbenchHeaderRef"
@@ -951,9 +951,12 @@ function toggleMultiSelectMode() {
 }
 
 // Opening plays the closing reversed: the panel slides in over the full-width
-// list while the cards glide to where the docked layout puts them, and only
-// then does the rail dock and the list narrow. Closing undocks at once.
+// list while the cards glide to where the docked layout puts them and the list
+// shell's left edge follows the panel's, its right-aligned header holding
+// still, and only then does the rail dock and the list narrow. Closing undocks
+// at once.
 const workbenchRef = ref<HTMLElement | null>(null)
+const listShellRef = ref<{ $el: HTMLElement } | null>(null)
 let cancelDockGlide: (() => void) | null = null
 watch(
   () => DRAWER_KEYS.find(key => drawers[key].visible),
@@ -975,6 +978,9 @@ watch(
       },
       revert: () => { workbench.className = drawn },
       commit: dock,
+      shell: listShellRef.value && workbenchHeaderRef.value
+        ? { element: listShellRef.value.$el, header: workbenchHeaderRef.value }
+        : undefined,
     })
   },
 )
