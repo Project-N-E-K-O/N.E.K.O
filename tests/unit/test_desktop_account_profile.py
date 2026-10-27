@@ -16,6 +16,7 @@ from main_routers import community_oauth as O
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 USER_ID = "11111111-1111-4111-8111-111111111111"
 REAL_STATUS_RESOLVER = O.resolve_saved_oauth_status
+REAL_SESSION_SNAPSHOT = C._desktop_session_snapshot
 
 
 @pytest.fixture
@@ -286,3 +287,104 @@ async def test_status_endpoints_do_not_publish_the_internal_verified_profile(val
         assert "private@example.com" not in serialized
         assert "/static/avatars/me.webp" not in serialized
     assert lookup.await_count == 2
+
+
+@pytest.mark.parametrize("user_id", [None, "", "absent"])
+async def test_legacy_profile_uses_only_the_cloud_verified_user_id(validated_profile_state, user_id):
+    state, lookup = validated_profile_state
+    if user_id == "absent":
+        state.pop("local_user_id")
+    else:
+        state["local_user_id"] = user_id
+    state["auth_source"] = ""
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.body) == {
+        "local_user_id": USER_ID, "avatar_url": "/static/avatars/me.webp",
+        "community_base_url": "https://community.example",
+    }
+    assert not state.get("local_user_id")
+    lookup.assert_awaited_once_with("https://community.example", "private-token")
+
+
+@pytest.mark.parametrize("change", ["logout", "token", "base", "identity", "source"])
+async def test_legacy_profile_rejects_session_changes_after_validation(validated_profile_state, change):
+    state, lookup = validated_profile_state
+    state.pop("local_user_id")
+    state["auth_source"] = ""
+    result = lookup.return_value
+
+    async def changed(*_):
+        # The real resolver captured the old session before this cloud await.
+        if change == "logout":
+            state.clear()
+        else:
+            field, value = {
+                "token": ("access_token", "replacement-token"),
+                "base": ("base_url", "https://other.example"),
+                "identity": ("local_user_id", USER_ID),
+                "source": ("auth_source", "oauth"),
+            }[change]
+            state[field] = value
+        return result
+
+    lookup.side_effect = changed
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == 409
+    assert json.loads(response.body) == {"detail": "session_changed"}
+    assert lookup.await_count == 1
+
+
+@pytest.mark.parametrize("failure,expected", [("unavailable", 503), ("rejected", 200)])
+async def test_legacy_profile_does_not_infer_identity_from_unverified_credentials(
+    validated_profile_state, monkeypatch, failure, expected,
+):
+    state, lookup = validated_profile_state
+    state.pop("local_user_id")
+    lookup.return_value = C._CloudIdentityLookup(None, 503 if failure == "unavailable" else 401, failure)
+    monkeypatch.setattr(O, "_clear_rejected_oauth_snapshot", lambda _: False)
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == expected
+    assert json.loads(response.body) == (
+        {"detail": "profile_unavailable"} if failure == "unavailable"
+        else {"local_user_id": None, "avatar_url": None}
+    )
+    assert lookup.await_count == 1
+
+
+@pytest.mark.parametrize("storage", ["social", "auth"])
+async def test_legacy_profile_from_real_records_and_cloud_protocol(monkeypatch, storage):
+    social = {"baseUrl": "https://community.example", "token": "legacy-private-token"}
+    auth = {"access_token": "legacy-private-token"}
+    monkeypatch.setattr(C, "_load_social_session", lambda: social if storage == "social" else None)
+    monkeypatch.setattr(C, "_load_auth", lambda: auth if storage == "auth" else None)
+    monkeypatch.setattr(C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _: True)
+    monkeypatch.setattr(O, "_account_request_identity", AsyncMock(return_value="local"))
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(O, "_oauth_status_lock", asyncio.Lock())
+    requests = []
+
+    def cloud(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "auth_source": "oauth", "user": {"id": USER_ID, "avatar_url": "hue:210", "email": "private@example.com"},
+        })
+
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(C.httpx, "AsyncClient", lambda **kwargs: client_factory(
+        transport=httpx.MockTransport(cloud), **kwargs))
+    assert not REAL_SESSION_SNAPSHOT()["local_user_id"]
+    response = await O.oauth_profile_endpoint(SimpleNamespace())
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "local_user_id": USER_ID, "avatar_url": "hue:210",
+        "community_base_url": "https://community.example",
+    }
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://community.example/api/users/me"
+    assert requests[0].headers["Authorization"] == "Bearer legacy-private-token"
+    # Profile reads do not migrate or write legacy credential records.
+    assert social == {"baseUrl": "https://community.example", "token": "legacy-private-token"}
+    assert auth == {"access_token": "legacy-private-token"}

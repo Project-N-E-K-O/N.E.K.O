@@ -862,7 +862,7 @@ async def oauth_profile_endpoint(request: Request):
         async with asyncio.timeout(6):
             status = await resolve_saved_oauth_status()
             snapshot = status.get("snapshot") or {}
-            if not status.get("logged_in") or not snapshot.get("local_user_id"):
+            if not status.get("logged_in"):
                 if snapshot.get("access_token") and not status.get("rejected"):
                     # Unverified saved credentials are not a confirmed logout.
                     return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
@@ -882,7 +882,11 @@ async def oauth_profile_endpoint(request: Request):
                 "local_user_id", "access_token", "base_url", "auth_source",
             )):
                 return JSONResponse({"detail": "session_changed"}, status_code=409, headers=headers)
-            if profile is None or profile["local_user_id"] != snapshot["local_user_id"]:
+            # Legacy sessions can lack UUID metadata. Only the cloud-verified
+            # profile may supply it, while an existing stored ID must match.
+            if profile is None or not profile["local_user_id"] or (
+                snapshot.get("local_user_id") and profile["local_user_id"] != snapshot["local_user_id"]
+            ):
                 return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
             avatar = profile["avatar_url"]
             return JSONResponse({
