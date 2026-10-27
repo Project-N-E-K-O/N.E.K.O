@@ -158,6 +158,7 @@ class FakeHost:
         self.resubmitted: list[dict] = []
         self.user_inputs: list[str] = []
         self.outputs: list[str] = []
+        self.output_finalized: list[bool] = []
         self.blocks: list[tuple[list, str]] = []
         self.streams: list[FakeStream] = []
         self.voice_streams = True
@@ -253,8 +254,11 @@ class FakeHost:
         self.user_inputs.append(text)
         self.events.append("mirror_user_input")
 
-    async def mirror_assistant_output(self, text, *, metadata, request_id) -> None:
+    async def mirror_assistant_output(
+        self, text, *, metadata, request_id, finalize_turn=False,
+    ) -> None:
         self.outputs.append(text)
+        self.output_finalized.append(bool(finalize_turn))
         self.events.append(f"output:{request_id}")
 
     async def render_chat_blocks(self, blocks, *, request_id, source_name) -> bool:

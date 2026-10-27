@@ -1,0 +1,507 @@
+.neko-social-hub-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 10060;
+  pointer-events: none;
+}
+
+.neko-social-hub-layer[hidden] { display: none; }
+
+html:has(body.neko-social-hub-standalone),
+body.neko-social-hub-standalone {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.neko-social-hub-standalone #neko-social-hub-root {
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.neko-social-hub-panel {
+  --hub-accent: #35abf5;
+  --hub-accent-strong: #168fe5;
+  --hub-text: #20304a;
+  --hub-muted: #74839d;
+  --hub-line: rgba(123, 161, 196, 0.2);
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  width: min(392px, calc(100vw - 24px));
+  max-height: min(680px, calc(100vh - 24px));
+  overflow: hidden;
+  padding: 18px 16px 14px;
+  border: var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.3));
+  border-radius: 12px;
+  box-sizing: border-box;
+  background: var(--neko-popup-bg, rgba(255, 255, 255, 0.82));
+  box-shadow: var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04));
+  color: var(--hub-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  pointer-events: auto;
+  backdrop-filter: blur(22px) saturate(1.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16);
+  transform-origin: left center;
+  animation: nekoSocialHubIn 180ms cubic-bezier(.2, .82, .25, 1);
+}
+
+.neko-social-hub-standalone .neko-social-hub-panel {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  box-sizing: border-box;
+}
+
+@keyframes nekoSocialHubIn {
+  from { opacity: 0; transform: translateY(4px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.neko-social-hub-friend-scroller {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(93, 161, 213, 0.35) transparent;
+}
+
+.neko-social-hub-friend-scroller::-webkit-scrollbar { width: 6px; }
+.neko-social-hub-friend-scroller::-webkit-scrollbar-track { background: transparent; }
+.neko-social-hub-friend-scroller::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(93, 161, 213, 0.35);
+}
+
+.neko-social-hub-header,
+.neko-social-hub-heading,
+.neko-social-hub-friend,
+.neko-social-hub-quota,
+.neko-social-hub-invite {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+.neko-social-hub-panel:focus { outline: none; }
+
+.neko-social-hub-header {
+  flex: 0 0 auto;
+  min-height: 44px;
+  gap: 10px;
+  padding: 0 2px 14px;
+}
+
+.neko-social-hub-standalone .neko-social-hub-header {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.neko-social-hub-standalone button,
+.neko-social-hub-standalone input,
+.neko-social-hub-standalone a {
+  -webkit-app-region: no-drag;
+}
+
+.neko-social-hub-logo {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+.neko-social-hub-title {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.15;
+  font-weight: 750;
+  letter-spacing: -.02em;
+}
+
+.neko-social-hub-community-link {
+  margin-left: auto;
+  padding: 8px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--hub-accent-strong);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.neko-social-hub-community-link:hover,
+.neko-social-hub-community-link:focus-visible {
+  color: #057ed1;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.neko-social-hub-invite {
+  gap: 12px;
+  min-height: 106px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(226, 244, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.neko-social-hub-avatar-wrap { position: relative; flex: 0 0 auto; }
+
+.neko-social-hub-avatar {
+  display: block;
+  width: 58px;
+  height: 58px;
+  border: 2px solid rgba(255, 255, 255, 0.94);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 3px 12px rgba(58, 105, 145, 0.18);
+}
+
+.neko-social-hub-avatar.is-hue {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: hsl(var(--neko-avatar-hue, 205) 72% 62%);
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(32, 63, 88, 0.22);
+  user-select: none;
+}
+
+.neko-social-hub-invite .neko-social-hub-avatar.is-hue { font-size: 28px; }
+
+.neko-social-hub-invite .neko-social-hub-avatar { width: 76px; height: 76px; }
+
+.neko-social-hub-status-dot {
+  position: absolute;
+  right: -1px;
+  bottom: 2px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #32c777;
+  box-sizing: content-box;
+}
+
+.neko-social-hub-status-dot.waiting { background: #f4a63b; }
+.neko-social-hub-status-dot.connecting { background: #35abf5; }
+.neko-social-hub-status-dot.active { background: #32c777; }
+.neko-social-hub-status-dot.online { background: #32c777; }
+.neko-social-hub-status-dot.away { background: #f4b53d; }
+.neko-social-hub-status-dot.invisible { background: #aab4c7; }
+.neko-social-hub-status-dot.ending { background: #9aa9bd; }
+.neko-social-hub-status-dot.offline { background: #aab4c7; }
+.neko-social-hub-invite-copy,
+.neko-social-hub-friend-copy { min-width: 0; flex: 1 1 auto; }
+
+.neko-social-hub-name {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--hub-text);
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 720;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.neko-social-hub-description,
+.neko-social-hub-status,
+.neko-social-hub-expiry {
+  display: block;
+  color: var(--hub-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.neko-social-hub-self {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  margin: 0 2px 4px;
+  padding: 10px 8px 12px;
+  border-top: 1px solid var(--hub-line);
+  border-bottom: 1px solid var(--hub-line);
+  box-sizing: border-box;
+}
+
+.neko-social-hub-self-copy { min-width: 0; flex: 1 1 auto; }
+.neko-social-hub-self-title-row {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  gap: 4px;
+}
+.neko-social-hub-self-name {
+  display: block;
+  overflow: hidden;
+  color: var(--hub-text);
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.neko-social-hub-presence-picker { position: relative; width: fit-content; max-width: 100%; }
+.neko-social-hub-presence-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--hub-muted);
+  font: inherit;
+  cursor: pointer;
+  /* 以用户名实际字形（不是 line box）为基准做光学居中。 */
+  transform: translateY(-4px);
+}
+
+.neko-social-hub-presence-toggle:disabled { cursor: wait; opacity: .68; }
+.neko-social-hub-presence-label {
+  display: block;
+  margin-top: 2px;
+  color: var(--hub-muted);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.neko-social-hub-presence-arrow {
+  display: block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  overflow: visible;
+}
+
+.neko-social-hub-presence-arrow path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.neko-social-hub-presence-menu {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 6px);
+  left: -8px;
+  width: 248px;
+  padding: 6px;
+  border: 1px solid rgba(123, 161, 196, 0.24);
+  border-radius: 13px;
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(37, 72, 102, 0.2);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.neko-social-hub-presence-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--hub-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.neko-social-hub-presence-option:hover,
+.neko-social-hub-presence-option.is-selected { background: rgba(53, 171, 245, 0.1); }
+.neko-social-hub-presence-dot {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(91, 113, 139, 0.2);
+}
+
+.neko-social-hub-presence-dot.online { background: #32c777; }
+.neko-social-hub-presence-dot.away { background: #f4b53d; }
+.neko-social-hub-presence-dot.invisible { background: #aab4c7; }
+.neko-social-hub-presence-option-copy { display: grid; min-width: 0; gap: 2px; }
+.neko-social-hub-presence-option-copy strong { font-size: 14px; line-height: 1.2; }
+.neko-social-hub-presence-option-copy small { color: var(--hub-muted); font-size: 11px; line-height: 1.35; }
+
+.neko-social-hub-expiry { margin-top: 5px; color: #eb913b; font-weight: 650; }
+.neko-social-hub-invite-actions { display: grid; flex: 0 0 92px; gap: 8px; }
+
+.neko-social-hub-button {
+  min-height: 38px;
+  padding: 0 15px;
+  border: 1px solid rgba(45, 165, 242, 0.38);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--hub-accent-strong);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.neko-social-hub-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(42, 153, 225, 0.18);
+}
+
+.neko-social-hub-button:active:not(:disabled) { transform: translateY(0); }
+.neko-social-hub-button.primary {
+  border-color: transparent;
+  background: var(--hub-accent);
+  color: #fff;
+  box-shadow: 0 7px 16px rgba(53, 171, 245, 0.24);
+}
+
+.neko-social-hub-button:disabled {
+  border-color: rgba(165, 176, 193, 0.18);
+  background: #edf1f6;
+  color: #a4afbf;
+  cursor: default;
+}
+
+.neko-social-hub-heading {
+  margin: 18px 4px 4px;
+  color: var(--hub-text);
+  font-size: 17px;
+  font-weight: 760;
+}
+
+.neko-social-hub-friends { margin: 0; padding: 0 4px; list-style: none; }
+
+.neko-social-hub-empty {
+  display: grid;
+  gap: 6px;
+  margin: 6px 4px 12px;
+  padding: 24px 18px;
+  border-radius: 16px;
+  color: var(--hub-muted);
+  text-align: center;
+  background: rgba(112, 188, 237, 0.09);
+}
+
+.neko-social-hub-empty strong { color: var(--hub-text); font-size: 15px; }
+.neko-social-hub-empty span { font-size: 13px; }
+.neko-social-hub-friend {
+  gap: 12px;
+  min-height: 78px;
+  padding: 8px 0;
+}
+
+.neko-social-hub-friend .neko-social-hub-button { min-width: 100px; }
+.neko-social-hub-friend.is-waiting .neko-social-hub-status { color: #dc8a2f; }
+.neko-social-hub-friend.is-connecting .neko-social-hub-status { color: #168fe5; }
+.neko-social-hub-friend.is-active .neko-social-hub-status { color: #229b61; font-weight: 650; }
+.neko-social-hub-friend.is-online .neko-social-hub-status { color: #229b61; font-weight: 650; }
+.neko-social-hub-friend.is-away .neko-social-hub-status { color: #d18b20; font-weight: 650; }
+.neko-social-hub-friend.is-offline .neko-social-hub-avatar { filter: saturate(0.72); opacity: 0.82; }
+.neko-social-hub-friend.is-ending .neko-social-hub-status { color: #77879d; }
+
+.neko-social-hub-quota {
+  gap: 12px;
+  min-height: 74px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(226, 244, 255, 0.68);
+}
+
+.neko-social-hub-quota img { width: 42px; height: 42px; object-fit: contain; }
+.neko-social-hub-quota-label { display: block; color: var(--hub-muted); font-size: 13px; }
+.neko-social-hub-quota-value {
+  display: block;
+  margin-top: 1px;
+  color: var(--hub-accent-strong);
+  font-size: 21px;
+  line-height: 1.2;
+  font-weight: 760;
+}
+
+.neko-social-hub-toast {
+  flex: 0 0 auto;
+  margin: 8px 2px 0;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(29, 151, 229, 0.1);
+  color: #2873a5;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.neko-social-hub-toast.is-error { background: rgba(226, 76, 76, 0.1); color: #bc4545; }
+.neko-social-hub-panel button:focus-visible,
+.neko-social-hub-panel input:focus-visible {
+  outline: 2px solid rgba(39, 151, 224, 0.7);
+  outline-offset: 2px;
+}
+
+[data-theme="dark"] .neko-social-hub-panel,
+html.dark .neko-social-hub-panel {
+  --hub-text: #edf5ff;
+  --hub-muted: #aab8ca;
+  --hub-line: rgba(151, 188, 220, 0.18);
+  border-color: rgba(133, 179, 217, 0.26);
+  background: linear-gradient(180deg, rgba(30, 37, 48, 0.96), rgba(24, 31, 41, 0.95));
+  box-shadow: 0 24px 58px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .neko-social-hub-invite,
+[data-theme="dark"] .neko-social-hub-quota,
+html.dark .neko-social-hub-invite,
+html.dark .neko-social-hub-quota { background: rgba(48, 91, 123, 0.3); }
+
+[data-theme="dark"] .neko-social-hub-button:not(.primary):not(:disabled),
+html.dark .neko-social-hub-button:not(.primary):not(:disabled) { background: rgba(255, 255, 255, 0.05); }
+[data-theme="dark"] .neko-social-hub-button:disabled,
+html.dark .neko-social-hub-button:disabled { background: rgba(255, 255, 255, 0.06); color: #778496; }
+[data-theme="dark"] .neko-social-hub-presence-menu,
+html.dark .neko-social-hub-presence-menu {
+  border-color: rgba(139, 178, 209, 0.24);
+  background: rgba(31, 40, 52, 0.98);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+}
+
+@media (max-width: 520px) {
+  .neko-social-hub-panel { max-height: calc(100vh - 16px); padding: 14px 12px 12px; border-radius: 16px; }
+  .neko-social-hub-invite { align-items: flex-start; flex-wrap: wrap; }
+  .neko-social-hub-invite-copy { min-width: 160px; }
+  .neko-social-hub-invite-actions { grid-template-columns: 1fr 1fr; flex-basis: 100%; }
+  .neko-social-hub-presence-menu { width: min(248px, calc(100vw - 92px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .neko-social-hub-panel { animation: none; }
+  .neko-social-hub-button,
+  .neko-social-hub-presence-arrow { transition: none; }
+}

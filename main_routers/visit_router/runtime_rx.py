@@ -332,6 +332,14 @@ class ReceiveMixin:
         self._set_phase(PHASE_AWAITING)
         creds = self.creds
         if self.side == "host":
+            if self.direct:
+                # A directed room exists only because this host's family
+                # explicitly invited this account.  The guest has just made
+                # the only remaining human decision before joining; asking
+                # the host a second time would duplicate consent and can leave
+                # an accepted invitation stuck at the door.
+                await self.accept(True)
+                return
             from config.visit_settings import VISIT_ACCEPT_TIMEOUT_S
 
             self._accept_deadline = now + VISIT_ACCEPT_TIMEOUT_S

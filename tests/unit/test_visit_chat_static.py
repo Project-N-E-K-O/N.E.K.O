@@ -339,7 +339,9 @@ def test_persona_panel_endpoints_and_review_flag():
 def test_no_visit_url_has_a_trailing_slash_before_the_query():
     for path in (CHAT, PERSONA):
         for url in re.findall(r"'(/api/visit/[^']*)'", _read(path)):
-            assert not url.endswith("/") or url in ("/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/"), url
+            assert not url.endswith("/") or url in (
+                "/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/", "/api/visit/direct/"
+            ), url
 
 
 # ── Eight languages ─────────────────────────────────────────────────────────

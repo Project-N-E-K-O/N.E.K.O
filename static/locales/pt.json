@@ -6891,6 +6891,10 @@
             "unreachable": "Não foi possível acessar o serviço local",
             "voiceSession": "Encerre a conversa por voz antes da visita",
             "alreadyVisiting": "Ela já está em uma visita",
+            "localAuth": "A credencial local da visita expirou. Tente novamente",
+            "noCharacter": "Não há personagem disponível para visitar agora",
+            "starting": "Preparando a sala da visita. Aguarde",
+            "characterSwitched": "A personagem mudou. Envie o convite novamente",
             "insecure_context": "Com um endereço de backend personalizado, as visitas exigem https ou localhost"
         },
         "export": {

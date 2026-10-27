@@ -1,0 +1,103 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+
+function loadHub(options = {}) {
+  const listeners = new Map();
+  const storage = new Map();
+  const window = {
+    addEventListener(name, handler) { listeners.set(name, handler); },
+    dispatchEvent() {},
+    nekoSocialHubHost: null,
+    nekoSocial: null,
+    nekoVisitChat: options.visitChat || null,
+  };
+  const document = {
+    addEventListener() {},
+    querySelector() { return null; },
+    body: { appendChild() {} },
+  };
+  const context = vm.createContext({
+    window,
+    document,
+    CustomEvent: function CustomEvent(name, options) { this.type = name; this.detail = options && options.detail; },
+    sessionStorage: {
+      getItem(key) { return storage.get(key) || null; },
+      setItem(key, value) { storage.set(key, value); },
+    },
+    setInterval() { return 0; },
+    setTimeout(callback) { callback(); return 1; },
+    clearTimeout() {},
+    requestAnimationFrame(callback) { callback(); },
+    fetch: async () => ({ ok: true, json: async () => (options.hubBody || {}) }),
+    innerWidth: 800,
+    innerHeight: 600,
+  });
+  const source = fs.readFileSync(path.join(__dirname, '../../static/social-hub.js'), 'utf8');
+  vm.runInContext(source, context);
+  return { hub: window.nekoSocialHub, listeners };
+}
+
+test('friend invitation follows the visit and clears when it ends', () => {
+  const { hub, listeners } = loadHub();
+  hub._state.accountId = 'account-1';
+  hub._state.invitations.set('friend-1', {
+    visitId: 'visit-1', phase: 'invite_ready', expiresAt: 0,
+  });
+
+  listeners.get('neko-visit-status-change')({
+    detail: { visitId: 'visit-1', action: 'started', phase: 'active' },
+  });
+  assert.equal(hub._state.invitations.get('friend-1').phase, 'active');
+
+  listeners.get('neko-visit-status-change')({
+    detail: { visitId: 'visit-1', action: 'ended', phase: 'ended' },
+  });
+  assert.equal(hub._state.invitations.has('friend-1'), false);
+});
+
+test('an incoming direct invitation is delivered to chat while the hub stays closed', async () => {
+  const delivered = [];
+  loadHub({
+    visitChat: {
+      presentDirectInvitation(invitation) {
+        delivered.push(invitation);
+        return true;
+      },
+    },
+    hubBody: {
+      logged_in: true,
+      account: { id: 'account-1' },
+      friends: [],
+      incoming_invite: {
+        id: 'notice-1',
+        actor_id: 'friend-1',
+        actor_display_name: 'Community Test',
+        visit_id: 'visit-1',
+        expires_at: 123,
+      },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(JSON.stringify(delivered), JSON.stringify([{
+    id: 'notice-1',
+    actor_id: 'friend-1',
+    display_name: 'Community Test',
+    visit_id: 'visit-1',
+    expires_at: 123,
+  }]));
+});
+
+test('an unrelated visit does not clear this friend invitation', () => {
+  const { hub } = loadHub();
+  hub._state.accountId = 'account-1';
+  hub._state.invitations.set('friend-1', {
+    visitId: 'visit-1', phase: 'invite_ready', expiresAt: 0,
+  });
+
+  hub._applyVisitStatus({ visitId: 'visit-2', action: 'ended', phase: 'ended' });
+  assert.equal(hub._state.invitations.get('friend-1').phase, 'invite_ready');
+});

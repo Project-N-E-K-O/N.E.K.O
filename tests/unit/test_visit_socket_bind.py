@@ -585,8 +585,8 @@ class DownlinkManager:
         self.blocks.append(request_id)
         return True
 
-    async def mirror_assistant_output(self, text, *, metadata, request_id):
-        self.outputs.append(text)
+    async def mirror_assistant_output(self, text, *, metadata, request_id, finalize_turn=False):
+        self.outputs.append((text, finalize_turn))
 
 
 async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch):
@@ -608,7 +608,7 @@ async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch)
     # Write chip to exact validated connection (render_chat_blocks frame shape), never reread websocket via manager.
     assert a.sent == [INVITE, chips] and b.sent == []
     # Return-home brief is ordinary catgirl speech (spoken and synced too); §4.5 requires no bind filter.
-    assert mgr.blocks == [] and mgr.outputs == ["简述", "简述2"]
+    assert mgr.blocks == [] and mgr.outputs == [("简述", False), ("简述2", False)]
 
 
 class SwappingManager(DownlinkManager):

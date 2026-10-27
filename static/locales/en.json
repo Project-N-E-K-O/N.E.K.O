@@ -6891,6 +6891,10 @@
             "unreachable": "Can't reach the local service",
             "voiceSession": "End the voice chat before visiting",
             "alreadyVisiting": "She's already on a visit",
+            "localAuth": "The local visit credential has expired. Please try again",
+            "noCharacter": "There is no character available to visit right now",
+            "starting": "Preparing the visit room. Please wait",
+            "characterSwitched": "The character changed. Please send the invitation again",
             "insecure_context": "Visits need https or localhost when using a custom backend address"
         },
         "export": {

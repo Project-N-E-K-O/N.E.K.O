@@ -501,6 +501,39 @@ const report = {};
     report.failed_old_disabled = f1.blocks.find((b) => b.type === 'buttons').buttons.every((b) => b.disabled === true);
     report.failed_new_enabled = f2.blocks.find((b) => b.type === 'buttons').buttons.every((b) => !b.disabled);
   }
+  // ── 连续串门：新的日记询问替换旧询问，不在聊天窗里纵向堆叠；预览流程不受影响 ──
+  {
+    const h = createHarness();
+    const chips = (visitId, label) => ({ type: 'chat_blocks', request_id: 'visit-debrief:' + visitId, blocks: [
+      { type: 'text', text: label },
+      { type: 'buttons', buttons: [
+        { id: 'diary', label: '记成日记', action: 'visit_debrief_choice', payload: { visit_id: visitId, choice: 'diary' } },
+        { id: 'forget', label: '不记', action: 'visit_debrief_choice', payload: { visit_id: visitId, choice: 'forget' } },
+      ] },
+    ] });
+    h.chat.handleChatBlocks(chips(VID, '第一次'));
+    h.chat.handleChatBlocks({ type: 'chat_blocks', request_id: 'visit-debrief-preview:' + VID, blocks: [
+      { type: 'text', text: '旧场次的日记预览' },
+    ] });
+    h.chat.handleChatBlocks(chips(VID2, '第二次'));
+    const prompts = h.messages.filter((m) => /^plugin-blocks-visit-debrief:[^-]+/.test(m.id));
+    report.latest_chip_only = prompts.map((m) => m.blocks[0].text);
+    report.preview_survives_new_chip = h.messages.some((m) => m.id.indexOf('plugin-blocks-visit-debrief-preview:' + VID) === 0);
+    h.chat.handleChatBlocks(chips(VID2, '第二次'));
+    report.latest_chip_deduped = h.messages.filter((m) => m.id.indexOf('plugin-blocks-visit-debrief:' + VID2) === 0).length;
+
+    const legacy = createHarness({ routes: {
+      '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }),
+    } });
+    legacy.win.appendReactChatBlocks(chips(VID, '旧版堆叠一'));
+    legacy.win.appendReactChatBlocks(chips(VID2, '旧版堆叠二'));
+    await legacy.chat.afterBind(legacy.socket, '咪咪');
+    legacy.chat.handleChatBlocks(chips(VID, '旧版堆叠一'));
+    legacy.chat.handleChatBlocks(chips(VID2, '旧版堆叠二'));
+    report.legacy_stack_collapsed = legacy.messages
+      .filter((m) => /^plugin-blocks-visit-debrief:[^-]+/.test(m.id))
+      .map((m) => m.blocks[0].text);
+  }
   // ── 放弃：有结果不明的写入 → 先确认、不明优先的文案 ──
   {
     const routes = { '/api/visit/debrief/choice': async () => ({ status: 200, body: { ok: true, applied: 'abandoned', written: { facts: true, cache: false }, unconfirmed: { facts: false, cache: true } } }) };
@@ -560,7 +593,7 @@ const report = {};
     h2.win.addEventListener('neko-visit-bound', (ev) => bound2.push(ev.detail));
     await h2.chat.afterBind(h2.socket, '咪咪');
     report.idle_active = bound2[0].active;
-    report.idle_bar_entry = h2.I.getVisitChatView().bar.actions.map((a) => a.id);
+    report.idle_bar_entry = h2.I.getVisitChatView().bar;
   }
   // ── 重载快照中继给 Pet 窗：阶段帧之后带上出门样式与对端显隐（中继可能抢在 Pet 自己的恢复之前建 iframe） ──
   {
@@ -738,8 +771,10 @@ const report = {};
     h.buttonsOf(h.dialogs()[0]).find((b) => b.attrs['data-visit-dialog-button'] === 'go').click();
     await p;
     h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'guest', ts: 1 });
+    report.guest_waiting_bar = h.I.getVisitChatView().bar;
     h.frame({ type: 'visit_state_change', action: 'departed', visit_id: VID2, side: 'guest', ts: 1 });
     report.guest_badge = h.I.getVisitChatView().bar.badge;
+    report.guest_peer_name = h.chat._test.state().visit.peerName;
     h.frame({ type: 'visit_line', visit_id: VID2, line_id: 'z1', text: '你好', final: true, truncated: false,
       speaker: { side: 'host', kind: 'cat', name: '小黑', self: false } });
     const m = h.lineMessage('z1');
@@ -1755,6 +1790,13 @@ def test_debrief_chips_dedupe_ack_and_choice_body(report):
     assert report["failed_new_enabled"] is True
 
 
+def test_a_new_debrief_question_replaces_the_older_question_only(report):
+    assert report["latest_chip_only"] == ["第二次"]
+    assert report["preview_survives_new_chip"] is True
+    assert report["latest_chip_deduped"] == 1
+    assert report["legacy_stack_collapsed"] == ["旧版堆叠二"]
+
+
 def test_abandon_with_unconfirmed_writes_asks_first_and_says_so(report):
     assert report["abandon_confirm_dialog"] == 1
     assert report["abandon_posted_before_confirm"] == 0
@@ -1777,7 +1819,7 @@ def test_reload_mid_visit_binds_active_and_idle_binds_inactive(report):
     assert report["reload_chat_phase"] == "active"
     assert report["reload_relay_crop"] == "full"
     assert report["idle_active"] is False
-    assert report["idle_bar_entry"] == ["invite", "go"]
+    assert report["idle_bar_entry"] is None
 
 
 def test_reload_snapshot_relay_carries_away_and_peer_visibility_after_the_phase(report):
@@ -1856,6 +1898,8 @@ def test_a_late_snapshot_never_revives_a_visit_that_already_ended(report):
 
 
 def test_guest_keeps_the_previewed_host_name_and_drops_the_old_avatar(report):
+    assert report["guest_waiting_bar"] is None
+    assert report["guest_peer_name"] == "邻居家"
     assert "邻居家" in report["guest_badge"]
     assert report["renderVisitLine_avatar"] == ""
 
@@ -1989,7 +2033,8 @@ def test_ack_only_text_session_is_released_when_the_visit_ends(report):
 
 
 def test_lines_are_ordered_by_lamport_key_with_host_first(report):
-    assert report["lamport_order"] == ["更早一句", "东家这句", "客人这句", "最新一句"]
+    # 自家猫娘经标准 gemini_response 上屏；专用 visit_line 只画对端身份。
+    assert report["lamport_order"] == ["更早一句", "东家这句"]
 
 
 def test_repeated_speaker_prefix_is_hidden_but_the_author_remains(report):
@@ -1997,9 +2042,9 @@ def test_repeated_speaker_prefix_is_hidden_but_the_author_remains(report):
         "你好呀",
         "又见面了",
         "[别人] 这不是我的标记",
-        "哟，又来了？",
-        "11，你也来了。",
-        "我刚才听见11叫我。",
+        None,
+        None,
+        None,
     ]
     assert report["repeated_speaker_author"] == "小白"
 

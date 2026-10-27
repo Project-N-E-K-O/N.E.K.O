@@ -6891,6 +6891,10 @@
             "unreachable": "ローカルサービスに接続できません",
             "voiceSession": "音声通話を終えてからおでかけしてください",
             "alreadyVisiting": "すでにおでかけ中です",
+            "localAuth": "この端末の訪問認証が期限切れです。もう一度お試しください",
+            "noCharacter": "現在、おでかけできるキャラクターがいません",
+            "starting": "訪問用の部屋を準備しています。少々お待ちください",
+            "characterSwitched": "キャラクターが切り替わりました。もう一度招待してください",
             "insecure_context": "カスタムのバックエンドアドレスでは https か localhost が必要です"
         },
         "export": {

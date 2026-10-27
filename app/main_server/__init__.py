@@ -553,6 +553,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/memory_browser",
     "/cookies_login",
     "/chat",
+    "/social_hub",
     "/web_chat_compact",
     "/subtitle",
     "/agenthud",

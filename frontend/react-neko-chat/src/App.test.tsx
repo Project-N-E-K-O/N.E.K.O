@@ -1922,6 +1922,15 @@ describe('App', () => {
     expect(actionButtons).toHaveLength(2);
     expect(actionButtons[0]).toBeEnabled();
     expect(actionButtons[1]).toBeEnabled();
+    expect(actionButtons[0]).toHaveAttribute(
+      'data-compact-hit-region-id',
+      'history:message-action:visit-debrief-actions:diary',
+    );
+    expect(actionButtons[1]).toHaveAttribute(
+      'data-compact-hit-region-id',
+      'history:message-action:visit-debrief-actions:forget',
+    );
+    expect(actionButtons[0]).toHaveAttribute('data-compact-hit-region-kind', 'message-action');
 
     fireEvent.click(actionButtons[0]);
     fireEvent.click(actionButtons[1]);

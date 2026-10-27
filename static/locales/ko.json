@@ -6891,6 +6891,10 @@
             "unreachable": "로컬 서비스에 연결할 수 없어요",
             "voiceSession": "음성 대화를 끝낸 뒤 방문해 주세요",
             "alreadyVisiting": "이미 방문 중이에요",
+            "localAuth": "로컬 방문 인증이 만료됐어요. 다시 시도해 주세요",
+            "noCharacter": "지금 방문할 수 있는 캐릭터가 없어요",
+            "starting": "방문 방을 준비하고 있어요. 잠시만 기다려 주세요",
+            "characterSwitched": "캐릭터가 바뀌었어요. 다시 초대해 주세요",
             "insecure_context": "사용자 지정 백엔드 주소는 https 또는 localhost여야 방문할 수 있어요"
         },
         "export": {

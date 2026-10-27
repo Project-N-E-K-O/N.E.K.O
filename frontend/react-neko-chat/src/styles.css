@@ -3591,7 +3591,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   pointer-events: none;
 }
 
-.compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scrollbar-hit,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
@@ -3600,6 +3599,22 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   filter: blur(1.5px);
   pointer-events: none;
   transition: opacity 0.22s ease, filter 0.22s ease;
+}
+
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll {
+  pointer-events: none;
+}
+
+/* 选择层打开时弱化普通历史消息，但串门结束与日记确认等系统提示必须保持可读。
+   不能直接给 scroll 容器降透明度，否则系统提示再清晰的底色也会被整层压暗。 */
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {
+  opacity: 0.32;
+  filter: blur(1.5px);
+}
+
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {
+  opacity: 1;
+  filter: none;
 }
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,
@@ -3835,8 +3850,24 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 
 .compact-export-history-message.is-system .compact-export-history-bubble {
   max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));
-  background: rgba(131, 148, 175, 0.18);
-  color: #607086;
+  border-color: rgba(74, 99, 135, 0.24);
+  background: rgba(242, 246, 252, 0.96);
+  color: #2f435e;
+  box-shadow: 0 8px 20px rgba(31, 55, 89, 0.14);
+}
+
+.compact-export-history-message.is-system .compact-export-history-meta {
+  color: #536983;
+}
+
+.compact-export-history-message.is-system .message-action-button.variant-secondary {
+  color: #233f61;
+  background: rgba(101, 133, 176, 0.2);
+}
+
+.compact-export-history-message.is-system .message-action-button.variant-danger {
+  color: #9b2935;
+  background: rgba(214, 79, 92, 0.17);
 }
 
 .compact-export-history-message[data-compact-history-complexity="rich"] .compact-export-history-bubble {
@@ -10253,8 +10284,24 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 }
 
 [data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-bubble {
-  background: rgba(80, 90, 110, 0.24);
-  color: #b9c4d6;
+  border-color: rgba(137, 169, 207, 0.28);
+  background: rgba(30, 42, 59, 0.96);
+  color: #edf4ff;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.34);
+}
+
+[data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-meta {
+  color: #bfd0e5;
+}
+
+[data-theme="dark"] .compact-export-history-message.is-system .message-action-button.variant-secondary {
+  color: #e1ecfb;
+  background: rgba(126, 157, 199, 0.26);
+}
+
+[data-theme="dark"] .compact-export-history-message.is-system .message-action-button.variant-danger {
+  color: #ffabb2;
+  background: rgba(219, 88, 103, 0.24);
 }
 
 [data-theme="dark"] .compact-export-history-meta {

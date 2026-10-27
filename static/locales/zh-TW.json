@@ -6891,6 +6891,10 @@
             "unreachable": "連不上本機服務",
             "voiceSession": "先結束語音通話再串門",
             "alreadyVisiting": "她已經在串門了",
+            "localAuth": "本機串門憑證已失效，請重試",
+            "noCharacter": "目前沒有可串門的角色",
+            "starting": "正在準備串門房間，請稍候",
+            "characterSwitched": "角色已切換，請重新邀請",
             "insecure_context": "自訂後端位址需要 https 或 localhost 才能串門"
         },
         "export": {
