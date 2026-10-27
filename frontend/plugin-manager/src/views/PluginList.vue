@@ -1,10 +1,11 @@
 <template>
   <div
     class="plugin-workbench"
+    ref="workbenchRef"
     :class="{
-      'plugin-workbench--market-open': drawers.market.visible,
-      'plugin-workbench--package-open': drawers.package.visible,
-      'plugin-workbench--mirror-open': drawers.mirror.visible,
+      'plugin-workbench--market-open': drawers.market.docked,
+      'plugin-workbench--package-open': drawers.package.docked,
+      'plugin-workbench--mirror-open': drawers.mirror.docked,
       'plugin-workbench--multi-select': multiSelectEnabled,
     }"
     data-yui-guide-id="plugin-list-workbench"
@@ -517,6 +518,7 @@ import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useBatchActions } from '@/composables/useBatchActions'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { useCollapsibleLabels } from '@/composables/useCollapsibleLabels'
+import { glideToLayout } from '@/motion/grid'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -543,14 +545,17 @@ const importing = ref(false)
 const importDialogVisible = ref(false)
 type DrawerKey = 'package' | 'mirror' | 'market'
 interface DrawerState {
+  /** The panel is shown (sliding in or open). */
   visible: boolean
+  /** The rail takes its width in the workbench and the list narrows. */
+  docked: boolean
   everOpened: boolean
 }
 const DRAWER_KEYS: readonly DrawerKey[] = ['package', 'mirror', 'market']
 const drawers = reactive<Record<DrawerKey, DrawerState>>({
-  package: { visible: false, everOpened: false },
-  mirror: { visible: false, everOpened: false },
-  market: { visible: false, everOpened: false },
+  package: { visible: false, docked: false, everOpened: false },
+  mirror: { visible: false, docked: false, everOpened: false },
+  market: { visible: false, docked: false, everOpened: false },
 })
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
@@ -944,6 +949,35 @@ async function handlePluginUiAction(plugin: PluginMeta, action: PluginListAction
 function toggleMultiSelectMode() {
   toggleMultiSelect()
 }
+
+// Opening plays the closing reversed: the panel slides in over the full-width
+// list while the cards glide to where the docked layout puts them, and only
+// then does the rail dock and the list narrow. Closing undocks at once.
+const workbenchRef = ref<HTMLElement | null>(null)
+let cancelDockGlide: (() => void) | null = null
+watch(
+  () => DRAWER_KEYS.find(key => drawers[key].visible),
+  (open) => {
+    cancelDockGlide?.()
+    cancelDockGlide = null
+    const dock = () => {
+      for (const key of DRAWER_KEYS) drawers[key].docked = key === open
+    }
+    const workbench = workbenchRef.value
+    if (!open || drawers[open].docked || !workbench) {
+      dock()
+      return
+    }
+    const drawn = workbench.className
+    cancelDockGlide = glideToLayout({
+      apply: () => {
+        for (const key of DRAWER_KEYS) workbench.classList.toggle(`plugin-workbench--${key}-open`, key === open)
+      },
+      revert: () => { workbench.className = drawn },
+      commit: dock,
+    })
+  },
+)
 
 // Drawers are mutually exclusive: opening one closes the others.
 function openDrawer(key: DrawerKey) {
@@ -1450,9 +1484,10 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* 关闭时 rail 宽度立即归零（列表一步到位），面板还在滑出：这段时间取消 rail 的裁剪，
-   让面板从列表上方滑出工作区，由 .app-body 的圆角裁掉。z-index 盖过正在 reflow 的卡片。 */
-.plugin-workbench__rail:has(> :is(.drawer-start-leave-active, .drawer-end-leave-active)) {
+/* rail 宽度为零时面板在滑动：打开时面板盖在全宽列表上滑入，卡片同时滑向停靠后的位置，
+   到位后 rail 才占宽；关闭时 rail 立即归零，面板从列表上方滑出。这段时间取消 rail 的裁剪，
+   由 .app-body 的圆角裁掉。z-index 盖过正在 reflow 的卡片。 */
+.plugin-workbench__rail:has(> :is(.drawer-start-enter-active, .drawer-end-enter-active, .drawer-start-leave-active, .drawer-end-leave-active)) {
   z-index: 1;
   overflow: visible;
   contain: layout size;
@@ -1489,7 +1524,9 @@ onUnmounted(() => {
   transition: transform var(--motion-duration-layout) var(--motion-ease-layout);
 }
 
-/* rail 已归零，max-width: 100% 会把滑出中的面板压成 0 宽。 */
+/* 滑动时 rail 宽度为零，max-width: 100% 会把面板压成 0 宽。 */
+.drawer-start-enter-active,
+.drawer-end-enter-active,
 .drawer-start-leave-active,
 .drawer-end-leave-active {
   max-width: none;

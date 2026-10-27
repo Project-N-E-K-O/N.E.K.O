@@ -150,6 +150,7 @@ const {
   enterItem, leaveItem, cancel, reflowColumns, syncColumns,
 } = useGridMotionController({
   phase: () => props.motionPhase,
+  grid: () => gridElement(),
 })
 
 // Column count changes on resize glide instead of snapping (motion/grid.ts).
