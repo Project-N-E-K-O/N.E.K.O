@@ -4274,3 +4274,66 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
     await _finished(rt)
     assert rt.finalize_reason == "peer_blocked" and rt.peer is None
     assert side.host.frames_of("visit_invite") == []
+
+
+# ── Catgirl voice tracks (OD-15 v4) ───────────────────────────────────────────────
+
+
+async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    try:
+        await settle()
+        for side in ("host", "guest"):
+            snaps = [m for m in wire.downlinks[side] if m.get("type") == "media"]
+            assert all(m["audio_publish"] is False and m["audio_subscribe"] is False for m in snaps)
+        for rt in (host.rt, guest.rt):
+            snap = rt.media_snapshot()
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_tracks_are_symmetric_after_ready_and_independent_of_video(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: [m for m in wire.downlinks[s] if m.get("type") == "media" and m["audio_publish"]])
+            snaps = [m for m in wire.downlinks[side] if m.get("type") == "media"]
+            assert snaps[-1]["audio_publish"] is True and snaps[-1]["audio_subscribe"] is True
+        # No encoder / decoder only drops video: the voices still flow both ways.
+        guest.rt.video_ok = False
+        host.rt.peer.video = False
+        for rt in (host.rt, guest.rt):
+            snap = rt.media_snapshot()
+            assert snap["audio_publish"] is True and snap["audio_subscribe"] is True
+        # A TTS fallback keeps the track published (it simply goes silent).
+        guest.rt.voice.fallen_back = True
+        assert guest.rt.media_snapshot()["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_turning_voice_off_mutes_both_directions_at_once(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: [m for m in media(s) if m["audio_publish"]])
+        before = {side: len(media(side)) for side in ("host", "guest")}
+        assert rtm.apply_voice_setting(False) == 2
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: len(media(s)) > before[s])
+            assert media(side)[-1]["audio_publish"] is False and media(side)[-1]["audio_subscribe"] is False
+        count = {side: len(media(side)) for side in ("host", "guest")}
+        rtm.apply_voice_setting(False)                     # Unchanged: no extra snapshot.
+        await settle()
+        assert {side: len(media(side)) for side in ("host", "guest")} == count
+        rtm.apply_voice_setting(True)
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: len(media(s)) > count[s])
+            assert media(side)[-1]["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

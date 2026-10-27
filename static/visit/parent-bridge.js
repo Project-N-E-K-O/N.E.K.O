@@ -12,6 +12,8 @@
  * - 分数累加器把任意源帧率抽成目标帧率：直通 30 fps、兼容模式（--disable-gpu-compositing，
  *   WebGL 源快照回读每帧约 8 ms）15 fps。
  * - 可见性 = 帧饥饿检测：>1 s 没有成功的 onFrame 就告诉 iframe hidden，不看页面可见性事件。
+ * - 猫娘语音（OD-15 v4）：传输页报 voice / remote_audio，交给 voice-relay.js 开关自家 TTS 旁路、
+ *   把对端语音接进自家扬声器；换 iframe / 移除 iframe 时一并收掉。
  * 除 PNGTuber 取帧期间的节拍外，本文件没有每帧循环、不自起动画帧、不建 WebSocket。
  */
 (function (root) {
@@ -107,6 +109,8 @@
     var clearTimeoutFn = env.clearTimeout || function (h) { win.clearTimeout(h); };
     var geo = env.geometry || win.NekoVisitCropGeometry;
     var assetVersion = env.assetVersion || '';
+    var relayFactory = win.NekoVisitVoiceRelay;
+    var voice = env.voice || (relayFactory ? relayFactory.createVoiceRelay({ window: win, log: function (level, msg) { logFrame(level, msg); } }) : null);
 
     var state = {
       frame: null,
@@ -392,6 +396,7 @@
       opts = opts || {};
       stopCapture();
       stopTick();
+      if (voice) voice.reset();
       if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
       state.readyTimer = null;
       if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -529,6 +534,8 @@
         state.readyTimer = null;
         var sink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!sink || typeof sink.setAuthToken !== 'function') return;
+        // 同一个 iframe 重新加载过：旧页面的语音旁路 / 对端语音都作废，新页面要时再报
+        if (voice) voice.reset();
         // iframe 每报一次 ready 就重新交一次 token（它重载过就要新的）；旧的重试作废
         state.authGen += 1;
         if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -538,6 +545,15 @@
         state.publishing = data.on === true;
         syncCapture();
         tick(true);
+      } else if (data.t === 'voice' || data.t === 'remote_audio') {
+        var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
+        if (!voice || !voiceSink) return;
+        if (data.t === 'voice') {
+          voice.setLocalWanted(data.on === true, voiceSink);
+        } else {
+          var peerTrack = data.on === true && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
+          voice.setRemoteTrack(peerTrack);
+        }
       } else if (data.t === 'geometry') {
         if (data.crop === 'upper' || data.crop === 'full') state.cropMode = data.crop;
         if (data.cropW > 0 && data.cropH > 0) state.cropAspect = data.cropW / data.cropH;

@@ -1,9 +1,13 @@
 /*
  * 串门传输页：TRTC 适配器（trtc-sdk-v5 5.20.1，设计稿 §3.5.1 / §4.3）。
  *
- * 串门不传音频：autoReceiveAudio:false，全目录不调用麦克风采集。视频只发自定义画布轨，
- * 远端视频 startRemoteVideo({view:null}) 只取轨不渲染。数据通道用 sendCustomMessage
- * （cmdId 1/2/3，全房广播，靠信封 r 与发送者绑定过滤）。
+ * 视频只发自定义画布轨，远端视频 startRemoteVideo({view:null}) 只取轨不渲染。数据通道用
+ * sendCustomMessage（cmdId 1/2/3，全房广播，靠信封 r 与发送者绑定过滤）。
+ *
+ * 猫娘语音（OD-15 v4）：只发父页交来的 TTS 旁路轨 startLocalAudio({option:{audioTrack}})，全目录
+ * 不调用麦克风采集；单声道 48 kHz，码率上限 audio_kbps（32）。入房仍 autoReceiveAudio:false，
+ * 收到 audio_subscribe 才 muteRemoteAudio(peer, false) 订阅；SDK 自己的播放音量压到 0，
+ * 轨交给控制器、由父页接进自家扬声器音量链出声（不双响）。
  *
  * 5.20.1 没有 updatePrivateMapKey：续期凭证只替换本地保存的那份，手动重新入房时用最新的。
  */
@@ -50,6 +54,15 @@
       opChain = opChain.then(function () { return p; }).then(null, function () {});
       return p;
     }
+    // 语音：与视频同一条队列、同一个 roomGen（发布中的轨 / 远端订阅的状态机与视频对偶）
+    var audioPublishing = false;
+    var publishedAudio = null;
+    var audioSubscribeWanted = false;
+    var remoteAudioUser = null;
+    var remoteAudioStarted = false;
+    var remoteAudioAttempt = 0;
+    var remoteAudioRetries = 0;
+    var remoteAudioRetryTimer = null;
     var subscribeWanted = false;
     var peerVid = opts.peerVid || null;
     var remoteVideoUser = null;
@@ -87,6 +100,16 @@
           remoteAttempt += 1;
           handlers.onRemoteTrack(null);
         }
+        if (ev.userId === remoteAudioUser) dropRemoteAudio();
+      });
+      trtc.on(E.REMOTE_AUDIO_AVAILABLE, function (ev) {
+        if (!isPeer(ev.userId)) return;
+        remoteAudioUser = ev.userId;
+        remoteAudioRetries = 0;
+        maybeStartRemoteAudio();
+      });
+      trtc.on(E.REMOTE_AUDIO_UNAVAILABLE, function (ev) {
+        if (ev.userId === remoteAudioUser) dropRemoteAudio();
       });
       trtc.on(E.REMOTE_VIDEO_AVAILABLE, function (ev) {
         if (!isPeer(ev.userId) || ev.streamType !== TRTC.TYPE.STREAM_TYPE_MAIN) return;
@@ -105,6 +128,9 @@
       trtc.on(E.TRACK, function (ev) {
         if (ev && ev.track && ev.track.kind === 'video' && ev.userId && ev.userId === remoteVideoUser && subscribeWanted) {
           handlers.onRemoteTrack(ev.track);
+        }
+        if (ev && ev.track && ev.track.kind === 'audio' && ev.userId && ev.userId === remoteAudioUser && remoteAudioStarted && audioSubscribeWanted) {
+          handlers.onRemoteAudio(ev.track);
         }
       });
       trtc.on(E.CUSTOM_MESSAGE, function (ev) {
@@ -176,6 +202,68 @@
               if (gen === roomGen && user === remoteVideoUser && attempt === remoteAttempt) maybeStartRemote();
             }, delay);
           });
+      });
+    }
+
+    // ── 对端语音（与远端视频的订阅状态机对偶）──
+    function clearRemoteAudioRetry() {
+      if (remoteAudioRetryTimer !== null) clearTimeout(remoteAudioRetryTimer);
+      remoteAudioRetryTimer = null;
+    }
+
+    /** 对端音频不可用 / 对端离开：丢掉状态（SDK 已不再推流，不用再退订）。 */
+    function dropRemoteAudio() {
+      remoteAudioUser = null;
+      remoteAudioStarted = false;
+      remoteAudioAttempt += 1;
+      clearRemoteAudioRetry();
+      handlers.onRemoteAudio(null);
+    }
+
+    function maybeStartRemoteAudio() {
+      if (!audioSubscribeWanted || !remoteAudioUser || remoteAudioStarted || !trtc) return;
+      clearRemoteAudioRetry();
+      remoteAudioStarted = true;
+      var attempt = ++remoteAudioAttempt;
+      var user = remoteAudioUser;
+      var gen = roomGen;
+      serial(function () {
+        if (gen !== roomGen || !trtc) return undefined;
+        return trtc.muteRemoteAudio(user, false).then(function () {
+          if (gen !== roomGen || attempt !== remoteAudioAttempt) return;
+          remoteAudioRetries = 0;
+          // SDK 自带的播放静音：出声走父页的扬声器音量链（与 TTS 同一个音量 / 输出设备），不双响
+          var muting = trtc.setRemoteAudioVolume(user, 0);
+          if (muting && typeof muting.catch === 'function') muting.catch(function () {});
+          var track = trtc.getAudioTrack({ userId: user });
+          if (track && audioSubscribeWanted && user === remoteAudioUser) handlers.onRemoteAudio(track);
+        }, function (err) {
+          handlers.onLog('warn', 'trtc muteRemoteAudio failed', String(err && err.code));
+          if (attempt !== remoteAudioAttempt) return;
+          remoteAudioStarted = false;
+          if (gen !== roomGen) return;
+          var delay = Math.min(REMOTE_RETRY_MAX_MS, REMOTE_RETRY_BASE_MS * Math.pow(2, remoteAudioRetries));
+          remoteAudioRetries += 1;
+          clearRemoteAudioRetry();
+          remoteAudioRetryTimer = setTimeout(function () {
+            remoteAudioRetryTimer = null;
+            if (gen === roomGen && user === remoteAudioUser && attempt === remoteAudioAttempt) maybeStartRemoteAudio();
+          }, delay);
+        });
+      });
+    }
+
+    /** 退订对端语音（已开始订阅时排进队列 muteRemoteAudio(true)）。 */
+    function stopRemoteAudio(user) {
+      remoteAudioStarted = false;
+      remoteAudioAttempt += 1;
+      clearRemoteAudioRetry();
+      handlers.onRemoteAudio(null);
+      if (!trtc || !user) return Promise.resolve();
+      var gen = roomGen;
+      return serial(function () {
+        if (gen !== roomGen || !trtc) return undefined;
+        return trtc.muteRemoteAudio(user, true).catch(function () {});
       });
     }
 
@@ -278,12 +366,68 @@
         if (publishesInFlight > 0 || profilesInFlight > 0) return serial(stop);
         return afterChain(Promise.resolve(stop()));
       },
+      /** 发布语音轨（父页 TTS 旁路转成的本页轨）；与视频的 publish 对偶：同一条轨不重复调 SDK，换轨走 updateLocalAudio。 */
+      publishAudio: function (track, kbps) {
+        publishesInFlight += 1;
+        var done = function (v) { publishesInFlight -= 1; return v; };
+        return serial(function () {
+          if (!trtc || !joined) return false;
+          if (audioPublishing && publishedAudio === track) return true;
+          var config = { publish: true, option: { audioTrack: track, profile: { sampleRate: 48000, channelCount: 1, bitrate: kbps } } };
+          var gen = roomGen;
+          var p = audioPublishing ? trtc.updateLocalAudio(config) : trtc.startLocalAudio(config);
+          return p.then(function () {
+            if (gen !== roomGen) {
+              if (!trtc) return false;
+              return trtc.stopLocalAudio().then(null, function () {}).then(function () { return false; });
+            }
+            audioPublishing = true;
+            publishedAudio = track;
+            return true;
+          }, function (err) {
+            if (publishedAudio !== track) publishedAudio = null;
+            throw err;
+          });
+        }).then(done, function (err) { done(); throw err; });
+      },
+      unpublishAudio: function () {
+        var stop = function () {
+          if (!trtc || !audioPublishing) return undefined;
+          audioPublishing = false;
+          publishedAudio = null;
+          return trtc.stopLocalAudio().catch(function () {});
+        };
+        if (publishesInFlight > 0 || profilesInFlight > 0) return serial(stop);
+        return afterChain(Promise.resolve(stop()));
+      },
+      setAudioSubscribe: function (on) {
+        audioSubscribeWanted = !!on;
+        if (audioSubscribeWanted) {
+          maybeStartRemoteAudio();
+          return Promise.resolve();
+        }
+        var wasStarted = remoteAudioStarted;
+        if (!wasStarted) {
+          clearRemoteAudioRetry();
+          handlers.onRemoteAudio(null);
+          return Promise.resolve();
+        }
+        return stopRemoteAudio(remoteAudioUser);
+      },
       /** 队列里的发布 / 撤销都执行完（销毁前等它，免得排队的停止落在已销毁的实例上）。 */
       idle: function () {
         return opChain;
       },
       setPeerVid: function (vid) {
         peerVid = vid || peerVid;
+        // 语音同理：暂记的不是核验出来的对端就退订、丢掉
+        if (peerVid && remoteAudioUser && remoteAudioUser !== peerVid) {
+          var staleAudio = remoteAudioUser;
+          var audioStarted = remoteAudioStarted;
+          remoteAudioUser = null;
+          if (audioStarted) stopRemoteAudio(staleAudio);
+          else dropRemoteAudio();
+        }
         // 核验前按「房里另一个人」暂记的远端视频若不是核验出来的对端：丢掉，已经开始的订阅停掉
         if (!peerVid || !remoteVideoUser || remoteVideoUser === peerVid) return;
         var stale = remoteVideoUser;
@@ -329,6 +473,14 @@
         roomGen += 1;
         publishing = false;
         publishedTrack = null;
+        audioPublishing = false;
+        publishedAudio = null;
+        remoteAudioUser = null;
+        remoteAudioStarted = false;
+        remoteAudioAttempt += 1;
+        remoteAudioRetries = 0;
+        clearRemoteAudioRetry();
+        // 同远端视频：离房前控制器已 stopAllMedia 停播对端语音，这里只清状态
         if (!trtc) return Promise.resolve();
         // exitRoom 立即发出；交给重连的「离房完成」还要等在途的发布 / 撤销跑完，
         // 免得旧的 SDK 调用与新一次 enterRoom 交错

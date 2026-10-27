@@ -73,6 +73,7 @@ from fastapi import APIRouter, WebSocket
 from starlette.websockets import WebSocketState
 
 from config.visit_settings import (
+    VISIT_AUDIO_KBPS,
     VISIT_CAPS_CACHE_TTL_S,
     VISIT_LIVEKIT_PUBLISH,
     VISIT_TIERS,
@@ -149,8 +150,9 @@ def build_credentials_message(
     the guest side and is ``None`` on the host side until the peer ``hello``
     verified (``media{peer_vid}`` fills it later); a host may pass the
     verified one when re-issuing after a reload. ``publish`` carries the
-    single-layer encoder profile (no ``publish_video``: publish / subscribe
-    timing is driven only by ``media``).
+    single-layer encoder profile plus the voice bitrate cap ``audio_kbps``
+    (no ``publish_video``: publish / subscribe timing, video and voice, is
+    driven only by ``media``).
     """
     if side not in SIDES or side != creds.role:
         raise ValueError("side must match the credentials role")
@@ -177,6 +179,7 @@ def build_credentials_message(
         "publish": {
             "codec": codec,
             "bitrate_kbps": tier["video_kbps"],
+            "audio_kbps": VISIT_AUDIO_KBPS,
             "fps": tier["fps"],
             "scalability_mode": VISIT_LIVEKIT_PUBLISH["scalabilityMode"],
             "simulcast": VISIT_LIVEKIT_PUBLISH["simulcast"],

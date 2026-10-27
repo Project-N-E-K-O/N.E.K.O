@@ -398,7 +398,7 @@ VISIT_TIERS: dict[str, dict] = {
         "pack_upper": (320, 896),
         "pack_full": (256, 1120),
         "fps": 30,
-        "video_kbps": 560,
+        "video_kbps": 528,
         "data_kbps_max": 40,
         "trtc_tier": "sd",
     },
@@ -431,8 +431,11 @@ VISIT_TIERS: dict[str, dict] = {
 VISIT_VIDEO_TIER_DEFAULT = "sd600"
 """The only published tier."""
 
-VISIT_VIDEO_KBPS = 560
-"""Video bitrate cap."""
+VISIT_VIDEO_KBPS = 528
+"""Video bitrate cap (560 before OD-15 v4; 32 kbps moved to the voice track)."""
+
+VISIT_AUDIO_KBPS = 32
+"""Voice track bitrate cap (mono 48 kHz Opus, OD-15 v4): video 528 + voice 32 + data <= 40 stays within 600."""
 
 VISIT_DATA_KBPS_MAX = 40
 """Data channel budget (= 5 KB/s)."""
@@ -450,8 +453,8 @@ VISIT_CROP_HYSTERESIS = {"center_pct": 4, "size_pct": 8, "transition_ms": 300}
 """Crop hysteresis: center 4 %, size 8 %, 300 ms transition."""
 
 VISIT_CONGESTION_LADDER = {
-    "upper": ((320, 448, 560), (256, 352, 400), (192, 272, 300)),
-    "full": ((256, 560, 560), (208, 448, 400), (160, 352, 300)),
+    "upper": ((320, 448, 528), (256, 352, 400), (192, 272, 300)),
+    "full": ((256, 560, 528), (208, 448, 400), (160, 352, 300)),
 }
 """Congestion ladder per framing: ``(w, h, kbps)``; only resolution drops, never fps."""
 
@@ -471,7 +474,7 @@ VISIT_LIVEKIT_PUBLISH = {
     "videoCodec": "vp9",
     "simulcast": False,
     "scalabilityMode": "L1T1",
-    "maxBitrate": 560000,
+    "maxBitrate": 528000,
     "maxFramerate": 30,
     "degradationPreference": "maintain-framerate",
 }

@@ -326,12 +326,17 @@ def apply_voice_setting(enabled: bool) -> int:
     Pushed by the settings save instead of re-read before each line, so the
     reply runner keeps no await between its admission check and taking the
     line; the home-coming line and debrief summary follow it as well. The
-    one-way TTS fallback (``voice.fallen_back``) is kept. Returns how many
-    runtimes were updated.
+    one-way TTS fallback (``voice.fallen_back``) is kept. The voice audio
+    tracks follow at once (OD-15 v4): a fresh ``media`` snapshot is sent so
+    the transport page stops / resumes sending and playing catgirl audio.
+    Returns how many runtimes were updated.
     """
     runtimes = live_runtimes()
     for rt in runtimes:
+        changed = rt.voice.enabled != bool(enabled)
         rt.voice.enabled = bool(enabled)
+        if changed and rt.ready_exchanged:
+            rt.spawn(rt.send_media(), name="voice-media")
     return len(runtimes)
 
 
@@ -1431,8 +1436,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     # -- Media --
 
     def media_snapshot(self) -> dict:
-        """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``)."""
-        snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder}
+        """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``).
+
+        Voice is symmetric (OD-15 v4): both sides publish their own TTS output
+        and play the peer's, only after ``ready`` and only while
+        ``visitVoiceEnabled`` is on; with voice off this side neither sends nor
+        plays catgirl audio. A TTS fallback keeps the track published but silent.
+        """
+        voice = bool(self.ready_exchanged and self.voice.enabled)
+        snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
             snap["publish"] = bool(self.ready_exchanged and self.video_ok)
         else:

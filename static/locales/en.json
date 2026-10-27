@@ -6871,7 +6871,7 @@
             "enabled": "Allow visits",
             "enabledTooltip": "When on, she can visit other players' homes and host visiting catgirls",
             "voice": "Speak aloud while visiting",
-            "voiceTooltip": "She talks at the neighbor's place and you hear her at home, like a speakerphone; the badge by her avatar means she is out right now",
+            "voiceTooltip": "When on, she speaks aloud, the other home hears her voice too, and you hear the other catgirl; when off, she only shows text and the other catgirl's voice is not played here. The badge by her avatar means she is out right now",
             "crop": "Framing",
             "cropUpper": "Upper body",
             "cropFull": "Full body",

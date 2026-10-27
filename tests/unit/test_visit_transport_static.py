@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -86,12 +87,12 @@ def test_backend_close_stops_media_and_leaves_before_any_reconnect():
     assert "Promise.all([delayDone, leftOrGaveUp])" in onclose
 
 
-def test_frame_sink_object_is_built_once_with_three_entry_points():
+def test_frame_sink_object_is_built_once_with_its_entry_points():
     sources = _all_transport_sources()
     assigners = {n: s.count("__nekoVisitFrameSink =") for n, s in sources.items() if "__nekoVisitFrameSink =" in s}
     assert assigners == {"frame-sink.js": 1}
     body = _function_body(sources["frame-sink.js"], r"root\.__nekoVisitFrameSink = ")
-    for key in ("onFrame:", "suspend:", "setAuthToken:"):
+    for key in ("onFrame:", "suspend:", "setAuthToken:", "setLocalVoice:", "remoteAudioTrack:"):
         assert key in body
 
 
@@ -105,8 +106,30 @@ def test_vendor_parameters_are_pinned():
     for literal in ("autoReceiveVideo: false", "autoReceiveAudio: false", "view: null", "'SmallStreamAutoSwitcher'"):
         assert literal in trtc, literal
     for name, s in _all_transport_sources().items():
-        assert "startLocalAudio" not in s, name
         assert "visibilitychange" not in s, name
+
+
+def test_voice_is_only_the_tts_tap_never_a_microphone():
+    # OD-15 v4: the only audio sent is the parent's TTS tap handed in via setLocalVoice; nothing here captures a microphone.
+    for name, s in _all_transport_sources().items():
+        code = _code_only(s)
+        for banned in ("getUserMedia", "setMicrophoneEnabled", "createLocalAudioTrack", "createLocalTracks", "microphoneId"):
+            assert banned not in code, (name, banned)
+    trtc = _code_only(_src("trtc-transport.js"))
+    # The custom track is the only audio source: startLocalAudio always carries option.audioTrack.
+    assert trtc.count("startLocalAudio(") == 1
+    assert "option: { audioTrack: track, profile: { sampleRate: 48000, channelCount: 1, bitrate: kbps } }" in trtc
+    # The SDK's own playback is silenced: the parent plays the peer voice through its speaker chain.
+    assert "trtc.setRemoteAudioVolume(user, 0)" in trtc
+    lk = _code_only(_src("livekit-transport.js"))
+    assert "webAudioMix: false" in lk
+    for literal in ("dtx: true", "red: false", "forceStereo: false", "audioPreset: { maxBitrate: kbps * 1000 }"):
+        assert literal in lk, literal
+    # Remote audio is never attached inside the SDK (no element, no second playback).
+    assert ".attach(" not in lk
+    voice = _code_only(_src("voice.js"))
+    assert "createMediaStreamSource(this.input)" in voice and "createMediaStreamDestination()" in voice
+    assert "el.muted = true" in voice
 
 
 def test_sizes_come_only_from_the_framing_tables():
@@ -433,15 +456,15 @@ def test_stop_unpublishes_leaves_reports_left_and_closes():
 
 
 def test_unknown_or_foreign_template_free_files():
-    # Only the eight registered scripts belong in the directory; additions require matching template/test updates.
+    # Only the nine registered scripts belong in the directory; additions require matching template/test updates.
     names = sorted(p.name for p in TRANSPORT_DIR.glob("*.js"))
     assert names == sorted([
-        "transport.js", "pack.js", "unpack.js", "trtc-transport.js", "livekit-transport.js",
+        "transport.js", "pack.js", "unpack.js", "voice.js", "trtc-transport.js", "livekit-transport.js",
         "frame-sink.js", "backend-ws.js", "loader.js",
     ])
     html = TEMPLATE.read_text(encoding="utf-8")
     assert [Path(r).name.split("?")[0] for r in re.findall(r'src="([^"]+)"', html)] == [
-        "transport.js", "pack.js", "unpack.js", "trtc-transport.js", "livekit-transport.js",
+        "transport.js", "pack.js", "unpack.js", "voice.js", "trtc-transport.js", "livekit-transport.js",
         "frame-sink.js", "backend-ws.js", "loader.js",
     ]
 
@@ -2828,3 +2851,185 @@ def test_every_join_starts_without_stale_peer_presence():
         """
     )
     assert out is False
+
+
+# -- Catgirl voice (OD-15 v4) --
+
+
+def test_trtc_voice_publishes_only_the_handed_in_tts_tap_and_stops_cleanly():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        const sink = h.ctx.__nekoVisitFrameSink;
+        h.ctx.NekoVisitTransport.controller = h.c;
+        h.ws.serverSend({ type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: false });
+        await settle();
+        const beforeTap = kinds(h.log).filter((k) => k.includes('Audio'));
+        const tap = new FakeMediaStream([{ id: 'parent-tap', kind: 'audio' }]);
+        sink.setLocalVoice(tap);
+        await settle();
+        const start = h.log.find((e) => e[0] === 'startLocalAudio');
+        const ctxs = audioContexts.length;
+        const bridged = audioContexts[0].sources[0];
+        sink.setLocalVoice(tap);                      // same tap again: no second SDK call
+        await settle();
+        h.ws.serverSend({ type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: false, audio_subscribe: false });
+        await settle();
+        return {
+          beforeTap, start, ctxs, bridgedFrom: bridged.stream === tap, bridgedTo: bridged.connectedTo === audioContexts[0].dests[0],
+          voicePosts: h.posted.filter((m) => m.t === 'voice').map((m) => m.on),
+          audioKinds: kinds(h.log).filter((k) => k.includes('Audio')),
+        };
+        """
+    )
+    assert out["beforeTap"] == []                    # Nothing is published until the parent hands in its TTS tap.
+    assert out["start"][1].startswith("audio-")      # The track comes from this page's own AudioContext (realm-safe).
+    assert out["start"][2] == {"sampleRate": 48000, "channelCount": 1, "bitrate": 32}
+    assert out["ctxs"] == 1 and out["bridgedFrom"] and out["bridgedTo"]
+    assert out["voicePosts"] == [True, False]
+    assert out["audioKinds"] == ["startLocalAudio", "stopLocalAudio"]
+
+
+def test_trtc_peer_voice_is_subscribed_muted_in_the_sdk_and_handed_to_the_parent():
+    out = run_visit_js(
+        """
+        const h = await joinedController('host');
+        const sink = h.ctx.__nekoVisitFrameSink;
+        h.ctx.NekoVisitTransport.controller = h.c;
+        h.ws.serverSend({ type: 'media', subscribe: false, peer_vid: 'g_peer', crop: 'upper', ladder: 0, audio_publish: false, audio_subscribe: true });
+        await settle();
+        h.trtc.emit('REMOTE_AUDIO_AVAILABLE', { userId: 'stranger' });   // not the verified peer
+        h.trtc.emit('REMOTE_AUDIO_AVAILABLE', { userId: 'g_peer' });
+        await settle();
+        const on = { posts: h.posted.filter((m) => m.t === 'remote_audio').map((m) => m.on), track: sink.remoteAudioTrack() === h.TRTC.remoteAudioTrack };
+        const el = h.ctx.document.created.find((e) => e.tagName === 'AUDIO');
+        h.trtc.emit('REMOTE_AUDIO_UNAVAILABLE', { userId: 'g_peer' });
+        await settle();
+        const afterUnavailable = sink.remoteAudioTrack();
+        h.trtc.emit('REMOTE_AUDIO_AVAILABLE', { userId: 'g_peer' });
+        await settle();
+        h.ws.serverSend({ type: 'media', subscribe: false, peer_vid: 'g_peer', crop: 'upper', ladder: 0, audio_publish: false, audio_subscribe: false });
+        await settle();
+        return {
+          on, muted: el && el.muted, afterUnavailable,
+          calls: h.log.filter((e) => e[0] === 'muteRemoteAudio' || e[0] === 'setRemoteAudioVolume'),
+          posts: h.posted.filter((m) => m.t === 'remote_audio').map((m) => m.on),
+          last: sink.remoteAudioTrack(),
+        };
+        """
+    )
+    assert out["on"] == {"posts": [True], "track": True}
+    assert out["muted"] is True                    # The keep-alive element never plays out loud.
+    assert out["afterUnavailable"] is None
+    assert out["calls"] == [
+        ["muteRemoteAudio", "g_peer", False], ["setRemoteAudioVolume", "g_peer", 0],
+        ["muteRemoteAudio", "g_peer", False], ["setRemoteAudioVolume", "g_peer", 0],
+        ["muteRemoteAudio", "g_peer", True],
+    ]
+    assert out["posts"] == [True, False, True, False]
+    assert out["last"] is None
+
+
+def test_voice_stops_when_kicked_resumes_on_the_next_snapshot_and_stops_on_stop():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.ctx.NekoVisitTransport.controller = h.c;
+        const media = { type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: true };
+        h.ws.serverSend(media);
+        await settle();
+        h.c.onLocalVoice(new FakeMediaStream([{ id: 'parent-tap', kind: 'audio' }]));
+        await settle();
+        h.trtc.emit('KICKED_OUT', { reason: 'kick' });          // kicked: both voice directions stop
+        await settle();
+        const afterKick = { audioPublish: h.c.media.audioPublish, audioSubscribe: h.c.media.audioSubscribe, voice: h.posted.filter((m) => m.t === 'voice').map((m) => m.on) };
+        h.ws.serverSend(media);                                 // the backend re-sends the snapshot
+        await settle();
+        h.ws.serverSend({ type: 'stop', reason: 'ended' });
+        await advance(6000);
+        return { afterKick, audioKinds: kinds(h.log).filter((k) => k.includes('LocalAudio')), voice: h.posted.filter((m) => m.t === 'voice').map((m) => m.on), ctxClosed: audioContexts.every((c) => c.closed) };
+        """
+    )
+    assert out["afterKick"] == {"audioPublish": False, "audioSubscribe": False, "voice": [True, False]}
+    assert out["voice"] == [True, False, True, False]
+    assert out["audioKinds"][:2] == ["startLocalAudio", "stopLocalAudio"]
+    assert out["ctxClosed"] is True
+
+
+def test_livekit_voice_is_symmetric_with_trtc():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + """
+        const ctx = makeContext();
+        load(ctx, FILES);
+        const LKV = ctx.NekoVisitTransport.vendors.livekit;
+        const log = [];
+        const LK = makeFakeLK(log);
+        LK.Track.Source.Microphone = 'microphone';
+        const remote = [];
+        const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onRemoteAudio(t) { remote.push(t ? t.id : null); }, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+        const creds = { vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9', bitrate_kbps: 528, audio_kbps: 32, fps: 30 } };
+        const a = LKV.createAdapter({ sdk: LK, handlers, peerVid: 'g_peer' });
+        await a.join(creds);
+        const room = LK.Room.last;
+        const published = [];
+        room.localParticipant.publishTrack = (t, o) => { published.push([t.id, o]); return Promise.resolve({ track: {} }); };
+        const unpublished = [];
+        room.localParticipant.unpublishTrack = (t, stop) => { unpublished.push([t.id, stop]); return Promise.resolve(); };
+        const track = { id: 'voice', kind: 'audio' };
+        const ok1 = await a.publishAudio(track, 32);
+        const ok2 = await a.publishAudio(track, 32);           // same track: not published twice
+        const subs = [];
+        const audioPub = { kind: 'audio', trackSid: 'TR_A', setSubscribed(on) { subs.push(on); } };
+        room.emit('TrackPublished', audioPub, { identity: 'g_peer' });   // not wanted yet: no subscription
+        await a.setAudioSubscribe(true);
+        room.emit('TrackSubscribed', { kind: 'audio', mediaStreamTrack: { id: 'peer-voice' } }, audioPub, { identity: 'g_peer' });
+        room.emit('TrackUnpublished', audioPub, { identity: 'g_peer' });
+        await a.unpublishAudio();
+        return { roomOpts: { webAudioMix: room.opts.webAudioMix }, ok1, ok2, published, unpublished, subs, remote };
+        """
+    )
+    assert out["roomOpts"] == {"webAudioMix": False}
+    assert out["ok1"] is True and out["ok2"] is True
+    assert out["published"] == [["voice", {"source": "microphone", "dtx": True, "red": False, "forceStereo": False,
+                                           "audioPreset": {"maxBitrate": 32000}}]]
+    assert out["unpublished"] == [["voice", False]]           # The voice track belongs to voice.js and is reused.
+    assert out["subs"] == [True]
+    assert out["remote"] == ["peer-voice", None]
+
+
+def test_parent_voice_relay_opens_the_tap_on_demand_and_closes_late_results():
+    relay_file = json.dumps(str(PROJECT_ROOT / "static" / "visit" / "voice-relay.js"))
+    out = run_visit_js(
+        """
+        const ctx = makeContext();
+        load(ctx, [FILES_VOICE_RELAY]);
+        const calls = [];
+        let resolveTap;
+        const audio = {
+          openAssistantVoiceTap() { calls.push('open'); return new Promise((r) => { resolveTap = r; }); },
+          playExternalVoiceTrack(t) { calls.push(['play', t.id]); return Promise.resolve({ stop() { calls.push(['stop', t.id]); } }); },
+        };
+        const relay = ctx.NekoVisitVoiceRelay.createVoiceRelay({ window: ctx, audio });
+        const handed = [];
+        const sink = { setLocalVoice(s) { handed.push(s ? s.id : null); } };
+        relay.setLocalWanted(true, sink);
+        await settle();
+        relay.setLocalWanted(false, sink);           // no longer wanted before the tap opened
+        let lateClosed = false;
+        resolveTap({ stream: { id: 'tap1' }, close() { lateClosed = true; } });
+        await settle();
+        relay.setLocalWanted(true, sink);
+        await settle();
+        resolveTap({ stream: { id: 'tap2' }, close() { calls.push('close2'); } });
+        await settle();
+        const peer = { id: 'peer' };
+        await relay.setRemoteTrack(peer);
+        await relay.setRemoteTrack(peer);            // same track: not routed twice
+        relay.reset();
+        return { calls, handed, lateClosed };
+        """,
+        extra_prelude="const FILES_VOICE_RELAY = " + relay_file + ";",
+    )
+    assert out["lateClosed"] is True
+    assert out["handed"] == [None, "tap2", None]
+    assert out["calls"] == ["open", "open", ["play", "peer"], "close2", ["stop", "peer"]]

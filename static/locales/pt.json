@@ -6871,7 +6871,7 @@
             "enabled": "Permitir visitas",
             "enabledTooltip": "Quando ativado, ela pode visitar a casa de outros jogadores e receber catgirls visitantes",
             "voice": "Falar em voz alta durante a visita",
-            "voiceTooltip": "Ela fala na casa do vizinho e você a ouve em casa, como no viva-voz; o selo ao lado do avatar indica que ela não está em casa agora",
+            "voiceTooltip": "Quando ativado, ela fala em voz alta, a outra casa também ouve a voz dela e você ouve a outra catgirl; quando desativado, ela só mostra texto e a voz da outra catgirl não é reproduzida aqui. O selo ao lado do avatar indica que ela não está em casa agora",
             "crop": "Enquadramento",
             "cropUpper": "Meio corpo",
             "cropFull": "Corpo inteiro",
