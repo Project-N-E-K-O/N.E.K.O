@@ -212,16 +212,19 @@
 
     /**
      * 一条订阅轨的入站取样（getStats 差分，基准存 rxMarks[kind]）：{ track, epoch, rttS, kbps?, lossPct? }。
-     * 取样期间基准被重置、轨被换掉、比当前基准还旧、或 SAMPLE_BOUND_MS 内没回来时给 null。
+     * 取样期间基准被重置、轨被换掉、比当前基准还旧、或 SAMPLE_BOUND_MS 内没回来时给 null（迟到的不动基准）。
      */
     function sampleInbound(kind, currentTrack, nowMs) {
       var track = currentTrack();
       var receiver = track && track.receiver;
       if (!receiver || typeof receiver.getStats !== 'function') return Promise.resolve(null);
       var epoch = statsEpoch;
-      var bound = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, SAMPLE_BOUND_MS); });
+      var expired = false;   // 超过上限这拍已按没测到交出：迟到的报告也不写基准，下一拍仍按上一个有效取样差分
+      var bound = new Promise(function (resolve) {
+        setTimeout(function () { expired = true; resolve(null); }, SAMPLE_BOUND_MS);
+      });
       return Promise.race([bound, receiver.getStats().then(function (report) {
-        if (epoch !== statsEpoch || currentTrack() !== track) return null;
+        if (expired || epoch !== statsEpoch || currentTrack() !== track) return null;
         var inbound = null;
         var rttS = null;
         report.forEach(function (r) {

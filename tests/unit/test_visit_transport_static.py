@@ -3364,3 +3364,23 @@ def test_livekit_one_stuck_track_does_not_drop_the_other():
         """
     )
     assert out == {"rx_kbps": 800, "loss_pct": 0}
+
+
+def test_livekit_late_sample_after_the_bound_does_not_move_the_baseline():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + _LK_TWO_TRACKS + """
+        bytes.video = 900000;
+        pending.video = [];
+        let late = 'unsettled';
+        a.receiverStats(5000).then((r) => { late = r; });
+        await advance(3000);                      // bound passed: this tick has no video
+        pending.video.forEach((f) => f());        // the report finally arrives
+        await settle();
+        pending.video = null;
+        bytes.video = 1000000;
+        const next = await a.receiverStats(10000);
+        return { late, next: next.rx_kbps };
+        """
+    )
+    # next tick differences against the last valid sample (0 B at t=0), not the late 900000 B report
+    assert out == {"late": {"rx_audio_kbps": 0}, "next": 800}
