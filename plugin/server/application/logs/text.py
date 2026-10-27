@@ -188,7 +188,8 @@ def filter_logs(
     level: str | None = None,
     start_time: str | None = None,
     end_time: str | None = None,
-    search: str | None = None
+    search: str | None = None,
+    *, search_all_fields: bool = False,
 ) -> list[dict[str, object]]:
     """
     Filter logs.
@@ -199,6 +200,7 @@ def filter_logs(
         start_time: Start time, ISO format.
         end_time: End time, ISO format.
         search: Keyword search.
+        search_all_fields: Include displayed metadata for opt-in viewer searches.
 
     Returns:
         Filtered log list.
@@ -230,9 +232,17 @@ def filter_logs(
     # Keyword search.
     if search:
         search_lower = search.lower()
+
+        def matches(entry):
+            fields = [entry.get("message", "")]
+            if search_all_fields:
+                fields.extend([entry.get("level", ""), entry.get("timestamp", ""),
+                               f"{entry.get('file', '')}:{entry.get('line', 0)}"])
+            return any(search_lower in str(value).lower() for value in fields)
+
         filtered = [
             log for log in filtered
-            if search_lower in log.get("message", "").lower()
+            if matches(log)
         ]
 
     return filtered

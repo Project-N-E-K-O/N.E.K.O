@@ -9,29 +9,36 @@ import pytest
 
 from plugin import logging_config as plogging
 from utils.logger_config import setup_logging
-from utils.logging_layout import plugin_log_service_name, resolve_log_directory, sanitize_log_identifier
+from plugin.logging_layout import plugin_log_service_name, sanitize_log_identifier
+from utils.logging_layout import resolve_log_directory
 
 
 @pytest.fixture
 def isolated_log_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path))
+    monkeypatch.setattr("utils.logger_config._get_development_log_directory", lambda: tmp_path / "application" / "logs")
+    monkeypatch.setattr("utils.logger_config._get_writable_application_directory", lambda: tmp_path / "application")
     monkeypatch.delenv("NEKO_PLUGIN_SERVICE_NAME", raising=False)
     monkeypatch.setattr(plogging, "_runtime_pid", None)
     monkeypatch.setattr(plogging, "_runtime_service", None)
     monkeypatch.setattr(plogging, "_runtime_result", None)
-    root = logging.getLogger()
-    old_root_level = root.level
-    # Restore external handlers/levels; dispose only handlers installed by this test.
-    original = {h for value in logging.Logger.manager.loggerDict.values()
-                if isinstance(value, logging.Logger) for h in value.handlers}
-    original.update(root.handlers)
+    from plugin._logging_runtime import all_loggers as _all_loggers
+    saved = {lg: (list(lg.handlers), lg.level, lg.propagate) for lg in _all_loggers()}
+    original = {h for handlers, _, _ in saved.values() for h in handlers}
+    # Each case starts without a previous test's canonical project writer.
+    for lg in saved:
+        lg.handlers = [h for h in lg.handlers if not getattr(h, "_neko_owned", False)]
     yield tmp_path / "logs"
-    from utils.logger_config import _all_loggers, _detach_handler
-    handlers = {h for lg in _all_loggers() for h in lg.handlers
-                if h not in original and getattr(h, "_neko_owned", False)}
-    for handler in handlers:
-        _detach_handler(handler)
-    root.setLevel(old_root_level)
+    created = {h for lg in _all_loggers() for h in lg.handlers
+               if h not in original and getattr(h, "_neko_owned", False)}
+    for lg in _all_loggers():
+        lg.handlers = [h for h in lg.handlers if h not in created]
+    for handler in created:
+        handler.close()
+    for lg, (handlers, level, propagate) in saved.items():
+        lg.handlers = handlers
+        lg.setLevel(level)
+        lg.propagate = propagate
 
 
 def _read(directory: Path, service: str) -> str:
@@ -42,13 +49,11 @@ def test_sdk_import_and_lookup_never_initialize_handlers(isolated_log_dir, monke
     def forbidden(*args, **kwargs):
         pytest.fail("SDK lookup must not initialize logging")
     monkeypatch.setattr("utils.logger_config.setup_logging", forbidden)
-    from plugin.sdk.shared.logging import get_sdk_logger, get_plugin_logger, setup_sdk_logging
+    from plugin.sdk.shared.logging import get_sdk_logger, get_plugin_logger
     from plugin.core.plugin_logger import PluginFileLogger
     get_sdk_logger("test")
     get_plugin_logger("demo")
-    setup_sdk_logging()
     manager = PluginFileLogger("demo", isolated_log_dir / "not-a-plugin-log-root")
-    manager.setup()
     assert manager.get_log_directory() == isolated_log_dir / "plugin"
     assert manager.get_log_file_path().name.startswith("N.E.K.O_Plugin_demo_")
     assert not isolated_log_dir.exists()
@@ -70,11 +75,10 @@ def test_standalone_sdk_and_standard_logging_share_service(isolated_log_dir):
     ("named {state}", ({"state": "ready"},), "named ready"),
     ("standard %(state)s", ({"state": "ready"},), "standard ready"),
 ])
-def test_sdk_and_standard_logging_share_format_policy(isolated_log_dir, message, args, expected):
+def test_sdk_preserves_legacy_format_policy(isolated_log_dir, message, args, expected):
     plogging.setup_plugin_logging("PluginServer", own_root=True)
     plogging.get_logger("format-contract").info(message, *args)
-    logging.getLogger("format-contract.standard").info(message, *args)
-    assert _read(isolated_log_dir, "PluginServer").count(expected) == 2
+    assert _read(isolated_log_dir, "PluginServer").count(expected) == 1
 
 
 def test_disabled_sdk_records_do_not_interpolate_arguments(isolated_log_dir):

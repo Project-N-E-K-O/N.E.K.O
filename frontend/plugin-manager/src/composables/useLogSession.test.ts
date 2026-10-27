@@ -73,7 +73,7 @@ describe('one log session per viewer', () => {
     session.search.value = ' needle & text '
     session.refresh()
     const params = new URL(latest().url).searchParams
-    expect(Object.fromEntries(params)).toEqual({ lines: '1000', level: 'WARNING', search: 'needle & text' })
+    expect(Object.fromEntries(params)).toEqual({ lines: '1000', search_scope: 'all', level: 'WARNING', search: 'needle & text' })
     latest().send({ type: 'initial', logs: [entry(2)] })
     stale({ data: JSON.stringify({ type: 'initial', logs: [entry(1)] }) })
     expect(session.logs.value.map(log => log.id)).toEqual(['file:2'])
@@ -178,8 +178,8 @@ describe('server log page uses the shared viewer session', () => {
     await nextTick()
     root.querySelector<HTMLButtonElement>('[data-yui-guide-id="logs-refresh"]')!.click()
     expect(new URL(latest().url).searchParams.get('search')).toBe('current search')
-    latest().send({ type: 'initial', logs: [entry(1)] })
-    latest().send({ type: 'append', logs: [entry(2)] })
+    latest().send({ type: 'initial', logs: [{ ...entry(1), message: 'current search first' }] })
+    latest().send({ type: 'append', logs: [{ ...entry(2), message: 'current search second' }] })
     await nextTick()
     expect(root.querySelector('[data-yui-guide-id="log-meta"]')?.textContent).toContain('logs.totalLogs:2')
     root.querySelector<HTMLButtonElement>('[data-yui-guide-id="log-refresh"]')!.click()

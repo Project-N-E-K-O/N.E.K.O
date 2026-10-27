@@ -28,7 +28,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from plugin.logging_config import get_logger, setup_plugin_logging
-from utils.logging_layout import plugin_log_service_name
+from plugin.logging_layout import plugin_log_service_name
 
 target, mode = sys.argv[1:]
 service = 'PluginServer' if target == '_server' else plugin_log_service_name(target)
@@ -114,13 +114,8 @@ print('logging compatibility contract passed')
 )
 def test_public_logging_to_management_transports(tmp_path, target, mode):
     root = Path(__file__).resolve().parents[3]
-    env = dict(os.environ)
-    env['NEKO_STORAGE_SELECTED_ROOT'] = str(tmp_path / 'runtime')
-    env['NEKO_STORAGE_ANCHOR_ROOT'] = str(tmp_path / 'runtime')
-    env['XDG_DATA_HOME'] = str(tmp_path / 'user-data')
-    env['XDG_DOCUMENTS_DIR'] = str(tmp_path / 'documents')
-    env['NEKO_LOG_LEVEL'] = 'INFO'
-    env.pop('NEKO_PLUGIN_SERVICE_NAME', None)
+    from plugin.tests.logging_scenarios import isolated_logging_environment
+    env = isolated_logging_environment(tmp_path)
     result = subprocess.run(
         [sys.executable, '-B', '-c', textwrap.dedent(_SCENARIO), target, mode],
         cwd=root,

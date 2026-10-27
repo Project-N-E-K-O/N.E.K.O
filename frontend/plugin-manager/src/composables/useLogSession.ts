@@ -9,12 +9,14 @@ const MAX_RECONNECT_ATTEMPTS = 5
 export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
   const logs = shallowRef<LogEntry[]>([])
   const logFile = ref<string>()
+  const totalLines = ref(0)
   const lines = ref(500)
   const level = ref('')
   const search = ref('')
   const loading = ref(false)
   const isConnected = ref(false)
   const error = ref<string | null>(null)
+  const errorCode = ref<string | null>(null)
   const connectionFailed = ref(false)
 
   let socket: WebSocket | null = null
@@ -72,7 +74,8 @@ export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
         const message = JSON.parse(event.data)
         if (message.type === 'ping') return
         if (message.type === 'error') {
-          error.value = String(message.error)
+          errorCode.value = typeof message.code === 'string' ? message.code : null
+          error.value = String(message.error || errorCode.value || 'LOG_READ_FAILED')
           loading.value = false
           return
         }
@@ -80,6 +83,7 @@ export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
         const incoming = message.logs as LogEntry[]
         if (message.type === 'initial') {
           logs.value = incoming.slice(-MAX_LOGS)
+          totalLines.value = typeof message.total_lines === 'number' ? message.total_lines : incoming.length
           logFile.value = message.log_file
           attempts = 0
         } else {
@@ -93,9 +97,11 @@ export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
             return true
           })
           logs.value = [...logs.value, ...added].slice(-MAX_LOGS)
+          totalLines.value = typeof message.total_lines === 'number' ? message.total_lines : totalLines.value + added.length
           if (message.log_file) logFile.value = message.log_file
         }
         error.value = message.error || null
+        errorCode.value = error.value && typeof message.code === 'string' ? message.code : null
         connectionFailed.value = false
         loading.value = false
       } catch {
@@ -120,7 +126,9 @@ export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
     attempts = 0
     logs.value = []
     logFile.value = undefined
+    totalLines.value = 0
     error.value = null
+    errorCode.value = null
     connectionFailed.value = false
     const id = toValue(pluginId)
     loading.value = !!id
@@ -135,5 +143,5 @@ export function useLogSession(pluginId: MaybeRefOrGetter<string>) {
   watch(() => toValue(pluginId), refresh, { immediate: true })
   onScopeDispose(close)
 
-  return { logs, logFile, lines, level, search, loading, isConnected, error, connectionFailed, refresh }
+  return { logs, logFile, totalLines, lines, level, search, loading, isConnected, error, errorCode, connectionFailed, refresh }
 }

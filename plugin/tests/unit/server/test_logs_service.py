@@ -1,7 +1,9 @@
 """Contracts for the single file-backed log application (no private watchers)."""
 from __future__ import annotations
 
+import io
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,7 @@ import pytest
 from plugin.server.application.logs import LogService
 from plugin.server.application.logs import service as service_module
 from plugin.server.domain.errors import ServerDomainError
-from utils.logging_layout import sanitize_log_identifier
+from plugin.logging_layout import sanitize_log_identifier
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -154,6 +156,88 @@ def test_snapshot_parses_only_the_requested_history_window(service, tmp_path, mo
         stream.write('next\n')
     assert messages(session.poll()) == ['next']
     assert len(parsed) == 501
+
+
+def test_snapshot_reads_only_the_tail_and_keeps_byte_offsets(service, tmp_path):
+    path = write_log(tmp_path)
+    content = b"old message\n" * 100000 + "猫\nlast\nunfinished".encode()
+    path.write_bytes(content)
+
+    class MeteredStream(io.BytesIO):
+        bytes_read = 0
+
+        def read(self, size=-1):
+            value = super().read(size)
+            self.bytes_read += len(value)
+            return value
+
+        def readline(self, size=-1):
+            value = super().readline(size)
+            self.bytes_read += len(value)
+            return value
+
+    stream = MeteredStream(content)
+    session = service.open_session("demo", lines=2)
+    session.identity = (1, 2)
+    result = session._read(stream, snapshot=True)
+    assert [entry["message"] for entry in result] == ["猫", "last"]
+    assert result[0]["id"] == f"1:2:{content.index('猫'.encode())}"
+    assert session.position == len(content) - len(b"unfinished")
+    assert stream.bytes_read < 150000
+
+
+@pytest.mark.parametrize("padding", [0, 1, 65535, 65536, 65537, 131073])
+@pytest.mark.parametrize("lines", [1, 2, 5])
+def test_tail_block_boundaries_preserve_complete_nonblank_lines(service, padding, lines):
+    content = (b"first\r\n" + b" " * padding + b"\n" + "猫".encode() * padding
+               + b"\n\t\nlast\npartial")
+    completed = [line for line in content.split(b"\n")[:-1] if line.strip()]
+    expected = completed[-lines:]
+    session = service.open_session("demo", lines=lines)
+    session.identity = (1, 2)
+    stream = io.BytesIO(content)
+    result = session._read(stream, snapshot=True)
+    assert [entry["message"] for entry in result] == [
+        line.decode().strip() for line in expected]
+    assert session.position == len(content) - len(b"partial")
+
+
+def test_poll_does_not_stat_unrelated_logs(service, tmp_path, monkeypatch):
+    write_log(tmp_path)
+    for i in range(100):
+        write_log(tmp_path, plugin_id=f"other{i}")
+    session = service.open_session("demo")
+    session.snapshot()
+    original_stat = Path.stat
+
+    def own_stat(path, *args, **kwargs):
+        assert "Plugin_other" not in path.name
+        return original_stat(path, *args, **kwargs)
+
+    original_scandir = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self.entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_file(self, *args, **kwargs):
+            assert "Plugin_other" not in self.name
+            return self.entry.is_file(*args, **kwargs)
+
+        def stat(self, *args, **kwargs):
+            assert "Plugin_other" not in self.name
+            return self.entry.stat(*args, **kwargs)
+
+    @contextmanager
+    def scandir(path):
+        with original_scandir(path) as entries:
+            yield (Entry(entry) for entry in entries)
+
+    monkeypatch.setattr(Path, "stat", own_stat)
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert session.poll() is None
 
 
 @pytest.mark.parametrize("change", ["truncate", "replace", "rotate"])

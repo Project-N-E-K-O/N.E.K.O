@@ -14,7 +14,8 @@ from typing import BinaryIO
 
 from plugin.server.domain.errors import ServerDomainError
 from plugin.logging_config import resolve_plugin_log_directory
-from utils.logging_layout import is_service_log_file, plugin_log_service_name
+from utils.logging_layout import is_service_log_file
+from plugin.logging_layout import plugin_log_service_name
 
 from .text import filter_logs, parse_log_line
 
@@ -64,13 +65,23 @@ class LogService:
         # as explicitly labelled server history, never as an individual plugin.
         if plugin_id == SERVER_LOG_ID:
             sources.append(("Plugin", True))
-        files: list[_LogFile] = []
-        for service_name, legacy in sources:
-            for path in directory.glob("*.log*"):
-                if path.is_file() and is_service_log_file(path.name, service_name):
-                    files.append(_LogFile(path, legacy))
-        files.sort(key=lambda item: (item.path.stat().st_mtime_ns, item.path.name), reverse=True)
-        return files
+        files: list[tuple[int, str, _LogFile]] = []
+        try:
+            entries = os.scandir(directory)
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+        with entries as candidates:
+            for entry in candidates:
+                for service_name, legacy in sources:
+                    # Filter names before any metadata I/O, including files for
+                    # other plugins sharing this directory. Scan server history
+                    # and canonical files together in one directory traversal.
+                    if is_service_log_file(entry.name, service_name) and entry.is_file():
+                        files.append((entry.stat().st_mtime_ns, entry.name,
+                                      _LogFile(Path(entry.path), legacy)))
+                        break
+        files.sort(key=lambda item: item[:2], reverse=True)
+        return [item[2] for item in files]
 
     def _latest(self, plugin_id: str) -> _LogFile | None:
         ordinary = [item for item in self._files(plugin_id) if "_error.log" not in item.path.name]
@@ -103,13 +114,14 @@ class LogService:
     def open_session(
         self, plugin_id: str, lines: int = 100, level: str | None = None,
         start_time: str | None = None, end_time: str | None = None,
-        search: str | None = None,
+        search: str | None = None, *, search_all_fields: bool = False,
     ) -> LogSession:
         _validate_target(plugin_id)
         if not 1 <= lines <= 10000:
             raise ServerDomainError(code="INVALID_LOG_QUERY", status_code=400,
                                     message="Log line count must be between 1 and 10000")
-        return LogSession(self, plugin_id, lines, level, start_time, end_time, search)
+        return LogSession(self, plugin_id, lines, level, start_time, end_time, search,
+                          search_all_fields=search_all_fields)
 
 
 class LogSession:
@@ -117,11 +129,12 @@ class LogSession:
 
     def __init__(self, service: LogService, plugin_id: str, lines: int,
                  level: str | None, start_time: str | None, end_time: str | None,
-                 search: str | None):
+                 search: str | None, *, search_all_fields: bool = False):
         self.service = service
         self.plugin_id = plugin_id
         self.lines = lines
         self.filters = (level, start_time, end_time, search)
+        self.search_all_fields = search_all_fields
         self.current: _LogFile | None = None
         self.identity: tuple[int, int] | None = None
         self.position = 0
@@ -137,10 +150,45 @@ class LogSession:
             legacy_source=self.current.legacy if self.current else False, reset=reset,
         )
 
+    def _seek_snapshot_start(self, stream: BinaryIO) -> None:
+        """Find the last N nonblank completed lines with bounded reverse reads.
+
+        Work follows the requested tail rather than the whole file. Keep only
+        a nonblank flag across blocks, so even a huge single line is scanned
+        without repeatedly concatenating it. The final unterminated line is
+        left for a subsequent poll, just as in incremental reads.
+        """
+        cursor = stream.seek(0, os.SEEK_END)
+        remaining = self.lines
+        partial = True
+        nonblank = False
+        while cursor:
+            start = max(0, cursor - 65536)
+            stream.seek(start)
+            block = stream.read(cursor - start)
+            edge = cursor
+            parts = block.split(b"\n")
+            for part in reversed(parts[1:]):
+                edge -= len(part)
+                nonblank = nonblank or bool(part.strip())
+                if not partial and nonblank:
+                    remaining -= 1
+                    if not remaining:
+                        stream.seek(edge)
+                        return
+                partial = False
+                nonblank = False
+                edge -= 1
+            nonblank = nonblank or bool(parts[0].strip())
+            cursor = start
+        stream.seek(0)
+
     def _read(self, stream: BinaryIO, *, snapshot: bool) -> list[dict[str, object]]:
         assert self.identity is not None
         tail: deque[tuple[int, bytes]] = deque(maxlen=self.lines if snapshot else None)
-        if not snapshot:
+        if snapshot:
+            self._seek_snapshot_start(stream)
+        else:
             stream.seek(self.position)
         while True:
             offset = stream.tell()
@@ -163,7 +211,7 @@ class LogSession:
                 entry["id"] = f"{self.identity[0]}:{self.identity[1]}:{offset}"
                 result.append(entry)
         self.total_lines = len(result) if snapshot else self.total_lines + len(result)
-        filtered = filter_logs(result, *self.filters)
+        filtered = filter_logs(result, *self.filters, search_all_fields=self.search_all_fields)
         self.returned_lines = len(filtered) if snapshot else self.returned_lines + len(filtered)
         return filtered
 

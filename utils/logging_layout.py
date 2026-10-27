@@ -7,7 +7,6 @@ Importing this module never installs handlers, creates directories or cleans log
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import sys
 import tempfile
@@ -43,19 +42,19 @@ def is_service_log_file(filename: str, service_name: str, *, app_name: str | Non
     return filename.startswith(prefix) and _LOG_SUFFIX.fullmatch(filename[len(prefix):]) is not None
 
 
-def sanitize_log_identifier(plugin_id: str, max_len: int = 64) -> str:
-    raw = str(plugin_id)
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw).strip("_-")
-    if not safe:
-        safe = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    if len(safe) > max_len:
-        digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:12]
-        safe = f"{safe[:max_len - 13]}_{digest}"
-    return safe
+def get_selected_storage_root() -> Path | None:
+    raw_root = str(os.environ.get(NEKO_STORAGE_SELECTED_ROOT_ENV) or "").strip()
+    if not raw_root:
+        return None
 
+    try:
+        selected_root = Path(raw_root).expanduser()
+    except Exception:
+        return None
 
-def plugin_log_service_name(plugin_id: str) -> str:
-    return f"Plugin_{sanitize_log_identifier(plugin_id)}"
+    if not selected_root.is_absolute():
+        return None
+    return selected_root
 
 
 def application_directory() -> Path:
@@ -118,23 +117,50 @@ def documents_directory() -> Path:
             return Path(xdg_docs)
         return Path.home() / "Documents"
 
-def log_directory_candidates(app_name: str | None = None, *, documents: Path | None = None) -> list[Path]:
+def log_directory_candidates(app_name=None, *, documents=None, application=None, selected_root=None):
+    """Yield candidates lazily in the historical writer order, without writes.
+
+    Writer hooks remain injectable for packaged applications and existing tests.
+    Failures resolving one candidate do not prevent trying the next one.
+    """
     name = APP_NAME if app_name is None else app_name
-    candidates: list[Path] = []
-    selected = os.getenv(NEKO_STORAGE_SELECTED_ROOT_ENV, "").strip()
-    if selected and Path(selected).expanduser().is_absolute():
-        candidates.append(Path(selected).expanduser() / "logs")
-    candidates.extend([(documents if documents is not None else documents_directory()) / name / "logs",
-                       application_directory() / "logs"])
-    if sys.platform == "win32":
-        if os.getenv("APPDATA"):
-            candidates.append(Path(os.environ["APPDATA"]) / name / "logs")
-    elif sys.platform == "darwin":
-        candidates.append(Path.home() / "Library" / "Application Support" / name / "logs")
-    else:
-        candidates.append(Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / name / "logs")
-    candidates.extend([Path.home() / f".{name}" / "logs", Path(tempfile.gettempdir()) / name / "logs"])
-    return list(dict.fromkeys(candidates))
+    documents = documents_directory if documents is None else documents
+    application = application_directory if application is None else application
+    selected_root = get_selected_storage_root if selected_root is None else selected_root
+    try:
+        selected = selected_root()
+        if selected is not None:
+            yield selected / "logs"
+    except Exception as error:
+        print(f"Warning: Failed to use selected storage log directory: {error}", file=sys.stderr)
+    try:
+        yield (documents() if callable(documents) else documents) / name / "logs"
+    except Exception as error:
+        print(f"Warning: Failed to use Documents directory: {error}", file=sys.stderr)
+    try:
+        yield application() / "logs"
+    except Exception as error:
+        print(f"Warning: Failed to use application directory: {error}", file=sys.stderr)
+    try:
+        if sys.platform == "win32":
+            if os.getenv("APPDATA"):
+                yield Path(os.environ["APPDATA"]) / name / "logs"
+        elif sys.platform == "darwin":
+            yield Path.home() / "Library" / "Application Support" / name / "logs"
+        else:
+            xdg_data_home = os.getenv("XDG_DATA_HOME")
+            base = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
+            yield base / name / "logs"
+    except Exception as error:
+        print(f"Warning: Failed to get system data directory: {error}", file=sys.stderr)
+    try:
+        yield Path.home() / f".{name}" / "logs"
+    except Exception as error:
+        print(f"Warning: Failed to use home directory: {error}", file=sys.stderr)
+    try:
+        yield Path(tempfile.gettempdir()) / name / "logs"
+    except Exception as error:
+        print(f"Warning: Failed to use temp directory: {error}", file=sys.stderr)
 
 
 def _can_use(directory: Path) -> bool:
@@ -153,10 +179,15 @@ def log_subdirectory(log_subdir: str | None) -> Path:
     return Path(log_subdir)
 
 
-def select_log_directory(candidates: list[Path]) -> Path:
+def select_log_directory(candidates):
     """Best-effort cold inspection; active callers use their writer's directory."""
-    return next((candidate for candidate in candidates if _can_use(candidate)), candidates[-1])
+    last = None
+    for candidate in candidates:
+        last = candidate
+        if _can_use(candidate):
+            return candidate
+    return last if last is not None else application_directory() / "logs"
 
 
-def resolve_log_directory(*, app_name: str | None = None, log_subdir: str | None = None) -> Path:
+def resolve_log_directory(*, app_name=None, log_subdir=None):
     return select_log_directory(log_directory_candidates(app_name)) / log_subdirectory(log_subdir)

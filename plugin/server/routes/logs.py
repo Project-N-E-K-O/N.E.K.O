@@ -9,7 +9,7 @@ from contextlib import suppress
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional, ParamSpec, TypeVar
+from typing import Literal, Optional, ParamSpec, TypeVar
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -178,7 +178,7 @@ async def export_plugin_log_endpoint(plugin_id: str, _: str = require_admin) -> 
         finally:
             # Immediately clean up the temporary directory if copying, packaging, or response construction fails.
             if temp_needs_cleanup:
-                cleanup_temp_path(str(temp_dir))
+                await asyncio.to_thread(cleanup_temp_path, str(temp_dir))
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -189,12 +189,14 @@ async def websocket_log_stream(
     lines: int = Query(default=100, ge=1, le=10000),
     level: str | None = None, start_time: str | None = None,
     end_time: str | None = None, search: str | None = None,
+    search_scope: Literal["message", "all"] = "message",
 ) -> None:
     """One socket owns one snapshot/follow session; no shared watcher state."""
     await websocket.accept()
     receiver = None
     try:
-        session = log_service.open_session(plugin_id, lines, level, start_time, end_time, search)
+        session = log_service.open_session(plugin_id, lines, level, start_time, end_time, search,
+                                           search_all_fields=search_scope == "all")
         await websocket.send_json(_stream_payload(await _log_io(session.snapshot), initial=True))
         receiver = asyncio.create_task(websocket.receive())
         heartbeat = asyncio.get_running_loop().time()
@@ -215,7 +217,8 @@ async def websocket_log_stream(
         pass
     except (ServerDomainError, OSError, ValueError) as error:
         # A failed read must not be indistinguishable from an empty log.
-        await websocket.send_json({"type": "error", "error": str(error)})
+        code = error.code if isinstance(error, ServerDomainError) else "LOG_READ_FAILED"
+        await websocket.send_json({"type": "error", "code": code, "error": str(error)})
         await websocket.close(code=1011)
     finally:
         if receiver is not None:

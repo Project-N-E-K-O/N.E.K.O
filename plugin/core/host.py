@@ -71,7 +71,7 @@ from plugin.settings import (
 )
 
 
-from utils.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
+from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
@@ -252,7 +252,7 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     from plugin.logging_config import get_logger, setup_plugin_logging
-    from utils.logging_layout import plugin_log_service_name
+    from plugin.logging_layout import plugin_log_service_name
 
     setup_plugin_logging(plugin_log_service_name(plugin_id), own_root=True)
     return get_logger(f"plugin.{_sanitize_plugin_id(plugin_id)}").bind(plugin_id=plugin_id)

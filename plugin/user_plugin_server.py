@@ -51,6 +51,10 @@ from plugin.logging_config import setup_plugin_logging
 
 logger, _log_config = setup_plugin_logging("PluginServer", own_root=True)
 
+from plugin._logging_runtime import configure_uvicorn_collection
+
+configure_uvicorn_collection()
+
 # Must run before any event loop gets created on Windows.
 def _configure_windows_event_loop_policy() -> None:
     if sys.platform != "win32":

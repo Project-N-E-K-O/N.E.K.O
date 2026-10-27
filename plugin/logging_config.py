@@ -7,6 +7,7 @@ here, so plugins keep one public interface and one persistence implementation.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 import os
 import re
 import threading
@@ -106,66 +107,200 @@ def _redact_sensitive(message: str) -> str:
     return message
 
 
-# Explicit bootstrap belongs to process/service entrypoints. Merely importing
-# the SDK or requesting an adapter never creates files or installs handlers.
+# Runtime ownership is process-local. SDK lookup stays pure; legacy SDK users
+# without a host runner initialize on explicit setup or on their first record.
 _runtime_pid: int | None = None
 _runtime_service: str | None = None
 _runtime_result: Any = None
 _runtime_owns_root = False
+_runtime_lock = threading.RLock()
+_runtime_lock_pid = os.getpid()
 
 
-def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool | None = None):
-    """Install plugin-owned sinks once for this process and service.
+def _process_lock():
+    global _runtime_lock, _runtime_lock_pid
+    if _runtime_lock_pid != os.getpid():
+        # A fork may copy a lock held by another parent thread.
+        _runtime_lock = threading.RLock()
+        _runtime_lock_pid = os.getpid()
+    return _runtime_lock
 
-    Embedded services own only their namespace. Dedicated servers and plugin
-    subprocesses also capture ordinary stdlib records through root. A PID check
-    makes an inherited fork state unusable until the child's explicit bootstrap.
+
+def _bind_process_logging(base_logger: logging.Logger, previous_handlers=()) -> None:
+    """Retarget inherited project sinks in a dedicated plugin process.
+
+    Rebind the handlers rather than clearing logger objects: cached Main/Agent
+    loggers may deliberately stop propagation and still need a working outlet.
+    The containing application's process never calls this operation.
+    """
+    from config import APP_NAME
+    from plugin._logging_runtime import (
+        all_loggers as _all_loggers, close_unbound_handlers as _close_unbound_handlers,
+        replace_handlers as _replace_handlers,
+    )
+
+    handlers = [h for h in base_logger.handlers if getattr(h, "_neko_owned", False)]
+    inherited = {h for lg in _all_loggers() for h in lg.handlers
+                 if getattr(h, "_neko_owned", False)
+                 and getattr(h, "_neko_pid", None) != os.getpid()}
+    retired = set(previous_handlers) | inherited
+    for target in _all_loggers():
+        selected = retired if target.name == APP_NAME or target.name.startswith(APP_NAME + ".") else inherited
+        _replace_handlers(target, selected, handlers)
+    shared = logging.getLogger(APP_NAME)
+    shared.setLevel(base_logger.level)
+    shared.propagate = False
+    root = logging.getLogger()
+    retired.update(h for target in (shared, root) for h in target.handlers
+                   if getattr(h, "_neko_owned", False) and h not in handlers)
+    for target in (shared, root):
+        target.handlers = [h for h in target.handlers if not getattr(h, "_neko_owned", False)] + handlers
+    root.setLevel(base_logger.level)
+    root._neko_sdk_bridge = None
+    _close_unbound_handlers(retired)
+
+
+def _active_file_handler(service_name: str) -> logging.FileHandler | None:
+    """Inspect the currently attached canonical writer, including public reconfiguration."""
+    from config import APP_NAME
+    from utils.logging_layout import is_service_log_file
+
+    for handler in logging.getLogger(f"{APP_NAME}.{service_name}").handlers:
+        if isinstance(handler, logging.FileHandler) and getattr(handler, "_neko_owned", False):
+            path = Path(handler.baseFilename)
+            if is_service_log_file(path.name, service_name) and "_error.log" not in path.name:
+                return handler
+    return None
+
+
+def _active_log_file(service_name: str) -> Path | None:
+    handler = _active_file_handler(service_name)
+    return Path(handler.baseFilename) if handler is not None else None
+
+
+def setup_plugin_logging(service_name: str = "PluginServer", *, own_root: bool | None = None,
+                         log_level: int = logging.INFO):
+    """Initialize an embedded namespace or a dedicated plugin process.
+
+    Official entrypoints retain their historical INFO default. SDK-only scripts
+    pass their legacy environment level explicitly. File setup failure degrades
+    to stderr, so logging cannot prevent plugin startup; explicit setup retries.
     """
     global _runtime_pid, _runtime_service, _runtime_result, _runtime_owns_root
-    from utils.logger_config import install_httpx_filter, install_message_formatting, setup_logging as bootstrap
+    from config import APP_NAME
+    from utils.logger_config import (EnhancedLogger, RobustLoggerConfig, mark_project_handler,
+                                     install_httpx_filter, install_message_formatting)
+    from plugin._logging_runtime import install_namespace_handlers
 
-    # App construction defaults to namespace-only ownership and preserves an
-    # explicit standalone bootstrap performed before importing server modules.
-    if own_root is None:
-        own_root = (_runtime_pid == os.getpid() and _runtime_service == service_name
-                    and _runtime_owns_root)
-
-    if (_runtime_pid == os.getpid() and _runtime_service == service_name
-            and _runtime_result is not None and _runtime_owns_root == own_root
-            and any(getattr(h, "_neko_owned", False)
-                    for h in _runtime_result[0].handlers)):
+    with _process_lock():
+        if own_root is None:
+            own_root = (_runtime_pid == os.getpid() and _runtime_service == service_name
+                        and _runtime_owns_root)
+        if (_runtime_pid == os.getpid() and _runtime_service == service_name
+                and _runtime_result is not None and _runtime_result[1] is not None
+                and _runtime_owns_root == own_root and _runtime_result[0].level == log_level
+                and _active_log_file(service_name) == _runtime_result[1].log_file.absolute()):
+            os.environ["NEKO_PLUGIN_SERVICE_NAME"] = service_name
+            return _runtime_result
+        previous_handlers = [h for h in logging.getLogger(f"{APP_NAME}.{service_name}").handlers
+                             if getattr(h, "_neko_owned", False)]
+        install_message_formatting()
+        config = None
+        try:
+            config = RobustLoggerConfig(service_name=service_name, log_level=log_level,
+                                        log_subdir="plugin" if service_name.startswith("Plugin_") else None)
+            base_logger = logging.getLogger(f"{APP_NAME}.{service_name}")
+            handlers = list(config.iter_handlers(delay=True))
+            install_namespace_handlers(base_logger, handlers, log_level)
+            if _active_log_file(service_name) != config.log_file.absolute():
+                # The backend tolerates file-open failures itself. A console-only
+                # result must still be marked degraded and explicitly retryable.
+                raise OSError("Primary plugin log file could not be opened")
+        except Exception as error:
+            config = None
+            base_logger = logging.getLogger(f"{APP_NAME}.{service_name}")
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            mark_project_handler(handler)
+            install_namespace_handlers(base_logger, [handler], log_level)
+            base_logger.warning("Plugin file logging unavailable (%s); using stderr", type(error).__name__)
+        if own_root:
+            _bind_process_logging(base_logger, previous_handlers)
+        else:
+            from plugin._logging_runtime import ensure_legacy_root_collection
+            root = logging.getLogger()
+            if getattr(root, "_neko_sdk_bridge", None) in root.handlers:
+                ensure_legacy_root_collection(base_logger)
+        _runtime_pid, _runtime_service = os.getpid(), service_name
+        _runtime_result = (EnhancedLogger(base_logger), config)
+        _runtime_owns_root = own_root
+        os.environ["NEKO_PLUGIN_SERVICE_NAME"] = service_name
+        install_httpx_filter()
         return _runtime_result
-    install_message_formatting()
-    result = bootstrap(
-        service_name=service_name, log_level=_level_to_int(LOG_LEVEL), silent=True,
-        log_subdir="plugin" if service_name.startswith("Plugin_") else None,
-        capture_root=own_root, shared_parent=own_root,
-    )
-    _runtime_pid, _runtime_service, _runtime_result = os.getpid(), service_name, result
-    _runtime_owns_root = own_root
-    # Preserve the public environment convention for external SDK consumers;
-    # internal routing uses the explicit runtime identity above.
-    os.environ["NEKO_PLUGIN_SERVICE_NAME"] = service_name
-    install_httpx_filter()
-    return result
+
+
+def _ensure_sdk_logging() -> None:
+    """Initialize legacy SDK persistence and its compatibility collection."""
+    # The established runtime is immutable until explicit reconfiguration. Keep
+    # the per-record path lock-free; a fork changes PID and takes the slow path.
+    if _runtime_pid == os.getpid() and _runtime_result is not None:
+        return
+    from config import APP_NAME
+
+    with _process_lock():
+        if _runtime_pid == os.getpid() and _runtime_result is not None:
+            return
+        from plugin._logging_runtime import all_loggers, ensure_legacy_root_collection
+
+        service = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
+        namespace = logging.getLogger(f"{APP_NAME}.{service}")
+        inherited = any(getattr(h, "_neko_owned", False)
+                        and getattr(h, "_neko_pid", None) != os.getpid()
+                        for lg in all_loggers() for h in lg.handlers)
+        if namespace.handlers and not inherited:
+            return  # Respect a logger explicitly configured by the containing app.
+        result = setup_plugin_logging(service, own_root=inherited, log_level=_level_to_int(LOG_LEVEL))
+        ensure_legacy_root_collection(result[0])
+
+
+def ensure_plugin_log_collection():
+    """Preserve historical third-party file collection at plugin app startup."""
+    from plugin._logging_runtime import ensure_legacy_root_collection
+
+    if _runtime_pid == os.getpid() and _runtime_result is not None:
+        ensure_legacy_root_collection(_runtime_result[0])
+
+
+def resolve_plugin_log_file(plugin_id: str) -> Path:
+    """Inspect the attached writer; only cold paths infer a daily filename."""
+    from plugin.logging_layout import plugin_log_service_name
+    from utils.logging_layout import log_filename
+
+    service = plugin_log_service_name(plugin_id)
+    return _active_log_file(service) or (resolve_plugin_log_directory(log_subdir="plugin") / log_filename(service))
 
 
 def resolve_plugin_log_directory(*, log_subdir: str | None = None) -> Path:
-    """Use the configured writer's actual fallback; cold SDK inspection is pure."""
+    """Use the actual attached writer; cold or degraded inspection stays pure."""
     from utils.logging_layout import log_subdirectory, resolve_log_directory
 
-    if _runtime_pid == os.getpid() and _runtime_result is not None:
-        directory = Path(_runtime_result[1].get_log_directory_path())
-        if _runtime_service and _runtime_service.startswith("Plugin_"):
-            directory = directory.parent
-        return directory / log_subdirectory(log_subdir)
+    service = _service_name()
+    handler = _active_file_handler(service)
+    if handler is not None:
+        directory = Path(handler.baseFilename).parent
+        own_directory = log_subdir == "plugin" if service.startswith("Plugin_") else log_subdir is None
+        if own_directory:
+            return directory
+        base = getattr(handler, "_neko_log_root", None)
+        if base is not None:
+            return Path(base) / log_subdirectory(log_subdir)
     return resolve_log_directory(log_subdir=log_subdir)
 
 
 def _service_name() -> str:
     if _runtime_pid == os.getpid() and _runtime_service:
         return _runtime_service
-    return os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "PluginServer"
+    return os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -220,19 +355,30 @@ class PluginLoggerAdapter:
 
     # -- Internal dispatch --
     def _log(self, level: int, msg: Any, args: tuple, kwargs: dict) -> None:
+        _ensure_sdk_logging()
         resolved_logger = self._resolve_logger()
         if not resolved_logger.isEnabledFor(level):
             self._opt_exc_info = None
             return
-        from utils.logger_config import format_log_message
+        # Leave standard percent records intact for filters and handler error
+        # handling. Only legacy brace calls need adapter-side interpolation.
+        if args and isinstance(msg, str) and "{" in msg and "}" in msg:
+            legacy_braces = "%" not in msg
+            if not legacy_braces:
+                percent_args = args[0] if len(args) == 1 and isinstance(args[0], Mapping) and args[0] else args
+                try:
+                    msg % percent_args
+                except (TypeError, ValueError):
+                    legacy_braces = True
+                except Exception:
+                    pass  # Keep conversion failures inside standard handlers.
+            if legacy_braces:
+                from utils.logger_config import format_log_message
 
-        # Public adapters work before host startup too; interpolation still has
-        # one implementation, shared with the backend's stdlib hook.
-        if args:
-            try:
-                msg, args = format_log_message(msg, args), ()
-            except (TypeError, ValueError):
-                pass  # Leave malformed percent templates to stdlib handling.
+                try:
+                    msg, args = format_log_message(msg, args), ()
+                except Exception:
+                    pass  # Standard handlers own formatting failures.
 
         std_kwargs: dict[str, Any] = {}
         for key in list(kwargs):
@@ -352,8 +498,7 @@ def setup_logging(
     Component/force historically did not select independent sinks. Retain that
     contract without allowing SDK calls to take ownership of host handlers.
     """
-    if level is not None:
-        get_logger(component)._resolve_logger().setLevel(_level_to_int(level))
+    _ensure_sdk_logging()
 
 
 def get_logger(component: str) -> PluginLoggerAdapter:
@@ -367,12 +512,8 @@ def get_logger(component: str) -> PluginLoggerAdapter:
 
 
 def configure_default_logger(level: str = "INFO") -> None:
-    """Compatibility no-op.
-
-    Main RobustLoggerConfig already sets up logging at entrypoints such as user_plugin_server;
-    retain signatures for legacy imports without configuring sinks again.
-    """
-    return None
+    """Legacy explicit initialization; the level argument remains ignored."""
+    _ensure_sdk_logging()
 
 
 def intercept_standard_logging() -> None:

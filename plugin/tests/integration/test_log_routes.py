@@ -83,7 +83,62 @@ def test_read_failure_is_explicit_in_http_and_socket(log_client, monkeypatch):
     with log_client.websocket_connect("/ws/logs/demo") as socket:
         packet = socket.receive_json()
         assert packet["type"] == "error"
+        assert packet["code"] == "LOG_READ_FAILED"
         assert packet["error"]
+
+
+def test_invalid_target_has_a_localizable_socket_error_code(log_client):
+    with log_client.websocket_connect("/ws/logs/invalid.target") as socket:
+        packet = socket.receive_json()
+        assert packet["type"] == "error"
+        assert packet["code"] == "INVALID_PLUGIN_ID"
+
+
+@pytest.mark.parametrize("search", ["ALPHA.PY:7", "INFO", "2026-10-26 12:00:00"])
+def test_viewer_search_scope_applies_to_history_and_appends(log_client, tmp_path, search):
+    from urllib.parse import urlencode
+
+    path = tmp_path / "N.E.K.O_Plugin_demo_20261026.log"
+    prefix = "2026-10-26 12:00:00 - [plugin.demo] - INFO - alpha.py:7 - "
+    path.write_text(prefix + "ready\n", encoding="utf-8")
+    query = urlencode({"search": search})
+    # Existing API clients keep message-only search unless they opt in.
+    assert log_client.get(f"/plugin/demo/logs?{query}").json()["logs"] == []
+    with log_client.websocket_connect(f"/ws/logs/demo?{query}") as socket:
+        assert socket.receive_json()["logs"] == []
+    with log_client.websocket_connect(f"/ws/logs/demo?{query}&search_scope=all") as socket:
+        assert [entry["message"] for entry in socket.receive_json()["logs"]] == ["ready"]
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(prefix + "ready appended\n")
+        assert [entry["message"] for entry in socket.receive_json()["logs"]] == ["ready appended"]
+
+
+def test_failed_export_cleans_temporary_files_outside_the_event_loop(log_client, monkeypatch, tmp_path):
+    import asyncio
+    from plugin.server.routes import logs
+
+    (tmp_path / "N.E.K.O_Plugin_demo_20261026.log").write_text("ready\n")
+    export_dir = tmp_path / "failed-export"
+    export_dir.mkdir()
+    monkeypatch.setattr(logs.tempfile, "mkdtemp", lambda: str(export_dir))
+
+    def fail_copy(*args, **kwargs):
+        raise OSError("copy failed")
+
+    original_cleanup = logs.cleanup_temp_path
+    cleaned = []
+
+    def cleanup(path):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        original_cleanup(path)
+        cleaned.append(path)
+
+    monkeypatch.setattr(logs.shutil, "copy2", fail_copy)
+    monkeypatch.setattr(logs, "cleanup_temp_path", cleanup)
+    assert log_client.get("/plugin/demo/logs/export").status_code == 500
+    assert cleaned == [str(export_dir)]
+    assert not export_dir.exists()
 
 
 def test_socket_serializes_a_file_reset_as_a_new_initial_snapshot(log_client, tmp_path):

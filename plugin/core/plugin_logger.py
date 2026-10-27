@@ -9,7 +9,7 @@ import functools
 from pathlib import Path
 from typing import Any, Optional
 
-from plugin.logging_config import PluginLoggerAdapter, get_logger
+from plugin.logging_config import PluginLoggerAdapter, get_logger, setup_logging
 
 
 class PluginFileLogger:
@@ -57,6 +57,7 @@ class PluginFileLogger:
         if self._logger is not None:
             return self._logger
 
+        setup_logging()
         if isinstance(logger_instance, PluginLoggerAdapter):
             self._logger = logger_instance
         else:
@@ -68,8 +69,8 @@ class PluginFileLogger:
 
     def get_log_file_path(self) -> Path:
         """Inspect the shared layout without initializing logging or cleaning files."""
-        from utils.logging_layout import log_filename, plugin_log_service_name
-        return self.get_log_directory() / log_filename(plugin_log_service_name(self.plugin_id))
+        from plugin.logging_config import resolve_plugin_log_file
+        return resolve_plugin_log_file(self.plugin_id)
 
     def get_log_directory(self) -> Path:
         from plugin.logging_config import resolve_plugin_log_directory

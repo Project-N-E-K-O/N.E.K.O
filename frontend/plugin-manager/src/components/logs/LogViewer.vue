@@ -38,7 +38,7 @@
         <el-tag size="small" data-yui-guide-id="log-connection-status" :type="isConnected ? 'success' : 'warning'">
           {{ isConnected ? $t('logs.connected') : $t('logs.disconnected') }}
         </el-tag>
-        <span class="meta-text">{{ $t('logs.totalLogs', { count: logs.length }) }}</span>
+        <span class="meta-text">{{ $t('logs.totalLogs', { count: filteredLogs.length }) }}</span>
         <span v-if="logFile" class="meta-text">{{ $t('logs.logFile') }}: {{ logFile }}</span>
       </el-space>
     </div>
@@ -54,8 +54,8 @@
     />
 
     <div ref="logContainerRef" class="log-list" data-yui-guide-id="log-list">
-      <template v-if="logs.length > 0">
-        <div v-for="(log, index) in logs" :key="log.id || `${log.timestamp}-${index}`" class="log-item">
+      <template v-if="filteredLogs.length > 0">
+        <div v-for="(log, index) in filteredLogs" :key="log.id || `${log.timestamp}-${index}`" class="log-item">
           <span class="log-time">{{ formatTimestamp(log.timestamp) }}</span>
           <el-tag size="small" :type="levelTagType(log.level)" class="log-level">{{ log.level || 'UNKNOWN' }}</el-tag>
           <span class="log-source">{{ log.file }}:{{ log.line }}</span>
@@ -91,7 +91,7 @@ const viewerStyle = computed(() => ({
 }))
 
 const { t } = useI18n()
-const { logs, logFile, level: levelFilter, search, lines, loading, isConnected, error, connectionFailed, refresh: refreshLogs } = useLogSession(toRef(props, 'pluginId'))
+const { logs, logFile, totalLines, level: levelFilter, search, lines, loading, isConnected, error, errorCode, connectionFailed, refresh: refreshLogs } = useLogSession(toRef(props, 'pluginId'))
 defineExpose({ refresh: refreshLogs, loading })
 
 // 检测是否有桌面桥接（Electron 环境）
@@ -151,8 +151,24 @@ const canOpenDirectory = computed(() => hasDesktopBridge.value && isLocalBackend
 const levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
 const autoScroll = ref(true)
 const logContainerRef = ref<HTMLElement | null>(null)
-const effectiveError = computed(() => error.value || (connectionFailed.value ? t('logs.connectionFailed') : ''))
-const emptyText = computed(() => t(loading.value ? 'common.loading' : 'logs.noLogs'))
+const logErrorKeys = new Map([
+  ['LOG_READ_FAILED', 'logs.readFailed'],
+  ['INVALID_PLUGIN_ID', 'logs.invalidPluginId'],
+  ['INVALID_LOG_QUERY', 'logs.invalidQuery'],
+])
+const effectiveError = computed(() => {
+  if (error.value) return t(logErrorKeys.get(errorCode.value || '') || 'logs.readFailed')
+  return connectionFailed.value ? t('logs.connectionFailed') : ''
+})
+const filteredLogs = computed(() => {
+  const keyword = search.value.trim().toLowerCase()
+  return logs.value.filter(log => {
+    if (levelFilter.value && String(log.level).toUpperCase() !== levelFilter.value) return false
+    return !keyword || [log.message, log.level, log.timestamp, `${log.file}:${log.line}`]
+      .some(value => String(value).toLowerCase().includes(keyword))
+  })
+})
+const emptyText = computed(() => t(loading.value ? 'common.loading' : totalLines.value > 0 ? 'logs.noMatches' : 'logs.noLogs'))
 
 function formatTimestamp(value: string) {
   if (!value) return ''
@@ -229,7 +245,7 @@ function handleOpenDirectory() {
 }
 
 watch(
-  () => logs.value,
+  () => filteredLogs.value,
   async () => {
     await scrollToBottom()
   }

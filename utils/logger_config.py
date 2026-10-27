@@ -46,15 +46,19 @@ For exe-packaged applications, supporting:
 import os
 import sys
 import logging
+from collections.abc import Mapping
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta
 
 from config import APP_NAME
 
-from utils.logging_layout import log_filename, log_subdirectory
+from utils.logging_layout import (
+    NEKO_STORAGE_SELECTED_ROOT_ENV, documents_directory,
+    get_selected_storage_root as _get_selected_storage_root_from_env,
+    log_directory_candidates, log_filename,
+)
 
-NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
 
 
 def _get_application_root() -> Path:
@@ -72,45 +76,14 @@ def _get_writable_application_directory() -> Path:
     return _get_application_root()
 
 
-def _get_selected_storage_root_from_env() -> Path | None:
-    raw_root = str(os.environ.get(NEKO_STORAGE_SELECTED_ROOT_ENV) or "").strip()
-    if not raw_root:
-        return None
-
-    try:
-        selected_root = Path(raw_root).expanduser()
-    except Exception:
-        return None
-
-    if not selected_root.is_absolute():
-        return None
-    return selected_root
+def _get_development_log_directory() -> Path:
+    return _get_application_root() / "logs"
 
 
-def _mark_handler(handler):
+def mark_project_handler(handler):
+    """Identify project-created sinks for explicit plugin child rebinding."""
     handler._neko_owned = True
     handler._neko_pid = os.getpid()
-
-
-def _all_loggers():
-    yield logging.getLogger()
-    for value in list(logging.Logger.manager.loggerDict.values()):
-        if isinstance(value, logging.Logger):
-            yield value
-
-
-def _detach_handler(handler):
-    for logger in _all_loggers():
-        logger.removeHandler(handler)
-    handler.close()
-
-
-def _release_inherited_handlers():
-    inherited = {handler for logger in _all_loggers() for handler in logger.handlers
-                 if getattr(handler, "_neko_owned", False)
-                 and getattr(handler, "_neko_pid", None) != os.getpid()}
-    for handler in inherited:
-        _detach_handler(handler)
 
 
 def format_log_message(message, args):
@@ -119,18 +92,18 @@ def format_log_message(message, args):
     if not args:
         return text
     # Match LogRecord's normalization when an adapter passes one mapping.
-    if isinstance(args, tuple) and len(args) == 1 and isinstance(args[0], dict) and args[0]:
+    if isinstance(args, tuple) and len(args) == 1 and isinstance(args[0], Mapping) and args[0]:
         args = args[0]
     braces = "{" in text and "}" in text
-    named_braces = isinstance(args, dict) and braces and "%" not in text
-    if not named_braces:
+    legacy_braces = braces and "%" not in text
+    if not legacy_braces:
         try:
             return text % args
         except (TypeError, ValueError):
             if not braces:
                 raise
     try:
-        if isinstance(args, dict):
+        if isinstance(args, Mapping):
             try:
                 return text.format(**args)
             except IndexError:
@@ -140,15 +113,30 @@ def format_log_message(message, args):
         return f"{text} | args={args!r}"
 
 
-def install_message_formatting():
-    """Startup owns the process-wide hook; SDK calls share its pure formatter."""
+def install_message_formatting() -> None:
     if getattr(logging, "_neko_brace_compat_installed", False):
         return
 
-    def get_message(record):
-        return format_log_message(record.msg, record.args)
+    original_get_message = logging.LogRecord.getMessage
 
-    logging.LogRecord.getMessage = get_message
+    def _compat_get_message(record: logging.LogRecord) -> str:
+        try:
+            return original_get_message(record)
+        except TypeError:
+            msg = str(record.msg)
+            args = record.args
+            if not args or "%" in msg or "{" not in msg or "}" not in msg:
+                raise
+            try:
+                if isinstance(args, dict):
+                    return msg.format(**args)
+                if not isinstance(args, tuple):
+                    args = (args,)
+                return msg.format(*args)
+            except Exception:
+                return f"{msg} | args={record.args!r}"
+
+    logging.LogRecord.getMessage = _compat_get_message
     logging._neko_brace_compat_installed = True
 
 
@@ -190,7 +178,11 @@ class RobustLoggerConfig:
 
         # Get the base log directory, then route to the log_subdir subdirectory.
         self.log_dir = self._get_log_directory()
-        self.log_dir = self.log_dir / log_subdirectory(log_subdir)
+        self._log_root = self.log_dir
+        if log_subdir:
+            safe = str(log_subdir).strip().strip("/\\")
+            if safe:
+                self.log_dir = self.log_dir / safe
 
         # Log filename includes service_name when present; otherwise use only app_name.
         self.log_file = self.log_dir / log_filename(self.service_name, app_name=self.app_name)
@@ -202,150 +194,24 @@ class RobustLoggerConfig:
         self._cleanup_old_logs()
     
     def _get_log_directory(self):
-        """
-        Get a suitable log directory
-        Priority:
-        1. selected runtime storage directory/logs (injected by the launcher via environment variables)
-        2. user documents directory/{APP_NAME}/logs (compatible with old versions and direct runs)
-        3. application directory/logs
-        4. user data directory (AppData etc.)
-        5. user home directory
-        6. temp directory (last-resort fallback)
-        
-        Returns:
-            Path: log directory path
-        """
-        # Attempt 1: current storage root. Do not migrate old logs; new logs follow the new root.
-        try:
-            selected_root = _get_selected_storage_root_from_env()
-            if selected_root is not None:
-                log_dir = selected_root / "logs"
-                if self._test_directory_writable(log_dir):
-                    return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to use selected storage log directory: {e}", file=sys.stderr)
-
-        # Attempt 2: user Documents directory (compatible with older versions and direct non-launcher runs).
-        try:
-            docs_dir = self._get_documents_directory()
-            # Use the configured application-name directory.
-            log_dir = docs_dir / self.app_name / "logs"
-            if self._test_directory_writable(log_dir):
-                return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to use Documents directory: {e}", file=sys.stderr)
-        
-        # Attempt 2: application directory.
-        try:
-            app_dir = _get_writable_application_directory()
-            log_dir = app_dir / "logs"
-            if self._test_directory_writable(log_dir):
-                return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to use application directory: {e}", file=sys.stderr)
-        
-        # Attempt 3: system user-data directory.
-        try:
-            if sys.platform == "win32":
-                # Windows: %APPDATA%\AppName\logs
-                base_dir = os.getenv('APPDATA')
-                if base_dir:
-                    log_dir = Path(base_dir) / self.app_name / "logs"
-                    if self._test_directory_writable(log_dir):
-                        return log_dir
-            elif sys.platform == "darwin":
-                # macOS: ~/Library/Application Support/AppName/logs
-                base_dir = Path.home() / "Library" / "Application Support"
-                log_dir = base_dir / self.app_name / "logs"
-                if self._test_directory_writable(log_dir):
-                    return log_dir
-            else:
-                # Linux: ~/.local/share/AppName/logs
-                xdg_data_home = os.getenv('XDG_DATA_HOME')
-                if xdg_data_home:
-                    log_dir = Path(xdg_data_home) / self.app_name / "logs"
-                else:
-                    log_dir = Path.home() / ".local" / "share" / self.app_name / "logs"
-                if self._test_directory_writable(log_dir):
-                    return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to get system data directory: {e}", file=sys.stderr)
-        
-        # Attempt 4: user home directory.
-        try:
-            log_dir = Path.home() / f".{self.app_name}" / "logs"
-            if self._test_directory_writable(log_dir):
-                return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to use home directory: {e}", file=sys.stderr)
-        
-        # Attempt 5: temporary directory (last-resort fallback).
-        try:
-            import tempfile
-            log_dir = Path(tempfile.gettempdir()) / self.app_name / "logs"
-            if self._test_directory_writable(log_dir):
-                return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to use temp directory: {e}", file=sys.stderr)
-        
-        # If every method fails, return the current directory.
+        """Probe the shared candidates in the historical fallback order."""
+        candidates = log_directory_candidates(
+            self.app_name, documents=self._get_documents_directory,
+            application=_get_writable_application_directory,
+            selected_root=_get_selected_storage_root_from_env,
+        )
+        for directory in candidates:
+            try:
+                if self._test_directory_writable(directory):
+                    return directory
+            except Exception as error:
+                print(f"Warning: Failed to use log directory {directory}: {error}", file=sys.stderr)
         print("Warning: All log directory attempts failed, using application directory", file=sys.stderr)
         return _get_writable_application_directory() / "logs"
-    
+
     def _get_documents_directory(self):
-        """Get the system's user documents directory (via system APIs)"""
-        if sys.platform == "win32":
-            # Windows: use the system API to find the actual Documents path.
-            try:
-                import ctypes
-                from ctypes import windll, wintypes
-                
-                # Use SHGetFolderPath to get the Documents path.
-                CSIDL_PERSONAL = 5  # My Documents
-                SHGFP_TYPE_CURRENT = 0
-                
-                buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
-                windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
-                docs_dir = Path(buf.value)
-                
-                if docs_dir.exists():
-                    return docs_dir
-            except Exception as e:
-                print(f"Warning: Failed to get Documents path via API: {e}", file=sys.stderr)
-            
-            # Fallback: try reading the registry.
-            try:
-                import winreg
-                key = winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER,
-                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
-                )
-                docs_dir = Path(winreg.QueryValueEx(key, "Personal")[0])
-                winreg.CloseKey(key)
-                
-                # Expand environment variables.
-                docs_dir = Path(os.path.expandvars(str(docs_dir)))
-                if docs_dir.exists():
-                    return docs_dir
-            except Exception as e:
-                print(f"Warning: Failed to get Documents path from registry: {e}", file=sys.stderr)
-            
-            # Final fallback.
-            docs_dir = Path.home() / "Documents"
-            if not docs_dir.exists():
-                docs_dir = Path.home() / "文档"
-            return docs_dir
-        
-        elif sys.platform == "darwin":
-            # macOS
-            return Path.home() / "Documents"
-        else:
-            # Linux: try XDG.
-            xdg_docs = os.getenv('XDG_DOCUMENTS_DIR')
-            if xdg_docs:
-                return Path(xdg_docs)
-            return Path.home() / "Documents"
-    
+        return documents_directory()
+
     def _test_directory_writable(self, directory):
         """
         Test whether a directory is writable
@@ -407,7 +273,7 @@ class RobustLoggerConfig:
         dirs_to_scan = [self.log_dir]
         if not getattr(sys, "frozen", False):
             try:
-                dev_dir = _get_application_root() / "logs"
+                dev_dir = _get_development_log_directory()
                 if dev_dir.exists() and dev_dir.resolve() != self.log_dir.resolve():
                     dirs_to_scan.append(dev_dir)
             except Exception as e:
@@ -448,30 +314,31 @@ class RobustLoggerConfig:
         return str(self.log_dir)
     
     def setup_logger(self, logger_name=None):
-        """
-        Configure and return a logger instance
-        
-        Args:
-            logger_name: name of the logger; returns the root logger when None
-            
-        Returns:
-            logging.Logger: the configured logger instance
-        """
-        # Create or retrieve the logger; default to a service-specific logger rather than root.
-        if not logger_name:
-            if self.service_name:
-                logger_name = f"{self.app_name}.{self.service_name}"
-            else:
-                logger_name = self.app_name
+        """Configure a host logger with the upstream replacement semantics."""
+        logger_name = logger_name or (f"{self.app_name}.{self.service_name}" if self.service_name else self.app_name)
         logger = logging.getLogger(logger_name)
         logger.setLevel(self.log_level)
-        # Disable propagation to root so external handlers cannot redirect logs to the wrong file.
         logger.propagate = False
-        # Idempotent rebuild: remove existing handlers from this logger to avoid duplicate writes.
         for handler in list(logger.handlers):
-            if getattr(handler, "_neko_owned", False):
-                _detach_handler(handler)
-        
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+        for handler in self.iter_handlers():
+            try:
+                logger.addHandler(handler)
+            except Exception as error:
+                handler.close()
+                print(f"Warning: Failed to add log handler: {error}", file=sys.stderr)
+        return logger
+
+    def iter_handlers(self, *, delay=False):
+        """Construct backend sinks without installing or replacing logger bindings.
+
+        The host installs each sink as before. Plugins may build a complete set
+        with delayed file opens before committing their own configuration.
+        """
         # Log format.
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         date_format = '%Y-%m-%d %H:%M:%S'
@@ -486,25 +353,32 @@ class RobustLoggerConfig:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(console_level)
             console_handler.setFormatter(formatter)
-            _mark_handler(console_handler)
-            logger.addHandler(console_handler)
+            mark_project_handler(console_handler)
+            yield console_handler
         except Exception as e:
             print(f"Warning: Failed to add console handler: {e}", file=sys.stderr)
         
         # 2. Rotating file handler.
         try:
             # Use RotatingFileHandler for size-based rotation.
+            # Probe now, but open the live stream on first emit. A previous
+            # writer may rotate the file while replacements are being built.
+            if delay:
+                with self.log_file.open("a", encoding="utf-8"):
+                    pass
             file_handler = RotatingFileHandler(
                 self.log_file,
                 maxBytes=self.max_bytes,
                 backupCount=self.backup_count,
-                encoding='utf-8'
+                encoding='utf-8',
+                delay=delay,
             )
             # Main log accepts INFO+; DEBUG goes to a separate dev file to keep the unified user log clean.
             file_handler.setLevel(max(self.log_level, logging.INFO))
             file_handler.setFormatter(formatter)
-            _mark_handler(file_handler)
-            logger.addHandler(file_handler)
+            mark_project_handler(file_handler)
+            file_handler._neko_log_root = self._log_root.absolute()
+            yield file_handler
         except Exception as e:
             print(f"Error: Failed to add file handler: {e}", file=sys.stderr)
             # File-handler failures must not stop the application.
@@ -514,7 +388,7 @@ class RobustLoggerConfig:
         # AppImage squashfs is read-only, and packaged users do not need developer debug logs.
         if not getattr(sys, "frozen", False) and self.log_level <= logging.DEBUG:
             try:
-                dev_debug_dir = _get_application_root() / "logs"
+                dev_debug_dir = _get_development_log_directory()
                 dev_debug_dir.mkdir(parents=True, exist_ok=True)
                 debug_filename = log_filename(self.service_name, app_name=self.app_name, kind="debug")
                 debug_handler = RotatingFileHandler(
@@ -527,8 +401,8 @@ class RobustLoggerConfig:
                 debug_handler.setLevel(logging.DEBUG)
                 debug_handler.addFilter(lambda r: r.levelno < logging.INFO)
                 debug_handler.setFormatter(formatter)
-                _mark_handler(debug_handler)
-                logger.addHandler(debug_handler)
+                mark_project_handler(debug_handler)
+                yield debug_handler
             except Exception as e:
                 print(f"Warning: Failed to add dev debug handler: {e}", file=sys.stderr)
 
@@ -536,20 +410,23 @@ class RobustLoggerConfig:
         try:
             error_filename = log_filename(self.service_name, app_name=self.app_name, kind="error")
             error_log_file = self.log_dir / error_filename
+            if delay:
+                with error_log_file.open("a", encoding="utf-8"):
+                    pass
             error_handler = RotatingFileHandler(
                 error_log_file,
                 maxBytes=self.max_bytes,
                 backupCount=self.backup_count,
-                encoding='utf-8'
+                encoding='utf-8',
+                delay=delay,
             )
             error_handler.setLevel(logging.ERROR)
             error_handler.setFormatter(formatter)
-            _mark_handler(error_handler)
-            logger.addHandler(error_handler)
+            mark_project_handler(error_handler)
+            yield error_handler
         except Exception as e:
             print(f"Warning: Failed to add error handler: {e}", file=sys.stderr)
         
-        return logger
 
 
 class EnhancedLogger:
@@ -584,7 +461,7 @@ class EnhancedLogger:
 
 
 def setup_logging(app_name=None, service_name=None, log_level=None, silent=False,
-                  log_subdir=None, *, capture_root=False, shared_parent=True):
+                  log_subdir=None):
     """
     Convenience function: set up logging configuration
 
@@ -593,11 +470,6 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         service_name: service name, distinguishing log files of different services (e.g. Main, Memory, Agent)
         log_level: log level
         silent: silent mode, no init message printed (for subprocesses, avoiding duplicate output)
-        capture_root: opt in to root ownership for dedicated plugin processes.
-            Default False preserves host startup behavior. Unrelated handlers
-            remain untouched.
-        shared_parent: also own shared APP_NAME module records. Embedded services
-            set False so the containing application's shared logger stays intact.
         log_subdir: log subdirectory. Plugin subprocesses pass ``"plugin"`` to tuck
             ``N.E.K.O_Plugin_<id>_*.log`` under ``logs/plugin/``, keeping them apart
             from host-process logs like PluginServer / Main / Memory / Agent.
@@ -610,9 +482,6 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         The returned logger automatically includes the traceback on error() calls (when in an exception context)
         logger.exception() can also be used to record exception info explicitly
     """
-    if capture_root:
-        # Dedicated plugin children explicitly replace inherited project sinks.
-        _release_inherited_handlers()
     config = RobustLoggerConfig(
         app_name=app_name,
         service_name=service_name,
@@ -626,18 +495,8 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
     # Attach handlers to the APP_NAME parent logger so cross-service shared modules (utils, config, etc.)
     # also write to files. Shared modules use get_module_logger(__name__) for loggers such as
     # N.E.K.O.utils.xxx, whose propagation reaches this parent and is captured.
-    if shared_parent:
-        _ensure_shared_parent_logger(config, base_logger, replace=capture_root)
-    if capture_root:
-        root = logging.getLogger()
-        for handler in list(root.handlers):
-            if getattr(handler, "_neko_owned", False):
-                root.removeHandler(handler)
-        for handler in base_logger.handlers:
-            if getattr(handler, "_neko_owned", False):
-                root.addHandler(handler)
-        root.setLevel(base_logger.level)
-    
+    _ensure_shared_parent_logger(config, base_logger)
+
     # Wrap as an enhanced logger.
     logger = EnhancedLogger(base_logger)
     
@@ -963,7 +822,7 @@ def install_httpx_filter() -> None:
     setattr(httpx_logger, _HTTPX_FILTER_MARKER, True)
 
 
-def _ensure_shared_parent_logger(config, service_logger, *, replace=False):
+def _ensure_shared_parent_logger(config, service_logger):
     """Attach the same handlers as the service logger to the APP_NAME parent logger.
 
     Configured only once per process (idempotent). This way shared loggers created by
@@ -971,11 +830,7 @@ def _ensure_shared_parent_logger(config, service_logger, *, replace=False):
     write to the log files correctly.
     """
     app_logger = logging.getLogger(config.app_name)
-    if replace:
-        for handler in list(app_logger.handlers):
-            if getattr(handler, "_neko_owned", False):
-                app_logger.removeHandler(handler)
-    elif app_logger.handlers:
+    if app_logger.handlers:
         return
     app_logger.setLevel(service_logger.level)
     app_logger.propagate = False
@@ -1011,6 +866,7 @@ __all__ = [
     'RobustLoggerConfig', 
     'EnhancedLogger', 
     'setup_logging',
+    'mark_project_handler',
     'format_log_message',
     'install_message_formatting',
     'get_module_logger',

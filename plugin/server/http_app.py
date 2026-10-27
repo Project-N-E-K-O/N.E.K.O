@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse, Response
 
-from plugin.logging_config import get_logger, setup_plugin_logging
+from plugin.logging_config import get_logger, setup_plugin_logging, ensure_plugin_log_collection
 from utils.host_origin_guard import HostOriginGuardMiddleware
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
@@ -279,6 +279,7 @@ def build_plugin_server_app(
     startup path before any port binds, and nothing reports it.
     """
     setup_plugin_logging("PluginServer")
+    ensure_plugin_log_collection()
     app = FastAPI(title=title, lifespan=plugin_server_lifespan)
     app.state.manage_plugin_lifecycle = manage_lifecycle
 
