@@ -22,6 +22,16 @@ from utils.music_crawlers import (
 # ==========================================
 
 @pytest.fixture(autouse=True)
+def _isolate_playback_authorization(monkeypatch):
+    """These tests isolate metadata/source selection; real authorization is covered
+    with HTTP transports in test_music_candidate_playability.py.
+    """
+    async def authorized(self, tracks):
+        return tracks
+
+    monkeypatch.setattr(NeteaseCrawler, 'filter_playable_tracks', authorized)
+
+@pytest.fixture(autouse=True)
 async def clear_music_caches():
     """Clear global caches before each test to prevent interference."""
     # Clear the deduplication cache.

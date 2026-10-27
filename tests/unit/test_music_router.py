@@ -20,10 +20,13 @@ def _reset_music_proxy_cache():
     # https://freemusicarchive.org/song.mp3; when random order puts it before
     # test_music_proxy_rejects_unsafe_redirect, the latter gets 200 HIT instead of 403.
     music_router.MUSIC_PROXY_CACHE.clear()
+    from utils import music_audio
+    music_audio._unavailable_hosts.clear()
     try:
         yield
     finally:
         music_router.MUSIC_PROXY_CACHE.clear()
+        music_audio._unavailable_hosts.clear()
 
 
 async def _read_streaming_body(response):
@@ -31,6 +34,77 @@ async def _read_streaming_body(response):
     async for chunk in response.body_iterator:
         body.extend(chunk)
     return bytes(body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recover',[True,False])
+async def test_music_proxy_retries_connection_failure_before_headers(monkeypatch,recover):
+    import httpx
+    real_client=httpx.AsyncClient
+    count=0
+    clients=[]
+    def handler(request):
+        nonlocal count
+        count+=1
+        if count==1 or not recover:
+            raise httpx.ConnectError('temporary connection failure',request=request)
+        return httpx.Response(206,headers={'content-type':'audio/mpeg'},content=b'ID3'+b'\0'*1021)
+    def factory(**kwargs):
+        value=real_client(transport=httpx.MockTransport(handler),**kwargs)
+        clients.append(value)
+        return value
+    monkeypatch.setattr(music_router.httpx,'AsyncClient',factory)
+    response=await music_router.proxy_music('https://freemusicarchive.org/chill.mp3',Request({'type':'http','headers':[(b'range',b'bytes=0-1023')]}))
+    assert count==2
+    if recover:
+        assert response.status_code==206
+        assert (await _read_streaming_body(response)).startswith(b'ID3')
+    else:
+        assert response.status_code==502
+    assert all(c.is_closed for c in clients)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode,expected',[
+    ('missing-location',502),('redirect-loop',502),('html',502),('denied',403),
+    ('read-timeout',504),('unexpected',500),('oversize-range',413),
+    ('malformed-length',206),('malformed-range',206),
+])
+async def test_proxy_rejects_broken_upstream_and_closes_resources(monkeypatch,mode,expected):
+    import httpx
+    real_client=httpx.AsyncClient
+    clients=[]
+    calls=[]
+    def handler(request):
+        calls.append(request)
+        if mode=='missing-location': return httpx.Response(302)
+        if mode=='redirect-loop': return httpx.Response(302,headers={'location':str(request.url)})
+        if mode=='html': return httpx.Response(200,headers={'content-type':'text/html'},content=b'<html>no music</html>')
+        if mode=='denied': return httpx.Response(403)
+        if mode=='read-timeout': raise httpx.ReadTimeout('stalled headers',request=request)
+        if mode=='unexpected': raise RuntimeError('unexpected provider adapter failure')
+        headers={'content-type':'audio/mpeg'}
+        if mode=='oversize-range': headers['content-range']=f'bytes 0-1023/{music_router.MAX_MUSIC_SIZE+1}'
+        if mode=='malformed-length': headers['content-length']='not-a-number'
+        if mode=='malformed-range': headers['content-range']='bytes 0-1023/not-a-number'
+        return httpx.Response(206,headers=headers,content=b'ID3'+b'\0'*1021)
+    def factory(**kwargs):
+        client=real_client(transport=httpx.MockTransport(handler),**kwargs)
+        clients.append(client)
+        return client
+    monkeypatch.setattr(music_router.httpx,'AsyncClient',factory)
+    response=await music_router.proxy_music('https://freemusicarchive.org/checked.mp3',Request({'type':'http','headers':[]}))
+    assert response.status_code==expected
+    if expected==206: assert (await _read_streaming_body(response)).startswith(b'ID3')
+    assert len(calls)==(10 if mode=='redirect-loop' else 1)
+    assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_missing_url_without_opening_client(monkeypatch):
+    monkeypatch.setattr(music_router.httpx,'AsyncClient',lambda **kwargs:pytest.fail('no network for an empty URL'))
+    response=await music_router.proxy_music('',Request({'type':'http','headers':[]}))
+    assert response.status_code==400
 
 
 class CookieRecorder:
