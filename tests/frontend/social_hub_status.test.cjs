@@ -32,7 +32,7 @@ function loadHub(options = {}) {
     setTimeout(callback) { callback(); return 1; },
     clearTimeout() {},
     requestAnimationFrame(callback) { callback(); },
-    fetch: async () => ({ ok: true, json: async () => (options.hubBody || {}) }),
+    fetch: options.fetch || (async () => ({ ok: true, json: async () => (options.hubBody || {}) })),
     innerWidth: 800,
     innerHeight: 600,
   });
@@ -117,4 +117,46 @@ test('an unrelated visit does not clear this friend invitation', () => {
 
   hub._applyVisitStatus({ visitId: 'visit-2', action: 'ended', phase: 'ended' });
   assert.equal(hub._state.invitations.get('friend-1').phase, 'invite_ready');
+});
+
+function loadHubWithFailedSend(cancelResult) {
+  const cancelled = [];
+  const loaded = loadHub({
+    visitChat: {
+      async createDirectInvitation() { return { visit_id: 'visit-1', expires_at: 456 }; },
+      async cancelDirectInvitation(visitId) {
+        cancelled.push(visitId);
+        if (cancelResult instanceof Error) throw cancelResult;
+        return cancelResult;
+      },
+    },
+    fetch: async (url) => (String(url).includes('/api/community/visit-invitations')
+      ? { ok: false, json: async () => ({ detail: 'community_unavailable' }) }
+      : { ok: true, json: async () => ({}) }),
+  });
+  loaded.hub._state.accountId = 'account-1';
+  loaded.hub._state.friends = [{ id: 'friend-1', displayName: 'Community Test' }];
+  return { ...loaded, cancelled };
+}
+
+for (const [label, cancelResult] of [['returns false', false], ['throws', new Error('offline')]]) {
+  test(`a failed send keeps the cancellable invitation when cancelling ${label}`, async () => {
+    const { hub, cancelled } = loadHubWithFailedSend(cancelResult);
+    await hub._inviteFriend('friend-1');
+
+    assert.deepEqual(cancelled, ['visit-1']);
+    assert.equal(JSON.stringify(hub._state.invitations.get('friend-1')), JSON.stringify({
+      visitId: 'visit-1', phase: 'invite_ready', expiresAt: 456,
+    }));
+    assert.equal(hub._state.toastError, true);
+  });
+}
+
+test('a failed send clears the invitation once its room is cancelled', async () => {
+  const { hub, cancelled } = loadHubWithFailedSend(true);
+  await hub._inviteFriend('friend-1');
+
+  assert.deepEqual(cancelled, ['visit-1']);
+  assert.equal(hub._state.invitations.has('friend-1'), false);
+  assert.equal(hub._state.toastError, true);
 });

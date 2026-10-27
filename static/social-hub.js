@@ -535,7 +535,16 @@
       state.toastError = false;
     } catch (error) {
       if (createdVisitId) {
-        try { await cancelDirectVisit(createdVisitId); } catch (_) {}
+        var cancelled = false;
+        try { cancelled = await cancelDirectVisit(createdVisitId); } catch (_) {}
+        if (!cancelled) {
+          // The room is still waiting; keep the cancel button so it can be closed later.
+          setInvitation(friendId, { visitId: createdVisitId, phase: 'invite_ready', expiresAt: Number(expiresAt) || 0 });
+          state.toast = tr('visit.socialHub.cancelFailed', '邀请暂时无法取消，请稍后重试');
+          state.toastError = true;
+          render();
+          return;
+        }
       }
       setInvitation(friendId, null);
       state.toast = error && error.message || tr('visit.socialHub.sendFailed', '邀请没有发出去，请稍后重试');
@@ -858,7 +867,7 @@
   window.nekoSocialHub = {
     open: open, close: close, toggle: toggle, handlePrimaryClick: toggle,
     openFullCommunity: openCommunity, refresh: refresh, _state: state,
-    _applyVisitStatus: applyVisitStatus
+    _applyVisitStatus: applyVisitStatus, _inviteFriend: inviteFriend
   };
   if (standalone) requestAnimationFrame(open);
   else requestAnimationFrame(refresh);
