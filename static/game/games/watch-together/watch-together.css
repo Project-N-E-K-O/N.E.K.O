@@ -162,7 +162,8 @@ body.watch-expanded { overflow: hidden; }
 .video-shell:has(#play:not([hidden]))::after { content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; background: radial-gradient(transparent 35%, #000a); }
 #stage:has(#title:empty) :is(#play, #cue-count), #stage:has(#title:empty) .video-shell::after { display: none; }
 #play[hidden] ~ #cue-count, #cue-count:empty { display: none; }
-#cue-count { position: absolute; inset: auto 0 18%; z-index: 2; text-align: center; color: #fffc; font-size: 13px; text-shadow: 0 1px 4px #000; pointer-events: none; }
+/* Hangs just below the centred play button (76px ring + 12px gap + label ≈ 117px tall), whatever the picture height. */
+#cue-count { position: absolute; inset: calc(50% + 66px) 0 auto; margin: 0; z-index: 2; text-align: center; color: #fffc; font-size: 13px; text-shadow: 0 1px 4px #000; pointer-events: none; }
 
 /* Cards over the screen: empty stage, preparation, end of a manual video */
 .screen-card { position: absolute; z-index: 4; left: 6%; top: 50%; transform: translateY(-50%); width: min(440px, 58%); display: flex; flex-direction: column; gap: 10px; padding: 20px 22px; border: 1px solid var(--wt-line); border-radius: var(--wt-radius); background: #131a26e8; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: var(--wt-shadow); animation: wt-pop .2s var(--wt-ease); }
