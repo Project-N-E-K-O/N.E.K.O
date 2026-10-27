@@ -4280,7 +4280,7 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
 
 
 async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
-    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False, audio=True)
     try:
         await settle()
         for side in ("host", "guest"):
@@ -4294,7 +4294,7 @@ async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
 
 
 async def test_voice_tracks_are_symmetric_after_ready_and_independent_of_video(tmp_path, monkeypatch):
-    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
     try:
         for side in ("host", "guest"):
             await wait_for(lambda s=side: [m for m in wire.downlinks[s] if m.get("type") == "media" and m["audio_publish"]])
@@ -4314,7 +4314,7 @@ async def test_voice_tracks_are_symmetric_after_ready_and_independent_of_video(t
 
 
 async def test_turning_voice_off_mutes_both_directions_at_once(tmp_path, monkeypatch):
-    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
 
     def media(side):
         return [m for m in wire.downlinks[side] if m.get("type") == "media"]
@@ -4335,5 +4335,26 @@ async def test_turning_voice_off_mutes_both_directions_at_once(tmp_path, monkeyp
         for side in ("host", "guest"):
             await wait_for(lambda s=side: len(media(s)) > count[s])
             assert media(side)[-1]["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_stays_off_while_servers_gives_no_audio_gate(tmp_path, monkeypatch):
+    # Plan A gate: credentials without Servers' literal ``audio: true`` (older Servers) keep exactly the old
+    # behaviour -- no voice in either direction even after ready, whatever visitVoiceEnabled says.
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            assert side.rt.creds.audio is False
+            snap = side.rt.media_snapshot()
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+        for side in ("host", "guest"):
+            assert all(not m["audio_publish"] and not m["audio_subscribe"]
+                       for m in wire.downlinks[side] if m.get("type") == "media")
+        rtm.apply_voice_setting(False)
+        rtm.apply_voice_setting(True)
+        await settle()
+        assert host.rt.media_snapshot()["audio_publish"] is False
+        assert guest.rt.media_snapshot()["audio_subscribe"] is False
     finally:
         await teardown(host, guest, wire=wire, clock=clock)

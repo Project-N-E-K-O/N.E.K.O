@@ -1439,11 +1439,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``).
 
         Voice is symmetric (OD-15 v4): both sides publish their own TTS output
-        and play the peer's, only after ``ready`` and only while
-        ``visitVoiceEnabled`` is on; with voice off this side neither sends nor
-        plays catgirl audio. A TTS fallback keeps the track published but silent.
+        and play the peer's, only after ``ready``, only while
+        ``visitVoiceEnabled`` is on and only when the current credentials carry
+        Servers' ``audio`` gate as a literal true (older Servers: no audio at
+        all). With voice off this side neither sends nor plays catgirl audio. A
+        TTS fallback keeps the track published but silent.
         """
-        voice = bool(self.ready_exchanged and self.voice.enabled)
+        creds = self.creds
+        voice = bool(self.ready_exchanged and self.voice.enabled and creds is not None and creds.audio is True)
         snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
             snap["publish"] = bool(self.ready_exchanged and self.video_ok)

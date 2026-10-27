@@ -91,6 +91,9 @@ def _pub_b64(key: Ed25519PrivateKey) -> str:
     return b64url_encode(raw)
 
 
+_OMIT = object()
+
+
 class FakeServers:
     """Minimal stateful Servers: signs tickets, binds invites, honours cancel."""
 
@@ -108,6 +111,7 @@ class FakeServers:
         self.pubkeys_status = 200
         self.key_window = (int(time.time()) - 86400, int(time.time()) + 30 * 86400)
         self.revoked: list[str] = []
+        self.audio: Any = _OMIT   # OD-15 v4 voice gate in the credentials response; _OMIT = pre-v4 Servers
 
     # —— Routes ——
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -189,6 +193,8 @@ class FakeServers:
             "cross_region": False,
             "entitlement": {"tier": "sd600", "free_minutes_left_today": 70, "concurrent_rooms_left": 1},
         }
+        if self.audio is not _OMIT:
+            out["audio"] = self.audio
         if role == "guest":
             out["peer_vid"] = HOST_VID
         else:
@@ -252,6 +258,23 @@ async def _host(**kw) -> cr.VisitCredentials:
 async def _guest(**kw) -> cr.VisitCredentials:
     kw.setdefault("invite_code", INVITE)
     return await cr.fetch_visit_credentials(role="guest", visit_id=VISIT_ID, char_tag=CHAR_TAG, **kw)
+
+
+# ── Voice gate (OD-15 v4, plan A) ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("gate", [_OMIT, False, None, "true", 1, {"on": True}])
+async def test_voice_gate_is_off_unless_servers_sends_literal_true(servers, gate):
+    # Missing (pre-v4 Servers) or anything but a literal true: not an error, just no voice.
+    servers.audio = gate
+    assert (await _host()).audio is False
+    assert (await _guest()).audio is False
+
+
+async def test_voice_gate_true_is_kept_for_both_sides(servers):
+    servers.audio = True
+    assert (await _host()).audio is True
+    assert (await _guest()).audio is True
 
 
 # ── Request body and char_tag ──────────────────────────────────────────────────

@@ -1393,6 +1393,15 @@ def test_voice_budget_fits_the_sd600_tier():
     assert msg["publish"]["audio_kbps"] == vs.VISIT_AUDIO_KBPS
 
 
+def test_credentials_message_forwards_the_voice_gate_strictly():
+    import dataclasses
+
+    off = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
+    assert off["publish"]["audio"] is False          # Pre-v4 Servers: no gate -> no voice.
+    on = tw.build_credentials_message(dataclasses.replace(_creds(), audio=True), side="guest", crop="upper", codec="vp9")
+    assert on["publish"]["audio"] is True
+
+
 def _wait_until(pred, timeout: float = 5.0) -> None:
     import time as _t
 

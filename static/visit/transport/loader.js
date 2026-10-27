@@ -615,7 +615,7 @@
 
   /** 发布本页的语音轨；父页还没交旁路时什么也不做（交来时 onLocalVoice 再发）。失败按退避重试，同视频。 */
   P.publishAudioNow = function () {
-    if (!this.adapter || !this.voice || this.stopped || !this.media.audioPublish) return;
+    if (!this.adapter || !this.voice || this.stopped || !this.media.audioPublish || !this.audioAllowed()) return;
     var track = this.voice.ensureTrack();
     if (!track) return;
     var self = this;
@@ -628,6 +628,11 @@
       self.log('warn', 'audio publish failed', String(err && err.code));
       self.scheduleAudioRetry();
     });
+  };
+
+  /** Servers 放开了猫娘语音（凭证 publish.audio 严格为 true，方案 A 闸门）；没放开时两个方向都不碰音频。 */
+  P.audioAllowed = function () {
+    return !!(this.creds && this.creds.publish && this.creds.publish.audio === true);
   };
 
   /** 语音码率上限（凭证 publish.audio_kbps；旧后端没给时按 32）。 */
@@ -808,8 +813,16 @@
       if (this.adapter) this.adapter.setPeerVid(msg.peer_vid);
     }
     if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') this.media.peerCrop = msg.peer_crop;
-    if (typeof msg.audio_publish === 'boolean' && msg.audio_publish !== this.media.audioPublish) this.setAudioPublish(msg.audio_publish);
-    if (typeof msg.audio_subscribe === 'boolean' && msg.audio_subscribe !== this.media.audioSubscribe) this.setAudioSubscribe(msg.audio_subscribe);
+    // 语音闸门：凭证 publish.audio 不是严格的 true（Servers 还没放开音频）时快照里的语音字段一律当 false
+    var audioAllowed = this.audioAllowed();
+    if (typeof msg.audio_publish === 'boolean') {
+      var pub = msg.audio_publish && audioAllowed;
+      if (pub !== this.media.audioPublish) this.setAudioPublish(pub);
+    }
+    if (typeof msg.audio_subscribe === 'boolean') {
+      var sub = msg.audio_subscribe && audioAllowed;
+      if (sub !== this.media.audioSubscribe) this.setAudioSubscribe(sub);
+    }
     if (this.side === 'guest') {
       var crop = msg.crop === 'full' || msg.crop === 'upper' ? msg.crop : this.media.crop;
       // 后端快照里的 ladder 只当下限：级别由本页的拥塞阶梯决定，快照不能把已降的级别抬回去。

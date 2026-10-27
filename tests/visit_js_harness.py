@@ -245,18 +245,20 @@ function makeController(side) {
   c.preflight = { ok: true };
   return { ctx, c, log, TRTC, NVT, posted, sockets };
 }
-async function joinedController(side) {
+async function joinedController(side, credsExtra) {
   const h = makeController(side);
   h.c.onAuthToken('tok');
   const ws = sockets[sockets.length - 1];
   ws.serverOpen();
-  ws.serverSend(credsFor(side));
+  ws.serverSend(credsFor(side, credsExtra));
   await settle();
   h.ws = ws;
   h.trtc = h.TRTC.instances[h.TRTC.instances.length - 1];
   return h;
 }
 const kinds = (log) => log.map((e) => e[0]);
+// Servers opened the catgirl voice (OD-15 v4 plan A gate)
+const VOICE_ON = { publish: { codec: 'h264', bitrate_kbps: 528, audio: true, audio_kbps: 32, fps: 30 } };
 """
 
 

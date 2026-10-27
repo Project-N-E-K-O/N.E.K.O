@@ -2856,10 +2856,40 @@ def test_every_join_starts_without_stale_peer_presence():
 # -- Catgirl voice (OD-15 v4) --
 
 
+def test_voice_is_ignored_unless_the_credentials_open_the_gate():
+    # Plan A: without credentials publish.audio === true (pre-v4 Servers) the page behaves exactly as before,
+    # whatever the media snapshot says: no startLocalAudio, no remote audio subscription, no voice tap request.
+    out = run_visit_js(
+        """
+        const results = {};
+        for (const [name, extra] of [['missing', undefined], ['false', { publish: { codec: 'h264', bitrate_kbps: 528, audio: false, fps: 30 } }],
+                                     ['string', { publish: { codec: 'h264', bitrate_kbps: 528, audio: 'true', fps: 30 } }]]) {
+          const h = await joinedController('host', extra);
+          h.ctx.NekoVisitTransport.controller = h.c;
+          h.ws.serverSend({ type: 'media', subscribe: false, peer_vid: 'g_peer', crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: true });
+          await settle();
+          h.ctx.__nekoVisitFrameSink.setLocalVoice(new FakeMediaStream([{ id: 'parent-tap', kind: 'audio' }]));
+          h.trtc.emit('REMOTE_AUDIO_AVAILABLE', { userId: 'g_peer' });
+          await settle();
+          const enter = h.log.find((e) => e[0] === 'enterRoom');
+          results[name] = {
+            autoReceiveAudio: enter[3],
+            audioCalls: kinds(h.log).filter((k) => /Audio/.test(k)),
+            posts: h.posted.filter((m) => m.t === 'voice' || m.t === 'remote_audio'),
+            contexts: audioContexts.length,
+          };
+        }
+        return results;
+        """
+    )
+    for name in ("missing", "false", "string"):
+        assert out[name] == {"autoReceiveAudio": False, "audioCalls": [], "posts": [], "contexts": 0}, name
+
+
 def test_trtc_voice_publishes_only_the_handed_in_tts_tap_and_stops_cleanly():
     out = run_visit_js(
         """
-        const h = await joinedController('guest');
+        const h = await joinedController('guest', VOICE_ON);
         const sink = h.ctx.__nekoVisitFrameSink;
         h.ctx.NekoVisitTransport.controller = h.c;
         h.ws.serverSend({ type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: false });
@@ -2893,7 +2923,7 @@ def test_trtc_voice_publishes_only_the_handed_in_tts_tap_and_stops_cleanly():
 def test_trtc_peer_voice_is_subscribed_muted_in_the_sdk_and_handed_to_the_parent():
     out = run_visit_js(
         """
-        const h = await joinedController('host');
+        const h = await joinedController('host', VOICE_ON);
         const sink = h.ctx.__nekoVisitFrameSink;
         h.ctx.NekoVisitTransport.controller = h.c;
         h.ws.serverSend({ type: 'media', subscribe: false, peer_vid: 'g_peer', crop: 'upper', ladder: 0, audio_publish: false, audio_subscribe: true });
@@ -2933,7 +2963,7 @@ def test_trtc_peer_voice_is_subscribed_muted_in_the_sdk_and_handed_to_the_parent
 def test_voice_stops_when_kicked_resumes_on_the_next_snapshot_and_stops_on_stop():
     out = run_visit_js(
         """
-        const h = await joinedController('guest');
+        const h = await joinedController('guest', VOICE_ON);
         h.ctx.NekoVisitTransport.controller = h.c;
         const media = { type: 'media', publish: false, crop: 'upper', ladder: 0, audio_publish: true, audio_subscribe: true };
         h.ws.serverSend(media);

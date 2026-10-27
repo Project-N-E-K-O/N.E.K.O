@@ -651,6 +651,8 @@ class VisitCredentials:
     invite_code: Optional[str] = field(default=None, repr=False)
     invite_expires_at: Optional[float] = None
     cross_region: bool = False
+    audio: bool = False
+    """Servers allows the catgirl voice tracks (OD-15 v4); only a literal ``true`` turns them on."""
     entitlement: Optional[Mapping[str, Any]] = None
     account: str = ""
     """Community ``local_user_id`` that fetched these credentials (owns the room side)."""
@@ -842,6 +844,8 @@ def _parse_credentials(
 
     cross_region = payload.get("cross_region", False)
     _need(isinstance(cross_region, bool), "cross_region")
+    # Voice gate (OD-15 v4): Servers older than v4 omit it, and anything but a literal true keeps the visit silent.
+    audio = payload.get("audio") is True
     entitlement = payload.get("entitlement")
     if entitlement is not None:
         _need(isinstance(entitlement, Mapping) and len(entitlement) <= _ENTITLEMENT_MAX_KEYS, "entitlement")
@@ -863,6 +867,7 @@ def _parse_credentials(
         invite_code=invite_code,
         invite_expires_at=float(invite_expires_at) if invite_expires_at is not None else None,
         cross_region=cross_region,
+        audio=audio,
         entitlement=entitlement,
         account=account,
     )

@@ -150,8 +150,8 @@ def build_credentials_message(
     the guest side and is ``None`` on the host side until the peer ``hello``
     verified (``media{peer_vid}`` fills it later); a host may pass the
     verified one when re-issuing after a reload. ``publish`` carries the
-    single-layer encoder profile plus the voice bitrate cap ``audio_kbps``
-    (no ``publish_video``: publish / subscribe timing, video and voice, is
+    single-layer encoder profile plus the voice gate ``audio`` (Servers'
+    ``audio`` flag) and bitrate cap ``audio_kbps`` (no ``publish_video``: publish / subscribe timing, video and voice, is
     driven only by ``media``).
     """
     if side not in SIDES or side != creds.role:
@@ -179,6 +179,7 @@ def build_credentials_message(
         "publish": {
             "codec": codec,
             "bitrate_kbps": tier["video_kbps"],
+            "audio": creds.audio is True,
             "audio_kbps": VISIT_AUDIO_KBPS,
             "fps": tier["fps"],
             "scalability_mode": VISIT_LIVEKIT_PUBLISH["scalabilityMode"],

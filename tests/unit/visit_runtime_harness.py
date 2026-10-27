@@ -71,7 +71,7 @@ def ticket(*, role: str, sub: str, vid: str, char_tag: str, display_name: str = 
 
 
 def credentials(role: str, *, visit_id: str = VISIT_ID, invite_code: Optional[str] = INVITE,
-                account: str = "acct") -> cr.VisitCredentials:
+                account: str = "acct", audio: bool = False) -> cr.VisitCredentials:
     host = role == "host"
     return cr.VisitCredentials(
         role=role, visit_id=visit_id, char_tag=HOST_CHAR_UID if host else GUEST_CHAR_UID,
@@ -84,7 +84,7 @@ def credentials(role: str, *, visit_id: str = VISIT_ID, invite_code: Optional[st
                                display_name="Host cat" if host else "Guest cat", visit_id=visit_id),
         visit_uid=HOST_UID if host else GUEST_UID, vid=HOST_VID if host else GUEST_VID,
         peer_vid=None if host else HOST_VID, invite_code=invite_code if host else None,
-        invite_expires_at=NOW + 600 if host else None, account=account,
+        invite_expires_at=NOW + 600 if host else None, account=account, audio=audio,
     )
 
 
@@ -368,6 +368,7 @@ class Side:
     rt: Optional[rtm.VisitRuntime] = None
     creds_error: Optional[Exception] = None
     creds_gate: Optional[asyncio.Event] = None
+    creds_audio: bool = False
 
 
 def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, name: Optional[str] = None,
@@ -385,7 +386,7 @@ def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, n
             await side.creds_gate.wait()
         if side.creds_error is not None:
             raise side.creds_error
-        return credentials(role)
+        return credentials(role, audio=side.creds_audio)
 
     async def fetch_pubkeys():
         return pubkeys()
@@ -551,7 +552,7 @@ async def through_gate(rt: rtm.VisitRuntime, *, video_ok: bool = True) -> Option
 
 
 async def bring_up(tmp_path: Path, monkeypatch, *, accept: bool = True, host_replies: Optional[Replies] = None,
-                   guest_replies: Optional[Replies] = None, settings: Optional[dict] = None):
+                   guest_replies: Optional[Replies] = None, settings: Optional[dict] = None, audio: bool = False):
     """Host and guest through the gate, joined, hello verified; with ``accept`` the visit is active."""
     patch_admission(monkeypatch)
     clock = FakeClock(1000.0)
@@ -561,6 +562,7 @@ async def bring_up(tmp_path: Path, monkeypatch, *, accept: bool = True, host_rep
     if settings:
         host.settings.update(settings)
         guest.settings.update(settings)
+    host.creds_audio = guest.creds_audio = audio   # Servers' voice gate (OD-15 v4); older Servers omit it
     wire = Wire()
     hrt = await start_side(host, clock=clock, wall=wall)
     grt = await start_side(guest, invite_code=INVITE, clock=clock, wall=wall)
