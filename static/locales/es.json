@@ -7061,6 +7061,11 @@
         "uploadPending": "Algunos registros o ajustes esperan el envío o la confirmación necesaria.",
         "uploadError": "Los envíos requieren atención. Revisa la cuenta y la conexión y actualiza.",
         "fullySynced": "La cola actual está vacía y hay un acuse de recibo de la nube verificado.",
-        "awaitingEnable": "Habilita este dispositivo explícitamente para iniciar sus envíos."
+        "awaitingEnable": "Habilita este dispositivo explícitamente para iniciar sus envíos.",
+        "informationTitle": "Sobre los datos enviados",
+        "informationData": "Se envían visualizaciones, confirmaciones, omisiones y otras respuestas a las recomendaciones de las conversaciones proactivas; estado y duración de reproducción, información del contenido recomendado, horas y ajustes relacionados. Los registros se vinculan a tu cuenta de la comunidad y dispositivo.",
+        "informationExcluded": "Este canal de comentarios no envía historiales completos de chat, grabaciones de audio ni capturas de pantalla.",
+        "informationNote": "«Entendido» solo cierra esta explicación. No cambia los ajustes de envío.",
+        "informationClose": "Entendido"
     }
 }

@@ -116,11 +116,18 @@ async function main() {
         await page.locator('#device-controls').waitFor({ state: 'hidden' });
         await page.locator('#coming-soon').waitFor({ state: 'visible' });
         await noOverflow(page);
-        assert.equal(await page.locator('dialog, #disclosure-open').count(), 0, 'direct internal page never opens or offers the withdrawn explanation');
+        const information = page.locator('#feedback-information');
+        await information.waitFor({ state: 'visible' });
+        assert.equal(await page.locator('#feedback-information-data').textContent(), copy.informationData);
+        assert.equal(await page.locator('#feedback-information-excluded').textContent(), copy.informationExcluded);
+        assert.equal(await page.locator('#disclosure-open').count(), 0);
+        await information.screenshot({ path: path.join(output, 'browser-information-375.png') });
+        await page.locator('#feedback-information-close').click();
+        await information.waitFor({ state: 'hidden' });
         assert.equal(calls.some(c => c.method === 'POST'), false);
         assert.equal(calls.some(c => c.route === '/api/proactive/feedback/devices'), false);
         await page.screenshot({ path: path.join(output, 'browser-signed-out.png'), fullPage: true });
-        record('browser: settings omit feedback entry; direct internal page has no account card or disclosure and keeps v1 device controls hidden');
+        record('browser: settings omit feedback entry; direct internal page shows short data explanation; closing does not authorize uploads');
         assert.equal(sequence, 0);
         assert.equal(protocol, 1);
         assert.equal(calls.some(c => c.route.includes('/activate')), false);
@@ -158,13 +165,26 @@ async function main() {
                 for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = window.t(node.dataset.i18n);
                 window.dispatchEvent(new Event('localechange'));
             }, translations);
-            assert.equal(await page.locator('dialog, #disclosure-open').count(), 0);
+            assert.equal(await page.locator('#disclosure-open').count(), 0);
+            assert.equal(await page.locator('#feedback-information-data').textContent(), translations.informationData);
+            // Reopen only inside this fixture to inspect each translation; the
+            // product provides no additional settings entry or reopen button.
+            await page.evaluate(() => document.querySelector('#feedback-information').showModal());
             for (const height of [850, 360]) {
                 await page.setViewportSize({width: 375, height});
                 await noOverflow(page);
+                assert.equal(await page.evaluate(() => {
+                    const dialog = document.querySelector('#feedback-information').getBoundingClientRect();
+                    const close = document.querySelector('#feedback-information-close').getBoundingClientRect();
+                    return dialog.left >= 0 && dialog.right <= innerWidth && dialog.top >= 0 && dialog.bottom <= innerHeight
+                        && close.top >= dialog.top && close.bottom <= dialog.bottom;
+                }), true, locale + ': explanation and close button fit the viewport');
             }
+            await page.keyboard.press('Escape');
+            await information.waitFor({ state: 'hidden' });
         }
-        record('browser: eight languages and narrow/short viewports retain no disclosure or upload permission request');
+        assert.equal(calls.some(c => c.method === 'POST'), false);
+        record('browser: short explanation translates in eight languages, fits narrow/short viewports, and closes with Escape without requests');
         await context.close();
     } finally { releaseReads(); await browser.close(); }
 
@@ -193,7 +213,22 @@ async function main() {
     try {
         const page = await electronApp.firstWindow();
         await waitDevices(page, 'A');
-        assert.equal(await page.locator('dialog, #disclosure-open').count(), 0);
+        await page.locator('#feedback-information').waitFor({ state: 'visible' });
+        assert.equal(await page.locator('#feedback-information-data').textContent(), copy.informationData);
+        assert.equal(await page.locator('#disclosure-open').count(), 0);
+        await electronApp.evaluate(async (_electron, file) => {
+            const rect = await global.page.webContents.executeJavaScript(`(() => {
+                const r = document.querySelector('#feedback-information').getBoundingClientRect();
+                return {x: Math.floor(r.x), y: Math.floor(r.y), width: Math.ceil(r.width), height: Math.ceil(r.height)};
+            })()`);
+            const image = await global.page.webContents.capturePage(rect);
+            if (image.isEmpty()) throw Error('Short explanation did not paint');
+            global.fixtureFs.writeFileSync(file, image.toPNG());
+        }, path.join(output, 'electron-information.png'));
+        await page.locator('#feedback-information-close').click();
+        await page.locator('#feedback-information').waitFor({ state: 'hidden' });
+        assert.equal(calls.some(c => c.method === 'POST'), false);
+        record('electron: short explanation displays and native confirmation closes it without changing upload permission');
         const settingsOpened = electronApp.waitForEvent('window');
         assert.equal(await page.locator('#account-panel').count(), 0);
         assert.deepEqual(await page.evaluate(() => window.electronShell.openAccountSettings()), { ok: true });

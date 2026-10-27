@@ -7061,6 +7061,11 @@
         "uploadPending": "部分記錄或設定正在等待上傳或必要的確認。",
         "uploadError": "上傳尚未完成，請檢查帳號和網路後重新整理。",
         "fullySynced": "目前佇列已清空，且已有通過驗證的雲端回執。",
-        "awaitingEnable": "請明確啟用本機，才會開始本機上傳。"
+        "awaitingEnable": "請明確啟用本機，才會開始本機上傳。",
+        "informationTitle": "上傳內容說明",
+        "informationData": "上傳主動搭話的顯示、確認／略過等回饋，以及播放狀態／時長、推薦內容資訊、時間和相關設定；記錄會關聯社群帳號和裝置。",
+        "informationExcluded": "此回饋管道不上傳完整聊天記錄、錄音檔或螢幕截圖。",
+        "informationNote": "「我知道了」僅關閉說明，不會變更上傳設定。",
+        "informationClose": "我知道了"
     }
 }

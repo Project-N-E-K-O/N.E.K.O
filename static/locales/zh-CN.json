@@ -7061,6 +7061,11 @@
         "uploadPending": "部分记录或设置正在等待上传或必要的确认。",
         "uploadError": "上传暂未完成，请检查账号和网络后刷新。",
         "fullySynced": "当前队列已清空，且已有通过核验的云端回执。",
-        "awaitingEnable": "请明确启用本机，才会开始本机上传。"
+        "awaitingEnable": "请明确启用本机，才会开始本机上传。",
+        "informationTitle": "上传内容说明",
+        "informationData": "上传主动搭话的展示、确认／跳过等反馈，以及播放状态／时长、推荐内容信息、时间和相关设置；记录会关联社区账号和设备。",
+        "informationExcluded": "此反馈通道不上传完整聊天记录、录音文件或屏幕截图。",
+        "informationNote": "“我知道了”仅关闭说明，不改变上传设置。",
+        "informationClose": "我知道了"
     }
 }

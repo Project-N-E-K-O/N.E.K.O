@@ -7061,6 +7061,11 @@
         "uploadPending": "Some records or settings are waiting to upload or for required confirmation.",
         "uploadError": "Uploads need attention. Check your account and connection, then refresh.",
         "fullySynced": "The current queue is empty and a verified cloud receipt is available.",
-        "awaitingEnable": "Enable this device explicitly to start its uploads."
+        "awaitingEnable": "Enable this device explicitly to start its uploads.",
+        "informationTitle": "About uploaded data",
+        "informationData": "Uploads include proactive recommendation displays, confirmations/skips and other feedback, playback status/duration, recommendation content information, times and related settings. Records are linked to your community account and device.",
+        "informationExcluded": "This feedback channel does not upload full chat histories, audio recordings or screenshots.",
+        "informationNote": "“Got it” only closes this explanation. It does not change upload settings.",
+        "informationClose": "Got it"
     }
 }

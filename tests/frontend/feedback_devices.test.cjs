@@ -449,7 +449,7 @@ test('native account notifications refresh immediately and subscription follows 
     s.events.pageshow(); await settle(); assert.equal(subscriptions,2);
 });
 
-test('settings hide the feedback entry and the internal page has no duplicate account card or disclosure', () => {
+test('settings hide the feedback entry and the internal page has no duplicate account card or old disclosure entry', () => {
     const api = fs.readFileSync(path.join(root, 'templates/api_key_settings.html'), 'utf8');
     assert.doesNotMatch(api, /href="\/api\/proactive\/feedback\/manage"/);
     const template = fs.readFileSync(path.join(root, 'templates/feedback_devices.html'), 'utf8');
