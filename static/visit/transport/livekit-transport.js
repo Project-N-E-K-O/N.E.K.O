@@ -18,6 +18,7 @@
   var SUB_RETRY_MAX_MS = 30000;
   var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
   var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 2 + 15 + 8 s 再留余量保留 iframe）
+  var SAMPLE_BOUND_MS = 3000;             // 单路入站取样的上限：短于控制器每拍 4 s，一路卡住不拖掉另一路
 
   /** 等退房 / 断开做完，但最多 CLEANUP_BOUND_MS：网络坏着时它可能一直不落定（失败也算完）。 */
   function boundCleanup(p) {
@@ -210,15 +211,16 @@
     }
 
     /**
-     * 一条订阅轨的入站取样（getStats 差分，基准存 rxMarks[kind]）：{ rttS, kbps?, lossPct? }。
-     * 取样期间基准被重置、轨被换掉、或比当前基准还旧时返回 null。
+     * 一条订阅轨的入站取样（getStats 差分，基准存 rxMarks[kind]）：{ track, epoch, rttS, kbps?, lossPct? }。
+     * 取样期间基准被重置、轨被换掉、比当前基准还旧、或 SAMPLE_BOUND_MS 内没回来时给 null。
      */
     function sampleInbound(kind, currentTrack, nowMs) {
       var track = currentTrack();
       var receiver = track && track.receiver;
       if (!receiver || typeof receiver.getStats !== 'function') return Promise.resolve(null);
       var epoch = statsEpoch;
-      return receiver.getStats().then(function (report) {
+      var bound = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, SAMPLE_BOUND_MS); });
+      return Promise.race([bound, receiver.getStats().then(function (report) {
         if (epoch !== statsEpoch || currentTrack() !== track) return null;
         var inbound = null;
         var rttS = null;
@@ -234,7 +236,7 @@
         // 慢回来的旧取样（比当前基准还早）不覆盖基准
         if (prev && !(mark.at > prev.at)) return null;
         rxMarks[kind] = mark;
-        var out = { rttS: rttS };
+        var out = { track: track, epoch: epoch, rttS: rttS };
         if (prev) {
           out.kbps = Math.max(0, Math.round((mark.bytes - prev.bytes) * 8 / (mark.at - prev.at)));
           var lost = Math.max(0, mark.lost - prev.lost);
@@ -242,7 +244,12 @@
           out.lossPct = lost + got > 0 ? lost * 100 / (lost + got) : 0;
         }
         return out;
-      }).catch(function () { return null; });
+      }).catch(function () { return null; })]);
+    }
+
+    /** 等另一路取样期间这一路已过期（基准重置 / 换了轨）：丢掉，不拿旧轨的码率接着计时。 */
+    function stillCurrent(sample, track) {
+      return !!sample && sample.epoch === statsEpoch && sample.track === track;
     }
 
     function bind() {
@@ -659,8 +666,8 @@
           sampleInbound('video', function () { return remoteTrack; }, nowMs),
           sampleInbound('audio', function () { return remoteAudioTrack; }, nowMs),
         ]).then(function (res) {
-          var video = res[0];
-          var audio = res[1];
+          var video = stillCurrent(res[0], remoteTrack) ? res[0] : null;
+          var audio = stillCurrent(res[1], remoteAudioTrack) ? res[1] : null;
           if (!video && !audio) return null;
           var out = {};
           if (video) {

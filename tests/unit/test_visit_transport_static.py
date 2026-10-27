@@ -3307,3 +3307,60 @@ def test_livekit_receiver_stats_measure_video_and_voice_separately():
     assert out["both"] == {"rtt_ms": 50, "rx_kbps": 800, "loss_pct": 0, "rx_audio_kbps": 40}
     assert out["newVoice"] == {"rtt_ms": 50, "rx_kbps": 800, "loss_pct": 0}
     assert out["afterReset"] == {"rtt_ms": 50}
+
+
+_LK_TWO_TRACKS = """
+const ctx = makeContext();
+load(ctx, FILES);
+const LKV = ctx.NekoVisitTransport.vendors.livekit;
+const LK = makeFakeLK([]);
+const handlers = { onPiece() {}, onPeer() {}, onState() {}, onRemoteTrack() {}, onRemoteAudio() {}, onNetwork() {}, onNeedRejoin() {}, onLog() {} };
+const a = LKV.createAdapter({ sdk: LK, handlers });
+await a.join({ vendor: { livekit: { url: 'wss://lk.example.com', token: 't' } }, allowed_hosts: ['lk.example.com'], publish: { codec: 'vp9', audio_kbps: 32 } });
+const bytes = { video: 0, audio: 0 };
+const pending = { video: null, audio: null };   // set to [] to hold that kind's getStats until released
+const recv = (kind) => ({ getStats: () => {
+  const report = new Map([['in', { type: 'inbound-rtp', kind, bytesReceived: bytes[kind], packetsReceived: 0, packetsLost: 0 }]]);
+  if (!pending[kind]) return Promise.resolve(report);
+  return new Promise((r) => pending[kind].push(() => r(report)));
+} });
+await a.setSubscribe(true);
+await a.setAudioSubscribe(true);
+const vpub = { kind: 'video', setSubscribed() {} };
+const apub = { kind: 'audio', trackSid: 'TR_a', setSubscribed() {} };
+LK.Room.last.emit('TrackPublished', vpub, { identity: 'g_peer' });
+LK.Room.last.emit('TrackPublished', apub, { identity: 'g_peer' });
+LK.Room.last.emit('TrackSubscribed', { kind: 'video', mediaStreamTrack: {}, receiver: recv('video') }, vpub, { identity: 'g_peer' });
+LK.Room.last.emit('TrackSubscribed', { kind: 'audio', mediaStreamTrack: {}, receiver: recv('audio') }, apub, { identity: 'g_peer' });
+await a.receiverStats(0);
+"""
+
+
+def test_livekit_drops_a_sample_whose_track_changed_while_waiting_for_the_other():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + _LK_TWO_TRACKS + """
+        bytes.video = 500000; bytes.audio = 25000;
+        pending.audio = [];
+        const p = a.receiverStats(5000);
+        await settle();                          // video sample is back, voice still pending
+        LK.Room.last.emit('TrackSubscribed', { kind: 'video', mediaStreamTrack: {}, receiver: recv('video') }, vpub, { identity: 'g_peer' });
+        pending.audio.forEach((f) => f());
+        return await p;
+        """
+    )
+    # the old video track's 800 kbps must not keep the guard window running for the new track
+    assert out == {"rx_audio_kbps": 40}
+
+
+def test_livekit_one_stuck_track_does_not_drop_the_other():
+    out = run_visit_js(
+        _FAKE_LIVEKIT + _LK_TWO_TRACKS + """
+        bytes.video = 500000; bytes.audio = 25000;
+        pending.audio = [];                      // voice getStats never answers
+        let res = 'unsettled';
+        a.receiverStats(5000).then((r) => { res = r; });
+        await advance(3000);
+        return res;
+        """
+    )
+    assert out == {"rx_kbps": 800, "loss_pct": 0}
