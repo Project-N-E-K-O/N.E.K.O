@@ -37,6 +37,7 @@ from config import (
 from config.prompts.prompts_proactive import (
     MINI_GAME_INVITE_KEYWORDS,
     MINI_GAME_INVITE_LINES_BY_GAME,
+    MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES,
     MINI_GAME_INVITE_OPTION_LABELS,
     normalize_mini_game_invite_locale,
 )
@@ -749,10 +750,13 @@ def _build_mini_game_invite_options_payload(
     ``invite_lang`` is normalized to a prompt-dict key first: the lookup is an
     exact ``.get``, so an unnormalized tag (``zh_TW`` / ``zh-Hant`` / ``tchinese``)
     would silently fall through to the Simplified labels."""
-    labels = MINI_GAME_INVITE_OPTION_LABELS.get(
-        normalize_mini_game_invite_locale(invite_lang),
-        MINI_GAME_INVITE_OPTION_LABELS.get('zh', {}),
-    )
+    locale = normalize_mini_game_invite_locale(invite_lang)
+    if locale not in MINI_GAME_INVITE_OPTION_LABELS:
+        locale = 'zh'
+    labels = {
+        **MINI_GAME_INVITE_OPTION_LABELS.get(locale, {}),
+        **MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES.get(game_type, {}).get(locale, {}),
+    }
     options = [
         {'choice': 'accept', 'label': labels.get('accept', 'Yes')},
         {'choice': 'decline', 'label': labels.get('decline', 'No')},

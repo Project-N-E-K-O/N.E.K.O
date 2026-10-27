@@ -4,9 +4,13 @@ import json
 import pytest
 
 from main_logic.watch_together.library import Library
+from main_logic.watch_together import library as library_module
 
 
 JOB = "0b3d279153c34ddfa8b88175d18c2e6f"
+# Captured before the autouse fixture replaces them, for the probe-batching tests.
+REAL_PROBE_MEDIA = library_module._probe_media
+REAL_PREWARM_PROBES = library_module._prewarm_probes
 
 
 @pytest.mark.parametrize('at,duration,video_duration,ready', [
@@ -74,6 +78,125 @@ def valid_media_probe(monkeypatch):
     # These archive fixtures use placeholder bytes; probe behavior has dedicated tests.
     from main_logic.watch_together import library as module
     monkeypatch.setattr(module, '_probe_media', lambda *args: True)
+    monkeypatch.setattr(module, '_prewarm_probes', lambda keys: None)
+
+
+def playable_source(tmp_path, name):
+    root = tmp_path / name
+    folder = root / JOB
+    folder.mkdir(parents=True)
+    for file in ('video.mp4', 'cover.png', 'a.wav', 'b.wav'):
+        (folder / file).write_bytes(file.encode())
+    (folder / 'timeline.json').write_text(json.dumps({
+        'status': 'ready', 'title': 'Cats', 'bvid': 'BV1GJ411x7h7', 'duration': 30,
+        'video': f'/media/{JOB}/video.mp4', 'cover': f'/media/{JOB}/cover.png',
+        'events': [{'at': 1, 'duration': 1, 'audio': f'/media/{JOB}/a.wav', 'text': 'spoiler'},
+                   {'at': 5, 'duration': 1, 'audio': f'/media/{JOB}/b.wav', 'text': 'spoiler'}]}))
+    return root
+
+
+def test_history_rows_expose_card_fields_without_reaction_text(tmp_path):
+    library = Library(tmp_path / 'data')
+    library.import_sources([playable_source(tmp_path, 'cards')])
+    row = library.history()[0]
+    assert row['status'] == 'ready'
+    assert row['cover'].startswith(f'/api/watch-together/media/{JOB}/')
+    assert (row['duration'], row['reactions'], row['bvid']) == (30, 2, 'BV1GJ411x7h7')
+    assert 'spoiler' not in json.dumps(row)
+
+
+def test_history_prewarms_page_probes_in_one_batch_worker(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from main_logic.watch_together import library as module, media
+    monkeypatch.setattr(module, '_probe_media', REAL_PROBE_MEDIA)
+    monkeypatch.setattr(module, '_prewarm_probes', REAL_PREWARM_PROBES)
+    module._probe_cache.clear()
+    library = Library(tmp_path / 'data')
+    library.import_sources([playable_source(tmp_path, 'batch')])
+    run = Mock(side_effect=lambda operation, items, timeout: [True] * len(items))
+    monkeypatch.setattr(media, 'run', run)
+    assert library.history()[0]['status'] == 'ready'
+    # video + two reaction files; the cover image is never probed as playable media.
+    assert [(call.args[0], len(call.args[1])) for call in run.call_args_list] == [('probe_many', 3)]
+    assert library.history()[0]['status'] == 'ready'
+    assert run.call_count == 1, 'cached results are not probed again'
+    module._probe_cache.clear()
+
+
+def test_failed_batch_falls_back_to_individual_probes(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from main_logic.watch_together import library as module, media
+    monkeypatch.setattr(module, '_probe_media', REAL_PROBE_MEDIA)
+    monkeypatch.setattr(module, '_prewarm_probes', REAL_PREWARM_PROBES)
+    module._probe_cache.clear()
+    library = Library(tmp_path / 'data')
+    library.import_sources([playable_source(tmp_path, 'fallback')])
+    def run(operation, *args, timeout):
+        if operation == 'probe_many':
+            raise RuntimeError('Media worker exited without a result')
+        return True
+    run = Mock(side_effect=run)
+    monkeypatch.setattr(media, 'run', run)
+    assert library.history()[0]['status'] == 'ready'
+    assert [call.args[0] for call in run.call_args_list] == ['probe_many', 'probe', 'probe', 'probe']
+    # An item whose probe raised inside the batch stays uncached and is retried on its own.
+    module._probe_cache.clear()
+    run = Mock(side_effect=lambda operation, *args, timeout: [True, None, True] if operation == 'probe_many' else True)
+    monkeypatch.setattr(media, 'run', run)
+    assert library.history()[0]['status'] == 'ready'
+    assert [call.args[0] for call in run.call_args_list] == ['probe_many', 'probe']
+    module._probe_cache.clear()
+
+
+@pytest.mark.parametrize('status', ['ready', 'cancelled'])
+def test_huge_integer_duration_does_not_break_history(tmp_path, status):
+    archive = tmp_path / 'huge'
+    folder = archive / JOB
+    folder.mkdir(parents=True)
+    (folder / 'video.mp4').write_bytes(b'video')
+    (folder / 'timeline.json').write_text(json.dumps({'status': status, 'duration': 10 ** 400,
+                                                     'video': f'/media/{JOB}/video.mp4', 'events': []}))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    row = library.history()[0]
+    assert row['duration'] is None and row['status'] != 'ready'
+
+
+def test_prewarm_skips_objects_whose_batch_probe_raised(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from main_logic.watch_together import library as module, media
+    monkeypatch.setattr(module, '_probe_media', REAL_PROBE_MEDIA)
+    monkeypatch.setattr(module, '_prewarm_probes', REAL_PREWARM_PROBES)
+    module._probe_cache.clear()
+    module._prewarm_raised.clear()
+    archive = tmp_path / 'partial'
+    folder = archive / JOB
+    folder.mkdir(parents=True)
+    (folder / 'video.mp4').write_bytes(b'truncated download')
+    (folder / 'timeline.json').write_text(json.dumps({'status': 'cancelled', 'video': f'/media/{JOB}/video.mp4'}))
+    library = Library(tmp_path / 'data')
+    library.import_sources([archive])
+    run = Mock(side_effect=lambda operation, items, timeout: [None] * len(items))
+    monkeypatch.setattr(media, 'run', run)
+    assert library.history()[0]['status'] == 'cancelled'
+    assert library.history()[0]['status'] == 'cancelled'
+    # A non-ready row is never validated, so without the skip its file would cost a worker per listing.
+    assert run.call_count == 1
+    module._probe_cache.clear()
+    module._prewarm_raised.clear()
+
+
+def test_watch_rows_carry_titles_without_probing(tmp_path, monkeypatch):
+    from main_logic.watch_together import library as module
+    library = Library(tmp_path / 'data')
+    library.import_sources([playable_source(tmp_path, 'titles')])
+    version = library.history()[0]['version']
+    library.start_watch(JOB, version, 'cat')
+    with library.connect() as db:
+        db.execute("INSERT INTO watches(id,job,version,character) VALUES('gone','f'||?,'v','cat')", (JOB[1:],))
+    monkeypatch.setattr(module, '_probe_media', lambda *args: pytest.fail('titles never probe media'))
+    titles = {row['job']: row['title'] for row in library.watches()}
+    assert titles == {JOB: 'Cats', 'f' + JOB[1:]: None}
 
 
 @pytest.mark.parametrize('count,size,ready', [(256, 1, True), (257, 1, False),
