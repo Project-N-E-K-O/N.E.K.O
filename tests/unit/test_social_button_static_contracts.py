@@ -1595,7 +1595,7 @@ def test_authoritative_credit_refresh_cannot_be_overwritten_by_queued_animation(
 
 @pytest.mark.unit
 def test_hide_community_entry_toggle_only_hides_the_social_button():
-    """「隐藏喵宇宙入口」只收起按钮栏里的喵宇宙按钮；网页设置弹窗里也能切换。"""
+    """The hide-nekoverse-entry toggle only hides the social button and is also offered in the web settings popup."""
     methods = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons" / "methods-buttons.js").read_text(
         encoding="utf-8"
     )
@@ -1649,7 +1649,7 @@ def test_hide_community_entry_toggle_only_hides_the_social_button():
 
 @pytest.mark.unit
 def test_english_ui_calls_the_community_nekoverse():
-    """英文界面里喵宇宙统一叫 nekoverse，不再混用 Neko Universe / Meow universe / N.E.K.O Community。"""
+    """The English UI names the community "nekoverse" instead of mixing older names."""
     en = (PROJECT_ROOT / "static" / "locales" / "en.json").read_text(encoding="utf-8")
     for stale in ("Neko Universe", "Meow universe", "Neko community", "N.E.K.O Community"):
         assert stale not in en, stale
