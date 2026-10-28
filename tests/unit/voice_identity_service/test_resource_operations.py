@@ -23,6 +23,46 @@ from main_logic.voice_identity_service import wake_word_bundle as model_bundle
 
 
 @pytest.mark.asyncio
+async def test_source_repair_is_reserved_cancelable_and_refreshes_the_prepared_snapshot(tmp_path, monkeypatch):
+    calls = []
+    ready = {name: {"state": "ready", "reason": None, "required": True} for name in ("campp", "silero", "noise_reduction")}
+    async def worker(kind, nr, path=None, **kwargs):
+        calls.append((kind, kwargs))
+        return ready
+    async def refreshed(operation_id):
+        calls.append(("refresh", operation_id))
+    monkeypatch.setattr(resource_manager, "_run_worker", worker)
+    manager = resource_manager.VoiceResourceManager(lambda: False, cache_root=tmp_path, on_ready=refreshed)
+    reservation = manager.reserve("repair")
+    assert calls == []
+    manager.start_reserved(reservation["operation_id"])
+    await manager._current.task
+    assert calls[0] == ("repair", {"timeout": 420})
+    assert calls[1] == ("refresh", reservation["operation_id"])
+    assert manager.operation(reservation["operation_id"])["state"] == "succeeded"
+    assert manager._prepared == ready
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_source_repair_cancel_retires_its_worker_and_does_not_publish_readiness(tmp_path, monkeypatch):
+    entered, retired = asyncio.Event(), asyncio.Event()
+    async def worker(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            retired.set()
+    monkeypatch.setattr(resource_manager, "_run_worker", worker)
+    manager = resource_manager.VoiceResourceManager(lambda: False, cache_root=tmp_path)
+    operation = manager.start("repair")
+    await asyncio.wait_for(entered.wait(), 2)
+    assert (await manager.cancel(operation["operation_id"]))["state"] == "cancelled"
+    assert retired.is_set() and manager._prepared == {}
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_reserved_operation_cancel_precedes_start_and_evicted_ids_never_restart(tmp_path, monkeypatch):
     from main_logic.voice_identity_service import resource_manager as rm
     manager = rm.VoiceResourceManager(lambda: False, cache_root=tmp_path)

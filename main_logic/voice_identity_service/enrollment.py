@@ -110,7 +110,11 @@ class SileroEnrollmentSpeechValidator:
         *,
         asset_dir: Path | None = None,
         vad: _EnrollmentSileroBackend | None = None,
+        minimum_speech_windows: int = ENROLLMENT_MINIMUM_SPEECH_WINDOWS,
     ) -> None:
+        if type(minimum_speech_windows) is not int or not 1 <= minimum_speech_windows <= ENROLLMENT_MINIMUM_SPEECH_WINDOWS:
+            raise ValueError("invalid minimum speech window count")
+        self._minimum_speech_windows = minimum_speech_windows
         self._vad: _EnrollmentSileroBackend = vad or SileroVad(
             enabled=True,
             asset_dir=asset_dir,
@@ -166,7 +170,7 @@ class SileroEnrollmentSpeechValidator:
             probability >= ENROLLMENT_SPEECH_PROBABILITY_THRESHOLD
             for probability in probabilities
         )
-        if active_window_count < ENROLLMENT_MINIMUM_SPEECH_WINDOWS:
+        if active_window_count < self._minimum_speech_windows:
             raise EnrollmentAudioError("no_speech_detected")
         return EnrollmentSpeechResult(
             window_count=len(probabilities),

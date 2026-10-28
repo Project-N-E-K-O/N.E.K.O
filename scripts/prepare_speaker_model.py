@@ -89,7 +89,12 @@ def _download_verified(
                 if urlsplit(response.geturl()).scheme.lower() != "https":
                     raise CampPlusAssetError("manifest_invalid")
                 with temporary.open("wb") as output:
-                    shutil.copyfileobj(response, output, length=1024 * 1024)
+                    received = 0
+                    while chunk := response.read(min(1024 * 1024, expected_size - received + 1)):
+                        received += len(chunk)
+                        if received > expected_size:
+                            raise CampPlusAssetError("asset_size_mismatch")
+                        output.write(chunk)
             _verify_transfer(
                 temporary,
                 expected_size=expected_size,

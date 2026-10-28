@@ -105,6 +105,19 @@ def test_reserve_cancel_and_late_start_use_real_manager_without_starting_worker(
     assert client.post(f"{ROOT}/resources/operations/unknown/start").status_code == 400
 
 
+def test_source_repair_reserves_and_cancels_without_side_effects(setup):
+    client, _, _, manager = setup
+    for extra in ({"url": "https://attacker.invalid"}, {"path": "../../outside"}, {"command": "install"}):
+        assert client.post(f"{ROOT}/resources/operations", json={"kind": "repair", **extra}).status_code == 400
+    assert not manager._operations
+    reserved = client.post(f"{ROOT}/resources/operations", json={"kind": "repair"})
+    assert reserved.status_code == 201
+    assert reserved.json()["kind"] == "repair"
+    assert manager._current is None
+    operation_id = reserved.json()["operation_id"]
+    assert client.post(f"{ROOT}/resources/operations/{operation_id}/cancel").json()["state"] == "cancelled"
+
+
 @pytest.mark.asyncio
 async def test_lost_actual_start_receipt_can_cancel_and_retire_the_matching_worker(monkeypatch, tmp_path):
     import asyncio

@@ -38,8 +38,12 @@ from .enrollment_audio import EnrollmentAudioNormalizationError, EnrollmentAudio
 from .state import VoiceIdentityEffectiveReason
 from .preference_worker import save_preference_worker
 from .publication_worker import publish_resource_worker
+from .source_model_repair import source_model_repair_available
 
 MAX_TRIAL_PCM_BYTES = 48_000 * 3 * 2
+# A microphone check only needs a short human utterance (10 × 32 ms).
+# Formal enrollment keeps the validator's 47-window default.
+TRIAL_MINIMUM_SPEECH_WINDOWS = 10
 RESOURCE_STATES = frozenset({"unchecked", "ready", "missing", "unavailable"})
 
 
@@ -54,7 +58,7 @@ def _resource(state: str, reason: str | None, required: bool) -> dict:
 
 
 async def _check_audio(pcm16: bytes, nr_enabled: bool) -> dict:
-    validator = SileroEnrollmentSpeechValidator()
+    validator = SileroEnrollmentSpeechValidator(minimum_speech_windows=TRIAL_MINIMUM_SPEECH_WINDOWS)
     normalized = b""
     try:
         normalizer = EnrollmentAudioNormalizer(nr_enabled=nr_enabled)
@@ -129,7 +133,7 @@ async def _prepare_resources(nr_enabled: bool, wake_path: str | None) -> dict:
 def _resource_worker(connection: Connection, kind: str, nr_enabled: bool, wake_path: str | None, pcm16: bytes):
     """Disposable worker makes native hangs, cancellation and shutdown bounded."""
     try:
-        if kind in {"audio", "prepare"}:
+        if kind in {"audio", "prepare", "repair"}:
             from utils import audio_processor
             audio_processor.DEBUG_SAVE_AUDIO = False
         if kind == "download":
@@ -142,12 +146,16 @@ def _resource_worker(connection: Connection, kind: str, nr_enabled: bool, wake_p
             directory = install_bundle(Path(wake_path), validate=validate, publish=False)
             result = {"version": directory.name}
         else:
+            if kind == "repair":
+                from .source_model_repair import repair_source_models
+                repair_source_models()
             result = asyncio.run(_check_audio(pcm16, nr_enabled) if kind == "audio" else _prepare_resources(nr_enabled, wake_path))
         connection.send({"ok": True, "result": result})
     except Exception as exc:
         reason = (exc.code if isinstance(exc, (WakeWordBundleError, VoiceResourceError)) else
+                  "resource_model_repair_failed" if kind == "repair" and isinstance(exc, (CampPlusAssetError, AssetManifestError)) else
                   "resource_storage_unavailable" if isinstance(exc, OSError) else
-                  "resource_worker_failed" if kind in {"audio", "prepare"} else safe_wake_word_reason(exc))
+                  "resource_worker_failed" if kind in {"audio", "prepare", "repair"} else safe_wake_word_reason(exc))
         connection.send({"ok": False, "reason": reason})
     finally:
         pcm16 = b""
@@ -335,6 +343,8 @@ class VoiceResourceManager:
         for name, value in resources.items():
             value["repair_action"] = "app_repair" if packaged else ("source_runtime" if name == "wake_runtime" else "source_models")
         return {"resources": resources, "wake_enabled": enabled, "wake_configured": bool(explicit),
+                "can_repair_models": not packaged and source_model_repair_available()
+                    and any(resources[name]["state"] == "missing" for name in ("campp", "silero")),
                 "repair_action": repair_action,
                 "wake_managed": preference["managed"], "wake_preference_reason": (
                     None if preference["reason"] is None else WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value),
@@ -357,8 +367,10 @@ class VoiceResourceManager:
     def reserve(self, kind: str) -> dict:
         if self._closed:
             raise VoiceResourceError("runtime_degraded")
-        if kind not in {"prepare", "download"}:
+        if kind not in {"prepare", "download", "repair"}:
             raise VoiceResourceError("invalid_resource_operation")
+        if kind == "repair" and not source_model_repair_available():
+            raise VoiceResourceError("resource_repair_unavailable")
         if self._current is not None and self._current.task is not None and not self._current.task.done():
             raise VoiceResourceError("resource_operation_busy")
         self._expire_reservations()
@@ -436,18 +448,21 @@ class VoiceResourceManager:
                         cached = None
                         cache_reason = WakeWordFailureReason.MODEL_INVALID.value
                     path = str(cached) if cached is not None else None
-                result = await _run_worker("prepare", nr, path)
+                if operation.kind == "repair":
+                    result = await _run_worker("repair", nr, path, timeout=420)
+                else:
+                    result = await _run_worker("prepare", nr, path)
                 if cache_reason is not None:
                     result["wake_model"] = _resource("unavailable", cache_reason, preference["enabled"])
                 if nr != self._noise_reduction_snapshot():
                     raise VoiceResourceError("audio_contract_changed")
             if operation is not self._current or operation.cancel.is_set() or self._closed:
                 raise VoiceResourceError("runtime_degraded" if operation.committed else "operation_cancelled")
-            if operation.kind == "prepare" and self._on_ready is not None:
+            if operation.kind in {"prepare", "repair"} and self._on_ready is not None:
                 await self._on_ready(operation.operation_id)
             if not self.owns(operation.operation_id):
                 raise VoiceResourceError("operation_cancelled")
-            if operation.kind == "prepare":
+            if operation.kind in {"prepare", "repair"}:
                 if nr != self._noise_reduction_snapshot():
                     raise VoiceResourceError("audio_contract_changed")
                 self._prepared = deepcopy(result)

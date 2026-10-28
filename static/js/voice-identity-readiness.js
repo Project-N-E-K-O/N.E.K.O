@@ -17,9 +17,50 @@
             } finally { root.clearTimeout(timer); if (config.signal) config.signal.removeEventListener('abort', abort); }
         } };
         const el = {};
-        ['microphone', 'actual-device', 'input-notice', 'gain', 'gain-value', 'meter', 'test', 'test-cancel', 'test-result', 'resources', 'prepare', 'download', 'repair', 'resource-cancel', 'resource-message', 'wake-enable'].forEach(name => { el[name] = document.getElementById('voice-identity-' + name); });
+        ['microphone', 'actual-device', 'input-notice', 'input-setup', 'input-settings', 'input-close', 'input-summary', 'resource-card', 'resource-progress', 'gain', 'gain-value', 'meter', 'test', 'test-cancel', 'test-result', 'resources', 'prepare', 'download', 'repair', 'resource-cancel', 'resource-message', 'wake-enable'].forEach(name => { el[name] = document.getElementById('voice-identity-' + name); });
         if (!el.microphone) return null;
         const t = hooks.translate;
+        const completeDialog = document.getElementById('voice-identity-resource-complete');
+        const completeClose = document.getElementById('voice-identity-resource-complete-close');
+        let completeNoticeTimer = null;
+        function closeResourceNotice() {
+            if (completeNoticeTimer !== null) root.clearTimeout(completeNoticeTimer);
+            completeNoticeTimer = null;
+            if (completeDialog && completeDialog.open) completeDialog.close();
+        }
+        function showResourceNotice(at, needsAttention = false) {
+            if (at !== epoch || pageHidden || !completeDialog || typeof completeDialog.showModal !== 'function') return;
+            closeResourceNotice();
+            completeDialog.classList.toggle('needs-attention', needsAttention);
+            const title = document.getElementById('voice-identity-resource-complete-title');
+            const titleKey = needsAttention ? 'voiceIdentity.resourceCheckAttention' : 'voiceIdentity.resourceCheckComplete';
+            title.setAttribute('data-i18n', titleKey);
+            title.textContent = t(titleKey, needsAttention ? 'Check finished: action needed' : 'Check complete');
+            const help = document.getElementById('voice-identity-resource-complete-help');
+            const resourcesKey = resourcesHintKey();
+            const helpKey = needsAttention
+                ? resourcesKey === 'voiceIdentity.resourcesReady' ? 'voiceIdentity.resourceRepair' : resourcesKey
+                : 'voiceIdentity.resourcesReadyForInput';
+            help.setAttribute('data-i18n', helpKey);
+            help.textContent = t(helpKey, RESOURCE_HINT_FALLBACKS[helpKey] || (needsAttention ? 'Check the resource status and repair the unavailable components.' : 'Resources are ready. Select your microphone and complete the input test below.'));
+            completeDialog.showModal();
+            const timer = root.setTimeout(() => {
+                if (completeNoticeTimer !== timer) return;
+                completeNoticeTimer = null;
+                if (at === epoch && !pageHidden && completeDialog.open) completeDialog.close();
+            }, 5000);
+            completeNoticeTimer = timer;
+        }
+        completeClose?.addEventListener('click', closeResourceNotice);
+        completeDialog?.addEventListener('close', () => {
+            if (!completeDialog.open) closeResourceNotice();
+        });
+        completeDialog?.addEventListener('keydown', event => {
+            if (event.key === 'Tab' && !event.isComposing) {
+                event.preventDefault();
+                completeClose.focus();
+            }
+        });
         let epoch = 0;
         let accepted = null;
         let inputChangedDuringEnrollment = false;
@@ -43,6 +84,14 @@
         let actualDeviceId = '';
         let fallbackShown = false;
         let currentMessage = null;
+        let inputSetupStarted = false;
+        let inputSetupRequested = false;
+        const SETUP_FEEDBACK_VISIBLE_MS = 3000;
+        let setupFeedbackTimer = null;
+        let compactSetupProof = null;
+        let resourceFeedbackIssue = false;
+        let resourceFeedback = null;
+        let pageHidden = false;
         try { selectedId = localStorage.getItem('neko_selected_microphone') || ''; gainDb = root.nekoMicrophoneInput.gain(localStorage.getItem('neko_mic_gain_db')); } catch (_) {}
         el.gain.value = String(gainDb);
         const RESOURCE_HINT_FALLBACKS = {
@@ -79,7 +128,60 @@
                 ? 'voiceIdentity.resourcesNeedRepair' : 'voiceIdentity.resourcesNeeded';
         }
         function message(key, fallback, error) { currentMessage = { key, fallback, error }; el['test-result'].textContent = t(key, fallback); el['test-result'].classList.toggle('is-error', !!error); }
+        function updateSetupFeedback(inputReady, inputSetupVisible, resourcesKey) {
+            const canCompact = inputSetupStarted && inputReady && !inputSetupVisible && !pending && !operation
+                && !resourceFeedbackIssue && resourcesKey === 'voiceIdentity.resourcesReady' && !pageHidden;
+            if (!canCompact) {
+                if (setupFeedbackTimer !== null) root.clearTimeout(setupFeedbackTimer);
+                setupFeedbackTimer = null;
+                compactSetupProof = null;
+            } else if (setupFeedbackTimer === null && compactSetupProof !== accepted) {
+                const proof = accepted;
+                const at = epoch;
+                const timer = root.setTimeout(() => {
+                    if (setupFeedbackTimer !== timer) return;
+                    setupFeedbackTimer = null;
+                    if (at !== epoch || proof !== accepted || pageHidden) return;
+                    compactSetupProof = proof;
+                    render(false);
+                }, SETUP_FEEDBACK_VISIBLE_MS);
+                setupFeedbackTimer = timer;
+            }
+            const compact = canCompact && compactSetupProof === accepted;
+            el['resource-card'].classList.toggle('is-compact', compact);
+            const summary = document.getElementById('voice-identity-resource-summary');
+            if (summary) summary.hidden = compact;
+            el['resource-message'].hidden = compact;
+            el['input-summary'].hidden = !inputReady || inputSetupVisible || compact;
+        }
         function render(updateParent = true) {
+            const resourceBusy = pending && resourceFeedback && resourceFeedback.epoch === epoch;
+            const preparing = resourceBusy && resourceFeedback.kind === 'prepare';
+            const repairing = resourceBusy && resourceFeedback.kind === 'repair';
+            el['resource-card'].classList.toggle('is-loading-resources', !!resourceBusy);
+            el['resource-progress'].hidden = !resourceBusy;
+            if (resourceBusy && Number.isFinite(resourceFeedback.progress)) el['resource-progress'].value = resourceFeedback.progress;
+            else el['resource-progress'].removeAttribute('value');
+            const prepareKey = preparing ? 'voiceIdentity.resourcePreparing' : 'voiceIdentity.resourcePrepare';
+            el.prepare.setAttribute('data-i18n', prepareKey);
+            el.prepare.textContent = t(prepareKey, preparing ? 'Checking and loading…' : 'Check and load resources');
+            el.prepare.classList.toggle('is-loading', !!preparing);
+            el.repair.textContent = t(repairing ? 'voiceIdentity.resourceRepairing' : 'voiceIdentity.resourceRepairButton', repairing ? 'Repairing resources…' : 'Repair resources');
+            el.repair.setAttribute('data-i18n', repairing ? 'voiceIdentity.resourceRepairing' : 'voiceIdentity.resourceRepairButton');
+            el.repair.classList.toggle('is-loading', !!repairing);
+            const inputReady = !!resources && resources.can_enroll === true && !!accepted && accepted.inputSnapshot === snapshot();
+            const inputSetupVisible = inputSetupStarted && (inputSetupRequested || !inputReady || trialActive);
+            el['input-setup'].hidden = !inputSetupVisible;
+            el['input-settings'].hidden = !inputSetupStarted || inputSetupVisible;
+            el['input-settings'].disabled = pending || !!operation || hooks.enrolling();
+            el['input-settings'].setAttribute('aria-expanded', String(inputSetupVisible));
+            el['input-close'].hidden = !inputReady || pending || !!operation || hooks.enrolling();
+            el.prepare.setAttribute('aria-expanded', String(inputSetupVisible));
+            el.prepare.classList.toggle('needs-input-setup', !inputReady);
+            el['input-summary'].hidden = !inputReady || inputSetupVisible;
+            const inputSummary = inputReady ? t('voiceIdentity.inputPassed', 'Input test passed.') + ' ' + actualLabel : '';
+            if (el['input-summary'].textContent !== inputSummary) el['input-summary'].textContent = inputSummary;
+            el.microphone.disabled = el.gain.disabled = !trialActive && (pending || !!operation);
             el.test.disabled = pending || hooks.enrolling();
             el['test-cancel'].hidden = !trialActive;
             el.prepare.disabled = pending || !!operation || hooks.enrolling();
@@ -87,15 +189,21 @@
             el['wake-enable'].disabled = pending || hooks.enrolling() || !resources || resources.wake_managed === true;
             el['wake-enable'].checked = !!(resources && resources.wake_enabled);
             el.repair.hidden = !resources || !Object.entries(resources.resources || {}).some(([name, value]) => needsRepair(name, value));
-            el.repair.disabled = pending || hooks.enrolling();
+            el.repair.disabled = pending || !!operation || hooks.enrolling();
             el['resource-cancel'].hidden = !operation;
             el['gain-value'].textContent = gainDb + ' dB';
             const resourcesKey = resourcesHintKey();
+            updateSetupFeedback(inputReady, inputSetupVisible, resourcesKey);
             const summary = document.getElementById('voice-identity-resource-summary');
             if (summary) {
-                const text = t(resourcesKey, RESOURCE_HINT_FALLBACKS[resourcesKey]);
+                const text = resourceBusy
+                    ? t(repairing ? 'voiceIdentity.resourceRepairing' : preparing ? 'voiceIdentity.resourcePreparing' : 'voiceIdentity.resourceOperation_running', 'Preparing resources…')
+                    : inputSetupStarted && !inputReady && resourcesKey === 'voiceIdentity.resourcesReady'
+                        ? t('voiceIdentity.resourcesReadyForInput', 'Resources are ready. Select your microphone and complete the input test below.')
+                        : t(resourcesKey, RESOURCE_HINT_FALLBACKS[resourcesKey]);
                 if (summary.textContent !== text) summary.textContent = text;
-                summary.classList.toggle('is-ready', resourcesKey === 'voiceIdentity.resourcesReady');
+                summary.classList.toggle('is-ready', !resourceBusy && resourcesKey === 'voiceIdentity.resourcesReady');
+                summary.classList.toggle('is-next', !resourceBusy && inputSetupStarted && !inputReady && resourcesKey === 'voiceIdentity.resourcesReady');
             }
             const wakeSummary = document.getElementById('voice-identity-wake-summary');
             if (wakeSummary) {
@@ -133,6 +241,7 @@
             return JSON.stringify({ device: settings.deviceId || actualDeviceId || selectedId, gain: gainDb });
         }
         function invalidate(key) {
+            closeResourceNotice();
             epoch += 1;
             accepted = null;
             if (hooks.enrolling()) {
@@ -201,13 +310,22 @@
             const at = epoch;
             const sequence = ++resourceSequence;
             const payload = await hooks.request('/resources', { method: 'GET' }).catch(error => {
-                if (at === epoch && sequence === resourceSequence) el['resource-message'].textContent = hooks.error(error);
+                if (at === epoch && sequence === resourceSequence) {
+                    resourceFeedbackIssue = true;
+                    el['resource-message'].textContent = hooks.error(error);
+                    render(false);
+                }
                 throw error;
             });
             if (at !== epoch || sequence !== resourceSequence) return;
             const previousContract = resources && resources.audio_contract;
             resources = payload;
-            if (previousContract && payload.audio_contract && JSON.stringify(previousContract) !== JSON.stringify(payload.audio_contract)) invalidate('voiceIdentity.inputChanged');
+            if (previousContract && payload.audio_contract && JSON.stringify(previousContract) !== JSON.stringify(payload.audio_contract)) {
+                // The current resource action already discarded its input proof.
+                // Its own refreshed contract must not cancel its completion feedback.
+                const ownedResourceAction = pending && resourceFeedback && resourceFeedback.epoch === epoch && !hooks.enrolling();
+                if (!ownedResourceAction) invalidate('voiceIdentity.inputChanged');
+            }
             el.resources.replaceChildren();
             Object.entries(payload.resources || {}).forEach(([name, value]) => {
                 const item = document.createElement('li');
@@ -280,6 +398,7 @@
         }
         async function testInput() {
             if (pending || hooks.enrolling()) return;
+            const returnFocus = typeof el['input-setup'].contains === 'function' && el['input-setup'].contains(document.activeElement);
             const at = ++epoch;
             accepted = null;
             pending = true;
@@ -296,7 +415,7 @@
                 if (at !== epoch) return;
                 if (fallbackRequired) { fallbackRequired = false; message('voiceIdentity.inputFallback', 'Selected microphone unavailable. Repeat the input test using the displayed device.', true); return; }
                 const inputSnapshot = snapshot();
-                message('voiceIdentity.inputTesting', 'Read the sentence naturally for three seconds.', false);
+                message('voiceIdentity.inputTesting', 'Recording for three seconds. Say “hello” a few times or speak a short sentence.', false);
                 pcm = await hooks.capture(3000);
                 if (at !== epoch || inputSnapshot !== snapshot()) return;
                 const payload = await hooks.request('/audio/check', {
@@ -322,7 +441,13 @@
                 if (pcm) new Uint8Array(pcm).fill(0);
                 if (at === epoch) hooks.stop('capture_cancelled');
                 try { await releaseIsolation(ownedIsolation); } catch (error) { if (at === epoch) { accepted = null; message('voiceIdentity.inputReason_capture_owner_unavailable', hooks.error(error), true); } }
-                if (at === epoch) { pending = false; trialActive = false; hooks.pause(); requestAbort = null; render(); }
+                if (at === epoch) {
+                    pending = false; trialActive = false; hooks.pause(); requestAbort = null;
+                    if (accepted) inputSetupRequested = false;
+                    render();
+                    if (accepted && returnFocus && el['input-setup'].hidden
+                        && (document.activeElement === document.body || el['input-setup'].contains(document.activeElement))) el['input-settings'].focus();
+                }
             }
         }
         function operationReason(reason) {
@@ -337,10 +462,19 @@
         }
         async function runResource(kind) {
             if (pending || operation || hooks.enrolling()) return;
+            closeResourceNotice();
+            resourceFeedbackIssue = false;
+            if (kind === 'prepare' || kind === 'repair') { inputSetupStarted = true; inputSetupRequested = true; }
             const at = ++epoch;
             discardTestForResources(); pending = true;
+            resourceFeedback = { epoch: at, kind, progress: null };
+            el['resource-message'].textContent = kind === 'repair'
+                ? t('voiceIdentity.resourceRepairingHelp', 'Downloading and verifying missing voice models, then checking whether they can load. Verified downloads are kept if cancelled.')
+                : t('voiceIdentity.resourcePreparingHelp', 'Preparing voice resources. Test your microphone below when loading finishes. The first load may take a little time.');
             requestAbort = new AbortController(); render();
+            if (kind === 'prepare') document.getElementById('voice-input-title')?.focus?.();
             let ownedOperation = null;
+            let completionResult = null;
             try {
                 // Reserving an ID cannot load or download anything. Once start
                 // is sent we already own its ID, even if the receipt is lost.
@@ -355,14 +489,21 @@
                 if (at !== epoch) { hooks.request('/resources/operations/' + encodeURIComponent(ownedOperation) + '/cancel', { method: 'POST', keepalive: true }).catch(() => {}); return; }
                 // Include the backend download (180s), commit/refresh and
                 // retirement budgets before the page attempts cancellation.
-                const deadline = Date.now() + (kind === 'download' ? 210000 : 60000);
+                const deadline = Date.now() + (kind === 'repair' ? 450000 : kind === 'download' ? 210000 : 60000);
                 while (at === epoch && operation) {
                     const id = operation;
                     const result = await hooks.request('/resources/operations/' + encodeURIComponent(id), { method: 'GET', signal: requestAbort.signal });
                     if (at !== epoch || operation !== id) return;
+                    resourceFeedbackIssue = ['failed', 'cancelled'].includes(result.state) || !!result.reason;
                     el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state || '') + (Number.isFinite(result.progress) ? ' ' + Math.round(result.progress * 100) + '%' : '');
                     if (result.reason) el['resource-message'].textContent += ' — ' + operationReason(result.reason);
-                    if (['succeeded', 'failed', 'cancelled'].includes(result.state)) { operation = null; break; }
+                    resourceFeedback.progress = Number.isFinite(result.progress) ? Math.max(0, Math.min(1, result.progress)) : null;
+                    render(false);
+                    if (['succeeded', 'failed', 'cancelled'].includes(result.state)) {
+                        completionResult = result;
+                        operation = null;
+                        break;
+                    }
                     if (Date.now() >= deadline) throw new Error('resource_operation_timeout');
                     await new Promise(resolve => { pollResolve = resolve; pollTimer = root.setTimeout(resolve, 1000); });
                     pollTimer = null; pollResolve = null;
@@ -374,6 +515,8 @@
                         const result = await hooks.request('/resources/operations/' + encodeURIComponent(ownedOperation) + '/cancel', { method: 'POST', keepalive: true });
                         if (operation === ownedOperation && ['succeeded', 'failed', 'cancelled'].includes(result.state)) operation = null;
                         if (at === epoch && result.committed === true) {
+                            completionResult = result;
+                            resourceFeedbackIssue = result.state !== 'succeeded' || !!result.reason;
                             el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state) + (result.reason ? ' — ' + operationReason(result.reason) : '');
                             await refreshResources();
                             if (at === epoch) await hooks.status();
@@ -385,9 +528,15 @@
                         if (operation === ownedOperation && cancelError.status === 400 && cancelError.message === 'invalid_resource_operation') operation = null;
                     }
                 }
-                if (at === epoch) el['resource-message'].textContent = hooks.error(error);
+                if (at === epoch) { resourceFeedbackIssue = true; el['resource-message'].textContent = hooks.error(error); }
             } finally {
-                if (at === epoch) { pending = false; requestAbort = null; render(); }
+                if (at === epoch) {
+                    pending = false; resourceFeedback = null; requestAbort = null; render();
+                    if ((kind === 'prepare' || kind === 'repair') && completionResult && completionResult.state !== 'cancelled') {
+                        const needsAttention = completionResult.state !== 'succeeded' || resourceFeedbackIssue || resourcesHintKey() !== 'voiceIdentity.resourcesReady';
+                        showResourceNotice(at, needsAttention);
+                    }
+                }
             }
         }
         async function cancelOperation() {
@@ -400,20 +549,35 @@
                 const result = await hooks.request('/resources/operations/' + encodeURIComponent(id) + '/cancel', { method: 'POST', keepalive: true });
                 if (operation === id && ['succeeded', 'failed', 'cancelled'].includes(result.state)) operation = null;
                 if (at !== epoch) return;
+                resourceFeedbackIssue = result.state !== 'succeeded' || !!result.reason;
                 el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state || '');
                 if (result.reason) el['resource-message'].textContent += ' — ' + operationReason(result.reason);
                 await refreshResources();
                 if (at === epoch) await hooks.status();
             } catch (error) {
                 if (operation === id && error.status === 400 && error.message === 'invalid_resource_operation') operation = null;
-                if (at === epoch) el['resource-message'].textContent = hooks.error(error);
+                if (at === epoch) { resourceFeedbackIssue = true; el['resource-message'].textContent = hooks.error(error); }
             } finally { if (at === epoch) { pending = false; render(); } }
         }
         el.test.addEventListener('click', testInput);
+        el['input-settings'].addEventListener('click', () => {
+            if (pending || operation || hooks.enrolling()) return;
+            inputSetupRequested = true;
+            render();
+            el.microphone.focus();
+        });
+        el['input-close'].addEventListener('click', () => {
+            if (startHintKey() !== 'voiceIdentity.enrollmentReady' || hooks.enrolling()) return;
+            inputSetupRequested = false;
+            render();
+            el['input-settings'].focus();
+        });
         el['test-cancel'].addEventListener('click', () => invalidate('voiceIdentity.inputTestRequired'));
         el.prepare.addEventListener('click', () => runResource('prepare'));
         el.download.addEventListener('click', () => runResource('download'));
         el.repair.addEventListener('click', async () => {
+            if (pending || operation || hooks.enrolling()) return;
+            if (resources && resources.can_repair_models === true) return runResource('repair');
             const local = ['localhost', '127.0.0.1', '[::1]'].includes(root.location.hostname);
             const actions = [resources && resources.repair_action, ...Object.values(resources && resources.resources || {}).map(value => value.repair_action)];
             if (local && actions.includes('app_repair') && root.nekoVoiceEnrollment && typeof root.nekoVoiceEnrollment.openRepair === 'function') {
@@ -429,7 +593,7 @@
             requestAbort = new AbortController();
             pending = true; render();
             try { await hooks.request('/resources/wake-word/preference', { method: 'POST', signal: requestAbort.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: desired }) }); if (at === epoch) await refreshResources(); }
-            catch (error) { if (at === epoch) el['resource-message'].textContent = hooks.error(error); }
+            catch (error) { if (at === epoch) { resourceFeedbackIssue = true; el['resource-message'].textContent = hooks.error(error); } }
             finally { if (at === epoch) { pending = false; requestAbort = null; render(); } }
         });
         el.microphone.addEventListener('change', () => { selectedId = el.microphone.value; try { localStorage.setItem('neko_selected_microphone', selectedId); } catch (_) {} invalidate('voiceIdentity.inputChanged'); });
@@ -477,6 +641,9 @@
             } catch (_) { if (at === epoch && stream) invalidate('voiceIdentity.inputReason_microphone_unavailable'); }
         });
         root.addEventListener('pagehide', () => {
+            pageHidden = true;
+            if (setupFeedbackTimer !== null) root.clearTimeout(setupFeedbackTimer);
+            setupFeedbackTimer = null;
             cancelOperation().catch(() => {});
             if (isolationId && root.nekoVoiceEnrollment) root.nekoVoiceEnrollment.release({ operationId: isolationId }).catch(() => {});
             if (isolationToken) {
@@ -486,6 +653,7 @@
             isolationId = null; isolationToken = null;
             if (pollTimer !== null) root.clearTimeout(pollTimer);
         });
+        root.addEventListener('pageshow', () => { pageHidden = false; render(false); });
         enumerate().catch(() => {});
         // The single enrollment gate; canStart and the button hint both read it.
         function startHintKey() {

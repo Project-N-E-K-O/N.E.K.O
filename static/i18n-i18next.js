@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh all eight language resources for the voice guide and latest main updates.
-    const LOCALE_VERSION = '2026-10-28-pr3507-ci-main-sync';
+    const LOCALE_VERSION = '2026-10-28-voice-resource-setup-ci-fix';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

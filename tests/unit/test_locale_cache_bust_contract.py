@@ -66,6 +66,15 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-27-voice-input-setup-main-rebase",
+        "2026-10-28-voice-input-setup-main-rebase",
+        "2026-10-28-voice-resource-feedback",
+        "2026-10-28-voice-resource-complete",
+        "2026-10-28-voice-resource-result",
+        "2026-10-28-voice-resource-repair",
+        "2026-10-28-voice-resource-repair-errors",
+        "2026-10-28-microphone-short-trial",
+        "2026-10-28-pr3507-ci-main-sync",
         "2026-10-28-social-hub-empty-states",
         "2026-10-28-pr3507-main-rebase",
         "2026-10-27-pr3507-conflict-rebase",
@@ -73,6 +82,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-27-watch-together-redesign",
         "2026-10-27-visit-social-hub-feedback-information",
         "2026-10-27-visit-social-hub",
+        "2026-10-27-voice-input-setup",
         "2026-10-27-pr3507-main-rebase",
         "2026-10-27-feedback-information",
         "2026-10-27-feedback-entry-hidden",
@@ -493,7 +503,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "191b7f42eebcd9bc136e6e4892d877c1db1c1a1348fcabe83c2be5edd85f1fea"
+LOCALE_KEY_SIGNATURE = "068c7f3ef3a28b0c9bb9ce6b30b8c675c85dd0d57f2144fdf6af58cf88addadb"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

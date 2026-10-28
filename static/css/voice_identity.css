@@ -14,7 +14,7 @@
 }
 
 .input-card-heading {
-    justify-content: flex-start;
+    justify-content: space-between;
     margin-bottom: 18px;
 }
 
@@ -374,6 +374,8 @@
 
 .resource-actions {
     justify-content: flex-end;
+    flex-direction: column;
+    align-items: stretch;
     flex-wrap: wrap;
 }
 
@@ -385,7 +387,7 @@
 }
 
 #voice-identity-resource-message {
-    grid-column: 1 / -1;
+    margin-top: 4px;
 }
 
 :root {
@@ -602,7 +604,7 @@ input:focus-visible,
 .voice-identity-content {
     display: grid;
     width: min(1080px, calc(100% - 48px));
-    grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.2fr);
+    grid-template-columns: minmax(0, 1fr);
     align-items: start;
     margin: 0 auto;
     padding: 20px 0 24px;
@@ -628,7 +630,7 @@ input:focus-visible,
 }
 
 .enrollment-card[hidden] + .profile-card {
-    grid-column: 2;
+    grid-column: 1 / -1;
 }
 
 .status-card {
@@ -1232,6 +1234,191 @@ input:focus-visible,
     background: var(--voice-panel-soft);
 }
 
+/* Keep the next setup action visible while the resource details are folded. */
+.resource-card:has(#voice-identity-resource-summary:not(.is-ready)) #voice-identity-prepare,
+.resource-card #voice-identity-prepare.needs-input-setup {
+    color: var(--voice-progress-current-text);
+    background: var(--voice-blue-strong);
+    border-color: var(--voice-blue-strong);
+    box-shadow: 0 3px 8px rgba(8, 126, 183, 0.12);
+}
+
+.resource-card:has(#voice-identity-resource-summary:not(.is-ready)) #voice-identity-prepare:hover:not(:disabled),
+.resource-card #voice-identity-prepare.needs-input-setup:hover:not(:disabled) {
+    box-shadow: 0 5px 12px rgba(8, 126, 183, 0.2);
+}
+
+.resource-card.is-loading-resources {
+    border-color: var(--voice-blue-strong);
+    box-shadow: 0 0 0 3px var(--voice-panel-soft);
+}
+
+.resource-card.is-loading-resources .resource-summary,
+.resource-summary.is-next {
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-inline-start: 3px solid var(--voice-blue-strong);
+    border-radius: 6px;
+    color: var(--voice-blue-dark);
+    background: var(--voice-panel-soft);
+    font-weight: 700;
+}
+
+.resource-summary.is-next {
+    color: var(--voice-success-text);
+    border-inline-start-color: var(--voice-success-text);
+}
+
+#voice-identity-resource-progress {
+    display: block;
+    width: 100%;
+    height: 12px;
+    margin: 14px 0 2px;
+    appearance: none;
+    border: 1px solid var(--voice-border);
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--voice-panel-soft);
+    accent-color: var(--voice-blue-strong);
+}
+
+#voice-identity-resource-progress::-webkit-progress-bar {
+    border-radius: 999px;
+    background: transparent;
+}
+
+#voice-identity-resource-progress::-webkit-progress-value {
+    border-radius: 999px;
+    background: linear-gradient(90deg, #55c9f2, var(--voice-blue-strong));
+    transition: width 0.25s ease;
+}
+
+#voice-identity-resource-progress::-moz-progress-bar {
+    border-radius: 999px;
+    background: linear-gradient(90deg, #55c9f2, var(--voice-blue-strong));
+}
+
+#voice-identity-resource-progress:indeterminate {
+    background: linear-gradient(100deg, var(--voice-panel-soft) 25%, #55c9f2 43%, var(--voice-blue-strong) 51%, var(--voice-panel-soft) 68%);
+    background-size: 240% 100%;
+    animation: voice-resource-loading 1.8s linear infinite;
+}
+
+@keyframes voice-resource-loading {
+    from { background-position: 100% 0; }
+    to { background-position: -100% 0; }
+}
+
+#voice-identity-resource-progress[hidden] {
+    display: none;
+}
+
+#voice-identity-prepare.is-loading:disabled,
+#voice-identity-repair.is-loading:disabled {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    opacity: 1;
+    cursor: wait;
+}
+
+#voice-identity-prepare.is-loading::before,
+#voice-identity-repair.is-loading::before {
+    content: "";
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    border: 2px solid currentColor;
+    border-inline-end-color: transparent;
+    border-radius: 50%;
+    animation: voice-resource-spin 0.8s linear infinite;
+}
+
+@keyframes voice-resource-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #voice-identity-prepare.is-loading::before,
+    #voice-identity-repair.is-loading::before { animation: none; }
+    #voice-identity-resource-progress:indeterminate { animation: none; }
+    #voice-identity-resource-progress::-webkit-progress-value { transition: none; }
+}
+
+.resource-complete-dialog {
+    box-sizing: border-box;
+    width: min(420px, calc(100% - 32px));
+    max-height: calc(100% - 32px);
+    padding: 30px 28px 24px;
+    overflow-y: auto;
+    border: 1px solid var(--voice-border);
+    border-radius: 22px;
+    color: var(--voice-ink);
+    background: var(--voice-panel);
+    box-shadow: 0 16px 48px rgba(0, 35, 65, 0.2);
+    text-align: center;
+}
+
+.resource-complete-dialog::backdrop {
+    background: rgba(10, 30, 45, 0.35);
+}
+
+.resource-complete-icon {
+    display: grid;
+    place-items: center;
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 18px;
+    border: 1px solid var(--voice-border);
+    border-radius: 50%;
+    color: var(--voice-success-text);
+    background: var(--voice-panel-soft);
+}
+
+.resource-complete-icon svg {
+    width: 34px;
+    height: 34px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.resource-complete-dialog:not(.needs-attention) .resource-complete-warning,
+.resource-complete-dialog.needs-attention .resource-complete-check {
+    display: none;
+}
+
+.resource-complete-dialog.needs-attention .resource-complete-icon {
+    color: var(--voice-danger);
+}
+
+.resource-complete-dialog h2 {
+    margin: 0 0 10px;
+    color: var(--voice-ink);
+    font-size: 1.25rem;
+}
+
+.resource-complete-dialog p {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+}
+
+.resource-complete-dialog .resource-complete-timeout {
+    margin-top: 12px;
+    color: var(--voice-muted);
+    font-size: 0.8rem;
+}
+
+.resource-complete-dialog button {
+    min-width: 130px;
+    margin-top: 22px;
+}
+
 [data-theme="dark"] .danger-button {
     background: #41242b;
 }
@@ -1310,17 +1497,7 @@ button:disabled {
     opacity: 0.48;
 }
 
-@media (max-width: 860px) {
-    .enrollment-card[hidden] + .profile-card {
-        grid-column: 1 / -1;
-    }
-
-    .voice-identity-content {
-        width: min(680px, calc(100% - 32px));
-        grid-template-columns: minmax(0, 1fr);
-        gap: 16px;
-    }
-
+@media (min-width: 561px) {
     .readiness-card {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1349,6 +1526,58 @@ button:disabled {
     .input-test-actions button {
         width: auto;
     }
+}
+
+.resource-card > .readiness-card {
+    grid-column: 1 / -1;
+    margin-top: 20px;
+    padding: 20px 0 0;
+    border: 0;
+    border-top: 1px solid var(--voice-border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+#voice-identity-input-summary {
+    grid-column: 1;
+    align-self: center;
+    min-width: 0;
+    margin: 14px 0 0;
+    color: var(--voice-success-text);
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+}
+
+#voice-identity-input-settings {
+    grid-column: 2;
+    align-self: center;
+    min-height: 38px;
+    margin-top: 14px;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+}
+
+.resource-card.is-compact #voice-identity-input-settings {
+    margin-top: 10px;
+}
+
+#voice-identity-input-close {
+    width: auto;
+    min-height: 36px;
+    padding: 6px 12px;
+}
+
+@media (max-width: 860px) {
+    .enrollment-card[hidden] + .profile-card {
+        grid-column: 1 / -1;
+    }
+
+    .voice-identity-content {
+        width: min(680px, calc(100% - 32px));
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+    }
 
     .enrollment-card {
         min-height: 0;
@@ -1361,6 +1590,10 @@ button:disabled {
     .resource-actions {
         justify-content: flex-start;
         margin-top: 10px;
+    }
+
+    #voice-identity-input-settings {
+        grid-column: 1;
     }
 }
 
