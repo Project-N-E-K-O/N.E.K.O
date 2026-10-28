@@ -564,7 +564,9 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
     Shared by the execution table and the static preview so both see the same ids.
     A router instance yields its prefix-resolved collect_entries(); a router class
     (or an instance that collects nothing) is scanned statically.
+    When multiple routers declare the same entry id, the last router wins (matching runtime).
     """
+    router_entries: dict[str, tuple[Any, Any]] = {}
     for router_item in getattr(cls, "__routers__", None) or []:
         if not isinstance(router_item, type) and hasattr(router_item, "collect_entries"):
             try:
@@ -579,7 +581,7 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
                     continue
                 eid = str(resolved_id or getattr(event_meta, "id", "") or "")
                 if eid:
-                    yield eid, event_meta, getattr(handler, "handler", handler)
+                    router_entries[eid] = (event_meta, getattr(handler, "handler", handler))
             if collected:
                 continue
 
@@ -594,7 +596,9 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
                 continue
             eid = str(getattr(event_meta, "id", None) or name)
             if eid:
-                yield eid, event_meta, member
+                router_entries[eid] = (event_meta, member)
+
+    yield from ((eid, meta, handler) for eid, (meta, handler) in router_entries.items())
 
 
 def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:

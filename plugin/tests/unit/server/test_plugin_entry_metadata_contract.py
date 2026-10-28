@@ -800,3 +800,39 @@ def test_malformed_routers_do_not_break_plugin_scan(isolated_registry):
 
     registry.scan_static_metadata("contract", Plugin, {}, {})
     assert state.event_handlers["contract.probe"].meta.timeout == 5
+
+
+def test_router_id_clashes_resolve_the_same_on_host_and_worker(isolated_registry):
+    """Host timeout must belong to the handler the worker runs: last router wins, plugin class beats routers."""
+    from unittest.mock import MagicMock
+
+    from plugin.sdk.plugin import NekoPluginBase, PluginRouter
+
+    class First(PluginRouter):
+        @plugin_entry(id="dup", timeout=1)
+        async def dup(self):
+            pass
+
+    class Second(PluginRouter):
+        @plugin_entry(id="dup", timeout=120)
+        async def dup(self):
+            pass
+
+        @plugin_entry(id="probe", timeout=60)
+        async def probe(self):
+            pass
+
+    class Plugin(ContractPlugin, NekoPluginBase):
+        __routers__ = [First, Second]
+
+        def __init__(self, ctx):
+            super().__init__(ctx)
+            for router_cls in self.__routers__:
+                self.include_router(router_cls())
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    runtime = Plugin(MagicMock()).collect_entries()
+    for eid in ("dup", "probe"):
+        assert state.event_handlers[f"contract.{eid}"].meta.timeout == runtime[eid].meta.timeout
+    assert runtime["dup"].meta.timeout == 120
+    assert runtime["probe"].meta.timeout == 5
