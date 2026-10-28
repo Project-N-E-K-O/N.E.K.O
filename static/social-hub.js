@@ -23,6 +23,8 @@
   var incomingDeliveryKey = '';
   var incomingDeliveryTimer = 0;
   var hubRefreshRevision = 0;
+  var appliedRefreshRevision = 0;
+  var loadingRefreshRevision = 0;
   var invitationSnapshotRevision = 0;
   var presenceRefreshInFlight = false;
   var presencePushRevision = 0;
@@ -394,6 +396,7 @@
     var refreshRevision = ++hubRefreshRevision;
     var presenceRevisionAtStart = presencePushRevision;
     if (!silent) {
+      loadingRefreshRevision = refreshRevision;
       state.loading = true;
       render();
     }
@@ -408,6 +411,12 @@
         applyInvitationSnapshot(body, refreshRevision);
         return;
       }
+      // 只拒绝早于最近已应用资料的响应；较新的请求失败时，较早的成功响应仍可兜底。
+      if (refreshRevision < appliedRefreshRevision) {
+        applyInvitationSnapshot(body, refreshRevision);
+        return;
+      }
+      appliedRefreshRevision = refreshRevision;
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
@@ -446,7 +455,7 @@
         state.toastError = false;
       }
     } catch (error) {
-      if (refreshGeneration !== openGeneration) return;
+      if (refreshGeneration !== openGeneration || refreshRevision < appliedRefreshRevision) return;
       if (!silent) {
         state.loadFailed = true;
         state.loggedIn = false;
@@ -462,7 +471,8 @@
       }
     } finally {
       if (refreshGeneration === openGeneration) {
-        if (!silent) state.loading = false;
+        // 静默刷新不拥有 loading；重叠读取也只能由最近的非静默刷新结束它。
+        if (!silent && refreshRevision === loadingRefreshRevision) state.loading = false;
         render();
       }
     }
@@ -932,6 +942,8 @@
         var status = String(item.presence_status);
         var online = status === 'online' || status === 'away';
         var lastSeenAt = String(item.last_seen_at || '');
+        // 即使值未变化也记录这次确认，阻止更早的全量快照随后回写旧 presence。
+        presencePushRevisions.set(friend.id, ++presencePushRevision);
         if (friend.presenceStatus === status && friend.online === online && friend.lastSeenAt === lastSeenAt) return;
         friend.presenceStatus = status;
         friend.online = online;

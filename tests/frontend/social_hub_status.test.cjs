@@ -418,6 +418,127 @@ test('a late full hub refresh cannot overwrite a newer pushed presence', async (
   assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
 });
 
+test('a newer successful hub refresh wins while the older loading owner finishes cleanly', async () => {
+  let visitHubReads = 0;
+  let resolveOlder;
+  let resolveNewer;
+  const { hub } = loadHub({
+    fetch: async () => {
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true,
+          account: { id: 'account-1' },
+          friends: [{ id: 'friend-initial', display_name: 'Initial' }],
+        }) };
+      }
+      if (visitHubReads === 2) return new Promise((resolve) => { resolveOlder = resolve; });
+      return new Promise((resolve) => { resolveNewer = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const older = hub.refresh(false);
+  const newer = hub.refresh(true);
+  resolveNewer({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-2' },
+    friends: [{ id: 'friend-newer', display_name: 'Newer' }],
+  }) });
+  await newer;
+  assert.equal(hub._state.accountId, 'account-2');
+  assert.equal(hub._state.loading, true);
+
+  resolveOlder({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{ id: 'friend-older', display_name: 'Older' }],
+  }) });
+  await older;
+
+  assert.equal(hub._state.accountId, 'account-2');
+  assert.equal(hub._state.friends[0].id, 'friend-newer');
+  assert.equal(hub._state.loading, false);
+});
+
+test('an older successful hub refresh can apply when a newer silent refresh fails', async () => {
+  let visitHubReads = 0;
+  let resolveOlder;
+  let resolveNewer;
+  const { hub } = loadHub({
+    fetch: async () => {
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true,
+          account: { id: 'account-initial' },
+          friends: [],
+        }) };
+      }
+      if (visitHubReads === 2) return new Promise((resolve) => { resolveOlder = resolve; });
+      return new Promise((resolve) => { resolveNewer = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const older = hub.refresh(false);
+  const newer = hub.refresh(true);
+  resolveNewer({ ok: false, json: async () => ({ detail: 'community_unavailable' }) });
+  await newer;
+  assert.equal(hub._state.loading, true);
+
+  resolveOlder({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-recovered' },
+    friends: [{ id: 'friend-recovered', display_name: 'Recovered' }],
+  }) });
+  await older;
+
+  assert.equal(hub._state.accountId, 'account-recovered');
+  assert.equal(hub._state.friends[0].id, 'friend-recovered');
+  assert.equal(hub._state.loading, false);
+});
+
+test('an unchanged presence poll protects against an older full hub snapshot', async () => {
+  let visitHubReads = 0;
+  let resolveOlderRefresh;
+  const currentFriend = {
+    id: 'friend-1', display_name: 'Friend', presence_status: 'online',
+    online: true, last_seen_at: '2026-10-28T06:01:00Z',
+  };
+  const { hub } = loadHub({
+    fetch: async (url) => {
+      if (String(url).includes('/api/community/friend-presence')) {
+        return { ok: true, json: async () => ({ friends: [currentFriend] }) };
+      }
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true, account: { id: 'account-1' }, friends: [currentFriend],
+        }) };
+      }
+      return new Promise((resolve) => { resolveOlderRefresh = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.open = true;
+
+  const olderRefresh = hub.refresh(true);
+  assert.equal(await hub._refreshPresence(), false);
+  resolveOlderRefresh({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{
+      id: 'friend-1', display_name: 'Friend', presence_status: 'offline',
+      online: false, last_seen_at: '2026-10-28T06:00:00Z',
+    }],
+  }) });
+  await olderRefresh;
+
+  assert.equal(hub._state.friends[0].presenceStatus, 'online');
+  assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
+});
+
 test('dismissed recommendations stay hidden during an automatic follow refresh', async () => {
   const body = {
     logged_in: true,

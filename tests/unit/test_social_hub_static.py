@@ -253,6 +253,11 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "if (replaceRecommendations)" in source
     assert "var refreshGeneration = openGeneration" in source
     assert "var refreshRevision = ++hubRefreshRevision" in source
+    assert "var appliedRefreshRevision = 0" in source
+    assert "var loadingRefreshRevision = 0" in source
+    assert "if (refreshRevision < appliedRefreshRevision)" in source
+    assert "appliedRefreshRevision = refreshRevision" in source
+    assert "refreshRevision === loadingRefreshRevision" in source
     assert "var presenceRevisionAtStart = presencePushRevision" in source
     assert "var requestAccountId = state.accountId" in source
     assert "var requestGeneration = openGeneration" in source
