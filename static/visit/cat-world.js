@@ -219,7 +219,10 @@
   function onPlaygroundEntryRequest(event) {
     if (!state.active || state.ending) return;
     var detail = event && event.detail ? event.detail : {};
-    if (detail.trigger !== 'cat1-question-mark') return;
+    var fromQuestion = detail.trigger === 'cat1-question-mark';
+    var fromGravity = detail.trigger === 'gravity-cat-setting';
+    if (!fromQuestion && !fromGravity) return;
+    if (fromGravity && state.world.yarn_active) return;
     var rect = detail.questionBlockScreenRect;
     var point = rect && Number.isFinite(Number(rect.left)) && Number.isFinite(Number(rect.top))
       ? pointFromEvent({
@@ -402,6 +405,7 @@
     var point = { x_q16: frame.x_q16, y_q16: frame.y_q16 };
     var holder = actorToHolder(frame.actor);
     if (frame.kind === 'pointer') return rememberPointer(frame);
+    if (frame.kind === 'yarn_spawn' && world.yarn_active) return true;
     if (frame.kind === 'question_tap' || frame.kind === 'yarn_spawn') {
       world.yarn_active = true;
       world.yarn_x_q16 = point.x_q16;

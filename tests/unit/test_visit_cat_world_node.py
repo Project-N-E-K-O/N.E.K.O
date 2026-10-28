@@ -192,24 +192,46 @@ async function main() {
   assert.equal(question.hidden, true);
   assert.equal(win.NekoVisitCatWorld.snapshot().world.question_active, false);
 
-  // The existing visible Playground entry becomes the shared-yarn spawn while
-  // a cat visit is active; the visit does not add another permanent control.
+  // Gravity already consumes the ordinary Playground entry, so its first
+  // activation also makes the shared yarn available without another control.
   emit('neko:idle-cat1-playground-entry-request', {
-    source: 'question-mark', trigger: 'cat1-question-mark',
+    source: 'gravity-cat-setting', trigger: 'gravity-cat-setting',
   });
   await flush();
   assert.equal(calls.intent.length, 1);
   assert.equal(calls.intent[0].kind, 'yarn_spawn');
+  emit('neko-visit-cat-world', {
+    type: 'visit_cat_world', visit_id: VID, phase: 'commit', world_seq: 1,
+    yarn_active: true, yarn_x_q16: 32768, yarn_y_q16: 19661,
+    yarn_vx_q12: 0, yarn_vy_q12: 0, yarn_holder: 'none',
+    question_active: false, question_x_q16: 32768, question_y_q16: 13107,
+    collision_seq: 0,
+  });
   emit('neko:idle-cat1-playground-entry-request', {
     source: 'gravity-cat-setting', trigger: 'gravity-cat-setting',
   });
   await flush();
   assert.equal(calls.intent.length, 1);
 
+  // The existing visible Playground entry remains the non-gravity spawn.
+  emit('neko-visit-cat-world', {
+    type: 'visit_cat_world', visit_id: VID, phase: 'commit', world_seq: 2,
+    yarn_active: false, yarn_x_q16: 32768, yarn_y_q16: 19661,
+    yarn_vx_q12: 0, yarn_vy_q12: 0, yarn_holder: 'none',
+    question_active: false, question_x_q16: 32768, question_y_q16: 13107,
+    collision_seq: 0,
+  });
+  emit('neko:idle-cat1-playground-entry-request', {
+    source: 'question-mark', trigger: 'cat1-question-mark',
+  });
+  await flush();
+  assert.equal(calls.intent.length, 2);
+  assert.equal(calls.intent[1].kind, 'yarn_spawn');
+
   // Ordinary cat visits do not create a question block.  A newer peer may
   // still explicitly publish the legacy field, which remains wire-compatible.
   emit('neko-visit-cat-world', {
-    type: 'visit_cat_world', visit_id: VID, phase: 'commit', world_seq: 1,
+    type: 'visit_cat_world', visit_id: VID, phase: 'commit', world_seq: 3,
     yarn_active: false, yarn_x_q16: 32768, yarn_y_q16: 19661,
     yarn_vx_q12: 0, yarn_vy_q12: 0, yarn_holder: 'none',
     question_active: true, question_x_q16: 32768, question_y_q16: 13107,
@@ -219,9 +241,9 @@ async function main() {
   staleIntentOnce = true;
   question.click();
   await advance(400);
-  assert.equal(calls.intent.length, 3);
-  assert.equal(calls.intent[1].kind, 'question_tap');
-  assert.equal(calls.intent[2].intent_id, 41);
+  assert.equal(calls.intent.length, 4);
+  assert.equal(calls.intent[2].kind, 'question_tap');
+  assert.equal(calls.intent[3].intent_id, 41);
   assert.equal(calls.state.length, 0);
   assert.equal(win.NekoVisitCatWorld.snapshot().simulation_started, false);
 
@@ -301,6 +323,16 @@ async function main() {
     type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
     intent_id: 10, x_q16: 33000, y_q16: 61000,
   });
+  // Simultaneous gravity entry on both sides is idempotent at the host: the
+  // second spawn cannot teleport or release an already visible yarn.
+  const spawnStateCount = calls.state.length;
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'yarn_spawn',
+    intent_id: 11, x_q16: 1000, y_q16: 2000,
+  });
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 33000);
+  assert.equal(calls.state.length, spawnStateCount);
+  await flush();
   await advance(8000);
   const settledStateCount = calls.state.length;
   assert.equal(calls.state[calls.state.length - 1].phase, 'commit');
@@ -368,7 +400,7 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 5
+    assert result["guestIntentCount"] == 6
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False
