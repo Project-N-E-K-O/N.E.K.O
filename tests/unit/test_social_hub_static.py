@@ -247,7 +247,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "state.recommendations = Array.isArray(body && body.recommendations)" in source
     assert "body.recommendations.slice(0, 3)" in source
     assert "var accountChanged = nextAccountId !== state.accountId" in source
-    assert "if (accountChanged) dismissedRecommendationIds.clear()" in source
+    assert "if (accountChanged) {" in source
+    assert "dismissedRecommendationIds.clear()" in source
     assert "replaceRecommendationsRequested = replaceRecommendationsRequested === true" in source
     assert "var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged" in source
     assert "if (shouldReplaceRecommendations) applyRecommendationSnapshot" in source
@@ -261,6 +262,12 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "function applyRecommendationSnapshot(body, revision)" in source
     assert "revision < appliedRecommendationRevision" in source
     assert "(replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId" in source
+    recommendation_snapshot = source.split("function applyRecommendationSnapshot", 1)[1].split(
+        "async function refresh", 1
+    )[0]
+    assert "state.recommendationBusy.clear()" not in recommendation_snapshot
+    account_change = source.split("if (accountChanged) {", 1)[1].split("}", 1)[0]
+    assert "state.recommendationBusy.clear()" in account_change
     assert "refreshRevision === loadingRefreshRevision" in source
     assert "var presenceRevisionAtStart = presencePushRevision" in source
     assert "var requestAccountId = state.accountId" in source

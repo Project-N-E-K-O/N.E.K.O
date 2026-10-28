@@ -704,6 +704,45 @@ test('a successful follow keeps the current friend view when recommendation refi
   assert.equal(hub._state.toastError, false);
 });
 
+test('a recommendation refill preserves another follow still in flight', async () => {
+  let visitHubReads = 0;
+  let resolveFollowA;
+  let resolveFollowB;
+  const { hub } = loadHub({
+    fetch: async (url, options = {}) => {
+      const text = String(url);
+      if (text.includes('/recommendation-a/follow') && options.method === 'POST') {
+        return new Promise((resolve) => { resolveFollowA = resolve; });
+      }
+      if (text.includes('/recommendation-b/follow') && options.method === 'POST') {
+        return new Promise((resolve) => { resolveFollowB = resolve; });
+      }
+      visitHubReads += 1;
+      return { ok: true, json: async () => ({
+        logged_in: true,
+        account: { id: 'account-1' },
+        friends: [],
+        recommendations: visitHubReads === 1 ? [
+          { id: 'recommendation-a', display_name: 'A' },
+          { id: 'recommendation-b', display_name: 'B' },
+        ] : [{ id: 'recommendation-b', display_name: 'B' }],
+      }) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const followA = hub._followRecommendation(hub._state.recommendations[0]);
+  const followB = hub._followRecommendation(hub._state.recommendations[1]);
+  resolveFollowA({ ok: true, json: async () => ({ following: true }) });
+  await followA;
+
+  assert.equal(hub._state.recommendationBusy.has('recommendation-b'), true);
+
+  resolveFollowB({ ok: true, json: async () => ({ following: true }) });
+  await followB;
+  assert.equal(hub._state.recommendationBusy.has('recommendation-b'), false);
+});
+
 test('keyboard focus survives the busy follow render and recommendation refill', async () => {
   let visitHubReads = 0;
   let resolveFollow;

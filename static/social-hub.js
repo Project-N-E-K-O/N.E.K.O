@@ -397,7 +397,6 @@
       ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(function (item) {
         return item && !dismissedRecommendationIds.has(item.id);
       }) : [];
-    state.recommendationBusy.clear();
     return true;
   }
 
@@ -438,7 +437,10 @@
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
       var accountChanged = nextAccountId !== state.accountId;
-      if (accountChanged) dismissedRecommendationIds.clear();
+      if (accountChanged) {
+        dismissedRecommendationIds.clear();
+        state.recommendationBusy.clear();
+      }
       var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
       state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
