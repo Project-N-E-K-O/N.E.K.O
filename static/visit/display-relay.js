@@ -290,14 +290,18 @@
     if (!normalized) return false;
     lastDisplayState = normalized;
     if (normalized.action === 'started' && normalized.cat_scene === 2) {
+      var isNewCatVisit = !retainedCatStart
+        || retainedCatStart.visit_id !== normalized.visit_id;
       retainedCatStart = Object.assign({}, normalized);
       retainedCatPhase = Object.assign({}, normalized);
-      retainedCatPoses.self = null;
-      retainedCatPoses.peer = null;
-      retainedCatWorld = null;
-      retainedCatWorldIntents = [];
-      lastCatWorldPointers.self = null;
-      lastCatWorldPointers.peer = null;
+      if (isNewCatVisit) {
+        retainedCatPoses.self = null;
+        retainedCatPoses.peer = null;
+        retainedCatWorld = null;
+        retainedCatWorldIntents = [];
+        lastCatWorldPointers.self = null;
+        lastCatWorldPointers.peer = null;
+      }
     } else if (retainedCatStart && retainedCatStart.visit_id === normalized.visit_id) {
       if (normalized.action === 'ended') {
         retainedCatStart = null;
