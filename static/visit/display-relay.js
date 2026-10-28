@@ -23,6 +23,7 @@
   var CAT_WORLD_HISTORY_MAX = 512;
   var catWorldKeys = new Set();
   var catWorldOrder = [];
+  var lastCatWorldPointers = { self: null, peer: null };
   var lastDisplayState = null;
   var retainedCatStart = null;
   var retainedCatPhase = null;
@@ -248,9 +249,15 @@
   function dispatchCatWorldIntent(frame) {
     var key = frame.visit_id + '\u0000' + frame.actor + '\u0000' + frame.kind
       + '\u0000' + String(frame.intent_id);
-    if (frame.kind === 'pointer') key += '\u0000' + frame.x_q16 + '\u0000' + frame.y_q16;
-    if (!rememberCatWorld('intent\u0000' + key)) return false;
-    if (frame.kind !== 'pointer') {
+    if (frame.kind === 'pointer') {
+      var previousPointer = lastCatWorldPointers[frame.actor];
+      if (previousPointer && previousPointer.visit_id === frame.visit_id
+          && previousPointer.intent_id === frame.intent_id
+          && previousPointer.x_q16 === frame.x_q16
+          && previousPointer.y_q16 === frame.y_q16) return false;
+      lastCatWorldPointers[frame.actor] = Object.assign({}, frame);
+    } else {
+      if (!rememberCatWorld('intent\u0000' + key)) return false;
       retainedCatWorldIntents.push(Object.assign({}, frame));
       while (retainedCatWorldIntents.length > 64) retainedCatWorldIntents.shift();
     }
@@ -289,6 +296,8 @@
       retainedCatPoses.peer = null;
       retainedCatWorld = null;
       retainedCatWorldIntents = [];
+      lastCatWorldPointers.self = null;
+      lastCatWorldPointers.peer = null;
     } else if (retainedCatStart && retainedCatStart.visit_id === normalized.visit_id) {
       if (normalized.action === 'ended') {
         retainedCatStart = null;
@@ -297,6 +306,8 @@
         retainedCatPoses.peer = null;
         retainedCatWorld = null;
         retainedCatWorldIntents = [];
+        lastCatWorldPointers.self = null;
+        lastCatWorldPointers.peer = null;
       } else if (['departed', 'wrap_up', 'ending', 'reconnecting', 'started'].indexOf(normalized.action) !== -1) {
         retainedCatPhase = Object.assign({}, retainedCatStart, normalized);
       }
@@ -308,6 +319,8 @@
       retainedCatPoses.peer = null;
       retainedCatWorld = null;
       retainedCatWorldIntents = [];
+      lastCatWorldPointers.self = null;
+      lastCatWorldPointers.peer = null;
     }
     try {
       window.dispatchEvent(new CustomEvent('neko-visit-display-state', { detail: normalized }));
@@ -528,6 +541,8 @@
     retainedCatPoses.peer = null;
     retainedCatWorld = null;
     retainedCatWorldIntents = [];
+    lastCatWorldPointers.self = null;
+    lastCatWorldPointers.peer = null;
     catSceneKeys.clear();
     catSceneOrder.length = 0;
     catPoseKeys.clear();

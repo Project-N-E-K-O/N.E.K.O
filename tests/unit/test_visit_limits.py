@@ -125,6 +125,19 @@ def test_reliable_world_actions_do_not_compete_with_ctl_or_lossy_world():
     )
 
 
+def test_cat_reliable_updates_survive_an_exhausted_control_bucket():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_PEER_CTL_PER_S):
+        assert lim.admit("g_a", channel_for("ack")).allowed
+    assert not lim.admit("g_a", channel_for("hb")).allowed
+    for message_type in ("cat_action", "cat_pose_commit"):
+        assert all(
+            lim.admit("g_a", channel_for(message_type)).allowed
+            for _ in range(6)
+        )
+
+
 def test_explicit_now_overrides_clock():
     lim = PeerRateLimiter(clock=lambda: 0.0)
     for _ in range(VISIT_PEER_LOSSY_PER_S):
@@ -183,7 +196,8 @@ def test_channel_mapping():
     assert channel_for("text") is RateChannel.TEXT
     assert channel_for("hello") is RateChannel.CTL
     assert channel_for("ack") is RateChannel.CTL
-    assert channel_for("cat_pose_commit") is RateChannel.CTL
+    assert channel_for("cat_action") is RateChannel.WORLD_RELIABLE
+    assert channel_for("cat_pose_commit") is RateChannel.WORLD_RELIABLE
     assert channel_for("typing") is RateChannel.LOSSY
     assert channel_for("cat_motion") is RateChannel.MOTION
     assert channel_for("cat_world_intent") is RateChannel.WORLD_RELIABLE

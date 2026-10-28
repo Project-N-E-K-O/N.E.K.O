@@ -825,8 +825,6 @@ class _CatPoseCommit(_CatPoseFields):
 
 
 class _CatWorldIntent(_Msg):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
     t: Literal["cat_world_intent"]
     seq: _Seq
     intent_id: _CatWorldIntentId
@@ -841,8 +839,6 @@ class _CatWorldIntent(_Msg):
 
 
 class _CatWorldPointer(_Msg):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
     t: Literal["cat_world_pointer"]
     intent_id: _CatWorldIntentId
     x_q16: _Q16
@@ -855,8 +851,6 @@ class _CatWorldPointer(_Msg):
 
 
 class _CatWorldStateFields(_Msg):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
     world_seq: _CatWorldSeq
     yarn_active: bool
     yarn_x_q16: _Q16

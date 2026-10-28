@@ -662,13 +662,17 @@
       if (!visitId) throw new Error(tr('visit.socialHub.roomMissing', '没有拿到定向串门房间'));
       createdVisitId = visitId;
       var expiresAt = Number(invite.expires_at || invite.expiresAt) || 0;
+      var actualMode = invite && (invite.visit_mode || invite.visitMode) || 'model';
+      if ((actualMode !== 'cat' && actualMode !== 'model') || actualMode !== requestedMode) {
+        throw new Error(tr('visit.socialHub.roomMissing', '串门形态没有正确建立，请结束后重试'));
+      }
       var response = await fetch('/api/community/visit-invitations', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           target_user_id: friend.id,
           visit_id: visitId,
-          visit_mode: requestedMode,
+          visit_mode: actualMode,
           expires_at: expiresAt || undefined
         })
       });

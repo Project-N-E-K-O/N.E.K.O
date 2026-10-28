@@ -772,12 +772,24 @@ def test_cat_world_wire_is_fixed_bounded_and_authority_free():
     for bad in (
         dict(intent, actor="peer"), dict(pointer, x=1),
         _cat_world_state(url="https://example.test/yarn.gif"),
-        _cat_world_state(items=[]), _cat_world_state(world_seq=0),
+        _cat_world_state(world_seq=0),
         _cat_world_state(yarn_vx_q12=-4097), _cat_world_state(yarn_vy_q12=4096),
         _cat_world_state(yarn_holder="self"), _cat_world_state(yarn_active=1),
     ):
         with pytest.raises(ValueError):
             vw.encode_msg(bad)
+
+
+def test_cat_world_ignores_unknown_fields_but_keeps_authority_guards():
+    intent = {"t": "cat_world_intent", "seq": 8, "intent_id": 1,
+              "kind": "yarn_grab", "x_q16": 5, "y_q16": 6, "future_hint": 1}
+    commit = _cat_world_state("cat_world_commit", future_hint={"optional": True})
+    assert "future_hint" not in vw.decode_msg(json.dumps(intent), cmd=vw.CMD_CTL)
+    assert "future_hint" not in vw.decode_msg(json.dumps(commit), cmd=vw.CMD_CTL)
+    with pytest.raises(ValueError):
+        vw.encode_msg(dict(intent, actor="host"))
+    with pytest.raises(ValueError):
+        vw.encode_msg(dict(commit, yarn_px=10))
 
 
 def test_cat_world_wrong_direction_channel_preserves_reliable_seq():
