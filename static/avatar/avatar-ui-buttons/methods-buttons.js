@@ -246,10 +246,11 @@
     };
 })();
 
-// 「隐藏喵宇宙入口」：给想纯单机使用的用户收起社区入口。
+// 「隐藏喵宇宙入口」：只收起角色旁按钮栏里的喵宇宙按钮，让按钮栏更简洁；社区功能本身不受影响。
 // 偏好由本模块独占一个 localStorage 键（与自动变猫等猫咪设置同一做法），
 // 不进 project_neko_settings，避免其他窗口带着旧值保存时把它覆盖回去。
-// 桌面端在聚合设置页「通用 → 喵宇宙」里切换（经 NEKO-PC pet-preference-actions 调用 setHidden）。
+// 开关入口：设置弹窗「动画设置」最后一行，以及桌面端聚合设置页「通用 → 喵宇宙」
+// （经 NEKO-PC pet-preference-actions 调用 setHidden）。
 (function setupCommunityEntryVisibility() {
     const STORAGE_KEY = 'neko.communityEntry.hidden';
     const CHANGE_EVENT = 'neko-community-entry-visibility-changed';
@@ -271,17 +272,6 @@
         });
     }
 
-    function closeOpenCommunitySurfaces() {
-        try {
-            if (window.nekoSocialHub && typeof window.nekoSocialHub.close === 'function') {
-                window.nekoSocialHub.close();
-            }
-        } catch (_) {}
-        try {
-            if (typeof window.closeSocialEmbed === 'function') window.closeSocialEmbed();
-        } catch (_) {}
-    }
-
     function update(next, { persist }) {
         const changed = hidden !== next;
         hidden = next;
@@ -292,7 +282,6 @@
         }
         apply();
         if (!changed) return;
-        if (next) closeOpenCommunitySurfaces();
         try {
             window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { hidden: next } }));
         } catch (_) {}

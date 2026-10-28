@@ -67,7 +67,6 @@
 
   function react(detail) {
     if (window.forgeDropEffectsEnabled === false) return;
-    if (window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden()) return;
     var now = Date.now();
     if (now - lastReactionAt < DEBOUNCE_MS) return;
     lastReactionAt = now;

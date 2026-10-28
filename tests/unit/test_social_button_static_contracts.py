@@ -1311,10 +1311,7 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     effects_handler = _extract_js_function(overlay, "function onDropEffectsChanged(event)")
     reaction_handler = _extract_js_function(reaction, "function react(detail)")
     play_one = _extract_js_function(overlay, "function playOne(payload)")
-    muted = _extract_js_function(overlay, "function dropEffectsMuted()")
-    assert "window.forgeDropEffectsEnabled === false" in muted
-    assert "dropEffectsMuted()" not in drop_handler
-    assert "window.forgeDropEffectsEnabled === false" not in drop_handler
+    assert "if (window.forgeDropEffectsEnabled === false)" not in drop_handler
     assert "play(queuedDetail);" in drop_handler
     assert "renderForgeBadge(" in state_handler
     assert "detail.active_count" in state_handler
@@ -1327,7 +1324,7 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     assert "playGeneration !== dropEffectsGeneration" in play_one
     # The entry branch for closing effects also needs a revision guard, or the queue-tail ticket can overwrite the badge
     # from an authoritative refresh using stale active_count.
-    disabled_entry = play_one[play_one.index("if (dropEffectsMuted())"):]
+    disabled_entry = play_one[play_one.index("if (window.forgeDropEffectsEnabled === false)"):]
     disabled_entry = disabled_entry[: disabled_entry.index("complete();")]
     assert "payloadRevision === creditStateRevision" in disabled_entry
     assert "renderForgeBadge(payload.active_count, true);" in disabled_entry
@@ -1597,39 +1594,55 @@ def test_authoritative_credit_refresh_cannot_be_overwritten_by_queued_animation(
 
 
 @pytest.mark.unit
-def test_hidden_community_entry_mutes_community_popups_and_tutorial_step():
-    """隐藏喵宇宙入口（纯单机）后：不弹社区消息、不播掉券演出、引导跳过喵宇宙一步。"""
+def test_hide_community_entry_toggle_only_hides_the_social_button():
+    """「隐藏喵宇宙入口」只收起按钮栏里的喵宇宙按钮；网页设置弹窗里也能切换。"""
     methods = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons" / "methods-buttons.js").read_text(
         encoding="utf-8"
     )
-    social_ui = APP_SOCIAL_UI_PATH.read_text(encoding="utf-8")
+    popup = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
-    reaction = FORGE_AVATAR_REACTION_PATH.read_text(encoding="utf-8")
+    social_ui = APP_SOCIAL_UI_PATH.read_text(encoding="utf-8")
     home_steps = (PROJECT_ROOT / "static" / "tutorial" / "click-guide" / "home-steps.js").read_text(
         encoding="utf-8"
     )
 
     # 社交按钮包装器打标，创建时和响应式重排时都按偏好显隐
     assert "btnWrapper.dataset.communityEntry = 'true';" in methods
-    sync = _extract_js_function(methods, "ManagerPrototype.syncResponsiveButtonVisibility = function(buttonsContainer)")
+    sync = _extract_js_function(
+        methods, "ManagerPrototype.syncResponsiveButtonVisibility = function(buttonsContainer)"
+    )
     assert '[data-community-entry="true"]' in sync
     assert "window.nekoCommunityEntry.isHidden()" in sync
 
-    toast = social_ui[social_ui.index("window.nekoSocial.onNotifyIncoming"):]
-    toast = toast[: toast.index("window.electronToast")]
-    assert "window.nekoCommunityEntry.isHidden()" in toast
-
-    muted = _extract_js_function(overlay, "function dropEffectsMuted()")
-    assert "window.nekoCommunityEntry.isHidden()" in muted
-    effects_handler = _extract_js_function(overlay, "function onDropEffectsChanged(event)")
-    assert "event.detail.hidden !== true" in effects_handler
-    assert "window.addEventListener('neko-community-entry-visibility-changed', onDropEffectsChanged);" in overlay
-
-    reaction_handler = _extract_js_function(reaction, "function react(detail)")
-    assert reaction_handler.index("window.nekoCommunityEntry.isHidden()") < reaction_handler.index(
-        "var now = Date.now();"
+    # 设置弹窗「动画设置」里的开关，走同一份偏好，并跟随其他入口的改动
+    assert "settings.toggles.hideCommunityEntry" in popup
+    assert "window.nekoCommunityEntry.setHidden(!communityEntryCheckbox.checked)" in popup
+    assert "window.addEventListener('neko-community-entry-visibility-changed'" in popup
+    assert popup.index("trackingRow.appendChild(forgeDropEffectsRow);") < popup.index(
+        "trackingRow.appendChild(communityEntryRow);"
     )
 
+    # 只藏按钮：社区消息提示照常
+    assert "nekoCommunityEntry" not in social_ui
+    # 掉券照常播放；按钮被藏时券卡原地淡出，不再飞向别的按钮
+    fly_target = _extract_js_function(overlay, "function getFlyTarget()")
+    assert fly_target.index("window.nekoCommunityEntry.isHidden()") < fly_target.index("readVisibleSocialCenter()")
+    assert "|| { x: cur.left + CARD_W / 2, y: cur.top + CARD_H / 2 };" in overlay
+
+    # 引导：按钮被藏时跳过喵宇宙一步；标题直接用按钮名
     social_step = home_steps[home_steps.index("optional('social'"):]
     social_step = social_step[: social_step.index("optional('settings'")]
     assert "when: () => !(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden())" in social_step
+    assert "title: root.t('buttons.social')" in social_step
+
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
+        assert '"hideCommunityEntry"' in locale_source
+
+
+@pytest.mark.unit
+def test_english_ui_calls_the_community_nekoverse():
+    """英文界面里喵宇宙统一叫 nekoverse，不再混用 Neko Universe / Meow universe / N.E.K.O Community。"""
+    en = (PROJECT_ROOT / "static" / "locales" / "en.json").read_text(encoding="utf-8")
+    for stale in ("Neko Universe", "Meow universe", "Neko community", "N.E.K.O Community"):
+        assert stale not in en, stale

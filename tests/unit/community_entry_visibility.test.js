@@ -1,7 +1,7 @@
 'use strict';
 
 // 「隐藏喵宇宙入口」开关：methods-buttons.js 里的 window.nekoCommunityEntry。
-// 在 vm 里跑真实源码，验证持久化、按钮显隐、跨窗口同步和打开中的社区浮层收起。
+// 在 vm 里跑真实源码，验证持久化、按钮显隐和跨窗口同步。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,7 +21,6 @@ function loadCommunityEntry({ stored } = {}) {
     if (stored !== undefined) storage.set(STORAGE_KEY, stored);
     const listeners = new Map();
     const events = [];
-    const calls = [];
     const wrappers = [{ style: { display: 'flex' } }, { style: { display: 'flex' } }];
     class CustomEvent {
         constructor(type, init = {}) {
@@ -42,9 +41,7 @@ function loadCommunityEntry({ stored } = {}) {
         dispatchEvent(event) {
             events.push(event);
             return true;
-        },
-        nekoSocialHub: { close() { calls.push('hub.close'); } },
-        closeSocialEmbed() { calls.push('embed.close'); }
+        }
     };
     const document = {
         querySelectorAll(selector) {
@@ -67,7 +64,6 @@ function loadCommunityEntry({ stored } = {}) {
         storage,
         wrappers,
         events,
-        calls,
         fireStorage(newValue) {
             (listeners.get('storage') || []).forEach((fn) => fn({ key: STORAGE_KEY, newValue }));
         }
@@ -80,13 +76,12 @@ test('community entry is shown by default and reads the stored preference', () =
     assert.equal(loadCommunityEntry({ stored: 'true' }).api.isHidden(), true);
 });
 
-test('hiding persists, hides every social wrapper, closes open community surfaces and notifies once', () => {
-    const { api, storage, wrappers, events, calls } = loadCommunityEntry();
+test('hiding persists, hides every social wrapper and notifies once', () => {
+    const { api, storage, wrappers, events } = loadCommunityEntry();
 
     assert.equal(api.setHidden(true), true);
     assert.equal(storage.get(STORAGE_KEY), 'true');
     assert.deepEqual(wrappers.map((w) => w.style.display), ['none', 'none']);
-    assert.deepEqual(calls, ['hub.close', 'embed.close']);
     assert.equal(events.length, 1);
     assert.equal(events[0].type, 'neko-community-entry-visibility-changed');
     assert.equal(events[0].detail.hidden, true);
@@ -100,8 +95,6 @@ test('hiding persists, hides every social wrapper, closes open community surface
     assert.deepEqual(wrappers.map((w) => w.style.display), ['flex', 'flex']);
     assert.equal(events.length, 2);
     assert.equal(events[1].detail.hidden, false);
-    // 重新显示时不去关浮层
-    assert.deepEqual(calls, ['hub.close', 'embed.close']);
 });
 
 test('a change written by another window is applied without writing storage back', () => {

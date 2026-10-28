@@ -124,10 +124,10 @@
   }
 
   function detailText(body, fallback) {
-    if (body && body.detail === 'community_login_required') return tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
+    if (body && body.detail === 'community_login_required') return tr('visit.socialHub.loginRequired', '请先在 N.E.K.O 设置里登录喵宇宙');
     if (body && body.detail === 'mutual_follow_required') return tr('visit.socialHub.mutualRequired', '你们已不再互相关注，无法发送邀请');
     if (body && body.detail === 'target_offline') return tr('visit.socialHub.targetOffline', '对方当前离线，暂时不能邀请');
-    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后再试');
+    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，稍后再试一次');
     return fallback;
   }
   function normalizeFriend(item) {
@@ -746,7 +746,7 @@
     }
     if (kind !== 'offline' && !canOpenCommunity()) {
       // 打不开社区时不放无效按钮；未登录退回到“去 Neko 设置登录”的指引。
-      if (kind === 'login') hint = tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
+      if (kind === 'login') hint = tr('visit.socialHub.loginRequired', '请先在 N.E.K.O 设置里登录喵宇宙');
       actionLabel = '';
     }
     empty.classList.add('is-' + kind);
