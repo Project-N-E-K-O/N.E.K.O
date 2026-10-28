@@ -464,3 +464,17 @@ def test_retry_keeps_keyboard_focus_and_narrow_header_wraps():
     # 窄屏下入口按钮放不下时换到第二行，而不是被面板裁掉。
     header = styles[styles.index(".neko-social-hub-header {"):]
     assert "flex-wrap: wrap" in header[:header.index("}")]
+
+
+def test_header_link_hidden_without_bridge_and_network_errors_are_localized():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    # 独立窗口打不开社区时，右上角入口也不显示。
+    assert "if (canOpenCommunity()) header.appendChild(focusKey(communityLink, 'open-community'))" in source
+    # 只有服务端给出的原因原样显示；网络异常用本地化的“连不上”文案。
+    assert "serverError.fromServer = true" in source
+    assert "error && error.fromServer && error.message" in source
+    # 网络异常时回退到本地化的 communityUnavailable，而不是浏览器原文。
+    assignment = source[source.index("state.loadError = error && error.fromServer"):]
+    assignment = assignment[:assignment.index(";")]
+    assert "tr('visit.socialHub.communityUnavailable'" in assignment
+    assert "error.message || " not in assignment
