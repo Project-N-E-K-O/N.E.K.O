@@ -65,7 +65,7 @@
             ? `[data-neko-sidepanel-owner^="${ownerPrefix}-popup-"]`
             : '[data-neko-sidepanel-owner]';
         return Array.from(document.querySelectorAll(
-            `${popupSelector}, ${sidePanelSelector}, .neko-social-hub-layer:not([hidden]) .neko-social-hub-panel`
+            `${popupSelector}, ${sidePanelSelector}, .neko-social-hub-layer:not([hidden]) .neko-social-hub-panel, .neko-social-hub-layer:not([hidden]) .neko-social-hub-presence-menu`
         )).some(element => {
             const overlayRect = getVisibleOverlayRect(element);
             return overlayRect &&

@@ -13,6 +13,7 @@
   };
   var layer = null;
   var panel = null;
+  var presenceMenu = null;
   var previousFocus = null;
   var openGeneration = 0;
   var dismissedRecommendationFocusKey = '';
@@ -442,6 +443,7 @@
       state.loggedIn = body.logged_in === true;
       var accountChanged = nextAccountId !== state.accountId;
       if (accountChanged) {
+        state.presenceMenuOpen = false;
         dismissedRecommendationIds.clear();
         state.recommendationBusy.clear();
       }
@@ -526,12 +528,41 @@
       invisible: tr('visit.socialHub.presenceInvisible', '隐身')
     }[status] || tr('visit.socialHub.presenceOnline', '在线');
   }
+  function hubContains(node) {
+    return !!node && ((panel && panel.contains(node)) || (presenceMenu && presenceMenu.contains(node)));
+  }
+  function removePresenceMenu() {
+    if (presenceMenu) presenceMenu.remove();
+    presenceMenu = null;
+    if (panel) panel.removeAttribute('aria-owns');
+  }
+  function closePresenceMenu(restoreFocus) {
+    state.presenceMenuOpen = false;
+    removePresenceMenu();
+    var picker = panel && panel.querySelector('.neko-social-hub-presence-picker');
+    if (picker) picker.classList.remove('is-open');
+    var toggle = panel && panel.querySelector('.neko-social-hub-presence-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.removeAttribute('aria-controls');
+    }
+    if (restoreFocus && toggle) toggle.focus({ preventScroll: true });
+  }
+  function focusPresenceOption(index) {
+    if (!presenceMenu) return;
+    var options = presenceMenu.querySelectorAll('[role="menuitemradio"]');
+    var target = index === undefined
+      ? presenceMenu.querySelector('[aria-checked="true"]') : options[(index + options.length) % options.length];
+    if (target) target.focus();
+  }
   async function setOwnPresence(selected) {
     if (!state.account || state.presenceSaving) return;
     if (['online', 'away', 'invisible'].indexOf(selected) === -1) return;
+    var restorePresenceFocus = presenceMenu && presenceMenu.contains(document.activeElement);
     state.presenceMenuOpen = false;
     state.presenceSaving = true;
     render();
+    if (restorePresenceFocus) panel.focus({ preventScroll: true });
     try {
       var response = await fetch('/api/community/presence', {
         method: 'PUT', credentials: 'same-origin',
@@ -548,7 +579,10 @@
       state.toastError = true;
     } finally {
       state.presenceSaving = false;
+      var returnPresenceFocus = restorePresenceFocus && document.activeElement === panel;
       render();
+      var toggle = panel && panel.querySelector('.neko-social-hub-presence-toggle');
+      if (returnPresenceFocus && toggle) toggle.focus({ preventScroll: true });
     }
   }
   function renderOwnAccount(target) {
@@ -564,12 +598,22 @@
       if (state.presenceSaving) return;
       state.presenceMenuOpen = !state.presenceMenuOpen;
       render();
+      if (state.presenceMenuOpen) focusPresenceOption();
     });
+    toggle.addEventListener('keydown', function (event) {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      state.presenceMenuOpen = true;
+      render();
+      focusPresenceOption(event.key === 'ArrowUp' ? -1 : 0);
+    });
+    toggle.id = 'neko-social-hub-presence-toggle';
     toggle.disabled = state.presenceSaving;
     focusKey(toggle, 'presence-toggle');
     toggle.setAttribute('aria-label', tr('visit.socialHub.setPresence', '设置在线状态'));
     toggle.setAttribute('aria-haspopup', 'menu');
     toggle.setAttribute('aria-expanded', state.presenceMenuOpen ? 'true' : 'false');
+    if (state.presenceMenuOpen) toggle.setAttribute('aria-controls', 'neko-social-hub-presence-menu');
     var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     arrow.setAttribute('class', 'neko-social-hub-presence-arrow');
     arrow.setAttribute('viewBox', '0 0 16 16');
@@ -583,9 +627,21 @@
     picker.appendChild(titleRow);
     picker.appendChild(el('span', 'neko-social-hub-presence-label',
       state.presenceSaving ? tr('visit.socialHub.setting', '设置中…') : presenceLabel(account.presenceStatus)));
+    copy.appendChild(picker);
+    section.appendChild(copy);
+    (target || panel).appendChild(section);
+  }
+  function renderPresenceMenu() {
+    var scrollTop = presenceMenu ? presenceMenu.scrollTop : 0;
+    removePresenceMenu();
+    if (!state.open || !state.loggedIn || !state.account) state.presenceMenuOpen = false;
     if (state.presenceMenuOpen) {
+      var account = state.account;
       var menu = el('div', 'neko-social-hub-presence-menu');
+      menu.id = 'neko-social-hub-presence-menu';
       menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-labelledby', 'neko-social-hub-presence-toggle');
+      menu.style.visibility = 'hidden';
       [
         ['online', tr('visit.socialHub.presenceOnline', '在线'), tr('visit.socialHub.presenceOnlineHint', '好友能看到你在线')],
         ['away', tr('visit.socialHub.presenceAway', '离开'), tr('visit.socialHub.presenceAwayHint', '保留在线，但显示暂时离开')],
@@ -605,11 +661,34 @@
         item.appendChild(words);
         menu.appendChild(item);
       });
-      picker.appendChild(menu);
+      presenceMenu = menu;
+      (layer || panel.parentNode).appendChild(menu);
+      panel.setAttribute('aria-owns', menu.id);
+      positionPresenceMenu();
+      menu.scrollTop = scrollTop;
     }
-    copy.appendChild(picker);
-    section.appendChild(copy);
-    (target || panel).appendChild(section);
+  }
+  function positionPresenceMenu() {
+    if (!presenceMenu || !state.open) return;
+    var picker = panel.querySelector('.neko-social-hub-presence-picker');
+    if (!picker) return;
+    var anchor = picker.getBoundingClientRect();
+    var viewport = panelViewport();
+    var leftEdge = viewport.left + 12;
+    var rightEdge = viewport.right - 12;
+    var topEdge = viewport.top + 12;
+    var bottomEdge = viewport.bottom - 12;
+    presenceMenu.style.maxWidth = Math.max(1, rightEdge - leftEdge) + 'px';
+    // 测量完整内容，不临时解除限高，否则会重置已聚焦选项的滚动位置。
+    var naturalHeight = presenceMenu.scrollHeight + presenceMenu.offsetHeight - presenceMenu.clientHeight;
+    var below = Math.max(0, bottomEdge - anchor.bottom - 6);
+    var above = Math.max(0, anchor.top - topEdge - 6);
+    var opensBelow = naturalHeight <= below || below >= above;
+    presenceMenu.style.maxHeight = Math.max(1, Math.floor(opensBelow ? below : above)) + 'px';
+    var top = opensBelow ? anchor.bottom + 6 : anchor.top - 6 - presenceMenu.offsetHeight;
+    presenceMenu.style.left = Math.round(clamp(anchor.left - 8, leftEdge, rightEdge - presenceMenu.offsetWidth)) + 'px';
+    presenceMenu.style.top = Math.round(clamp(top, topEdge, bottomEdge - presenceMenu.offsetHeight)) + 'px';
+    presenceMenu.style.visibility = '';
   }
   async function joinWithCode(rawCode) {
     var code = String(rawCode || '').trim().toUpperCase();
@@ -1049,13 +1128,13 @@
     var oldScroller = panel.querySelector('.neko-social-hub-friend-scroller');
     var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0;
     var active = document.activeElement;
-    var activeKey = active && panel.contains(active) ? active.getAttribute('data-neko-focus-key') : '';
+    var activeKey = hubContains(active) ? active.getAttribute('data-neko-focus-key') : '';
     if (dismissedRecommendationFocusKey) {
       activeKey = dismissedRecommendationFocusKey;
       dismissedRecommendationFocusKey = '';
     }
     // 用户已把焦点移到面板外的其他控件：放弃待恢复的焦点，不再抢回来。
-    if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) {
+    if (pendingFocusKey && active && active !== document.body && !hubContains(active)) {
       pendingFocusKey = '';
       pendingFocusOriginKey = '';
     }
@@ -1064,7 +1143,7 @@
       var focusStayedOnOrigin = !!(pendingFocusOriginKey && activeKey === pendingFocusOriginKey);
       var focusedNodeDisappeared = !active || active === document.body || active === panel;
       if (focusStayedOnOrigin || focusedNodeDisappeared) activeKey = pendingFocusKey;
-      else if (active && panel.contains(active)) {
+      else if (hubContains(active)) {
         // 用户在补位期间主动选择了面板内的其他控件，保留其选择。
         pendingFocusKey = '';
         pendingFocusOriginKey = '';
@@ -1103,10 +1182,13 @@
       renderFriendGroup(tr('visit.socialHub.offlineFriends', '离线好友'), offlineFriends, friendScroller);
     }
     if (state.toast) panel.appendChild(el('div', 'neko-social-hub-toast' + (state.toastError ? ' is-error' : ''), state.toast));
+    renderPresenceMenu();
     friendScroller.scrollTop = oldScrollTop;
     var restoredFocus = false;
     if (activeKey) {
-      restoredFocus = Array.from(panel.querySelectorAll('[data-neko-focus-key]')).some(function (node) {
+      var focusNodes = Array.from(panel.querySelectorAll('[data-neko-focus-key]'));
+      if (presenceMenu) focusNodes = focusNodes.concat(Array.from(presenceMenu.querySelectorAll('[data-neko-focus-key]')));
+      restoredFocus = focusNodes.some(function (node) {
         if (node.getAttribute('data-neko-focus-key') !== activeKey) return false;
         try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
         return true;
@@ -1122,7 +1204,10 @@
     if (pendingFocusKey && state.loading && (!document.activeElement || document.activeElement === document.body)) {
       try { panel.focus({ preventScroll: true }); } catch (_) { panel.focus(); }
     }
-    if (state.open && !standalone) requestAnimationFrame(keepPanelInViewport);
+    if (state.open) requestAnimationFrame(function () {
+      if (!standalone) keepPanelInViewport();
+      positionPresenceMenu();
+    });
   }
 
   function panelViewport() {
@@ -1173,7 +1258,8 @@
   }
 
   function positionPanel() {
-    if (standalone || !panel || !state.open) return;
+    if (!panel || !state.open) return;
+    if (standalone) { positionPresenceMenu(); return; }
     var margin = 12;
     var gap = 14;
     var anchor = document.querySelector('[id$="-btn-social"]');
@@ -1195,8 +1281,7 @@
     panel.style.maxHeight = Math.max(1, Math.floor(maxHeight)) + 'px';
 
     var width = Math.min(panel.offsetWidth || 360, availableWidth);
-    // 状态菜单是绝对定位的浮层，部分浏览器仍会把它计入 scrollHeight。
-    // 用真实布局高度定位，避免菜单展开/收起时把整个面板向上夹紧几像素。
+    // 按面板外框的实际高度定位，内部滚动内容不参与外框位置计算。
     var height = Math.min(panel.offsetHeight || panel.scrollHeight, maxHeight);
     var left = clamp(rightEdge - width, leftEdge, rightEdge - width);
     var top = clamp((topEdge + bottomEdge - height) / 2, topEdge, bottomEdge - height);
@@ -1216,6 +1301,7 @@
     }
     panel.style.left = Math.round(left) + 'px';
     panel.style.top = Math.round(top) + 'px';
+    positionPresenceMenu();
   }
   function mount() {
     if (panel) return;
@@ -1223,6 +1309,7 @@
     panel.tabIndex = -1;
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-label', '喵宇宙串门');
+    panel.addEventListener('animationend', positionPresenceMenu);
     if (standalone) (document.getElementById('neko-social-hub-root') || document.body).appendChild(panel);
     else {
       layer = el('div', 'neko-social-hub-layer');
@@ -1271,6 +1358,7 @@
     return true;
   }
   function close() {
+    closePresenceMenu(false);
     if (standalone) {
       var bridge = host();
       return bridge && typeof bridge.close === 'function' ? bridge.close() : window.close();
@@ -1285,10 +1373,28 @@
   function toggle() { return state.open ? (close(), true) : open(); }
 
   document.addEventListener('keydown', function (event) {
+    if (state.open && state.presenceMenuOpen) {
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); }
+        closePresenceMenu(true);
+        return;
+      }
+      if (presenceMenu && presenceMenu.contains(event.target)) {
+        var options = Array.from(presenceMenu.querySelectorAll('[role="menuitemradio"]'));
+        var index = options.indexOf(document.activeElement);
+        var next = { ArrowDown: (index + 1) % options.length, ArrowUp: (index + options.length - 1) % options.length,
+          Home: 0, End: options.length - 1 }[event.key];
+        if (next !== undefined) { event.preventDefault(); focusPresenceOption(next); }
+      }
+    }
     if (state.open && event.key === 'Escape') { event.preventDefault(); close(); }
   });
   document.addEventListener('pointerdown', function (event) {
-    if (standalone || !state.open || !panel) return;
+    if (!state.open || !panel) return;
+    if (presenceMenu && presenceMenu.contains(event.target)) return;
+    var picker = event.target && event.target.closest && event.target.closest('.neko-social-hub-presence-picker');
+    if (state.presenceMenuOpen && !picker) closePresenceMenu(false);
+    if (standalone) return;
     if (panel.contains(event.target)) return;
     var trigger = event.target && event.target.closest
       ? event.target.closest('[id$="-btn-social"]') : null;
