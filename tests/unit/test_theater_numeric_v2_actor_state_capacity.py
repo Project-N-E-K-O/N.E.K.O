@@ -32,7 +32,7 @@ def inputs(request):
 
 
 def tokens(data):
-    return actor.count_tokens('system') + actor.count_tokens('context:' + json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+    return actor.count_tokens('system') + actor.count_tokens('context:' + actor.render_prompt_context(data))
 
 
 def minimum(data):
@@ -79,11 +79,28 @@ def test_fitting_boundary_keeps_prompt_byte_exact(inputs):
     assert inputs == original
 
 
-def test_still_over_budget_rejects_without_mutating_any_input(inputs):
+def test_still_over_budget_omits_auxiliary_projection_without_mutation(inputs):
     original = deepcopy(inputs)
     limit = tokens(without_quotes(minimum(inputs))) - 1
+    actual = build(inputs, limit)
+    state = actual['story_context']['narrative_state']
+    assert state['current'] == state['last_known'] == {}
+    assert state['recent_events'] == []
+    assert state['projection'] == {'over_budget': True, 'details_omitted': True}
+    assert state['revision'] == 8 and state['coverage'] == 'partial'
+    assert tokens(actual) <= limit
+    expected = minimum(inputs)
+    expected['story_context']['narrative_state'] = state
+    assert actual == expected
+    assert inputs == original
+
+
+def test_fixed_contract_still_over_budget_rejects(inputs):
+    original = deepcopy(inputs)
+    fixed = minimum(inputs)
+    fixed['story_context'].pop('narrative_state')
     with pytest.raises(actor.NumericV2ActorError, match='fixed_context_budget_exceeded'):
-        build(inputs, limit)
+        build(inputs, tokens(fixed) - 1)
     assert inputs == original
 
 

@@ -180,7 +180,7 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
                   turn=TurnRequestV2("go", 0, case["message"]), ensure_current_binding=lambda _: _binding())
-    if formal_failure == "timeout":
+    if formal_failure in {"timeout", "body"}:
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_(review_failed|fact_boundary)"):
             await workflow.execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session("recover") == current
@@ -198,7 +198,7 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     assert actor_nodes == (["start", "start", "ending_leave"] if recover_after_rewrite
                            else ["start", "ending_leave", "ending_leave"] if formal_failure == "body"
                            else ["start", "ending_leave"])
-    assert len(reviews) == (4 if formal_failure == "body" or recover_after_rewrite else 2)
+    assert len(reviews) == (4 if formal_failure == "body" else 3 if recover_after_rewrite else 2)
 
 
 @pytest.mark.parametrize("request_quote,allowed", [

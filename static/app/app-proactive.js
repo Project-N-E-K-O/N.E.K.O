@@ -698,7 +698,7 @@
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
-            S.proactiveMiniGameInviteEnabled;
+            S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -812,7 +812,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return false;
         }
 
@@ -820,7 +820,7 @@
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return isProactiveVisionEnabledNow();
         }
 
@@ -828,7 +828,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
@@ -1234,6 +1234,7 @@
                     voice_mode: true,
                     // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                     // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                    theater_invite_enabled: !!S.proactiveTheaterInviteEnabled,
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                 };
                 _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
@@ -1371,7 +1372,7 @@
             // 如果没有选择任何搭话方式，跳过本次搭话——除非 mini-game 邀请独立开着
             // （那条路径与 enabled_modes 解耦，后端短路通道仍可能掷骰投递邀请）。
             if (availableModes.length === 0) {
-                if (!S.proactiveMiniGameInviteEnabled) {
+                if (!S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
                     console.log('未选择任何搭话方式，跳过本次搭话');
                     return;
                 }
@@ -1390,6 +1391,7 @@
                 music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                theater_invite_enabled: !!S.proactiveTheaterInviteEnabled,
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
@@ -1564,7 +1566,7 @@
             requestBody.music_cooldown = !!musicCooldownBeforeRequest;
             if (musicOccupiedBeforeRequest || musicRateLimitedBeforeRequest || musicCooldownBeforeRequest) {
                 requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'music'; });
-                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) {
+                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
                     return;
                 }
             }

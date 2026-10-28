@@ -46,10 +46,10 @@ async def test_failure_reason_alone_does_not_bypass_independent_review(tmp_path,
         turn=TurnRequestV2("one", 0, "我在这里等你完成检查。"),
         ensure_current_binding=lambda _: _binding(),
     )
-    assert len(generations) == 1
-    assert len(reviews) == 2 and reviews[1]["dispute_review"] is True
+    assert len(generations) == 2
+    assert [bool(review.get("dispute_review")) for review in reviews] == [False, False, True]
     assert result.performance["performance"] == reply
-    assert result.diagnostics["semantic_rewrite_attempts"] == 0
+    assert result.diagnostics["semantic_rewrite_attempts"] == 1
     assert await runtime.restore_session("catgirl_movement") == result.stored
 
 

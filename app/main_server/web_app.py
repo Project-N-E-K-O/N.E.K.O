@@ -732,7 +732,8 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
-    body = b"" if knowledge_path else await request.body()
+    theater_path = path.startswith("theater/")
+    body = b"" if knowledge_path or theater_path else await request.body()
     if request.scope.get("neko.instance_identity"):
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
@@ -754,6 +755,13 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
         if refused is not None:
             return refused
+    elif theater_path and request.method == "POST":
+        from utils.http.knowledge_proxy import capped_body, declared_size_problem
+        limit = 8 * 1024 * 1024 if path.endswith("/import") else 4096
+        problem = declared_size_problem(request.headers.get("content-length"), limit)
+        if problem is not None:
+            return _payload_too_large()
+        body = capped_body(request, limit)
     from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large
 
     try:
@@ -833,6 +841,8 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
+from main_routers.theater_market_router import router as theater_market_router
+app.include_router(theater_market_router)
 # Catgirl visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
 app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.

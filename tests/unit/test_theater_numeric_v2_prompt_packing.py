@@ -120,6 +120,8 @@ async def test_prompt_packing_runs_off_event_loop(monkeypatch):
             return False
 
         async def ainvoke(self, messages):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(
                 offer_present=False, valid=False, body_violations=[],
                 unsafe_suggestion_indexes=[], delivery_matches_route=True,

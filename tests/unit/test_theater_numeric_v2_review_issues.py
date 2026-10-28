@@ -145,6 +145,6 @@ async def test_location_output_room_does_not_add_calls_or_change_deadline(monkey
         actor_performance={'performance': '再见。', 'suggested_inputs': []},
     )
     assert len(calls) == 1
-    assert calls[0]['max_completion_tokens'] == (350 if completion_facts else 190) + (322 if departed else 0)
+    assert calls[0]['max_completion_tokens'] == max(320, (350 if completion_facts else 190) + (322 if departed else 0))
     assert calls[0]['timeout'] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
     assert calls[0]['max_retries'] == 0

@@ -59,11 +59,14 @@ MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = (
     "drawing_guess",
     "air_basketball",
     "watch-together",
+    "theater",
 )
 """Available game_type list for mini-game invitations.
 - On a hit, select one via random.choice and retrieve its text from
   config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type].
-- Supports soccer, badminton, draw-and-guess, air basketball, and watch-together; new games require both invitation text and a page URL.
+- Supports soccer, badminton, draw-and-guess, air basketball, watch-together, and theater.
+- Theater uses its own user toggle; other entries share the mini-game toggle.
+- New entries require invitation text and a page URL.
 - Order is irrelevant (random.choice); use a tuple to prevent runtime mutation."""
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
@@ -81,6 +84,7 @@ MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
 - Upstream: 'later' action at endpoint /api/mini_game/invite/respond."""
 
 MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
+    'theater': '/theater',
     'soccer': '/soccer_demo',
     'badminton': '/badminton_demo',
     'air_basketball': '/air_basketball',

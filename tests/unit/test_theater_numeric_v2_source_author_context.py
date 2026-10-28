@@ -8,6 +8,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -72,8 +73,7 @@ def test_transition_names_source_author_state_without_changing_payload(source_co
     source, target = transition['source_scene'], transition['target_scene']
     inputs = dict(story_context=expected['story_context'], player_address=expected['player_address'],
         current_chapter_title=source['chapter_title'], source_story_direction=source['story_direction'],
-        target_chapter_title=target['chapter_title'], shared_boundaries=transition['shared_boundaries'],
-        source_boundaries=source['boundaries'], target_boundaries=target['boundaries'],
+        target_chapter_title=target['chapter_title'],
         runtime_target_opening=target['opening_situation'], transition_contract=transition,
         recent_context=expected['recent_context'], acting_context=expected['acting_context'],
         player_input=expected['player_input'])
@@ -85,14 +85,25 @@ def test_transition_names_source_author_state_without_changing_payload(source_co
     assert list(actual['acting_context']) == [
         'story_identity', 'story_role_context', 'source_author_entry_situation', 'capability_state',
         'core_persona', 'dialogue_policy', 'source_author_entry_state', 'acting_contract',
-        'relationship_control', 'target_acting_contract', 'target_character_state',
+        'relationship_control', 'target_acting_contract',
         'target_dialogue_policy', 'target_relationship_control',
     ]
-    # After checking every output key, restore only its original label by position.
-    # Comparing the whole ordered payload also catches lost or changed nested values and history.
+    # Reconstruct the pre-projection shadow, including the target plan's move;
+    # the complete comparison still detects any changed text, condition or history.
     restored = deepcopy(actual)
-    restored['acting_context'] = dict(zip(expected['acting_context'], actual['acting_context'].values()))
-    assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected, ensure_ascii=False)
+    target_plan = restored['transition']['target_scene'].pop('author_entry_plan')
+    original_labels = {'source_author_entry_situation': 'current_scene_state',
+                       'source_author_entry_state': 'character_state'}
+    context = {original_labels.get(key, key): value
+               for key, value in restored['acting_context'].items()}
+    context['target_character_state'] = target_plan
+    restored['acting_context'] = {key: context[key] for key in expected['acting_context']}
+    # Complete hard boundaries now live once in the phase-labelled System message.
+    expected_wire = deepcopy(expected)
+    expected_wire['transition'].pop('shared_boundaries')
+    expected_wire['transition']['source_scene'].pop('boundaries')
+    expected_wire['transition']['target_scene'].pop('boundaries')
+    assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected_wire, ensure_ascii=False)
 
 
 def test_source_labels_stay_unchanged_outside_transition(source_context):
@@ -109,17 +120,21 @@ def test_source_labels_stay_unchanged_outside_transition(source_context):
     outcome = engine.resolve_turn(session, TurnRequestV2('ordinary', 0, '眼前这件事已经做完了。'), ())
     assert outcome.session.current_node_id == session.current_node_id
     opening = actor._opening_messages(engine, original['core_persona'], '小岚', '你')
-    opening_data = json.loads(opening[1].content)
+    opening_data = prompt_payload(opening[1].content)
     for context in [generic, opening_data['acting_context']]:
         assert context['current_scene_state'] == original['current_scene_state']
-        assert context['character_state'] == original['character_state']
+        expected_state = deepcopy(original['character_state'])
+        if context is opening_data['acting_context']:
+            for rule in expected_state.pop('scene_boundaries'):
+                assert rule in opening[0].content
+        assert context['character_state'] == expected_state
         assert 'source_author_entry_situation' not in context
         assert 'source_author_entry_state' not in context
     ordinary = actor._turn_messages(engine, session, outcome, '眼前这件事已经做完了。',
                                     original['core_persona'], '小岚', '你')
-    ordinary_data = json.loads(ordinary[1].content.split('\n', 1)[1])
-    assert list(ordinary_data) == ['role', 'current_scene', 'story_so_far', 'pacing', 'next_scene', 'player_input']
-    assert original['current_scene_state'] in ordinary_data['role']
-    assert original['character_state']['player_state'] in ordinary_data['role']
+    ordinary_data = prompt_payload(ordinary[1].content)
+    assert list(ordinary_data) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
+    assert original['current_scene_state'] in ordinary_data['current_scene']
+    assert original['character_state']['player_state'] in ordinary_data['current_scene']
     assert 'source_author_entry_situation' not in ordinary[1].content
     assert 'source_author_entry_state' not in ordinary[1].content

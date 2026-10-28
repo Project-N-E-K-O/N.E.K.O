@@ -3,10 +3,10 @@ from copy import deepcopy
 
 import pytest
 
-from theater_workshop.host import InProcessPackageGateway
-from theater_workshop.sdk import PackageError
-from theater_workshop.sdk import numeric_v2 as compiler_module
-from theater_workshop.sdk import numeric_v2_project_store as store_module
+from services.theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk import PackageError
+from services.theater_workshop.sdk import numeric_v2 as compiler_module
+from services.theater_workshop.sdk import numeric_v2_project_store as store_module
 
 from .numeric_v2_fixture import numeric_v2_story
 from .test_sdk_lifecycle import opened

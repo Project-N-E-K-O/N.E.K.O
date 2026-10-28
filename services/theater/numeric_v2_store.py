@@ -1258,6 +1258,31 @@ class NumericV2SessionStore:
             raw_changes = event.get("metric_changes")
             if not isinstance(raw_changes, list):
                 raise NumericV2StoreError("numeric_ledger_metric_changes_invalid")
+            performance = stored.session.performance_history[event_index]
+            if not isinstance(performance, Mapping):
+                raise NumericV2StoreError("numeric_performance_record_invalid")
+            if event.get("input_source") == "accept_invitation" or performance.get("input_source") == "accept_invitation":
+                # New control provenance is mandatory in both durable records.
+                # An empty ordinary input cannot replay a stripped marker as an
+                # old model-authored acceptance. Legacy sources remain unchanged.
+                if (event.get("input_source") != "accept_invitation"
+                        or performance.get("input_source") != "accept_invitation"
+                        or event.get("input_text") != "" or performance.get("input_text") != ""):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                for value in (event, performance):
+                    projection = value.get("player_action_projection")
+                    if (not isinstance(projection, Mapping) or projection.get("confirmed_actions") != []
+                            or projection.get("future_references") != []):
+                        raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                if event.get("transition_intent") == "unclear":
+                    # Full Review may retract an incorrect proposal without
+                    # moving the scene. No other empty control round may commit.
+                    if (event.get("from_node_id") != event.get("to_node_id")
+                            or event.get("transition_offer_invalidated") is not True
+                            or performance.get("transition_offer_invalidated") is not True):
+                        raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                elif event.get("transition_intent") != "accept":
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if (event.get("transition_intent") == "accept"
                     and event.get("from_node_id") != event.get("to_node_id")):
                 origin = pending_transition_record(
@@ -1306,6 +1331,9 @@ class NumericV2SessionStore:
                         "input_source": event.get("input_source", "freeform"),
                     }
                 )
+                if self.engine.node_uses_fact_routes(self.engine.nodes[replay_session.current_node_id]):
+                    if not isinstance(event.get("routing_fact_operations"), list):
+                        raise ValueError("routing_fact_operations_missing")
                 replayed = self.engine.resolve_turn(
                     replay_session,
                     request,
@@ -1313,8 +1341,11 @@ class NumericV2SessionStore:
                     scene_complete=scene_complete,
                     transition_intent=str(event.get("transition_intent") or "unclear"),
                     natural_ending_ready=natural_ending_ready,
-                    ledger_events=tuple(events[:event_index]) if "accepted_offer_route_id" in event else (),
+                    ledger_events=tuple(events[:event_index]) if ("accepted_offer_route_id" in event
+                        or event.get("input_source") == "accept_invitation") else (),
                     condition_narrations_enabled=condition_narrations_enabled,
+                    routing_fact_operations=tuple(event["routing_fact_operations"])
+                    if "routing_fact_operations" in event else None,
                     fact_operations=tuple(
                         dict(operation)
                         for operation in event.get("fact_operations") or []
@@ -1358,6 +1389,7 @@ class NumericV2SessionStore:
                 "after_metrics",
                 "metric_changes",
                 "fact_operations",
+                "routing_fact_operations",
                 "accepted_offer_route_id",
             ):
                 if event.get(field) != expected_event.get(field):
@@ -1487,12 +1519,18 @@ class NumericV2SessionStore:
                             transition_source_dialogue_policy(
                                 str(event.get("source_transition_dialogue_policy") or replay_session.dialogue_policy)
                             ),
+                            allow_empty=True,
                         )
                         # Contract version 3 allows an empty deduplicated beat; the target opening must remain non-empty and be injected by Runtime.
                         or not valid_scene_narration(segments[1], allow_empty=True)
-                        or not valid_scene_narration(segments[2])
+                        or not valid_scene_narration(segments[2], allow_empty=any(
+                            piece["position"] == "before" for piece in segments[2].get("fixed_narrations", ())))
                         or not valid_mixed_performance_policy(
-                            segments[2], replayed_session.dialogue_policy
+                            segments[2], replayed_session.dialogue_policy,
+                            allow_empty=any(piece["position"] == "before"
+                                for piece in segments[2].get("fixed_narrations", ()))
+                                or (replayed_session.status == "ended"
+                                    and expected_event.get("natural_ending_ready") is True),
                         )
                     ):
                         raise NumericV2StoreError("numeric_transition_performance_invalid")
@@ -1529,6 +1567,12 @@ class NumericV2SessionStore:
                 replayed_session,
                 performance_history=(*replayed_session.performance_history, deepcopy(dict(performance))),
             )
+            receipt = event.get("program_invitation")
+            if isinstance(receipt, Mapping) and receipt.get("kind") == "reviewed_proposal":
+                # Validate new receipts at their original revision, rather than
+                # trusting a copied JSON object during restore or test forks.
+                if not self.engine.invitation_acceptance_route(replay_session, ledger_events=tuple(events[:event_index + 1])):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             expected_node = str(expected_event["to_node_id"])
             expected_metrics = dict(expected_event["after_metrics"])
             seen_turns.add(turn_id)

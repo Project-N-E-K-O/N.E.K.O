@@ -1,12 +1,12 @@
 """Keep only applicable evaluator protocols without losing authorization rules."""
 
 from dataclasses import replace
-import json
 
 import pytest
 
 from services.theater.numeric_v2_evaluator import _build_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -60,15 +60,20 @@ def test_evaluator_protocols_follow_available_metrics_and_invitation(
     player_input = f"我准备去{destination}，但先问清楚，尚未出发。"
     messages = _build_messages(engine, session, player_input)
     system = messages[0].content
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
 
     assert data["player_input"] == player_input
     assert bool(data["metrics"]) == metrics
-    assert ("每个数值每轮最多变化一次" in system) == metrics
-    assert ("没有四回合冷却" in system) == metrics
-    if not metrics:
-        assert "metric_changes 必须为 {}" in system
     has_invitation = invitation in {"active", "withdrawn"}
+    focused_ending = "natural_ending_context" in data["transition_preview"] and not has_invitation
+    if focused_ending:
+        assert "每项最多一次" in system and "新的行为可连续计分" in system
+        assert "没有依据或 metrics 为空则 metric_changes={}" in system
+    else:
+        assert ("每个数值每轮最多变化一次" in system) == metrics
+        assert ("没有四回合冷却" in system) == metrics
+        if not metrics:
+            assert "metric_changes 必须为 {}" in system
     assert ("pending_transition" in data) == has_invitation
     assert ("pending_transition.status=withdrawn" in system) == has_invitation
     assert ("若 pending_transition.immediately_previous=false" in system) == has_invitation
@@ -76,12 +81,17 @@ def test_evaluator_protocols_follow_available_metrics_and_invitation(
         assert data["pending_transition"]["status"] == invitation
         assert f"要和我一起去{destination}吗？" in data["pending_transition"]["visible_performance"]
     else:
-        assert "transition_reply_target 固定为 unclear" in system
+        assert "transition_reply_target=unclear" in system
     # Missing protocols must not strip independent player-action, evidence, fact or ending duties.
     assert "interaction_intent" not in system
-    assert "询问下一步安排不代表同意执行" in system
-    assert "公开依据只能来自本次访问的实际演出" in system
-    assert "不满足主动请求条件则 unclear，不能空口 accept" in system
+    if focused_ending:
+        assert "提问、准备或含糊同意都不构成公开授权" in system
+        assert "current_visit=true、source=performance" in system
+        assert "其余 transition_intent=unclear" in system
+    else:
+        assert "询问下一步安排不代表同意执行" in system
+        assert "公开依据只能来自本次访问的实际演出" in system
+        assert "不满足主动请求条件则 unclear，不能空口 accept" in system
     assert "natural_ending_ready" in system
     assert "subject、action、object、result" in system
     assert "prop:letter" in data["current_story_beat"]["fact_contract"]["facts"]

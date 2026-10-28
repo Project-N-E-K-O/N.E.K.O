@@ -113,6 +113,7 @@ from main_logic.proactive_chat.mini_game_invite import (
     _mini_game_invite_get_state,
     _mini_game_invite_record_delivered,
     _pick_mini_game_type,
+    _select_theater_story,
 )
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
@@ -868,6 +869,7 @@ async def handle_proactive_chat(
         # after flag already bypassed upstream gates; toggle returned None there and caller
         # continued ordinary source picking, leaking through blocked contexts.
         _user_invite_toggle = command.mini_game_invite_enabled
+        _theater_invite_toggle = command.theater_invite_enabled
 
         # Non-None ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` bypasses all upstream
         # early-return gates (closed / skip_probability / restricted_screen_only),
@@ -879,7 +881,9 @@ async def handle_proactive_chat(
         # CodeRabbit Major: checking outside ``_maybe_deliver_mini_game_invite`` is necessary,
         # since upstream gates already passed inside, too late to guarantee forced delivery.
         _debug_force_invite = (
-            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None and _user_invite_toggle
+            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+            and (_theater_invite_toggle if MINI_GAME_INVITE_FORCE_GAME_TYPE == "theater"
+                 else _user_invite_toggle)
         )
 
         # ========== Hard short-circuit: propensity=closed ==========
@@ -1081,18 +1085,27 @@ async def handle_proactive_chat(
                 _gi_prob = _gi_prob_default
             branch_game_invite = False
             chosen_game_type: str | None = None
+            selected_theater = None
             gi_prompt: str | None = None
-            if MINI_GAME_INVITE_ENABLED and _user_invite_toggle and _gi_prob > 0:
+            if MINI_GAME_INVITE_ENABLED and (_user_invite_toggle or _theater_invite_toggle) and _gi_prob > 0:
                 import random as _random
 
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
+                    chosen_game_type = _pick_mini_game_type(
+                        lanlan_name, manager=mgr, user_toggle_enabled=_user_invite_toggle,
+                        theater_toggle_enabled=_theater_invite_toggle,
+                    )
+                    if chosen_game_type == "theater":
+                        selected_theater = await _select_theater_story()
+                        if selected_theater is None:
+                            chosen_game_type = None
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
                             game_type=chosen_game_type,
                             master_name=master_name_current,
                             lang=_break_lang,
+                            theater_story=selected_theater,
                         )
                         if gi_prompt is not None:
                             branch_game_invite = True
@@ -1137,6 +1150,7 @@ async def handle_proactive_chat(
                     _mini_game_invite_get_state(lanlan_name)["last_game_type"] = (
                         chosen_game_type
                     )
+                    _mini_game_invite_get_state(lanlan_name)["theater_selection"] = selected_theater
                     # Persist counter+1 + ever_delivered atomically (mini-game cooldown
                     # contract). Track success so we can fall back to the plain
                     # _increment_proactive_chat_total if persistence fails — otherwise
@@ -1382,6 +1396,7 @@ async def handle_proactive_chat(
             invite_lang=invite_lang,
             master_name=master_name_current,
             user_toggle_enabled=_user_invite_toggle,
+            theater_toggle_enabled=_theater_invite_toggle,
             round_id=lifecycle.screenshot_request_id,
             **state_storage_kwargs,
         )

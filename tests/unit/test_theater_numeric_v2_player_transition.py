@@ -4,8 +4,9 @@ from dataclasses import replace
 import json
 import pytest
 from services.theater.numeric_v2_actor import _turn_messages
-from services.theater.numeric_v2_evaluator import _build_transition_judge_messages, _parse_output
+from services.theater.numeric_v2_evaluator import _build_messages, _build_transition_judge_messages, _parse_output
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2, MetricChangeV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
@@ -39,6 +40,47 @@ def initiation_cases():
             ('hidden', f'带我去{target}吧。', False, 'unclear'),
         ]:
             yield dict(name=place+'_'+name, expected_intent=intent, **initiation_case(place,target,public=public,message=message))
+
+
+@pytest.mark.asyncio
+async def test_evaluator_distinguishes_current_choice_from_earlier_player_input(tmp_path):
+    case = initiation_case()
+    runtime = NumericV2Runtime(case['engine'], tmp_path)
+    current = await runtime.start_session(session_id='new_choice', catgirl_binding=_binding(),
+        opening_performance=case['session'].opening_performance)
+    old = '你先去，我留在这里。'
+    outcome = runtime.prepare_turn(current, TurnRequestV2('stay', 0, old), ())
+    current = await runtime.commit_turn(outcome, {'performance': '好，我先去，你留在这里。', 'suggested_inputs': []})
+    latest = '我改主意了，我们一起去阅览室。'
+    messages = _build_messages(case['engine'], current.session, latest)
+    data = prompt_payload(messages[1].content)
+    assert old in json.dumps(data['scene_context'], ensure_ascii=False)
+    assert data['player_input'] == latest and list(data)[-1] == 'player_input'
+    assert data['player_input_revision'] == current.session.revision + 1
+
+
+@pytest.mark.parametrize('place,target,offer,entry,aftermath', [
+    ('灯会渡口', '船到岸边', '现在点亮引路灯，等摆渡人靠岸吗？',
+     '引路灯亮起，摆渡人看见灯光后划向岸边。', '摆渡人靠岸后等待玩家决定是否登船。'),
+    ('剧团值班台', '演员候场', '敲铃通知演员候场吧，可以吗？',
+     '铃声传进后台，演员陆续来到候场区。', '演员提出临时换角，需要玩家另行决定。'),
+])
+def test_evaluator_compares_public_entry_action_without_target_plot(place, target, offer, entry, aftermath):
+    """The real packed request retains entry authorization while future decisions stay out of its preview."""
+    case = initiation_case(place, target, message='就按你说的做。')
+    engine, session = case['engine'], case['session']
+    engine.nodes['start']['route_gates'][1]['transition_contract'].update(
+        reason=offer, bridge_scene_narration=entry)
+    engine.nodes['ending_leave']['story_beat']['opening_scene'] = aftermath
+    session = replace(session, opening_performance={'performance': offer, 'suggested_inputs': []})
+    messages = _build_messages(engine, session, case['message'])
+    payload = prompt_payload(messages[1].content)
+    preview = payload['transition_preview']
+    assert preview['transition_direction'] == offer
+    assert preview['entry_movement'] == entry
+    assert 'target_opening_situation' not in preview
+    assert aftermath not in messages[1].content
+    assert offer in json.dumps(payload['scene_context'], ensure_ascii=False)
 
 
 @pytest.mark.asyncio
@@ -87,14 +129,14 @@ def test_initiation_uses_updated_metrics_and_does_not_offer_unavailable_route():
 def test_initiation_reaches_actor_and_formal_guard_without_becoming_natural_ending():
     """An erroneous ending flag must not make the Actor mark an ordinary transition as a natural ending."""
     c = initiation_case(); engine,session = c['engine'],c['session']
-    parsed = _parse_output(json.dumps(dict(scene_complete=False,metric_changes={},transition_intent='initiate',public_destination_quote='左侧走廊通往阅览室，通道已经开放。')),engine,c['message'],session)
+    parsed = _parse_output(json.dumps(dict(scene_complete=False,metric_changes={},transition_intent='initiate',public_destination_quote='左侧走廊通往阅览室，通道已经开放。',exit_matches=True,exit_comparison='玩家要求与出口都是前往阅览室。')),engine,c['message'],session)
     outcome = engine.resolve_turn(session,TurnRequestV2('go',0,c['message']),(),transition_intent=parsed.transition_intent,natural_ending_ready=True)
     actor = _turn_messages(engine,session,outcome,c['message'],'安静克制。','测试猫娘','你')
-    data = json.loads(actor[1].content.split('：',1)[1])
+    data = prompt_payload(actor[1].content)
     assert data['transition']['player_initiated'] is True
     assert not data['transition'].get('natural_ending')
     messages = _build_transition_judge_messages(engine,session,actor_performance={'segments':[],'suggested_inputs':[]},player_input=c['message'],transition_outcome=outcome)[0]
-    data = json.loads(messages[1].content.split('：',1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['transition_authorization']['transition_intent'] == 'initiate'
     assert '左侧走廊' in json.dumps(data['scene_context'],ensure_ascii=False)
     assert '作者未来材料不能充当公开证据' in messages[0].content
@@ -105,7 +147,8 @@ def test_fabricated_or_missing_public_quote_cannot_authorize(quote, caplog):
     """Source verification constrains initiation only; existing accept intent follows Runtime invitation rules, and dispute review must still reject fabricated evidence."""
     from services.theater.numeric_v2_evaluator import _parse_transition_judge_output
     c = initiation_case()
-    payload = dict(scene_complete=False, metric_changes={}, transition_intent='initiate', public_destination_quote=quote)
+    payload = dict(scene_complete=False, metric_changes={}, transition_intent='initiate', public_destination_quote=quote,
+                   exit_matches=True, exit_comparison='玩家要求与出口都是前往阅览室。')
     result = _parse_output(json.dumps(payload), c['engine'], c['message'], c['session'])
     assert result.transition_intent == 'unclear'
     assert 'public destination quote rejected' in caplog.text

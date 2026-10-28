@@ -2,18 +2,18 @@
 from copy import deepcopy
 import json
 import pytest
-from theater_workshop.sdk.generation.evidence import validate_evidence_review, review_targets
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.evidence import validate_evidence_review, review_targets
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
 from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _quality_wire_payload, _plan_review_reply
 
 
 def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples():
     # All five entry points must use the same semantics so literary/revision stages cannot reinterpret the framework after factual review corrects it.
-    from theater_workshop.sdk.generation.runtime_rules import SCORING_RUNTIME_RULES
-    from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
-    from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
+    from services.theater_workshop.sdk.generation.runtime_rules import SCORING_RUNTIME_RULES
+    from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
     for prompt in (FACT_REVIEW_PROMPT, EVIDENCE_REVIEW_PROMPT, _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT, PLAN_REVIEW_PROMPT):
         assert prompt.count(SCORING_RUNTIME_RULES) == 1
         # Fact checking must not promote creative preferences into runtime prohibitions; revisions must preserve existing causality.
@@ -33,6 +33,28 @@ def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples(
     assert "本幕准备分工与另一时段的见面应分开邀约" in SCORING_RUNTIME_RULES
     assert "world.rules 与 intervention_capacity 是未直接导出的策划字段" in SCORING_RUNTIME_RULES
     assert all(name not in SCORING_RUNTIME_RULES for name in ("种子", "天文馆", "圆扣", "明信片"))
+
+
+def test_exit_execution_rule_is_shared_by_generation_review_and_revision():
+    from services.theater_workshop.sdk.generation.runtime_rules import EXIT_EXECUTION_RULE
+    from services.theater_workshop.sdk.generation.numeric_v2 import (
+        _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
+        _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT,
+    )
+    from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
+    from services.theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
+
+    for prompt in (
+        _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
+        _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT, FACT_REVIEW_PROMPT,
+        EVIDENCE_REVIEW_PROMPT, PLAN_REVIEW_PROMPT, _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT,
+    ):
+        assert prompt.count(EXIT_EXECUTION_RULE) == 1
+    # 不能再用“出口都在接受后”把尚待选择的按钮或邀约读成已完成的桥段。
+    assert "outgoing_routes是来源核心互动成立、玩家接受换场后的桥段" not in EVIDENCE_REVIEW_PROMPT
+    assert "它属于当前节点互动完成后的出幕时点，must_preserve 可保留本幕目标已交付的结果" not in FACT_REVIEW_PROMPT
 
 
 def review_payload(issues, verdict="supported", keep=()):
@@ -73,15 +95,18 @@ def test_evidence_review_rejects_incomplete_or_expanded_results(case):
 
 
 @pytest.mark.parametrize("verdict", ["supported", "unsupported", "uncertain", "no_issues"])
-def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdict):
+@pytest.mark.parametrize("format_repair", [False, True])
+def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdict, format_repair):
     story, authoring = _quality_story_context();before = deepcopy(story)
     assessor = NumericV2QualityAssessor();calls = []
     def reply(messages, **kwargs):
         request = json.loads(messages[1]["content"]);calls.append(kwargs["operation"])
         assert kwargs["max_retries"] == 1
         if kwargs["operation"] == "numeric_v2_fact_review":
-            return json.dumps({"checked_node_ids": request["checked_node_ids"], "issues": []} if verdict == "no_issues" else wire_fact(request), ensure_ascii=False)
-        if kwargs["operation"] == "numeric_v2_fact_evidence_review":
+            return json.dumps({"checked_node_ids": request["checked_node_ids"], "issues": []} if verdict == "no_issues" or request["checked_node_ids"] != ["mainline_01"] else wire_fact(request), ensure_ascii=False)
+        if kwargs["operation"] == "numeric_v2_fact_evidence_review" and format_repair:
+            return "{"
+        if kwargs["operation"] in {"numeric_v2_fact_evidence_review", "numeric_v2_fact_evidence_review_format_repair"}:
             return json.dumps(review_payload(request["proposed_issues"], verdict, keep=("/opening_scene",)), ensure_ascii=False)
         if kwargs["operation"] == "numeric_v2_repair_plan_review":
             return _plan_review_reply(messages)
@@ -95,7 +120,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
         return json.dumps(_quality_wire_payload(_quality_payload()), ensure_ascii=False)
     assessor.call_llm = reply
     report = assessor.assess(story=story, authoring=authoring, setup=_generation_setup())
-    assert len(calls) == (4 if verdict == "supported" else 2 if verdict == "no_issues" else 3)
+    assert len(calls) == len(story["nodes"]) + (3 if verdict == "supported" else 1 if verdict == "no_issues" else 2) + int(format_repair and verdict != "no_issues")
     assert report["passed"] is (verdict != "supported")
     assert report["repair_plan_version"] == 3
     assert story == before
@@ -131,7 +156,7 @@ def test_rejected_fact_id_cannot_supply_literary_deduction():
 
 
 def test_protected_field_blocks_literary_parent_and_unnecessary_node():
-    from theater_workshop.sdk.generation.repair import classify_repair
+    from services.theater_workshop.sdk.generation.repair import classify_repair
     # When an array item is preserved, literary plans cannot bypass that by replacing the whole array; nodes requiring no change within the same issue remain non-executable.
     story, authoring = _quality_story_context();assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)

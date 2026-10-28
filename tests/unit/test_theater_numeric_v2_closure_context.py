@@ -1,9 +1,9 @@
 """Regress complete closure scope and subsequent direction projections; reuse the fixtures for real-model positive and negative comparisons."""
 from dataclasses import replace
-import json
 import pytest
 from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_runtime import NumericV2Engine
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_prompt_contract import _session
 
@@ -45,7 +45,7 @@ def test_evaluator_keeps_full_closure_scope_and_route_reason(case):
     """Keep the full causal direction within the 5200-token budget without truncating its tail or removing complete current evidence."""
     engine, session = case['engine'], case['session']
     messages = ev._build_messages(engine, session, case['message'])
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['current_story_beat']['scene_direction'] == engine.nodes['start']['story_beat']['summary']
     assert ev.count_tokens(data['current_story_beat']['scene_direction']) > ev.NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS
     assert data['transition_preview']['transition_direction'] == engine.nodes['start']['route_gates'][0]['transition_contract']['reason']
@@ -57,11 +57,11 @@ def test_evaluator_keeps_full_closure_scope_and_route_reason(case):
 def test_actor_identity_instruction_does_not_use_framework_name(phase):
     """Use the script's performer identity without exposing implementation identifiers in the first identity instruction."""
     from services.theater.numeric_v2_actor import _system_prompt
-    prompt = _system_prompt(catgirl_name='测试猫娘', player_address='你', phase=phase)
+    prompt = _system_prompt(catgirl_name='测试猫娘', phase=phase)
     if phase == 'transition_compact':
         # A formal transition also generates NPC narration; catgirl identity remains determined by the dynamic character, not the implementation name.
-        assert '猫娘写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
-        assert '当前猫娘由“测试猫娘”扮演。' in prompt
+        assert '你的回应写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
+        assert '你扮演的角色以角色设定中的姓名为准。' in prompt
     else:
-        assert prompt.startswith('你负责扮演当前猫娘')
+        assert '你是下方角色设定中姓名所标明的角色' in prompt.split('。', 1)[0]
     assert 'N.E.K.O Numeric v2 演绎 Actor' not in prompt

@@ -1,4 +1,4 @@
-"""Completed goal projections preserve actual events instead of rewriting their actor."""
+"""Completed values retain registration metadata without inventing event provenance."""
 
 from copy import deepcopy
 from types import SimpleNamespace
@@ -13,7 +13,7 @@ from services.theater.numeric_v2_cast import NumericV2CastProjection
     ("玩家修好了角色的发饰。", "（收起工具）我自己修好了发饰。"),
     ("玩家接通了备用电源。", "（合上电闸）备用电源是我接通的。"),
 ])
-def test_completed_goal_uses_recorded_evidence_not_authored_actor(description, actual):
+def test_completed_goal_keeps_value_without_assigning_its_actor_from_registration(description, actual):
     key = "scene:start:completed"
     definition = {"value_type": "bool", "visibility": "public", "description": description}
     engine = SimpleNamespace(fact_contract={key: definition})
@@ -31,13 +31,10 @@ def test_completed_goal_uses_recorded_evidence_not_authored_actor(description, a
     row = context["all"][0]
     assert row["satisfied"] is True and row["committed_value"] is True
     assert "description" not in row
-    assert row["evidence_revision"] == 5
-    evidence = context["completion_evidence"][0]
-    assert evidence["revision"] == 5
-    assert evidence["player_input"] == record["input_text"]
-    action, dialogue = actual[1:].split("）", 1)
-    assert {"type": "action", "text": action} in evidence["content"]
-    assert {"type": "dialogue", "speaker_id": "active_catgirl", "text": dialogue} in evidence["content"]
+    assert row["registration_revision"] == 5
+    assert "evidence_revision" not in row
+    assert "completion_evidence" not in context
+    assert actual not in str(context)
     assert (definition, record, facts, node) == before
 
 
@@ -55,15 +52,16 @@ def test_missing_record_never_turns_author_plan_into_historical_evidence(value, 
     )
     row = context["all"][0]
     assert row["satisfied"] is expected_satisfied
-    assert context.get("completion_evidence", []) == []
+    assert "completion_evidence" not in context
     if expected_satisfied:
         assert "description" not in row
-        assert row["evidence_revision"] == 8
+        assert row["registration_revision"] == 8
+        assert "evidence_revision" not in row
     else:
         assert row["description"] == definition["description"]
 
 
-def test_pending_goals_keep_their_definition_and_shared_evidence_is_not_duplicated():
+def test_pending_goals_keep_definition_and_completed_values_do_not_attach_unbound_prose():
     definitions = {key: {"value_type": "bool", "visibility": "public", "description": f"目标{key}"}
                    for key in ("first", "second", "pending")}
     session = SimpleNamespace(
@@ -79,11 +77,12 @@ def test_pending_goals_keep_their_definition_and_shared_evidence_is_not_duplicat
     )
     assert context["status"] == "pending"
     assert context["all"][-1]["description"] == "目标pending"
-    assert len(context["completion_evidence"]) == 1
-    assert context["completion_evidence"][0]["revision"] == 2
+    assert [row["registration_revision"] for row in context["all"][:2]] == [2, 2]
+    assert "completion_evidence" not in context
+    assert "新的实际结果" not in str(context)
 
 
-def test_large_evidence_is_omitted_whole_without_inventing_or_truncating_a_fact():
+def test_large_registration_round_cannot_be_attached_as_completion_evidence():
     key = "scene:start:completed"
     session = SimpleNamespace(
         story_state={"facts": {key: {"value": True, "source_revision": 1, "updated_revision": 1}}},
@@ -96,6 +95,25 @@ def test_large_evidence_is_omitted_whole_without_inventing_or_truncating_a_fact(
         {"completion_contract": {"all": [{"key": key, "equals": True}]}},
         SimpleNamespace(session=session), cast=NumericV2CastProjection("", "", "玩家", "角色"),
     )
-    assert context["completion_evidence"] == []
-    assert context["all"][0]["evidence_revision"] == 1
+    assert "completion_evidence" not in context
+    assert context["all"][0]["registration_revision"] == 1
     assert "description" not in context["all"][0]
+
+
+@pytest.mark.parametrize("revision", [0, 3])
+def test_legacy_source_revision_is_only_registration_metadata(revision):
+    key = "scene:start:completed"
+    session = SimpleNamespace(story_state={"facts": {key: {
+        "value": True, "source_revision": revision,
+    }}}, performance_history=())
+    context = _completion_fact_prompt_context(
+        SimpleNamespace(fact_contract={key: {
+            "value_type": "bool", "visibility": "public", "description": "玩家完成了操作。",
+        }}),
+        {"completion_contract": {"all": [{"key": key, "equals": True}]}},
+        SimpleNamespace(session=session), cast=NumericV2CastProjection("", "", "玩家", "角色"),
+    )
+    assert context["status"] == "satisfied"
+    assert context["all"][0]["registration_revision"] == revision
+    assert "evidence_revision" not in context["all"][0]
+    assert "completion_evidence" not in context

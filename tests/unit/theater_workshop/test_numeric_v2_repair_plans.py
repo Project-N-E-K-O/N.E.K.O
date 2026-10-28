@@ -3,8 +3,8 @@ from copy import deepcopy
 import json
 import pytest
 
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
-from theater_workshop.sdk.generation.repair import classify_repair, assign_shared_plans
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.repair import classify_repair, assign_shared_plans
 from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _reviewed_fixture
 
 

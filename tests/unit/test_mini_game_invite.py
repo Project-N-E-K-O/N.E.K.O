@@ -11,6 +11,7 @@ Three contract layers:
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -1725,6 +1726,7 @@ def test_invite_game_configs_and_i18n_complete():
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
     expected_urls = {
+        'theater': '/theater',
         'watch-together': '/watch_together',
         'soccer': '/soccer_demo',
         'badminton': '/badminton_demo',
@@ -1814,3 +1816,163 @@ async def test_short_circuit_invite_respects_round_ownership(monkeypatch, retire
             == "current-round"
         )
     assert state_machine.proactive_round_id == "current-round"
+
+
+@pytest.mark.parametrize(
+    ('games_enabled', 'theater_enabled', 'expected'),
+    [(False, True, ['theater']), (True, False, ['soccer', 'badminton', 'air_basketball']),
+     (False, False, []), (True, True, ['soccer', 'badminton', 'air_basketball', 'theater'])],
+)
+def test_theater_invite_toggle_selects_independently(monkeypatch, games_enabled, theater_enabled, expected):
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES',
+                        ('soccer', 'badminton', 'air_basketball', 'theater'))
+    seen = []
+    monkeypatch.setattr('random.choice', lambda candidates: seen.extend(candidates) or candidates[0])
+    selected = sr._pick_mini_game_type(
+        LANLAN, user_toggle_enabled=games_enabled, theater_toggle_enabled=theater_enabled,
+    )
+    assert seen == expected
+    assert selected == (expected[0] if expected else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('choice,action', [('accept', 'open_game'), ('decline', 'cooldown'), ('later', 'suppress')])
+async def test_theater_invite_reuses_response_and_cooldown(monkeypatch, choice, action):
+    from main_logic.proactive_chat import mini_game_invite as invites
+    monkeypatch.setattr(invites, "_select_theater_story", AsyncMock(return_value={"id": 42, "revision": 3, "file_sha256": "a" * 64}))
+    from urllib.parse import parse_qs, urlparse
+
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(), activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER,
+        user_toggle_enabled=False, theater_toggle_enabled=True,
+    )
+    assert out is not None
+    assert out['game_type'] == 'theater'
+    result = sr._apply_mini_game_invite_choice(LANLAN, choice, source='button')
+    assert result['action'] == action
+    assert sr._mini_game_invite_in_cooldown(LANLAN, 'theater')
+    if choice == 'accept':
+        parsed = urlparse(result['game_url'])
+        assert parsed.path == '/theater'
+        assert parse_qs(parsed.query) == {'lanlan_name': [LANLAN], 'session_id': [out['invite_session_id']],
+                                            'market': ['selected'], 'share_id': ['42'], 'market_revision': ['3'],
+                                            'file_sha256': ['a' * 64]}
+        assert result['game_type'] == 'theater'
+    else:
+        assert 'game_url' not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('enabled', [False, True])
+async def test_forced_theater_invite_respects_own_toggle(monkeypatch, enabled):
+    from main_logic.proactive_chat import mini_game_invite as invites
+    monkeypatch.setattr(invites, "_select_theater_story", AsyncMock(return_value={"id": 42, "revision": 3, "file_sha256": "a" * 64}))
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_FORCE_GAME_TYPE', 'theater')
+    out = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=_make_mgr(), activity_snapshot=None,
+        invite_lang='en', master_name=MASTER,
+        user_toggle_enabled=not enabled, theater_toggle_enabled=enabled,
+    )
+    assert (out is not None) is enabled
+
+
+def test_theater_toggle_payload_and_persistence_are_independent():
+    from main_logic.proactive_chat.contracts import ProactiveChatCommand
+    from utils.preferences import _validate_conversation_settings
+
+    command = ProactiveChatCommand.from_payload({
+        'mini_game_invite_enabled': False, 'theater_invite_enabled': True,
+    })
+    assert command.theater_invite_enabled and not command.mini_game_invite_enabled
+    assert not ProactiveChatCommand.from_payload({}).theater_invite_enabled
+    settings = {'proactiveMiniGameInviteEnabled': False, 'proactiveTheaterInviteEnabled': True}
+    assert _validate_conversation_settings(settings) == settings
+
+
+@pytest.mark.parametrize('title', ['《霓虹下的猫耳重构》', '霓虹下的猫耳重构'])
+@pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
+def test_theater_invite_renders_one_clean_title_in_every_locale(invite_lang, title):
+    """Bundled meta.title values carry their own brackets; every locale template adds more."""
+    from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
+
+    line = _render_mini_game_invite_line(
+        'theater', invite_lang, '阿八',
+        selected_story={'title': title}, synopsis='霓虹牌下少了一只猫耳',
+    )
+    # 标题正文出现且只出现一次，外层定界符不叠加。
+    assert line.count('霓虹下的猫耳重构') == 1, line
+    for opening, closing in ('《》', '『』', '「」', '“”', '‘’', '«»'):
+        assert opening * 2 not in line and closing * 2 not in line, line
+    # 摘要是模型现生成的、不保证句末标点，而中日韩模板把它直接接在下一句前面。
+    # 这里直接验「摘要正文后紧跟一个句末标点」，否则 zh 会读成「…一只猫耳要不要陪我…」。
+    after = line.split('霓虹牌下少了一只猫耳', 1)[1][:1]
+    assert after in '。.', (invite_lang, after, line)
+    # 带空格的模板遇到摘要时不应留下连续空格。
+    assert '  ' not in line, line
+
+
+@pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
+def test_theater_invite_without_synopsis_keeps_single_spaces(invite_lang):
+    """A timed-out or oversized summary returns an empty string, doubling a template space."""
+    from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
+
+    line = _render_mini_game_invite_line(
+        'theater', invite_lang, '阿八',
+        selected_story={'title': '《月台尽头的猫灯》'}, synopsis='',
+    )
+    assert '  ' not in line, (invite_lang, line)
+    assert line.count('月台尽头的猫灯') == 1, line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('synopsis', ['你我在末班列车月台守住一盏将熄的猫灯，寻找失约旅人的线索。', ''])
+async def test_theater_invitation_uses_short_synopsis_and_freezes_same_market_story(monkeypatch, synopsis):
+    selected = {'id': 42, 'revision': 3, 'file_sha256': 'a' * 64,
+                'title': '月台尽头的猫灯', 'background': '很长的公开前情。' * 100}
+    monkeypatch.setattr(sr, '_select_theater_story', AsyncMock(return_value=selected))
+    summarizer = AsyncMock(return_value=synopsis)
+    monkeypatch.setattr(sr, '_summarize_theater_invite', summarizer)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    mgr = _make_mgr()
+    result = await sr._maybe_deliver_mini_game_invite(
+        lanlan_name=LANLAN, mgr=mgr, activity_snapshot=_make_snapshot(),
+        invite_lang='zh', master_name=MASTER, user_toggle_enabled=False, theater_toggle_enabled=True)
+    assert result is not None
+    text = mgr.feed_tts_chunk.call_args.args[0]
+    assert selected['title'] in text and '要不要' in text
+    assert not synopsis or synopsis in text
+    assert selected['background'] not in text
+    assert sr._mini_game_invite_get_state(LANLAN)['theater_selection'] == selected
+    summarizer.assert_awaited_once_with(selected, 'zh')
+    assert 'share_id=42' in sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='button')['game_url']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply,expected', [('你我在雨夜守护一盏灯，寻找失约旅人的线索。', True), ('长' * 81, False)])
+async def test_theater_synopsis_is_one_bounded_call_with_public_premise(monkeypatch, reply, expected):
+    from utils import config_manager, llm_client
+    from utils.tokenize import count_tokens
+    seen = []
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def ainvoke(self, messages):
+            seen.extend(messages)
+            return types.SimpleNamespace(content=reply)
+    config = types.SimpleNamespace(aget_model_api_config=AsyncMock(return_value={
+        'model': 'test', 'base_url': 'http://test.invalid', 'api_key': 'test'}))
+    monkeypatch.setattr(config_manager, 'get_config_manager', lambda: config)
+    factory = AsyncMock(return_value=Client())
+    monkeypatch.setattr(llm_client, 'create_chat_llm_async', factory)
+    result = await sr._summarize_theater_invite({'title': '猫灯' * 300, 'background': '公开前情。' * 1000}, 'zh-CN')
+    assert result == (reply if expected else '')
+    assert len(result) <= 80
+    factory.assert_awaited_once()
+    assert factory.call_args.kwargs['max_retries'] == 0
+    assert '公开前情' in seen[1].content
+    assert '50 Chinese characters' in seen[0].content
+    public = json.loads(seen[1].content)
+    assert count_tokens(public['title']) <= 256
+    assert count_tokens(public['background']) <= 2048

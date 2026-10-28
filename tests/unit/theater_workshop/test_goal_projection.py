@@ -3,8 +3,8 @@ from copy import deepcopy
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
 
 
 @pytest.mark.parametrize("kind,owner,output", [

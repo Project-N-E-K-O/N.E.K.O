@@ -9,7 +9,9 @@ from jsonschema import Draft202012Validator
 
 from services.theater import numeric_v2_actor as actor
 from services.theater import numeric_v2_evaluator as evaluator
+from services.theater.numeric_v2_actor_output import _parse_output
 from services.theater.numeric_v2_narrative import parse_narrative_events
+from services.theater.numeric_v2_performance import content_blocks
 from services.theater.numeric_v2_structured_output import (
     actor_output_schema, contract_output_schema, narrative_output_schema, review_output_schema, response_format_for,
 )
@@ -45,13 +47,65 @@ def test_only_supported_provider_and_model_get_schema(changes, enabled):
 
 
 ACTOR_CASES = [
-    ({}, {'performance': '我只知道记录里的内容。', 'suggested_inputs': ['（点头）', '（保持沉默）'], 'transition_offered': False}),
+    ({}, {'performance': '我只知道记录里的内容。', 'transition_offer': '', 'suggested_inputs': ['（点头）', '（保持沉默）']}),
     ({'opening_required': True}, {'scene_narration': '灯光亮起。', 'performance': '准备好了。', 'suggested_inputs': ['（点头）', '（保持沉默）'], 'transition_offered': False}),
     ({'transition_required': True}, {'source_scene_narration': '', 'source_performance': '好。', 'target_performance': '到了。', 'bridge_scene_narration': '门打开了。', 'target_scene_narration': '走廊亮着灯。', 'suggested_inputs': []}),
     ({'suggestions_only': True}, {'suggested_inputs': ['（点头）', '（保持沉默）']}),
     ({'transition_suggestions_only': True}, {'accept_input': '（点头）好，我们过去。', 'alternative_inputs': ['（摇头）先留在这里。']}),
-    ({'fact_candidates_expected': True}, {'performance': '灯亮了。', 'suggested_inputs': [], 'transition_offered': False, 'fact_candidates': [{'key': 'ready', 'value': True, 'evidence_quote': '灯亮了'}]}),
+    ({'fact_candidates_expected': True}, {'performance': '灯亮了。', 'transition_offer': '', 'suggested_inputs': [], 'fact_candidates': [{'key': 'ready', 'value': True, 'evidence_quote': '灯亮了'}]}),
 ]
+
+
+@pytest.mark.parametrize('flags,fields', [
+    ({}, ['scene_update', 'performance', 'transition_offer', 'suggested_inputs']),
+    ({'fact_candidates_expected': True}, ['scene_update', 'performance', 'transition_offer',
+                                        'suggested_inputs', 'fact_candidates']),
+    ({'opening_required': True}, ['scene_narration', 'performance', 'suggested_inputs', 'transition_offered']),
+    ({'transition_required': True}, ['source_scene_narration', 'source_performance',
+                                  'bridge_scene_narration', 'target_scene_narration',
+                                  'target_performance', 'suggested_inputs']),
+])
+def test_actor_schema_generates_text_in_playback_order(flags, fields):
+    schema = actor_output_schema(**flags)
+
+    assert list(schema['properties']) == fields
+    assert schema['required'] == [field for field in fields if field != 'scene_update']
+
+
+@pytest.mark.parametrize('scene_first', [False, True])
+def test_ordinary_scene_first_generation_preserves_parser_and_playback(scene_first):
+    payload = {'performance': '（收起文书）那就按规矩办。', 'suggested_inputs': [],
+               'transition_offer': '', 'scene_update': '管事答道：“登记已经完成。”',
+               'fact_candidates': []}
+    if scene_first:
+        payload = {'scene_update': payload['scene_update'], **payload}
+    Draft202012Validator(actor_output_schema(fact_candidates_expected=True)).validate(payload)
+
+    parsed = _parse_output(json.dumps(payload, ensure_ascii=False), fact_candidates_expected=True)
+
+    assert parsed['fact_candidates'] == []
+    assert parsed['suggested_inputs'] == []
+    assert parsed['transition_offered'] is False
+    assert content_blocks(parsed) == [
+        {'type': 'narration', 'text': '管事答道：“登记已经完成。”'},
+        {'type': 'action', 'text': '收起文书'},
+        {'type': 'dialogue', 'speaker_id': 'active_catgirl', 'text': '那就按规矩办。'},
+    ]
+
+
+@pytest.mark.parametrize('playback_order', [False, True])
+def test_transition_generation_order_preserves_existing_fields(playback_order):
+    payload = {'source_scene_narration': '管事点头放行。', 'source_performance': '好，我们走。',
+               'target_performance': '天晴了。', 'bridge_scene_narration': '两人走到门口。',
+               'target_scene_narration': '门外雪已经停了。', 'suggested_inputs': []}
+    expected = _parse_output(json.dumps(payload, ensure_ascii=False), transition_required=True)
+    if playback_order:
+        fields = ['source_scene_narration', 'source_performance', 'bridge_scene_narration',
+                  'target_scene_narration', 'target_performance', 'suggested_inputs']
+        payload = {field: payload[field] for field in fields}
+    Draft202012Validator(actor_output_schema(transition_required=True)).validate(payload)
+
+    assert _parse_output(json.dumps(payload, ensure_ascii=False), transition_required=True) == expected
 
 
 @pytest.mark.parametrize('flags,payload', ACTOR_CASES)
@@ -100,7 +154,8 @@ def test_schema_rejects_wrong_fields_types_and_keeps_existing_optional_contract(
     valid = ACTOR_CASES[0][1]
     assert validator.is_valid(valid)
     assert validator.is_valid({**valid, 'scene_update': '灯亮了。'})
-    assert not validator.is_valid({**valid, 'transition_offered': 'false'})
+    assert not validator.is_valid({**valid, 'transition_offer': False})
+    assert not validator.is_valid({**valid, 'transition_offered': True})
     assert not validator.is_valid({**valid, 'scene_update': None})
     assert not validator.is_valid({**valid, 'segments': []})
     assert not validator.is_valid({**valid, 'narrative_events': []})
@@ -109,6 +164,33 @@ def test_schema_rejects_wrong_fields_types_and_keeps_existing_optional_contract(
     for value in (True, 3, 'on'):
         assert Draft202012Validator(facts).is_valid({**valid, 'fact_candidates': [{'key': 'state', 'value': value, 'evidence_quote': '原文'}]})
     assert not Draft202012Validator(facts).is_valid({**valid, 'fact_candidates': [{'key': 'state', 'value': {}, 'evidence_quote': '原文'}]})
+
+
+def test_reinvitation_only_schema_does_not_request_story_state_updates():
+    # 控制请求不能因节点声明了完成事实，就重新取得普通演出的状态写入输出面。
+    schema = actor_output_schema(reinvitation_only=True, fact_candidates_expected=True)
+    valid = {'performance': '我们现在去下一处看看吗？', 'transition_offered': True}
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid(valid)
+    assert set(schema['required']) == set(valid)
+    for field, value in [('scene_update', '门已经打开。'), ('scene_narration', '人已到场。'),
+                         ('fact_candidates', []), ('narrative_events', []),
+                         ('suggested_inputs', ['好，现在去。']), ('suggested_inputs', [])]:
+        assert not validator.is_valid({**valid, field: value})
+        with pytest.raises(actor.NumericV2ActorOutputError, match='fields_invalid'):
+            _parse_output(json.dumps({**valid, field: value}), reinvitation_only=True)
+    assert _parse_output(json.dumps(valid), reinvitation_only=True) == {
+        **valid, 'suggested_inputs': [],
+    }
+    for invalid in ({'performance': valid['performance']},
+                    {'transition_offered': True}, {**valid, 'transition_offered': 'true'}):
+        assert not validator.is_valid(invalid)
+        with pytest.raises(actor.NumericV2ActorOutputError):
+            _parse_output(json.dumps(invalid), reinvitation_only=True)
+    # 普通演出仍可记录本轮新结果；不能把控制限制施加到所有调用。
+    assert Draft202012Validator(actor_output_schema(fact_candidates_expected=True)).is_valid(
+        {'performance': '门开了。', 'transition_offer': valid['performance'],
+         'suggested_inputs': ['好，现在去。'], 'scene_update': '门已经打开。', 'fact_candidates': []})
 
 
 def _narrative_event(phase='turn'):
@@ -238,7 +320,7 @@ async def test_review_attaches_schema_without_touching_evaluator_model_parameter
     async def config(_): return CONFIG
     async def factory(*args, **kwargs):
         assert kwargs['max_retries'] == 0
-        assert kwargs['max_completion_tokens'] == (evaluator.NUMERIC_V2_DISPUTE_JUDGE_MAX_OUTPUT_TOKENS if dispute else evaluator.NUMERIC_V2_TRANSITION_JUDGE_MAX_OUTPUT_TOKENS)
+        assert kwargs['max_completion_tokens'] == (evaluator.NUMERIC_V2_DISPUTE_JUDGE_MAX_OUTPUT_TOKENS if dispute else 320)
         assert kwargs.get('extra_body') == ({'enable_thinking': True, 'thinking_budget': 512} if dispute else None)
         return Client()
     monkeypatch.setattr(evaluator, '_model_config', config)
@@ -293,7 +375,7 @@ async def test_review_schema_matches_real_prompt_branches(monkeypatch, scenario)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
     await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(
         engine=engine, session=session, message='我按下开关。', actor_performance=candidate, **options)
-    assert len(calls) == 1
+    assert len(calls) == (2 if scenario.startswith('formal_') or scenario in {'scene_update', 'fixed'} else 1)
 
 
 def test_contract_schema_matches_existing_prompt_and_parser():

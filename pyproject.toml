@@ -150,6 +150,8 @@ packages = [
 ]
 exclude = [
   "plugin/plugins",
+  # Author tooling is source-only, even though its parent services is shipped.
+  "services/theater_workshop",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
   "knowledge/data",
@@ -183,6 +185,8 @@ include = [
 ]
 exclude = [
   "plugin/plugins",
+  # Author tooling is source-only, even though its parent services is shipped.
+  "services/theater_workshop",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
   "knowledge/data",

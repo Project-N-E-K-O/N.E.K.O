@@ -581,3 +581,19 @@ test('a screenshot taken before a revocation never rides a later request', () =>
     );
     assert.equal(crossWindow.screenshot_data, undefined);
 });
+
+test('theater-only proactive mode can schedule independently of mini-games', () => {
+    const state = { proactiveChatEnabled: true, proactiveTheaterInviteEnabled: true };
+    const window = { appState: state, appConst: {}, addEventListener() {} };
+    vm.runInNewContext(source, {
+        window, document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem() { return null; } }, console, clearTimeout() {}, clearInterval() {}
+    });
+    assert.equal(window.appProactive.hasAnyChatModeEnabled(), true);
+    assert.equal(window.appProactive.canTriggerProactively(), true);
+    state.proactiveTheaterInviteEnabled = false;
+    assert.equal(!!window.appProactive.hasAnyChatModeEnabled(), false);
+    assert.equal(window.appProactive.canTriggerProactively(), false);
+    state.proactiveMiniGameInviteEnabled = true;
+    assert.equal(window.appProactive.hasAnyChatModeEnabled(), true);
+});

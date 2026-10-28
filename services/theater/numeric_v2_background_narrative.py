@@ -82,12 +82,16 @@ def schedule_narrative(*, config_manager, runtime, previous, stored, before_comm
     task.add_done_callback(done)
 
 
-async def settle_before_input(runtime, current):
+async def settle_before_input(runtime, current, *, wait_for_background=True):
     """Wait briefly, then seal an interrupted/slow job as a gap and reload the snapshot."""
     if not current.ledger_events or "narrative_pending" not in current.ledger_events[-1]:
         return current
     task = _TASKS.get(_key(runtime, current))
-    if task is not None:
+    if task is not None and not wait_for_background:
+        # Disabling the ledger must not wait for or continue an old model job.
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    elif task is not None:
         try:
             await asyncio.wait_for(asyncio.shield(task), NEXT_INPUT_WAIT_SECONDS)
         except TimeoutError:

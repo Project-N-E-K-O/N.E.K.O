@@ -24,7 +24,7 @@ def sample(request):
     return data, rows, state
 
 def size(data):
-    return actor.count_tokens('system') + actor.count_tokens('context:' + json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+    return actor.count_tokens('system') + actor.count_tokens('context:' + actor.render_prompt_context(data))
 
 def minimum(sample, omit=False):
     data, rows, state = deepcopy(sample)
@@ -59,10 +59,28 @@ def test_exact_fit_and_history_only_fit_keep_original_state(sample):
     assert build(sample, size(want)) == want
     assert sample == original
 
-def test_still_over_budget_rejects_without_mutation(sample):
+def test_still_over_budget_omits_auxiliary_projection_without_mutation(sample):
     original = deepcopy(sample)
+    limit = size(minimum(sample, omit=True)) - 1
+    actual = build(sample, limit)
+    state = sample[2]
+    compact = {**state, 'current': {}, 'last_known': {}, 'recent_events': [],
+               'projection': {'over_budget': True, 'details_omitted': True}}
+    expected = minimum(sample)
+    expected['current_scene'] = expected['current_scene'].replace(
+        MARKER + json.dumps(state, ensure_ascii=False, separators=(',', ':')),
+        MARKER + json.dumps(compact, ensure_ascii=False, separators=(',', ':')))
+    assert actual == expected
+    assert size(actual) <= limit
+    assert sample == original
+
+
+def test_fixed_contract_still_over_budget_rejects(sample):
+    original = deepcopy(sample)
+    fixed = minimum(sample)
+    fixed['current_scene'] = fixed['current_scene'].split(MARKER)[0]
     with pytest.raises(actor.NumericV2ActorError, match='fixed_context_budget_exceeded'):
-        build(sample, size(minimum(sample, omit=True)) - 1)
+        build(sample, size(fixed) - 1)
     assert sample == original
 
 @pytest.mark.parametrize('case', ['no_state_argument', 'missing_marker', 'ambiguous_marker'])

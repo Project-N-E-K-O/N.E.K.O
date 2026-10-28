@@ -14,7 +14,8 @@ def test_evaluation_retains_only_verified_initiation_quote():
     """Pass only actual quotations; author summaries and uncertain intent cannot be attached as verified evidence."""
     c=initiation_case()
     for intent,quote,expected in [('initiate',QUOTE,QUOTE),('initiate','作者安排去阅览室。',''),('unclear',QUOTE,'')]:
-        payload=dict(scene_complete=False,metric_changes={},transition_intent=intent,public_destination_quote=quote)
+        payload=dict(scene_complete=False,metric_changes={},transition_intent=intent,public_destination_quote=quote,
+                     exit_matches=True, exit_comparison='玩家要求与出口都是前往阅览室。')
         result=ev._parse_output(json.dumps(payload),c['engine'],c['message'],c['session'])
         assert result.public_destination_quote==expected
 
@@ -32,7 +33,7 @@ def test_formal_guard_quote_is_verified_again_at_projection(quote):
 
 @pytest.mark.asyncio
 async def test_same_quote_reaches_fast_and_dispute_but_not_persistent_state(tmp_path,monkeypatch):
-    """The real Workflow passes the same quotation during the first dispute; successful commits add no evidence state to Session or Ledger."""
+    """The real Workflow passes the same quotation during the post-rewrite dispute; successful commits add no evidence state to Session or Ledger."""
     c=initiation_case();engine=c['engine'];runtime=NumericV2Runtime(engine,tmp_path)
     current=await runtime.start_session(session_id='quote_handoff',catgirl_binding=_binding(),opening_performance=c['session'].opening_performance)
     calls=[]
@@ -49,7 +50,8 @@ async def test_same_quote_reaches_fast_and_dispute_but_not_persistent_state(tmp_
     monkeypatch.setattr(workflow.NumericV2Actor,'generate_turn',generate)
     monkeypatch.setattr(workflow.NumericV2Actor,'_character_profile',lambda self:'温和。')
     result=await workflow.execute_numeric_v2_turn(config_manager=object(),runtime=runtime,current=current,turn=TurnRequestV2('go',0,c['message']),ensure_current_binding=lambda _: _binding())
-    assert len(calls)==2 and calls[1]['dispute_review']
+    assert len(calls)==3
+    assert [bool(call.get('dispute_review')) for call in calls] == [False, False, True]
     assert result.stored.session.current_node_id=='ending_leave'
     assert 'public_destination_quote' not in result.stored.session.to_dict()
     assert 'public_destination_quote' not in result.stored.ledger_events[-1]

@@ -983,7 +983,16 @@ function CompactChatApp({
   const visibleDraft = theaterActive ? theaterDraft : (catLocalTextOnly ? catDraft : draft);
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
-    || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
+    || (theaterActive && (theaterPresentation.sessionEnded === true
+      || !['awaiting_player', 'performing'].includes(theaterPresentation.phase)));
+  const theaterReplyPending = theaterActive
+    && ['loading', 'evaluating'].includes(theaterPresentation.phase);
+  const theaterFreeInputHint = theaterActive && !compactTextEntryLocked
+    && theaterPresentation.phase === 'awaiting_player'
+    && !theaterPresentation.errorMessage
+    && !(theaterPresentation.suggestedInputs ?? []).length
+    ? i18n('theater.freeInputHint', 'No suggested options this time~')
+    : '';
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -1278,7 +1287,7 @@ function CompactChatApp({
   // 避免在一个紧凑输入区里叠放两组选项。
   const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const theaterSuggestedOptions: GalgameOption[] = theaterActive
-    && theaterPresentation.phase === 'awaiting_player'
+    && (theaterPresentation.phase === 'awaiting_player' || theaterPresentation.phase === 'performing')
     && theaterDraft.trim().length === 0
     ? (theaterPresentation.suggestedInputs ?? []).slice(0, 3).map((text, index) => ({
         label: String.fromCharCode(65 + index),
@@ -1850,9 +1859,9 @@ function CompactChatApp({
     : '';
   const compactEmptyStateText = guideChatButtonsLocked
     ? ''
-    : composerHidden
+    : theaterFreeInputHint || (composerHidden
       ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
-      : i18n('chat.emptyState', getChatEmptyStateFallback());
+      : i18n('chat.emptyState', getChatEmptyStateFallback()));
   const compactPreviewText = compactSuppressAssistantFallback
     ? compactRestoreEmptyStateAfterTurnEnd
       ? compactEmptyStateText
@@ -6064,7 +6073,8 @@ function CompactChatApp({
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
       visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
-      thinking={focusThinking}
+      thinking={theaterActive ? theaterReplyPending : focusThinking}
+      thinkingLabel={theaterActive ? i18n('theater.waitingReply', 'Preparing the next reply…') : undefined}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
@@ -6317,7 +6327,7 @@ function CompactChatApp({
                           data-compact-hit-region="true"
                           data-compact-hit-region-id="input:text"
                           data-compact-hit-region-kind="input-text"
-                          placeholder={inputPlaceholder}
+                          placeholder={theaterFreeInputHint || inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
                           value={visibleDraft}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 import json
+import re
 from typing import Any, Mapping
 
 from .numeric_v2_json import strip_single_json_fence
@@ -61,10 +62,6 @@ def _normalized_comparison_text(value: Any) -> str:
 def _text_is_covered(
     value: Any,
     references: list[str],
-    *,
-    similarity: float,
-    common_span: int = 0,
-    strong_common_span: int = 0,
 ) -> bool:
     """Check whether any complete reference sentence already covers a text."""  # noqa: DOCSTRING_CJK
 
@@ -79,14 +76,11 @@ def _text_is_covered(
             return True
         matcher = SequenceMatcher(None, candidate, normalized_reference)
         ratio = matcher.ratio()
-        if ratio >= similarity:
-            return True
-        if strong_common_span > 0 and matcher.find_longest_match().size >= strong_common_span:
+        if ratio >= 0.55:
             return True
         if (
-            common_span > 0
-            and ratio >= 0.32
-            and matcher.find_longest_match().size >= common_span
+            ratio >= 0.32
+            and matcher.find_longest_match().size >= 3
         ):
             return True
     return False
@@ -140,9 +134,13 @@ def _parse_transition_performance(
     value: Any,
     *,
     dialogue_policy: str = "required",
+    allow_empty: bool = False,
 ) -> str:
     """Support the legacy action/dialogue object that the model occasionally returns for a split scene transition."""  # noqa: DOCSTRING_CJK
 
+    if (allow_empty and dialogue_policy in {"optional", "forbidden"}
+            and isinstance(value, str) and not value.strip()):
+        return ""
     if isinstance(value, Mapping) and set(value) == {"action", "dialogue"}:
         action = value.get("action")
         dialogue = value.get("dialogue")
@@ -220,14 +218,19 @@ def _parse_actor_suggestions(
             diagnostics.update(parse_counts)
         return []
     if len(value) > 3:
-        # The recommended contract is 2–3 items. If there are more, keep the first three instead of discarding the entire result: these are valid buttons written by the actor,
+        # The recommended contract is 1–3 items. If there are more, keep the first three instead of discarding the entire result: these are valid buttons written by the actor,
         # and discarding them would needlessly trigger another recommendation call (or leave all buttons empty). Only trim deterministically;
         # do not invent content for the model.
         parse_counts["too_many_items"] = 1
         value = value[:3]
     parsed: list[str] = []
     for item in value:
-        text = _normalize_suggestion_quotes(str(item or "").strip())
+        # Plain dialogue is a valid input, but arbitrary JSON values must not
+        # become sendable speech through str() coercion.
+        if not isinstance(item, str):
+            parse_counts["mixed_shape_invalid"] += 1
+            continue
+        text = _normalize_suggestion_quotes(item.strip())
         # Recommendations are shown directly and can be sent with one click, so template placeholders must not leak to the player; the caller retains the body text.
         if not text:
             parse_counts["empty_item"] += 1
@@ -242,15 +245,25 @@ def _parse_actor_suggestions(
             parse_counts["placeholder_item"] += 1
             continue
         blocks = mixed_performance_blocks(text)
-        if [block.get("type") for block in blocks] not in (["action"], ["action", "dialogue"]):
+        if [block.get("type") for block in blocks] not in (
+            ["dialogue"], ["action"], ["action", "dialogue"],
+        ):
             parse_counts["mixed_shape_invalid"] += 1
             continue
-        action = str(blocks[0].get("text") or "").strip()
-        if action in {"玩家动作", "玩家对白", "动作", "对白"}:
+        # Match only the four format labels at a block's start, either complete
+        # or explicitly wrapped/delimited. Mentions inside real dialogue remain
+        # valid; reject the item rather than guessing text after a label.
+        format_label = r"(?:玩家动作|玩家对白|动作|对白)"
+        if any(re.match(
+            rf"(?:{format_label}(?:$|\s*[:：])|【{format_label}】"
+            rf"|\*\*{format_label}\*\*|“{format_label}”\s*[:：])",
+            block["text"],
+        ) for block in blocks):
             parse_counts["placeholder_item"] += 1
             continue
         # suggested_inputs will later be stored by the program as player_input/input_text,
         # so Chinese actions may naturally omit "I"; reject only cases that explicitly make a third party the action's subject.
+        # Addressing "you" in dialogue is valid and is not an action ownership claim.
         explicit_nonplayer_prefixes = (
             "你",
             "您",
@@ -261,14 +274,16 @@ def _parse_actor_suggestions(
             "男主",
             "环境",
         )
-        if action.startswith(explicit_nonplayer_prefixes):
+        if any(block["type"] == "action" and block["text"].startswith(explicit_nonplayer_prefixes)
+               for block in blocks):
             parse_counts["action_owner_invalid"] += 1
             continue
         parsed.append(text)
         parse_counts["accepted_items"] += 1
-    # If there are fewer than two items, keep recommendations that pass format and subject validation; the Actor layer decides whether to fill the rest.
-    # Otherwise, when opening without additional recommendations, the model's only valid option would be incorrectly cleared.
-    if len(parsed) not in {2, 3}:
+    # One usable choice already satisfies the generic count contract. A concrete
+    # invitation's acceptance/alternative needs remain the Actor filler's separate
+    # responsibility; this parser does not infer semantic safety from the count.
+    if not parsed:
         parse_counts["insufficient_valid_items"] = 1
     if diagnostics is not None:
         diagnostics.clear()
@@ -325,11 +340,16 @@ def _parse_output(
     dialogue_policy: str = "required",
     source_dialogue_policy: str = "required",
     target_dialogue_policy: str = "required",
+    natural_ending: bool = False,
+    entry_narration: bool = False,
     suggestions_only: bool = False,
     transition_suggestions_only: bool = False,
     suggestion_diagnostics: dict[str, int] | None = None,
     fact_candidates_expected: bool = False,
     fact_candidate_diagnostics: dict[str, int] | None = None,
+    reinvitation_only: bool = False,
+    fixed_entry_only: bool = False,
+    combined_evaluation: bool = False,
 ) -> dict[str, Any]:
     """Parse one Actor response into the only valid opening, ordinary-turn, or scene-transition shape."""  # noqa: DOCSTRING_CJK
 
@@ -342,6 +362,27 @@ def _parse_output(
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+    evaluation = None
+    if combined_evaluation:
+        evaluation = payload.pop("turn_evaluation", None)
+        if (not isinstance(evaluation, dict)
+                or set(evaluation) != {"scene_complete", "metric_changes", "fact_candidates"}
+                or type(evaluation["scene_complete"]) is not bool
+                or not isinstance(evaluation["metric_changes"], dict)
+                or not isinstance(evaluation["fact_candidates"], list)):
+            raise NumericV2ActorOutputError("numeric_v2_actor_turn_evaluation_invalid")
+    if reinvitation_only:
+        # 先严格核对模型原始字段再归一化，不能删除越权建议/状态后把违规输出当作成功。
+        if set(payload) != {"performance", "transition_offered"}:
+            raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+        return {
+            "performance": _parse_mixed_performance(
+                payload["performance"], require_narration=False, dialogue_policy=dialogue_policy,
+            ),
+            "transition_offered": _parse_transition_offered(payload["transition_offered"]),
+            # 仅为 Runtime 既有表现结构补空容器，不取得推荐或事实的生成权限。
+            "suggested_inputs": [],
+        }
     # Accept the legacy narrative_events field shape for body text, but do not parse or use it; the strict shape for supplemental recommendations is unchanged.
     if transition_suggestions_only:
         # Supplemental transition recommendations return an accepted path in its own field, and code deterministically places it first;
@@ -394,6 +435,23 @@ def _parse_output(
         )
         return result
     if transition_required:
+        if natural_ending and target_dialogue_policy in {"optional", "forbidden"}:
+            if "response_phase" in payload:
+                fields = {"response_phase", "performance", "source_scene_narration",
+                          "bridge_scene_narration", "target_scene_narration", "suggested_inputs"}
+                if (set(payload) != fields or payload["response_phase"] not in ("source_response", "target_opening", "none")
+                        or not isinstance(payload["performance"], str)
+                        or (payload["response_phase"] == "none" and payload["performance"].strip())):
+                    raise NumericV2ActorOutputError("numeric_v2_actor_response_phase_invalid")
+                phase = payload.pop("response_phase")
+                response = payload.pop("performance")
+                # An empty body under either playback marker is equivalent to none; normalize both slots to empty.
+                has_response = bool(response.strip())
+                payload["source_performance"] = response if has_response and phase == "source_response" else ""
+                payload["target_performance"] = response if has_response and phase == "target_opening" else ""
+            elif payload.get("source_performance") and payload.get("target_performance"):
+                # Old one-response shapes remain readable; new generation cannot add a second reply.
+                raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
         # Runtime still determines stages and order; narration is generated from real history, and a missing field must not fall back to author text that could replay a scene.
         expected_fields = {"source_performance", "target_performance",
                            "bridge_scene_narration", "target_scene_narration"}
@@ -404,25 +462,38 @@ def _parse_output(
             "bridge_scene_narration": _parse_scene_narration(
                 payload.get("bridge_scene_narration"), allow_empty=not bridge_required,
             ),
-            "target_scene_narration": _parse_scene_narration(payload.get("target_scene_narration")),
+            "target_scene_narration": _parse_scene_narration(
+                payload.get("target_scene_narration"), allow_empty=entry_narration),
             "source_performance": _parse_transition_performance(
                 payload.get("source_performance"),
                 dialogue_policy=source_dialogue_policy,
-            ),
-            "target_performance": _parse_transition_performance(
-                payload.get("target_performance"),
-                dialogue_policy=target_dialogue_policy,
+                allow_empty=True,
             ),
         }
+        result["target_performance"] = _parse_transition_performance(
+            payload.get("target_performance"), dialogue_policy=target_dialogue_policy,
+            allow_empty=natural_ending or entry_narration,
+        )
         # Source narration, like ordinary scene_update, may be omitted; preserve NPC wording rather than turning it into catgirl dialogue.
         if "source_scene_narration" in payload:
             narration = _parse_scene_update(payload["source_scene_narration"])
             if narration:
                 result["source_scene_narration"] = narration
+        if fixed_entry_only and payload.get("suggested_inputs", []) != []:
+            # Check the raw container before recommendation normalization can drop invalid entries.
+            raise NumericV2ActorOutputError("numeric_v2_actor_fixed_entry_only_fields_nonempty")
         result["suggested_inputs"] = _parse_actor_suggestions(
             payload.get("suggested_inputs"),
             diagnostics=suggestion_diagnostics,
         )
+        if fixed_entry_only and (
+            result.get("target_scene_narration")
+            or result.get("target_performance")
+            or result["suggested_inputs"]
+        ):
+            # Explicit author mode: the program delivers the whole target entry. Never
+            # silently drop a model-written target segment; the bounded retry must fix it.
+            raise NumericV2ActorOutputError("numeric_v2_actor_fixed_entry_only_fields_nonempty")
         return result
     required_fields = {"performance"}
     tolerated_fields = {
@@ -430,6 +501,7 @@ def _parse_output(
         "scene_update",
         "suggested_inputs",
         "transition_offered",
+        "transition_offer",
         "fact_candidates",
         "narrative_events",
     }
@@ -437,9 +509,22 @@ def _parse_output(
     # when absent, so any combination of them is a valid ordinary-turn shape.
     if not required_fields <= set(payload) <= tolerated_fields:
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+    body = payload.get("performance")
+    offered = payload.get("transition_offered", False)
+    if "transition_offer" in payload:
+        if not isinstance(payload["transition_offer"], str):
+            raise NumericV2ActorOutputError("numeric_v2_actor_transition_offer_invalid")
+        # Publish before deriving the existing flag. This proves delivery only;
+        # it does not establish validity or authorize the player's next action.
+        offer = _strip_inline_markdown(payload["transition_offer"].strip())
+        offered = bool(offer)
+        if isinstance(body, str):
+            body = _strip_inline_markdown(body.strip())
+            if offer and offer not in body:
+                body = "\n".join(part for part in (body, offer) if part)
     result = {
         "performance": _parse_mixed_performance(
-            payload.get("performance"),
+            body,
             # Ordinary turns allow dialogue only; dialogue is required, and the formatting layer should not force generation of parenthetical micro-actions.
             require_narration=False,
             dialogue_policy=dialogue_policy,
@@ -449,9 +534,13 @@ def _parse_output(
             diagnostics=suggestion_diagnostics,
         ),
         "transition_offered": _parse_transition_offered(
-            payload.get("transition_offered", False)
+            offered
         ),
     }
+    if "transition_offer" in payload:
+        # Workflow consumes this before delivery/history; old payloads retain
+        # their existing fallback behavior without a storage format migration.
+        result["_transition_offer_provided"] = True
     if "scene_update" in payload:
         # Runtime continues to use the existing scene_narration field, so the frontend and older Sessions need no new protocol branch.
         scene_update = _parse_scene_update(payload.get("scene_update"))
@@ -462,6 +551,9 @@ def _parse_output(
         expected=fact_candidates_expected,
         diagnostics=fact_candidate_diagnostics,
     )
+    if combined_evaluation:
+        # Internal workflow proposal, removed before history/HTTP delivery.
+        result["_turn_evaluation"] = evaluation
     return result
 
 

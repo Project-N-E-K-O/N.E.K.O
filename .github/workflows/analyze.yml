@@ -266,7 +266,7 @@ jobs:
       - name: Enforce top-level module layering (no inversions, no cycles)
         # Top-level packages have a strict ordering — only higher layers may
         # depend on lower ones (config/steamworks → utils →
-        # knowledge/memory/main_logic/services → main_routers/theater_workshop
+        # knowledge/memory/main_logic/services → main_routers
         # → plugin → brain → app/launcher_core). The walker descends into
         # function bodies and string-form dynamic imports
         # (importlib.import_module / __import__), so deferred / conditional

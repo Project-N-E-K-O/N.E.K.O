@@ -7,9 +7,11 @@ import argparse
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import sys
@@ -25,7 +27,10 @@ if str(REPO_ROOT) not in sys.path:
 from services.theater.numeric_v2_budget import (  # noqa: E402
     NUMERIC_V2_ACTOR_BUDGET_PROFILES,
 )
+from services.theater.numeric_v2_actor import NumericV2Actor, actor_visible_profile  # noqa: E402
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding  # noqa: E402
+from services.theater import numeric_v2_actor, numeric_v2_workflow  # noqa: E402
+from services.theater.numeric_v2_context import prompt_data_block_payload  # noqa: E402
 from services.theater.numeric_v2_performance import performance_content_blocks  # noqa: E402
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry  # noqa: E402
 from services.theater.numeric_v2_trace import text_trace_scope, trace_event, trace_state  # noqa: E402
@@ -410,19 +415,24 @@ def _record_suggestion_quality(
     attempt: int,
     base_revision: int,
     route_status: str,
+    invitation_acceptance_available: bool = False,
 ) -> list[dict[str, str]]:
     """Record visible recommendation counts and return candidates for next-turn selection."""  # noqa: DOCSTRING_CJK
 
     suggestions = _suggestions(performance)
+    # 新回执提供的是程序接受控件，不能凭空补一条玩家台词来凑推荐数量。
+    # 只有已由 Runtime 核实的控制能解释空数组，其余旧质量统计保持原样。
+    if not suggestions and invitation_acceptance_available:
+        return suggestions
     if not suggestions:
-        trace["quality_errors"].append({
+        trace.setdefault("quality_warnings", []).append({
             "attempt": attempt,
             "base_revision": base_revision,
             "route_status": route_status,
             "error_code": "missing_player_suggestions",
         })
     elif len(suggestions) < 2:
-        trace["quality_errors"].append({
+        trace.setdefault("quality_warnings", []).append({
             "attempt": attempt,
             "base_revision": base_revision,
             "route_status": route_status,
@@ -519,6 +529,7 @@ def choose_player_input(
     route_status: str = "",
     last_performance: Mapping[str, Any] | None = None,
     node_title: str = "",
+    invitation_acceptance_available: bool = False,
 ) -> tuple[str, str]:
     """Mixed strategies periodically click recommendations; free input first draws context from recent visible enactment."""  # noqa: DOCSTRING_CJK
 
@@ -528,13 +539,16 @@ def choose_player_input(
         strategy == "mixed"
         and attempt_index % 10 in MIXED_RECOMMENDED_OFFSETS
     )
+    if use_recommended and invitation_acceptance_available:
+        # 与真实界面一样点程序按钮；空文本不扮演玩家，也不让自由输入轮自动变成控制。
+        return "", "accept_invitation"
     if (
         strategy != "chat"
         and route_status == "transition_offered"
         and (strategy != "mixed" or use_recommended)
     ):
         # Prioritize acceptance of visible transition offers, while mixed mode retains scheduled free-input turns.
-        # Missing acceptance recommendations use an explicit fallback and record recommendation-quality errors.
+        # Missing acceptance recommendations use free input and remain a recommendation-quality warning.
         if normalized:
             # Pending stages always choose the first executable recommendation, avoiding rotation into clarification/delay
             # that would misclassify tester-induced stays as Runtime/model transition failures.
@@ -693,7 +707,43 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path.unlink()
 
 
-def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+def _response_latency(stories: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Keep zero-call controls and failures separate from successful narrative waits."""
+    samples = {name: [] for name in ("narrative", "ordinary", "transition", "reinvitation", "failed")}
+    for story in stories:
+        for trace_name in ("primary_trace", "fork_trace"):
+            trace = story.get(trace_name)
+            if not isinstance(trace, Mapping):
+                continue
+            for collection in ("turns", "errors"):
+                for row in trace.get(collection) or []:
+                    elapsed = row.get("elapsed_seconds")
+                    if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0:
+                        continue
+                    if collection == "errors":
+                        samples["failed"].append(elapsed)
+                    elif row.get("input_source") == "reinvite":
+                        samples["reinvitation"].append(elapsed)
+                    else:
+                        samples["narrative"].append(elapsed)
+                        samples["transition" if row.get("route_changed") else "ordinary"].append(elapsed)
+
+    report = {"unit": "seconds", "scope": "workflow_only_excludes_simulated_player_http_playback_tts"}
+    for name, values in samples.items():
+        values.sort()
+        result = {"count": len(values), "mean": None, "p50": None, "p90": None, "p95": None, "max": None}
+        if values:
+            result.update(mean=round(sum(values) / len(values), 3), max=round(values[-1], 3))
+            for percentile in (50, 90, 95):
+                position = (len(values) - 1) * percentile / 100
+                left = math.floor(position)
+                right = math.ceil(position)
+                result[f"p{percentile}"] = round(values[left] + (values[right] - values[left]) * (position - left), 3)
+        report[name] = result
+    return report
+
+
+def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Include model errors/isolation failures in overall status, preventing ok=true despite errors."""  # noqa: DOCSTRING_CJK
 
     fatal_count = sum("fatal_error" in story for story in stories)
@@ -702,6 +752,8 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     quality_warning_count = 0
     isolation_failure_count = 0
     committed_turns = 0
+    reinvitation_actions = 0
+    invitation_acceptance_actions = 0
     evaluator_degraded_count = 0
     actor_generation_attempts = 0
     actor_repeated_output_guards: dict[str, int] = {}
@@ -725,12 +777,10 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     completion_fallback_offer_applied = 0
     pending_acceptance_suggestions_preserved = 0
     verified_offer_acceptance_suggestions_inserted = 0
-    author_fallback_invitation_protected = 0
     narration_offer_flags_cleared = 0
     explicit_player_movement_flags_cleared = 0
     player_action_projection_conflicts = 0
     player_action_projection_safe_degrades = 0
-    current_scene_offer_flags_cleared = 0
     unsafe_suggestions_removed = 0
     route_suggestion_reviews = 0
     transition_judge_calls = 0
@@ -768,12 +818,10 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         nonlocal completion_fallback_offer_applied
         nonlocal pending_acceptance_suggestions_preserved
         nonlocal verified_offer_acceptance_suggestions_inserted
-        nonlocal author_fallback_invitation_protected
         nonlocal narration_offer_flags_cleared
         nonlocal explicit_player_movement_flags_cleared
         nonlocal player_action_projection_conflicts
         nonlocal player_action_projection_safe_degrades
-        nonlocal current_scene_offer_flags_cleared
         nonlocal unsafe_suggestions_removed
         nonlocal route_suggestion_reviews
         nonlocal transition_judge_calls
@@ -890,9 +938,6 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             verified_offer_acceptance_suggestions_inserted += int(
                 diagnostics.get("verified_offer_acceptance_suggestions_inserted") or 0
             )
-            author_fallback_invitation_protected += int(
-                diagnostics.get("author_fallback_invitation_protected") or 0
-            )
             narration_offer_flags_cleared += int(
                 diagnostics.get("narration_offer_flags_cleared") or 0
             )
@@ -904,9 +949,6 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             )
             player_action_projection_safe_degrades += int(
                 diagnostics.get("player_action_projection_safe_degrades") or 0
-            )
-            current_scene_offer_flags_cleared += int(
-                diagnostics.get("current_scene_offer_flags_cleared") or 0
             )
             unsafe_suggestions_removed += int(
                 diagnostics.get("unsafe_suggestions_removed") or 0
@@ -974,6 +1016,8 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             quality_error_count += len(primary.get("quality_errors") or [])
             quality_warning_count += len(primary.get("quality_warnings") or [])
             committed_turns += int(primary.get("committed_turns") or 0)
+            reinvitation_actions += int(primary.get("reinvitation_actions") or 0)
+            invitation_acceptance_actions += int(primary.get("invitation_acceptance_actions") or 0)
         if isinstance(fork_trace, Mapping):
             collect_workflow_diagnostics(fork_trace)
             dynamic_player_provider_calls += int(
@@ -986,6 +1030,8 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             quality_error_count += len(fork_trace.get("quality_errors") or [])
             quality_warning_count += len(fork_trace.get("quality_warnings") or [])
             committed_turns += int(fork_trace.get("committed_turns") or 0)
+            reinvitation_actions += int(fork_trace.get("reinvitation_actions") or 0)
+            invitation_acceptance_actions += int(fork_trace.get("invitation_acceptance_actions") or 0)
         fork = story.get("fork")
         if (
             isinstance(fork, Mapping)
@@ -996,6 +1042,9 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     return {
         "story_count": len(stories),
         "committed_turns": committed_turns,
+        "reinvitation_actions": reinvitation_actions,
+        "invitation_acceptance_actions": invitation_acceptance_actions,
+        "response_latency": _response_latency(stories),
         "fatal_count": fatal_count,
         "turn_error_count": turn_error_count,
         "quality_error_count": quality_error_count,
@@ -1024,12 +1073,10 @@ def summarize_stories(stories: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         "completion_fallback_offer_applied": completion_fallback_offer_applied,
         "pending_acceptance_suggestions_preserved": pending_acceptance_suggestions_preserved,
         "verified_offer_acceptance_suggestions_inserted": verified_offer_acceptance_suggestions_inserted,
-        "author_fallback_invitation_protected": author_fallback_invitation_protected,
         "narration_offer_flags_cleared": narration_offer_flags_cleared,
         "explicit_player_movement_flags_cleared": explicit_player_movement_flags_cleared,
         "player_action_projection_conflicts": player_action_projection_conflicts,
         "player_action_projection_safe_degrades": player_action_projection_safe_degrades,
-        "current_scene_offer_flags_cleared": current_scene_offer_flags_cleared,
         "unsafe_suggestions_removed": unsafe_suggestions_removed,
         "route_suggestion_reviews": route_suggestion_reviews,
         "transition_judge_calls": transition_judge_calls,
@@ -1087,6 +1134,10 @@ async def _run_trace(
     )
     expected_character_id = str(current.session.catgirl_binding.get("character_id") or "")
     ensure_binding = _ensure_binding(expected_character_id, config_manager)
+    module_options = (
+        await numeric_v2_workflow.aload_theater_module_options()
+        if isinstance(runtime, NumericV2Runtime) else {}
+    )
     last_performance: Mapping[str, Any] = (
         current.session.performance_history[-1]
         if current.session.performance_history
@@ -1125,12 +1176,17 @@ async def _run_trace(
             # Ledger route_status reflects the previous Runtime result, but Actor may offer transitions at that turn's body end;
             # next turn tests acceptance directly from Session lifecycle rather than introducing artificial one-turn delays.
             route_status = "transition_offered"
+        acceptance_checker = getattr(engine, "invitation_acceptance_route", None)
+        acceptance_available = bool(acceptance_checker(
+            current.session, ledger_events=tuple(getattr(current, "ledger_events", ())),
+        )) if callable(acceptance_checker) else False
         suggestions = _record_suggestion_quality(
             trace,
             last_performance,
             attempt=attempt_index + 1,
             base_revision=current.session.revision,
             route_status=route_status,
+            invitation_acceptance_available=acceptance_available,
         )
         last_quality_checked_revision = current.session.revision
         player_input, input_source = choose_player_input(
@@ -1139,6 +1195,7 @@ async def _run_trace(
             suggestions=suggestions,
             route_status=route_status,
             last_performance=last_performance,
+            invitation_acceptance_available=acceptance_available,
             node_title=(
                 str(current_node.get("chapter") or "")
                 if isinstance(current_node, Mapping)
@@ -1177,7 +1234,7 @@ async def _run_trace(
                 }, ensure_ascii=False), flush=True)
                 break
         if input_source == "transition_acceptance_fallback":
-            trace["quality_errors"].append({
+            trace["quality_warnings"].append({
                 "attempt": attempt_index + 1,
                 "base_revision": current.session.revision,
                 "route_status": route_status,
@@ -1213,9 +1270,8 @@ async def _run_trace(
             "message": player_input,
             # Bypass free-chat classification only for real clicks on current Actor recommendations; simulator failure submits no fallback.
             "input_source": (
-                "suggestion"
-                if input_source == "recommended"
-                else "freeform"
+                input_source if input_source in {"reinvite", "accept_invitation"}
+                else ("suggestion" if input_source == "recommended" else "freeform")
             ),
         })
         before_revision = current.session.revision
@@ -1248,6 +1304,7 @@ async def _run_trace(
                 "attempt": attempt_index + 1,
                 "base_revision": before_revision,
                 "input_source": input_source,
+                "invitation_acceptance_available": acceptance_available,
                 "player_input_generation": player_input_generation,
                 "player_input": player_input,
                 "error_type": type(exc).__name__,
@@ -1276,6 +1333,7 @@ async def _run_trace(
             "attempt": attempt_index + 1,
             "revision": current.session.revision,
             "input_source": input_source,
+            "invitation_acceptance_available": acceptance_available,
             "player_input_generation": player_input_generation,
             "player_input": player_input,
             "from_node_id": event["from_node_id"],
@@ -1328,6 +1386,9 @@ async def _run_trace(
             attempt=max(0, attempts) + 1,
             base_revision=current.session.revision,
             route_status=final_route_status,
+            invitation_acceptance_available=bool(runtime.engine.invitation_acceptance_route(
+                current.session, ledger_events=tuple(current.ledger_events),
+            )) if isinstance(runtime, NumericV2Runtime) else False,
         )
 
     _record_structural_stalls(
@@ -1338,6 +1399,8 @@ async def _run_trace(
     trace["end_node_id"] = current.session.current_node_id
     trace["status"] = current.session.status
     trace["committed_turns"] = len(trace["turns"])
+    trace["reinvitation_actions"] = sum(row.get("input_source") == "reinvite" for row in trace["turns"])
+    trace["invitation_acceptance_actions"] = sum(row.get("input_source") == "accept_invitation" for row in trace["turns"])
     trace["error_count"] = len(trace["errors"])
     trace["quality_error_count"] = len(trace["quality_errors"])
     trace["quality_warning_count"] = len(trace["quality_warnings"])
@@ -1479,6 +1542,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="balanced",
         help="Actor Token 档位；balanced 对应标准档",
     )
+    parser.add_argument(
+        "--require-persona",
+        action="store_true",
+        help="个性化/内置验收前提：Actor 有效人格为空时在首次模型调用前停止；不传仍可通用压测，不代表个性化通过",
+    )
     parser.add_argument("--fork-revision", type=int, help="从主轨迹指定 revision 创建隔离分叉")
     parser.add_argument("--fork-turns", type=int, default=1, help="分叉继续尝试的回合数")
     parser.add_argument("--max-errors", type=int, default=3, help="单条轨迹最多容忍的模型错误数")
@@ -1573,6 +1641,121 @@ def _legacy_package_ids(package_root: Path) -> list[str]:
     return result
 
 
+async def _stress_preflight(
+    *,
+    config_manager: ConfigManager,
+    args: argparse.Namespace,
+    packages: Sequence[Mapping[str, Any]],
+    registry: NumericV2PackageRegistry,
+) -> dict[str, Any]:
+    """Check Actor's real persona projection without invoking a model or exposing private text."""
+
+    # Use the same reader/projection as Actor rather than treating a persona file's
+    # existence (or its unfiltered contents) as proof that the model receives a persona.
+    actor = NumericV2Actor(config_manager)
+    raw_profile = actor._character_profile()
+    effective = actor_visible_profile(raw_profile)
+    required = bool(args.require_persona)
+    package_reports = []
+    for package in packages:
+        try:
+            engine = registry.load_engine(str(package["story_id"]))
+            known = bool(engine.story["initial_state"]["player_address_known"])
+            address = numeric_v2_actor._project_player_address(
+                numeric_v2_actor._load_player_address(config_manager), known=known,
+            )
+            # Reuse Actor's actual opening builder, including the start-node contract,
+            # name/address projection and input budget. Do not duplicate persona rules.
+            messages = numeric_v2_actor._opening_messages(
+                engine, raw_profile, actor._current_catgirl_name(), address, known,
+                max_tokens=NUMERIC_V2_ACTOR_BUDGET_PROFILES[args.profile]["input_max_tokens"],
+            )
+            # The Human message is the fenced multi-block context, not one JSON
+            # object; read the role block back the way the renderer wrote it.
+            opening = prompt_data_block_payload(
+                messages[1].content, "角色设定",
+            )["acting_context"]["core_persona"]
+        except Exception as exc:
+            package_reports.append({
+                "story_id": package.get("story_id"),
+                "opening_persona": {"effective_status": "unavailable", "error_type": type(exc).__name__},
+            })
+            continue
+        meta = engine.story["meta"]
+        package_reports.append({
+            **{key: meta.get(key) for key in ("story_id", "title", "revision", "contract_version")},
+            "package_hash": engine.compiled.package_hash,
+            "opening_persona": {
+                "effective_status": "available" if opening.strip() else "empty",
+                "effective_sha256": hashlib.sha256(opening.encode("utf-8")).hexdigest(),
+                "projection": "packed_opening_actor_context",
+            },
+        })
+    empty_opening = any(
+        package["opening_persona"]["effective_status"] == "empty"
+        for package in package_reports
+    )
+    unavailable_opening = any(
+        package["opening_persona"]["effective_status"] == "unavailable" for package in package_reports
+    )
+    blocked = required and (empty_opening or unavailable_opening)
+    slots: dict[str, Any] = {}
+    getter = (
+        getattr(config_manager, "aget_model_api_config", None)
+        or getattr(config_manager, "get_model_api_config", None)
+    )
+    for slot in ("conversation", "summary"):
+        try:
+            value = getter(slot) if getter is not None else None
+            config = await value if inspect.isawaitable(value) else value
+            if not isinstance(config, Mapping):
+                raise ValueError("model_config_unavailable")
+            # Hash the configuration including credentials, but never serialize it
+            # into a report. Endpoint URLs can themselves contain private tokens.
+            encoded = json.dumps(dict(config), ensure_ascii=False, sort_keys=True).encode("utf-8")
+            slots[slot] = {
+                "status": "available",
+                "model": config.get("model"),
+                "provider_type": config.get("provider_type"),
+                "configuration_sha256": hashlib.sha256(encoded).hexdigest(),
+                "endpoint_sha256": hashlib.sha256(str(config.get("base_url") or "").encode("utf-8")).hexdigest(),
+            }
+        except Exception as exc:
+            # Do not echo provider/configuration exception text, which can include keys.
+            slots[slot] = {"status": "unavailable", "error_type": type(exc).__name__}
+    return {
+        "status": "blocked" if blocked else "ready",
+        "error_code": (
+            ("numeric_v2_stress_opening_persona_unavailable" if unavailable_opening
+             else "numeric_v2_stress_effective_persona_empty" if not effective.strip()
+             else "numeric_v2_stress_opening_persona_empty")
+            if blocked else None
+        ),
+        "validation_scope": "personalization_prerequisite" if required else "generic_stress",
+        "persona": {
+            "required": required,
+            "effective_status": "available" if effective.strip() else "empty",
+            "effective_sha256": hashlib.sha256(effective.encode("utf-8")).hexdigest(),
+            # This is the widest eligible projection, not proof of each scene's final packing.
+            "projection": "actor_visible_profile_before_scene_packing",
+        },
+        # A prerequisite and a successful technical run are not evidence that the
+        # corresponding player behavior occurred or its enactment met the quality bar.
+        "quality_acceptance": {"personalization": "not_assessed", "refusal": "not_assessed"},
+        "models": {"scope": "preflight_snapshot", "slots": slots},
+        "runtime": {
+            "scope": "preflight_snapshot",
+            "module_options": await numeric_v2_workflow.aload_theater_module_options(),
+            "actor_budget_profile": args.profile,
+            "budgets": dict(NUMERIC_V2_ACTOR_BUDGET_PROFILES[args.profile]),
+            "entrypoint": "execute_numeric_v2_turn",
+            "tts": False,
+            "background_narrative": False,
+        },
+        "packages": package_reports,
+    }
+
+
 async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
     config_manager = ConfigManager()
     # Stress-test generated packages from temporary directories rather than overwriting installed user packages to verify revisions.
@@ -1597,6 +1780,28 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
     report_path = args.output.resolve() if args.output else run_root / "report.json"
     storage_root = run_root / "isolated_theater"
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    preflight = await _stress_preflight(
+        config_manager=config_manager,
+        args=args,
+        packages=[installed[story_id] for story_id in story_ids],
+        registry=registry,
+    )
+    if preflight["status"] == "blocked":
+        # Persist the unmet prerequisite before opening, simulated-player generation,
+        # or session creation; zero executed stories must never look like a passing run.
+        summary = _report_summary([], selection)
+        summary["preflight_failure_count"] = 1
+        _atomic_write_json(report_path, {
+            "schema": REPORT_SCHEMA,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "run_root": str(run_root),
+            "isolated_storage_root": str(storage_root),
+            "selection": selection,
+            "preflight": preflight,
+            "summary": summary,
+            "stories": [],
+        })
+        return _exit_code(summary), report_path
     previous_trace_dir = os.environ.get("NEKO_THEATER_TRACE_DIR")
     trace_dir_argument = getattr(args, "trace_dir", None)
     if trace_dir_argument is not None:
@@ -1675,6 +1880,7 @@ async def _async_main(args: argparse.Namespace) -> tuple[int, Path]:
         "strategy": args.strategy,
         "freeform_input_mode": "qwen_dynamic_visible_context",
         "selection": selection,
+        "preflight": preflight,
         "requested_turns": args.turns,
         "fork_revision": args.fork_revision,
         "fork_turns": args.fork_turns,
@@ -1718,6 +1924,7 @@ def _exit_code(summary: Mapping[str, Any]) -> int:
             # Simulator failure means incomplete trajectories; absence of formal turn errors cannot imply successful exit.
             "dynamic_player_error_count",
             "baseline_title_mismatch_count",
+            "preflight_failure_count",
         )
     )
     return 1 if has_failure else 0

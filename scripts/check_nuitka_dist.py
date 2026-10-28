@@ -93,6 +93,7 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("templates", None),
     ("assets", None),
     ("data/browser_use_prompts", None),
+    # Built-in theater stories are JSON data; including the services package only bundles Python modules.
     # Offline model assets: prepare_*.py scripts download these before Nuitka; weights are not checked in, and frozen builds have no runtime download path;
     # if omitted, local endpoint detection, speaker recognition, and vector memory silently degrade. CI also checks every file ("Verify bundled
     # offline assets"); this check catches silent drift such as a missing directory or weights. For embeddings, assert the actual file:

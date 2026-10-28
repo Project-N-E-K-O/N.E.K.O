@@ -35,6 +35,58 @@ def _event(quote, changes, *, phase="player_input", source="player_input", subje
             **({"authorization_quote": quote} if phase == "player_input" else {})}
 
 
+@pytest.mark.parametrize("source_refs", [False, True])
+def test_proposal_and_ledger_review_bind_named_character_without_disclosing_unknown_player(source_refs):
+    session = _session()
+    session.catgirl_binding = {"catgirl_name": "同步验收1023", "player_address": "老谢"}
+    session.player_address_known = False
+    before = deepcopy(session.__dict__)
+    messages = proposer._messages({"performance": "同步验收1023停在桌前。"}, "我还在门口。",
+                                 session, False, source_refs=source_refs)
+    data = json.loads(messages[1].content)
+    assert data["protagonists"] == {
+        "player": {"role": "用户"}, "character": {"role": "当前演出角色", "name": "同步验收1023"}}
+    assert "老谢" not in messages[1].content
+    assert session.__dict__ == before
+
+
+def _wire_events(events, sources, references=None):
+    """Encode canonical test fixtures as model-wire replies; malformed fixtures stay malformed."""
+    if not isinstance(events, list):
+        return events
+    result = []
+    references = references or {"player": "player", "character": "character"}
+    by_entity = {entity: key for key, entity in references.items()}
+
+    def identity(value, *, holder=False):
+        if not isinstance(value, str):
+            return deepcopy(value)
+        if holder and value == "none":
+            return {"ref": "none"}
+        if value in by_entity:
+            return {"ref": by_entity[value]}
+        kind, separator, name = value.partition(":")
+        return {"type": kind, "name": name} if separator else {"ref": value}
+
+    for event in events:
+        if not isinstance(event, dict) or "source_id" in event:
+            result.append(deepcopy(event))
+            continue
+        source = next((row for row in sources if row["phase"] == event.get("phase")
+                       and row["source"] == event.get("source") and isinstance(event.get("quote"), str)
+                       and event["quote"] in row["text"]), None)
+        wire = {**{key: deepcopy(value) for key, value in event.items() if key not in {"phase", "source"}},
+                "source_id": source["id"] if source else "missing"}
+        wire["subject"] = identity(wire.get("subject"))
+        for change in wire.get("changes", []):
+            if isinstance(change, dict):
+                change["entity"] = identity(change.get("entity"))
+                if change.get("attribute") == "holder":
+                    change["value"] = identity(change.get("value"), holder=True)
+        result.append(wire)
+    return result
+
+
 def _client(monkeypatch, payload, *, slow="", fail=""):
     observed = {"config": [], "factory": [], "requests": [], "closed": 0, "call_types": []}
 
@@ -63,8 +115,14 @@ def _client(monkeypatch, payload, *, slow="", fail=""):
         async def ainvoke(self, messages, **kwargs):
             observed["requests"].append((messages, kwargs))
             await stage("request")
+            response = deepcopy(payload)
+            data = json.loads(messages[1].content)
+            if isinstance(response, dict) and "narrative_events" in response and "source_texts" in data:
+                # Only the simulated transport changes shape; assertions still inspect canonical results.
+                response["narrative_events"] = _wire_events(
+                    response["narrative_events"], data["source_texts"], data["entity_refs"])
             return SimpleNamespace(
-                content=payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False),
+                content=response if isinstance(response, str) else json.dumps(response, ensure_ascii=False),
                 response_metadata={"token_usage": {"prompt_tokens": 321, "completion_tokens": 45}},
             )
 
@@ -94,7 +152,7 @@ async def test_player_changes_use_one_formal_request_with_complete_input_and_act
     session = _session()
     history_text = changes[0]["entity"].partition(":")[2] + "仍在桌上，尚未交接。"
     session.performance_history[0]["performance"] = history_text
-    performance = {"performance": "我看到了。", "scene_update": "灯亮着。",
+    performance = {"performance": "我看到了。", "scene_narration": "灯亮着。",
                    "suggested_inputs": ["未选择的本轮推荐"], "author_target": "本轮作者目标",
                    "fact_candidates": [{"key": "不应进入的完成事实"}], "persona": "不应进入的人格"}
     original = deepcopy((session.__dict__, performance))
@@ -104,7 +162,7 @@ async def test_player_changes_use_one_formal_request_with_complete_input_and_act
 
     assert result == events
     assert (session.__dict__, performance) == original
-    assert instance.provider_call_count == len(seen["requests"]) == 1
+    assert len(seen["requests"]) == 1
     assert seen["config"] == ["conversation"]
     assert seen["call_types"] == ["theater_numeric_v2_narrative"]
     assert calls == [{"stage": "narrative", "input_tokens": 321, "output_tokens": 45}]
@@ -113,9 +171,12 @@ async def test_player_changes_use_one_formal_request_with_complete_input_and_act
     assert options == {"provider_type": "openai", "timeout": 12.0, "max_retries": 0, "max_completion_tokens": 1000}
     messages, request_options = seen["requests"][0]
     data = json.loads(messages[1].content)
-    assert data["player_input"] == player_input
-    assert data["phase_texts"] == [{"phase": "player_input"},
-                                  {"phase": "turn", "scene_narration": "灯亮着。", "performance": "我看到了。"}]
+    assert data["source_texts"] == [
+        {"id": "s0", "phase": "player_input", "source": "player_input", "text": player_input},
+        {"id": "s1", "phase": "turn", "source": "scene_narration", "text": "灯亮着。"},
+        {"id": "s2", "phase": "turn", "source": "performance", "text": "我看到了。"},
+    ]
+    assert "player_input" not in data and "phase_texts" not in data
     assert history_text in messages[1].content
     for excluded in ("未选择的", "作者目标", "不应进入"):
         assert excluded not in messages[1].content
@@ -147,10 +208,15 @@ async def test_transition_reads_each_actual_phase_without_target_author_fields(m
     instance, seen = _client(monkeypatch, {"narrative_events": events})
     assert await instance.propose(performance=performance, player_input="继续。", session=_session()) == events
     messages, options = seen["requests"][0]
-    assert json.loads(messages[1].content)["phase_texts"] == [{"phase": "player_input"}, *rows]
+    sources = json.loads(messages[1].content)["source_texts"]
+    assert sources == [{"id": "s0", "phase": "player_input", "source": "player_input", "text": "继续。"},
+                       *({"id": f"s{index}", "phase": row["phase"], "source": source, "text": row[source]}
+                         for index, (row, source) in enumerate(
+                             ((row, source) for row in rows for source in ("scene_narration", "performance") if row.get(source)), 1))]
     assert "未选的后续目标" not in messages[1].content
-    phases = options["response_format"]["json_schema"]["schema"]["properties"]["narrative_events"]["items"]["properties"]["phase"]["enum"]
-    assert phases == ["player_input", "source_response", "transition_bridge", "target_opening"]
+    fields = options["response_format"]["json_schema"]["schema"]["properties"]["narrative_events"]["items"]["properties"]
+    assert fields["source_id"]["enum"] == [row["id"] for row in sources]
+    assert "phase" not in fields and "source" not in fields
 
 
 async def test_opening_has_no_player_input_source_and_rejects_player_event(monkeypatch):
@@ -161,10 +227,12 @@ async def test_opening_has_no_player_input_source_and_rejects_player_event(monke
     assert await instance.propose(performance=performance, player_input="不应作为开场输入", session=_session(), opening=True) == [event]
     messages, options = seen["requests"][0]
     data = json.loads(messages[1].content)
-    assert data["player_input"] == ""
-    assert data["phase_texts"] == [{"phase": "opening", **performance}]
+    assert data["source_texts"] == [
+        {"id": "s0", "phase": "opening", "source": "scene_narration", "text": "窗外雨停了。"},
+        {"id": "s1", "phase": "opening", "source": "performance", "text": "我收好书。"},
+    ]
     assert "不应作为开场输入" not in messages[1].content
-    assert options["response_format"]["json_schema"]["schema"]["properties"]["narrative_events"]["items"]["properties"]["phase"]["enum"] == ["opening"]
+    assert options["response_format"]["json_schema"]["schema"]["properties"]["narrative_events"]["items"]["properties"]["source_id"]["enum"] == ["s0", "s1"]
     bad = _event("玩家动作", [{"entity": "player", "attribute": "position", "value": "玩家动作"}])
     instance, _ = _client(monkeypatch, {"narrative_events": [bad]})
     with pytest.raises(NumericV2ActorOutputError):
@@ -200,7 +268,7 @@ async def test_bad_output_aborts_without_retries_or_empty_success(monkeypatch, p
     instance, seen = _client(monkeypatch, payload)
     with pytest.raises(NumericV2ActorOutputError):
         await instance.propose(performance={"performance": "原话"}, player_input="原话", session=_session())
-    assert instance.provider_call_count == len(seen["requests"]) == 1
+    assert len(seen["requests"]) == 1
     assert seen["closed"] == 1
 
 
@@ -242,19 +310,33 @@ async def test_oversized_required_text_fails_before_config_or_client(monkeypatch
     assert not seen["config"] and not seen["factory"] and not seen["requests"]
 
 
-def test_only_history_can_shrink_at_input_boundary(monkeypatch):
+async def test_only_history_can_shrink_at_actual_review_input_boundary(monkeypatch):
     monkeypatch.setattr(proposer, "count_tokens", len)
     history = [{"revision": 1, "source": "performance", "text": "旧" * 300},
                {"revision": 2, "source": "performance", "text": "最近更正"}]
     monkeypatch.setattr(proposer, "history_evidence", lambda *args, **kwargs: deepcopy(history))
     monkeypatch.setattr(proposer, "project_narrative_state", lambda *args, **kwargs: {"current": "完整状态"})
-    baseline = proposer._messages({"performance": "完整正文"}, "完整原话", _session(), False)
-    limit = sum(len(m.content) for m in baseline) - 200
+    quote = "我把工具匣放到柜台。"
+    events = [_event(quote, [{"entity": "item:工具匣", "attribute": "position", "value": "柜台"}],
+                     phase="turn", source="performance", subject="character")]
+    performance = {"performance": quote, "narrative_events": events}
+    baseline = proposer._messages(performance, "完整原话", _session(), False)
+    data = json.loads(baseline[1].content)
+    data["narrative_events"] = [{"index": index, **event} for index, event in enumerate(events)]
+    # 额度按真正会发送的审核System及候选计算，不由从未发送的旧提案提示提前裁掉历史。
+    limit = len(proposer._REVIEW_SYSTEM) + len(json.dumps(data, ensure_ascii=False, separators=(",", ":"))) - 200
     monkeypatch.setattr(proposer, "NUMERIC_V2_NARRATIVE_INPUT_MAX_TOKENS", limit)
-    messages = proposer._messages({"performance": "完整正文"}, "完整原话", _session(), False)
+    instance, seen = _client(monkeypatch, {
+        "approved_narrative_event_indexes": [], "narrative_review_complete": False,
+    })
+    result = await instance.review(performance=performance, player_input="完整原话", session=_session())
+    assert len(seen["requests"]) == 1
+    messages = seen["requests"][0][0]
     data = json.loads(messages[1].content)
     assert data["history_evidence"] == history[1:]
     assert data["player_input"] == "完整原话"
-    assert data["phase_texts"][1]["performance"] == "完整正文"
+    assert data["phase_texts"][1]["performance"] == quote
     assert data["narrative_state"] == {"current": "完整状态"}
+    assert data["narrative_events"] == [{"index": 0, **events[0]}]
+    assert result.reviewed_narrative_events == tuple(events)
     assert sum(len(m.content) for m in messages) <= limit

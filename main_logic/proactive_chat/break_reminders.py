@@ -228,6 +228,7 @@ def _render_work_break_game_invite_prompt(
     game_type: str,
     master_name: str,
     lang: str,
+    theater_story: dict[str, Any] | None = None,
 ) -> str | None:
     """Render the rest+game-invite combo prompt (50% branch).
 
@@ -245,6 +246,8 @@ def _render_work_break_game_invite_prompt(
     template = per_lang.get(lang, per_lang.get("en", per_lang.get("zh")))
     if not template:
         return None
+    if game_type == "theater" and not (theater_story or {}).get("title"):
+        return None
     app_label = _resolve_break_reminder_label(
         pending.app,
         lang,
@@ -254,6 +257,8 @@ def _render_work_break_game_invite_prompt(
         master=master_name or "",
         app=app_label,
         minutes=pending.minutes,
+        story_title=(theater_story or {}).get("title", ""),
+        story_background=(theater_story or {}).get("background", ""),
     )
 
 

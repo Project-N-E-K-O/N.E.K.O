@@ -15,7 +15,8 @@ OFFER = '手续办妥了，我们现在去阅览室吧。'
 ACCEPT = '（点头）好，带路吧。'
 
 
-async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='先留在这里。', review=False):
+async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='先留在这里。', review=False,
+                     first_invitation=False):
     engine = initiation_case()['engine']
     engine.nodes['start']['route_gates'][1]['transition_contract'].update(
         fallback_offer=OFFER, accept_input=ACCEPT)
@@ -32,7 +33,7 @@ async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='
         current = await runtime.commit_turn(prepared, {'performance': '办好了。', 'suggested_inputs': []})
 
     async def options():
-        return {**default_options(), 'review': review, 'evaluator': mode != 'off',
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': review, 'evaluator': mode != 'off',
                 'review_delivery': False, 'review_contract': False, 'actor_retry': False}
 
     async def evaluate(self, **kwargs):
@@ -43,20 +44,31 @@ async def setup_case(tmp_path, monkeypatch, *, complete=True, mode='off', text='
 
     async def generate(self, **kwargs):
         outcome = kwargs['outcome']
+        if kwargs.get('input_source') == 'reinvite':
+            return {'performance': OFFER, 'suggested_inputs': [], 'transition_offered': True}
         if outcome.ledger_event['from_node_id'] != outcome.ledger_event['to_node_id']:
             return engine.finalize_transition_performance(outcome, _candidate(),
                 target_opening='两人在阅览室入口，后续操作尚未开始。',
                 bridge_scene_narration='两人沿左侧走廊来到阅览室。')
-        return {'performance': text, 'suggested_inputs': [ACCEPT, '再等等。'],
+        body = OFFER if first_invitation and outcome.ledger_event['base_revision'] == 1 else text
+        return {'performance': body, 'suggested_inputs': [ACCEPT, '再等等。'],
                 'transition_offered': True,
                 'program_invitation': {'route_id': 'fake', 'offer': OFFER, 'accept_input': ACCEPT}}
 
     async def validate_offer(self, **kwargs):
-        # The appended author invitation is reviewed as part of the final draft.
-        # An earlier verdict about the body without it cannot approve this text.
-        offered = OFFER in kwargs['actor_performance'].get('performance', '')
-        return ev.NumericV2TransitionOfferReview(offered, complete, (), (),
-            acceptance_authorized=True if kwargs.get('route_changed') else None)
+        # 语义审批针对整稿；引用假话或邀请后又撤回，不能仅凭出现同一句文字就判有效。
+        candidate = kwargs['actor_performance']
+        body = candidate.get('performance', '')
+        offered = OFFER in body
+        valid = bool(complete and offered and not body.startswith('这句话是假的')
+                     and '等等，先别去了。' not in body)
+        suggestions = tuple(candidate.get('suggested_inputs') or [])
+        return ev.NumericV2TransitionOfferReview(offered, valid, (), (),
+            offer_quote=OFFER if offered else '', offer_kind='invitation' if offered else '',
+            approved_suggestion_texts=suggestions,
+            acceptance_authorized=True if kwargs.get('route_changed') else None,
+            offer_acceptance_valid=bool(valid and kwargs.get('require_offer_acceptance', False)
+                and suggestions[:1] == (ACCEPT,)))
 
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -89,13 +101,17 @@ async def test_actor_flags_and_literal_quotes_never_issue_authorization(tmp_path
 @pytest.mark.parametrize('review,mode', [(False, 'off'), (False, 'on'), (False, 'failure'),
                                        (True, 'off'), (True, 'failure')])
 async def test_program_invitation_accepts_after_cold_restore(tmp_path, monkeypatch, mode, review):
-    runtime, current = await setup_case(tmp_path, monkeypatch, mode=mode, review=review)
+    dynamic = mode == 'on' and not review
+    runtime, current = await setup_case(tmp_path, monkeypatch, mode=mode, review=review,
+        text=OFFER if dynamic else '先留在这里。')
     offered = await turn(runtime, current, 'offer', '接下来呢？')
     assert offered.stored.session.transition_offered
     assert offered.performance['suggested_inputs'][0] == ACCEPT
-    assert offered.performance['suggested_inputs'] == [ACCEPT]
+    assert offered.performance['suggested_inputs'] == ([ACCEPT, '再等等。'] if dynamic else [ACCEPT])
     assert offered.performance['performance'].endswith(OFFER)
     receipt = offered.stored.ledger_events[-1]['program_invitation']
+    if dynamic:
+        assert receipt['kind'] == 'reviewed_dynamic'
     assert receipt['performance'] == offered.performance['performance']
     restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id)
     assert restored == offered.stored
@@ -104,11 +120,34 @@ async def test_program_invitation_accepts_after_cold_restore(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['on', 'off', 'failure'])
+async def test_default_evaluator_does_not_append_invitation_to_ordinary_nonoffer(tmp_path, monkeypatch, mode):
+    runtime, current = await setup_case(tmp_path, monkeypatch, mode=mode, text='手续办好了，先歇一会儿。')
+    result = await turn(runtime, current, 'ordinary-nonoffer', '办得怎么样？')
+    if mode == 'on':
+        assert result.performance['performance'] == '手续办好了，先歇一会儿。'
+        assert OFFER not in result.performance['performance']
+        assert not result.stored.session.transition_offered
+        assert 'program_invitation' not in result.stored.ledger_events[-1]
+        assert result.performance['suggested_inputs'] == []
+        assert result.diagnostics['completion_fallback_offer_applied'] == 0
+    else:
+        # 关闭判定或判定降级沿用旧兼容合同，不借本轮语义变更扩大到其它配置。
+        assert result.performance['performance'].endswith(OFFER)
+        assert result.stored.session.transition_offered
+        assert result.performance['suggested_inputs'] == [ACCEPT]
+        assert result.diagnostics['completion_fallback_offer_applied'] == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('text', ['那里有什么？', '等等，今天不开门，先别去了。'])
 @pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off'), (True, 'failure')])
 async def test_unreviewed_followup_expires_program_invitation(tmp_path, monkeypatch, text, review, mode):
-    runtime, current = await setup_case(tmp_path, monkeypatch, text=text, mode=mode, review=review)
+    runtime, current = await setup_case(tmp_path, monkeypatch, text=text, mode=mode, review=review,
+        first_invitation=True)
     offered = await turn(runtime, current, 'offer', '接下来呢？')
+    assert offered.stored.session.transition_offered
+    assert 'program_invitation' in offered.stored.ledger_events[-1]
     continued = await turn(runtime, offered.stored, 'followup', '先问个问题。')
     assert not continued.stored.session.transition_offered
     assert continued.performance['suggested_inputs'] == []
@@ -130,11 +169,17 @@ async def test_final_author_blocks_are_issued_without_duplication(tmp_path, monk
     result = await turn(runtime, current, 'quote', '接下来呢？')
     assert result.performance['performance'] == text
     assert result.performance['performance'].count(OFFER) == 1
+    dynamic = not review and mode == 'on'
+    # 动态邀请允许不改变去向和玩家选择的猫娘动作；兼容固定稿仍要求作者块在最终可见末尾。
+    valid = valid or (dynamic and text in {'（收好凭据）' + OFFER, OFFER + '（望向窗外）'})
     assert result.stored.session.transition_offered is valid
     if review and valid:
         assert result.diagnostics['transition_judge_calls'] == 1
-    assert result.performance['suggested_inputs'] == ([ACCEPT] if valid else [])
+    assert result.performance['suggested_inputs'] == (
+        [ACCEPT, '再等等。'] if valid and dynamic else [ACCEPT] if valid else [])
     assert ('program_invitation' in result.stored.ledger_events[-1]) is valid
+    if valid and dynamic:
+        assert result.stored.ledger_events[-1]['program_invitation']['kind'] == 'reviewed_dynamic'
     accepted = await turn(runtime, result.stored, 'accept', ACCEPT, 'suggestion')
     assert accepted.stored.session.current_node_id == ('ending_leave' if valid else 'start')
 
@@ -143,8 +188,11 @@ async def test_final_author_blocks_are_issued_without_duplication(tmp_path, monk
 @pytest.mark.parametrize('message,intent', [('那里有什么？', 'unclear'), ('再等等，先不走。', 'reject')])
 @pytest.mark.parametrize('review,mode', [(False, 'on'), (True, 'off')])
 async def test_expired_program_offer_is_not_reissued_every_other_turn(tmp_path, monkeypatch, message, intent, review, mode):
-    runtime, current = await setup_case(tmp_path, monkeypatch, review=review, mode=mode)
+    runtime, current = await setup_case(tmp_path, monkeypatch, review=review, mode=mode,
+        first_invitation=True)
     offered = await turn(runtime, current, 'offer', '接下来呢？')
+    assert offered.stored.session.transition_offered
+    assert 'program_invitation' in offered.stored.ledger_events[-1]
     current = offered.stored
     async def evaluate_reply(self, **kwargs):
         return ev.NumericV2EvaluationResult((), False, transition_intent=intent)

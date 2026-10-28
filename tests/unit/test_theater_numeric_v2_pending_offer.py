@@ -8,6 +8,7 @@ import pytest
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_evaluator import _build_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -118,7 +119,7 @@ async def test_route_drift_is_cancelled_before_actor_without_extra_calls(tmp_pat
             offer_present=False, valid=False, body_violations=(), unsafe_suggestion_indexes=())
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -227,12 +228,12 @@ async def test_invalidated_invitation_is_shared_before_rewrite_and_review(tmp_pa
     outcome, _ = runtime.engine.finalize_transition_offer_state(outcome, {}, new_offer=False, invalidate_previous_offer=True)
     messages = _turn_messages(runtime.engine, current.session, outcome, "好，走吧。", "温和。", "测试猫娘", "哥哥",
                              retry_hint="请更正邀请。",  recent_ledger_events=current.ledger_events)
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert "已确认去向错误并撤下的旧邀请原文：我们去便利店买热饮吧？" in data['pacing']
     assert "当前待确认提议原文" not in data['pacing']
     messages = _build_transition_judge_messages(runtime.engine, outcome.session, player_input="好，走吧。",
         actor_performance={"performance": "那就走吧。"}, cancelled_transition=True, invalidated_invitation=True)[0]
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert "便利店" in json.dumps(data['invalidated_invitation'], ensure_ascii=False)
     assert "不再判断它是否有效" in messages[0].content
 
@@ -272,7 +273,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
     forked = await runtime.fork_session_for_test(stored.session.session_id, session_id="pending_fork", through_revision=3)
     for current in (stored, restored, forked):
         messages = _build_messages(engine, current.session, "好，我们现在去长街。", recent_ledger_events=current.ledger_events)
-        pending = json.loads(messages[1].content.split("：", 1)[1])["pending_transition"]
+        pending = prompt_payload(messages[1].content)["pending_transition"]
         assert invitation in pending["visible_performance"]
         assert "不会很远" not in pending["visible_performance"]
         assert pending["suggested_inputs"] == original["suggested_inputs"]
@@ -282,7 +283,7 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
         for retry_hint in ("", "请修正未提交的重复正文。"):
             actor_messages = _turn_messages(engine, current.session, outcome, "我再想一想。", "安静克制。", "测试猫娘", "哥哥",
                 retry_hint=retry_hint, recent_ledger_events=current.ledger_events)
-            actor_data = json.loads(actor_messages[1].content.split("：", 1)[1])
+            actor_data = prompt_payload(actor_messages[1].content)
             assert invitation in actor_data["pacing"]
             assert "ledger_events" not in actor_data
             # Latching proves only prior public disclosure; it cannot turn erroneous wording into a valid arrangement the actor must fulfill.
@@ -301,8 +302,7 @@ async def test_reject_then_new_offer_uses_new_origin_even_when_all_records_are_t
     stored = await _commit(runtime, stored, "那就改为结束今晚的谈话，好吗？", offer=True, intent="reject")
     stored = await _commit(runtime, stored, "你可以慢慢考虑。")
     assert all(record["transition_offered"] for record in stored.session.performance_history)
-    pending = json.loads(_build_messages(engine, stored.session, "好，那今晚到这里。",
-        recent_ledger_events=stored.ledger_events)[1].content.split("：", 1)[1])["pending_transition"]
+    pending = prompt_payload(_build_messages(engine, stored.session, '好，那今晚到这里。', recent_ledger_events=stored.ledger_events)[1].content)["pending_transition"]
     assert "结束今晚的谈话" in pending["visible_performance"]
     assert "长街" not in pending["visible_performance"]
 
@@ -319,8 +319,7 @@ async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp
     stored = await _commit(runtime, stored, "那就先留在这里。", intent="reject")
     stored = await _commit(runtime, stored, "我听着。")
     assert not stored.session.transition_offered
-    data = json.loads(_build_messages(engine, stored.session, "我改主意了，就按刚才说的走。",
-                      recent_ledger_events=stored.ledger_events)[1].content.split("：", 1)[1])
+    data = prompt_payload(_build_messages(engine, stored.session, '我改主意了，就按刚才说的走。', recent_ledger_events=stored.ledger_events)[1].content)
     assert data["pending_transition"]["status"] == "withdrawn"
     assert "沿长街寻找旧信" in data["pending_transition"]["visible_performance"]
     assert "我听着" not in data["pending_transition"]["visible_performance"]
@@ -358,6 +357,7 @@ async def test_evaluator_parser_keeps_evidenced_accept_of_withdrawn_offer(tmp_pa
             "scene_complete": False,
             "metric_changes": {},
             "transition_intent": "accept",
+            "exit_matches": True, "exit_comparison": "玩家明确恢复原邀请的相同行动。",
             "transition_reply_target": reply_target,
         }
         return _parse_output(json.dumps(payload, ensure_ascii=False), engine, message,
@@ -443,7 +443,7 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
         assert await runtime.restore_session(current.session.session_id) == current
         return
     result = await workflow.execute_numeric_v2_turn(**kwargs)
-    assert len(reviews) == (3 if needs_repair else 1)
+    assert len(reviews) == (3 if mode == 'fallback' else 2 if needs_repair else 1)
     assert len(evaluations) == 1 and len(generations) == (2 if needs_repair else 1)
     if needs_repair:
         # Revisions still use original input and committed history; the rejected first draft cannot become the actor's continuation base.
@@ -459,7 +459,8 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
     assert result.stored.session.current_node_id == current.session.current_node_id
     assert result.diagnostics['semantic_review_fallback'] is (mode == 'fallback')
     assert result.diagnostics['transition_judge_degraded'] is (mode == 'fast_failure')
-    assert result.diagnostics['dispute_review_degraded'] is (mode == 'dispute_timeout')
+    assert result.diagnostics['dispute_review_degraded'] is False
+    assert result.diagnostics['dispute_review_attempts'] == (1 if mode == 'fallback' else 0)
     if mode == 'buttons':
         # The original invitation remains valid, but this entire submitted group was rejected; the acceptance button must not bypass review afterward.
         assert result.performance['suggested_inputs'] == []
@@ -515,6 +516,11 @@ async def test_invalid_fallback_offer_without_prior_invitation_is_not_latched(tm
     )
 
     assert len(generations) == 2
+    # A wrong future invitation needs its reason and existing next_scene,
+    # not an extra copy of the full unplayed bridge and opening.
+    assert '邀请去向与 next_scene_direction 不符。' in generations[1]['retry_hint']
+    assert '本轮获准转场才可播放的作者桥段' not in generations[1]['retry_hint']
+    assert '正式换幕后才成立的下一幕开场' not in generations[1]['retry_hint']
     assert result.diagnostics['semantic_review_fallback'] is True
     assert result.stored.session.transition_offered is False
     assert result.performance['transition_offered'] is False
@@ -522,111 +528,65 @@ async def test_invalid_fallback_offer_without_prior_invitation_is_not_latched(tm
 
 
 @pytest.mark.asyncio
-async def test_current_scene_completion_action_is_not_rewritten_as_wrong_exit(tmp_path, monkeypatch):
-    """Player-authorized movement within the act that can record completion facts must not enter rewriting/dispute review because the model falsely reports an exit."""  # noqa: DOCSTRING_CJK
-
+async def test_shared_completion_words_cannot_clear_an_invalid_exit(tmp_path, monkeypatch):
+    """Shared words cannot prove matching exits or authority; preserve repair and completion settlement."""
     from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_options import default_options
 
+    key = 'scene:start:seal_checked'
     story = numeric_v2_story()
-    story['fact_contract'] = {
-        'facts': {
-            'scene:start:civilians_sheltered': {
-                'value_type': 'bool',
-                'visibility': 'public',
-                'description': '三名平民已经全部进入深层屏蔽走廊并安全安置。',
-            },
-        },
-    }
-    story['nodes'][0]['completion_contract'] = {
-        'all': [{'key': 'scene:start:civilians_sheltered', 'equals': True}],
-    }
+    story['fact_contract'] = {'facts': {key: {
+        'value_type': 'bool', 'visibility': 'public', 'description': '封条核对已经完成。',
+    }}}
+    story['nodes'][0]['completion_contract'] = {'all': [{'key': key, 'equals': True}]}
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
     current = await runtime.start_session(
-        session_id='current_scene_completion_action',
-        catgirl_binding=_binding(),
-        opening_performance=_opening(),
-    )
-    generations = []
-    reviews = []
-    player_input = '大家互相搀扶，跟着我进入深层走廊。'
-    narration = '三名平民已经进入深层屏蔽走廊并安全安置。'
+        session_id='shared_words', catgirl_binding=_binding(), opening_performance=_opening())
+    before = runtime.store._path(current.session.session_id).read_bytes()
+    invitation = '我们去下一库房核对封条吧？'
+    narration = '你已核对封条上的编号，结果和登记本一致。'
+    generations, reviews = [], []
 
-    # Even if review also returns current-act completion facts, an unrelated incorrect destination cannot use them to avoid rewriting.
-    wrong_destination_review = ev.NumericV2TransitionOfferReview(
-        offer_present=True,
-        valid=False,
-        body_violations=(),
-        unsafe_suggestion_indexes=(),
-        failure_reason='正文提议前往便利店，与节点出口不一致。',
-        offer_quote='我们去便利店吧。',
-        fact_candidates=({
-            'key': 'scene:start:civilians_sheltered',
-            'value': True,
-            'evidence_quote': narration,
-        },),
-    )
-    assert workflow._current_scene_completion_offer_evidence(
-        engine=runtime.engine,
-        session=current.session,
-        player_input=player_input,
-        review=wrong_destination_review,
-    ) == ()
+    async def options():
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
-        return ev.NumericV2EvaluationResult(
-            metric_changes=(),
-            scene_complete=True,
-            transition_intent='unclear',
-        )
+        return ev.NumericV2EvaluationResult((), True, transition_intent='unclear')
 
     async def generate(self, **kwargs):
+        assert runtime.store._path(current.session.session_id).read_bytes() == before
         generations.append(kwargs)
-        return {
-            'performance': '快，扶着他们进入走廊深处。',
-            'scene_narration': narration,
-            'suggested_inputs': ['（确认三人站稳）都跟紧了。'],
-            'transition_offered': True,
-        }
+        return {'performance': '封条已经核对好。' + (invitation if len(generations) == 1 else '我们先留在这里。'),
+                'scene_narration': narration, 'suggested_inputs': [], 'transition_offered': len(generations) == 1}
 
     async def review(self, **kwargs):
         reviews.append(kwargs)
-        assert not kwargs.get('dispute_review')
+        invalid = invitation in kwargs['actor_performance']['performance']
         return ev.NumericV2TransitionOfferReview(
-            offer_present=True,
-            valid=False,
-            body_violations=(),
-            unsafe_suggestion_indexes=(),
-            failure_reason='正文邀请进入深层走廊，与节点出口不一致。',
-            offer_quote='快，扶着他们进入走廊深处。',
-            fact_candidates=({
-                'key': 'scene:start:civilians_sheltered',
-                'value': True,
-                'evidence_quote': narration,
-            },),
+            offer_present=invalid, valid=False, body_violations=(), unsafe_suggestion_indexes=(),
+            offer_quote=invitation if invalid else '', offer_kind='invitation' if invalid else '',
+            failure_reason='提议下一库房不是当前获准出口。' if invalid else '',
+            fact_candidates=({'key': key, 'value': True, 'evidence_quote': narration},),
         )
 
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
-
     result = await workflow.execute_numeric_v2_turn(
-        config_manager=object(),
-        runtime=runtime,
-        current=current,
-        turn=TurnRequestV2('shelter_civilians', 0, player_input),
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('check_seal', 0, '只核对封条，先不要离开这里。'),
         ensure_current_binding=lambda _: _binding(),
     )
-
-    assert len(generations) == 1
-    assert len(reviews) == 1
-    assert result.diagnostics['current_scene_offer_flags_cleared'] == 1
-    assert result.diagnostics['semantic_rewrite_attempts'] == 0
-    assert result.diagnostics['transition_offer_retries'] == 0
+    assert invitation not in result.performance['performance']
+    assert len(generations) == len(reviews) == 2
+    assert result.diagnostics['semantic_rewrite_attempts'] == 1
     assert result.diagnostics['dispute_review_attempts'] == 0
-    assert result.diagnostics['fact_candidates_accepted'] == 1
-    assert result.stored.session.transition_offered is False
-    assert runtime.engine.completion_contract_satisfied(result.stored.session) is True
+    assert result.stored.session.current_node_id == 'start'
+    assert not result.stored.session.transition_offered
+    assert result.stored.session.story_state['facts'][key]['value'] is True
+    assert await runtime.restore_session(current.session.session_id) == result.stored
 
 
 @pytest.mark.asyncio
@@ -905,12 +865,14 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
             return ev.NumericV2TransitionOfferReview(
                 offer_present=True, valid=not reject_fallback,
                 body_violations=(), unsafe_suggestion_indexes=(), offer_quote=projected_offer,
+                approved_suggestion_texts=tuple(kwargs['actor_performance'].get('suggested_inputs') or []),
             )
         return ev.NumericV2TransitionOfferReview(
             offer_present=False,
             valid=False,
             body_violations=(),
             unsafe_suggestion_indexes=(),
+            approved_suggestion_texts=tuple(kwargs['actor_performance'].get('suggested_inputs') or []),
         )
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -992,7 +954,8 @@ async def test_rejected_offer_does_not_put_old_acceptance_button_first(tmp_path,
                 'transition_offered': False}
 
     async def review(self, **kwargs):
-        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_suggestion_texts=tuple(kwargs['actor_performance'].get('suggested_inputs') or []))
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)

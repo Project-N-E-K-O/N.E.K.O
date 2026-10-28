@@ -33,7 +33,7 @@ async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on",
     calls = []
 
     async def options():
-        return {**default_options(), "review": review, "evaluator": mode != "off",
+        return {**{key: key == 'evaluator' for key in default_options()}, "review": review, "evaluator": mode != "off",
                 "actor_retry": False, "suggestion_fill": False}
 
     async def evaluate(self, **kwargs):
@@ -52,7 +52,6 @@ async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on",
     async def review_offer(self, **kwargs):
         calls.append(kwargs)
         return ev.NumericV2TransitionOfferReview(False, False, (), (),
-            reviewed_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs", [])),
             pending_invitation_invalid=False if kwargs.get("confirmed_acceptance") else None,
             acceptance_authorized=True if kwargs.get("route_changed") else None,
             delivery_matches_route=True if kwargs.get("route_changed") else None)
@@ -118,7 +117,6 @@ async def test_fixed_narration_completed_this_turn_publishes_button_immediately(
 
     async def review(self, **kwargs):
         return ev.NumericV2TransitionOfferReview(False, False, (), (),
-            reviewed_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs", [])),
             fixed_narration_triggers=({"id": "closing", "evidence": "记录封存。"},))
 
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
@@ -132,17 +130,30 @@ async def test_fixed_narration_completed_this_turn_publishes_button_immediately(
 
 
 @pytest.mark.asyncio
-async def test_completion_confirmed_this_turn_publishes_button_immediately(tmp_path, monkeypatch):
+@pytest.mark.parametrize("approved", [False, True])
+async def test_completion_confirmed_this_turn_publishes_button_immediately(tmp_path, monkeypatch, approved):
     runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False, complete=False)
 
     async def evaluate(self, **kwargs):
         return ev.NumericV2EvaluationResult((), False, fact_operations=(
-            {"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},))
+            {"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},),
+            fact_audit=({"key": "scene:start:done", "subject": "玩家", "action": "完成", "object": "本幕操作",
+                         "result": "操作已完成", "evidence": [{"source": "player_input", "quote": "办好了。"}]},))
+
+    async def review(self, **kwargs):
+        # A silent exit must wait for actual completion approval, including when
+        # the candidate arrives from Evaluator rather than the Actor draft.
+        assert kwargs["completion_fact_review_only"] and kwargs["actor_performance"] == {}
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_evaluator_fact_indexes=(0,) if approved else ())
 
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
     result = await turn(runtime, current, "complete-now", "办好了。")
-    assert result.performance["suggested_inputs"][0] == accept
-    assert result.stored.session.transition_offered
+    assert (accept in result.performance["suggested_inputs"]) is approved
+    assert result.stored.session.transition_offered is approved
+    assert runtime.engine.completion_contract_satisfied(result.stored.session) is approved
+    assert await runtime.restore_session("silent") == result.stored
 
 
 @pytest.mark.asyncio
@@ -250,7 +261,7 @@ async def test_program_button_does_not_whitelist_other_rejected_suggestions(tmp_
     runtime, current, accept, _ = await setup(tmp_path, monkeypatch)
 
     async def review(self, **kwargs):
-        return ev.NumericV2TransitionOfferReview(False, False, (), (0,), reviewed_suggestion_texts=())
+        return ev.NumericV2TransitionOfferReview(False, False, (), (0,))
 
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
     result = await turn(runtime, current, "offer", "接下来呢？")
@@ -274,9 +285,9 @@ async def test_empty_body_exception_requires_exact_program_control_receipt(tmp_p
 
 
 def test_workshop_prompts_make_silent_button_self_contained():
-    from theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
-    from theater_workshop.sdk.generation import numeric_v2
-    from theater_workshop.sdk.generation import runtime_rules
+    from services.theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
+    from services.theater_workshop.sdk.generation import numeric_v2
+    from services.theater_workshop.sdk.generation import runtime_rules
     assert "Runtime 据此生成完整按钮、不补台词" in _BRANCH_PATH_PROMPT
     assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_PROMPT
     assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
@@ -425,7 +436,7 @@ def test_invalid_structured_silent_choices_fail_compilation(choice):
 
 @pytest.mark.parametrize("destination", ["观测舱", "山间石桥"])
 def test_branch_export_preserves_structured_silent_choice(destination):
-    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
     choice = {"destination": destination, "arrangement": "查看封存记录"}
     transition = {"reason": "完成交接", "bridge_scene_narration": "来到下一处。",
         "must_preserve": [], "tone": "平静", "silent_choice": choice}
@@ -450,7 +461,7 @@ def test_compiler_and_runtime_reject_carriage_returns_in_silent_choice(tmp_path,
 
 @pytest.mark.parametrize("fallback,accept", [("一起去下一处？", "好，我们去。"), (None, None)])
 def test_branch_export_drops_unused_silent_choice(fallback, accept):
-    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
     transition = {"reason": "完成交接", "bridge_scene_narration": "来到下一处。",
         "must_preserve": [], "tone": "平静", "silent_choice": {"destination": "unused"}}
     contract = NumericV2BranchService._transition_contract(transition,
@@ -490,7 +501,7 @@ async def test_readonly_session_payload_survives_projected_choice_overflow(tmp_p
     from services.theater import numeric_v2_options
 
     async def options():
-        return default_options()
+        return {key: key == 'evaluator' for key in default_options()}
 
     monkeypatch.setattr(numeric_v2_options, "aload_theater_module_options", options)
     runtime, current, _, _ = await setup(tmp_path, monkeypatch,
@@ -498,7 +509,7 @@ async def test_readonly_session_payload_survives_projected_choice_overflow(tmp_p
         silent_choice={"destination": "男女主的观测舱", "arrangement": "查看记录"})
     payload = await router._numeric_payload(runtime, current)
     assert payload["session"]["session_id"] == current.session.session_id
-    assert payload["invitation_recovery_available"] is False
+    assert "invitation_recovery_available" not in payload
     assert await runtime.restore_session("silent") == current
     with pytest.raises(NumericV2RuntimeError, match="numeric_silent_choice_input_too_long"):
         await turn(runtime, current, "reinvite-after-read", "重新邀请", "reinvite")

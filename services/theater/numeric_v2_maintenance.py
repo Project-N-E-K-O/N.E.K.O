@@ -15,6 +15,8 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
+import portalocker
+
 from .numeric_v2_archive import (
     FORGET_MARKER_DIRNAME,
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
@@ -24,7 +26,7 @@ from .numeric_v2_archive import (
     NumericV2ArchiveStore,
     quarantined_file_name,
 )
-from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageNotFoundError
+from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageExistsError, NumericV2PackageNotFoundError
 from .numeric_v2_runtime import NumericV2RuntimeError
 from .numeric_v2_store import (
     NumericV2SessionStore,
@@ -872,6 +874,29 @@ def audit_numeric_v2_storage(
     return {"valid": sum(len(slots) for story_id, slots in rebuilt.items() if story_id not in unloadable_stories), "quarantined": quarantined}
 
 
+def install_bundled_numeric_v2_packages(registry: NumericV2PackageRegistry, bundled_root: Path) -> None:
+    """Seed this release's stories once, preserving imported files and later deletions."""
+    marker = registry.root.parent / "bundled_stories.json"
+    if (marker.exists() or not bundled_root.is_dir()
+            or _RECOVERY_BLOCKED_STORIES.get(str(registry.root.parent.parent.resolve()))):
+        return
+    registry.root.parent.mkdir(parents=True, exist_ok=True)
+    # Other processes may initialize the same profile; publish the marker only
+    # after every package is installed or an existing same-ID file is preserved.
+    with portalocker.Lock(str(marker.with_suffix(".lock")), mode="a", timeout=10):
+        if marker.exists():
+            return
+        story_ids = []
+        for path in sorted(bundled_root.glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                registry.import_package(payload)
+            except NumericV2PackageExistsError:
+                pass
+            story_ids.append(payload["meta"]["story_id"])
+        _atomic_write_manifest(marker, {"story_ids": story_ids})
+
+
 def maintain_numeric_v2_storage_once(
     theater_root: Path,
     registry: NumericV2PackageRegistry,
@@ -889,7 +914,7 @@ def maintain_numeric_v2_storage_once(
         if callable(character_ids_by_name):
             character_ids_by_name = character_ids_by_name()
         with write_transaction():
-            # Cold-start recovery, default-package installation, and index rebuilding write to disk and must obey the same write fence as cloud saves.
+            # Cold-start recovery and index rebuilding write to disk and must obey the same write fence as cloud saves.
             if assert_writable is not None:
                 assert_writable()
             blocked_stories = frozenset(recover_numeric_v2_delete_transactions(theater_root))
@@ -899,7 +924,6 @@ def maintain_numeric_v2_storage_once(
             purge_result = recover_character_purge_intents(
                 theater_root, character_ids_by_name,
             )
-            registry.ensure_default_packages()
             result = audit_numeric_v2_storage(
                 theater_root,
                 registry,
@@ -934,6 +958,7 @@ def maintain_numeric_v2_storage_once(
 
 
 __all__ = [
+    "install_bundled_numeric_v2_packages",
     "CHARACTER_PURGE_INTENT_SCHEMA",
     "INDEX_QUARANTINE_DIRNAME",
     "NumericV2PurgeIntentError",

@@ -531,6 +531,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
@@ -689,6 +690,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=services
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=services.theater_workshop
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=knowledge
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils

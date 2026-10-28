@@ -3,8 +3,8 @@ from copy import deepcopy
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import _validate_idea_outline, _validate_node_enhancement
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
+from services.theater_workshop.sdk.generation.numeric_v2 import _validate_idea_outline, _validate_node_enhancement
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
 from tests.unit.theater_workshop.test_numeric_v2_generation import _idea_outline
 from tests.unit.theater_workshop.test_numeric_v2_branch import _path_result
 

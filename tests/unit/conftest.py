@@ -359,7 +359,12 @@ def _enable_theater_review_modules(request, monkeypatch):
         if not _is_theater_test_module(request):
             return
         from services.theater import numeric_v2_workflow as workflow
+    from services.theater import numeric_v2_options
     from services.theater.numeric_v2_options import default_options
+
+    # Exercise retained review implementations despite the temporary production pause.
+    # Speed-first regressions explicitly restore False and the real options loader.
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", True)
 
     async def _all_on() -> dict[str, bool]:
         # Delivery validation is a new purely programmatic check; exclude it from existing regressions to avoid silently changing their assertions.

@@ -27,6 +27,7 @@ _DEPARTURE_TERMS = (
     "走出门", "走出去", "推门离开", "转身离开", "起身离开", "那我走", "我们走",
 )
 _EXIT_APPROACH_TERMS = ("走向门口", "走向巷口")
+_NONPLAYER_SUBJECTS = ("你们", "他们", "她们", "它们", "您", "你", "他", "她", "它")
 _QUESTION_MARKERS = ("？", "?", "吗", "能不能", "可以吗", "要不要", "是否", "有没有")
 _UNCOMMITTED_MARKERS = (
     "想", "希望", "准备", "打算", "考虑", "计划", "可能", "也许", "如果", "尝试", "试试",
@@ -89,10 +90,24 @@ def _explicit_subject(text: str) -> bool:
     return bool(re.search(r"(?:^|[，,。；;：:\s])(?:我|我们|咱们|先|那我|这就)", text))
 
 
+def _has_unambiguous_nonplayer_subject(text: str, start: int) -> bool:
+    # 按当前动作自己的词位读取分句，不能借同一括号中别的“我做了……”认领他人动作。
+    prefix = re.split(r"[，,。；;：:\n（）()]+", text[:start])[-1].lstrip()
+    subject = next((word for word in _NONPLAYER_SUBJECTS if prefix.startswith(word)), "")
+    if not subject:
+        return False
+    remainder = prefix[len(subject):]
+    # “你的包我提着离开”是物主结构；含后续“我”的嵌套句也保留原规则，避免误伤
+    # “她看着我离开”。这里不尝试判断宾语、任意人名或逗号后省略的主语。
+    if remainder.startswith("的"):
+        return False
+    return re.search(r"(?:我们|咱们|我)(?!们|的)", remainder) is None
+
+
 def _action_term(text: str) -> str:
     for term in sorted(_ACTION_TERMS, key=len, reverse=True):
         for start in _term_starts(text, term):
-            if _negated_at(text, start):
+            if _negated_at(text, start) or _has_unambiguous_nonplayer_subject(text, start):
                 continue
             if len(term) > 1:
                 return term
@@ -132,6 +147,7 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
         if departure:
             has_term = any(
                 not _negated_at(clause, start)
+                and not _has_unambiguous_nonplayer_subject(clause, start)
                 and not any(
                     start < approach_start + len(approach)
                     and start + len(term) > approach_start
@@ -162,7 +178,12 @@ def _exit_approach_clause(text: str) -> str:
            for start in _term_starts(text, term)):
         return ""
     for clause in _clauses(text):
-        if any(term in clause for term in _EXIT_APPROACH_TERMS) and _explicit_action_clause(clause):
+        has_player_approach = any(
+            not _has_unambiguous_nonplayer_subject(clause, start)
+            for term in _EXIT_APPROACH_TERMS
+            for start in _term_starts(clause, term)
+        )
+        if has_player_approach and _explicit_action_clause(clause):
             return clause
     return ""
 
@@ -198,7 +219,8 @@ def project_player_action_result(
     a conservative direct-execution structure. Runtime transitions and fact operations are separate deterministic sources.
     """  # noqa: DOCSTRING_CJK
 
-    text = _evidence(message)
+    # 判定使用完整原话，避免180字符摘录裁掉句尾疑问、条件或动作括号；只有输出引文限长。
+    text = " ".join(str(message or "").strip().split())
     confirmed: list[dict[str, Any]] = []
     future: list[dict[str, Any]] = []
     if text and _departure_is_explicit(text):
@@ -206,7 +228,7 @@ def project_player_action_result(
             "kind": "leave_current_scene",
             "status": "completed",
             "source": "player_input",
-            "evidence_quote": text,
+            "evidence_quote": _evidence(text),
         })
     approach_clause = _exit_approach_clause(text) if not confirmed else ""
     action_clause = _explicit_action_clause(text)
@@ -215,7 +237,7 @@ def project_player_action_result(
             "kind": "approach_scene_exit",
             "status": "performed",
             "source": "player_input",
-            "evidence_quote": approach_clause,
+            "evidence_quote": _evidence(approach_clause),
         })
     elif text and not confirmed and _action_is_explicit(action_clause):
         confirmed.append({
@@ -223,14 +245,14 @@ def project_player_action_result(
             "status": "performed",
             "action_term": _action_term(action_clause),
             "source": "player_input",
-            "evidence_quote": action_clause,
+            "evidence_quote": _evidence(action_clause),
         })
     if text and _future_reference(text):
         future.append({
             "kind": "future_return_or_follow_up",
             "status": "future",
             "source": "player_input",
-            "evidence_quote": text,
+            "evidence_quote": _evidence(text),
         })
 
     if route_changed and transition_intent in {"accept", "initiate"}:
@@ -331,8 +353,22 @@ def normalize_player_action_projection(value: Any) -> dict[str, Any]:
     }
 
 
+def player_action_projection_for_prompt(value: Any) -> dict[str, Any]:
+    """Project input actions and authorized transitions without treating draft facts as confirmation."""
+
+    projection = normalize_player_action_projection(value)
+    # 这些结果行来自本轮 fact_operations，尚未提交；不能再成为 Actor 或复核自己的证据。
+    # 仅过滤模型请求的副本，历史／账本仍沿用原 normalizer，玩家动作、未来约定和转场保持。
+    projection["confirmed_actions"] = [
+        row for row in projection["confirmed_actions"]
+        if not (row["kind"] == "runtime_result" and row["source"] == "runtime_fact")
+    ]
+    return projection
+
+
 __all__ = [
     "PLAYER_ACTION_PROJECTION_SCHEMA",
     "normalize_player_action_projection",
+    "player_action_projection_for_prompt",
     "project_player_action_result",
 ]

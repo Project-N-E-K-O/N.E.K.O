@@ -8,6 +8,7 @@ import pytest
 
 from services.theater import numeric_v2_evaluator as evaluator
 from services.theater import numeric_v2_workflow as workflow
+from services.theater.numeric_v2_options import default_options
 from services.theater.numeric_v2_runtime import (
     MetricChangeV2, NumericV2Engine, NumericV2Runtime, TurnRequestV2,
 )
@@ -71,6 +72,9 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
 
     async def review(self, **kwargs):
         calls["review"] += 1
+        if scenario == "review_off":
+            assert kwargs["completion_fact_review_only"] is True
+            assert kwargs["actor_performance"] == {}
         assert key not in kwargs["session"].story_state["facts"]
         claims = kwargs.get("evaluator_fact_claims", ())
         if scenario == "missing_audit":
@@ -88,7 +92,7 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
             failure_reason="当前稿违反作者边界。" if needs_rewrite else "",
             acceptance_authorized=True if formal else None,
             approved_evaluator_fact_indexes=(
-                (0,) if scenario in {"approve", "global", "formal", "fallback"} or first_rewrite else ()
+                (0,) if scenario in {"approve", "review_off", "global", "formal", "fallback"} or first_rewrite else ()
             ),
         )
 
@@ -129,14 +133,121 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
     assert calls["evaluator"] == 1
     assert calls["actor"] == (2 if scenario in {"rewrite", "budget_skip", "fallback", "fallback_veto"} else 1)
     assert calls["review"] == (
-        0 if scenario == "review_off" else 2 if scenario in {"rewrite", "fallback", "fallback_veto"} else 1
+        2 if scenario in {"rewrite", "fallback", "fallback_veto"} else 1
     )
     if formal:
         assert result.stored.session.current_node_id != current.session.current_node_id
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("review_on,approved", [(True, False), (True, True), (False, False)])
+@pytest.mark.parametrize("scenario", [
+    "approve", "global", "false_target", "veto", "missing_audit", "timeout", "async_timeout", "cancelled",
+    "empty", "noncompletion", "disabled", "already_committed", "budget",
+])
+async def test_default_completion_claims_need_approval_before_prepare(tmp_path, monkeypatch, scenario):
+    """A quoted plan is not completion; unrelated facts and legal replies still proceed."""
+    story = numeric_v2_story()
+    key, other = "prop:inspection_complete" if scenario == "global" else "scene:start:checked", "prop:manual_open"
+    target = scenario != "false_target"
+    story["fact_contract"] = {"facts": {
+        key: {"value_type": "bool", "visibility": "public", "description": "设备已经检查完毕并得到实际结果。"},
+        other: {"value_type": "bool", "visibility": "public", "description": "操作手册已打开。"},
+    }}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": target}]}
+    if scenario == "noncompletion":
+        story["nodes"][0].pop("completion_contract")
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    quote = "检查已经完成，结果正常。" if scenario in {"approve", "global", "false_target"} else "我自己来检查设备。"
+    current = await runtime.start_session(session_id="completion_precheck", catgirl_binding=_binding(),
+        opening_performance={"performance": quote, "suggested_inputs": []})
+    operation = {"op": "set", "key": key, "value": target, "visibility": "public"}
+    ordinary = {"op": "set", "key": other, "value": True, "visibility": "public"}
+    if scenario == "already_committed":
+        prepared = runtime.prepare_turn(current, TurnRequestV2("record", 0, "记录已完成结果。"), (),
+                                        fact_operations=(operation,))
+        current = await runtime.commit_turn(prepared, {"performance": "检查结果已记录。", "suggested_inputs": []})
+    before = runtime.store._path(current.session.session_id).read_bytes()
+    calls = {"evaluate": 0, "actor": 0, "review": 0}
+    message = "（打开操作手册）那我退后，你检查时小心。"
+    audit = {"key": key, "subject": "角色", "action": "检查", "object": "设备", "result": "检查完成。",
+             "evidence": [{"source": "actor_performance", "quote": quote}]}
+    other_audit = {**audit, "key": other, "evidence": [{"source": "player_input", "quote": "打开操作手册"}]}
+    expected_registered = scenario in {"approve", "global", "false_target", "already_committed", "noncompletion"}
+    expected_calls = int(scenario in {"approve", "global", "false_target", "veto", "timeout", "async_timeout", "cancelled"})
+    review_entered, review_stopped = asyncio.Event(), asyncio.Event()
+
+    async def options():
+        return {**{key: key == 'evaluator' for key in default_options()}, "evaluator": scenario != "disabled", "review": False}
+
+    async def evaluate(self, **kwargs):
+        calls["evaluate"] += 1
+        return evaluator.NumericV2EvaluationResult((), False,
+            fact_operations=(ordinary,) if scenario == "empty" else (operation, ordinary),
+            fact_audit=(other_audit,) if scenario in {"empty", "missing_audit"} else (audit, other_audit))
+
+    async def generate(self, **kwargs):
+        calls["actor"] += 1
+        assert (key in kwargs["outcome"].session.story_state["facts"]) is expected_registered
+        assert calls["review"] == expected_calls
+        assert runtime.store._path(current.session.session_id).read_bytes() == before
+        return {"performance": "你先看着手册，我按实际情况检查。", "suggested_inputs": []}
+
+    async def review(self, **kwargs):
+        calls["review"] += 1
+        assert kwargs["completion_fact_review_only"] is True
+        assert kwargs["session"] == current.session
+        assert kwargs["actor_performance"] == {}
+        assert kwargs["evaluator_fact_claims"] == ({**operation, **audit,
+            "description": story["fact_contract"]["facts"][key]["description"]},)
+        assert 0 < kwargs["timeout_seconds"] <= 8
+        assert key not in kwargs["session"].story_state["facts"]
+        if scenario == "timeout":
+            raise evaluator.NumericV2EvaluatorError("numeric_v2_transition_judge_timeout")
+        if scenario in {"async_timeout", "cancelled"}:
+            review_entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                review_stopped.set()
+        return evaluator.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_evaluator_fact_indexes=(0,) if scenario in {"approve", "global", "false_target"} else ())
+
+    monkeypatch.setattr(workflow, "aload_theater_module_options", options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "validate_transition_offer", review)
+    monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "克制务实。")
+    if scenario == "budget":
+        monkeypatch.setattr(workflow, "NUMERIC_V2_REVIEW_BUDGET_SECONDS", 0)
+    if scenario == "async_timeout":
+        monkeypatch.setattr(workflow, "NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS", 0.01)
+    task = asyncio.create_task(workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("check", current.session.revision, message), ensure_current_binding=lambda _: _binding()))
+    if scenario == "cancelled":
+        await asyncio.wait_for(review_entered.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert review_stopped.is_set()
+        assert calls == {"evaluate": 1, "actor": 0, "review": 1}
+        assert runtime.store._path(current.session.session_id).read_bytes() == before
+        assert await runtime.restore_session(current.session.session_id) == current
+        return
+    result = await task
+    if scenario == "async_timeout":
+        assert review_stopped.is_set()
+    facts = result.stored.session.story_state["facts"]
+    assert (key in facts) is expected_registered
+    if expected_registered:
+        assert facts[key]["value"] is target
+    assert (other in facts) is (scenario != "disabled")
+    assert calls == {"evaluate": int(scenario != "disabled"), "actor": 1, "review": expected_calls}
+    assert result.diagnostics["completion_fact_review_calls"] == expected_calls
+    assert await runtime.restore_session(current.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review_on,approved", [(True, False), (True, True), (False, False), (False, True)])
 async def test_actor_candidate_cannot_bypass_enabled_review(tmp_path, monkeypatch, review_on, approved):
     story = numeric_v2_story()
     key = "scene:start:disclosed"
@@ -150,6 +261,7 @@ async def test_actor_candidate_cannot_bypass_enabled_review(tmp_path, monkeypatc
     )
     text = "我是救援员，能量还剩两成。" if approved else "能量还剩两成。"
     candidate = {"key": key, "value": True, "evidence_quote": text}
+    review_calls = []
 
     async def options():
         return {"evaluator": True, "review": review_on}
@@ -161,6 +273,8 @@ async def test_actor_candidate_cannot_bypass_enabled_review(tmp_path, monkeypatc
         return {"performance": text, "suggested_inputs": [], "fact_candidates": [candidate]}
 
     async def review(self, **kwargs):
+        review_calls.append(kwargs)
+        assert kwargs.get("completion_fact_review_only", False) is (not review_on)
         return evaluator.NumericV2TransitionOfferReview(False, False, (), (),
                                                        fact_candidates=(candidate,) if approved else ())
 
@@ -173,7 +287,10 @@ async def test_actor_candidate_cannot_bypass_enabled_review(tmp_path, monkeypatc
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("disclosure", 0, "请介绍一下情况。"), ensure_current_binding=lambda _: _binding(),
     )
-    assert (key in result.stored.session.story_state["facts"]) == (approved or not review_on)
+    assert (key in result.stored.session.story_state["facts"]) == approved
+    assert result.performance["performance"] == text
+    assert result.stored.session.performance_history[-1]["performance"] == text
+    assert len(review_calls) == 1
     assert "fact_candidates" not in result.performance
 
 

@@ -13,9 +13,9 @@ from threading import Barrier, Event
 
 import pytest
 
-from theater_workshop.host import open_workshop, InProcessPackageGateway, NekoWorkshopModel
-from theater_workshop.sdk import WorkshopError, NumericV2RevisionConflictError, ModelReply
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2GenerationError
+from services.theater_workshop.host import open_workshop, InProcessPackageGateway, NekoWorkshopModel
+from services.theater_workshop.sdk import WorkshopError, NumericV2RevisionConflictError, ModelReply
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2GenerationError
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageExistsError
 from services.theater.numeric_v2_store import numeric_v2_story_session_guard
 from utils.cloudsave_runtime import MaintenanceModeError
@@ -23,6 +23,7 @@ from utils.cloudsave_runtime import MaintenanceModeError
 from .numeric_v2_fixture import numeric_v2_story
 from .test_numeric_v2_generation import _generation_setup, _quality_payload, _quality_reply
 from .test_numeric_v2_names import NAMES, named_outline
+from .test_staged_generation import staged_reply
 
 
 class TestConfig:
@@ -49,7 +50,7 @@ class TestConfig:
 
 
 def fixed_model(messages, **options):
-    return ModelReply(json.dumps(named_outline(), ensure_ascii=False), "fixture-model",
+    return ModelReply(staged_reply(messages, options["operation"], named_outline()), "fixture-model",
                       {"prompt_tokens": 17, "completion_tokens": 23, "total_tokens": 40})
 
 
@@ -67,6 +68,99 @@ def setup_project(sdk):
         changes={"title": "旧信", "setup": _generation_setup()})
 
 
+def test_native_generation_failure_preserves_story_and_repairs_only_rejected_scene(opened, monkeypatch):
+    from services.theater_workshop.sdk import PackageError
+
+    host, _ = opened
+    sdk = host.sdk
+    project = setup_project(sdk)
+    project = sdk.update_project(project["project_id"], base_revision=project["revision"],
+                                 changes={"story": numeric_v2_story()})
+    original_compile = sdk._compiler.compile
+    rejected = []
+    calls = []
+
+    def native_compile(story):
+        if not rejected:
+            rejected.append(True)
+            raise PackageError("numeric_v2_compile_failed", {"issues": [{
+                "code": "invalid_native_field", "path": "nodes[1].story_beat.opening_scene",
+                "message": "本幕开场尚未通过正式编译。",
+            }]})
+        return original_compile(story)
+
+    def model(messages, **options):
+        context = json.loads(messages[1]["content"])
+        calls.append((options["operation"], context.get("chapter_index")))
+        return fixed_model(messages, **options)
+
+    monkeypatch.setattr(sdk._compiler, "compile", native_compile)
+    monkeypatch.setattr(sdk._generator, "_model_call", model)
+    with pytest.raises(PackageError, match="numeric_v2_compile_failed"):
+        sdk.generate(project["project_id"], base_revision=project["revision"])
+    failed = sdk.get_project(project["project_id"])
+    assert failed["story"] == project["story"]
+    assert failed["revision"] == project["revision"]
+    assert failed["generation_state"] == "failed"
+    assert failed["generation_checkpoint"]["remaining_issue_count"] == 1
+    assert sdk._store.generation_checkpoint(project["project_id"])["repairs"] == [1]
+    calls.clear()
+    recovered = sdk.generate(project["project_id"], base_revision=project["revision"])["project"]
+    assert calls == [("numeric_v2_chapter_generation", 2), ("numeric_v2_opening_state_extraction", None)]
+    InProcessPackageGateway().compile(recovered["story"])
+    assert recovered["generation_checkpoint"] is None
+
+
+@pytest.mark.parametrize("legacy_checkpoint", [False, True])
+def test_native_frame_failure_resumes_frame_without_rewriting_completed_scenes(opened, monkeypatch, legacy_checkpoint):
+    from services.theater_workshop.sdk import PackageError
+
+    host, _ = opened
+    sdk = host.sdk
+    project = setup_project(sdk)
+    outline = named_outline()
+    outline["story_protagonist"]["motivation"] = "她希望先核对旧信的来源。" * 55
+    calls = []
+
+    def model(messages, **options):
+        context = json.loads(messages[1]["content"])
+        calls.append(options["operation"])
+        if len(calls) == 1 and context.get("native_validation_issues"):
+            assert context["native_validation_issues"][0]["path"] == "catgirl_binding.role_overlay"
+            assert context["current_candidate"]["story_protagonist"]["motivation"] == "她希望先核对旧信的来源。" * 55
+        return ModelReply(staged_reply(messages, options["operation"], outline), "fixture-model", {})
+
+    monkeypatch.setattr(sdk._generator, "_model_call", model)
+    with pytest.raises(PackageError, match="numeric_v2_compile_failed"):
+        sdk.generate(project["project_id"], base_revision=project["revision"])
+    checkpoint = sdk._store.generation_checkpoint(project["project_id"])
+    if legacy_checkpoint:
+        checkpoint["stage"] = "complete"
+        sdk._store.record_generation_checkpoint(project["project_id"], base_revision=project["revision"], checkpoint=checkpoint)
+    completed = deepcopy(checkpoint["candidate"])
+    calls.clear()
+    outline["story_protagonist"]["motivation"] = "核对旧信的来源。"
+    completed["story_protagonist"]["motivation"] = outline["story_protagonist"]["motivation"]
+    expected = sdk._generator._generation_result(title=project["title"], normalized_idea=project["setup"]["brief"],
+        normalized_setup=project["setup"], candidate=completed, cast_names=checkpoint["cast_names"])
+    # A repair reply may drift even while satisfying the structural frame contract.
+    outline["world"]["background"] = "你在海港与旧识见面。"
+    outline["story_protagonist"]["secret_or_wound"] = "她忘了自己的来历。"
+    outline["player_role"]["identity"] = NAMES["player_name"] + "，海港的商人。"
+    outline["tone"] = ["轻松"]
+    outline["key_props"] = []
+    recovered = sdk.generate(project["project_id"], base_revision=project["revision"])["project"]
+
+    assert calls == ["numeric_v2_story_frame"]
+    assert recovered["story"]["nodes"] == expected["story"]["nodes"]
+    expected["story"]["meta"]["story_id"] = recovered["story"]["meta"]["story_id"]
+    assert recovered["story"] == expected["story"]
+    assert recovered["authoring"]["key_props"] == expected["key_props"]
+    assert recovered["setup"]["tone"] == expected["setup_updates"]["tone"]
+    InProcessPackageGateway().compile(recovered["story"])
+    assert recovered["generation_checkpoint"] is None
+
+
 def test_generation_error_survives_a_concurrent_revision_change(opened, monkeypatch):
     host, _config = opened
     project = setup_project(host.sdk)
@@ -77,7 +171,7 @@ def test_generation_error_survives_a_concurrent_revision_change(opened, monkeypa
                                        changes={'title': '修改中的标题'})
         raise failure
 
-    monkeypatch.setattr(host.sdk._generator, 'generate', fail)
+    monkeypatch.setattr(host.sdk._generator, 'generate_staged', fail)
     with pytest.raises(NumericV2GenerationError) as raised:
         host.sdk.generate(project['project_id'], base_revision=project['revision'])
     assert raised.value is failure
@@ -118,7 +212,7 @@ async def test_generated_projects_with_identical_content_have_separate_stable_st
 
 
 def test_enhancement_rebuilds_outgoing_goal_references(opened, monkeypatch):
-    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
     from .test_numeric_v2_branch import _ordered_goal
 
     host, _ = opened
@@ -138,7 +232,7 @@ def test_enhancement_rebuilds_outgoing_goal_references(opened, monkeypatch):
 
 @pytest.mark.parametrize('refs', [[0], [0, 1], [2], [0, 2]])
 def test_enhancement_preserves_valid_nonfinal_goal_references(opened, monkeypatch, refs):
-    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
     from .test_numeric_v2_branch import _ordered_goal
 
     host, _ = opened
@@ -161,8 +255,97 @@ def test_enhancement_preserves_valid_nonfinal_goal_references(opened, monkeypatc
     assert f"goal.{goals[-1]['id']}" not in actual
 
 
+# 节点完善：目标重排只重绑旧的最后目标来源，并保留公开 SDK 的持久化与编译行为。
+
+def _enhancement_reordered_goal_case(order):
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
+    from .test_numeric_v2_branch import _ordered_goal
+    from .test_numeric_v2_generation import _ending_enhancement_case
+
+    _generator, story, candidate = _ending_enhancement_case()
+    node = story["nodes"][0]
+    candidate["ordered_goals"] = [
+        _ordered_goal("女主说明核对记录的依据。"),
+        _ordered_goal("女主回应已经得到的核对结果。"),
+        _ordered_goal("女主说明接下来仍需双方商量的安排。"),
+    ]
+    projected = goals_to_package(node["id"], candidate["ordered_goals"])
+    # The public editor retains stable goal IDs when authors reorder their existing goals.
+    node["story_beat"]["goals"] = [deepcopy(projected[index]) for index in order]
+    return story, node, candidate, projected
+
+
+@pytest.mark.parametrize("order", [(2, 0, 1)], ids=['order0'])
+@pytest.mark.parametrize("source_kind", ["final", "nonfinal", "mixed", "opening_only"])
+def test_native_enhancement_rebinds_only_the_previous_final_goal(opened, monkeypatch, order, source_kind):
+    sdk = opened[0].sdk
+    story, node, candidate, projected = _enhancement_reordered_goal_case(order)
+    old_final = f"goal.{node['story_beat']['goals'][-1]['id']}"
+    new_final = f"goal.{projected[-1]['id']}"
+    other = next(f"goal.{goal['id']}" for goal in projected
+                 if f"goal.{goal['id']}" not in {old_final, new_final})
+    opening, player_input = f"opening.{node['id']}", "runtime.player_input"
+    if source_kind == "final":
+        sources, expected = [old_final, opening, player_input], [opening, player_input, new_final]
+    elif source_kind == "nonfinal":
+        sources = expected = [other, opening, player_input]
+    elif source_kind == "mixed":
+        sources = [new_final, other, old_final, opening, player_input]
+        expected = [new_final, other, opening, player_input]
+    else:
+        sources = expected = [opening, player_input]
+    node["route_gates"][0]["transition_contract"]["source_ids"] = sources
+    original = deepcopy(story)
+    project = sdk.import_story(story)
+    calls = []
+
+    def reply(messages, **options):
+        calls.append((json.loads(messages[1]["content"]), options))
+        return json.dumps(candidate, ensure_ascii=False)
+
+    # Keep the real generator, response parser, validation and indexed goal projection in this SDK call.
+    monkeypatch.setattr(sdk._generator, "call_llm", reply)
+    revised = sdk.enhance_node(project["project_id"], node["id"], base_revision=project["revision"])["project"]
+    current = next(row for row in revised["story"]["nodes"] if row["id"] == node["id"])
+    old_ids = [goal["id"] for goal in node["story_beat"]["goals"]]
+    new_ids = [goal["id"] for goal in current["story_beat"]["goals"]]
+    assert set(old_ids) == set(new_ids) and old_ids != new_ids
+    assert current["story_beat"]["goals"] == projected
+    expected_routes = deepcopy(node["route_gates"])
+    expected_routes[0]["transition_contract"]["source_ids"] = expected
+    assert current["route_gates"] == expected_routes
+    assert story == original and project["story"] == original
+    assert sdk.get_project(project["project_id"]) == revised
+    compiled = sdk.compile(project["project_id"], base_revision=revised["revision"])
+    assert json.loads(compiled["json_bytes"]) == revised["story"]
+    assert len(calls) == 1
+    request, options = calls[0]
+    assert request["existing_story_beat"]["goals"] == node["story_beat"]["goals"]
+    assert options["operation"] == "numeric_v2_node_enhancement"
+    assert options["max_tokens"] == 4000 and options["max_retries"] == 1
+
+
+@pytest.mark.parametrize("with_goals", [False, True])
+def test_unchanged_or_omitted_goals_keep_existing_source_order(opened, monkeypatch, with_goals):
+    sdk = opened[0].sdk
+    story, node, _candidate, _projected = _enhancement_reordered_goal_case((2, 0, 1))
+    node["route_gates"][0]["transition_contract"]["source_ids"] = [
+        f"goal.{node['story_beat']['goals'][-1]['id']}", f"opening.{node['id']}", "runtime.player_input",
+    ]
+    project = sdk.import_story(story)
+    update = {"opening_scene": "柜台旁的灯光照着仍待核对的记录。"}
+    if with_goals:
+        update["goals"] = deepcopy(node["story_beat"]["goals"])
+    monkeypatch.setattr(sdk._generator, "enhance_node", lambda **kwargs: deepcopy(update))
+    revised = sdk.enhance_node(project["project_id"], node["id"], base_revision=project["revision"])["project"]
+    current = next(row for row in revised["story"]["nodes"] if row["id"] == node["id"])
+    assert current["story_beat"]["opening_scene"] == update["opening_scene"]
+    assert current["story_beat"]["goals"] == node["story_beat"]["goals"]
+    assert current["route_gates"] == node["route_gates"]
+
+
 def test_unknown_total_usage_uses_reported_components_without_fabricating_counts():
-    from theater_workshop.sdk.model import ModelAgent, capture_usage
+    from services.theater_workshop.sdk.model import ModelAgent, capture_usage
     agent = ModelAgent('test', lambda *a, **kw: ModelReply('{}', 'test',
                        {'prompt_tokens': 5, 'completion_tokens': 7, 'total_tokens': None}))
     with capture_usage() as usage:
@@ -185,13 +368,17 @@ def test_import_has_no_host_config_server_io_or_model_side_effects(tmp_path):
 import builtins, sys
 old_import = builtins.__import__
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
-    if level == 0 and name.split('.')[0] in {'flask','flask_cors','config','base_agent','services','utils','theater_generator'}:
+    if level == 0 and (
+        name.split('.')[0] in {'flask','flask_cors','config','base_agent','utils','theater_generator'}
+        or (name.startswith('services.') and name != 'services.theater_workshop'
+            and not name.startswith('services.theater_workshop.'))
+    ):
         raise AssertionError(name)
     return old_import(name, globals, locals, fromlist, level)
 builtins.__import__ = guarded
-import theater_workshop.sdk
-assert theater_workshop.sdk.TheaterWorkshop._instances == {}
-from theater_workshop.sdk.numeric_v2 import valid_silent_choice
+import services.theater_workshop.sdk
+assert services.theater_workshop.sdk.TheaterWorkshop._instances == {}
+from services.theater_workshop.sdk.numeric_v2 import valid_silent_choice
 choice = {'destination': 'observatory', 'arrangement': 'read the records'}
 assert valid_silent_choice(choice, token_counter=lambda text: 30)
 assert not valid_silent_choice(choice, token_counter=lambda text: 31)
@@ -250,7 +437,7 @@ def test_generation_names_usage_and_explicit_resume_are_preserved(opened):
     assert result["project"]["story"]["intro"]["catgirl_name"] == NAMES["catgirl_name"]
     assert result["project"]["story"]["initial_state"]["player_address_known"] is False
     assert result["usage"][0]["total_tokens"] == 40
-    assert result["usage"][0]["operation"] == "numeric_v2_mainline_generation"
+    assert result["usage"][0]["operation"] == "numeric_v2_story_frame"
     assert result["project"]["authoring"]["quality_assessment"] is None
 
 
@@ -357,8 +544,8 @@ def test_second_process_rejected_before_data_or_model_and_can_reopen(opened):
     script = """
 import sys
 from tests.unit.theater_workshop.test_sdk_lifecycle import TestConfig, fixed_model
-from theater_workshop.host import open_workshop
-from theater_workshop.sdk import WorkshopError
+from services.theater_workshop.host import open_workshop
+from services.theater_workshop.sdk import WorkshopError
 try:
     h = open_workshop(TestConfig(sys.argv[1]), model_call=fixed_model)
 except WorkshopError as e:
@@ -498,6 +685,7 @@ def test_model_configuration_is_explicit_and_request_budget_has_no_hidden_retry(
     assert calls[0]["timeout"].read == 400
     assert calls[0]["timeout"].connect == 10
     assert calls[0]["api_key"] == (api_key or "")
+    assert "extra_body" not in calls[0]
     assert calls[1] == {"response_format":{"type":"json_object"}}
     calls.clear()
     NekoWorkshopModel({"model":"selected-model", "api_key":api_key, "max_input_tokens":16000,
@@ -517,6 +705,50 @@ def test_model_requires_explicit_positive_input_budget_before_opening_client(mon
     with pytest.raises(WorkshopError, match="workshop_model_input_budget_required"):
         model([], max_tokens=100, max_retries=1, response_format={"type": "json_object"},
               thinking=None, operation="numeric_v2_mainline_generation")
+
+
+@pytest.mark.parametrize("model_name,compatible,operation,focused", [
+    ("qwen3.8-flash", True, "numeric_v2_fact_review", True),
+    ("qwen3.8-flash", True, "numeric_v2_fact_evidence_review", True),
+    ("qwen3.8-flash", True, "numeric_v2_story_frame", True),
+    ("qwen3.8-flash", True, "numeric_v2_chapter_generation", True),
+    ("qwen3.8-flash", True, "numeric_v2_ending_generation", True),
+    ("qwen3.8-flash", True, "numeric_v2_opening_state_extraction", False),
+    ("qwen3.8-flash", False, "numeric_v2_story_frame", False),
+    ("qwen3.8-max", True, "numeric_v2_story_frame", False),
+    ("qwen3.8-flash", True, "numeric_v2_fact_evidence_review_format_repair", False),
+    ("qwen3.8-flash", True, "numeric_v2_mainline_generation", False),
+    ("qwen3.8-flash", False, "numeric_v2_fact_review", False),
+    ("qwen3.8-max", True, "numeric_v2_fact_review", False),
+])
+@pytest.mark.parametrize("output_tokens", [3000, 5000, 6000])
+def test_workshop_flash_quality_mode_is_scoped_without_extra_retries(monkeypatch, model_name, compatible, operation, focused, output_tokens):
+    from types import SimpleNamespace
+    from utils import llm_client
+    from utils.tokenize import count_tokens
+
+    messages = [{"role": "user", "content": "完整作者稿"}]
+    calls = []
+    class Client:
+        def invoke(self, actual, **options):
+            assert actual == messages
+            calls.append(options["response_format"])
+            return SimpleNamespace(content="{}", response_metadata={})
+        def close(self): pass
+    def create(**options):
+        assert options["max_retries"] == 0 and options["max_completion_tokens"] == output_tokens
+        budget = (min(2048, output_tokens // 2) if operation in {
+            "numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation"} else 2048)
+        assert options.get("extra_body") == ({"enable_thinking": True, "thinking_budget": budget} if focused else None)
+        return Client()
+    monkeypatch.setattr(llm_client, "create_chat_llm", create)
+    model = NekoWorkshopModel({"model": model_name,
+        "max_input_tokens": count_tokens(json.dumps(messages, ensure_ascii=False)),
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1" if compatible else "https://example.invalid/v1"})
+    reply = model(messages, max_tokens=output_tokens, max_retries=1, response_format={"type": "json_object"},
+                  thinking=None, operation=operation)
+    assert reply.content == "{}"
+    assert calls == [None if focused else {"type": "json_object"}]
 
 
 @pytest.mark.parametrize("operation", ["numeric_v2_mainline_generation", "numeric_v2_quality_assessment"])
@@ -587,14 +819,14 @@ def test_over_budget_generation_and_quality_preserve_author_content(tmp_path, mo
 
 
 def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
-    from theater_workshop.sdk.generation.quality import QualityAssessmentError
+    from services.theater_workshop.sdk.generation.quality import QualityAssessmentError
     operations = []
     broken = False
     replacement = "小岚把旧信放到桌面，说明日期与当年的误会有关。"
     def model(messages, **options):
         operation = options["operation"]
         operations.append(operation)
-        if operation == "numeric_v2_mainline_generation":
+        if operation in {"numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation", "numeric_v2_opening_state_extraction"}:
             return fixed_model(messages, **options)
         if broken:
             return "invalid JSON"
@@ -648,6 +880,12 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
                 "irreversible_facts":["误会来源已经公开"], "character_state":_character_state(),
                 "catgirl_situation":"她不再独自保守秘密。", "tone":"释然", "fixed_narrations":fixed}, ensure_ascii=False)
         path_result = _path_result_from_context(context)
+        for index, scene in enumerate(path_result["scenes"]):
+            scene["completion_facts"] = [{
+                "id": "evidence_presented", "description": "猫娘已展示带日期的证据。",
+                "value_type": "bool", "target_value": True, "visibility": "public",
+            }]
+            path_result["transitions"][index + 1]["trigger_fact_ids"] = ["evidence_presented"]
         path_result["scenes"][0]["fixed_narrations"] = fixed
         return json.dumps(path_result, ensure_ascii=False)
     host = open_workshop(TestConfig(tmp_path), model_call=model)
@@ -743,21 +981,25 @@ async def test_cancelled_install_keeps_story_lock_until_worker_settles(opened, m
 
 
 def test_release_smoke_runs_from_source_and_sdk_stays_out_of_frozen_builds(tmp_path):
-    from theater_workshop.release_smoke import run
+    from services.theater_workshop.release_smoke import run
     fixture = dict(title="旧信", setup=_generation_setup(), outline=named_outline(), names=NAMES)
     result = asyncio.run(run(fixture))
     assert result["success"] is True
     assert {"resume", "reopen", "maintenance", "load_engine"}.issubset(result["checks"])
     # The SDK has no UI or HTTP caller yet, so it must not ship in the frozen
     # backend. Nuitka follows static imports, so launcher.py must not import it
-    # either, or dropping --include-package would not keep it out.
+    # either. The parent services package is included, so each platform must
+    # explicitly exclude the workshop subtree.
     repo = Path(__file__).resolve().parents[3]
     for filename in ("build-desktop.yml", "build-desktop-linux.yml"):
         workflow = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
-        assert "theater_workshop" not in workflow
+        include_lines = [line for line in workflow.splitlines() if "--include-package=services" in line]
+        assert include_lines
+        assert workflow.count("--nofollow-import-to=services.theater_workshop") == len(include_lines)
+        assert "--include-package=services.theater_workshop" not in workflow
     assert "theater_workshop" not in (repo / "launcher.py").read_text(encoding="utf-8")
     # With no frozen entry point, a frozen-only gate in the smoke would be dead code.
-    smoke_source = (repo / "theater_workshop/release_smoke.py").read_text(encoding="utf-8")
+    smoke_source = (repo / "services/theater_workshop/release_smoke.py").read_text(encoding="utf-8")
     assert "__compiled__" not in smoke_source
     assert "NEKO_THEATER_WORKSHOP_REQUIRE_FROZEN" not in smoke_source
 
@@ -802,7 +1044,7 @@ def test_process_exit_releases_writer_without_clean_close(tmp_path):
     script = """
 import json, os, sys
 from tests.unit.theater_workshop.test_sdk_lifecycle import TestConfig, fixed_model, setup_project
-from theater_workshop.host import open_workshop
+from services.theater_workshop.host import open_workshop
 h = open_workshop(TestConfig(sys.argv[1]), model_call=fixed_model)
 p = setup_project(h.sdk)
 h.sdk._store.begin_generation(p['project_id'], base_revision=p['revision'])
@@ -822,14 +1064,14 @@ os._exit(0)
 
 @pytest.mark.parametrize("project_id", ["project_../../outside", "project_/../outside", "project_..\\outside"])
 def test_project_ids_cannot_escape_author_root(opened, project_id):
-    from theater_workshop.sdk import NumericV2ProjectNotFoundError
+    from services.theater_workshop.sdk import NumericV2ProjectNotFoundError
     with pytest.raises(NumericV2ProjectNotFoundError):
         opened[0].sdk.get_project(project_id)
 
 
 def test_failed_model_usage_is_available_on_error(opened):
     host, config = opened
-    from theater_workshop.sdk import LLMCallFailure
+    from services.theater_workshop.sdk import LLMCallFailure
     host.sdk._generator._model_call = lambda *args, **kwargs: ModelReply(
         LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError"), "test-model")
     project = setup_project(host.sdk)
@@ -846,7 +1088,7 @@ def test_fixed_narration_generation_import_export_and_author_update(tmp_path):
     fixed = [_piece('report', REPORT, entry=True)]
     outline['mainline_chapters'][0]['fixed_narrations'] = deepcopy(fixed)
     outline['ending']['fixed_narrations'] = deepcopy(fixed)
-    host = open_workshop(TestConfig(tmp_path), model_call=lambda *a, **kw: json.dumps(outline, ensure_ascii=False))
+    host = open_workshop(TestConfig(tmp_path), model_call=lambda messages, **kw: staged_reply(messages, kw["operation"], outline))
     try:
         sdk = host.sdk
         setup = setup_project(sdk)

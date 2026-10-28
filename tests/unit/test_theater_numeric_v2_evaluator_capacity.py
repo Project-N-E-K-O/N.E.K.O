@@ -1,18 +1,18 @@
 """Ordinary Evaluator capacity preserves fixed input and trims optional evidence."""
 from copy import deepcopy
 import asyncio
-import json
 
 import pytest
 
 from services.theater import numeric_v2_evaluator as e
 from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
 
 
 def data_from(messages):
     text = messages[-1].content
-    return json.JSONDecoder().raw_decode(text[text.find('{'):])[0]
+    return prompt_payload(text)
 
 
 def tokens(messages):
@@ -20,9 +20,9 @@ def tokens(messages):
 
 
 def count_data(messages, data):
-    prefix = messages[-1].content[:messages[-1].content.find('{')]
+    prefix = messages[-1].content.split("======以下为", 1)[0]
     return e.count_tokens(messages[0].content) + e.count_tokens(
-        prefix + json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+        prefix + e.render_prompt_context(data))
 
 
 def strip_quotes(state):
@@ -63,6 +63,9 @@ def inputs(request, monkeypatch):
               'content': [{'type': 'dialogue', 'text': item + '仍由我拿着。'}]}
     monkeypatch.setattr(e, '_current_scene_context', lambda *args: deepcopy([latest]))
     monkeypatch.setattr(e, 'history_evidence', lambda *args, **kwargs: [])
+    # These cases isolate dialogue/ledger packing; lifecycle pressure has its own cases below.
+    monkeypatch.setattr(e, 'project_scene_facts', lambda *args: {
+        'revision': session.revision, 'facts': [], 'truncated': False})
     monkeypatch.setattr(e, 'project_narrative_state', lambda *args, **kwargs: deepcopy(state))
     profile = NUMERIC_V2_ACTOR_BUDGET_PROFILES[session.actor_budget_profile]
     monkeypatch.setitem(profile, 'evaluator_input_max_tokens', 100000)
@@ -93,7 +96,10 @@ def test_optional_retrieval_trims_minimum_and_does_not_reappear(inputs,monkeypat
     monkeypatch.setattr(e,'project_narrative_state',lambda *a,**k:None)
     rows=[{'revision':i,'source':'performance','current_visit':False,'text':str(i)+'此前公开的证据。'*100} for i in range(1,4)]
     original=deepcopy(rows)
-    monkeypatch.setattr(e,'history_evidence',lambda *a,**k:deepcopy(rows))
+    def fixed_retrieval(*args, **kwargs):
+        # 本例只验证固定来源的最少裁剪；扩充阶段保留已经裁好的种子，不能绕过容量谓词。
+        return deepcopy(kwargs['retained'] if 'within_prompt' in kwargs else rows)
+    monkeypatch.setattr(e,'history_evidence',fixed_retrieval)
     messages,data,_=build();expected=deepcopy(data);expected['history_evidence']=rows[1:]
     limit(count_data(messages,expected))
     _,packed,diag=build()
@@ -110,9 +116,9 @@ def test_history_trim_restores_evidence_from_removed_record(inputs,monkeypatch):
     monkeypatch.setattr(e,'history_evidence',lambda *a,**k:deepcopy(rows))
     messages,data,_=build();assert 'history_evidence' not in data
     expected=deepcopy(data);expected['scene_context']=[latest];expected['history_evidence']=[rows[0]]
-    prefix=messages[-1].content[:messages[-1].content.find('{')]
+    prefix=messages[-1].content.split("======以下为", 1)[0]
     # Restoring evidence also restores the evidence protocol in the system.
-    desired=e.count_tokens(messages[0].content+e.HISTORY_EVIDENCE_RULE)+e.count_tokens(prefix+json.dumps(expected,ensure_ascii=False,separators=(',',':')))
+    desired=e.count_tokens(messages[0].content+e.HISTORY_EVIDENCE_RULE)+e.count_tokens(prefix+e.render_prompt_context(expected))
     limit(desired)
     _,packed,diag=build()
     assert packed==expected and diag['recent_dropped_revisions']==[2]
@@ -134,8 +140,8 @@ def test_still_over_budget_keeps_fixed_context_and_latest_record(inputs,monkeypa
     monkeypatch.setattr(e,'history_evidence',lambda *a,**k:deepcopy(rows))
     messages,data,_=build();expected=deepcopy(data);expected.pop('history_evidence');expected['narrative_state']=strip_quotes(state)
     system=messages[0].content.replace(e.HISTORY_EVIDENCE_RULE,'',1)
-    prefix=messages[-1].content[:messages[-1].content.find('{')]
-    minimum=e.count_tokens(system)+e.count_tokens(prefix+json.dumps(expected,ensure_ascii=False,separators=(',',':')))
+    prefix=messages[-1].content.split("======以下为", 1)[0]
+    minimum=e.count_tokens(system)+e.count_tokens(prefix+e.render_prompt_context(expected))
     limit(minimum-1)
     after,packed,diag=build()
     assert packed==expected and after[0].content==system
@@ -160,3 +166,73 @@ def test_still_over_budget_keeps_fixed_context_and_latest_record(inputs,monkeypa
     with pytest.raises(e.NumericV2EvaluatorError,match='numeric_v2_evaluator_input_budget_exceeded'):
         asyncio.run(e.NumericV2MetricEvaluator(object()).evaluate(engine=engine,session=session,message=message,allow_history_lookup=False))
     assert invoked==[]
+
+
+def test_old_lifecycle_projection_yields_to_current_public_evidence(inputs, monkeypatch):
+    _, session, message, _, latest, build, limit = inputs
+    current = {'node_id': session.current_node_id, 'event_revision': 0, 'event': 'scene.entered'}
+    projection = {'revision': session.revision, 'facts': [current], 'truncated': False}
+    monkeypatch.setattr(e, 'project_scene_facts', lambda *a: deepcopy(projection))
+    _, baseline, diag = build()
+    limit(diag['final_tokens'] + 100)
+    projection['facts'] = [
+        {'node_id': f'previous_{i}', 'event_revision': 0, 'event': 'scene.completed'}
+        for i in range(23)
+    ] + [current]
+    original = deepcopy(projection)
+    _, packed, diag = build()
+    summary = packed['current_story_beat']['runtime_scene_facts']
+    assert diag['final_tokens'] <= diag['budget_tokens']
+    assert summary['facts'] == [current] and summary['scope'] == 'current_visit'
+    assert summary['truncated'] and summary['omitted_prior_scene_events'] == 23
+    assert packed['scene_context'] == [latest] and packed['player_input'] == message
+    assert packed['metrics'] == baseline['metrics'] and projection == original
+
+
+def test_identical_ending_author_plan_is_kept_once_under_pressure(inputs):
+    engine, session, *_, build, limit = inputs
+    engine.nodes[session.current_node_id]['story_beat']['narrative_summary'] = (
+        '角色回应玩家立场，收好现场物品后安静告别；实际收束以后才进入结局。' * 25)
+    messages, data, _ = build()
+    ending = data['transition_preview']['natural_ending_context']
+    assert ending['source_direction'] == data['current_story_beat']['scene_direction']
+    expected = deepcopy(data)
+    expected['transition_preview']['natural_ending_context']['source_direction'] = (
+        '见 current_story_beat.scene_direction；同一作者规划，不是已发生事实。')
+    assert count_data(messages, expected) < tokens(messages)
+    limit(count_data(messages, expected))
+    _, packed, diag = build()
+    assert packed == expected and diag['final_tokens'] == diag['budget_tokens']
+
+
+def test_empty_unrecorded_ledger_envelope_yields_before_public_text(inputs, monkeypatch):
+    *_, build, limit = inputs
+    empty = {'coverage': 'unrecorded', 'current': {}, 'last_known': {}, 'recent_events': [],
+             'revision': 0, 'projection': {'retained_entities': 0}}
+    monkeypatch.setattr(e, 'project_narrative_state', lambda *a, **k: deepcopy(empty))
+    messages, data, _ = build()
+    expected = deepcopy(data)
+    expected.pop('narrative_state')
+    limit(count_data(messages, expected))
+    _, packed, diag = build()
+    assert packed == expected and diag['final_tokens'] == diag['budget_tokens']
+    assert empty['coverage'] == 'unrecorded'
+
+
+def test_auxiliary_lifecycle_summary_can_yield_without_losing_current_result(inputs, monkeypatch):
+    _, session, message, _, latest, build, limit = inputs
+    monkeypatch.setattr(e, 'project_narrative_state', lambda *a, **k: None)
+    projection = {'revision': session.revision, 'facts': [
+        {'node_id': session.current_node_id, 'event_revision': 0, 'event': 'scene.entered',
+         'key': f'event:scene.entered:{session.current_node_id}:r0', 'value': True,
+         'source_revision': 0, 'updated_revision': 0}], 'truncated': False}
+    monkeypatch.setattr(e, 'project_scene_facts', lambda *a: deepcopy(projection))
+    messages, data, _ = build()
+    expected = deepcopy(data)
+    expected['current_story_beat']['runtime_scene_facts'] = {
+        'truncated': True, 'scope': 'omitted_for_capacity'}
+    limit(count_data(messages, expected))
+    _, packed, diag = build()
+    assert packed == expected and diag['final_tokens'] == diag['budget_tokens']
+    assert packed['player_input'] == message and packed['scene_context'] == [latest]
+    assert projection['facts'][0]['event'] == 'scene.entered'

@@ -3920,7 +3920,28 @@ PROACTIVE_SOURCE_LABELS = {
 # Multigame contract: outer game_type keys match config.MINI_GAME_INVITE_AVAILABLE_GAMES,
 # inner keys hold supported-locale lines. New games require another outer
 # key only, without shortcut-dispatch changes.
+THEATER_STORY_INVITE_LINES: dict[str, str] = {
+    "zh": "{master_name}，我挑了《{story_title}》。{synopsis}要不要陪我把这个故事演一遍？",
+    "zh-TW": "{master_name}，我挑了《{story_title}》。{synopsis}要不要陪我把這個故事演一遍？",
+    "en": '{master_name}, I picked “{story_title}”. {synopsis} Want to act out this story with me?',
+    "ja": "{master_name}、『{story_title}』を選んだよ。{synopsis}一緒にこの物語を演じてみない？",
+    "ko": "{master_name}, ‘{story_title}’을 골랐어. {synopsis} 나랑 이 이야기를 함께 연기해 볼래?",
+    "ru": 'Я выбрала «{story_title}», {master_name}. {synopsis} Разыграем эту историю вместе?',
+    "es": 'He elegido «{story_title}», {master_name}. {synopsis} ¿La interpretamos juntos?',
+    "pt": 'Escolhi “{story_title}”, {master_name}. {synopsis} Vamos encenar essa história juntos?',
+}
+
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    "theater": {
+        "zh": "{master_name}，要不要挑个剧本，和我一起演一场小剧场？",
+        "zh-TW": "{master_name}，要不要挑個劇本，和我一起演一場小劇場？",
+        "en": "{master_name}, want to pick a story and act it out with me in the theater?",
+        "ja": "{master_name}、台本を選んで、一緒にミニシアターで演じてみない？",
+        "ko": "{master_name}, 대본을 골라서 나랑 작은 극장에서 함께 연기해 볼래?",
+        "ru": "{master_name}, выберем историю и разыграем её вместе в мини-театре?",
+        "es": "{master_name}, ¿elegimos una historia y la interpretamos juntos en el teatro?",
+        "pt": "{master_name}, vamos escolher uma história e encenar juntos no teatro?",
+    },
     "watch-together": {
         "zh": "{master_name}，要不要选个视频和我一起看？",
         "zh-TW": "{master_name}，要不要選個影片和我一起看？",

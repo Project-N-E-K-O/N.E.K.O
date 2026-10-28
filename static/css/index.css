@@ -2506,6 +2506,45 @@ body.react-chat-window-dragging {
     display: none;
 }
 
+/* 小剧场主动入口独立于邀约开关，复用浮动菜单的明暗主题。 */
+.theater-market-enter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+    min-height: 24px;
+    padding: 0 9px;
+    border: 1px solid var(--neko-popup-accent-border, rgba(68, 183, 254, 0.25));
+    border-radius: 999px;
+    background: var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05));
+    color: var(--neko-popup-accent, #2a7bc4);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.theater-market-enter::after {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-top: 1.5px solid currentColor;
+    border-right: 1.5px solid currentColor;
+    transform: rotate(45deg);
+}
+.theater-market-enter:hover {
+    background: var(--neko-popup-selected-hover, rgba(68, 183, 254, 0.15));
+    border-color: var(--neko-popup-accent, #2a7bc4);
+}
+.theater-market-enter:focus-visible {
+    outline: 2px solid var(--neko-popup-accent, #2a7bc4);
+    outline-offset: 2px;
+}
+
 /* 独立头像预览弹窗（chat.html / index.html 共用）
    作为一个浮动窗口定位在触发按钮附近。 */
 #chat-avatar-preview-popup {

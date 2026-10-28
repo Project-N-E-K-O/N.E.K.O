@@ -1,10 +1,10 @@
 from __future__ import annotations
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.host import InProcessPackageGateway
 
 from copy import deepcopy
 
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
 from .numeric_v2_fixture import numeric_v2_story
 
 

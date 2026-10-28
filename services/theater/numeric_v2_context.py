@@ -6,13 +6,75 @@ import json
 import math
 import re
 from collections import Counter
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from utils.tokenize import count_tokens, truncate_to_tokens
 
 from .numeric_v2_actor_output import _sentence_units
 from .numeric_v2_budget import numeric_v2_actor_budget, NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE
-from .numeric_v2_performance import performance_content_blocks
+from .numeric_v2_cast import NumericV2CastProjection
+from .numeric_v2_performance import performance_content_blocks, scene_narration_text
+
+
+def prompt_data_block(label: str, data: Mapping[str, Any]) -> str:
+    """Fence lossless JSON data without allowing values to forge block delimiters."""
+
+    # Keep evidence and player input reversible; destructive sanitizers would
+    # change the original strings against which quote validation operates.
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    payload = payload.replace("=", r"\u003d").replace("<", r"\u003c").replace(">", r"\u003e")
+    return f"======以下为{label}======\n{payload}\n======以上为{label}======"
+
+
+def prompt_data_block_payload(text: str, label: str) -> dict[str, Any]:
+    """Read one block back out of prompt_data_block output, reversing its delimiter escaping."""
+
+    # Match the markers without their surrounding newlines so CRLF text reads
+    # back too; json.loads ignores the leading/trailing whitespace that leaves
+    # behind, and turns the renderer's escaped delimiter characters back into
+    # the originals.
+    opening = f"======以下为{label}======"
+    closing = f"======以上为{label}======"
+    start = text.find(opening)
+    if start < 0:
+        raise KeyError(label)
+    start += len(opening)
+    end = text.find(closing, start)
+    if end < 0:
+        raise KeyError(label)
+    return json.loads(text[start:end])
+
+
+def render_prompt_context(data: Mapping[str, Any]) -> str:
+    """Group existing prompt fields for display without changing their values."""
+
+    role, story, history, player = {}, {}, {}, {}
+    role_keys = {"role", "character_name", "acting_context", "player_address", "player_address_state"}
+    history_keys = {"story_so_far", "recent_context", "scene_context", "visible_player_history",
+                    "history_evidence", "committed_fact_evidence", "pending_transition"}
+    for key, value in data.items():
+        target = (role if key in role_keys else history if key in history_keys
+                  else player if key in {"player_input_revision", "player_input"} else story)
+        target[key] = value
+    # The same source object has stable identity and author staging. Keep its
+    # field paths intact, but show staging alongside the script, not personality.
+    acting = role.get("acting_context")
+    if isinstance(acting, Mapping):
+        entry_keys = {"current_scene_state", "character_state", "source_author_entry_situation",
+                      "source_author_entry_state", "target_character_state"}
+        role["acting_context"] = {key: value for key, value in acting.items() if key not in entry_keys}
+        entry = {key: value for key, value in acting.items() if key in entry_keys}
+        if entry:
+            story["acting_context"] = entry
+    context = story.get("story_context")
+    if isinstance(context, Mapping):
+        identity = {key: value for key, value in context.items() if key in {"player_identity", "knowledge_scope"}}
+        if identity:
+            role["story_context"] = identity
+            story["story_context"] = {key: value for key, value in context.items() if key not in identity}
+    return "\n\n".join(prompt_data_block(label, values) for label, values in (
+        ("角色设定", role), ("剧本资料", story), ("历史对话", history), ("玩家本轮输入", player),
+    ))
 
 
 # Interpret user confirmation using ordinary present-tense language; all three model types share the rule and must not require extra parentheses or perfective aspect.
@@ -47,13 +109,44 @@ PLAYER_ACTION_PROJECTION_RULE = (
 )
 
 
-# Read author state at the same point for all consumers: after the opening performance. Actual history still takes precedence; do not add a second mutable state or archive.
+# Author staging describes an intended entry, not proof of what was performed.
+# Keep legitimate initial facts while all consumers compare later plans with actual history.
 SCENE_ENTRY_STATE_RULE = (
-    "作者角色状态记录开场演完后的起点，不是开场前姿态或整幕完成结果。"
+    "作者角色状态是作者预期的入幕起点，须与实际开场及已提交历史核对，不是已发生事件的证据。"
+    "首幕明确给出的合法初始身份、伤势和环境可以建立；后续幕的玩家动作、持物或决定须有实际历史或本轮授权支持。"
     "已播放开场的动作只承接结果，不能为符合静态状态而重做；后续变化以实际已提交历史为准。"
     "目标幕尚未播放时，其状态描述预期的开场结果，不能提前当作来源幕已经发生的事实；"
     "其中‘尚未操作’等预设须按实际已提交动作更新，不能推翻玩家已做的连续动作。"
     "状态描述不授权新增玩家行动；认知、能力、关系和明确阶段边界仍有效。"
+    "temporal_context是作者入幕时序规划，anchor为时间原文，relation_to_previous仅说明相对安排，"
+    "不是Runtime已推进日期的回执；当前时间须承接实际演出，未来约定或回忆不改变现在，同幕自然经过不自动算跨日。"
+    "关系上限不是已达关系；待发生的关系契机只在实际互动满足时产生有限回应，玩家拒绝或条件未成立时保留原有距离和分歧，表达仍服从演出角色本人的人设。"
+)
+
+
+# A source proves only what it actually establishes. Share this scope across
+# writing and review rather than classify props or silently upgrade quoted speech
+# into world state. This is a model contract, not a deterministic truth checker.
+EVIDENCE_SCOPE_RULE = (
+    "资料按来源与范围使用：已提交原文先证明谁说过什么、做过什么，不保证话中的猜测、传闻或假设为真。"
+    "当前可见现象不自动证明过去过程、隐蔽原因或完整成败；未观察到不等于从未发生，未操作不等于已测试失败。"
+    "依照已给世界规则或已公开知识，实际证据足以支持的有限推断可以交付，但不能扩大到证据之外的范围。"
+    "角色有依据的未决判断须保留归属与不确定，不升为客观状态或推荐的既知前提；"
+    "仅加‘似乎’等措辞也不授权编造未知机制或关键结果。"
+    "有权限的在场人物可以给出其确知的具体答复，不要求先有历史重复证明；"
+    "玩家的经历、回忆或认出对象须有玩家公开原话或合法初始背景支持，不能由角色推测代填。"
+)
+
+
+# 未选推荐只提供玩家意图，不能自己建立外部事实。生成与同次审核共用合同，
+# 不把具体题材、词语或观察句式做成 parser 黑名单，也不限制真实玩家输入及正常角色演出。
+SUGGESTION_EVIDENCE_RULE = (
+    "推荐只提出玩家下一步的行动、问题、意愿或主观反应；观察、查找、询问和尝试可选，未知发现与成败留待正文交付。"
+    "推荐涉及的外部事物、线索、他人已完成动作或结果须有可见正文或公开历史支持；"
+    "声称看见、听见、读出或认出，也不授权自造其存在、身份和属性；"
+    "不因‘好像’、‘可能’或问句而免除依据。"
+    "可据已公开对象提出未决猜测或合理估算，不补造输入、配方或检查结果。"
+    "此约束仅限未选推荐，不限制真实玩家输入与角色按作者权限正常接戏。"
 )
 
 
@@ -143,10 +236,13 @@ def history_lookup_note(lookup: Mapping[str, Any] | None) -> str:
 
 
 def history_evidence(session: Any, query: str, *, focus: str = "", claims: str = "", max_tokens: int | None = None,
-                     lookup: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+                     lookup: Mapping[str, Any] | None = None,
+                     retained: Sequence[Mapping[str, Any]] = (),
+                     within_prompt: Callable[[Sequence[Mapping[str, Any]]], bool] | None = None) -> list[dict[str, Any]]:
     """Retrieve complete source statements for the current question and direction, retaining provenance, visit boundaries and final negations."""
 
-    # All three consumers share the same tier and count of complete source texts; an explicit remaining budget may narrow but never exceed the tier limit.
+    # 默认检索仍使用原附件额度；Actor 第二阶段可用最终整份请求的容量谓词补入原文。
+    # 该谓词不扩大总输入预算，且不能要求消费者再次裁掉已经保留的内容。
     budget = numeric_v2_actor_budget(getattr(session, "actor_budget_profile", NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE))
     max_tokens = budget["evidence_max_tokens"] if max_tokens is None else min(max_tokens, budget["evidence_max_tokens"])
     units = performance_history_records(session)
@@ -183,20 +279,168 @@ def history_evidence(session: Any, query: str, *, focus: str = "", claims: str =
                ) else 0.0,
                sum(math.log(1 + len(units) / frequencies[term]) for term in row & focus_terms))
               for index, row in enumerate(terms)]
+    # A short reply can answer a named question without repeating its object.
+    # Associate only explicit ordinary turns: an old crossing's source, bridge
+    # and target can all have current_visit=False despite belonging to different scenes.
+    ordinary_revisions = {
+        record["revision"] for record in getattr(session, "performance_history", ())
+        if isinstance(record, Mapping) and type(record.get("revision")) is int
+        and record.get("from_node_id")
+        and record.get("from_node_id") == record.get("to_node_id")
+    }
+    reply_relevance = {
+        unit["revision"]: (relevance(terms[index], query_terms), scores[index][1])
+        for index, unit in enumerate(units)
+        if unit["source"] == "player_input" and unit["revision"] in ordinary_revisions
+    }
+    # Propagate the actual question/conversation ranking, never a pending claim
+    # or author direction. This retrieves originals; it does not make the reply true.
+    scores = [
+        (max(score[0], reply_relevance[unit["revision"]][0]),
+         max(score[1], reply_relevance[unit["revision"]][1]), score[2])
+        if unit["source"] == "performance" and unit["revision"] in reply_relevance else score
+        for unit, score in zip(units, scores)
+    ]
     selected: list[int] = []
     # Resolve the retrieved index back to original text, then verify it belongs to the current Session; prefer newer corrections and do not trust facts copied by the model.
     lookup_indexes = sorted({units.index(row) for row in (lookup or {}).get("evidence", []) if row in units}, reverse=True)
-    ranked = sorted(range(len(units)), key=lambda i: (scores[i], units[i]["revision"]), reverse=True)
-    for index in [*lookup_indexes, *(i for i in ranked if i not in lookup_indexes)]:
+    lookup_questions = {units[i]["revision"] for i in lookup_indexes
+                        if units[i]["source"] == "player_input" and units[i]["revision"] in ordinary_revisions}
+    # A verified lookup of a question may retrieve its actual ordinary reply too;
+    # supplement only after every directly retrieved original had its chance to fit.
+    # Foreign lookup text and cross-scene text cannot seed that association.
+    lookup_replies = sorted((i for i, unit in enumerate(units)
+                             if unit["source"] == "performance" and unit["revision"] in lookup_questions
+                             and i not in lookup_indexes), reverse=True)
+    ranked = sorted(range(len(units)), key=lambda i: (
+        scores[i], units[i]["revision"], units[i]["source"] == "performance",
+    ), reverse=True)
+    if within_prompt is not None:
+        # 种子必须逐条对应本 Session 的完整来源，外来正文、额外字段及伪造访问归属不能注入。
+        # 保留原检索的全部单位（即使近期历史已承载），不借去重放宽原 12 单元上限。
+        for record in retained:
+            index = next((i for i, unit in enumerate(units) if i not in selected and unit == record), None)
+            if index is not None and len(selected) < budget["evidence_max_units"]:
+                selected.append(index)
+    attempts = 0
+    for index in [*lookup_indexes, *lookup_replies,
+                  *(i for i in ranked if i not in lookup_indexes and i not in lookup_replies)]:
+        if len(selected) >= budget["evidence_max_units"]:
+            break
+        if index in selected:
+            continue
         # Author-provided direction still requires two fragments so a long plan cannot retrieve an unrelated old task through one common word.
-        if index not in lookup_indexes and not any(scores[index][:2]) and len(terms[index] & focus_terms) < 2:
+        if (index not in lookup_indexes and index not in lookup_replies
+                and not any(scores[index][:2]) and len(terms[index] & focus_terms) < 2):
             continue
         candidate = [units[i] for i in sorted([*selected, index])]
-        if count_tokens(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) <= max_tokens:
+        if within_prompt is not None:
+            # 失败也消耗试装次数，避免长存档反复对整份请求分词；未尝试不代表来源不存在。
+            if attempts >= budget["evidence_max_units"]:
+                break
+            attempts += 1
+            accepted = within_prompt(candidate)
+        else:
+            accepted = count_tokens(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) <= max_tokens
+        if accepted:
             selected.append(index)
         if len(selected) >= budget["evidence_max_units"]:
             break
     return [units[i] for i in sorted(selected)]
+
+
+def current_scene_history_index(
+    session: Any, query: str = "", *, max_tokens: int = 900,
+    within_prompt: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Index complete current-visit originals; omission never becomes a completed fact.
+
+    This is a disposable projection of Session, not another summary or fact store.
+    Keep a reply separate from its player's potentially long request so the request's
+    prefix cannot replace the actual refusal, condition or result later in the turn.
+    The caller still packs this whole JSON projection within its existing input budget.
+    """
+
+    records, _ = current_scene_records(session)
+    units: list[dict[str, Any]] = []
+    for record in reversed(records):
+        revision = record.get("revision", 0)
+        crossing = record.get("from_node_id") != record.get("to_node_id")
+        message = str(record.get("input_text") or "").strip()
+        if message and not crossing:
+            units.append(dict(revision=revision, source="player_input", current_visit=True,
+                              field="input_text", text=message))
+        segments = record.get("segments")
+        for part in segments if isinstance(segments, list) else [record]:
+            # Entry bridge and opening are visible in this visit; the accepted input
+            # and source response belong to the old scene and must not become new tasks.
+            if crossing and isinstance(segments, list) and part.get("phase") not in {
+                "transition_bridge", "target_opening",
+            }:
+                continue
+            fixed = part.get("fixed_narrations", [])
+            texts = [
+                ("scene_narration", scene_narration_text(part)),
+                *(("fixed_narration_before", item["text"])
+                  for item in fixed if item["position"] == "before"),
+                ("performance", str(part.get("performance") or "").strip()),
+                *(("fixed_narration_after", item["text"])
+                  for item in fixed if item["position"] == "after"),
+            ]
+            if "scene_narration" not in part and "performance" not in part:
+                texts = [(block["type"], block["text"])
+                         for block in performance_content_blocks(part)]
+            for field, text in texts:
+                if text:
+                    # A legacy unsegmented crossing cannot prove which scene owns
+                    # its text. Retain it verbatim without claiming current-visit authority.
+                    units.append(dict(revision=revision, source="performance",
+                                      current_visit=not crossing or isinstance(segments, list),
+                                      field=field, text=text))
+    if not units:
+        return None
+
+    query_terms = _history_terms(_HISTORY_QUERY_FILLER.sub(" ", query))
+    # A reply can answer "no" without repeating the object's name. Matching a turn
+    # makes its complete response relevant too; this ranks evidence, not story truth.
+    related_revisions = {unit["revision"] for unit in units
+                         if _history_terms(unit["text"]) & query_terms}
+    ranked = sorted(range(len(units)), key=lambda index: (
+        units[index]["revision"] in related_revisions,
+        units[index]["revision"],
+        units[index]["source"] == "performance",
+        index,
+    ), reverse=True)
+    selected: set[int] = set()
+
+    def projection(indexes: set[int]) -> dict[str, Any]:
+        omitted = [unit for index, unit in enumerate(units) if index not in indexes]
+        return {
+            "evidence": [units[index] for index in sorted(indexes)],
+            "omitted_units": len(omitted),
+            "latest_omitted_revision": max((unit["revision"] for unit in omitted), default=None),
+        }
+
+    def fits(value: Mapping[str, Any]) -> bool:
+        # Provenance and omission metadata consume the same budget as original text.
+        return (count_tokens(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) <= max_tokens
+                and (within_prompt is None or within_prompt(value)))
+
+    if not fits(projection(selected)):
+        return None
+    blocked_before_revision = None
+    for index in ranked:
+        unit = units[index]
+        related = unit["revision"] in related_revisions
+        if related and blocked_before_revision is not None and unit["revision"] < blocked_before_revision:
+            continue
+        if fits(projection(selected | {index})):
+            selected.add(index)
+        elif related:
+            # If a newer relevant original cannot fit, do not backfill older versions
+            # of that topic while omitting the possible correction. Report the gap.
+            blocked_before_revision = unit["revision"]
+    return projection(selected)
 
 
 def scene_opening_text(beat: Mapping[str, Any]) -> str:
@@ -331,7 +575,7 @@ def scene_narrative_focus(beat: Mapping[str, Any]) -> str:
 def scene_narrative_summary(beat: Mapping[str, Any]) -> str:
     """Project the ordinary Actor's current situation without turning the scene plan into a checklist. opening_scene supplies observable opening facts and story_so_far supplies subsequent progress. Fall back to summary only when the package has no opening field, preserving author facts without rescanning and executing the entire scene plan each turn."""
 
-    for key in ("narrative_summary", "opening_scene", "summary"):
+    for key in ("opening_scene", "narrative_summary", "summary"):
         value = str(beat.get(key) or "").strip()
         if value:
             return value
@@ -409,6 +653,7 @@ def project_contract_boundaries(
     *,
     include_opening_only: bool = False,
     fact_only: bool = False,
+    explicit_prohibitions: bool = False,
 ) -> tuple[str, ...]:
     """Project author-defined boundaries in one shared order so Actor and the reviewer use the same contract."""  # noqa: DOCSTRING_CJK
 
@@ -432,6 +677,17 @@ def project_contract_boundaries(
         else []
     )
     must_not_happen = list(beat.get("must_not_happen") or [])
+    prohibition_labels: dict[str, str] = {}
+    if explicit_prohibitions and not fact_only:
+        # Preserve prohibition provenance even when the raw text first appears in an earlier scene/opening field.
+        for items, label in (
+            (forbidden_behaviors, "演出角色禁止行为"),
+            (must_not_happen, "禁止发生的剧情"),
+        ):
+            for item in items:
+                text = str(item or "").strip()
+                if text:
+                    prohibition_labels.setdefault(text, label)
     # Narrow-contract review keeps the existing must_not_happen priority; Actor/Evaluator public boundaries share scene-first ordering.
     candidates = [
         *(must_not_happen if fact_only else opening_boundaries),
@@ -451,7 +707,8 @@ def project_contract_boundaries(
         if not text or text in seen:
             continue
         seen.add(text)
-        boundaries.append(text)
+        label = prohibition_labels.get(text)
+        boundaries.append(f"{label}：{text}" if label else text)
     return tuple(boundaries)
 
 
@@ -467,14 +724,10 @@ def contract_boundary_items(node: Mapping[str, Any]) -> tuple[str, ...]:
     return project_contract_boundaries(beat, fact_only=True)
 
 
-def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tuple[str, ...]:
-    """Key prop names the author requires to be delivered this turn in the scene-transition contract.
+def _contract_required_props(node: Mapping[str, Any], target_node_id: str) -> tuple[tuple[str, bool], ...]:
+    """Keep display-name provenance so casting never rewrites a fallback protocol ID."""
 
-    `must_preserve` only prevents contradictory state; it does not require every transition to restate each item. Read only
-    structured prop declarations in `must_deliver` that the author explicitly requires to be visibly delivered this turn.
-    """  # noqa: DOCSTRING_CJK
-
-    names: list[str] = []
+    names: list[tuple[str, bool]] = []
     for route in node.get("route_gates") or []:
         if not isinstance(route, Mapping) or str(route.get("target_node_id") or "") != str(target_node_id):
             continue
@@ -490,29 +743,24 @@ def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tup
             quoted = [m.group(1).strip() for m in matches if m.group(1) and m.group(1).strip()]
             fallback = [m.group(2).strip() for m in matches if m.group(2) and m.group(2).strip()]
             for name in (quoted or fallback):
-                if name not in names:
-                    names.append(name)
+                prop = (name, bool(quoted))
+                # Identical spelling does not make a display name a protocol
+                # ID; keep both sources so declaration order cannot hide an ID.
+                if prop not in names:
+                    names.append(prop)
     return tuple(names)
 
 
-def _visible_contract_delivery_text(performance: Mapping[str, Any]) -> str:
-    """Collect the three body-text segments and narration actually visible to the player for exact checking of explicit delivery requirements."""  # noqa: DOCSTRING_CJK
+def contract_required_names(node: Mapping[str, Any], target_node_id: str) -> tuple[str, ...]:
+    """Read explicit `must_deliver` prop names; `must_preserve` does not require restatement."""
 
-    parts: list[str] = []
-    for field in ("performance", "scene_narration"):
-        value = performance.get(field)
-        if isinstance(value, str):
-            parts.append(value)
-    segments = performance.get("segments")
-    if isinstance(segments, (list, tuple)):
-        for segment in segments:
-            if not isinstance(segment, Mapping):
-                continue
-            for field in ("performance", "scene_narration"):
-                value = segment.get(field)
-                if isinstance(value, str):
-                    parts.append(value)
-    return "\n".join(parts)
+    return tuple(dict.fromkeys(name for name, _ in _contract_required_props(node, target_node_id)))
+
+
+def _visible_contract_delivery_text(performance: Mapping[str, Any]) -> str:
+    """Read actual playback, including inserted originals, rather than hidden copies or pending author templates."""  # noqa: DOCSTRING_CJK
+
+    return "\n".join(block["text"] for block in performance_content_blocks(performance))
 
 
 def missing_contract_names(
@@ -520,20 +768,55 @@ def missing_contract_names(
     target_node_id: str,
     performance: Mapping[str, Any],
     session: Any,
+    *,
+    story: Mapping[str, Any] | None = None,
+    delivery_session: Any | None = None,
 ) -> tuple[str, ...]:
     """Prop names required by the author this turn that do not appear in either the candidate or committed history.
 
-    Pure programmatic check: count a prop as delivered if its Chinese name appears in visible candidate text or committed source text.
+    Only author display names are cast, never evidence or IDs. Name presence is
+    not proof of ownership, completion, character knowledge or authorization.
     """  # noqa: DOCSTRING_CJK
 
-    required = contract_required_names(node, target_node_id)
+    required = _contract_required_props(node, target_node_id)
     if not required:
         return ()
-    haystack = "\n".join((
-        _visible_contract_delivery_text(performance),
-        *(str(row.get("text") or "") for row in performance_history_records(session)),
-    ))
-    return tuple(name for name in required if name not in haystack)
+    visible = _visible_contract_delivery_text(performance)
+    history = "\n".join(str(row.get("text") or "") for row in performance_history_records(session))
+    if story is None:
+        return tuple(dict.fromkeys(name for name, _ in required if name not in visible and name not in history))
+
+    def cast_for(source_session: Any) -> NumericV2CastProjection:
+        binding = source_session.catgirl_binding
+        return NumericV2CastProjection.from_story(
+            story,
+            player_name=(str(binding.get("player_address") or "你")
+                         if source_session.player_address_known else "你"),
+            catgirl_name=str(binding.get("catgirl_name") or "当前猫娘"),
+        )
+
+    current_cast = cast_for(session)
+    # Actor reads the pre-turn Session; entry originals read the outcome. A name
+    # disclosed this turn can therefore have two legitimate visible spellings.
+    entry_cast = cast_for(delivery_session if delivery_session is not None else session)
+    unknown_cast = NumericV2CastProjection.from_story(
+        story, player_name="你", catgirl_name=current_cast.catgirl_name,
+    )
+    missing: list[str] = []
+    for name, display_name in required:
+        current_name = current_cast.text(name) if display_name else name
+        # Keep the original accepted spelling too: legacy fixed originals may
+        # contain literal author names rather than runtime-name placeholders.
+        visible_names = (name, current_name, entry_cast.text(name)) if display_name else (name,)
+        # Old records can predate disclosure or retain author names. Keep those
+        # literal alternatives without recasting history or introducing this
+        # turn's newly disclosed nickname into the historical matching scope.
+        history_names = (name, current_name, unknown_cast.text(name)) if display_name else (name,)
+        if (not any(value in visible for value in visible_names)
+                and not any(value in history for value in history_names)
+                and current_name not in missing):
+            missing.append(current_name)
+    return tuple(missing)
 
 
 def transition_bridge_leak_markers(
@@ -541,12 +824,15 @@ def transition_bridge_leak_markers(
     target_opening: str,
     bridge_text: str,
     authored_bridge: str = "",
+    source_narration: str = "",
 ) -> tuple[str, ...]:
     """Return target-opening clauses copied into a transition bridge.
 
     This is intentionally a narrow provenance check, not a semantic duplicate detector. It only
     reports exact normalized clauses or time markers that belong to the target opening and are not
-    explicitly present in the authored bridge contract. A paraphrase still needs model review or
+    explicitly present in the authored bridge contract. Numeric markers already visible in the
+    latest source narration are not target-exclusive; this does not prove their temporal meaning.
+    Exact target clauses remain checked regardless. A paraphrase still needs model review or
     a future structured fact projection.
     """  # noqa: DOCSTRING_CJK
 
@@ -576,9 +862,12 @@ def transition_bridge_leak_markers(
             markers.append(unit)
 
     # Time markers are useful even when punctuation or the surrounding clause was rewritten.
-    authored_times = _time_markers(authored_bridge)
+    # A repeated number alone cannot prove target ownership when the last played
+    # source narration already contains it. This never exempts a copied full clause
+    # or certifies that a quoted timetable has become the current time.
+    allowed_times = _time_markers(authored_bridge) | _time_markers(source_narration)
     for marker in sorted(_time_markers(target) & _time_markers(bridge)):
-        if marker not in authored_times and marker not in markers:
+        if marker not in allowed_times and marker not in markers:
             markers.append(marker)
     return tuple(markers)
 
@@ -650,7 +939,9 @@ def premature_target_markers(
     source = nodes.get(source_id)
     if not isinstance(source, Mapping) or not source.get("route_gates"):
         return ()
-    route = engine.preview_route(source_id, getattr(session, "metrics", {}) or {})
+    route_session = getattr(outcome, "session", None) or session
+    route = engine.preview_route(source_id, getattr(route_session, "metrics", {}) or {},
+                                 facts=(getattr(route_session, "story_state", None) or {}).get("facts", {}))
     if not isinstance(route, Mapping):
         return ()
     target = nodes.get(str(route.get("target_node_id") or ""))
@@ -696,7 +987,9 @@ def premature_target_scene_facts(
     source = nodes.get(source_id)
     if not isinstance(source, Mapping) or not source.get("route_gates"):
         return ()
-    route = engine.preview_route(source_id, getattr(session, "metrics", {}) or {})
+    route_session = getattr(outcome, "session", None) or session
+    route = engine.preview_route(source_id, getattr(route_session, "metrics", {}) or {},
+                                 facts=(getattr(route_session, "story_state", None) or {}).get("facts", {}))
     if not isinstance(route, Mapping):
         return ()
     target_id = str(route.get("target_node_id") or "")
