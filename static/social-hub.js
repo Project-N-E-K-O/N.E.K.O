@@ -20,6 +20,8 @@
   var pendingFocusKey = '';
   var incomingDeliveryKey = '';
   var incomingDeliveryTimer = 0;
+  var hubRefreshRevision = 0;
+  var invitationSnapshotRevision = 0;
   var presenceRefreshInFlight = false;
   var presencePushRevision = 0;
   var presencePushRevisions = new Map();
@@ -372,9 +374,21 @@
     });
   }
 
+  function applyInvitationSnapshot(body, revision) {
+    if (revision < invitationSnapshotRevision) return false;
+    invitationSnapshotRevision = revision;
+    body = body || {};
+    state.incoming = normalizeIncoming(body.incoming_invite);
+    applyInviteResponses(body.invite_responses);
+    reconcileCurrentVisit();
+    deliverIncomingToChat(0);
+    return true;
+  }
+
   async function refresh(silent) {
     silent = silent === true;
     var refreshGeneration = openGeneration;
+    var refreshRevision = ++hubRefreshRevision;
     if (!silent) {
       state.loading = true;
       render();
@@ -385,8 +399,11 @@
       // 登录态失效按“未登录”处理，引导重新登录，而不是显示成加载失败。
       if (!response.ok && body && body.detail === 'community_login_required') body = { logged_in: false };
       else if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取好友失败')));
-      // 浮窗关闭后重开会启动新一轮推荐；旧请求不得覆盖新一轮结果。
-      if (refreshGeneration !== openGeneration) return;
+      // 浮窗内容按打开代数隔离，但邀请属于聊天事件，关闭浮窗后仍需及时投递。
+      if (refreshGeneration !== openGeneration) {
+        applyInvitationSnapshot(body, refreshRevision);
+        return;
+      }
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
@@ -405,10 +422,8 @@
           }) : [];
         state.recommendationBusy.clear();
       }
-      state.incoming = normalizeIncoming(body.incoming_invite);
       restoreInvitations();
-      applyInviteResponses(body.invite_responses);
-      reconcileCurrentVisit();
+      applyInvitationSnapshot(body, refreshRevision);
       if (!silent) {
         state.toast = '';
         state.toastError = false;
@@ -432,7 +447,6 @@
       if (refreshGeneration === openGeneration) {
         if (!silent) state.loading = false;
         render();
-        deliverIncomingToChat(0);
       }
     }
   }

@@ -248,8 +248,13 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "var replaceRecommendations = !silent || accountChanged" in source
     assert "if (replaceRecommendations)" in source
     assert "var refreshGeneration = openGeneration" in source
-    assert "if (refreshGeneration !== openGeneration) return" in source
+    assert "var refreshRevision = ++hubRefreshRevision" in source
+    assert "if (refreshGeneration !== openGeneration) {" in source
     assert "if (refreshGeneration === openGeneration)" in source
+    assert "function applyInvitationSnapshot(body, revision)" in source
+    assert "if (revision < invitationSnapshotRevision) return false" in source
+    stale_refresh = source.split("if (refreshGeneration !== openGeneration) {", 1)[1].split("}", 1)[0]
+    assert "applyInvitationSnapshot(body, refreshRevision)" in stale_refresh
     assert "renderRecommendations(panel)" in source
     assert "renderRecommendations(friendScroller)" not in source
     assert source.index("renderRecommendations(panel)") < source.index(
