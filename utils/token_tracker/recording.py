@@ -18,7 +18,7 @@ import time
 from datetime import date, timedelta
 
 from ._shared import _deep_copy_day, _merge_day_stats
-from .reporting import record_settings_state
+from .reporting import record_avatar_state, record_settings_state
 
 class RecordingMixin:
     """In-memory usage and application-lifecycle recording methods."""
@@ -212,6 +212,8 @@ class RecordingMixin:
         # Settings are user-facing, making the main process the natural owner.
         if process == "main_server":
             record_settings_state()
+            # Avatar type usage (live2d / vrm / mmd / pngtuber); same main_server-only rule as above.
+            record_avatar_state()
 
     def note_first_user_message(self, input_type: str = "text"):
         """Record the user's first message within this process (a key D1-funnel milestone).
