@@ -350,3 +350,44 @@ def test_non_private_staging_directory_is_not_adopted(assets):
     with pytest.raises(OSError, match="ownership or permissions"):
         repair.repair_source_models()
     assert requested == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["manifest_corrupt", "manifest_removed", "preparer_removed", "frozen"])
+async def test_worker_preserves_unavailable_reason_when_installation_changes_after_reservation(assets, monkeypatch, change):
+    from main_logic.voice_identity_service import resource_manager
+    camp, silero, _, _, _, requested = assets
+    manager = resource_manager.VoiceResourceManager(lambda: False)
+    messages, closed = [], []
+    reply = SimpleNamespace(send=messages.append, close=lambda: closed.append(True))
+    operation = manager.reserve("repair")
+    try:
+        if change == "manifest_corrupt":
+            (silero / "manifest.json").write_bytes(b"not json")
+        elif change == "manifest_removed":
+            (camp / "manifest.json").unlink()
+        elif change == "preparer_removed":
+            (Path(repair.__file__).resolve().parents[2] / "scripts/prepare_speaker_model.py").unlink()
+        else:
+            monkeypatch.setattr(repair.sys, "frozen", True, raising=False)
+        resource_manager._resource_worker(reply, "repair", False, None, b"")
+        assert messages == [{"ok": False, "reason": "resource_repair_unavailable"}]
+        assert closed == [True]
+        assert requested == []
+        assert not (camp / ".voice-model-repair").exists()
+    finally:
+        await manager.cancel(operation["operation_id"])
+        await manager.close()
+
+
+@pytest.mark.parametrize("message", ["resource_repair_unavailable", "unexpected runtime failure"])
+def test_worker_does_not_reclassify_unrelated_runtime_errors(monkeypatch, message):
+    from main_logic.voice_identity_service import resource_manager
+    def fail():
+        raise RuntimeError(message)
+    monkeypatch.setattr(repair, "repair_source_models", fail)
+    messages, closed = [], []
+    reply = SimpleNamespace(send=messages.append, close=lambda: closed.append(True))
+    resource_manager._resource_worker(reply, "repair", False, None, b"")
+    assert messages == [{"ok": False, "reason": "resource_worker_failed"}]
+    assert closed == [True]

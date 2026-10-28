@@ -39,7 +39,7 @@ from .enrollment_audio import EnrollmentAudioNormalizationError, EnrollmentAudio
 from .state import VoiceIdentityEffectiveReason
 from .preference_worker import save_preference_worker
 from .publication_worker import publish_resource_worker
-from .source_model_repair import source_model_repair_available
+from .source_model_repair import SourceModelRepairUnavailable, source_model_repair_available
 
 MAX_TRIAL_PCM_BYTES = 48_000 * 3 * 2
 # A microphone check only needs a short human utterance (10 × 32 ms).
@@ -153,7 +153,7 @@ def _resource_worker(connection: Connection, kind: str, nr_enabled: bool, wake_p
             result = asyncio.run(_check_audio(pcm16, nr_enabled) if kind == "audio" else _prepare_resources(nr_enabled, wake_path))
         connection.send({"ok": True, "result": result})
     except Exception as exc:
-        reason = (exc.code if isinstance(exc, (WakeWordBundleError, VoiceResourceError)) else
+        reason = (exc.code if isinstance(exc, (WakeWordBundleError, VoiceResourceError, SourceModelRepairUnavailable)) else
                   "resource_operation_busy" if isinstance(exc, ResourceFileLockBusy) else
                   "resource_model_repair_failed" if kind == "repair" and isinstance(exc, (CampPlusAssetError, AssetManifestError)) else
                   "resource_storage_unavailable" if isinstance(exc, OSError) else

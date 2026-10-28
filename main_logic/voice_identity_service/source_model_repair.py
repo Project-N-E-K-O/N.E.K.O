@@ -18,6 +18,12 @@ from main_logic.asr_client.speaker_shadow.asset_manifest import load_campplus_ma
 SILERO_MAXIMUM_DOWNLOAD_BYTES = 16 * 1024 * 1024
 
 
+class SourceModelRepairUnavailable(RuntimeError):
+    """Source-only prerequisites are unavailable when the worker starts."""
+
+    code = "resource_repair_unavailable"
+
+
 def _load_repair_manifests(project: Path):
     camp = load_campplus_manifest(project / "main_logic/asr_client/speaker_shadow/models")
     silero = load_manifest(project / "main_logic/asr_client/endpointing/models").asset("silero_vad.onnx")
@@ -95,7 +101,7 @@ def repair_source_models() -> None:
     Shared temporary directories are never used or adopted.
     """
     if not source_model_repair_available():
-        raise RuntimeError("resource_repair_unavailable")
+        raise SourceModelRepairUnavailable(SourceModelRepairUnavailable.code)
 
     from scripts import prepare_speaker_model as speaker
     from scripts import prepare_voice_turn_assets as endpointing
