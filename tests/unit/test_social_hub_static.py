@@ -36,6 +36,7 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "visit.createDirectInvitation(friend.id, requestedMode)" in source
     assert "visit_mode: actualMode" in source
     assert "actualMode !== requestedMode" in source
+    assert "visit.socialHub.modeMismatch" in source
     assert "模型串门" in source
     assert "猫形态" in source
     assert "visit_id: visitId" in source

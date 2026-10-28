@@ -6883,6 +6883,7 @@
             "desktopRequired": "请在桌面版 Neko 中发送定向邀请",
             "preparingRoom": "正在为 {{name}} 准备房间…",
             "roomMissing": "没有拿到定向串门房间",
+            "modeMismatch": "串门形态没有正确建立，请结束后重试",
             "sendFailed": "邀请没有发出去，请稍后重试",
             "invited": "已向 {{name}} 发出串门邀请",
             "cancelFailed": "邀请暂时无法取消，请稍后重试",

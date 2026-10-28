@@ -24,16 +24,18 @@
       ``VISIT_PEER_RECV_MSGS_PER_S``;
     * message level (``admit``): ``ctl`` <= ``VISIT_PEER_CTL_PER_S``/s,
       ``lossy`` <= ``VISIT_PEER_LOSSY_PER_S``/s, latest-wins cat ``motion``
-      <= ``VISIT_PEER_MOTION_PER_S``/s, and separate reliable/lossy cat shared
-      world channels <= ``VISIT_PEER_WORLD_PER_S``/s each; ``text`` uses a token
-      bucket refilling ``VISIT_INBOUND_TEXT_REFILL_PER_S``/s (= 20 per 10 s)
+      <= ``VISIT_PEER_MOTION_PER_S``/s; reliable cat actions, pose commits and
+      shared-world messages, plus lossy shared-world messages, use separate
+      channels <= ``VISIT_PEER_WORLD_PER_S``/s each; ``text`` uses a token bucket
+      refilling ``VISIT_INBOUND_TEXT_REFILL_PER_S``/s (= 20 per 10 s)
       capped at ``VISIT_INBOUND_TEXT_BURST`` plus a per-visit hard cap
       ``VISIT_INBOUND_TEXT_MAX``.
 
     Every over-limit message is dropped and counted. A ``text`` overflow
     counts toward the room's consecutive-anomaly streak
-    (``counts_toward_streak=True``, §4.2). Frame / ctl / lossy / motion / world overflows are
-    diagnostics only, but an overflow sustained for 30 s reports
+    (``counts_toward_streak=True``, §4.2). Frame / ctl / lossy / motion /
+    world / world-reliable overflows are diagnostics only, but an overflow
+    sustained for 30 s reports
     ``sustained_overflow=True`` so the caller can finalize with
     ``peer_protocol_violation`` (§4.1).
 
@@ -148,8 +150,8 @@ class RateDecision:
     """Outcome of one limiter check.
 
     ``reason`` is set only when dropped: ``recv_bytes`` / ``recv_msgs`` /
-    ``ctl_rate`` / ``lossy_rate`` / ``motion_rate`` / ``text_rate`` /
-    ``text_visit_cap``.
+    ``ctl_rate`` / ``lossy_rate`` / ``motion_rate`` / ``world_rate`` /
+    ``world_reliable_rate`` / ``text_rate`` / ``text_visit_cap``.
     ``counts_toward_streak`` asks the caller to feed the room's
     consecutive-anomaly counter (``violation_streak``).
     ``sustained_overflow`` asks the caller to finalize with

@@ -6883,6 +6883,7 @@
             "desktopRequired": "Send direct invitations from the desktop Neko app",
             "preparingRoom": "Preparing a room for {{name}}…",
             "roomMissing": "Couldn't create a direct-visit room",
+            "modeMismatch": "The visit mode wasn't created correctly. End the visit and try again",
             "sendFailed": "Couldn't send the invitation. Try again",
             "invited": "Invited {{name}} to visit",
             "cancelFailed": "Couldn't cancel the invitation. Try again",

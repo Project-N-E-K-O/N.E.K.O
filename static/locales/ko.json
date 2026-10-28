@@ -6883,6 +6883,7 @@
             "desktopRequired": "지정 초대는 데스크톱용 Neko에서 보내 주세요",
             "preparingRoom": "{{name}}을(를) 위한 방을 준비하는 중…",
             "roomMissing": "지정 방문용 방을 받지 못했습니다",
+            "modeMismatch": "방문 형태가 올바르게 생성되지 않았습니다. 방문을 종료한 후 다시 시도해 주세요",
             "sendFailed": "초대를 보내지 못했습니다. 잠시 후 다시 시도해 주세요",
             "invited": "{{name}}에게 방문 초대를 보냈습니다",
             "cancelFailed": "지금은 초대를 취소할 수 없습니다. 잠시 후 다시 시도해 주세요",

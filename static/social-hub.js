@@ -664,7 +664,7 @@
       var expiresAt = Number(invite.expires_at || invite.expiresAt) || 0;
       var actualMode = invite && (invite.visit_mode || invite.visitMode) || 'model';
       if ((actualMode !== 'cat' && actualMode !== 'model') || actualMode !== requestedMode) {
-        throw new Error(tr('visit.socialHub.roomMissing', '串门形态没有正确建立，请结束后重试'));
+        throw new Error(tr('visit.socialHub.modeMismatch', '串门形态没有正确建立，请结束后重试'));
       }
       var response = await fetch('/api/community/visit-invitations', {
         method: 'POST', credentials: 'same-origin',

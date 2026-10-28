@@ -6883,6 +6883,7 @@
             "desktopRequired": "Envie convites diretos pelo app Neko para desktop",
             "preparingRoom": "Preparando uma sala para {{name}}…",
             "roomMissing": "Não foi possível obter a sala da visita direta",
+            "modeMismatch": "O modo de visita não foi criado corretamente. Encerre a visita e tente novamente",
             "sendFailed": "Não foi possível enviar o convite. Tente mais tarde",
             "invited": "Convite de visita enviado para {{name}}",
             "cancelFailed": "Não é possível cancelar o convite agora. Tente mais tarde",
