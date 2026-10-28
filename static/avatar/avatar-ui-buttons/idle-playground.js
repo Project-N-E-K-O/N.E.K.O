@@ -1998,6 +1998,10 @@ function _startNekoIdleCat1PlaygroundDrop(button, detail) {
 }
 
 function _handleNekoIdleCat1PlaygroundEntryRequest(event) {
+    const visitCatScene = window.nekoVisitCatScene;
+    if (visitCatScene && typeof visitCatScene.isActive === 'function' && visitCatScene.isActive()) {
+        return false;
+    }
     const button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button) return false;
     const detail = event && event.detail ? event.detail : null;

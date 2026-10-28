@@ -56,6 +56,7 @@
     side: '',
     phase: '',
     returning: false,
+    pendingModelReturn: null,
     root: null,
     layer: null,
     toolbar: null,
@@ -80,7 +81,8 @@
       motionId: 0,
       sampleSeq: 0,
       committed: true,
-      queue: Promise.resolve()
+      pending: [],
+      inFlight: false
     },
     geometry: { frame: 0, until: 0 },
     slots: { self: emptySlot('self'), peer: emptySlot('peer') }
@@ -390,43 +392,68 @@
     scene.pose.motionId = 0;
     scene.pose.sampleSeq = 0;
     scene.pose.committed = true;
-    scene.pose.queue = Promise.resolve();
+    scene.pose.pending = [];
+    scene.pose.inFlight = false;
   }
 
-  function queuePose(phase, snapshot) {
-    var generation = scene.pose.generation;
-    var visitId = scene.visitId;
-    var payload = {
-      motion_id: scene.pose.motionId,
-      sample_seq: scene.pose.sampleSeq,
-      x_q16: snapshot.x_q16,
-      y_q16: snapshot.y_q16,
-      mode: snapshot.mode,
-      facing: snapshot.facing,
-      tier: snapshot.tier,
-      slot: snapshot.slot
-    };
-    scene.pose.queue = scene.pose.queue.catch(function () { return false; }).then(function () {
-      if (!scene.active || scene.visitId !== visitId || scene.pose.generation !== generation) return false;
+  function drainPoseQueue() {
+    if (scene.pose.inFlight || !scene.pose.pending.length) return;
+    var item = scene.pose.pending.shift();
+    scene.pose.inFlight = true;
+    Promise.resolve().then(function () {
+      if (!scene.active || scene.visitId !== item.visitId
+          || scene.pose.generation !== item.generation) return false;
       var chat = global.nekoVisitChat;
       if (!chat || typeof chat.requestCatPose !== 'function') return false;
-      return chat.requestCatPose(visitId, phase, payload);
+      return chat.requestCatPose(item.visitId, item.phase, item.payload);
+    }).catch(function () {
+      return false;
     }).then(function (result) {
-      if (!scene.active || scene.visitId !== visitId || scene.pose.generation !== generation) return false;
+      if (!scene.active || scene.visitId !== item.visitId
+          || scene.pose.generation !== item.generation) return false;
       var cursor = result && Number(result.current_motion_id);
       if (result && result.stale && Number.isSafeInteger(cursor)) {
         scene.pose.motionId = Math.max(scene.pose.motionId, cursor);
         scene.pose.sampleSeq = 0;
         scene.pose.committed = true;
         scene.pose.lastSignature = '';
-      } else if (!result && phase === 'sample') {
+      } else if (!result && item.phase === 'sample') {
         scene.pose.lastSignature = '';
-      } else if (!result && phase === 'commit') {
+      } else if (!result && item.phase === 'commit') {
         scene.pose.committed = false;
         scene.pose.lastChangeAt = geometryNow();
       }
       return result;
+    }).then(function () {
+      if (scene.pose.generation !== item.generation) return;
+      scene.pose.inFlight = false;
+      drainPoseQueue();
     });
+  }
+
+  function queuePose(phase, snapshot) {
+    var item = {
+      generation: scene.pose.generation,
+      visitId: scene.visitId,
+      phase: phase,
+      payload: {
+        motion_id: scene.pose.motionId,
+        sample_seq: scene.pose.sampleSeq,
+        x_q16: snapshot.x_q16,
+        y_q16: snapshot.y_q16,
+        mode: snapshot.mode,
+        facing: snapshot.facing,
+        tier: snapshot.tier,
+        slot: snapshot.slot
+      }
+    };
+    var last = scene.pose.pending[scene.pose.pending.length - 1];
+    if (phase === 'sample' && last && last.phase === 'sample') {
+      scene.pose.pending[scene.pose.pending.length - 1] = item;
+    } else {
+      scene.pose.pending.push(item);
+    }
+    drainPoseQueue();
   }
 
   function pumpNativePose(timestamp) {
@@ -561,6 +588,8 @@
     scene.side = '';
     scene.phase = '';
     scene.returning = false;
+    scene.pendingModelReturn = null;
+    scene.nativeSelf.entryRequested = false;
     clearNativeSelfBinding();
     restoreIdleAppearance();
     resetPosePump();
@@ -588,7 +617,16 @@
     }
     if (!scene.active || frame.visit_id !== scene.visitId) return;
     if (frame.action === 'ended') {
+      var pendingReturn = scene.pendingModelReturn;
+      var shouldRestoreModel = scene.nativeSelf.entryRequested;
+      var returnButton = scene.nativeSelf.button || findReturnButton();
       deactivate();
+      if (pendingReturn && pendingReturn.visitId === frame.visit_id
+          && typeof pendingReturn.commit === 'function') {
+        pendingReturn.commit();
+      } else if (shouldRestoreModel) {
+        commitNativeModelReturn(returnButton);
+      }
       return;
     }
     if (frame.action === 'ending') {
@@ -734,17 +772,16 @@
       }
       var chat = global.nekoVisitChat;
       if (!chat || typeof chat.endCatVisitForModelReturn !== 'function') return false;
+      scene.pendingModelReturn = { visitId: visitId, commit: commitReturn };
       setStatus(t('visit.catScene.ending', '正在退出串门…'));
       return Promise.resolve(chat.endCatVisitForModelReturn(visitId)).then(function (ok) {
-        if (!ok || !scene.active || scene.visitId !== visitId) return false;
-        deactivate();
-        if (typeof commitReturn === 'function') commitReturn();
-        return true;
+        return !!ok;
       });
     }).catch(function () {
       return false;
     }).then(function (completed) {
       if (!completed && scene.active && scene.visitId === visitId) {
+        scene.pendingModelReturn = null;
         scene.returning = false;
         setStatus(t('visit.catScene.active', '正在串门'));
         updateControls();
@@ -763,10 +800,25 @@
     return null;
   }
 
+  function commitNativeModelReturn(button) {
+    if (button && typeof button.click === 'function') {
+      button.click();
+      return true;
+    }
+    try {
+      global.dispatchEvent(new CustomEvent('live2d-return-click', {
+        detail: { source: 'cat-visit-ended', reason: 'cat-visit-ended' }
+      }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function requestModelReturn() {
     var button = scene.nativeSelf.button || findReturnButton();
     return guardModelReturn(function () {
-      if (button && typeof button.click === 'function') button.click();
+      commitNativeModelReturn(button);
     });
   }
 

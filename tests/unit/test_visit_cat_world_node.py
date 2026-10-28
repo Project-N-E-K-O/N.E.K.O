@@ -15,6 +15,7 @@ from tests.node_harness import run_node_script
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORLD_PATH = PROJECT_ROOT / "static" / "visit" / "cat-world.js"
+PLAYGROUND_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons" / "idle-playground.js"
 
 NODE_SCENARIO = r"""
 'use strict';
@@ -191,6 +192,15 @@ async function main() {
   assert.equal(question.hidden, true);
   assert.equal(win.NekoVisitCatWorld.snapshot().world.question_active, false);
 
+  // The existing visible Playground entry becomes the shared-yarn spawn while
+  // a cat visit is active; the visit does not add another permanent control.
+  emit('neko:idle-cat1-playground-entry-request', {
+    source: 'question-mark', trigger: 'cat1-question-mark',
+  });
+  await flush();
+  assert.equal(calls.intent.length, 1);
+  assert.equal(calls.intent[0].kind, 'yarn_spawn');
+
   // Ordinary cat visits do not create a question block.  A newer peer may
   // still explicitly publish the legacy field, which remains wire-compatible.
   emit('neko-visit-cat-world', {
@@ -204,9 +214,9 @@ async function main() {
   staleIntentOnce = true;
   question.click();
   await advance(400);
-  assert.equal(calls.intent.length, 2);
-  assert.equal(calls.intent[0].kind, 'question_tap');
-  assert.equal(calls.intent[1].intent_id, 41);
+  assert.equal(calls.intent.length, 3);
+  assert.equal(calls.intent[1].kind, 'question_tap');
+  assert.equal(calls.intent[2].intent_id, 41);
   assert.equal(calls.state.length, 0);
   assert.equal(win.NekoVisitCatWorld.snapshot().simulation_started, false);
 
@@ -353,7 +363,19 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 4
+    assert result["guestIntentCount"] == 5
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False
+
+
+def test_active_cat_visit_reuses_playground_entry_without_starting_solo_world() -> None:
+    source = PLAYGROUND_PATH.read_text(encoding="utf-8")
+    block = source.split(
+        "function _handleNekoIdleCat1PlaygroundEntryRequest(event)", 1
+    )[1].split("if (typeof window !== 'undefined')", 1)[0]
+    assert "window.nekoVisitCatScene" in block
+    assert "visitCatScene.isActive()" in block
+    assert block.index("visitCatScene.isActive()") < block.index(
+        "_getNekoIdleCat1PlaygroundEntryButton()"
+    )

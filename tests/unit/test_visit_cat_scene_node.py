@@ -590,6 +590,11 @@ const report = {};
     endCalls: h.endCalls.slice(),
     active: h.body.classList.contains('neko-visit-cat-scene-active'),
   };
+  h.state('ended');
+  report.after_confirmed_exit = {
+    commits: returnCommits,
+    active: h.body.classList.contains('neko-visit-cat-scene-active'),
+  };
   report.request_model_return_exposed =
     typeof h.win.nekoVisitCatScene.requestModelReturn === 'function';
 
@@ -604,6 +609,11 @@ const report = {};
   h.confirmAnswers.push(true);
   h.win.nekoVisitCatScene.requestModelReturn();
   await h.settle();
+  report.ball_toolbar_waiting = {
+    clicks: nativeReturnClicks,
+    active: h.body.classList.contains('neko-visit-cat-scene-active'),
+  };
+  h.state('ended');
   report.ball_toolbar_return = {
     clicks: nativeReturnClicks,
     tier_after_exit: native.button.getAttribute('data-neko-idle-tier'),
@@ -621,6 +631,60 @@ const report = {};
     hidden: h.root().hidden,
     native_actor: native.container.getAttribute('data-visit-cat-actor'),
     pending_tasks: h.pendingTasks(),
+  };
+
+  const enteredForVisit = createHarness();
+  enteredForVisit.state('started', {
+    cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+  });
+  const enteredNative = enteredForVisit.installNativeSelf();
+  let enteredReturnClicks = 0;
+  enteredNative.button.addEventListener('click', () => { enteredReturnClicks += 1; });
+  enteredForVisit.state('ended');
+  report.auto_return_after_peer_exit = enteredReturnClicks;
+
+  const alreadyCat = createHarness();
+  const existingNative = alreadyCat.installNativeSelf();
+  let existingReturnClicks = 0;
+  existingNative.button.addEventListener('click', () => { existingReturnClicks += 1; });
+  alreadyCat.state('started', {
+    cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+  });
+  alreadyCat.state('ended');
+  report.preserve_preexisting_cat = existingReturnClicks;
+
+  const bounded = createHarness();
+  bounded.installNativeSelf();
+  const poseResolvers = [];
+  bounded.setPoseHandler(() => new Promise((resolve) => { poseResolvers.push(resolve); }));
+  bounded.state('started', {
+    cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+  });
+  const movingSnapshot = (x) => ({
+    tier: 'cat1', slot: 'movement.cat1.walking', mode: 'walk', facing: 'right',
+    x_q16: x, y_q16: 22000,
+  });
+  bounded.setSnapshot(movingSnapshot(10000));
+  bounded.advance(128);
+  await bounded.settle();
+  bounded.setSnapshot(movingSnapshot(20000));
+  bounded.advance(112);
+  bounded.setSnapshot(movingSnapshot(30000));
+  bounded.advance(112);
+  bounded.setSnapshot(movingSnapshot(40000));
+  bounded.advance(112);
+  await bounded.settle();
+  const callsDuringBacklog = bounded.poseCalls.length;
+  poseResolvers.shift()({ ok: true });
+  await bounded.settle();
+  poseResolvers.shift()({ ok: true });
+  await bounded.settle();
+  bounded.advance(500);
+  await bounded.settle();
+  report.bounded_pose_queue = {
+    calls_during_backlog: callsDuringBacklog,
+    phases: bounded.poseCalls.map((call) => call.phase),
+    x_positions: bounded.poseCalls.map((call) => call.pose.x_q16),
   };
 
   const earlyPose = {
@@ -755,11 +819,13 @@ def test_model_return_is_guarded_until_exit_is_confirmed(report):
     assert report["after_cancel"] == {"commits": 0, "endCalls": 0, "active": True}
     assert report["confirm_guarded"] is True
     assert report["after_confirm"] == {
-        "commits": 1,
+        "commits": 0,
         "endCalls": ["A" * 22],
-        "active": False,
+        "active": True,
     }
+    assert report["after_confirmed_exit"] == {"commits": 1, "active": False}
     assert report["request_model_return_exposed"] is True
+    assert report["ball_toolbar_waiting"] == {"clicks": 0, "active": True}
     assert report["ball_toolbar_return"] == {"clicks": 1, "tier_after_exit": "none"}
 
 
@@ -770,6 +836,8 @@ def test_ended_cleans_native_binding_animation_and_scene(report):
         "native_actor": None,
         "pending_tasks": 0,
     }
+    assert report["auto_return_after_peer_exit"] == 1
+    assert report["preserve_preexisting_cat"] == 0
 
 
 def test_early_relay_snapshots_restore_scene_and_peer_pose(report):
@@ -780,6 +848,14 @@ def test_early_relay_snapshots_restore_scene_and_peer_pose(report):
 
 def test_old_pose_result_cannot_mutate_the_next_visit(report):
     assert report["cross_visit_pose_results"] == 1
+
+
+def test_owner_pose_queue_keeps_only_the_newest_waiting_sample(report):
+    assert report["bounded_pose_queue"] == {
+        "calls_during_backlog": 1,
+        "phases": ["sample", "sample", "commit"],
+        "x_positions": [10000, 40000, 40000],
+    }
 
 
 def test_wide_pose_uses_the_wide_actor_box_state(report):

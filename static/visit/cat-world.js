@@ -216,6 +216,21 @@
     sendIntent('question_tap', point);
   }
 
+  function onPlaygroundEntryRequest(event) {
+    if (!state.active || state.ending) return;
+    var detail = event && event.detail ? event.detail : {};
+    var rect = detail.questionBlockScreenRect;
+    var point = rect && Number.isFinite(Number(rect.left)) && Number.isFinite(Number(rect.top))
+      ? pointFromEvent({
+        clientX: Number(rect.left) + Math.max(0, Number(rect.width) || 0) / 2,
+        clientY: Number(rect.top) + Math.max(0, Number(rect.height) || 0) / 2
+      }) : null;
+    sendIntent('yarn_spawn', point || {
+      x_q16: state.world.yarn_x_q16,
+      y_q16: state.world.yarn_y_q16
+    });
+  }
+
   function onYarnPointerDown(event) {
     if (!state.world.yarn_active || (event.button !== undefined && event.button !== 0)) return;
     var point = pointFromEvent(event);
@@ -832,12 +847,14 @@
   global.addEventListener('neko-visit-cat-world-intent', onWorldIntent);
   global.addEventListener('neko-visit-cat-world', onWorld);
   global.addEventListener('neko:visit-cat-scene-deactivated', onSceneDeactivated);
+  global.addEventListener('neko:idle-cat1-playground-entry-request', onPlaygroundEntryRequest);
   global.addEventListener('pagehide', function () {
     global.removeEventListener('neko-visit-display-state', onDisplayState);
     global.removeEventListener('neko-visit-cat-pose', onPose);
     global.removeEventListener('neko-visit-cat-world-intent', onWorldIntent);
     global.removeEventListener('neko-visit-cat-world', onWorld);
     global.removeEventListener('neko:visit-cat-scene-deactivated', onSceneDeactivated);
+    global.removeEventListener('neko:idle-cat1-playground-entry-request', onPlaygroundEntryRequest);
     deactivate();
   }, { once: true });
 
