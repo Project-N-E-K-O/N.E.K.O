@@ -24,7 +24,6 @@ These documents preserve design intent and implementation context. They are grou
 - [Memory event journal](./memory-event-log-rfc)
 - [User-driven memory evidence](./memory-evidence-rfc)
 - [Plugin control requests and entry execution](./plugin-control-rpc)
-- [Plugin process creation and concurrent startup](./plugin-process-creation)
 - [PNGTuber lightweight avatar](./pngtuber-lightweight-avatar-plan)
 - [Translation subtitle panel](./translation-subtitle-panel-design)
 - [TTS provider and voice-source unification](./tts-voice-source-unification)
