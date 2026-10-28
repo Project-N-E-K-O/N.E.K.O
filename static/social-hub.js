@@ -385,8 +385,9 @@
     return true;
   }
 
-  async function refresh(silent) {
+  async function refresh(silent, replaceRecommendationsRequested) {
     silent = silent === true;
+    replaceRecommendationsRequested = replaceRecommendationsRequested === true;
     var refreshGeneration = openGeneration;
     var refreshRevision = ++hubRefreshRevision;
     if (!silent) {
@@ -410,7 +411,7 @@
       var nextAccountId = String(body.account && body.account.id || '');
       var accountChanged = nextAccountId !== state.accountId;
       if (accountChanged) dismissedRecommendationIds.clear();
-      var replaceRecommendations = !silent || accountChanged;
+      var replaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
       state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
       state.friends = Array.isArray(body.friends)
@@ -732,7 +733,7 @@
         pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community';
       }
       state.recommendations = remaining;
-      await refresh(false);
+      await refresh(true, true);
       state.toast = tr('visit.socialHub.followedUser', '已关注 {{name}}', { name: recommendation.displayName });
     } catch (error) {
       state.toast = error && error.message || tr('visit.socialHub.followFailed', '关注失败，请稍后重试');
@@ -874,8 +875,12 @@
     if (!state.open || !state.loggedIn || presenceRefreshInFlight) return false;
     presenceRefreshInFlight = true;
     var requestRevision = presencePushRevision;
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var abortTimer = controller ? setTimeout(function () { controller.abort(); }, 8000) : 0;
     try {
-      var response = await fetch('/api/community/friend-presence', { credentials: 'same-origin' });
+      var response = await fetch('/api/community/friend-presence', {
+        credentials: 'same-origin', signal: controller ? controller.signal : undefined
+      });
       var body = await json(response);
       if (!response.ok || !Array.isArray(body.friends)) return false;
       var updates = new Map();
@@ -905,6 +910,7 @@
     } catch (_) {
       return false;
     } finally {
+      if (abortTimer) clearTimeout(abortTimer);
       presenceRefreshInFlight = false;
     }
   }
@@ -987,7 +993,7 @@
     // 用户已把焦点移到面板外的其他控件：放弃待恢复的焦点，不再抢回来。
     if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) pendingFocusKey = '';
     var pendingFocusFallback = !!(pendingFocusKey && !state.loading);
-    if (!activeKey && pendingFocusFallback && active && panel.contains(active)) activeKey = pendingFocusKey;
+    if (pendingFocusFallback && active && panel.contains(active)) activeKey = pendingFocusKey;
     if (!state.loading) pendingFocusKey = '';
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
@@ -1156,6 +1162,7 @@
     });
   }
   function open() {
+    if (state.open && panel && !standalone) return true;
     mount();
     closeAvatarPopups();
     previousFocus = document.activeElement;
@@ -1270,7 +1277,8 @@
     _orphanInvitationFriends: orphanInvitationFriends,
     _applyPresenceChanged: applyPresenceChanged,
     _refreshPresence: refreshPresence,
-    _dismissRecommendation: dismissRecommendation
+    _dismissRecommendation: dismissRecommendation,
+    _followRecommendation: followRecommendation
   };
   if (standalone) requestAnimationFrame(open);
   else requestAnimationFrame(refresh);

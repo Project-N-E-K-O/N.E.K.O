@@ -6885,7 +6885,7 @@
             "followedUser": "{{name}}을(를) 팔로우했습니다",
             "followFailed": "팔로우하지 못했습니다. 잠시 후 다시 시도해 주세요",
             "followBlocked": "현재 관계에서는 이 사용자를 팔로우할 수 없습니다",
-            "dismissRecommendation": "{{name}} 추천 숨기기",
+            "dismissRecommendation": "{{name}}님 잠시 숨기기",
             "onlineFriends": "온라인 친구",
             "offlineFriends": "오프라인 친구",
             "openCommunity": "카드 · 주조 · DM",

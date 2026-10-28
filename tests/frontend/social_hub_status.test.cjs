@@ -331,3 +331,33 @@ test('switching community accounts clears the previous account dismissals', asyn
   assert.equal(hub._state.accountId, 'account-2');
   assert.equal(hub._state.recommendations[0].id, 'recommendation-shared');
 });
+
+test('a successful follow keeps the current friend view when recommendation refill fails', async () => {
+  let visitHubReads = 0;
+  const { hub } = loadHub({
+    fetch: async (url, options = {}) => {
+      if (String(url).includes('/follow') && options.method === 'POST') {
+        return { ok: true, json: async () => ({ following: true }) };
+      }
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true,
+          account: { id: 'account-1' },
+          friends: [{ id: 'friend-1', display_name: 'Friend' }],
+          recommendations: [{ id: 'recommendation-1', display_name: 'Recommended' }],
+        }) };
+      }
+      return { ok: false, json: async () => ({ detail: 'community_unavailable' }) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await hub._followRecommendation(hub._state.recommendations[0]);
+
+  assert.equal(hub._state.loggedIn, true);
+  assert.equal(hub._state.friends[0].id, 'friend-1');
+  assert.equal(hub._state.loadFailed, false);
+  assert.equal(hub._state.recommendations.length, 0);
+  assert.equal(hub._state.toastError, false);
+});

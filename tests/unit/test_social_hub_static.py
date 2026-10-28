@@ -42,6 +42,9 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "上次在线 " in source
     assert "if (view || friend.online)" in source
     assert "setInterval(function () { refresh(true); }, 60000)" in source
+    assert "controller.abort()" in source
+    assert "}, 8000)" in source
+    assert "signal: controller ? controller.signal : undefined" in source
     assert "kind === 'presence_changed'" in source
     assert "applyPresenceChanged(notification)" in source
     assert "/api/community/friend-presence" in source
@@ -245,7 +248,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "body.recommendations.slice(0, 3)" in source
     assert "var accountChanged = nextAccountId !== state.accountId" in source
     assert "if (accountChanged) dismissedRecommendationIds.clear()" in source
-    assert "var replaceRecommendations = !silent || accountChanged" in source
+    assert "replaceRecommendationsRequested = replaceRecommendationsRequested === true" in source
+    assert "var replaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged" in source
     assert "if (replaceRecommendations)" in source
     assert "var refreshGeneration = openGeneration" in source
     assert "var refreshRevision = ++hubRefreshRevision" in source
@@ -263,6 +267,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "neko-social-hub-recommendation-section" in source
     assert "'/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow'" in source
     assert "state.recommendationBusy.has(recommendation.id)" in source
+    assert "await refresh(true, true)" in source
+    assert "await refresh(false)" not in source
     assert "function dismissRecommendation(recommendation)" in source
     assert "pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community'" in source
     assert "pendingFocusFallback" in source
@@ -291,6 +297,7 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "formatter.format(0, 'minute')" not in source
 
     open_source = source.split("function open()", 1)[1].split("function close()", 1)[0]
+    assert "if (state.open && panel && !standalone) return true" in open_source
     assert "layer.hidden = true" in open_source
     assert "state.recommendations = []" in open_source
     assert "var loadingRevealTimer = setTimeout" in open_source
@@ -305,6 +312,16 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "generation !== openGeneration" in reveal_source
     assert "layer.hidden = false" in reveal_source
 
+    dismiss_labels = {
+        "en": "Hide {{name}} for now",
+        "ja": "{{name}}を一時的に非表示",
+        "ko": "{{name}}님 잠시 숨기기",
+        "zh-CN": "暂时隐藏 {{name}}",
+        "zh-TW": "暫時隱藏 {{name}}",
+        "ru": "Временно скрыть {{name}}",
+        "pt": "Ocultar {{name}} por enquanto",
+        "es": "Ocultar a {{name}} por ahora",
+    }
     for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
         translations = (ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
         for key in (
@@ -320,6 +337,7 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
             "dismissRecommendation",
         ):
             assert f'"{key}"' in translations
+        assert f'"dismissRecommendation": "{dismiss_labels[locale]}"' in translations
 
 
 def test_only_friend_area_scrolls_while_current_account_stays_fixed():

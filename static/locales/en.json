@@ -6885,7 +6885,7 @@
             "followedUser": "Now following {{name}}",
             "followFailed": "Couldn't follow this user. Try again",
             "followBlocked": "Your current relationship doesn't allow following this user",
-            "dismissRecommendation": "Dismiss {{name}}",
+            "dismissRecommendation": "Hide {{name}} for now",
             "onlineFriends": "Online friends",
             "offlineFriends": "Offline friends",
             "openCommunity": "Cards · Forge · DMs",

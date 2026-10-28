@@ -121,6 +121,20 @@ async def _community_recommendations(client: httpx.AsyncClient, session: dict):
         return 502, {"detail": "community_unavailable"}
 
 
+async def _community_friend_presence(client: httpx.AsyncClient, session: dict):
+    """Use the compact endpoint, with a rollout-only fallback for older Verse."""
+    status, body = await _community_json(
+        client, session, "GET", "/api/users/me/friends/presence",
+    )
+    if status != 404:
+        return status, body
+    me_status, me = await _community_json(client, session, "GET", "/api/users/me")
+    profile = me.get("user") if isinstance(me, dict) and isinstance(me.get("user"), dict) else me
+    if me_status != 200 or not isinstance(profile, dict) or not profile.get("id"):
+        return me_status, me
+    return await _community_following(client, session, str(profile["id"]))
+
+
 def _absolute_community_url(base_url: str, value) -> str | None:
     text = str(value or "").strip()
     return urljoin(base_url + "/", text) if text else None
@@ -155,9 +169,7 @@ async def friend_presence(request: Request):
         return error
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8)) as client:
-            presence_status, presence_body = await _community_json(
-                client, session, "GET", "/api/users/me/friends/presence",
-            )
+            presence_status, presence_body = await _community_friend_presence(client, session)
     except httpx.HTTPError:
         return JSONResponse({"detail": "community_unavailable"}, status_code=502)
     if presence_status != 200:

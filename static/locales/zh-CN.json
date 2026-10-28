@@ -6885,7 +6885,7 @@
             "followedUser": "已关注 {{name}}",
             "followFailed": "关注失败，请稍后重试",
             "followBlocked": "当前关系无法关注这位用户",
-            "dismissRecommendation": "不再推荐 {{name}}",
+            "dismissRecommendation": "暂时隐藏 {{name}}",
             "onlineFriends": "在线好友",
             "offlineFriends": "离线好友",
             "openCommunity": "卡牌 · 铸造 · 私信",
