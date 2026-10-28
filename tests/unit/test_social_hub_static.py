@@ -303,3 +303,7 @@ def test_empty_states_offer_a_next_step_and_header_names_community_features():
     # 网络错误不能被显示成“还没有登录”。
     assert "state.loadFailed" in source
     assert "body.detail === 'community_login_required'" in source
+    # 独立窗口没有宿主桥时不能放打不开社区的按钮，未登录要退回设置登录指引。
+    assert "function canOpenCommunity()" in source
+    assert "!canOpenCommunity()" in source
+    assert "'visit.socialHub.loginRequired'" in source

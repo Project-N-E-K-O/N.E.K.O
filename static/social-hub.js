@@ -395,6 +395,11 @@
     }
   }
 
+  // 独立窗口只能借宿主桥打开社区；页面内浮层则交给 live2d-social-click 处理。
+  function canOpenCommunity() {
+    var bridge = host();
+    return !standalone || !!(bridge && typeof bridge.openCommunity === 'function');
+  }
   function openCommunity() {
     var bridge = host();
     if (bridge && typeof bridge.openCommunity === 'function') return bridge.openCommunity();
@@ -734,13 +739,20 @@
       actionHandler = openCommunity;
       actionKey = 'empty-find-friends';
     }
+    if (kind !== 'offline' && !canOpenCommunity()) {
+      // 打不开社区时不放无效按钮；未登录退回到“去 Neko 设置登录”的指引。
+      if (kind === 'login') hint = tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
+      actionLabel = '';
+    }
     empty.classList.add('is-' + kind);
     var badge = el('span', 'neko-social-hub-empty-badge');
     badge.appendChild(svgIcon('neko-social-hub-empty-icon', EMPTY_ICONS[kind]));
     empty.appendChild(badge);
     empty.appendChild(el('strong', 'neko-social-hub-empty-title', title));
     empty.appendChild(el('span', 'neko-social-hub-empty-hint', hint));
-    empty.appendChild(focusKey(button(actionLabel, 'neko-social-hub-button primary neko-social-hub-empty-action', actionHandler), actionKey));
+    if (actionLabel) {
+      empty.appendChild(focusKey(button(actionLabel, 'neko-social-hub-button primary neko-social-hub-empty-action', actionHandler), actionKey));
+    }
     target.appendChild(empty);
   }
   function render() {
