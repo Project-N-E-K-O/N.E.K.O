@@ -21,6 +21,31 @@ def _hold_inherited_descriptors(release) -> None:
     release.wait(15)
 
 
+_HOST_STARTER_THREAD = "race-host-starter"
+
+
+class _QueueObservingLock:
+    """Report when the host starter has to wait for a busy creation window."""
+
+    def __init__(self, host_queued: threading.Event) -> None:
+        self._lock = threading.Lock()
+        self._host_queued = host_queued
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        # An uncontended acquire is not queuing: if the scanner skipped the
+        # window, the host must go on to fork and be caught doing so.
+        if self._lock.acquire(False):
+            return True
+        if not blocking:
+            return False
+        if threading.current_thread().name == _HOST_STARTER_THREAD:
+            self._host_queued.set()
+        return self._lock.acquire(True, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+
 @pytest.mark.skipif(
     not hasattr(os, "fork") or not hasattr(subprocess, "_fork_exec"),
     reason="requires the CPython POSIX fork/exec pipe implementation",
@@ -35,9 +60,12 @@ def test_scanner_finishes_while_a_concurrent_plugin_process_stays_alive(
     context = multiprocessing.get_context("fork")
     release_child = context.Event()
     exec_window = threading.Event()
-    start_attempted = threading.Event()
+    host_decided = threading.Event()
+    host_forked = threading.Event()
+    window_closed = threading.Event()
     host_started = threading.Event()
     scan_finished = threading.Event()
+    window_violations: list[str] = []
     errors: list[BaseException] = []
     results: list[object] = []
     real_fork_exec = subprocess._fork_exec
@@ -47,16 +75,27 @@ def test_scanner_finishes_while_a_concurrent_plugin_process_stays_alive(
         # At this point Popen still owns its close-on-exec error-pipe writer.
         # A bare multiprocessing fork copies it even though exec would close it.
         exec_window.set()
-        if not start_attempted.wait(5):
-            raise AssertionError("host did not attempt concurrent creation")
-        # Unfixed code can finish that fork inside this window. A coordinated
-        # host waits outside it; keep only creation serialized, not scan I/O.
-        host_started.wait(0.5)
+        # Hold the window open until the host either forks inside it (the
+        # bug) or queues for creation (the fix). No timing decides the result.
+        if not host_decided.wait(5):
+            window_violations.append("host neither queued for creation nor forked")
+        elif host_forked.is_set():
+            window_violations.append("host forked inside the scanner's exec window")
+        window_closed.set()
         return pid
 
     monkeypatch.setattr(subprocess, "_fork_exec", overlap_host_fork)
+    monkeypatch.setattr(process_creation, "_creation_lock", _QueueObservingLock(host_decided))
     host = object.__new__(PluginHost)
     host.process = context.Process(target=_hold_inherited_descriptors, args=(release_child,))
+    real_process_start = host.process.start
+
+    def record_host_fork() -> None:
+        real_process_start()
+        host_forked.set()
+        host_decided.set()
+
+    monkeypatch.setattr(host.process, "start", record_host_fork)
 
     def scan():
         try:
@@ -70,7 +109,6 @@ def test_scanner_finishes_while_a_concurrent_plugin_process_stays_alive(
             scan_finished.set()
 
     def start_host():
-        start_attempted.set()
         try:
             host._start_process()
             host_started.set()
@@ -78,11 +116,14 @@ def test_scanner_finishes_while_a_concurrent_plugin_process_stays_alive(
             errors.append(error)
 
     scanner = threading.Thread(target=scan, daemon=True)
-    starter = threading.Thread(target=start_host, daemon=True)
+    starter = threading.Thread(target=start_host, name=_HOST_STARTER_THREAD, daemon=True)
     scanner.start()
     try:
         assert exec_window.wait(5), "scanner did not enter process creation"
         starter.start()
+        assert window_closed.wait(5), "scanner's exec window did not close"
+        if window_violations:
+            raise AssertionError(window_violations[0])
         assert scan_finished.wait(5), (
             "metadata scan is stuck in Popen while a live sibling owns its exec-error pipe"
         )
@@ -91,7 +132,8 @@ def test_scanner_finishes_while_a_concurrent_plugin_process_stays_alive(
         assert not errors, errors
         assert len(results) == 1
     finally:
-        start_attempted.set()
+        window_closed.set()
+        host_decided.set()
         release_child.set()
         if starter.ident is not None:
             starter.join(5)
