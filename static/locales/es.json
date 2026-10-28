@@ -6884,6 +6884,7 @@
             "followedUser": "Ahora sigues a {{name}}",
             "followFailed": "No se pudo seguir a este usuario. Inténtalo más tarde",
             "followBlocked": "La relación actual no permite seguir a este usuario",
+            "dismissRecommendation": "Ocultar sugerencia de {{name}}",
             "onlineFriends": "Amigos en línea",
             "offlineFriends": "Amigos desconectados",
             "openCommunity": "Cartas · Forja · MD",

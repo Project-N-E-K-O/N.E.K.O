@@ -187,3 +187,61 @@ test('an invitation still attached to a friend is not rendered twice', () => {
 
   assert.equal(hub._orphanInvitationFriends().length, 0);
 });
+
+test('a realtime presence event updates the friend without a full refresh', () => {
+  const { hub } = loadHub();
+  hub._state.friends = [{
+    id: 'friend-1', displayName: 'Community Test', online: false,
+    presenceStatus: 'offline', lastSeenAt: '2026-10-28T04:00:00Z',
+  }];
+
+  const applied = hub._applyPresenceChanged({
+    kind: 'presence_changed',
+    payload: {
+      user_id: 'friend-1', presence_status: 'away', online: true,
+      last_seen_at: '2026-10-28T06:00:00Z',
+    },
+  });
+
+  assert.equal(applied, true);
+  assert.equal(JSON.stringify(hub._state.friends[0]), JSON.stringify({
+    id: 'friend-1', displayName: 'Community Test', online: true,
+    presenceStatus: 'away', lastSeenAt: '2026-10-28T06:00:00Z',
+  }));
+});
+
+test('open hub reconciles friend presence without refreshing hub content', async () => {
+  const calls = [];
+  const { hub } = loadHub({
+    fetch: async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('/api/community/friend-presence')) {
+        return { ok: true, json: async () => ({ friends: [{
+          id: 'friend-1', presence_status: 'away', online: true,
+          last_seen_at: '2026-10-28T06:00:00Z',
+        }] }) };
+      }
+      return { ok: true, json: async () => ({
+        logged_in: true,
+        account: { id: 'account-1' },
+        friends: [{
+          id: 'friend-1', display_name: 'Community Test',
+          presence_status: 'offline', online: false,
+          last_seen_at: '2026-10-28T04:00:00Z',
+        }],
+        recommendations: [{ id: 'recommendation-1', display_name: 'Recommended' }],
+      }) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.open = true;
+
+  const changed = await hub._refreshPresence();
+
+  assert.equal(changed, true);
+  assert.equal(hub._state.friends[0].presenceStatus, 'away');
+  assert.equal(hub._state.friends[0].online, true);
+  assert.equal(hub._state.recommendations[0].id, 'recommendation-1');
+  assert.equal(calls.filter((url) => url.includes('/api/community/visit-hub')).length, 1);
+  assert.equal(calls.filter((url) => url.includes('/api/community/friend-presence')).length, 1);
+});

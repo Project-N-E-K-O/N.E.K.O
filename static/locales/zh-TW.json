@@ -6884,6 +6884,7 @@
             "followedUser": "已追蹤 {{name}}",
             "followFailed": "追蹤失敗，請稍後重試",
             "followBlocked": "目前關係無法追蹤這位使用者",
+            "dismissRecommendation": "不再推薦 {{name}}",
             "onlineFriends": "線上好友",
             "offlineFriends": "離線好友",
             "openCommunity": "卡牌 · 鑄造 · 私訊",

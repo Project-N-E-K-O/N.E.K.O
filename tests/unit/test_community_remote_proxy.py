@@ -209,6 +209,50 @@ def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
     }]
 
 
+def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    friend_id = "22222222-2222-4222-8222-222222222222"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        seen.append(request)
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": [
+                {"id": friend_id, "display_name": "Friend", "is_mutual": True,
+                 "online": True, "presence_status": "away",
+                 "last_seen_at": "2026-10-28T06:00:00Z"},
+                {"id": "33333333-3333-4333-8333-333333333333",
+                 "is_mutual": False, "online": True},
+            ]})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/friend-presence")
+    assert response.status_code == 200
+    assert response.json() == {"friends": [{
+        "id": friend_id,
+        "online": True,
+        "presence_status": "away",
+        "last_seen_at": "2026-10-28T06:00:00Z",
+    }]}
+    assert all(request.headers["Authorization"] == "Bearer cloud-secret" for request in seen)
+    assert "cloud-secret" not in response.text
+    assert "display_name" not in response.text
+
+
 def test_recommendation_failure_does_not_break_the_visit_hub(proxy, monkeypatch):
     owner_id = "11111111-1111-4111-8111-111111111111"
 

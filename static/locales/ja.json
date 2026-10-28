@@ -6884,6 +6884,7 @@
             "followedUser": "{{name}} をフォローしました",
             "followFailed": "フォローできませんでした。しばらくしてから再試行してください",
             "followBlocked": "現在の関係ではこのユーザーをフォローできません",
+            "dismissRecommendation": "{{name}}をおすすめから非表示",
             "onlineFriends": "オンラインの友達",
             "offlineFriends": "オフラインの友達",
             "openCommunity": "カード・鋳造・DM",

@@ -258,8 +258,6 @@ body.neko-social-hub-standalone {
   min-height: 68px;
   margin: 0 2px 4px;
   padding: 8px 6px 10px;
-  border-top: 1px solid var(--hub-line);
-  border-bottom: 1px solid var(--hub-line);
   box-sizing: border-box;
 }
 
@@ -502,16 +500,69 @@ body.neko-social-hub-standalone {
 .neko-social-hub-recommendation-section { flex: 0 0 auto; }
 
 .neko-social-hub-recommendation-heading {
-  margin-top: 10px;
+  margin: 8px 4px 1px;
   color: var(--hub-accent-strong);
+  font-size: 14px;
 }
 
 .neko-social-hub-recommendations {
   margin: 0;
-  padding: 0 4px;
+  padding: 0 2px;
 }
 
 .neko-social-hub-recommendation .neko-social-hub-status { color: var(--hub-accent-strong); }
+.neko-social-hub-recommendation {
+  min-height: 48px;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.neko-social-hub-recommendation .neko-social-hub-avatar {
+  width: 38px;
+  height: 38px;
+}
+
+.neko-social-hub-recommendation .neko-social-hub-avatar.is-hue { font-size: 15px; }
+.neko-social-hub-recommendation .neko-social-hub-name { margin-bottom: 1px; font-size: 14px; }
+.neko-social-hub-recommendation .neko-social-hub-status { font-size: 10px; }
+
+.neko-social-hub-recommendation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.neko-social-hub-recommendation .neko-social-hub-button {
+  min-width: 64px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.neko-social-hub-recommendation-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--hub-muted);
+  font: inherit;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.neko-social-hub-recommendation-dismiss:hover:not(:disabled) {
+  background: rgba(53, 171, 245, 0.1);
+  color: var(--hub-text);
+}
+
+.neko-social-hub-recommendation-dismiss:disabled { cursor: wait; opacity: .48; }
 
 .neko-social-hub-quota {
   gap: 12px;

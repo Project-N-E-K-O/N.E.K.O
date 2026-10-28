@@ -6884,6 +6884,7 @@
             "followedUser": "Вы подписались на {{name}}",
             "followFailed": "Не удалось подписаться. Попробуйте позже",
             "followBlocked": "Текущие отношения не позволяют подписаться на этого пользователя",
+            "dismissRecommendation": "Скрыть рекомендацию {{name}}",
             "onlineFriends": "Друзья в сети",
             "offlineFriends": "Друзья не в сети",
             "openCommunity": "Карты · Ковка · ЛС",

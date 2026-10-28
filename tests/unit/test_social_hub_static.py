@@ -42,6 +42,12 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "上次在线 " in source
     assert "if (view || friend.online)" in source
     assert "setInterval(function () { refresh(true); }, 60000)" in source
+    assert "kind === 'presence_changed'" in source
+    assert "applyPresenceChanged(notification)" in source
+    assert "/api/community/friend-presence" in source
+    assert "setInterval(function () { refreshPresence(); }, 3000)" in source
+    assert "if (!state.open || !state.loggedIn || presenceRefreshInFlight)" in source
+    assert "notif.kind === 'presence_changed'" in (ROOT / "static" / "app-social-ui.js").read_text(encoding="utf-8")
     assert "target_offline" in source
     assert "邀请来玩" in source
     assert "使用邀请码（备用）" not in source
@@ -63,6 +69,11 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "window.visualViewport" in source
     assert "top = clamp(rect.top, topEdge, bottomEdge - height)" in source
     assert "panel.style.maxHeight = Math.max(1, Math.floor(maxHeight)) + 'px'" in source
+    assert "panel.offsetHeight || panel.scrollHeight" in source
+    render_source = source.split("function render()", 1)[1].split(
+        "function panelViewport()", 1
+    )[0]
+    assert "positionPanel" not in render_source
 
 
 def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
@@ -239,6 +250,17 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "neko-social-hub-recommendation-section" in source
     assert "'/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow'" in source
     assert "state.recommendationBusy.has(recommendation.id)" in source
+    assert "function dismissRecommendation(recommendation)" in source
+    dismiss_source = source.split("function dismissRecommendation(recommendation)", 1)[1].split(
+        "async function followRecommendation", 1
+    )[0]
+    assert "state.recommendations = remaining" in dismiss_source
+    assert "fetch(" not in dismiss_source
+    assert "refresh(" not in dismiss_source
+    assert "neko-social-hub-recommendation-dismiss" in source
+    assert ".neko-social-hub-recommendation-dismiss" in styles
+    assert "min-height: 48px" in styles
+    assert "width: 38px" in styles
     assert "setInterval(function () { refresh(true); }, 60000)" in source
     assert "recommendedUsersRefresh" not in source
     assert ".neko-social-hub-recommendations" in styles
@@ -249,6 +271,19 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "background: rgba(226, 244, 255, 0.42)" not in styles
     assert "[data-theme=\"dark\"] .neko-social-hub-recommendations" not in styles
     assert "tr('visit.socialHub.recommendedUsers', '你可能感兴趣的人')" in source
+    assert "' (' + state.recommendations.length + ')'" not in source
+    assert "if (minutes < 1) return tr('visit.socialHub.justNow', '刚刚')" in source
+    assert "formatter.format(0, 'minute')" not in source
+
+    open_source = source.split("function open()", 1)[1].split("function close()", 1)[0]
+    assert "layer.hidden = true" in open_source
+    assert "refresh().finally(function () { revealOpenPanel(generation); })" in open_source
+    assert open_source.index("layer.hidden = true") < open_source.index("refresh().finally")
+    reveal_source = source.split("function revealOpenPanel(generation)", 1)[1].split(
+        "function open()", 1
+    )[0]
+    assert "generation !== openGeneration" in reveal_source
+    assert "layer.hidden = false" in reveal_source
 
     for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
         translations = (ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
@@ -262,6 +297,7 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
             "followedUser",
             "followFailed",
             "followBlocked",
+            "dismissRecommendation",
         ):
             assert f'"{key}"' in translations
 

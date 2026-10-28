@@ -121,6 +121,45 @@ def _absolute_community_url(base_url: str, value) -> str | None:
     return urljoin(base_url + "/", text) if text else None
 
 
+def _friend_presence_items(following) -> list[dict]:
+    friends = []
+    for item in following.get("items", []) if isinstance(following, dict) else []:
+        if not isinstance(item, dict) or item.get("is_mutual") is not True or not item.get("id"):
+            continue
+        status = item.get("presence_status")
+        if status not in {"online", "away", "offline"}:
+            status = "online" if item.get("online") is True else "offline"
+        friends.append({
+            "id": str(item["id"]),
+            "online": status in {"online", "away"},
+            "presence_status": status,
+            "last_seen_at": item.get("last_seen_at"),
+        })
+    return friends
+
+
+@router.get("/api/community/friend-presence")
+async def friend_presence(request: Request):
+    """Return a small live-presence snapshot without rotating hub content."""
+    session, error = await _community_access(request)
+    if error is not None:
+        return error
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8)) as client:
+            me_status, me = await _community_json(client, session, "GET", "/api/users/me")
+            profile = me.get("user") if isinstance(me, dict) and isinstance(me.get("user"), dict) else me
+            if me_status != 200 or not isinstance(profile, dict) or not profile.get("id"):
+                return JSONResponse(me, status_code=me_status)
+            following_status, following = await _community_following(
+                client, session, str(profile["id"]),
+            )
+    except httpx.HTTPError:
+        return JSONResponse({"detail": "community_unavailable"}, status_code=502)
+    if following_status != 200:
+        return JSONResponse(following, status_code=following_status)
+    return {"friends": _friend_presence_items(following)}
+
+
 @router.get("/api/community/visit-hub")
 async def visit_hub(request: Request):
     """Return only the signed-in account's real mutuals and live invitations."""
@@ -150,22 +189,20 @@ async def visit_hub(request: Request):
     if following_status != 200:
         return JSONResponse(following, status_code=following_status)
 
+    presence_by_id = {item["id"]: item for item in _friend_presence_items(following)}
     friends = []
     for item in following.get("items", []) if isinstance(following, dict) else []:
         if not isinstance(item, dict) or item.get("is_mutual") is not True or not item.get("id"):
             continue
+        presence = presence_by_id[str(item["id"])]
         friends.append({
             "id": str(item["id"]),
             "display_name": item.get("display_name") or item.get("username") or "喵友",
             "username": item.get("username"),
             "avatar_url": _absolute_community_url(session["base_url"], item.get("avatar_url")),
-            "online": item.get("online") is True,
-            "presence_status": (
-                item.get("presence_status")
-                if item.get("presence_status") in {"online", "away", "offline"}
-                else "online" if item.get("online") is True else "offline"
-            ),
-            "last_seen_at": item.get("last_seen_at"),
+            "online": presence["online"],
+            "presence_status": presence["presence_status"],
+            "last_seen_at": presence["last_seen_at"],
         })
 
     recommendations = []
