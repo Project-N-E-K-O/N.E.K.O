@@ -3,6 +3,7 @@
 import json
 import random
 import sqlite3
+import sys
 from datetime import date
 
 import pytest
@@ -201,8 +202,16 @@ def test_flashback_visit_row_does_not_hide_ordinary_archived_copy():
     assert pick(active, [memory("same")])["id"] == "same"
 
 
-def test_count_user_turns_with_uri_special_characters_in_path(tmp_path):
-    folder = tmp_path / "A#1 %20 猫?x"
+@pytest.mark.parametrize(
+    "folder_name",
+    [
+        "A#1 %20 猫",
+        # Windows forbids "?" in file names.
+        pytest.param("A?x", marks=pytest.mark.skipif(sys.platform == "win32", reason="'?' is not a valid Windows file name character")),
+    ],
+)
+def test_count_user_turns_with_uri_special_characters_in_path(tmp_path, folder_name):
+    folder = tmp_path / folder_name
     folder.mkdir()
     db = folder / "time_indexed.db"
     make_time_db(db, [json.dumps({"type": "human"})] * 2)
