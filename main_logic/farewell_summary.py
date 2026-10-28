@@ -98,6 +98,12 @@ def select_flashback(
     """
     today = today or date.today()
     rng = rng or random
+    # Every active row shadows its archived copies, whatever its own state:
+    # a private or redacted active row must keep its archived copy out.
+    active_ids: set[forge._FactKey] = set()
+    active_hashes: set[str] = set()
+    # Only accepted candidates claim an identity among themselves, so an
+    # ineligible duplicate (e.g. a machine-log copy) never hides a valid one.
     seen_ids: set[forge._FactKey] = set()
     seen_hashes: set[str] = set()
     candidates: list[tuple[date, dict[str, Any], forge._FactKey]] = []
@@ -112,12 +118,13 @@ def select_flashback(
             fact_key, _, hash_aliases = forge._fact_identity(item)
             if fact_key is None:
                 continue
-            # Claim the identity before filtering: a private or redacted
-            # active row must keep its archived copy out of the flashback.
+            if not is_archive:
+                active_ids.add(fact_key)
+                active_hashes.update(hash_aliases)
+            elif fact_key in active_ids or hash_aliases & active_hashes:
+                continue
             if fact_key in seen_ids or hash_aliases & seen_hashes:
                 continue
-            seen_ids.add(fact_key)
-            seen_hashes.update(hash_aliases)
             if not _flashback_candidate(item):
                 continue
             if is_archive and not _archive_row_eligible(item):
@@ -125,6 +132,8 @@ def select_flashback(
             memory_date = _local_memory_date(item)
             if memory_date is None or (today - memory_date).days < FLASHBACK_MIN_AGE_DAYS:
                 continue
+            seen_ids.add(fact_key)
+            seen_hashes.update(hash_aliases)
             candidates.append((memory_date, item, fact_key))
 
     if not candidates:
@@ -157,11 +166,17 @@ def _time_index_db_path(config_manager: Any, lanlan_name: str, memory_dir: Path 
         time_store = character_data[6] if len(character_data) > 6 else {}
     except Exception:
         time_store = {}
-    if isinstance(time_store, dict) and time_store.get(lanlan_name):
-        return Path(str(time_store[lanlan_name]))
-    if memory_dir is None:
+    # Key presence, like the writer: a registered empty path is not readable.
+    if isinstance(time_store, dict) and lanlan_name in time_store:
+        value = time_store[lanlan_name]
+        return Path(str(value)) if value else None
+    # The writer uses config_manager.memory_dir, not the NEKO_MEMORY_DIR
+    # override that card_forge_facts honours for facts.
+    configured = getattr(config_manager, "memory_dir", None)
+    base = Path(str(configured)) if configured else memory_dir
+    if base is None:
         return None
-    return memory_dir / lanlan_name / "time_indexed.db"
+    return base / lanlan_name / "time_indexed.db"
 
 
 def count_user_turns(db_path: Path) -> int | None:

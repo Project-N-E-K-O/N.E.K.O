@@ -121,8 +121,9 @@ def test_count_user_turns_without_table(tmp_path):
 
 
 class _FakeConfig:
-    def __init__(self, time_store):
+    def __init__(self, time_store, memory_dir=None):
         self.time_store = time_store
+        self.memory_dir = memory_dir
 
     def get_character_data(self):
         return ("Master", "Neko", {}, {}, {}, {"Neko": ""}, self.time_store, {}, {})
@@ -142,7 +143,7 @@ def summary_env(tmp_path, monkeypatch):
     monkeypatch.setattr(F, "resolve_active_neko_context", context)
     import utils.config_manager as cm
 
-    config = _FakeConfig({})
+    config = _FakeConfig({}, memory_dir=tmp_path)
     monkeypatch.setattr(cm, "get_config_manager", lambda: config)
     return char_dir, config
 
@@ -216,3 +217,33 @@ def test_count_user_turns_with_uri_special_characters_in_path(tmp_path, folder_n
     db = folder / "time_indexed.db"
     make_time_db(db, [json.dumps({"type": "human"})] * 2)
     assert S.count_user_turns(db) == 2
+
+
+def test_flashback_ineligible_duplicate_does_not_hide_valid_copy():
+    log_copy = memory("dup", text="imported 2026-01-01T00:00 row")
+    assert pick([log_copy, memory("dup")])["id"] == "dup"
+    archived = memory("dup2", subject_archived_at="2026-02-01")
+    assert pick([], [archived, memory("dup2")])["id"] == "dup2"
+
+
+@pytest.mark.asyncio
+async def test_build_summary_reads_time_index_from_config_memory_dir(summary_env, tmp_path):
+    _, config = summary_env
+    # The facts context may follow NEKO_MEMORY_DIR; the time index writer does not.
+    writer_dir = tmp_path / "writer"
+    (writer_dir / "Neko").mkdir(parents=True)
+    make_time_db(writer_dir / "Neko" / "time_indexed.db", [json.dumps({"type": "human"})] * 3)
+    config.memory_dir = writer_dir
+    assert (await S.build_farewell_summary())["conversation_count"] == 3
+
+    # A registered but empty time_store path is unreadable, as for the writer.
+    config.time_store = {"Neko": ""}
+    assert "conversation_count" not in await S.build_farewell_summary()
+
+
+@pytest.mark.asyncio
+async def test_route_swallows_import_failure(monkeypatch):
+    from main_routers import memory_router
+
+    monkeypatch.setitem(sys.modules, "main_logic.farewell_summary", None)
+    assert await memory_router.get_farewell_summary() == {"flashback": None}

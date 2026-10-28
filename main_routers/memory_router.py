@@ -1538,9 +1538,9 @@ async def get_farewell_summary():
     cannot be read is omitted (``flashback`` is ``null``). No LLM, sync or
     writes: the desktop waits at most 1.2 s for this during quit.
     """
-    from main_logic.farewell_summary import build_farewell_summary
-
     try:
+        from main_logic.farewell_summary import build_farewell_summary
+
         return await build_farewell_summary()
     except Exception as exc:
         logger.warning("farewell-summary unavailable: %s", type(exc).__name__)
