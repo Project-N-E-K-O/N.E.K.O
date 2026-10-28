@@ -253,6 +253,7 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "if (replaceRecommendations)" in source
     assert "var refreshGeneration = openGeneration" in source
     assert "var refreshRevision = ++hubRefreshRevision" in source
+    assert "var presenceRevisionAtStart = presencePushRevision" in source
     assert "if (refreshGeneration !== openGeneration) {" in source
     assert "if (refreshGeneration === openGeneration)" in source
     assert "function applyInvitationSnapshot(body, revision)" in source
@@ -269,6 +270,9 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "state.recommendationBusy.has(recommendation.id)" in source
     assert "await refresh(true, true)" in source
     assert "await refresh(false)" not in source
+    assert "var followGeneration = openGeneration" in source
+    assert "var followAccountId = state.accountId" in source
+    assert "function isCurrentFollow()" in source
     assert "function dismissRecommendation(recommendation)" in source
     assert "pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community'" in source
     assert "pendingFocusFallback" in source

@@ -282,6 +282,49 @@ test('a late presence snapshot cannot overwrite a newer pushed state', async () 
   assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
 });
 
+test('a late full hub refresh cannot overwrite a newer pushed presence', async () => {
+  let visitHubReads = 0;
+  let resolveRefresh;
+  const { hub } = loadHub({
+    fetch: async () => {
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true,
+          account: { id: 'account-1' },
+          friends: [{
+            id: 'friend-1', display_name: 'Community Test', presence_status: 'offline',
+            online: false, last_seen_at: '2026-10-28T04:00:00Z',
+          }],
+        }) };
+      }
+      return new Promise((resolve) => { resolveRefresh = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const pending = hub.refresh(true);
+  hub._applyPresenceChanged({
+    kind: 'presence_changed',
+    payload: {
+      user_id: 'friend-1', presence_status: 'online', online: true,
+      last_seen_at: '2026-10-28T06:01:00Z',
+    },
+  });
+  resolveRefresh({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{
+      id: 'friend-1', display_name: 'Community Test', presence_status: 'offline',
+      online: false, last_seen_at: '2026-10-28T06:00:00Z',
+    }],
+  }) });
+  await pending;
+
+  assert.equal(hub._state.friends[0].presenceStatus, 'online');
+  assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
+});
+
 test('dismissed recommendations stay hidden during an automatic follow refresh', async () => {
   const body = {
     logged_in: true,
@@ -360,4 +403,34 @@ test('a successful follow keeps the current friend view when recommendation refi
   assert.equal(hub._state.loadFailed, false);
   assert.equal(hub._state.recommendations.length, 0);
   assert.equal(hub._state.toastError, false);
+});
+
+test('an old follow response cannot mutate a new account panel', async () => {
+  let resolveFollow;
+  const { hub } = loadHub({
+    fetch: async (url) => {
+      if (String(url).includes('/follow')) {
+        return new Promise((resolve) => { resolveFollow = resolve; });
+      }
+      return { ok: true, json: async () => ({
+        logged_in: true,
+        account: { id: 'account-1' },
+        recommendations: [{ id: 'recommendation-1', display_name: 'Recommended' }],
+      }) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const pending = hub._followRecommendation(hub._state.recommendations[0]);
+  hub._state.accountId = 'account-2';
+  hub._state.toast = 'new-account';
+  hub._state.recommendations = [{ id: 'recommendation-1', displayName: 'New account item' }];
+  hub._state.recommendationBusy.clear();
+  hub._state.recommendationBusy.add('recommendation-1');
+  resolveFollow({ ok: true, json: async () => ({ following: true }) });
+  await pending;
+
+  assert.equal(hub._state.toast, 'new-account');
+  assert.equal(hub._state.recommendations[0].displayName, 'New account item');
+  assert.equal(hub._state.recommendationBusy.has('recommendation-1'), true);
 });

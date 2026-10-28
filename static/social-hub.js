@@ -390,6 +390,7 @@
     replaceRecommendationsRequested = replaceRecommendationsRequested === true;
     var refreshGeneration = openGeneration;
     var refreshRevision = ++hubRefreshRevision;
+    var presenceRevisionAtStart = presencePushRevision;
     if (!silent) {
       state.loading = true;
       render();
@@ -414,8 +415,21 @@
       var replaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
       state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
-      state.friends = Array.isArray(body.friends)
+      var nextFriends = Array.isArray(body.friends)
         ? body.friends.map(normalizeFriend).filter(function (friend) { return friend.id; }) : [];
+      if (!accountChanged) {
+        var previousFriends = new Map(state.friends.map(function (friend) {
+          return [friend.id, friend];
+        }));
+        nextFriends.forEach(function (friend) {
+          var previous = previousFriends.get(friend.id);
+          if (!previous || (presencePushRevisions.get(friend.id) || 0) <= presenceRevisionAtStart) return;
+          friend.online = previous.online;
+          friend.presenceStatus = previous.presenceStatus;
+          friend.lastSeenAt = previous.lastSeenAt;
+        });
+      }
+      state.friends = nextFriends;
       if (replaceRecommendations) {
         state.recommendations = Array.isArray(body.recommendations)
           ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(function (item) {
@@ -710,6 +724,11 @@
 
   async function followRecommendation(recommendation) {
     if (!recommendation || state.recommendationBusy.has(recommendation.id)) return;
+    var followGeneration = openGeneration;
+    var followAccountId = state.accountId;
+    function isCurrentFollow() {
+      return followGeneration === openGeneration && followAccountId === state.accountId;
+    }
     state.recommendationBusy.add(recommendation.id);
     state.toast = '';
     state.toastError = false;
@@ -720,6 +739,7 @@
       });
       var body = await json(response);
       if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.followFailed', '关注失败，请稍后重试')));
+      if (!isCurrentFollow()) return;
       var index = state.recommendations.findIndex(function (item) {
         return item.id === recommendation.id;
       });
@@ -734,13 +754,17 @@
       }
       state.recommendations = remaining;
       await refresh(true, true);
+      if (!isCurrentFollow()) return;
       state.toast = tr('visit.socialHub.followedUser', '已关注 {{name}}', { name: recommendation.displayName });
     } catch (error) {
+      if (!isCurrentFollow()) return;
       state.toast = error && error.message || tr('visit.socialHub.followFailed', '关注失败，请稍后重试');
       state.toastError = true;
     } finally {
-      state.recommendationBusy.delete(recommendation.id);
-      render();
+      if (isCurrentFollow()) {
+        state.recommendationBusy.delete(recommendation.id);
+        render();
+      }
     }
   }
 
