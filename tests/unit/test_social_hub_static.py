@@ -289,3 +289,31 @@ def test_local_visual_preview_uses_the_production_hub_assets():
     assert "/static/social-hub.js" in preview
     assert 'id="preview-btn-social"' in preview
     assert "window.nekoSocialHub.toggle()" in preview
+
+
+def test_empty_states_offer_a_next_step_and_header_names_community_features():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    # 右上角入口直接写出完整社区里的功能，而不是含糊的“打开完整社区”。
+    assert "'卡牌 · 铸造 · 私信'" in source
+    assert "'打开完整社区'" not in source
+    # 未登录、无好友、加载失败都有可点的下一步，而不是只有一段说明文字。
+    assert "'empty-login'" in source
+    assert "'empty-find-friends'" in source
+    assert "'empty-retry'" in source
+    # 网络错误不能被显示成“还没有登录”。
+    assert "state.loadFailed" in source
+    assert "body.detail === 'community_login_required'" in source
+    # 独立窗口没有宿主桥时不能放打不开社区的按钮，未登录要退回设置登录指引。
+    assert "function canOpenCommunity()" in source
+    assert "!canOpenCommunity()" in source
+    assert "'visit.socialHub.loginRequired'" in source
+
+
+def test_retry_keeps_keyboard_focus_and_narrow_header_wraps():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
+    # 重试时按钮被“读取中”替换，结果回来后焦点要回到重试按钮。
+    assert "pendingFocusKey = 'empty-retry'" in source
+    # 窄屏下入口按钮放不下时换到第二行，而不是被面板裁掉。
+    header = styles[styles.index(".neko-social-hub-header {"):]
+    assert "flex-wrap: wrap" in header[:header.index("}")]

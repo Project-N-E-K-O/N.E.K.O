@@ -95,6 +95,7 @@ body.neko-social-hub-standalone {
 
 .neko-social-hub-header {
   flex: 0 0 auto;
+  flex-wrap: wrap;
   min-height: 44px;
   gap: 10px;
   padding: 0 2px 14px;
@@ -124,25 +125,44 @@ body.neko-social-hub-standalone {
   line-height: 1.15;
   font-weight: 750;
   letter-spacing: -.02em;
+  white-space: nowrap;
 }
 
 .neko-social-hub-community-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
-  padding: 8px 6px;
-  border: 0;
-  background: transparent;
+  min-width: 0;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid rgba(45, 165, 242, 0.3);
+  border-radius: 999px;
+  background: rgba(53, 171, 245, 0.08);
   color: var(--hub-accent-strong);
   font: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
 .neko-social-hub-community-link:hover,
 .neko-social-hub-community-link:focus-visible {
+  border-color: rgba(45, 165, 242, 0.55);
+  background: rgba(53, 171, 245, 0.16);
   color: #057ed1;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+}
+
+.neko-social-hub-community-arrow {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .neko-social-hub-invite {
@@ -401,18 +421,68 @@ body.neko-social-hub-standalone {
 .neko-social-hub-friends { margin: 0; padding: 0 4px; list-style: none; }
 
 .neko-social-hub-empty {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 6px;
-  margin: 6px 4px 12px;
-  padding: 24px 18px;
+  margin: 10px 4px 6px;
+  padding: 26px 22px 22px;
   border-radius: 16px;
   color: var(--hub-muted);
   text-align: center;
   background: rgba(112, 188, 237, 0.09);
 }
 
-.neko-social-hub-empty strong { color: var(--hub-text); font-size: 15px; }
-.neko-social-hub-empty span { font-size: 13px; }
+.neko-social-hub-empty.is-loading {
+  flex-direction: row;
+  justify-content: center;
+  gap: 10px;
+  padding: 22px 18px;
+}
+
+.neko-social-hub-empty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: rgba(53, 171, 245, 0.14);
+  color: var(--hub-accent-strong);
+}
+
+.neko-social-hub-empty.is-offline .neko-social-hub-empty-badge {
+  background: rgba(226, 76, 76, 0.1);
+  color: #d05252;
+}
+
+.neko-social-hub-empty-icon {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.neko-social-hub-empty-title { color: var(--hub-text); font-size: 16px; font-weight: 720; line-height: 1.35; }
+.neko-social-hub-empty-hint { max-width: 280px; text-wrap: balance; font-size: 13px; line-height: 1.5; }
+.neko-social-hub-empty-action { margin-top: 10px; min-width: 148px; }
+
+.neko-social-hub-spinner {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(53, 171, 245, 0.25);
+  border-top-color: var(--hub-accent);
+  border-radius: 50%;
+  animation: nekoSocialHubSpin 800ms linear infinite;
+}
+
+@keyframes nekoSocialHubSpin { to { transform: rotate(360deg); } }
+
 .neko-social-hub-friend {
   gap: 12px;
   min-height: 78px;
@@ -476,6 +546,11 @@ html.dark .neko-social-hub-panel {
   box-shadow: 0 24px 58px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
+[data-theme="dark"] .neko-social-hub-community-link,
+html.dark .neko-social-hub-community-link { color: #6cc4ff; border-color: rgba(108, 196, 255, 0.32); background: rgba(108, 196, 255, 0.1); }
+[data-theme="dark"] .neko-social-hub-empty-badge,
+html.dark .neko-social-hub-empty-badge { color: #6cc4ff; background: rgba(108, 196, 255, 0.14); }
+
 [data-theme="dark"] .neko-social-hub-invite,
 [data-theme="dark"] .neko-social-hub-quota,
 html.dark .neko-social-hub-invite,
@@ -502,6 +577,7 @@ html.dark .neko-social-hub-presence-menu {
 
 @media (prefers-reduced-motion: reduce) {
   .neko-social-hub-panel { animation: none; }
+  .neko-social-hub-spinner { animation-duration: 2s; }
   .neko-social-hub-button,
   .neko-social-hub-presence-arrow { transition: none; }
 }
