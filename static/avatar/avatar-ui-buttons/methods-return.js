@@ -206,30 +206,35 @@ Object.assign(AvatarButtonMixin.methods, {
                     return;
                 }
                 e.stopPropagation();
-                const desktopInteractions = window.NekoDesktopWindowInteractions;
-                if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
-                    desktopInteractions.cancel(returnBtn, {
-                        reason: 'return-click',
-                        restoreArt: false
-                    });
-                } else {
-                    [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
-                        if (runner && typeof runner.cancel === 'function') {
-                            runner.cancel(returnBtn, {
-                                reason: 'return-click',
-                                restoreArt: false
-                            });
-                        }
-                    });
+                const commitReturn = () => {
+                    const desktopInteractions = window.NekoDesktopWindowInteractions;
+                    if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
+                        desktopInteractions.cancel(returnBtn, {
+                            reason: 'return-click',
+                            restoreArt: false
+                        });
+                    } else {
+                        [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
+                            if (runner && typeof runner.cancel === 'function') {
+                                runner.cancel(returnBtn, {
+                                    reason: 'return-click',
+                                    restoreArt: false
+                                });
+                            }
+                        });
+                    }
+                    window.NekoDesktopWindowGravity?.cancel(returnBtn);
+                    _clearNekoIdleCat1QuestionMark(returnBtn);
+                    _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
+                    _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1Journey(returnBtn);
+                    _dispatchNekoIdleReturnClickFromButton(returnBtn);
+                };
+                if (!_guardNekoVisitCatReturn(commitReturn)) {
+                    commitReturn();
                 }
-                window.NekoDesktopWindowGravity?.cancel(returnBtn);
-                _clearNekoIdleCat1QuestionMark(returnBtn);
-                _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
-                _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1Journey(returnBtn);
-                _dispatchNekoIdleReturnClickFromButton(returnBtn);
             });
 
             const thoughtBubble = document.createElement('span');

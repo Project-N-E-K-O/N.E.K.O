@@ -118,6 +118,12 @@ const walkingSnapshot = take(walking);
 const dragging = cat('cat2', '/official/move-2.gif', { 'data-dragging': 'true' });
 const draggingSnapshot = take(dragging);
 
+const rapidCat2 = cat('cat2', '/official/move-5.gif', { 'data-dragging': 'true' });
+const rapidCat2Snapshot = take(rapidCat2);
+
+const wrongTierCat3 = cat('cat3', '/official/move-2.gif', { 'data-dragging': 'true' });
+const wrongTierCat3Snapshot = take(wrongTierCat3);
+
 const airborne = cat('cat1', '/official/move-2.gif');
 airborne.button.__nekoIdleCat1PlaygroundDropState = {
   active: true,
@@ -140,6 +146,8 @@ const hiddenSnapshot = take(hidden);
 process.stdout.write(JSON.stringify({
   walking: walkingSnapshot,
   dragging: draggingSnapshot,
+  rapidCat2: rapidCat2Snapshot,
+  wrongTierCat3: wrongTierCat3Snapshot,
   airborne: airborneSnapshot,
   edge: edgeSnapshot,
   hidden: hiddenSnapshot,
@@ -181,6 +189,8 @@ def test_bridge_resolves_ambiguous_official_art_by_tier_and_mode(report):
     assert report["dragging"]["tier"] == "cat2"
     assert report["dragging"]["mode"] == "drag"
     assert report["dragging"]["slot"] == "drag.cat2"
+    assert report["rapidCat2"]["slot"] == "drag.cat2"
+    assert report["wrongTierCat3"]["slot"] == "drag.cat3"
     assert report["airborne"]["mode"] == "airborne"
     assert report["airborne"]["slot"] == "playground.cat1.air"
     assert report["edge"]["mode"] == "edge"

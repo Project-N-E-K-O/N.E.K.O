@@ -30,6 +30,8 @@ from tests.node_harness import run_node_script
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCENE_PATH = PROJECT_ROOT / "static" / "visit" / "cat-scene.js"
+PLAYGROUND_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons" / "idle-playground.js"
+METHODS_RETURN_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons" / "methods-return.js"
 
 HARNESS = r"""
 'use strict';
@@ -860,3 +862,21 @@ def test_owner_pose_queue_keeps_only_the_newest_waiting_sample(report):
 
 def test_wide_pose_uses_the_wide_actor_box_state(report):
     assert report["wide_slot"] == "action.cat1.play_yarn"
+
+
+def test_return_confirmation_precedes_local_cat_state_cleanup():
+    playground = PLAYGROUND_PATH.read_text(encoding="utf-8")
+    playground_click = playground.split(
+        "function _handleNekoIdleCat1PlaygroundCatClick(button, event)", 1
+    )[1].split("function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady", 1)[0]
+    assert playground_click.index("const commitReturn = () => {") < playground_click.index(
+        "_stopNekoIdleCat1PlaygroundPhysics(button);"
+    ) < playground_click.index("_guardNekoVisitCatReturn(commitReturn)")
+
+    methods = METHODS_RETURN_PATH.read_text(encoding="utf-8")
+    return_click = methods.split("returnBtn.addEventListener('click', (e) => {", 1)[1].split(
+        "const thoughtBubble = document.createElement('span');", 1
+    )[0]
+    assert return_click.index("const commitReturn = () => {") < return_click.index(
+        "desktopInteractions.cancel(returnBtn"
+    ) < return_click.index("_guardNekoVisitCatReturn(commitReturn)")

@@ -217,10 +217,17 @@
     return 'idle.' + tier;
   }
 
+  function slotMatchesTier(slot, tier) {
+    if (slot === 'drag.rapid') return tier === 'cat1';
+    var match = slot.match(/\.cat([123])(?:\.|$)/);
+    return !match || 'cat' + match[1] === tier;
+  }
+
   function selectSlot(tier, mode, url) {
-    var matches = matchingSlots(url);
+    var matches = matchingSlots(url).filter(function (slot) {
+      return slotMatchesTier(slot, tier);
+    });
     if (!matches.length) return fallbackSlot(tier, mode);
-    var expectedTierSuffix = '.' + tier;
     var priorities = [];
     if (mode === 'airborne') priorities.push('playground.' + tier + '.air');
     if (mode === 'drag') priorities.push('drag.' + tier, 'drag.rapid');
@@ -229,10 +236,7 @@
     for (var index = 0; index < priorities.length; index += 1) {
       if (matches.indexOf(priorities[index]) !== -1) return priorities[index];
     }
-    var sameTier = matches.find(function (slot) {
-      return slot.indexOf(expectedTierSuffix) !== -1 || slot.indexOf(expectedTierSuffix + '.') !== -1;
-    });
-    return sameTier || matches[0];
+    return matches[0];
   }
 
   function snapshot() {

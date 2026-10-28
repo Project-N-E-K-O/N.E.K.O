@@ -934,7 +934,8 @@ def test_model_cat_transition_contract_is_present():
     assert "dispatchClickEvent();" in source
     assert "window.playNekoModelCatTransition" in avatar_source
     assert "window.dispatchEvent(event);" in avatar_source
-    assert "dispatchReturnEvent();" in avatar_source
+    assert "const commitReturn = () => {" in avatar_source
+    assert "if (_guardNekoVisitCatReturn(commitReturn)) return true;" in avatar_source
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
     assert "nekoModelCatRevealPlaybackToken = 0" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source

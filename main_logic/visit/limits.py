@@ -102,12 +102,13 @@ class RateChannel(str, Enum):
 
 # cmd 1 = ctl (non-text); only text in cmd 2 uses the TEXT bucket, while line_delta/line_abort use frame buckets only; cmd 3 = lossy.
 _CTL_TYPES = frozenset({
-    "hello", "ready", "cat_action", "cat_pose_commit", "ack", "hb", "state", "wrap_up", "leave",
+    "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent", "cat_world_commit",
+    "ack", "hb", "state", "wrap_up", "leave",
 })
 _LOSSY_TYPES = frozenset({"typing", "stats"})
 _MOTION_TYPES = frozenset({"cat_motion"})
 _WORLD_TYPES = frozenset({
-    "cat_world_intent", "cat_world_pointer", "cat_world_frame", "cat_world_commit",
+    "cat_world_pointer", "cat_world_frame",
 })
 _FRAME_ONLY_TYPES = frozenset({"line_delta", "line_abort"})
 

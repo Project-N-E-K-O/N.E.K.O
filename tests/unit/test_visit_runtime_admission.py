@@ -782,6 +782,10 @@ async def test_cat_scene_negotiates_distinct_assets_without_dialogue_runtime_or_
             assert rt.room is None and rt.session is None and rt.spool is None
             assert rt.memory_enabled is False and side.clients == [] and side.commits == []
             assert rt._journal_opening is None and not rt.journal.is_open and not rt.journal.sealed
+            anomalies_before = rt.pre_room_anomalies
+            rt._count_anomaly("malformed")
+            assert rt.pre_room_anomalies == anomalies_before + 1
+            assert rt._journal_backlog == []
             assert not rt.journal.stream_path.exists() and not rt.journal.sealed_path.exists()
             assert side.host.streams == [] and side.host.outputs == []
             assert rt.snapshot()["self_cat_asset"] == own_asset

@@ -172,8 +172,8 @@ def test_channel_mapping():
     assert channel_for("cat_pose_commit") is RateChannel.CTL
     assert channel_for("typing") is RateChannel.LOSSY
     assert channel_for("cat_motion") is RateChannel.MOTION
-    assert channel_for("cat_world_intent") is RateChannel.WORLD
-    assert channel_for("cat_world_commit") is RateChannel.WORLD
+    assert channel_for("cat_world_intent") is RateChannel.CTL
+    assert channel_for("cat_world_commit") is RateChannel.CTL
     assert channel_for("cat_world_pointer") is RateChannel.WORLD
     assert channel_for("cat_world_frame") is RateChannel.WORLD
     assert channel_for("line_delta") is None

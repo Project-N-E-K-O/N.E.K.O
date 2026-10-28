@@ -1867,27 +1867,24 @@ function _installNekoIdleCat1PlaygroundPointerListeners(button) {
 function _dispatchNekoIdleReturnClickFromButton(button) {
     const container = _getNekoIdleReturnContainerFromButton(button);
     if (!button || !container) return false;
-    // Return/model transition state is stored in virtual body coordinates.
-    // Convert the crop-local DOMRect exactly once before publishing it.
-    const rect = _getNekoDesktopVirtualElementRect(container)
-        || container.getBoundingClientRect();
-    const prefix = button.id && button.id.endsWith('-btn-return')
-        ? button.id.slice(0, -'-btn-return'.length)
-        : 'avatar';
-    const event = new CustomEvent(`${prefix}-return-click`, {
-        detail: {
-            returnButtonRect: {
-                left: rect.left,
-                top: rect.top,
-                width: rect.width,
-                height: rect.height
-            }
-        }
-    });
-    const dispatchReturnEvent = () => {
-        window.dispatchEvent(event);
-    };
     const commitReturn = () => {
+        // Confirmation may stay open while the cat moves. Read the final
+        // virtual rect only when the reliable visit exit has completed.
+        const rect = _getNekoDesktopVirtualElementRect(container)
+            || container.getBoundingClientRect();
+        const prefix = button.id && button.id.endsWith('-btn-return')
+            ? button.id.slice(0, -'-btn-return'.length)
+            : 'avatar';
+        const event = new CustomEvent(`${prefix}-return-click`, {
+            detail: {
+                returnButtonRect: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height
+                }
+            }
+        });
         if (
             typeof window.playNekoModelCatTransition === 'function' &&
             !_isNekoGoodbyeIdleBallButton(button)
@@ -1902,15 +1899,22 @@ function _dispatchNekoIdleReturnClickFromButton(button) {
                 container.removeAttribute('data-neko-model-cat-transitioning');
             });
         }
-        dispatchReturnEvent();
+        window.dispatchEvent(event);
         return true;
     };
+    if (_guardNekoVisitCatReturn(commitReturn)) return true;
+    return commitReturn();
+}
+
+function _guardNekoVisitCatReturn(commitReturn) {
     const visitCatScene = window.nekoVisitCatScene;
-    if (visitCatScene && typeof visitCatScene.guardModelReturn === 'function'
+    if (visitCatScene && typeof visitCatScene.isActive === 'function'
+        && visitCatScene.isActive()
+        && typeof visitCatScene.guardModelReturn === 'function'
         && visitCatScene.guardModelReturn(commitReturn)) {
         return true;
     }
-    return commitReturn();
+    return false;
 }
 
 function _handleNekoIdleCat1PlaygroundCatClick(button, event) {
@@ -1927,10 +1931,13 @@ function _handleNekoIdleCat1PlaygroundCatClick(button, event) {
         try { event.preventDefault(); } catch (_) {}
         try { event.stopPropagation(); } catch (_) {}
     }
-    _stopNekoIdleCat1PlaygroundPhysics(button);
-    _clearNekoIdleCat1PlaygroundPointerListeners(button);
-    _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'cat-click');
-    _dispatchNekoIdleReturnClickFromButton(button);
+    const commitReturn = () => {
+        _stopNekoIdleCat1PlaygroundPhysics(button);
+        _clearNekoIdleCat1PlaygroundPointerListeners(button);
+        _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'cat-click');
+        _dispatchNekoIdleReturnClickFromButton(button);
+    };
+    if (!_guardNekoVisitCatReturn(commitReturn)) commitReturn();
     return true;
 }
 
