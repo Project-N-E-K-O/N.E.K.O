@@ -362,7 +362,11 @@
       var body = await json(response);
       // 登录态失效按“未登录”处理，引导重新登录，而不是显示成加载失败。
       if (!response.ok && body && body.detail === 'community_login_required') body = { logged_in: false };
-      else if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取好友失败')));
+      else if (!response.ok) {
+        var serverError = new Error(detailText(body, tr('visit.socialHub.readFailed', '读取好友失败')));
+        serverError.fromServer = true;
+        throw serverError;
+      }
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
@@ -386,7 +390,10 @@
         state.friends = [];
         state.incoming = null;
         // 失败原因直接写进空状态卡片（带重试按钮），不再额外弹一条重复的红色提示。
-        state.loadError = error && error.message || tr('visit.socialHub.readFailed', '读取好友失败');
+        // 服务端给出的原因照常显示；网络层异常（浏览器的 "Failed to fetch" 等）换成本地化文案。
+        state.loadError = error && error.fromServer && error.message
+          ? error.message
+          : tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后再试');
         state.toast = '';
         state.toastError = false;
       }
@@ -778,7 +785,8 @@
     var communityLink = button(tr('visit.socialHub.openCommunity', '卡牌 · 铸造 · 私信'), 'neko-social-hub-community-link', openCommunity);
     communityLink.title = tr('visit.socialHub.openCommunityHint', '打开完整社区：看卡、铸造（抽卡）、私信');
     communityLink.appendChild(svgIcon('neko-social-hub-community-arrow', ['M7 17 17 7', 'M8 7h9v9']));
-    header.appendChild(focusKey(communityLink, 'open-community'));
+    // 独立窗口没有宿主桥时打不开社区，不放这个点了没反应的入口。
+    if (canOpenCommunity()) header.appendChild(focusKey(communityLink, 'open-community'));
     panel.appendChild(header);
     if (state.loggedIn && state.account) renderOwnAccount(panel);
 
