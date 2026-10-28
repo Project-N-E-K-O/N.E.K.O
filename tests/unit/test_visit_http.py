@@ -966,6 +966,7 @@ async def test_accept_before_the_guest_arrived_is_404(env):
         ({"visit_id": VISIT_ID}, "invalid_action"),
         ({"visit_id": VISIT_ID, "kind": "eat"}, "invalid_action"),
         ({"visit_id": VISIT_ID, "kind": True}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": []}, "invalid_action"),
         ({"visit_id": VISIT_ID, "kind": "greet", "actor": "self"}, "invalid_fields"),
         ({"visit_id": VISIT_ID, "kind": "greet", "actor_side": "host"}, "invalid_fields"),
         ({"visit_id": VISIT_ID, "kind": "greet", "seed": 7}, "invalid_fields"),
@@ -1091,6 +1092,9 @@ _CAT_POSE_BODY = {
         ({"sample_seq": 0}, "invalid_pose"),
         ({"x_q16": 65536}, "invalid_pose"),
         ({"mode": "teleport"}, "invalid_pose"),
+        ({"mode": []}, "invalid_pose"),
+        ({"facing": []}, "invalid_pose"),
+        ({"slot": []}, "invalid_pose"),
         ({"tier": "cat2", "slot": "movement.cat1.walking"}, "invalid_pose"),
         ({"slot": "https://example.test/cat.gif"}, "invalid_pose"),
     ],
@@ -1168,12 +1172,14 @@ _CAT_WORLD_STATE_BODY = {
 @pytest.mark.parametrize(("path", "body", "change", "code"), [
     ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"actor": "self"}, "invalid_fields"),
     ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"kind": "move"}, "invalid_intent"),
+    ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"kind": []}, "invalid_intent"),
     ("cat-world-pointer", _CAT_WORLD_INTENT_BODY, {"kind": None}, "invalid_fields"),
     ("cat-world-pointer", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items() if k != "kind"},
      {"x_q16": 65536}, "invalid_pointer"),
     ("cat-world-state", _CAT_WORLD_STATE_BODY, {"window_width": 100}, "invalid_fields"),
     ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_vx_q12": 4096}, "invalid_state"),
     ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_holder": "self"}, "invalid_state"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_holder": []}, "invalid_state"),
 ])
 async def test_cat_world_http_has_strict_fixed_normalized_fields(env, path, body, change, code):
     async with env.client() as c:

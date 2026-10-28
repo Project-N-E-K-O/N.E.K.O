@@ -149,7 +149,8 @@ def _valid_cat_world_state(payload: Mapping[str, Any]) -> bool:
         and 0 <= payload["yarn_y_q16"] <= 65535
         and -4096 <= payload["yarn_vx_q12"] <= 4095
         and -4096 <= payload["yarn_vy_q12"] <= 4095
-        and payload.get("yarn_holder") in {"none", "host", "guest"}
+        and isinstance(payload.get("yarn_holder"), str)
+        and payload["yarn_holder"] in {"none", "host", "guest"}
         and isinstance(payload.get("yarn_active"), bool)
         and isinstance(payload.get("question_active"), bool)
         and 0 <= payload["question_x_q16"] <= 65535
@@ -906,7 +907,7 @@ async def request_cat_action(request: Request):
     if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
         return _error(400, "visit_id_format")
     kind = payload.get("kind")
-    if kind not in _CAT_ACTION_KINDS:
+    if not isinstance(kind, str) or kind not in _CAT_ACTION_KINDS:
         return _error(400, "invalid_action")
     rt = runtime.get_runtime_by_visit(visit_id)
     # Unknown and another account's visits are deliberately indistinguishable.
@@ -939,9 +940,13 @@ async def request_cat_pose(request: Request):
             and 1 <= payload["sample_seq"] <= 2 ** 32 - 1
             and 0 <= payload["x_q16"] <= 65535
             and 0 <= payload["y_q16"] <= 65535
-            and payload.get("mode") in CAT_POSE_MODES
-            and payload.get("facing") in CAT_POSE_FACINGS
-            and CAT_POSE_SLOT_TIERS.get(payload.get("slot")) == payload.get("tier")):
+            and isinstance(payload.get("mode"), str)
+            and payload["mode"] in CAT_POSE_MODES
+            and isinstance(payload.get("facing"), str)
+            and payload["facing"] in CAT_POSE_FACINGS
+            and isinstance(payload.get("slot"), str)
+            and isinstance(payload.get("tier"), str)
+            and CAT_POSE_SLOT_TIERS.get(payload["slot"]) == payload["tier"]):
         return _error(400, "invalid_pose")
     rt = runtime.get_runtime_by_visit(visit_id)
     if rt is None or not await _owned_by_current_account(rt):
@@ -968,7 +973,8 @@ async def request_cat_world_intent(request: Request):
             or not 1 <= payload["intent_id"] <= 2 ** 32 - 1
             or not 0 <= payload["x_q16"] <= 65535
             or not 0 <= payload["y_q16"] <= 65535
-            or payload.get("kind") not in CAT_WORLD_INTENT_KINDS):
+            or not isinstance(payload.get("kind"), str)
+            or payload["kind"] not in CAT_WORLD_INTENT_KINDS):
         return _error(400, "invalid_intent")
     rt = runtime.get_runtime_by_visit(visit_id)
     if rt is None or not await _owned_by_current_account(rt):

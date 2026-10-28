@@ -346,15 +346,17 @@ def apply_voice_setting(enabled: bool) -> int:
     reply runner keeps no await between its admission check and taking the
     line; the home-coming line and debrief summary follow it as well. The
     one-way TTS fallback (``voice.fallen_back``) is kept. The voice audio
-    tracks follow at once (OD-15 v4): a fresh ``media`` snapshot is sent so
-    the transport page stops / resumes sending and playing catgirl audio.
+    tracks follow at once (OD-15 v4): an active model visit sends a fresh
+    ``media`` snapshot so the transport page stops / resumes sending and
+    playing catgirl audio. Cat scenes and ending visits have no audio track.
     Returns how many runtimes were updated.
     """
     runtimes = live_runtimes()
     for rt in runtimes:
         changed = rt.voice.enabled != bool(enabled)
         rt.voice.enabled = bool(enabled)
-        if changed and rt.ready_exchanged:
+        if (changed and rt.ready_exchanged and not rt.cat_scene_requested
+                and not rt.finalizing):
             rt.spawn(rt.send_media(), name="voice-media")
     return len(runtimes)
 
@@ -2064,7 +2066,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         only a closed action kind, so it cannot impersonate the peer or pick a
         transport identity.
         """
-        if kind not in _CAT_ACTION_KINDS:
+        if not isinstance(kind, str) or kind not in _CAT_ACTION_KINDS:
             return 400, {"ok": False, "code": "invalid_kind"}
         if (not self.cat_scene_active or not self.activated or not self.ready_exchanged
                 or self.phase != PHASE_ACTIVE or self.finalizing):
@@ -2106,9 +2108,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             and 1 <= sample_seq <= _U32_MAX
             and 0 <= x_q16 <= 65535
             and 0 <= y_q16 <= 65535
-            and pose.get("mode") in CAT_POSE_MODES
-            and pose.get("facing") in CAT_POSE_FACINGS
-            and CAT_POSE_SLOT_TIERS.get(pose.get("slot")) == pose.get("tier")
+            and isinstance(pose.get("mode"), str)
+            and pose["mode"] in CAT_POSE_MODES
+            and isinstance(pose.get("facing"), str)
+            and pose["facing"] in CAT_POSE_FACINGS
+            and isinstance(pose.get("slot"), str)
+            and isinstance(pose.get("tier"), str)
+            and CAT_POSE_SLOT_TIERS.get(pose["slot"]) == pose["tier"]
         )
 
     def _cat_pose_is_newer(self, actor: str, pose: Mapping[str, Any]) -> bool:
@@ -2212,7 +2218,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             and 1 <= int(intent["intent_id"]) <= _U32_MAX
             and 0 <= int(intent["x_q16"]) <= 65535
             and 0 <= int(intent["y_q16"]) <= 65535
-            and intent.get("kind") in CAT_WORLD_INTENT_KINDS
+            and isinstance(intent.get("kind"), str)
+            and intent["kind"] in CAT_WORLD_INTENT_KINDS
         )
 
     @staticmethod
@@ -2232,7 +2239,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             and 0 <= int(state["yarn_y_q16"]) <= 65535
             and -4096 <= int(state["yarn_vx_q12"]) <= 4095
             and -4096 <= int(state["yarn_vy_q12"]) <= 4095
-            and state.get("yarn_holder") in {"none", "host", "guest"}
+            and isinstance(state.get("yarn_holder"), str)
+            and state["yarn_holder"] in {"none", "host", "guest"}
             and isinstance(state.get("yarn_active"), bool)
             and isinstance(state.get("question_active"), bool)
             and 0 <= int(state["question_x_q16"]) <= 65535

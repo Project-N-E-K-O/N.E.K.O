@@ -892,6 +892,18 @@ def _cat_world(world_seq, **overrides):
     return state
 
 
+@pytest.mark.parametrize(("validator", "payload"), [
+    (rtm.VisitRuntime._valid_cat_pose, _cat_pose(1, 1, mode=[])),
+    (rtm.VisitRuntime._valid_cat_pose, _cat_pose(1, 1, facing=[])),
+    (rtm.VisitRuntime._valid_cat_pose, _cat_pose(1, 1, slot=[])),
+    (rtm.VisitRuntime._valid_cat_world_intent,
+     {"intent_id": 1, "kind": [], "x_q16": 1, "y_q16": 2}),
+    (rtm.VisitRuntime._valid_cat_world_state, _cat_world(1, yarn_holder=[])),
+])
+def test_cat_runtime_validators_reject_unhashable_enum_fields(validator, payload):
+    assert validator(payload) is False
+
+
 async def test_cat_world_is_host_authoritative_directional_and_commit_recovers(tmp_path, monkeypatch):
     host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
     try:
@@ -1055,6 +1067,8 @@ async def test_cat_actions_require_ready_and_reject_once_finalization_starts(tmp
     host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch, accept=False)
     try:
         for rt in (host.rt, guest.rt):
+            status, body = await rt.request_cat_action([])
+            assert status == 400 and body["code"] == "invalid_kind"
             status, body = await rt.request_cat_action("rest")
             assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"
             status, body = await rt.request_cat_pose("sample", _cat_pose(1, 1))
@@ -4810,6 +4824,43 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
 
 
 # ── Catgirl voice tracks (OD-15 v4) ───────────────────────────────────────────────
+
+
+def test_voice_setting_skips_cat_scenes_and_finalizing_runtimes(monkeypatch):
+    class Voice:
+        enabled = True
+
+    class StubRuntime:
+        def __init__(self, *, cat_scene=False, finalizing=False):
+            self.voice = Voice()
+            self.ready_exchanged = True
+            self.cat_scene_requested = cat_scene
+            self._finalizing = finalizing
+            self.media_calls = 0
+            self.spawn_calls = 0
+
+        @property
+        def finalizing(self):
+            return self._finalizing
+
+        def send_media(self):
+            self.media_calls += 1
+            return object()
+
+        def spawn(self, _awaitable, *, name):
+            assert name == "voice-media"
+            self.spawn_calls += 1
+
+    model = StubRuntime()
+    cat = StubRuntime(cat_scene=True)
+    ending = StubRuntime(finalizing=True)
+    monkeypatch.setattr(rtm, "live_runtimes", lambda: [model, cat, ending])
+
+    assert rtm.apply_voice_setting(False) == 3
+    assert all(rt.voice.enabled is False for rt in (model, cat, ending))
+    assert (model.media_calls, model.spawn_calls) == (1, 1)
+    assert (cat.media_calls, cat.spawn_calls) == (0, 0)
+    assert (ending.media_calls, ending.spawn_calls) == (0, 0)
 
 
 async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
