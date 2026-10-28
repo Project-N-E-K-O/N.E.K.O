@@ -6873,7 +6873,7 @@
             "loadingFriends": "友達を読み込み中…",
             "notLoggedIn": "ログインしていません",
             "loginHint": "ログインすると友達を招待できます",
-            "noFriends": "まだ相互フォローの友達がいません",
+            "noFriends": "相互フォローの友達はまだいません",
             "mutualHint": "相互フォローすると招待できます",
             "onlineFriends": "オンラインの友達",
             "offlineFriends": "オフラインの友達",

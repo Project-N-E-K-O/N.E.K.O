@@ -125,7 +125,7 @@
     if (body && body.detail === 'community_login_required') return tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
     if (body && body.detail === 'mutual_follow_required') return tr('visit.socialHub.mutualRequired', '你们已不再互相关注，无法发送邀请');
     if (body && body.detail === 'target_offline') return tr('visit.socialHub.targetOffline', '对方当前离线，暂时不能邀请');
-    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后重试');
+    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后再试');
     return fallback;
   }
   function normalizeFriend(item) {
@@ -360,7 +360,7 @@
       var body = await json(response);
       // 登录态失效按“未登录”处理，引导重新登录，而不是显示成加载失败。
       if (!response.ok && body && body.detail === 'community_login_required') body = { logged_in: false };
-      else if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取互关好友失败')));
+      else if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取好友失败')));
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
@@ -384,7 +384,7 @@
         state.friends = [];
         state.incoming = null;
         // 失败原因直接写进空状态卡片（带重试按钮），不再额外弹一条重复的红色提示。
-        state.loadError = error && error.message || tr('visit.socialHub.readFailed', '读取互关好友失败');
+        state.loadError = error && error.message || tr('visit.socialHub.readFailed', '读取好友失败');
         state.toast = '';
         state.toastError = false;
       }
@@ -714,14 +714,14 @@
       kind = 'offline';
       title = tr('visit.socialHub.loadFailedTitle', '好友列表加载失败');
       // 没有具体原因时，通用的“读取失败”会和标题重复，换成可操作的提示。
-      hint = state.loadError && state.loadError !== tr('visit.socialHub.readFailed', '读取互关好友失败')
+      hint = state.loadError && state.loadError !== tr('visit.socialHub.readFailed', '读取好友失败')
         ? state.loadError : tr('visit.socialHub.loadFailedHint', '检查一下网络，再试一次');
       actionLabel = tr('visit.socialHub.retry', '重试');
       actionHandler = function () { refresh(); };
       actionKey = 'empty-retry';
     } else if (!state.loggedIn) {
       kind = 'login';
-      title = tr('visit.socialHub.notLoggedIn', '还没有登录喵宇宙');
+      title = tr('visit.socialHub.notLoggedIn', '还没登录喵宇宙');
       hint = tr('visit.socialHub.loginHint', '登录后就能邀请好友来串门');
       actionLabel = tr('visit.socialHub.loginAction', '登录喵宇宙');
       actionHandler = openCommunity;
