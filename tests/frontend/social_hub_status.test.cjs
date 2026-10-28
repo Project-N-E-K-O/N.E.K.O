@@ -1,8 +1,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { createRequire } = require('node:module');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+
+const frontendRequire = createRequire(path.join(__dirname, '../../frontend/react-neko-chat/package.json'));
+const { JSDOM } = frontendRequire('jsdom');
 
 function loadHub(options = {}) {
   const listeners = new Map();
@@ -39,6 +43,22 @@ function loadHub(options = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../../static/social-hub.js'), 'utf8');
   vm.runInContext(source, context);
   return { hub: window.nekoSocialHub, listeners, intervals };
+}
+
+function loadMountedHub(options = {}) {
+  const dom = new JSDOM('<!doctype html><body><div id="neko-social-hub-root"></div></body>', {
+    runScripts: 'outside-only',
+    url: 'http://localhost/',
+  });
+  const { window } = dom;
+  window.__NEKO_SOCIAL_HUB_STANDALONE__ = true;
+  window.fetch = options.fetch;
+  window.requestAnimationFrame = (callback) => { callback(); return 1; };
+  window.setInterval = () => 1;
+  window.clearInterval = () => {};
+  const source = fs.readFileSync(path.join(__dirname, '../../static/social-hub.js'), 'utf8');
+  window.eval(source);
+  return { dom, hub: window.nekoSocialHub, document: window.document };
 }
 
 test('friend invitation follows the visit and clears when it ends', () => {
@@ -437,6 +457,58 @@ test('a successful follow keeps the current friend view when recommendation refi
   assert.equal(hub._state.loadFailed, false);
   assert.equal(hub._state.recommendations.length, 0);
   assert.equal(hub._state.toastError, false);
+});
+
+test('keyboard focus survives the busy follow render and recommendation refill', async () => {
+  let visitHubReads = 0;
+  let resolveFollow;
+  let resolveRefill;
+  const { dom, hub, document } = loadMountedHub({
+    fetch: async (url, options = {}) => {
+      if (String(url).includes('/follow') && options.method === 'POST') {
+        return new Promise((resolve) => { resolveFollow = resolve; });
+      }
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true,
+          account: { id: 'account-1', display_name: 'Current User' },
+          friends: [],
+          recommendations: [
+            { id: 'a', display_name: 'A' },
+            { id: 'b', display_name: 'B' },
+          ],
+        }) };
+      }
+      return new Promise((resolve) => { resolveRefill = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const followButton = document.querySelector('[data-neko-focus-key="recommendation-a"]');
+  assert.ok(followButton, document.body.innerHTML);
+  followButton.focus();
+  assert.equal(document.activeElement, followButton);
+
+  const pending = hub._followRecommendation(hub._state.recommendations[0]);
+  resolveFollow({ ok: true, json: async () => ({ following: true }) });
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveRefill({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1', display_name: 'Current User' },
+    friends: [],
+    recommendations: [
+      { id: 'b', display_name: 'B' },
+      { id: 'c', display_name: 'C' },
+    ],
+  }) });
+  await pending;
+
+  assert.equal(
+    document.activeElement.getAttribute('data-neko-focus-key'),
+    'recommendation-b',
+  );
+  dom.window.close();
 });
 
 test('an old follow response cannot mutate a new account panel', async () => {

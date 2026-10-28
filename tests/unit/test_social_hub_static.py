@@ -274,10 +274,12 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "await refresh(false)" not in source
     assert "var followGeneration = openGeneration" in source
     assert "var followAccountId = state.accountId" in source
+    assert "var activeAtFollow = document.activeElement" in source
+    assert "var restoreFollowFocus = !!(activeAtFollow" in source
     assert "function isCurrentFollow()" in source
     assert "function dismissRecommendation(recommendation)" in source
     assert "var pendingFocusOriginKey = '';" in source
-    assert "pendingFocusOriginKey = 'recommendation-' + recommendation.id" in source
+    assert "pendingFocusOriginKey = followFocusKey" in source
     assert "pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community'" in source
     assert "pendingFocusFallback" in source
     assert "activeKey === pendingFocusOriginKey" in source

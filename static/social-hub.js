@@ -728,6 +728,10 @@
     if (!recommendation || state.recommendationBusy.has(recommendation.id)) return;
     var followGeneration = openGeneration;
     var followAccountId = state.accountId;
+    var followFocusKey = 'recommendation-' + recommendation.id;
+    var activeAtFollow = document.activeElement;
+    var restoreFollowFocus = !!(activeAtFollow && activeAtFollow.getAttribute &&
+      activeAtFollow.getAttribute('data-neko-focus-key') === followFocusKey);
     function isCurrentFollow() {
       return followGeneration === openGeneration && followAccountId === state.accountId;
     }
@@ -749,10 +753,8 @@
         return item.id !== recommendation.id;
       });
       var next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)] || null;
-      var active = document.activeElement;
-      if (active && active.getAttribute &&
-          active.getAttribute('data-neko-focus-key') === 'recommendation-' + recommendation.id) {
-        pendingFocusOriginKey = 'recommendation-' + recommendation.id;
+      if (restoreFollowFocus) {
+        pendingFocusOriginKey = followFocusKey;
         pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community';
       }
       state.recommendations = remaining;
