@@ -1849,7 +1849,8 @@ function syncCommunityEntryToggles(event) {
         if (typeof checkbox.updateStyle === 'function') checkbox.updateStyle();
     });
 }
-if (typeof window !== 'undefined' && !window.__nekoCommunityEntryToggleSyncInstalled) {
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+    && !window.__nekoCommunityEntryToggleSyncInstalled) {
     window.__nekoCommunityEntryToggleSyncInstalled = true;
     window.addEventListener('neko-community-entry-visibility-changed', syncCommunityEntryToggles);
 }
