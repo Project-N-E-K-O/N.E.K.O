@@ -124,10 +124,10 @@
   }
 
   function detailText(body, fallback) {
-    if (body && body.detail === 'community_login_required') return tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
+    if (body && body.detail === 'community_login_required') return tr('visit.socialHub.loginRequired', '请先在 N.E.K.O 设置里登录喵宇宙');
     if (body && body.detail === 'mutual_follow_required') return tr('visit.socialHub.mutualRequired', '你们已不再互相关注，无法发送邀请');
     if (body && body.detail === 'target_offline') return tr('visit.socialHub.targetOffline', '对方当前离线，暂时不能邀请');
-    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后再试');
+    if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，稍后再试一次');
     return fallback;
   }
   function normalizeFriend(item) {
@@ -746,7 +746,7 @@
     }
     if (kind !== 'offline' && !canOpenCommunity()) {
       // 打不开社区时不放无效按钮；未登录退回到“去 Neko 设置登录”的指引。
-      if (kind === 'login') hint = tr('visit.socialHub.loginRequired', '请先在 Neko 设置里登录喵宇宙');
+      if (kind === 'login') hint = tr('visit.socialHub.loginRequired', '请先在 N.E.K.O 设置里登录喵宇宙');
       actionLabel = '';
     }
     empty.classList.add('is-' + kind);
@@ -773,7 +773,7 @@
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));
-    header.appendChild(el('h2', 'neko-social-hub-title', '喵宇宙'));
+    header.appendChild(el('h2', 'neko-social-hub-title', tr('buttons.social', '喵宇宙')));
     // 完整社区里实际是看卡、铸造和私信；直接写出来，比“打开完整社区”更好懂。
     var communityLink = button(tr('visit.socialHub.openCommunity', '卡牌 · 铸造 · 私信'), 'neko-social-hub-community-link', openCommunity);
     communityLink.title = tr('visit.socialHub.openCommunityHint', '打开完整社区：看卡、铸造（抽卡）、私信');

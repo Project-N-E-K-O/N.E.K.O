@@ -1530,6 +1530,23 @@ def _load_memory_toggle_enabled(config_manager, key):
     return enabled
 
 
+@router.get('/farewell-summary')
+async def get_farewell_summary():
+    """Read-only memory summary of the active character for the desktop exit farewell card.
+
+    ``memory_count`` / ``conversation_count`` / ``flashback``; a field that
+    cannot be read is omitted (``flashback`` is ``null``). No LLM, sync or
+    writes: the desktop waits at most 1.2 s for this during quit.
+    """
+    try:
+        from main_logic.farewell_summary import build_farewell_summary
+
+        return await build_farewell_summary()
+    except Exception as exc:
+        logger.warning("farewell-summary unavailable: %s", type(exc).__name__)
+        return {"flashback": None}
+
+
 @router.get('/review_config')
 async def get_review_config():
     """Get the memory review configuration."""
