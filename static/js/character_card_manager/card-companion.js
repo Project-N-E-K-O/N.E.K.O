@@ -900,7 +900,7 @@ async function _companionRunGenerate(state) {
         // 走完澄清问答后被 LLM 镜像成中文回复。
         state.mode = 'chat';
         const seedDescribe = _cardAssistT('character.aiCompanionSeedDescribe',
-            'Generate a catgirl card based on this description: ');
+            'Generate a neko card based on this description: ');
         const seedGenerated = _cardAssistT('character.aiCompanionSeedGenerated',
             'Generated and filled into the form: ');
         state.chatHistory.push({ role: 'user',

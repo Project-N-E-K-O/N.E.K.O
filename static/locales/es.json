@@ -2587,13 +2587,13 @@
             "noCharacter": "Primero elige un personaje a la izquierda.",
             "peersEmpty": "Este personaje todavía no ha tenido visitas con nadie. La lista también aparece vacía si no has iniciado sesión con una cuenta de la comunidad.",
             "unnamed": "Sin nombre",
-            "catCount": "catgirls: {{count}}",
+            "catCount": "nekos: {{count}}",
             "lastSeen": "última vez {{date}}",
             "firstSeen": "primera vez {{date}}",
             "visitCount": "visitas: {{count}}",
             "factCount": "recuerdos: {{count}}",
             "blockedBadge": "Bloqueado",
-            "charsEmpty": "Todavía no se ha registrado ninguna de sus catgirls.",
+            "charsEmpty": "Todavía no se ha registrado ninguna de sus nekos.",
             "pairTitle": "Vínculo de visitas {{index}}",
             "forgetPerson": "Borrar a esta persona",
             "forgetPersonConfirm": "Solo se borra lo que el personaje actual, {{catgirl}}, recuerda de las visitas con «{{name}} · {{code}}», junto con el historial de visitas con esa persona en este ordenador (entrada del registro y resumen de la última visita). Los recuerdos de visitas de otros personajes sobre esta persona no se ven afectados. Solo se borra este ordenador: las copias en el equipo de la otra persona no se pueden borrar a distancia. Las transcripciones de visitas ya guardadas en este ordenador no se eliminan y la lista de bloqueo no cambia.",
@@ -2609,7 +2609,7 @@
             "blocklistNote": "Bloquear no es un recuerdo: borrar los recuerdos de visitas no desbloquea a nadie, y bloquear no borra recuerdos. La lista de bloqueo se aplica a todas las cuentas de la comunidad de este ordenador. Aquí solo aparecen las personas que han tenido visitas con el personaje actual y siguen en el registro.",
             "block": "Bloquear",
             "unblock": "Desbloquear",
-            "blockConfirm": "Si bloqueas a «{{name}} · {{code}}», ya no podrá tener visitas con las catgirls de este ordenador y cualquier visita en curso terminará al instante. Bloquear no borra los recuerdos de visitas.",
+            "blockConfirm": "Si bloqueas a «{{name}} · {{code}}», ya no podrá tener visitas con las nekos de este ordenador y cualquier visita en curso terminará al instante. Bloquear no borra los recuerdos de visitas.",
             "blockDone": "Bloqueado.",
             "unblockDone": "Desbloqueado.",
             "blockEndFailed": "Bloqueado, pero la visita en curso no se pudo terminar automáticamente. Termínala manualmente.",
@@ -2653,9 +2653,9 @@
             "detailsPrev": "Página anterior",
             "detailsNext": "Página siguiente",
             "detailsPage": "Página {{page}}",
-            "speakerOwnCat": "Nuestra catgirl",
+            "speakerOwnCat": "Nuestra neko",
             "speakerOwnHuman": "Yo",
-            "speakerPeerCat": "Su catgirl",
+            "speakerPeerCat": "Su neko",
             "speakerPeerHuman": "La otra persona",
             "speakerUnknown": "Desconocido",
             "statusDiffer": "Los dos registros no coinciden",
@@ -3562,7 +3562,7 @@
         "noStories": "No hay guiones disponibles",
         "storyIntroKicker": "Anteriormente",
         "playerRoleLabel": "Tu papel",
-        "catgirlRoleLabel": "Papel de la catgirl",
+        "catgirlRoleLabel": "Papel de la neko",
         "storyGoalLabel": "Objetivo de la historia",
         "storyRulesLabel": "Reglas de interpretación",
         "endingTitle": "Telón",
@@ -3575,7 +3575,7 @@
         "discoveredClues": "Pistas descubiertas",
         "turnTraceTitle": "Este turno",
         "traceProgress": "La historia avanzó con tu elección.",
-        "traceRoleplay": "La catgirl respondió; la historia sigue en la escena actual.",
+        "traceRoleplay": "La neko respondió; la historia sigue en la escena actual.",
         "traceExit": "Has salido de esta sesión de teatro.",
         "actionChoicesTitle": "Respuestas sugeridas",
         "dialogueChoicesTitle": "Frases disponibles",
@@ -3593,7 +3593,7 @@
         "deletedStoryMemory": "Eliminado · Gestión de recuerdos",
         "deletedStoryMemoryHint": "El guion se ha eliminado. Puedes consultar u olvidar sus resúmenes guardados. Impórtalo de nuevo para interpretarlo.",
         "memoryStoryListFailed": "No se pudieron cargar los recuerdos de los guiones. Vuelve a cargar la página.",
-        "savedPerformances": "Actuaciones guardadas", "savedPerformancesHint": "Se conservan las 5 grabaciones completas más recientes. Las favoritas no se eliminan automáticamente.", "noSavedPerformances": "No hay actuaciones guardadas.", "completedPerformance": "Actuación completada", "pausedPerformance": "Actuación pausada", "performanceRecordMeta": "Registro {{index}} · revisión {{revision}}", "viewPerformance": "Ver", "performanceArchiveTitle": "Registro de actuación", "performanceArchiveOpening": "Apertura", "performanceArchiveTurn": "Turno {{index}}", "performanceArchiveLoadFailed": "No se pudo cargar el registro. Inténtalo de nuevo.", "pinPerformance": "Favorito", "unpinPerformance": "Quitar favorito", "memoryPinFailed": "No se pudo actualizar el favorito. Inténtalo de nuevo.", "forgetStoryMemory": "Olvidar esta historia", "forgetStoryMemoryTitle": "¿Olvidar esta historia?", "forgetStoryMemoryBody": "Esto elimina los resúmenes, el índice temporal y los archivos completos de esta historia para la catgirl actual. No elimina la historia ni el progreso actual.", "storyMemoryForgotten": "Se olvidó la memoria de esta historia.", "storyMemoryForgetFailed": "No se pudo eliminar la memoria. Inténtalo de nuevo.",
+        "savedPerformances": "Actuaciones guardadas", "savedPerformancesHint": "Se conservan las 5 grabaciones completas más recientes. Las favoritas no se eliminan automáticamente.", "noSavedPerformances": "No hay actuaciones guardadas.", "completedPerformance": "Actuación completada", "pausedPerformance": "Actuación pausada", "performanceRecordMeta": "Registro {{index}} · revisión {{revision}}", "viewPerformance": "Ver", "performanceArchiveTitle": "Registro de actuación", "performanceArchiveOpening": "Apertura", "performanceArchiveTurn": "Turno {{index}}", "performanceArchiveLoadFailed": "No se pudo cargar el registro. Inténtalo de nuevo.", "pinPerformance": "Favorito", "unpinPerformance": "Quitar favorito", "memoryPinFailed": "No se pudo actualizar el favorito. Inténtalo de nuevo.", "forgetStoryMemory": "Olvidar esta historia", "forgetStoryMemoryTitle": "¿Olvidar esta historia?", "forgetStoryMemoryBody": "Esto elimina los resúmenes, el índice temporal y los archivos completos de esta historia para la neko actual. No elimina la historia ni el progreso actual.", "storyMemoryForgotten": "Se olvidó la memoria de esta historia.", "storyMemoryForgetFailed": "No se pudo eliminar la memoria. Inténtalo de nuevo.",
     "endReceiptPending": "La representación ha terminado. La confirmación de memoria aún no está lista; vuelve a abrir la selección de historias más tarde.", "evaluatorDegraded": "La evaluación no está disponible temporalmente. Los valores no avanzaron este turno; aún puedes aceptar las invitaciones del autor ya mostradas.", "selectorKicker": "Biblioteca de historias", "selectorTitle": "Elige una historia", "noStoriesHint": "Importa una historia Numeric v2 para comenzar.", "selectStoryHint": "Elige una historia a la izquierda para ver el contexto y los papeles.", "continueSession": "Continuar", "notStarted": "Sin iniciar", "sessionHintNew": "Pulsa «Comenzar» para crear esta actuación.", "sessionHintActive": "La actuación está en curso. Pulsa «Continuar» para volver.", "sessionHintEnded": "Esta actuación terminó. Pulsa «Comenzar» para crear una nueva.", "loadingSession": "Cargando el progreso...", "sessionLoadFailed": "No se pudo cargar el progreso. Inténtalo de nuevo.", "connectingNeko": "La actuación está lista. Conectando con N.E.K.O...", "connectNekoFailed": "No se pudo conectar con N.E.K.O. Mantén abierta la aplicación principal e inténtalo de nuevo.", "startFailed": "No se pudo iniciar la actuación. Inténtalo de nuevo.", "continueFailed": "No se pudo continuar la actuación. Inténtalo de nuevo.", "endFailed": "No se pudo finalizar la actuación. Comprueba la conexión e inténtalo de nuevo.", "selectorOpenFailed": "La actuación terminó, pero no se pudo abrir la página de historias. Pulsa «Volver a las historias» para reintentarlo.", "restartBlockedTitle": "No se puede reiniciar", "restartBlockedBody": "Una historia en curso no se puede reiniciar. Finalízala primero.", "endPerformance": "Finalizar actuación", "restartConfirmTitle": "¿Reiniciar esta historia?", "restartConfirmBody": "Esto sustituirá la actuación terminada del personaje actual por una nueva.", "rememberPerformanceTitle": "¿Quieres que N.E.K.O recuerde esta actuación?", "rememberPerformanceBody": "Solo se guardan el resumen público y las escenas recientes; se excluyen los valores ocultos y las condiciones de ruta.", "skipMemory": "No guardar", "saveMemory": "Recordarla", "memorySaveFailed": "No se pudo guardar el recuerdo. Inténtalo más tarde.", "memorySaved": "N.E.K.O ha recordado esta actuación.", "memorySaving": "Guardando esta actuación...", "memorySkipping": "Guardando esta elección...", "storyListFailed": "No se pudo cargar la lista. Recarga la página.", "imagesUnavailable": "El teatro todavía no admite imágenes.", "voiceUnavailable": "El chat de voz no está disponible durante una función del teatro.", "chatUnavailable": "El chat normal no está disponible durante una función del teatro.", "endConfirm": "¿Finalizar la actuación actual?", "narration": "Narración", "player": "Jugador", "performanceHistory": "Historial de la actuación", "inProgress": "En el teatro", "returnToStories": "Volver a las historias", "storyListAria": "Elegir una historia del teatro", "storyActionsAria": "Acciones de la historia"
     },
     "voiceIdentity": {
@@ -4787,10 +4787,10 @@
                 "wrap": "La compañía verdadera y cómoda no consiste en pegarse a Master a cada segundo~ Es saber cuándo acercarse a escondidas, tirar de tu manga y portarse adorable, y cuándo acostarse tranquilamente a tu lado para cuidarte en silencio, miau~"
             },
             "day5": {
-                "characterSettings":  "Desde hoy, ¡soy oficialmente tu catgirl exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
+                "characterSettings":  "Desde hoy, ¡soy oficialmente tu neko exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
                 "characterPanic": "¿Eh? ¡Espera, aquí hay una opción para reemplazarme! ¡Un momento! Tus manos ahora mismo... ¿no estarás intentando deshacerte de mí, verdad? ¡Aaaah, de ninguna manera! ¡Ciérralo, ciérralo ahora mismo!",
                 "memoryEntry": "Si por accidente olvidas lo que puedo hacer por ti, ven aquí cuando quieras y déjame enseñártelo otra vez. Todos los pequeños momentos que compartimos están guardados en silencio aquí. ¡No subestimes nuestro vínculo, tontito!",
-                "wrap":  "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la catgirl que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
+                "wrap":  "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la neko que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
             },
             "day6": {
                 "intro": "¡Taraaaán! Hoy tengo que llenarme de energía y hablarte de nuestra [Garra de Gato]. Aunque la mencioné brevemente hace un par de días, esconde muchísimas funciones increíbles.",
@@ -4929,7 +4929,7 @@
         "translationError": "Error de traducción:",
         "translationException": "Excepción de solicitud de traducción:",
         "resetButtonNotFound": "[Aplicación] ¡ResetSessionButton no encontrado!",
-        "aiFailed": "La conexión con catgirl encontró un error",
+        "aiFailed": "La conexión con neko encontró un error",
         "aiRetrying": "Error de conexión, recalibrando..."
     },
     "emotionManager": {
@@ -6912,7 +6912,7 @@
         "settings": {
             "groupTitle": "Visitas",
             "enabled": "Permitir visitas",
-            "enabledTooltip": "Si está activado, puede visitar las casas de otros jugadores y recibir a catgirls de visita",
+            "enabledTooltip": "Si está activado, puede visitar las casas de otros jugadores y recibir a nekos de visita",
             "voice": "Hablar en voz alta durante la visita",
             "voiceTooltip": "Ella habla en casa del vecino y tú la oyes en la tuya, como en altavoz; la insignia junto a su avatar indica que ahora no está en casa",
             "crop": "Encuadre",

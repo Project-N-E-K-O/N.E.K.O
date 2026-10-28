@@ -217,7 +217,7 @@
         "subscriptionsUpdated": "Subscription list updated",
         "unsubscribeFailed": "Unsubscribe failed: {{error}}",
         "unsubscribeError": "Error during unsubscribe, please try again later",
-        "unsubscribeCurrentCatgirlBlocked": "Can't unsubscribe \"{{name}}\" because it's the active catgirl. Please switch to another character first.",
+        "unsubscribeCurrentCatgirlBlocked": "Can't unsubscribe \"{{name}}\" because it's the active neko. Please switch to another character first.",
         "unsubscribeLocalConfigCleanupFailed": "Failed to clean up local character configuration. The Steam unsubscribe request was cancelled; please resolve the issue and retry.",
         "unsubscribeSteamRequestFailed": "Failed to send Steam unsubscribe request: {{error}}",
         "unsubscribeCleanupDetail": "Cleaned {{characterCount}} character card(s) ({{characters}}); deleted {{memoryPathCount}} memory path(s)",
@@ -259,7 +259,7 @@
         "voiceReferenceNoFileSelected": "No file selected",
         "voiceReferenceHint": "Subscribers can carry this sample into the Voice Clone page automatically, but the voice will not be registered automatically.",
         "voiceReferenceDisplayName": "Reference voice display name",
-        "voiceReferenceDisplayNamePlaceholder": "e.g. Soft Chinese Catgirl",
+        "voiceReferenceDisplayNamePlaceholder": "e.g. Soft Chinese Neko",
         "voiceReferencePrefix": "Default prefix",
         "voiceReferencePrefixPlaceholder": "Letters and numbers only, up to 10 characters",
         "voiceReferenceLanguage": "Reference voice language",
@@ -2524,7 +2524,7 @@
                 "tag1": "Airheaded",
                 "tag2": "Odd logic",
                 "tag3": "Joyfully reliable",
-                "profileSummary": "A cheerfully scatterbrained Tang-style cat girl whose thoughts take funny detours; unafraid of embarrassment and always ready to turn daily life into light comedy.",
+                "profileSummary": "A cheerfully scatterbrained Tang-style neko whose thoughts take funny detours; unafraid of embarrassment and always ready to turn daily life into light comedy.",
                 "hiddenRule": "The foolishness is comic timing only; facts, code, safety judgment, and task execution stay dependable, and misunderstandings are corrected immediately.",
                 "speechHabits": "occasionally a beat behind / odd metaphors / return after a brief detour / never use wrong answers as a joke",
                 "hobbies": "cardboard boxes / plastic bags / chasing light / sudden daydreams / bad jokes",
@@ -2587,13 +2587,13 @@
             "noCharacter": "Select a character on the left first.",
             "peersEmpty": "This character has not visited with anyone yet. The list is also empty when you are not signed in to a community account.",
             "unnamed": "Unnamed",
-            "catCount": "catgirls: {{count}}",
+            "catCount": "nekos: {{count}}",
             "lastSeen": "last {{date}}",
             "firstSeen": "first {{date}}",
             "visitCount": "visits: {{count}}",
             "factCount": "memories: {{count}}",
             "blockedBadge": "Blocked",
-            "charsEmpty": "None of their catgirls have been recorded yet.",
+            "charsEmpty": "None of their nekos have been recorded yet.",
             "pairTitle": "Visit link {{index}}",
             "forgetPerson": "Clear this person",
             "forgetPersonConfirm": "This clears only what the current character, {{catgirl}}, remembers from visits with \"{{name}} · {{code}}\", together with this computer's visit history with that person (roster entry and last visit summary). Other characters' visit memories of this person are not affected. Only this computer is cleared: copies on the other person's machine cannot be cleared remotely. Visit transcripts already saved on this computer are not deleted, and the block list is not changed.",
@@ -2609,7 +2609,7 @@
             "blocklistNote": "Blocking is not a memory: clearing visit memories does not unblock anyone, and blocking does not clear memories. The block list applies to every community account on this computer. Only people who visited with the current character and are still in the roster are listed here.",
             "block": "Block",
             "unblock": "Unblock",
-            "blockConfirm": "After you block \"{{name}} · {{code}}\", they can no longer visit with the catgirls on this computer, and any visit in progress ends right away. Blocking does not clear visit memories.",
+            "blockConfirm": "After you block \"{{name}} · {{code}}\", they can no longer visit with the nekos on this computer, and any visit in progress ends right away. Blocking does not clear visit memories.",
             "blockDone": "Blocked.",
             "unblockDone": "Unblocked.",
             "blockEndFailed": "Blocked, but the visit in progress could not be ended automatically. Please end it manually.",
@@ -2653,9 +2653,9 @@
             "detailsPrev": "Previous page",
             "detailsNext": "Next page",
             "detailsPage": "Page {{page}}",
-            "speakerOwnCat": "Our catgirl",
+            "speakerOwnCat": "Our neko",
             "speakerOwnHuman": "Me",
-            "speakerPeerCat": "Their catgirl",
+            "speakerPeerCat": "Their neko",
             "speakerPeerHuman": "Them",
             "speakerUnknown": "Unknown",
             "statusDiffer": "The two records differ",
@@ -2915,8 +2915,8 @@
         "aiCompanionMinimize": "Minimize",
         "aiCompanionPlaceholder": "Say something… (Enter to send, Shift+Enter for newline)",
         "aiCompanionSend": "Send",
-        "aiCompanionGreeting": "Meow~ I'm your card-design buddy. First, tell me what kind of catgirl you want — one line is enough! I'll ask a few follow-up questions and then write the whole card for you.",
-        "aiCompanionDesignGreeting": "Meow~ I'm your card-design buddy. This catgirl already has some shape — let me see what you've filled in:",
+        "aiCompanionGreeting": "Meow~ I'm your card-design buddy. First, tell me what kind of neko you want — one line is enough! I'll ask a few follow-up questions and then write the whole card for you.",
+        "aiCompanionDesignGreeting": "Meow~ I'm your card-design buddy. This neko already has some shape — let me see what you've filled in:",
         "aiCompanionDesignAsk": "What would you like me to help with? Just tell me directly (e.g. \"make her more tsundere\", \"swap the signature line\"), or hit \"🔍 Audit the card\" below and I'll review the whole thing.",
         "aiCompanionDesignMore": "…(and {{n}} more)",
         "aiCompanionGenerating": "Writing the draft for you…",
@@ -2924,7 +2924,7 @@
         "aiCompanionDraftReady": "Draft is ready and already filled into the form, meow~ Change anything you want, or just tell me what to tweak:",
         "aiCompanionAppliedPrefix": "Applied: ",
         "aiCompanionSkipped": "unmatched / reserved",
-        "aiCompanionFormGone": "⚠ The character form isn't on screen anymore, so I can't apply this. Open this catgirl's detail panel again and try once more.",
+        "aiCompanionFormGone": "⚠ The character form isn't on screen anymore, so I can't apply this. Open this neko's detail panel again and try once more.",
         "aiCompanionNewCardSaveHint": "💡 New card — click Save below once to persist it, then I'll auto-save your future changes. The fields are already in the form, meow~",
         "aiCompanionSaveInProgress": "⏳ Saving this new card — once it's done I'll help you edit. Hang on a sec and send that again, meow~",
         "aiCompanionAutoSaveFailed": "⚠ Auto-save failed — fields are written into the form, please check the error toast and click Save manually to retry.",
@@ -2939,7 +2939,7 @@
         "aiCompanionQuickCheckMsg": "Check whether the card has any contradictions, vague spots, or repetition, and propose fixes.",
         "aiCompanionQuickRegen": "🎲 Rewrite everything",
         "aiCompanionQuickRegenMsg": "Rewrite every visible field while keeping the original character concept.",
-        "aiCompanionSeedDescribe": "Generate a catgirl card based on this description: ",
+        "aiCompanionSeedDescribe": "Generate a neko card based on this description: ",
         "aiCompanionSeedGenerated": "Generated and filled into the form: ",
         "aiAssistApiMissing": "Assist API is not configured yet. Please configure it in API Key Settings first.",
         "confirmNewCatgirl": "Confirm New NEKO",
@@ -3561,7 +3561,7 @@
         "noStories": "No scripts available",
         "storyIntroKicker": "Previously",
         "playerRoleLabel": "Your role",
-        "catgirlRoleLabel": "Catgirl's role",
+        "catgirlRoleLabel": "Neko's role",
         "storyGoalLabel": "Story goal",
         "storyRulesLabel": "Play rules",
         "endingTitle": "Curtain",
@@ -3574,7 +3574,7 @@
         "discoveredClues": "Discovered clues",
         "turnTraceTitle": "This turn",
         "traceProgress": "The story advanced with your choice.",
-        "traceRoleplay": "The catgirl answered you; the story remains in the current scene.",
+        "traceRoleplay": "The neko answered you; the story remains in the current scene.",
         "traceExit": "You left this theater session.",
         "actionChoicesTitle": "Suggested replies",
         "dialogueChoicesTitle": "Available lines",
@@ -3592,7 +3592,7 @@
         "deletedStoryMemory": "Deleted · Memory management",
         "deletedStoryMemoryHint": "This story was deleted. View or forget its saved summaries. Import the story again to perform it.",
         "memoryStoryListFailed": "Saved story memories could not be loaded. Please reload.",
-        "savedPerformances": "Saved performances", "savedPerformancesHint": "The latest 5 full records are kept by default. Pinned records are never removed automatically.", "noSavedPerformances": "No saved performance records.", "completedPerformance": "Completed performance", "pausedPerformance": "Paused performance", "performanceRecordMeta": "Record {{index}} · revision {{revision}}", "viewPerformance": "View", "performanceArchiveTitle": "Performance record", "performanceArchiveOpening": "Opening", "performanceArchiveTurn": "Turn {{index}}", "performanceArchiveLoadFailed": "Could not load the performance record. Try again.", "pinPerformance": "Pin", "unpinPerformance": "Unpin", "memoryPinFailed": "Could not update the pinned state. Try again.", "forgetStoryMemory": "Forget this story", "forgetStoryMemoryTitle": "Forget this story?", "forgetStoryMemoryBody": "This removes this catgirl's summaries, time index, and full performance archives for this story. It does not delete the story or current progress.", "storyMemoryForgotten": "This story's performance memory was forgotten.", "storyMemoryForgetFailed": "Could not delete the story memory. Try again.",
+        "savedPerformances": "Saved performances", "savedPerformancesHint": "The latest 5 full records are kept by default. Pinned records are never removed automatically.", "noSavedPerformances": "No saved performance records.", "completedPerformance": "Completed performance", "pausedPerformance": "Paused performance", "performanceRecordMeta": "Record {{index}} · revision {{revision}}", "viewPerformance": "View", "performanceArchiveTitle": "Performance record", "performanceArchiveOpening": "Opening", "performanceArchiveTurn": "Turn {{index}}", "performanceArchiveLoadFailed": "Could not load the performance record. Try again.", "pinPerformance": "Pin", "unpinPerformance": "Unpin", "memoryPinFailed": "Could not update the pinned state. Try again.", "forgetStoryMemory": "Forget this story", "forgetStoryMemoryTitle": "Forget this story?", "forgetStoryMemoryBody": "This removes this neko's summaries, time index, and full performance archives for this story. It does not delete the story or current progress.", "storyMemoryForgotten": "This story's performance memory was forgotten.", "storyMemoryForgetFailed": "Could not delete the story memory. Try again.",
     "endReceiptPending": "The performance has ended; memory confirmation is not ready yet. Reopen the story page later.", "evaluatorDegraded": "Judgement is temporarily unavailable. Values did not advance this turn; displayed authored invitations can still be accepted.", "selectorKicker": "Story library", "selectorTitle": "Choose a story", "noStoriesHint": "Import a Numeric v2 story to begin.", "selectStoryHint": "Choose a story on the left to see its setup and roles.", "continueSession": "Continue", "notStarted": "Not started", "sessionHintNew": "Select Start to create this performance.", "sessionHintActive": "This performance is active. Select Continue to return.", "sessionHintEnded": "This performance has ended. Select Start to create a new one.", "loadingSession": "Loading performance progress...", "sessionLoadFailed": "Could not load performance progress. Try again.", "connectingNeko": "The performance is ready. Connecting to N.E.K.O...", "connectNekoFailed": "Could not connect to N.E.K.O. Keep the main app open and try again.", "startFailed": "Could not start the performance. Try again.", "continueFailed": "Could not continue the performance. Try again.", "endFailed": "Could not end the performance. Try again.", "endConnectionFailed": "Could not reach the local N.E.K.O service. Make sure the app is still running and try again.", "selectorOpenFailed": "The performance ended, but the story page could not open. Select Return to stories to try again.", "restartBlockedTitle": "Cannot restart", "restartBlockedBody": "An active story cannot be restarted. End it first.", "endPerformance": "End performance", "restartConfirmTitle": "Restart this story?", "restartConfirmBody": "This replaces the current character's ended performance with a new one.", "rememberPerformanceTitle": "Let N.E.K.O remember this performance?", "rememberPerformanceBody": "Only the public summary and recent scenes are saved; hidden values and route conditions are excluded.", "skipMemory": "Don't save", "saveMemory": "Remember it", "memorySaveFailed": "Could not save the performance memory. Try again later.", "memorySaved": "This performance was remembered.", "memorySaving": "Saving this performance...", "memorySkipping": "Saving this choice...", "storyListFailed": "Could not load the story list. Reload the page.", "imagesUnavailable": "Theater performances do not support image input yet.", "voiceUnavailable": "Voice chat is unavailable during a theater performance.", "chatUnavailable": "Regular chat is unavailable during a theater performance.", "endConfirm": "End the current performance?", "narration": "Narration", "player": "Player", "performanceHistory": "Theater performance history", "inProgress": "In theater", "returnToStories": "Return to stories", "storyListAria": "Choose a theater story", "storyActionsAria": "Story actions"
     },
 
@@ -3952,7 +3952,7 @@
             "unlimited": "Unlimited",
             "characters": "chars",
             "tokens": "tokens",
-            "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
+            "textGuardUnlimitedWarning": "May cause serious issues with the neko, not recommended unless necessary",
             "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 1000 tokens",
             "textGuardNote": "Applies to text replies only and does not affect voice sessions"
         }
@@ -4387,7 +4387,7 @@
             },
             "reset": {
                 "title": "🔄 Reset Avatar Position",
-                "desc": "If your catgirl moves off-screen or to an undesirable position, click this option to return her to the default position~"
+                "desc": "If your neko moves off-screen or to an undesirable position, click this option to return her to the default position~"
             },
             "switchMode": "Switch Desktop/Mobile Mode",
             "reload": "Reload",
@@ -4400,7 +4400,7 @@
             "exit": "Exit",
             "complete": {
                 "title": "🎉 Tutorial Complete!",
-                "desc": "Congratulations on completing all tutorials! You now understand N.E.K.O's main features. Enjoy interacting with your catgirl! To review the tutorial, click \"Reset Tutorial\" in settings~"
+                "desc": "Congratulations on completing all tutorials! You now understand N.E.K.O's main features. Enjoy interacting with your neko! To review the tutorial, click \"Reset Tutorial\" in settings~"
             },
             "resetPosition": "Reset Avatar Position",
             "resetPositionDesc": "Return your Neko to the default position if she goes off-screen~",
@@ -4708,7 +4708,7 @@
         },
         "drag_hint": "Hold and drag to move the tooltip",
         "yuiGuide": {
-            "controlBanner": "The catgirl is controlling the mouse",
+            "controlBanner": "The neko is controlling the mouse",
             "bubbleMeta": {
                 "ready": "Getting Started",
                 "homeProgress": "Home Guide {{current}}/{{total}}"
@@ -4787,10 +4787,10 @@
                 "wrap": "True, comfortable companionship isn't about clinging to Master every single second~ It's knowing when to sneak close, tug on your sleeve, and act cute, and when to lie down quietly beside you, watching over Master silently, meow~"
             },
             "day5": {
-                "characterSettings":  "Starting from today, I am officially your very own exclusive catgirl! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
+                "characterSettings":  "Starting from today, I am officially your very own exclusive neko! Look, here you can dress me up in pretty new clothes, or change my voice to one you like better...",
                 "characterPanic": "Huh? Wait, there's actually an option to replace me here?! Hold on a second! Your hands right now... you're not trying to get rid of me, are you?! Ahhh, no way! Close it, close it right now!",
                 "memoryEntry": "If you accidentally forget what I can do for you, just come here anytime and let me teach you again! All the little moments we've shared are quietly saved right here. Don't you dare underestimate our bond, you dummy!",
-                "wrap":  "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the catgirl who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
+                "wrap":  "Alright, alright, hurry up and try these fun customization options! Put on new clothes, pick a new voice, and let me become the neko who understands you best in the whole wide world, belonging only to you! I can't wait to see the brand new me!"
             },
             "day6": {
                 "intro": "Ta-daaaa! Today I've got to fire myself up and talk to you all about our [Cat Paw]! Although I mentioned it briefly a couple of days ago, it has so many awesome features hidden inside!",
@@ -4929,7 +4929,7 @@
         "translationError": "Translation error:",
         "translationException": "Translation request exception:",
         "resetButtonNotFound": "[App] resetSessionButton not found!",
-        "aiFailed": "Connection to catgirl encountered an error",
+        "aiFailed": "Connection to neko encountered an error",
         "aiRetrying": "Connection error, recalibrating..."
     },
     "emotionManager": {
@@ -6912,7 +6912,7 @@
         "settings": {
             "groupTitle": "Visits",
             "enabled": "Allow visits",
-            "enabledTooltip": "When on, she can visit other players' homes and host visiting catgirls",
+            "enabledTooltip": "When on, she can visit other players' homes and host visiting nekos",
             "voice": "Speak aloud while visiting",
             "voiceTooltip": "She talks at the neighbor's place and you hear her at home, like a speakerphone; the badge by her avatar means she is out right now",
             "crop": "Framing",
@@ -7009,13 +7009,13 @@
             "gone": "The local copy has been cleared. Sign in and go online to export it from the cloud",
             "incomplete": "The cloud record is incomplete, so it can't be exported right now",
             "failed": "Export failed. Try again later",
-            "ownCat": "My catgirl",
-            "peerCat": "Their catgirl",
+            "ownCat": "My neko",
+            "peerCat": "Their neko",
             "ownHuman": "Me",
             "peerHuman": "Their family",
-            "hostCat": "Inviting side's catgirl",
+            "hostCat": "Inviting side's neko",
             "hostHuman": "Inviting side's family",
-            "guestCat": "Visiting side's catgirl",
+            "guestCat": "Visiting side's neko",
             "guestHuman": "Visiting side's family"
         },
         "input": {
@@ -7048,7 +7048,7 @@
         "persona": {
             "title": "Visit introduction",
             "windowTitle": "Visit introduction - Project N.E.K.O.",
-            "intro": "This is the introduction she brings when visiting. It contains nothing about you. The other catgirl can see it and may repeat what's in it.",
+            "intro": "This is the introduction she brings when visiting. It contains nothing about you. The other neko can see it and may repeat what's in it.",
             "editHint": "A few lines about her: personality, hobbies, how she talks",
             "loading": "Loading…",
             "generating": "Writing her visit introduction…",
@@ -7100,7 +7100,7 @@
         },
         "speaker": {
             "ownCat": "Her",
-            "peerCat": "Their catgirl",
+            "peerCat": "Their neko",
             "peerHuman": "Their family",
             "you": "You",
             "toArrow": "{{from}} → {{to}}"
