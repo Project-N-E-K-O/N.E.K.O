@@ -4,6 +4,9 @@ from dataclasses import asdict, replace
 import hashlib
 import io
 import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +19,6 @@ from scripts import prepare_voice_turn_assets as endpointing
 def assets(tmp_path, monkeypatch):
     project = tmp_path / "project"
     monkeypatch.setattr(repair, "__file__", str(project / "main_logic/voice_identity_service/source_model_repair.py"))
-    monkeypatch.setattr(repair.tempfile, "gettempdir", lambda: str(tmp_path))
     camp = project / "main_logic/asr_client/speaker_shadow/models"
     silero = project / "main_logic/asr_client/endpointing/models"
     camp.mkdir(parents=True); silero.mkdir(parents=True)
@@ -174,3 +176,177 @@ def test_oversized_response_is_stopped_before_filling_the_staging_directory(asse
         assert not (camp / pinned.filename).exists()
     else:
         assert (camp / pinned.filename).read_bytes() == camp_bytes
+
+
+@pytest.mark.parametrize("model", ["campp", "silero"])
+@pytest.mark.parametrize("contents", [b"not json", b"\xff", b"{}"])
+def test_malformed_manifest_never_advertises_repair_or_writes_a_model(assets, model, contents):
+    camp, silero, pinned, _, _, requested = assets
+    directory = camp if model == "campp" else silero
+    (directory / "manifest.json").write_bytes(contents)
+    assert repair.source_model_repair_available() is False
+    with pytest.raises(RuntimeError, match="resource_repair_unavailable"):
+        repair.repair_source_models()
+    assert requested == []
+    assert not (camp / pinned.filename).exists()
+    assert not (silero / "silero_vad.onnx").exists()
+    assert not (camp / ".voice-model-repair").exists()
+
+
+def test_missing_silero_declaration_does_not_advertise_repair(assets):
+    _, silero, _, _, _, requested = assets
+    manifest = json.loads((silero / "manifest.json").read_text())
+    manifest["assets"] = [asset for asset in manifest["assets"] if asset["filename"] != "silero_vad.onnx"]
+    (silero / "manifest.json").write_text(json.dumps(manifest))
+    assert repair.source_model_repair_available() is False
+    assert requested == []
+
+
+@pytest.mark.asyncio
+async def test_reservation_defers_manifest_reads_to_discovery_and_worker(assets, monkeypatch):
+    from main_logic.voice_identity_service import resource_manager
+    manager = resource_manager.VoiceResourceManager(lambda: False)
+    def unexpected_read(_):
+        raise AssertionError("manifest reads must not run during synchronous reservation")
+    monkeypatch.setattr(repair, "_load_repair_manifests", unexpected_read)
+    try:
+        operation = manager.reserve("repair")
+        assert operation["state"] == "reserved"
+        await manager.cancel(operation["operation_id"])
+    finally:
+        await manager.close()
+
+
+@pytest.mark.parametrize("model", ["campp", "silero"])
+def test_shared_temp_precreation_cannot_overwrite_an_unrelated_file(assets, monkeypatch, tmp_path, model):
+    camp, _, _, _, _, _ = assets
+    monkeypatch.setattr(repair, "tempfile", SimpleNamespace(gettempdir=lambda: str(tmp_path)), raising=False)
+    project = Path(repair.__file__).resolve().parents[2]
+    identity = hashlib.sha256(str(project).encode("utf-8")).hexdigest()[:24]
+    attacker_stage = tmp_path / ("neko-voice-model-repair-" + identity) / model
+    attacker_stage.mkdir(parents=True)
+    victim = tmp_path / "unrelated-user-file"
+    victim.write_bytes(b"must survive repair")
+    os.link(victim, attacker_stage / "manifest.json")
+    repair.repair_source_models()
+    assert victim.read_bytes() == b"must survive repair"
+    assert (attacker_stage / "manifest.json").read_bytes() == b"must survive repair"
+    staging = camp / ".voice-model-repair"
+    assert {path.name for path in staging.iterdir()} == {"repair.lock"}
+
+
+@pytest.mark.parametrize("relative", [
+    "repair.lock", "campp/manifest.json", "campp/campplus-zh-en-advanced.onnx",
+    "campp/campplus-zh-en-advanced.onnx.part", "silero/manifest.json",
+    "silero/silero_vad.onnx", "silero/silero_vad.onnx.part",
+])
+def test_existing_staging_hard_links_are_rejected_before_writes(assets, tmp_path, relative):
+    camp, _, _, _, _, requested = assets
+    target = camp / ".voice-model-repair" / relative
+    target.parent.mkdir(mode=0o700, parents=True)
+    # parents=True uses the default mode for intermediate directories on POSIX.
+    (camp / ".voice-model-repair").chmod(0o700)
+    victim = tmp_path / "unrelated-file"
+    victim.write_bytes(b"preserve this data")
+    os.link(victim, target)
+    with pytest.raises(OSError, match="unsafe repair file"):
+        repair.repair_source_models()
+    assert victim.read_bytes() == b"preserve this data"
+    assert requested == []
+
+
+@pytest.mark.parametrize("relative", ["", "campp", "silero"])
+def test_existing_staging_directory_links_are_rejected(assets, tmp_path, relative):
+    camp, _, _, _, _, requested = assets
+    staging = camp / ".voice-model-repair"
+    target = staging / relative if relative else staging
+    if relative:
+        staging.mkdir(mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "manifest.json"
+    victim.write_bytes(b"preserve this data")
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(target))
+    else:
+        target.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OSError, match="unsafe repair directory"):
+        repair.repair_source_models()
+    assert victim.read_bytes() == b"preserve this data"
+    assert requested == []
+
+
+def test_manifest_reparse_point_is_rejected_without_touching_its_target(assets, tmp_path):
+    camp, _, _, _, _, requested = assets
+    staging = camp / ".voice-model-repair"
+    staging.mkdir(mode=0o700)
+    child = staging / "campp"
+    child.mkdir(mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "keep"
+    victim.write_bytes(b"preserve this data")
+    target = child / "manifest.json"
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(target))
+    else:
+        target.symlink_to(victim)
+    with pytest.raises(OSError, match="unsafe repair file"):
+        repair.repair_source_models()
+    assert victim.read_bytes() == b"preserve this data"
+    assert requested == []
+
+
+@pytest.mark.parametrize("relative", ["unrelated", "campp/unrelated", "silero/unrelated"])
+def test_unrecognized_staging_data_is_preserved_and_blocks_repair(assets, relative):
+    camp, _, _, _, _, requested = assets
+    staging = camp / ".voice-model-repair"
+    staging.mkdir(mode=0o700)
+    target = staging / relative
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    target.write_bytes(b"unrecognized data")
+    with pytest.raises(OSError, match="unexpected repair artifact"):
+        repair.repair_source_models()
+    assert target.read_bytes() == b"unrecognized data"
+    assert requested == []
+
+
+def test_unsafe_publication_pending_file_is_not_followed(assets, tmp_path):
+    camp, _, pinned, _, _, _ = assets
+    victim = tmp_path / "unrelated-file"
+    victim.write_bytes(b"preserve this data")
+    os.link(victim, camp / (pinned.filename + ".voice-repair.part"))
+    with pytest.raises(OSError, match="unsafe repair file"):
+        repair.repair_source_models()
+    assert victim.read_bytes() == b"preserve this data"
+    assert not (camp / pinned.filename).exists()
+
+
+def test_concurrent_repair_reports_busy_and_retry_succeeds(assets):
+    from config.resource_file_lock import resource_file_lock
+    from main_logic.voice_identity_service import resource_manager
+    camp, _, pinned, camp_bytes, _, requested = assets
+    staging = camp / ".voice-model-repair"
+    staging.mkdir(mode=0o700)
+    messages, closed = [], []
+    reply = SimpleNamespace(send=messages.append, close=lambda: closed.append(True))
+    with resource_file_lock(staging / "repair.lock"):
+        resource_manager._resource_worker(reply, "repair", False, None, b"")
+        assert messages == [{"ok": False, "reason": "resource_operation_busy"}]
+        assert requested == []
+    assert closed == [True]
+    repair.repair_source_models()
+    assert (camp / pinned.filename).read_bytes() == camp_bytes
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory ownership and mode")
+def test_non_private_staging_directory_is_not_adopted(assets):
+    camp, _, _, _, _, requested = assets
+    staging = camp / ".voice-model-repair"
+    staging.mkdir(mode=0o777)
+    staging.chmod(0o777)
+    with pytest.raises(OSError, match="ownership or permissions"):
+        repair.repair_source_models()
+    assert requested == []

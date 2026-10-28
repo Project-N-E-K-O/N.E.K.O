@@ -17,6 +17,7 @@ import time
 from typing import Callable
 import uuid
 from utils.asyncio_retirement import await_retirement
+from config.resource_file_lock import ResourceFileLockBusy
 
 from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS, wake_word_model_dir, wake_word_preference
 from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError, resolve_verified_assets
@@ -153,6 +154,7 @@ def _resource_worker(connection: Connection, kind: str, nr_enabled: bool, wake_p
         connection.send({"ok": True, "result": result})
     except Exception as exc:
         reason = (exc.code if isinstance(exc, (WakeWordBundleError, VoiceResourceError)) else
+                  "resource_operation_busy" if isinstance(exc, ResourceFileLockBusy) else
                   "resource_model_repair_failed" if kind == "repair" and isinstance(exc, (CampPlusAssetError, AssetManifestError)) else
                   "resource_storage_unavailable" if isinstance(exc, OSError) else
                   "resource_worker_failed" if kind in {"audio", "prepare", "repair"} else safe_wake_word_reason(exc))
@@ -369,7 +371,9 @@ class VoiceResourceManager:
             raise VoiceResourceError("runtime_degraded")
         if kind not in {"prepare", "download", "repair"}:
             raise VoiceResourceError("invalid_resource_operation")
-        if kind == "repair" and not source_model_repair_available():
+        # Snapshot discovery and the disposable worker validate manifests off
+        # the event loop; reservation keeps its existing installation-only gate.
+        if kind == "repair" and not source_model_repair_available(validate_manifests=False):
             raise VoiceResourceError("resource_repair_unavailable")
         if self._current is not None and self._current.task is not None and not self._current.task.done():
             raise VoiceResourceError("resource_operation_busy")
