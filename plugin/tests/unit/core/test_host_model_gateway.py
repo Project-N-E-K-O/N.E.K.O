@@ -138,8 +138,10 @@ async def test_failed_start_revokes_launch_credential(host_factory, failure):
         }[failure]
 
     expected = asyncio.CancelledError if failure == "cancel" else Exception
+    # Every failure is injected; the budget only has to outlast process
+    # creation, which now counts against it (a thread hop alone can take 15ms).
     with pytest.raises(expected):
-        await plugin_host.start(startup_timeout=0.01, startup_failure="fail")
+        await plugin_host.start(startup_timeout=1, startup_failure="fail")
 
     assert host_factory.revoked == [plugin_host.process.launched_options["token"]]
     assert plugin_host._model_gateway_token == ""
