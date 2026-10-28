@@ -705,29 +705,31 @@
     if (state.loading) {
       empty.classList.add('is-loading');
       empty.appendChild(el('span', 'neko-social-hub-spinner'));
-      empty.appendChild(el('span', 'neko-social-hub-empty-hint', tr('visit.socialHub.loadingFriends', '正在读取当前账号的互关好友…')));
+      empty.appendChild(el('span', 'neko-social-hub-empty-hint', tr('visit.socialHub.loadingFriends', '正在读取互关好友…')));
       target.appendChild(empty);
       return;
     }
     var kind, title, hint, actionLabel, actionHandler, actionKey;
     if (state.loadFailed) {
       kind = 'offline';
-      title = tr('visit.socialHub.loadFailedTitle', '好友列表没能加载出来');
-      hint = state.loadError || tr('visit.socialHub.readFailed', '读取互关好友失败');
+      title = tr('visit.socialHub.loadFailedTitle', '好友列表加载失败');
+      // 没有具体原因时，通用的“读取失败”会和标题重复，换成可操作的提示。
+      hint = state.loadError && state.loadError !== tr('visit.socialHub.readFailed', '读取互关好友失败')
+        ? state.loadError : tr('visit.socialHub.loadFailedHint', '检查一下网络，再试一次');
       actionLabel = tr('visit.socialHub.retry', '重试');
       actionHandler = function () { refresh(); };
       actionKey = 'empty-retry';
     } else if (!state.loggedIn) {
       kind = 'login';
       title = tr('visit.socialHub.notLoggedIn', '还没有登录喵宇宙');
-      hint = tr('visit.socialHub.loginHint', '登录后就能邀请互关好友来串门');
+      hint = tr('visit.socialHub.loginHint', '登录后就能邀请好友来串门');
       actionLabel = tr('visit.socialHub.loginAction', '登录喵宇宙');
       actionHandler = openCommunity;
       actionKey = 'empty-login';
     } else {
       kind = 'friends';
       title = tr('visit.socialHub.noFriends', '还没有互关喵友');
-      hint = tr('visit.socialHub.mutualHint', '和别人互相关注后，就能邀请 TA 来串门');
+      hint = tr('visit.socialHub.mutualHint', '互相关注后，就能邀请 TA 来串门');
       actionLabel = tr('visit.socialHub.findFriends', '去喵宇宙找喵友');
       actionHandler = openCommunity;
       actionKey = 'empty-find-friends';
@@ -753,7 +755,7 @@
     header.appendChild(el('h2', 'neko-social-hub-title', '喵宇宙'));
     // 完整社区里实际是看卡、铸造和私信；直接写出来，比“打开完整社区”更好懂。
     var communityLink = button(tr('visit.socialHub.openCommunity', '卡牌 · 铸造 · 私信'), 'neko-social-hub-community-link', openCommunity);
-    communityLink.title = tr('visit.socialHub.openCommunityHint', '打开喵宇宙完整社区：看卡、铸造（抽卡）和查看私信');
+    communityLink.title = tr('visit.socialHub.openCommunityHint', '打开完整社区：看卡、铸造（抽卡）、私信');
     communityLink.appendChild(svgIcon('neko-social-hub-community-arrow', ['M7 17 17 7', 'M8 7h9v9']));
     header.appendChild(focusKey(communityLink, 'open-community'));
     panel.appendChild(header);
