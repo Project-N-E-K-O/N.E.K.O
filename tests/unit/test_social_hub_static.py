@@ -297,7 +297,7 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "}, 300)" in open_source
     assert "clearTimeout(loadingRevealTimer)" in open_source
     assert "refresh().finally(function ()" in open_source
-    assert "revealOpenPanel(generation)" in open_source
+    assert "if (layer.hidden) revealOpenPanel(generation)" in open_source
     assert open_source.index("layer.hidden = true") < open_source.index("refresh().finally")
     reveal_source = source.split("function revealOpenPanel(generation)", 1)[1].split(
         "function open()", 1

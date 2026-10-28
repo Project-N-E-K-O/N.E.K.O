@@ -1177,7 +1177,8 @@
     }, 300);
     refresh().finally(function () {
       clearTimeout(loadingRevealTimer);
-      revealOpenPanel(generation);
+      // 慢请求的 loading 已经展示并聚焦过；完成后只由 refresh() 更新内容。
+      if (layer.hidden) revealOpenPanel(generation);
     });
     return true;
   }
