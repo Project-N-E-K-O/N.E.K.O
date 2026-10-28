@@ -255,7 +255,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "var refreshRevision = ++hubRefreshRevision" in source
     assert "var presenceRevisionAtStart = presencePushRevision" in source
     assert "var requestAccountId = state.accountId" in source
-    assert "if (state.accountId !== requestAccountId) return false" in source
+    assert "var requestGeneration = openGeneration" in source
+    assert "openGeneration !== requestGeneration || state.accountId !== requestAccountId" in source
     assert "if (refreshGeneration !== openGeneration) {" in source
     assert "if (refreshGeneration === openGeneration)" in source
     assert "function applyInvitationSnapshot(body, revision)" in source
@@ -268,7 +269,7 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
         "renderFriendGroup(tr('visit.socialHub.onlineFriends'"
     )
     assert "neko-social-hub-recommendation-section" in source
-    assert "'/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow'" in source
+    assert "'/follow?expected_account_id=' + encodeURIComponent(followAccountId)" in source
     assert "state.recommendationBusy.has(recommendation.id)" in source
     assert "await refresh(true, true)" in source
     assert "await refresh(false)" not in source

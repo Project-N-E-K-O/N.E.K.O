@@ -32,9 +32,14 @@ async def _community_access(request: Request):
     access = snapshot.get("access_token")
     if not access or status.get("rejected") or not status.get("logged_in"):
         return None, JSONResponse({"detail": "community_login_required"}, status_code=401)
+    verified_profile = status.get("verified_profile") or {}
+    account_id = C._normalize_local_user_id(
+        verified_profile.get("local_user_id") or snapshot.get("local_user_id")
+    )
     return {
         "access": access,
         "base_url": C._social_base_url().rstrip("/"),
+        "account_id": account_id,
     }, None
 
 
@@ -327,6 +332,15 @@ async def follow_recommended_user(request: Request, target_user_id: str):
         target = str(uuid.UUID(target_user_id))
     except ValueError:
         return JSONResponse({"detail": "invalid_target_user"}, status_code=400)
+    expected_account_id = request.query_params.get("expected_account_id")
+    if expected_account_id is not None:
+        expected_account_id = C._normalize_local_user_id(expected_account_id)
+        if (
+            not expected_account_id
+            or not session["account_id"]
+            or expected_account_id != session["account_id"]
+        ):
+            return JSONResponse({"detail": "community_account_changed"}, status_code=409)
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(12)) as client:
             status_code, body = await _community_json(

@@ -415,6 +415,38 @@ def test_follow_recommended_user_relays_only_the_validated_uuid(proxy, monkeypat
     assert proxy.post("/api/community/users/not-a-uuid/follow").status_code == 400
 
 
+def test_follow_recommended_user_rejects_a_stale_account(proxy, monkeypatch):
+    current_account_id = "11111111-1111-4111-8111-111111111111"
+    stale_account_id = "22222222-2222-4222-8222-222222222222"
+    target_id = "55555555-5555-4555-8555-555555555555"
+
+    async def status():
+        return {
+            "logged_in": True,
+            "snapshot": {"access_token": "new-account-secret"},
+            "verified_profile": {"local_user_id": current_account_id},
+        }
+
+    async def upstream(_request):
+        pytest.fail("A stale recommendation must not reach the current account")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.post(
+        f"/api/community/users/{target_id}/follow",
+        params={"expected_account_id": stale_account_id},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "community_account_changed"}
+
+
 def test_visit_hub_reads_mutual_friends_after_the_first_page(proxy, monkeypatch):
     owner_id = "11111111-1111-4111-8111-111111111111"
     later_id = "22222222-2222-4222-8222-222222222222"

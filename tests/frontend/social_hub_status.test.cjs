@@ -51,7 +51,7 @@ function loadMountedHub(options = {}) {
     url: 'http://localhost/',
   });
   const { window } = dom;
-  window.__NEKO_SOCIAL_HUB_STANDALONE__ = true;
+  window.__NEKO_SOCIAL_HUB_STANDALONE__ = options.standalone !== false;
   window.fetch = options.fetch;
   window.requestAnimationFrame = (callback) => { callback(); return 1; };
   window.setInterval = () => 1;
@@ -334,6 +334,45 @@ test('a late presence snapshot cannot cross community accounts', async () => {
   assert.equal(await pending, false);
   assert.equal(hub._state.friends[0].presenceStatus, 'away');
   assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
+});
+
+test('a late presence snapshot cannot cross panel open generations', async () => {
+  let resolvePresence;
+  const hubBody = {
+    logged_in: true,
+    account: { id: 'account-1', display_name: 'Current User' },
+    friends: [{
+      id: 'shared-friend', display_name: 'Shared Friend', online: true,
+      presence_status: 'away', last_seen_at: '2026-10-28T06:01:00Z',
+    }],
+    recommendations: [],
+  };
+  const { dom, hub } = loadMountedHub({
+    standalone: false,
+    fetch: async (url) => {
+      if (String(url).includes('/api/community/friend-presence')) {
+        return new Promise((resolve) => { resolvePresence = resolve; });
+      }
+      return { ok: true, json: async () => hubBody };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub.open();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const pending = hub._refreshPresence();
+  hub.close();
+  hub.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  resolvePresence({ ok: true, json: async () => ({ friends: [{
+    id: 'shared-friend', presence_status: 'online', online: true,
+    last_seen_at: '2026-10-28T06:00:00Z',
+  }] }) });
+
+  assert.equal(await pending, false);
+  assert.equal(hub._state.friends[0].presenceStatus, 'away');
+  assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
+  dom.window.close();
 });
 
 test('a late full hub refresh cannot overwrite a newer pushed presence', async () => {

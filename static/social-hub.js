@@ -740,7 +740,8 @@
     state.toastError = false;
     render();
     try {
-      var response = await fetch('/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow', {
+      var response = await fetch('/api/community/users/' + encodeURIComponent(recommendation.id) +
+        '/follow?expected_account_id=' + encodeURIComponent(followAccountId), {
         method: 'POST', credentials: 'same-origin'
       });
       var body = await json(response);
@@ -904,6 +905,7 @@
     if (!state.open || !state.loggedIn || presenceRefreshInFlight) return false;
     presenceRefreshInFlight = true;
     var requestAccountId = state.accountId;
+    var requestGeneration = openGeneration;
     var requestRevision = presencePushRevision;
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
     var abortTimer = controller ? setTimeout(function () { controller.abort(); }, 8000) : 0;
@@ -913,7 +915,7 @@
       });
       var body = await json(response);
       if (!response.ok || !Array.isArray(body.friends)) return false;
-      if (state.accountId !== requestAccountId) return false;
+      if (openGeneration !== requestGeneration || state.accountId !== requestAccountId) return false;
       var updates = new Map();
       body.friends.forEach(function (item) {
         var userId = String(item && item.id || '');
