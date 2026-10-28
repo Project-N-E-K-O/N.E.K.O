@@ -773,7 +773,7 @@
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));
-    header.appendChild(el('h2', 'neko-social-hub-title', '喵宇宙'));
+    header.appendChild(el('h2', 'neko-social-hub-title', tr('buttons.social', '喵宇宙')));
     // 完整社区里实际是看卡、铸造和私信；直接写出来，比“打开完整社区”更好懂。
     var communityLink = button(tr('visit.socialHub.openCommunity', '卡牌 · 铸造 · 私信'), 'neko-social-hub-community-link', openCommunity);
     communityLink.title = tr('visit.socialHub.openCommunityHint', '打开完整社区：看卡、铸造（抽卡）、私信');

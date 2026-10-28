@@ -6725,6 +6725,7 @@
             "body": "会話を選択肢で進めるGalgameモードに切り替えます。もう一度クリックすると通常のチャットに戻ります。"
         },
         "floatingOverviewContinueHint": "ハイライトされたボタンのどれかを押して進みます。機能は開きません。",
+        "floatingOverviewWithoutSocial": "キャラクターの横のボタンから、音声、Agent、設定、おやすみを開けます。",
         "floatingOverview": {
             "title": "キャラクター横のショートカット",
             "body": "キャラクターの横のボタンから、音声、Agent、ミャオ宇宙、設定、おやすみを開けます。"

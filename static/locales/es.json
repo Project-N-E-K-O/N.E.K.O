@@ -6725,6 +6725,7 @@
             "body": "Cambia el chat al modo Galgame, con opciones de respuesta para seguir la conversación. Pulsa de nuevo para volver al chat normal."
         },
         "floatingOverviewContinueHint": "Pulsa cualquier botón resaltado para seguir. La función no se abrirá.",
+        "floatingOverviewWithoutSocial": "Los botones junto al personaje abren voz, Agent, ajustes y descanso.",
         "floatingOverview": {
             "title": "Botones junto al personaje",
             "body": "Los botones junto al personaje abren voz, Agent, Universo Miau, ajustes y descanso."

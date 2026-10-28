@@ -230,7 +230,9 @@
                     return !!button && group.contains(button);
                 },
                 cursorTarget: avatar('btn-mic'),
-                body: () => t('floatingOverview.body') + ' ' + t('floatingOverviewContinueHint') }),
+                // 用户隐藏了喵宇宙按钮时，总览里也不再提它
+                body: () => t(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden()
+                    ? 'floatingOverviewWithoutSocial' : 'floatingOverview.body') + ' ' + t('floatingOverviewContinueHint') }),
             optional('mic', avatar('btn-mic'), { enter: close, view: () => popupView('mic') }),
             optional('agent', avatar('btn-agent'), { enter: close, view: () => popupView('agent'), windowGuide: windowGuide() }),
             optional('social', avatar('btn-social'), { enter: close, windowGuide: windowGuide(),

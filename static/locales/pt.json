@@ -6725,6 +6725,7 @@
             "body": "Muda a conversa para o modo Galgame, com opções de resposta. Clique novamente para voltar ao chat comum."
         },
         "floatingOverviewContinueHint": "Clique em qualquer botão destacado para continuar. A função não será aberta.",
+        "floatingOverviewWithoutSocial": "Os botões ao lado da personagem abrem voz, Agent, configurações e descanso.",
         "floatingOverview": {
             "title": "Botões ao lado do personagem",
             "body": "Os botões ao lado da personagem abrem voz, Agent, Universo Miau, configurações e descanso."

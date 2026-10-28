@@ -6725,6 +6725,7 @@
             "body": "This switches chat into Galgame mode, with reply choices for continuing the conversation. Click again to return to regular chat."
         },
         "floatingOverviewContinueHint": "Click any highlighted button to continue. It will not open the feature.",
+        "floatingOverviewWithoutSocial": "The buttons beside your character open voice, Agent, settings, and rest.",
         "floatingOverview": {
             "title": "Buttons beside your character",
             "body": "The buttons beside your character open voice, Agent, nekoverse, settings, and rest."

@@ -6725,6 +6725,7 @@
             "body": "想用選項來接話，可以開啟 Galgame 模式。再點一次就能回到普通聊天。"
         },
         "floatingOverviewContinueHint": "點任意高亮按鈕繼續，不會開啟功能。",
+        "floatingOverviewWithoutSocial": "角色旁的按鈕依次通往語音、Agent、設定和回窩。",
         "floatingOverview": {
             "title": "模型旁的快捷按鈕",
             "body": "角色旁的按鈕依次通往語音、Agent、喵宇宙、設定和回窩。"

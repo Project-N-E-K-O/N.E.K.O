@@ -6725,6 +6725,7 @@
             "body": "대화를 선택지로 이어가는 Galgame 모드로 바꿔요. 다시 클릭하면 일반 채팅으로 돌아와요."
         },
         "floatingOverviewContinueHint": "강조된 버튼 중 아무거나 누르면 다음으로 넘어갑니다. 기능은 열리지 않습니다.",
+        "floatingOverviewWithoutSocial": "캐릭터 옆 버튼에서 음성, Agent, 설정, 휴식을 열 수 있습니다.",
         "floatingOverview": {
             "title": "캐릭터 옆 바로가기 버튼",
             "body": "캐릭터 옆 버튼에서 음성, Agent, 먀오 우주, 설정, 휴식을 열 수 있습니다."

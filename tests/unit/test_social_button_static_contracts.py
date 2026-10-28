@@ -1641,10 +1641,19 @@ def test_hide_community_entry_toggle_only_hides_the_social_button():
     social_step = social_step[: social_step.index("optional('settings'")]
     assert "when: () => !(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden())" in social_step
     assert "title: root.t('buttons.social')" in social_step
+    # 按钮被藏时，按钮总览不再列出喵宇宙
+    overview_step = home_steps[home_steps.index("optional('floatingOverview'"):]
+    overview_step = overview_step[: overview_step.index("optional('mic'")]
+    assert "'floatingOverviewWithoutSocial' : 'floatingOverview.body'" in overview_step
+
+    # 喵宇宙浮层标题跟随当前语言的按钮名
+    hub = (PROJECT_ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    assert "el('h2', 'neko-social-hub-title', tr('buttons.social', '喵宇宙'))" in hub
 
     for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
         locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
         assert '"hideCommunityEntry"' in locale_source
+        assert '"floatingOverviewWithoutSocial"' in locale_source
 
 
 @pytest.mark.unit
