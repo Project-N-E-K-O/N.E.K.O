@@ -244,19 +244,23 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
 
-    assert "state.recommendations = Array.isArray(body.recommendations)" in source
+    assert "state.recommendations = Array.isArray(body && body.recommendations)" in source
     assert "body.recommendations.slice(0, 3)" in source
     assert "var accountChanged = nextAccountId !== state.accountId" in source
     assert "if (accountChanged) dismissedRecommendationIds.clear()" in source
     assert "replaceRecommendationsRequested = replaceRecommendationsRequested === true" in source
-    assert "var replaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged" in source
-    assert "if (replaceRecommendations)" in source
+    assert "var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged" in source
+    assert "if (shouldReplaceRecommendations) applyRecommendationSnapshot" in source
     assert "var refreshGeneration = openGeneration" in source
     assert "var refreshRevision = ++hubRefreshRevision" in source
     assert "var appliedRefreshRevision = 0" in source
+    assert "var appliedRecommendationRevision = 0" in source
     assert "var loadingRefreshRevision = 0" in source
     assert "if (refreshRevision < appliedRefreshRevision)" in source
     assert "appliedRefreshRevision = refreshRevision" in source
+    assert "function applyRecommendationSnapshot(body, revision)" in source
+    assert "revision < appliedRecommendationRevision" in source
+    assert "(replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId" in source
     assert "refreshRevision === loadingRefreshRevision" in source
     assert "var presenceRevisionAtStart = presencePushRevision" in source
     assert "var requestAccountId = state.accountId" in source

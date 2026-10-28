@@ -499,6 +499,91 @@ test('an older successful hub refresh can apply when a newer silent refresh fail
   assert.equal(hub._state.loading, false);
 });
 
+test('an older opening refresh can still fill recommendations after newer silent data', async () => {
+  let visitHubReads = 0;
+  let resolveOpening;
+  let resolveSilent;
+  const { hub } = loadHub({
+    fetch: async () => {
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true, account: { id: 'account-1' }, friends: [], recommendations: [],
+        }) };
+      }
+      if (visitHubReads === 2) return new Promise((resolve) => { resolveOpening = resolve; });
+      return new Promise((resolve) => { resolveSilent = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const opening = hub.refresh(false);
+  const silent = hub.refresh(true);
+  resolveSilent({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{ id: 'friend-newer', display_name: 'Newer Friend' }],
+    recommendations: [{ id: 'ignored-newer', display_name: 'Ignored Newer' }],
+  }) });
+  await silent;
+  assert.equal(hub._state.recommendations.length, 0);
+
+  resolveOpening({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{ id: 'friend-older', display_name: 'Older Friend' }],
+    recommendations: [{ id: 'opening-recommendation', display_name: 'Opening Recommendation' }],
+  }) });
+  await opening;
+
+  assert.equal(hub._state.friends[0].id, 'friend-newer');
+  assert.equal(hub._state.recommendations[0].id, 'opening-recommendation');
+  assert.equal(hub._state.loading, false);
+});
+
+test('an older requested refill can still replace recommendations after newer silent data', async () => {
+  let visitHubReads = 0;
+  let resolveRefill;
+  let resolveSilent;
+  const { hub } = loadHub({
+    fetch: async () => {
+      visitHubReads += 1;
+      if (visitHubReads === 1) {
+        return { ok: true, json: async () => ({
+          logged_in: true,
+          account: { id: 'account-1' },
+          friends: [],
+          recommendations: [{ id: 'recommendation-old', display_name: 'Old' }],
+        }) };
+      }
+      if (visitHubReads === 2) return new Promise((resolve) => { resolveRefill = resolve; });
+      return new Promise((resolve) => { resolveSilent = resolve; });
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const refill = hub.refresh(true, true);
+  const silent = hub.refresh(true);
+  resolveSilent({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{ id: 'friend-newer', display_name: 'Newer Friend' }],
+    recommendations: [{ id: 'recommendation-ignored', display_name: 'Ignored' }],
+  }) });
+  await silent;
+
+  resolveRefill({ ok: true, json: async () => ({
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [{ id: 'friend-older', display_name: 'Older Friend' }],
+    recommendations: [{ id: 'recommendation-refilled', display_name: 'Refilled' }],
+  }) });
+  await refill;
+
+  assert.equal(hub._state.friends[0].id, 'friend-newer');
+  assert.equal(hub._state.recommendations[0].id, 'recommendation-refilled');
+});
+
 test('an unchanged presence poll protects against an older full hub snapshot', async () => {
   let visitHubReads = 0;
   let resolveOlderRefresh;

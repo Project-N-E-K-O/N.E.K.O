@@ -24,6 +24,7 @@
   var incomingDeliveryTimer = 0;
   var hubRefreshRevision = 0;
   var appliedRefreshRevision = 0;
+  var appliedRecommendationRevision = 0;
   var loadingRefreshRevision = 0;
   var invitationSnapshotRevision = 0;
   var presenceRefreshInFlight = false;
@@ -389,6 +390,17 @@
     return true;
   }
 
+  function applyRecommendationSnapshot(body, revision) {
+    if (revision < appliedRecommendationRevision) return false;
+    appliedRecommendationRevision = revision;
+    state.recommendations = Array.isArray(body && body.recommendations)
+      ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(function (item) {
+        return item && !dismissedRecommendationIds.has(item.id);
+      }) : [];
+    state.recommendationBusy.clear();
+    return true;
+  }
+
   async function refresh(silent, replaceRecommendationsRequested) {
     silent = silent === true;
     replaceRecommendationsRequested = replaceRecommendationsRequested === true;
@@ -411,8 +423,13 @@
         applyInvitationSnapshot(body, refreshRevision);
         return;
       }
+      var nextAccountId = String(body.account && body.account.id || '');
       // 只拒绝早于最近已应用资料的响应；较新的请求失败时，较早的成功响应仍可兜底。
       if (refreshRevision < appliedRefreshRevision) {
+        // 推荐替换有独立版本：后发的普通静默刷新不能吞掉打开读取或关注补位。
+        if ((replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId) {
+          applyRecommendationSnapshot(body, refreshRevision);
+        }
         applyInvitationSnapshot(body, refreshRevision);
         return;
       }
@@ -420,10 +437,9 @@
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
-      var nextAccountId = String(body.account && body.account.id || '');
       var accountChanged = nextAccountId !== state.accountId;
       if (accountChanged) dismissedRecommendationIds.clear();
-      var replaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
+      var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
       state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
       var nextFriends = Array.isArray(body.friends)
@@ -441,13 +457,7 @@
         });
       }
       state.friends = nextFriends;
-      if (replaceRecommendations) {
-        state.recommendations = Array.isArray(body.recommendations)
-          ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(function (item) {
-            return item && !dismissedRecommendationIds.has(item.id);
-          }) : [];
-        state.recommendationBusy.clear();
-      }
+      if (shouldReplaceRecommendations) applyRecommendationSnapshot(body, refreshRevision);
       restoreInvitations();
       applyInvitationSnapshot(body, refreshRevision);
       if (!silent) {
