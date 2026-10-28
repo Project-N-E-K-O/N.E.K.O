@@ -1617,7 +1617,14 @@ def test_hide_community_entry_toggle_only_hides_the_social_button():
     # 设置弹窗「动画设置」里的开关，走同一份偏好，并跟随其他入口的改动
     assert "settings.toggles.hideCommunityEntry" in popup
     assert "window.nekoCommunityEntry.setHidden(!communityEntryCheckbox.checked)" in popup
-    assert "window.addEventListener('neko-community-entry-visibility-changed'" in popup
+    # 跟随其他入口的改动：只挂一个文件级监听器，面板创建函数里不挂（否则旧面板被监听器引用住无法释放）
+    assert popup.count("window.addEventListener('neko-community-entry-visibility-changed'") == 1
+    assert "window.__nekoCommunityEntryToggleSyncInstalled" in popup
+    sync_toggles = _extract_js_function(popup, "function syncCommunityEntryToggles(event)")
+    assert "input[data-neko-community-entry-toggle]" in sync_toggles
+    anim_panel = _extract_js_function(popup, "function createAnimationSettingsSidePanel(manager, prefix)")
+    assert "neko-community-entry-visibility-changed" not in anim_panel
+    assert "data-neko-community-entry-toggle" in anim_panel
     assert popup.index("trackingRow.appendChild(forgeDropEffectsRow);") < popup.index(
         "trackingRow.appendChild(communityEntryRow);"
     )

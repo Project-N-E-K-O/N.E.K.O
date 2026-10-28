@@ -1781,6 +1781,8 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const communityEntryCheckbox = document.createElement('input');
     communityEntryCheckbox.type = 'checkbox';
     communityEntryCheckbox.id = `${prefix}-community-entry-hidden`;
+    // 由文件级的单个监听器按这个标记同步勾选状态（见 syncCommunityEntryToggles），面板本身不挂 window 监听器
+    communityEntryCheckbox.setAttribute('data-neko-community-entry-toggle', '');
     communityEntryCheckbox.style.display = 'none';
     communityEntryCheckbox.checked = !!(window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden());
 
@@ -1830,17 +1832,26 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         }
     });
 
-    // 桌面端设置页或其他窗口改了偏好时同步勾选状态
-    window.addEventListener('neko-community-entry-visibility-changed', (e) => {
-        if (!communityEntryRow.isConnected) return;
-        communityEntryCheckbox.checked = !!(e && e.detail && e.detail.hidden === true);
-        updateCommunityEntryRowStyle();
-    });
-
     trackingRow.appendChild(communityEntryRow);
 
     document.body.appendChild(container);
     return container;
+}
+
+/**
+ * 「隐藏喵宇宙入口」在桌面端设置页或其他窗口改动时，同步所有现存设置面板里的勾选。
+ * 只挂一个文件级监听器、每次现查 DOM：面板被移除后不会被监听器引用住。
+ */
+function syncCommunityEntryToggles(event) {
+    const hidden = !!(event && event.detail && event.detail.hidden === true);
+    document.querySelectorAll('input[data-neko-community-entry-toggle]').forEach((checkbox) => {
+        checkbox.checked = hidden;
+        if (typeof checkbox.updateStyle === 'function') checkbox.updateStyle();
+    });
+}
+if (typeof window !== 'undefined' && !window.__nekoCommunityEntryToggleSyncInstalled) {
+    window.__nekoCommunityEntryToggleSyncInstalled = true;
+    window.addEventListener('neko-community-entry-visibility-changed', syncCommunityEntryToggles);
 }
 
 /**
