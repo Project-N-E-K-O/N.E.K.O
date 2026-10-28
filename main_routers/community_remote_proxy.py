@@ -136,7 +136,7 @@ def _friend_presence_items(following) -> list[dict]:
         ):
             continue
         status = item.get("presence_status")
-        if status not in {"online", "away", "offline"}:
+        if not isinstance(status, str) or status not in {"online", "away", "offline"}:
             status = "online" if item.get("online") is True else "offline"
         friends.append({
             "id": str(item["id"]),

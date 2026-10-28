@@ -237,7 +237,7 @@ def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
         seen.append(request)
         if request.url.path == "/api/users/me/friends/presence":
             return httpx.Response(200, json={"items": [
-                {"id": friend_id, "online": True, "presence_status": "away",
+                {"id": friend_id, "online": True, "presence_status": ["untrusted"],
                  "last_seen_at": "2026-10-28T06:00:00Z"},
             ]})
         return httpx.Response(404, json={"detail": "not_found"})
@@ -256,7 +256,7 @@ def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
     assert response.json() == {"friends": [{
         "id": friend_id,
         "online": True,
-        "presence_status": "away",
+        "presence_status": "online",
         "last_seen_at": "2026-10-28T06:00:00Z",
     }]}
     assert len(seen) == 1
