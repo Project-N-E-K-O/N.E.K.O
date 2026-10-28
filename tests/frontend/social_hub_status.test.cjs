@@ -306,3 +306,28 @@ test('dismissed recommendations stay hidden during an automatic follow refresh',
     'recommendation-c',
   ]));
 });
+
+test('switching community accounts clears the previous account dismissals', async () => {
+  let body = {
+    logged_in: true,
+    account: { id: 'account-1' },
+    recommendations: [{ id: 'recommendation-shared', display_name: 'Shared' }],
+  };
+  const { hub } = loadHub({
+    fetch: async () => ({ ok: true, json: async () => body }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  hub._dismissRecommendation(hub._state.recommendations[0]);
+  assert.equal(hub._state.recommendations.length, 0);
+
+  body = {
+    logged_in: true,
+    account: { id: 'account-2' },
+    recommendations: [{ id: 'recommendation-shared', display_name: 'Shared' }],
+  };
+  await hub.refresh(true);
+
+  assert.equal(hub._state.accountId, 'account-2');
+  assert.equal(hub._state.recommendations[0].id, 'recommendation-shared');
+});

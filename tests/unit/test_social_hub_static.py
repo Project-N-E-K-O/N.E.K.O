@@ -243,7 +243,9 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
 
     assert "state.recommendations = Array.isArray(body.recommendations)" in source
     assert "body.recommendations.slice(0, 3)" in source
-    assert "var replaceRecommendations = !silent || nextAccountId !== state.accountId" in source
+    assert "var accountChanged = nextAccountId !== state.accountId" in source
+    assert "if (accountChanged) dismissedRecommendationIds.clear()" in source
+    assert "var replaceRecommendations = !silent || accountChanged" in source
     assert "if (replaceRecommendations)" in source
     assert "var refreshGeneration = openGeneration" in source
     assert "if (refreshGeneration !== openGeneration) return" in source
@@ -285,7 +287,12 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
 
     open_source = source.split("function open()", 1)[1].split("function close()", 1)[0]
     assert "layer.hidden = true" in open_source
-    assert "refresh().finally(function () { revealOpenPanel(generation); })" in open_source
+    assert "state.recommendations = []" in open_source
+    assert "var loadingRevealTimer = setTimeout" in open_source
+    assert "}, 300)" in open_source
+    assert "clearTimeout(loadingRevealTimer)" in open_source
+    assert "refresh().finally(function ()" in open_source
+    assert "revealOpenPanel(generation)" in open_source
     assert open_source.index("layer.hidden = true") < open_source.index("refresh().finally")
     reveal_source = source.split("function revealOpenPanel(generation)", 1)[1].split(
         "function open()", 1

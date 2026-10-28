@@ -391,7 +391,9 @@
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
       var nextAccountId = String(body.account && body.account.id || '');
-      var replaceRecommendations = !silent || nextAccountId !== state.accountId;
+      var accountChanged = nextAccountId !== state.accountId;
+      if (accountChanged) dismissedRecommendationIds.clear();
+      var replaceRecommendations = !silent || accountChanged;
       state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
       state.friends = Array.isArray(body.friends)
@@ -1151,10 +1153,18 @@
       refresh();
       return true;
     }
-    // 先在隐藏状态取回本次的新推荐，再一次性展示完整浮窗。
-    // 否则会先闪出上次保留的名单，接口返回后又突然换成新的一批。
+    // 快速请求一次性展示完整内容；慢请求超过短暂防闪窗口后才显示 loading。
+    // 这样不会先闪出上次的推荐，也不会在上游变慢时长时间毫无反馈。
     layer.hidden = true;
-    refresh().finally(function () { revealOpenPanel(generation); });
+    state.recommendations = [];
+    state.recommendationBusy.clear();
+    var loadingRevealTimer = setTimeout(function () {
+      revealOpenPanel(generation);
+    }, 300);
+    refresh().finally(function () {
+      clearTimeout(loadingRevealTimer);
+      revealOpenPanel(generation);
+    });
     return true;
   }
   function close() {
