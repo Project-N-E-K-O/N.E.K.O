@@ -254,6 +254,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "var refreshGeneration = openGeneration" in source
     assert "var refreshRevision = ++hubRefreshRevision" in source
     assert "var presenceRevisionAtStart = presencePushRevision" in source
+    assert "var requestAccountId = state.accountId" in source
+    assert "if (state.accountId !== requestAccountId) return false" in source
     assert "if (refreshGeneration !== openGeneration) {" in source
     assert "if (refreshGeneration === openGeneration)" in source
     assert "function applyInvitationSnapshot(body, revision)" in source

@@ -901,6 +901,7 @@
   async function refreshPresence() {
     if (!state.open || !state.loggedIn || presenceRefreshInFlight) return false;
     presenceRefreshInFlight = true;
+    var requestAccountId = state.accountId;
     var requestRevision = presencePushRevision;
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
     var abortTimer = controller ? setTimeout(function () { controller.abort(); }, 8000) : 0;
@@ -910,6 +911,7 @@
       });
       var body = await json(response);
       if (!response.ok || !Array.isArray(body.friends)) return false;
+      if (state.accountId !== requestAccountId) return false;
       var updates = new Map();
       body.friends.forEach(function (item) {
         var userId = String(item && item.id || '');

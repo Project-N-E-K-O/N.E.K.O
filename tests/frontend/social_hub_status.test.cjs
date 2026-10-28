@@ -282,6 +282,40 @@ test('a late presence snapshot cannot overwrite a newer pushed state', async () 
   assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
 });
 
+test('a late presence snapshot cannot cross community accounts', async () => {
+  let resolvePresence;
+  const { hub } = loadHub({
+    fetch: async (url) => {
+      if (String(url).includes('/api/community/friend-presence')) {
+        return new Promise((resolve) => { resolvePresence = resolve; });
+      }
+      return { ok: true, json: async () => ({ logged_in: true, account: { id: 'account-1' } }) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.open = true;
+  hub._state.loggedIn = true;
+  hub._state.friends = [{
+    id: 'shared-friend', displayName: 'Shared Friend', online: false,
+    presenceStatus: 'offline', lastSeenAt: '2026-10-28T04:00:00Z',
+  }];
+
+  const pending = hub._refreshPresence();
+  hub._state.accountId = 'account-2';
+  hub._state.friends = [{
+    id: 'shared-friend', displayName: 'Shared Friend', online: true,
+    presenceStatus: 'away', lastSeenAt: '2026-10-28T06:01:00Z',
+  }];
+  resolvePresence({ ok: true, json: async () => ({ friends: [{
+    id: 'shared-friend', presence_status: 'online', online: true,
+    last_seen_at: '2026-10-28T06:00:00Z',
+  }] }) });
+
+  assert.equal(await pending, false);
+  assert.equal(hub._state.friends[0].presenceStatus, 'away');
+  assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
+});
+
 test('a late full hub refresh cannot overwrite a newer pushed presence', async () => {
   let visitHubReads = 0;
   let resolveRefresh;
