@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,17 @@ def _load_repair_manifests(project: Path):
     camp = load_campplus_manifest(project / "main_logic/asr_client/speaker_shadow/models")
     silero = load_manifest(project / "main_logic/asr_client/endpointing/models").asset("silero_vad.onnx")
     return camp, silero
+
+
+def _load_source_preparer(project: Path, filename: str):
+    """Load a checked source tool without requiring it in wheel packages."""
+    path = project / "scripts" / filename
+    module_spec = importlib.util.spec_from_file_location(f"_neko_source_{path.stem}", path)
+    if module_spec is None or module_spec.loader is None:
+        raise SourceModelRepairUnavailable(SourceModelRepairUnavailable.code)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
 
 
 def source_model_repair_available(*, validate_manifests: bool = True) -> bool:
@@ -103,11 +115,11 @@ def repair_source_models() -> None:
     if not source_model_repair_available():
         raise SourceModelRepairUnavailable(SourceModelRepairUnavailable.code)
 
-    from scripts import prepare_speaker_model as speaker
-    from scripts import prepare_voice_turn_assets as endpointing
     project = Path(__file__).resolve().parents[2]
     # Preflight both manifests before any download or model publication.
     camp_manifest, spec = _load_repair_manifests(project)
+    speaker = _load_source_preparer(project, "prepare_speaker_model.py")
+    endpointing = _load_source_preparer(project, "prepare_voice_turn_assets.py")
     camp_dir = project / "main_logic/asr_client/speaker_shadow/models"
     silero_dir = project / "main_logic/asr_client/endpointing/models"
     staging = _checked_directory(camp_dir / ".voice-model-repair")

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -24,8 +25,8 @@ def assets(tmp_path, monkeypatch):
     camp.mkdir(parents=True); silero.mkdir(parents=True)
     scripts = project / "scripts"
     scripts.mkdir()
-    for name in ("prepare_speaker_model.py", "prepare_voice_turn_assets.py"):
-        (scripts / name).touch()
+    for preparer in (speaker, endpointing):
+        shutil.copyfile(preparer.__file__, scripts / Path(preparer.__file__).name)
     camp_bytes, silero_bytes = b"reviewed-campp-fixture", b"reviewed-silero-fixture"
     pinned = replace(speaker._asset_manifest._EXPECTED_MANIFEST, size_bytes=len(camp_bytes), sha256=hashlib.sha256(camp_bytes).hexdigest())
     monkeypatch.setattr(speaker._asset_manifest, "_EXPECTED_MANIFEST", pinned)
@@ -391,3 +392,20 @@ def test_worker_does_not_reclassify_unrelated_runtime_errors(monkeypatch, messag
     resource_manager._resource_worker(reply, "repair", False, None, b"")
     assert messages == [{"ok": False, "reason": "resource_worker_failed"}]
     assert closed == [True]
+
+
+def test_source_repair_uses_checked_checkout_scripts_without_package_imports(assets, monkeypatch):
+    camp, silero, pinned, camp_bytes, silero_bytes, requested = assets
+    scripts = Path(repair.__file__).resolve().parents[2] / "scripts"
+    for filename in ("prepare_speaker_model.py", "prepare_voice_turn_assets.py"):
+        with (scripts / filename).open("a", encoding="utf-8") as script:
+            script.write("\nPath(__file__).with_suffix('.loaded').touch()\n")
+    # A source-only checkout tool must not require an installed scripts package
+    # or reuse a same-named module from another checkout on sys.path.
+    monkeypatch.setitem(repair.sys.modules, "scripts", None)
+    repair.repair_source_models()
+    assert (scripts / "prepare_speaker_model.loaded").is_file()
+    assert (scripts / "prepare_voice_turn_assets.loaded").is_file()
+    assert (camp / pinned.filename).read_bytes() == camp_bytes
+    assert (silero / "silero_vad.onnx").read_bytes() == silero_bytes
+    assert len(requested) == 2
