@@ -736,7 +736,7 @@
         "dismiss": "Close preview",
         "categories": {
             "news": "Headlines",
-            "community": "Neko community",
+            "community": "nekoverse",
             "video": "Video pick",
             "personal": "Your feed",
             "meme": "Meme for you",
@@ -3898,8 +3898,8 @@
             "proactiveVisionChatTooltip": "Requires Proactive Chat enabled and Privacy Mode disabled",
             "proactiveNewsChat": "News Website",
             "proactiveNewsChatTooltip": "Use trending topics and Xiaoheihe home content for proactive chat",
-            "proactiveCommunityChat": "N.E.K.O Community",
-            "proactiveCommunityChatTooltip": "Use public cards from the N.E.K.O Community discover feed for proactive chat",
+            "proactiveCommunityChat": "nekoverse",
+            "proactiveCommunityChatTooltip": "Use public cards from the nekoverse discover feed for proactive chat",
             "proactiveVideoChat": "Video Website",
             "proactiveVideoChatTooltip": "Use video content for proactive chat",
             "proactivePersonalChat": "Personal Updates",
@@ -3948,6 +3948,7 @@
             "localTracking": "Local Tracking",
             "lockedHoverFade": "Locked Hover Fade",
             "forgeDropEffects": "Ticket Drop Effects",
+            "hideCommunityEntry": "Hide nekoverse Entry",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
             "characters": "chars",
@@ -6724,9 +6725,10 @@
             "body": "This switches chat into Galgame mode, with reply choices for continuing the conversation. Click again to return to regular chat."
         },
         "floatingOverviewContinueHint": "Click any highlighted button to continue. It will not open the feature.",
+        "floatingOverviewWithoutSocial": "The buttons beside your character open voice, Agent, settings, and rest.",
         "floatingOverview": {
             "title": "Buttons beside your character",
-            "body": "The buttons beside your character open voice, Agent, Neko Universe, settings, and rest."
+            "body": "The buttons beside your character open voice, Agent, nekoverse, settings, and rest."
         },
         "mic": {
             "title": "Voice chat",
@@ -6749,8 +6751,7 @@
             "body": "This master switch enables Agent. The task panel shows progress and lets you stop tasks. You do not need to enable it."
         },
         "social": {
-            "title": "Meow universe",
-            "body": "Neko Universe unlocks after three calendar days for new users. Open the community here once it is available."
+            "body": "nekoverse unlocks after three calendar days for new users. Open it here once it is available."
         },
         "settings": {
             "title": "Settings",
@@ -6798,8 +6799,8 @@
             "returnToPage": "Go to the open page"
         },
         "socialClose": {
-            "title": "Return from the community",
-            "body": "The community is open. Click × to close it and return to the shortcuts beside your character."
+            "title": "Return from nekoverse",
+            "body": "nekoverse is open. Click × to close it and return to the shortcuts beside your character."
         },
         "micMenu": {
             "body": "This menu contains microphone, volume, and screen-sharing options. When you’re done looking, close the menu to continue."
@@ -6838,10 +6839,10 @@
             "sayingGoodbye": "Saying goodbye",
             "ending": "Wrapping up",
             "endingSoon": "Ending soon",
-            "loginRequired": "Sign in to Neko Universe in Settings first",
+            "loginRequired": "Sign in to nekoverse in N.E.K.O Settings first",
             "mutualRequired": "You no longer follow each other",
             "targetOffline": "This friend is offline and can't be invited",
-            "communityUnavailable": "Can't reach Neko Universe. Try later",
+            "communityUnavailable": "Couldn't reach nekoverse. Try again later",
             "declined": "{{name}} can't visit this time",
             "otherParty": "They",
             "readFailed": "Couldn't load friends",

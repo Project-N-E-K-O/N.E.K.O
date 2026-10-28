@@ -736,7 +736,7 @@
         "dismiss": "미리보기 닫기",
         "categories": {
             "news": "주요 뉴스",
-            "community": "Neko 커뮤니티",
+            "community": "먀오 우주",
             "video": "추천 영상",
             "personal": "개인 피드",
             "meme": "밈 공유",
@@ -3898,8 +3898,8 @@
             "proactiveVisionChatTooltip": "사전 예방적 채팅을 활성화하고 프라이버시 모드를 비활성화해야 합니다",
             "proactiveNewsChat": "뉴스 웹사이트",
             "proactiveNewsChatTooltip": "인기 주제와 小黑盒 홈 콘텐츠로 대화",
-            "proactiveCommunityChat": "N.E.K.O 커뮤니티",
-            "proactiveCommunityChatTooltip": "N.E.K.O 커뮤니티 탐색 피드의 공개 카드를 사용해 먼저 말을 겁니다",
+            "proactiveCommunityChat": "먀오 우주",
+            "proactiveCommunityChatTooltip": "먀오 우주 탐색 피드의 공개 카드를 사용해 먼저 말을 겁니다",
             "proactiveVideoChat": "동영상 웹사이트",
             "proactiveVideoChatTooltip": "동영상 콘텐츠를 사용하여 채팅",
             "proactivePersonalChat": "개인 업데이트",
@@ -3948,6 +3948,7 @@
             "localTracking": "로컬 추적",
             "lockedHoverFade": "잠금 호버 페이드",
             "forgeDropEffects": "티켓 획득 연출 및 효과음",
+            "hideCommunityEntry": "먀오 우주 입구 숨기기",
             "textGuardMaxLength": "응답 길이 상한",
             "unlimited": "무제한",
             "characters": "자",
@@ -6724,9 +6725,10 @@
             "body": "대화를 선택지로 이어가는 Galgame 모드로 바꿔요. 다시 클릭하면 일반 채팅으로 돌아와요."
         },
         "floatingOverviewContinueHint": "강조된 버튼 중 아무거나 누르면 다음으로 넘어갑니다. 기능은 열리지 않습니다.",
+        "floatingOverviewWithoutSocial": "캐릭터 옆 버튼에서 음성, Agent, 설정, 휴식을 열 수 있습니다.",
         "floatingOverview": {
             "title": "캐릭터 옆 바로가기 버튼",
-            "body": "캐릭터 옆 버튼에서 음성, Agent, Neko Universe, 설정, 휴식을 열 수 있습니다."
+            "body": "캐릭터 옆 버튼에서 음성, Agent, 먀오 우주, 설정, 휴식을 열 수 있습니다."
         },
         "mic": {
             "title": "음성 대화",
@@ -6749,8 +6751,7 @@
             "body": "Agent를 켜는 스위치예요. 작업 패널에서 진행 상황을 보고 중지할 수 있어요. 켜지 않아도 돼요."
         },
         "social": {
-            "title": "냥 유니버스",
-            "body": "Neko Universe는 신규 사용자가 3일을 사용하면 열립니다. 열리면 여기서 커뮤니티에 들어갈 수 있습니다."
+            "body": "먀오 우주는 신규 사용자가 3일을 사용하면 열립니다. 열리면 여기서 커뮤니티에 들어갈 수 있습니다."
         },
         "settings": {
             "title": "설정",
@@ -6798,8 +6799,8 @@
             "returnToPage": "열린 페이지로 이동"
         },
         "socialClose": {
-            "title": "커뮤니티에서 돌아가기",
-            "body": "커뮤니티가 열렸어요. × 버튼으로 닫고 캐릭터 옆 버튼 소개로 돌아가요."
+            "title": "먀오 우주에서 돌아가기",
+            "body": "먀오 우주가 열렸어요. × 버튼으로 닫고 캐릭터 옆 버튼 소개로 돌아가요."
         },
         "micMenu": {
             "body": "마이크, 음량, 화면 공유 설정이 있는 메뉴예요. 다 봤다면 메뉴를 닫고 계속하세요."
@@ -6838,10 +6839,10 @@
             "sayingGoodbye": "작별 인사 중",
             "ending": "마무리 중",
             "endingSoon": "곧 종료",
-            "loginRequired": "먼저 Neko 설정에서 먀오 우주에 로그인해 주세요",
+            "loginRequired": "먼저 N.E.K.O 설정에서 먀오 우주에 로그인해 주세요",
             "mutualRequired": "더 이상 서로 팔로우하지 않아 초대를 보낼 수 없습니다",
             "targetOffline": "상대가 현재 오프라인이라 초대할 수 없습니다",
-            "communityUnavailable": "먀오 우주에 연결할 수 없어요",
+            "communityUnavailable": "먀오 우주에 연결하지 못했어요",
             "declined": "{{name}}은(는) 이번에는 놀러 올 수 없어요",
             "otherParty": "상대",
             "readFailed": "친구 목록을 불러오지 못했어요",

@@ -736,7 +736,7 @@
         "dismiss": "Fechar prévia",
         "categories": {
             "news": "Notícias em destaque",
-            "community": "Comunidade Neko",
+            "community": "Universo Miau",
             "video": "Vídeo recomendado",
             "personal": "Seu feed",
             "meme": "Meme para você",
@@ -3898,8 +3898,8 @@
             "proactiveVisionChatTooltip": "Requer Chat Proativo ativado e Modo Privacidade desativado",
             "proactiveNewsChat": "Site de notícias",
             "proactiveNewsChatTooltip": "Use tópicos populares e conteúdo inicial do Xiaoheihe",
-            "proactiveCommunityChat": "Comunidade N.E.K.O",
-            "proactiveCommunityChatTooltip": "Usar cartões públicos do feed Descobrir da comunidade N.E.K.O para iniciar conversas",
+            "proactiveCommunityChat": "Universo Miau",
+            "proactiveCommunityChatTooltip": "Usar cartões públicos do feed Descobrir do Universo Miau para iniciar conversas",
             "proactiveVideoChat": "Site de vídeo",
             "proactiveVideoChatTooltip": "Use conteúdo de vídeo para bate-papo proativo",
             "proactivePersonalChat": "Atualizações pessoais",
@@ -3948,6 +3948,7 @@
             "localTracking": "Rastreamento Local",
             "lockedHoverFade": "Desbotamento de foco bloqueado",
             "forgeDropEffects": "Efeitos ao receber bilhete",
+            "hideCommunityEntry": "Ocultar acesso ao Universo Miau",
             "textGuardMaxLength": "Limite de comprimento de resposta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
@@ -6724,9 +6725,10 @@
             "body": "Muda a conversa para o modo Galgame, com opções de resposta. Clique novamente para voltar ao chat comum."
         },
         "floatingOverviewContinueHint": "Clique em qualquer botão destacado para continuar. A função não será aberta.",
+        "floatingOverviewWithoutSocial": "Os botões ao lado da personagem abrem voz, Agent, configurações e descanso.",
         "floatingOverview": {
             "title": "Botões ao lado do personagem",
-            "body": "Os botões ao lado da personagem abrem voz, Agent, Neko Universe, configurações e descanso."
+            "body": "Os botões ao lado da personagem abrem voz, Agent, Universo Miau, configurações e descanso."
         },
         "mic": {
             "title": "Chat de voz",
@@ -6749,8 +6751,7 @@
             "body": "Ativa o Agent. O painel de tarefas mostra o progresso e permite pará-las. Não é preciso ativar."
         },
         "social": {
-            "title": "Universo Miau",
-            "body": "O Neko Universe é liberado para novos usuários após três dias corridos. Depois, entre na comunidade por aqui."
+            "body": "O Universo Miau é liberado para novos usuários após três dias corridos. Depois, entre na comunidade por aqui."
         },
         "settings": {
             "title": "Configurações",
@@ -6798,8 +6799,8 @@
             "returnToPage": "Ir para a página aberta"
         },
         "socialClose": {
-            "title": "Voltar da comunidade",
-            "body": "A comunidade está aberta. Clique no × para fechar e voltar aos atalhos do personagem."
+            "title": "Voltar do Universo Miau",
+            "body": "O Universo Miau está aberto. Clique no × para fechar e voltar aos atalhos do personagem."
         },
         "micMenu": {
             "body": "Aqui ficam opções de microfone, volume e compartilhamento de tela. Feche o menu quando terminar de olhar."
@@ -6838,10 +6839,10 @@
             "sayingGoodbye": "Despedindo-se",
             "ending": "Encerrando",
             "endingSoon": "Termina em breve",
-            "loginRequired": "Primeiro entre no Universo Miau nas configurações do Neko",
+            "loginRequired": "Primeiro entre no Universo Miau nas configurações do N.E.K.O",
             "mutualRequired": "Vocês não se seguem mais; não é possível enviar o convite",
             "targetOffline": "Essa pessoa está offline e não pode ser convidada agora",
-            "communityUnavailable": "Sem conexão com o Universo Miau",
+            "communityUnavailable": "Falha ao conectar ao Universo Miau",
             "declined": "{{name}} não pode vir visitar desta vez",
             "otherParty": "O outro lado",
             "readFailed": "Falha ao carregar amigos",

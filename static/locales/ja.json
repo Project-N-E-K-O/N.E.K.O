@@ -736,7 +736,7 @@
         "dismiss": "プレビューを閉じる",
         "categories": {
             "news": "話題のニュース",
-            "community": "Nekoコミュニティ",
+            "community": "ミャオ宇宙",
             "video": "おすすめ動画",
             "personal": "あなたのフィード",
             "meme": "ミームを共有",
@@ -3898,8 +3898,8 @@
             "proactiveVisionChatTooltip": "自発的会話を有効にし、プライバシーモードを無効にする必要があります",
             "proactiveNewsChat": "ニュースサイト",
             "proactiveNewsChatTooltip": "トレンド話題と小黒盒のホーム内容をもとに話しかける",
-            "proactiveCommunityChat": "N.E.K.O コミュニティ",
-            "proactiveCommunityChatTooltip": "N.E.K.O コミュニティの発見ページにある公開カードを使って話しかける",
+            "proactiveCommunityChat": "ミャオ宇宙",
+            "proactiveCommunityChatTooltip": "ミャオ宇宙の発見ページにある公開カードを使って話しかける",
             "proactiveVideoChat": "動画サイト",
             "proactiveVideoChatTooltip": "動画コンテンツを使用してチャット",
             "proactivePersonalChat": "アクティビティ更新",
@@ -3948,6 +3948,7 @@
             "localTracking": "ローカル追跡",
             "lockedHoverFade": "ロック時ホバー透過",
             "forgeDropEffects": "チケット獲得演出・効果音",
+            "hideCommunityEntry": "ミャオ宇宙の入口を隠す",
             "textGuardMaxLength": "返信長さ上限",
             "unlimited": "無制限",
             "characters": "文字",
@@ -6724,9 +6725,10 @@
             "body": "会話を選択肢で進めるGalgameモードに切り替えます。もう一度クリックすると通常のチャットに戻ります。"
         },
         "floatingOverviewContinueHint": "ハイライトされたボタンのどれかを押して進みます。機能は開きません。",
+        "floatingOverviewWithoutSocial": "キャラクターの横のボタンから、音声、Agent、設定、おやすみを開けます。",
         "floatingOverview": {
             "title": "キャラクター横のショートカット",
-            "body": "キャラクターの横のボタンから、音声、Agent、Neko Universe、設定、おやすみを開けます。"
+            "body": "キャラクターの横のボタンから、音声、Agent、ミャオ宇宙、設定、おやすみを開けます。"
         },
         "mic": {
             "title": "音声チャット",
@@ -6749,8 +6751,7 @@
             "body": "Agentを有効にします。タスクパネルで進捗確認や停止ができます。有効化は不要です。"
         },
         "social": {
-            "title": "ニャンユニバース",
-            "body": "Neko Universe は新規ユーザーが3暦日利用すると開放されます。開放後はここからコミュニティへ入れます。"
+            "body": "ミャオ宇宙は新規ユーザーが3暦日利用すると開放されます。開放後はここからコミュニティへ入れます。"
         },
         "settings": {
             "title": "設定",
@@ -6798,8 +6799,8 @@
             "returnToPage": "開いているページへ"
         },
         "socialClose": {
-            "title": "コミュニティから戻る",
-            "body": "コミュニティが開きました。×をクリックして閉じ、キャラクターの横のボタンに戻りましょう。"
+            "title": "ミャオ宇宙から戻る",
+            "body": "ミャオ宇宙が開きました。×をクリックして閉じ、キャラクターの横のボタンに戻りましょう。"
         },
         "micMenu": {
             "body": "ここでマイク、音量、画面共有を設定できます。見終わったらメニューを閉じて次へ進みましょう。"
@@ -6838,10 +6839,10 @@
             "sayingGoodbye": "お別れ中",
             "ending": "締めくくり中",
             "endingSoon": "まもなく終了",
-            "loginRequired": "先に Neko の設定でミャオ宇宙にログインしてください",
+            "loginRequired": "先に N.E.K.O の設定でミャオ宇宙にログインしてください",
             "mutualRequired": "相互フォローではなくなったため、招待を送れません",
             "targetOffline": "相手は現在オフラインのため、招待できません",
-            "communityUnavailable": "ミャオ宇宙に接続できません",
+            "communityUnavailable": "ミャオ宇宙に接続できませんでした",
             "declined": "{{name}}は今回は遊びに来られません",
             "otherParty": "相手",
             "readFailed": "友達を読み込めませんでした",

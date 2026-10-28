@@ -736,7 +736,7 @@
         "dismiss": "收起预览",
         "categories": {
             "news": "热点资讯",
-            "community": "喵宇宙社区",
+            "community": "喵宇宙",
             "video": "视频推荐",
             "personal": "个人动态",
             "meme": "表情包分享",
@@ -3898,8 +3898,8 @@
             "proactiveVisionChatTooltip": "需开启主动搭话且关闭隐私模式",
             "proactiveNewsChat": "新闻网站",
             "proactiveNewsChatTooltip": "使用微博热议和小黑盒首页内容进行搭话",
-            "proactiveCommunityChat": "喵宇宙社区",
-            "proactiveCommunityChatTooltip": "使用喵宇宙社区发现页的公开卡牌进行搭话",
+            "proactiveCommunityChat": "喵宇宙",
+            "proactiveCommunityChatTooltip": "使用喵宇宙发现页的公开卡牌进行搭话",
             "proactiveVideoChat": "视频网站",
             "proactiveVideoChatTooltip": "使用视频内容进行搭话",
             "proactivePersonalChat": "个人动态",
@@ -3948,6 +3948,7 @@
             "localTracking": "局部跟踪",
             "lockedHoverFade": "锁定悬停淡化",
             "forgeDropEffects": "掉券动画与音效",
+            "hideCommunityEntry": "隐藏喵宇宙入口",
             "textGuardMaxLength": "回复长度上限",
             "unlimited": "无限制",
             "characters": "字",
@@ -6724,9 +6725,10 @@
             "body": "想用选项来接话，可以开启 Galgame 模式。再点一次就能回到普通聊天。"
         },
         "floatingOverviewContinueHint": "点任意高亮按钮继续，不会打开功能。",
+        "floatingOverviewWithoutSocial": "角色旁的按钮依次通向语音、Agent、设置和回窝。",
         "floatingOverview": {
             "title": "模型旁的快捷按钮",
-            "body": "角色旁的按钮分别通向语音、Agent、喵宇宙、设置和回窝。"
+            "body": "角色旁的按钮依次通向语音、Agent、喵宇宙、设置和回窝。"
         },
         "mic": {
             "title": "语音聊天",
@@ -6749,8 +6751,7 @@
             "body": "这里控制 Agent 是否启用，任务面板可以查看进度和停止任务。不要求打开开关。"
         },
         "social": {
-            "title": "喵宇宙",
-            "body": "喵宇宙在新用户使用满三个自然日后解锁，届时可以从这里进入社区。"
+            "body": "喵宇宙在新用户使用满三个自然日后解锁，届时可以从这里进入喵宇宙。"
         },
         "settings": {
             "title": "设置",
@@ -6798,8 +6799,8 @@
             "returnToPage": "回到已打开的页面"
         },
         "socialClose": {
-            "title": "从喵宇宙回来",
-            "body": "喵宇宙已经打开了。点 × 关闭这个页面，就能回到角色旁边，继续认识快捷按钮。"
+            "title": "从喵宇宙返回",
+            "body": "喵宇宙已经打开了。点 × 关闭它，就能回到角色旁边，继续认识快捷按钮。"
         },
         "micMenu": {
             "body": "这个菜单里可以选麦克风、调音量和设置屏幕分享。先认识这些入口就够了；看完点“收起菜单，继续”。"
@@ -6838,10 +6839,10 @@
             "sayingGoodbye": "正在道别",
             "ending": "正在收尾",
             "endingSoon": "即将结束",
-            "loginRequired": "请先在 Neko 设置里登录喵宇宙",
+            "loginRequired": "请先在 N.E.K.O 设置里登录喵宇宙",
             "mutualRequired": "你们已不再互相关注，无法发送邀请",
             "targetOffline": "对方当前离线，暂时不能邀请",
-            "communityUnavailable": "暂时连不上喵宇宙，请稍后再试",
+            "communityUnavailable": "暂时连不上喵宇宙，稍后再试一次",
             "declined": "{{name}}这次不能来串门",
             "otherParty": "对方",
             "readFailed": "读取好友失败",
