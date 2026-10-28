@@ -24,6 +24,7 @@ TRANSPORT_FILES = tuple(
         "transport.js",
         "pack.js",
         "unpack.js",
+        "voice.js",
         "trtc-transport.js",
         "livekit-transport.js",
         "frame-sink.js",
@@ -33,6 +34,7 @@ TRANSPORT_FILES = tuple(
 )
 BRIDGE_FILES = (
     PROJECT_ROOT / "static" / "visit" / "crop-geometry.js",
+    PROJECT_ROOT / "static" / "visit" / "voice-relay.js",
     PROJECT_ROOT / "static" / "visit" / "parent-bridge.js",
 )
 VISIT_ID = "AbCdEfGhIjKlMnOpQrStUv"
@@ -125,7 +127,17 @@ class FakeDocument {
   _detach(el) { if (el.id && this.byId.get(el.id) === el) this.byId.delete(el.id); }
 }
 class FakeFileReader { readAsDataURL(blob) { this.result = 'data:' + blob.type + ';base64,' + Buffer.from(blob.bytes).toString('base64'); setTimeoutF(() => this.onload && this.onload(), 0); } }
-class FakeMediaStream { constructor(tracks) { this.tracks = tracks; } getVideoTracks() { return this.tracks; } }
+class FakeMediaStream { constructor(tracks) { this.tracks = tracks; } getVideoTracks() { return this.tracks; } getAudioTracks() { return this.tracks.filter((t) => t.kind === 'audio'); } getTracks() { return this.tracks; } }
+// 本页 realm 的语音轨：createMediaStreamDestination 每次给一条新的 audio 轨（被 stop 后 ensureTrack 重建）
+class FakeAudioTrack { constructor() { this.id = 'audio-' + (++trackSeq); this.kind = 'audio'; this.readyState = 'live'; } stop() { this.readyState = 'ended'; } }
+const audioContexts = [];
+class FakeAudioContext {
+  constructor() { this.state = 'running'; this.closed = false; this.sources = []; this.dests = []; audioContexts.push(this); }
+  createMediaStreamSource(stream) { const node = { stream, connectedTo: null, connect(d) { this.connectedTo = d; }, disconnect() { this.connectedTo = null; } }; this.sources.push(node); return node; }
+  createMediaStreamDestination() { const d = { channelCount: 2, stream: new FakeMediaStream([new FakeAudioTrack()]) }; this.dests.push(d); return d; }
+  resume() { this.state = 'running'; return Promise.resolve(); }
+  close() { this.closed = true; return Promise.resolve(); }
+}
 
 // ── 假 WebSocket ───────────────────────────────────────────────────────
 const sockets = [];
@@ -141,12 +153,13 @@ FakeWebSocket.prototype.send.toString = () => 'function send() { [native code] }
 
 // ── 假 TRTC SDK ────────────────────────────────────────────────────────
 function makeFakeTRTC(log) {
-  const names = ['REMOTE_USER_ENTER', 'REMOTE_USER_EXIT', 'REMOTE_VIDEO_AVAILABLE', 'REMOTE_VIDEO_UNAVAILABLE', 'TRACK', 'CUSTOM_MESSAGE', 'CONNECTION_STATE_CHANGED', 'KICKED_OUT', 'NETWORK_QUALITY', 'STATISTICS', 'ERROR'];
+  const names = ['REMOTE_USER_ENTER', 'REMOTE_USER_EXIT', 'REMOTE_VIDEO_AVAILABLE', 'REMOTE_VIDEO_UNAVAILABLE', 'REMOTE_AUDIO_AVAILABLE', 'REMOTE_AUDIO_UNAVAILABLE', 'TRACK', 'CUSTOM_MESSAGE', 'CONNECTION_STATE_CHANGED', 'KICKED_OUT', 'NETWORK_QUALITY', 'STATISTICS', 'ERROR'];
   const EVENT = {}; names.forEach((n) => { EVENT[n] = n; });
   const instances = [];
   const remoteTrack = new FakeTrack(null);
+  const remoteAudioTrack = new FakeAudioTrack();
   return {
-    EVENT, TYPE: { SCENE_RTC: 'rtc', ROLE_ANCHOR: 'anchor', STREAM_TYPE_MAIN: 'main' }, instances, remoteTrack,
+    EVENT, TYPE: { SCENE_RTC: 'rtc', ROLE_ANCHOR: 'anchor', STREAM_TYPE_MAIN: 'main' }, instances, remoteTrack, remoteAudioTrack,
     isSupported: () => Promise.resolve({ result: true, detail: { isWebRTCSupported: true, isH264EncodeSupported: true, isVp8EncodeSupported: true, isH264DecodeSupported: true, isVp8DecodeSupported: true } }),
     create() {
       const handlers = {};
@@ -161,6 +174,12 @@ function makeFakeTRTC(log) {
         startRemoteVideo(c) { log.push(['startRemoteVideo', c.userId, c.view]); return Promise.resolve(); },
         stopRemoteVideo(c) { log.push(['stopRemoteVideo', c.userId]); return Promise.resolve(); },
         getVideoTrack() { return remoteTrack; },
+        startLocalAudio(c) { log.push(['startLocalAudio', c.option.audioTrack.id, c.option.profile]); return Promise.resolve(); },
+        updateLocalAudio(c) { log.push(['updateLocalAudio', c.option.audioTrack.id]); return Promise.resolve(); },
+        stopLocalAudio() { log.push(['stopLocalAudio']); return Promise.resolve(); },
+        muteRemoteAudio(userId, mute) { log.push(['muteRemoteAudio', userId, mute]); return Promise.resolve(); },
+        setRemoteAudioVolume(userId, volume) { log.push(['setRemoteAudioVolume', userId, volume]); },
+        getAudioTrack(o) { return o && o.userId ? remoteAudioTrack : null; },
         sendCustomMessage(m) { log.push(['send', clock.now, m.cmdId, m.data.byteLength]); },
         stopPlugin(n) { log.push(['stopPlugin', n]); return Promise.resolve(); },
         destroy() { log.push(['destroy']); },
@@ -179,7 +198,7 @@ function makeContext(opts) {
   const ctx = {
     console, TextEncoder, TextDecoder, URL, URLSearchParams, Uint8Array, ArrayBuffer, Buffer,
     setTimeout: setTimeoutF, clearTimeout: clearTimerF, setInterval: setIntervalF, clearInterval: clearTimerF,
-    WebSocket: FakeWebSocket, MediaStream: FakeMediaStream, FileReader: FakeFileReader,
+    WebSocket: FakeWebSocket, MediaStream: FakeMediaStream, FileReader: FakeFileReader, AudioContext: FakeAudioContext,
     RTCPeerConnection: function RTCPeerConnection() {}, EventTarget,
     document: doc, isSecureContext: true, devicePixelRatio: 1,
     navigator: { userAgent: 'harness' },
@@ -208,7 +227,7 @@ function credsFor(side, extra) {
     type: 'credentials', visit_id: VISIT_ID, side, transport: 'trtc',
     vendor: { trtc: { sdk_app_id: 1, user_id: side[0] + '_self', user_sig: 'sig1', private_map_key: 'pmk1', str_room_id: VISIT_ID, expire: 600 } },
     own_vid: side[0] + '_self', peer_vid: side === 'guest' ? 'h_peer' : null, allowed_hosts: [], tier: 'sd600',
-    crop: 'upper', publish: { codec: 'h264', bitrate_kbps: 560, fps: 30 }, expires_at: 0,
+    crop: 'upper', publish: { codec: 'h264', bitrate_kbps: 528, fps: 30 }, expires_at: 0,
   }, extra || {});
 }
 function makeController(side) {
@@ -226,18 +245,20 @@ function makeController(side) {
   c.preflight = { ok: true };
   return { ctx, c, log, TRTC, NVT, posted, sockets };
 }
-async function joinedController(side) {
+async function joinedController(side, credsExtra) {
   const h = makeController(side);
   h.c.onAuthToken('tok');
   const ws = sockets[sockets.length - 1];
   ws.serverOpen();
-  ws.serverSend(credsFor(side));
+  ws.serverSend(credsFor(side, credsExtra));
   await settle();
   h.ws = ws;
   h.trtc = h.TRTC.instances[h.TRTC.instances.length - 1];
   return h;
 }
 const kinds = (log) => log.map((e) => e[0]);
+// Servers opened the catgirl voice (OD-15 v4 plan A gate)
+const VOICE_ON = { publish: { codec: 'h264', bitrate_kbps: 528, audio: true, audio_kbps: 32, fps: 30 } };
 """
 
 

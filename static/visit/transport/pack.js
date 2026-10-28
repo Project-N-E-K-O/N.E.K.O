@@ -20,8 +20,8 @@
 
   // 与 VISIT_CONGESTION_LADDER 对偶：每级 [w, h, kbps]；只缩裁剪不动 fps
   var CONGESTION_LADDER = {
-    upper: [[320, 448, 560], [256, 352, 400], [192, 272, 300]],
-    full: [[256, 560, 560], [208, 448, 400], [160, 352, 300]],
+    upper: [[320, 448, 528], [256, 352, 400], [192, 272, 300]],
+    full: [[256, 560, 528], [208, 448, 400], [160, 352, 300]],
   };
 
   var LADDER_TRIGGER_MS = 10000;      // VISIT_CONGESTION_TRIGGER_S

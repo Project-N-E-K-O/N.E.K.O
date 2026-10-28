@@ -49,6 +49,7 @@ HOST_VID = "h_" + "1" * 24
 GUEST_VID = "g_" + "2" * 24
 CHAR_TAG = "c" * 32
 INVITE = "ABCDEFGHJK"
+TARGET_USER_ID = "f8ca78f1-57ad-4fb0-b706-28d39e6db0ba"
 KID = "k2026a"
 BASE = "https://servers.test"
 BEARER = "bearer-SECRET-7f3a"
@@ -90,6 +91,9 @@ def _pub_b64(key: Ed25519PrivateKey) -> str:
     return b64url_encode(raw)
 
 
+_OMIT = object()
+
+
 class FakeServers:
     """Minimal stateful Servers: signs tickets, binds invites, honours cancel."""
 
@@ -107,6 +111,7 @@ class FakeServers:
         self.pubkeys_status = 200
         self.key_window = (int(time.time()) - 86400, int(time.time()) + 30 * 86400)
         self.revoked: list[str] = []
+        self.publish: Any = _OMIT   # OD-15 v4 voice gate ``publish:{audio}``; _OMIT = pre-v4 Servers
 
     # —— Routes ——
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -134,6 +139,15 @@ class FakeServers:
             self.cancelled.add(visit_id)
             return httpx.Response(200, json={"ok": True})
         if path.startswith("/api/visit/invites/"):
+            return httpx.Response(200, json={
+                "visit_id": VISIT_ID,
+                "host_display_name": "Mochi",
+                "host_short_code": HOST_UID[:6].upper(),
+                "cross_region": False,
+                "expires_at": time.time() + 500,
+                "host_visit_uid": HOST_UID,
+            })
+        if path.startswith("/api/visit/direct/"):
             return httpx.Response(200, json={
                 "visit_id": VISIT_ID,
                 "host_display_name": "Mochi",
@@ -179,10 +193,13 @@ class FakeServers:
             "cross_region": False,
             "entitlement": {"tier": "sd600", "free_minutes_left_today": 70, "concurrent_rooms_left": 1},
         }
+        if self.publish is not _OMIT:
+            out["publish"] = self.publish
         if role == "guest":
             out["peer_vid"] = HOST_VID
         else:
-            out["invite_code"] = INVITE
+            if not body.get("direct"):
+                out["invite_code"] = INVITE
             out["invite_expires_at"] = iat + 600
         # Serialize explicitly with ensure_ascii: httpx json= writes UTF-8 directly and cannot encode malformed lone-surrogate values
         return httpx.Response(200, content=json.dumps(out).encode("ascii"),
@@ -243,6 +260,34 @@ async def _guest(**kw) -> cr.VisitCredentials:
     return await cr.fetch_visit_credentials(role="guest", visit_id=VISIT_ID, char_tag=CHAR_TAG, **kw)
 
 
+# ── Voice gate (OD-15 v4, plan A) ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("publish", [
+    _OMIT, None, True, "audio", ["audio"], {}, {"audio": False}, {"audio": None}, {"audio": "true"}, {"audio": 1},
+])
+async def test_voice_gate_is_off_unless_publish_audio_is_literally_true(servers, publish):
+    # Missing (pre-v4 Servers), not an object, or ``audio`` anything but a literal true: not an error, just no voice.
+    servers.publish = publish
+    assert (await _host()).audio is False
+    assert (await _guest()).audio is False
+
+
+async def test_voice_gate_true_is_kept_for_both_sides(servers):
+    servers.publish = {"audio": True}
+    assert (await _host()).audio is True
+    assert (await _guest()).audio is True
+
+
+async def test_renewal_carries_the_voice_gate(servers):
+    # Servers' emergency stop rides on renewal: with_renewed_vendor must not keep the old gate.
+    servers.publish = {"audio": True}
+    first = await _host()
+    servers.publish = {"audio": False}
+    renewed = await _host()
+    assert first.with_renewed_vendor(renewed).audio is False
+
+
 # ── Request body and char_tag ──────────────────────────────────────────────────
 
 
@@ -262,6 +307,31 @@ async def test_host_request_body_and_headers(servers):
     assert creds.invite_code == INVITE and creds.peer_vid is None
     assert creds.vid == HOST_VID and creds.visit_uid == HOST_UID
     assert creds.tier == "sd600"
+
+
+@pytest.mark.asyncio
+async def test_direct_credentials_use_target_account_without_invite_code(servers):
+    host = await _host(target_user_id=TARGET_USER_ID, direct=True)
+    host_body = servers.bodies("/api/visit/credentials")[-1]
+    assert host_body["target_user_id"] == TARGET_USER_ID and host_body["direct"] is True
+    assert "invite_code" not in host_body
+    assert host.invite_code is None and host.invite_expires_at is not None
+
+    guest = await cr.fetch_visit_credentials(
+        role="guest", visit_id=VISIT_ID, char_tag=CHAR_TAG, direct=True,
+    )
+    guest_body = servers.bodies("/api/visit/credentials")[-1]
+    assert guest_body["direct"] is True and "invite_code" not in guest_body
+    assert guest.peer_vid == HOST_VID
+
+
+@pytest.mark.asyncio
+async def test_direct_preview_uses_visit_id_and_current_account(servers):
+    preview = await cr.fetch_direct_visit_preview(VISIT_ID, generic_label="Neko")
+    assert preview.visit_id == VISIT_ID and preview.host_display_name == "Mochi"
+    request = next(r for r in servers.requests if r.url.path.startswith("/api/visit/direct/"))
+    assert request.url.path == "/api/visit/direct/" + VISIT_ID + "/preview"
+    assert request.headers["authorization"] == f"Bearer {BEARER}"
 
 
 class _CharsCM:
@@ -939,6 +1009,35 @@ async def test_grant_renews_vendor_and_keeps_identity_ticket(servers):
     assert renewed.expires_at == first.expires_at
     assert servers.count("/api/visit/credentials") == 2
     assert servers.bodies("/api/visit/credentials")[-1]["invite_code"] == INVITE
+
+
+@pytest.mark.asyncio
+async def test_direct_guest_grant_renews_without_an_invite_code(servers):
+    first = await _guest(direct=True, invite_code=None)
+    grant = cr.VisitGrant(first, direct=True)
+
+    await grant.renew()
+
+    body = servers.bodies("/api/visit/credentials")[-1]
+    assert body["role"] == "guest"
+    assert body["direct"] is True
+    assert "invite_code" not in body
+
+
+@pytest.mark.asyncio
+async def test_direct_host_grant_keeps_target_account_when_it_renews(servers):
+    first = await _host(target_user_id=TARGET_USER_ID, direct=True)
+    grant = cr.VisitGrant(
+        first, target_user_id=TARGET_USER_ID, direct=True,
+    )
+
+    await grant.renew()
+
+    body = servers.bodies("/api/visit/credentials")[-1]
+    assert body["role"] == "host"
+    assert body["target_user_id"] == TARGET_USER_ID
+    assert body["direct"] is True
+    assert "invite_code" not in body
 
 
 @pytest.mark.asyncio

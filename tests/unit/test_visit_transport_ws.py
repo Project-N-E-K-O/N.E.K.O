@@ -1384,6 +1384,24 @@ def test_credentials_message_tier_comes_from_the_credentials():
     assert sd["publish"]["bitrate_kbps"] == vs.VISIT_TIERS["sd600"]["video_kbps"]
 
 
+def test_voice_budget_fits_the_sd600_tier():
+    # OD-15 v4: the voice track's 32 kbps comes out of the old 560 kbps video cap (video + voice + data <= 600).
+    sd = vs.VISIT_TIERS["sd600"]
+    assert sd["video_kbps"] + vs.VISIT_AUDIO_KBPS + sd["data_kbps_max"] <= 600
+    assert vs.VISIT_LIVEKIT_PUBLISH["maxBitrate"] == sd["video_kbps"] * 1000
+    msg = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
+    assert msg["publish"]["audio_kbps"] == vs.VISIT_AUDIO_KBPS
+
+
+def test_credentials_message_forwards_the_voice_gate_strictly():
+    import dataclasses
+
+    off = tw.build_credentials_message(_creds(), side="guest", crop="upper", codec="vp9")
+    assert off["publish"]["audio"] is False          # Pre-v4 Servers: no gate -> no voice.
+    on = tw.build_credentials_message(dataclasses.replace(_creds(), audio=True), side="guest", crop="upper", codec="vp9")
+    assert on["publish"]["audio"] is True
+
+
 def _wait_until(pred, timeout: float = 5.0) -> None:
     import time as _t
 

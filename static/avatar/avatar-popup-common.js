@@ -44,8 +44,16 @@
         return Array.from(document.querySelectorAll(selector)).some(isOverlayVisible);
     }
 
+    function hasVisibleSocialHub() {
+        const layer = document.querySelector('.neko-social-hub-layer:not([hidden])');
+        if (!layer) return false;
+        return Array.from(layer.querySelectorAll('.neko-social-hub-panel')).some(isOverlayVisible);
+    }
+
     function hasVisibleOverlay(ownerPrefix = '') {
-        return hasVisiblePopup(ownerPrefix) || hasVisibleSidePanel(ownerPrefix);
+        // 串门面板与设置 popup 一样依附于当前模型按钮列。无论当前模型前缀是什么，
+        // 只要串门仍打开，就要阻止悬浮按钮因鼠标移出模型而自动淡出。
+        return hasVisiblePopup(ownerPrefix) || hasVisibleSidePanel(ownerPrefix) || hasVisibleSocialHub();
     }
 
     function isRectOverlappedByVisibleOverlay(rect, ownerPrefix = '') {
@@ -56,7 +64,9 @@
         const sidePanelSelector = ownerPrefix
             ? `[data-neko-sidepanel-owner^="${ownerPrefix}-popup-"]`
             : '[data-neko-sidepanel-owner]';
-        return Array.from(document.querySelectorAll(`${popupSelector}, ${sidePanelSelector}`)).some(element => {
+        return Array.from(document.querySelectorAll(
+            `${popupSelector}, ${sidePanelSelector}, .neko-social-hub-layer:not([hidden]) .neko-social-hub-panel`
+        )).some(element => {
             const overlayRect = getVisibleOverlayRect(element);
             return overlayRect &&
                 rect.right > overlayRect.left && rect.left < overlayRect.right &&
@@ -1036,6 +1046,7 @@
         observePopupLayout,
         hasVisiblePopup,
         hasVisibleSidePanel,
+        hasVisibleSocialHub,
         hasVisibleOverlay,
         isRectOverlappedByVisibleOverlay
     };

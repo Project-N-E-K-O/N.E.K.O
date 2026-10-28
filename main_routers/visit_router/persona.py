@@ -775,7 +775,10 @@ async def generate_visit_persona(
     hits: list[PrivacyHit] = []
     for _attempt in range(2):
         try:
-            raw = await asyncio.wait_for(llm(build_visit_persona_prompt(card_in, lang)), VISIT_LLM_TIMEOUT_S)
+            rejected_fragments = truncate_to_tokens("\n".join(hit.value for hit in hits), VISIT_PERSONA_MAX_TOKENS)
+            raw = await asyncio.wait_for(llm(build_visit_persona_prompt(
+                card_in, lang, rejected_fragments=rejected_fragments,
+            )), VISIT_LLM_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit persona: generation failed: %s", type(exc).__name__)
             return PersonaResult(error="llm_unavailable")

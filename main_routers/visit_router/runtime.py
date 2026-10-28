@@ -139,6 +139,8 @@ _SESSION_CLOSE_S = 5.0
 _RESERVED_SEND_MAX_S = 10.0
 _SEAL_MAX_S = 10.0
 _DISPLAY_FLUSH_S = 2.0
+_VOICE_OFF_SEND_S = 1.0  # Bound the voice-off media write that must precede handing the TTS chain back to private chat.
+_VOICE_OFF_PAGE_S = 2.5  # The voice-off display frame: a little over the frame write timeout (host_port._FRAME_TIMEOUT_S).
 _ENDED_AFTER_DISPLAY_S = 2.0  # Bound waiting for ended notifications queued behind stubborn display writes, then send best effort.
 _ACCOUNT_RECORD_S = 3.0
 _ACCOUNT_RETRY_DELAYS_S = (1.0, 5.0, 30.0, 120.0, 600.0)
@@ -326,12 +328,17 @@ def apply_voice_setting(enabled: bool) -> int:
     Pushed by the settings save instead of re-read before each line, so the
     reply runner keeps no await between its admission check and taking the
     line; the home-coming line and debrief summary follow it as well. The
-    one-way TTS fallback (``voice.fallen_back``) is kept. Returns how many
-    runtimes were updated.
+    one-way TTS fallback (``voice.fallen_back``) is kept. The voice audio
+    tracks follow at once (OD-15 v4): a fresh ``media`` snapshot is sent so
+    the transport page stops / resumes sending and playing catgirl audio.
+    Returns how many runtimes were updated.
     """
     runtimes = live_runtimes()
     for rt in runtimes:
+        changed = rt.voice.enabled != bool(enabled)
         rt.voice.enabled = bool(enabled)
+        if changed and rt.ready_exchanged:
+            rt.spawn(rt.send_media(), name="voice-media")
     return len(runtimes)
 
 
@@ -676,6 +683,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         persona_text: str,
         crop: str = VISIT_CROP_DEFAULT,
         invite_code: Optional[str] = None,
+        target_user_id: Optional[str] = None,
+        direct: bool = False,
         deps: Optional[RuntimeDeps] = None,
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
@@ -689,6 +698,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.persona_text = persona_text
         self.crop = crop if crop in ("upper", "full") else VISIT_CROP_DEFAULT
         self.invite_code = invite_code
+        self.target_user_id = target_user_id
+        self.direct = direct
         self.deps = deps or runtime_deps()
         self.clock = clock
         self.wall = wall
@@ -768,6 +779,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._memory_off_unsaved = False
         self._state_writing: Optional[asyncio.Future] = None  # State write still running after activation cancellation; finalization awaits completion first.
         self._renew_task: Optional[asyncio.Task] = None
+        self._audio_gate: Optional[bool] = None
+        """Servers' ``publish.audio`` latched for this visit (OD-15 v4): the first issue decides, a renewal can only
+        turn it off (emergency stop, never back on); ``None`` until the first credentials."""
         self._renew_failures = 0
         self._renew_retry_at: Optional[float] = None
         self._exit_task: Optional[asyncio.Task] = None
@@ -941,7 +955,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         _register(self)
         register_transport_session(self.transport)
         self._pump_task = asyncio.ensure_future(self._pump_loop())
-        self.spawn(self.push(PHASE_PENDING, transport=None))
+        self.spawn(self.push(
+            PHASE_PENDING,
+            transport=None,
+            target_user_id=self.target_user_id if self.direct else None,
+        ))
 
     # -- Capability gates and credentials --
 
@@ -1012,8 +1030,31 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def _credentials_message(self, *, refresh: bool) -> dict:
         creds = self.grant.current  # type: ignore[union-attr]
         peer_vid = self.peer.vid if self.peer is not None else None
+        audio = self._voice_gate()
         return build_credentials_message(creds, side=self.side, crop=self.crop, codec=self._codec(),
-                                         peer_vid=peer_vid, refresh=refresh)
+                                         peer_vid=peer_vid, refresh=refresh, audio=audio)
+
+    def _voice_gate(self) -> bool:
+        """Servers' voice gate for this visit, latched (OD-15 v4).
+
+        The first credentials decide. A renewal answering ``publish.audio``
+        anything but true while it was on is Servers' emergency stop: the
+        gate stays off for the rest of the visit and a fresh ``media``
+        snapshot stops sending and playing voice at once. Off to on is
+        ignored (it takes effect next visit).
+        """
+        creds = self.creds
+        if creds is None:
+            return False
+        on = creds.audio is True
+        if self._audio_gate is None:
+            self._audio_gate = on
+        elif self._audio_gate and not on:
+            self._audio_gate = False
+            logger.info("visit %s: Servers turned the voice tracks off", self.visit_id[:6])
+            if self.ready_exchanged:
+                self.spawn(self.send_media(), name="voice-revoked")
+        return bool(self._audio_gate)
 
     async def _obtain_credentials(self) -> bool:
         """Main turn interrupt → Servers credentials → takeover (§3.2.1 steps 4–6)."""
@@ -1036,6 +1077,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             role=self.side, visit_id=self.visit_id, char_tag=self.character_uid,
             tier=VISIT_VIDEO_TIER_DEFAULT, display_name=self.lanlan_name,
             invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
+            direct=self.direct,
             expect_account=self.admitted_account,
         ))
         _credential_requests.add(request)
@@ -1049,8 +1092,13 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             logger.warning("visit %s: credentials failed: %s", self.visit_id[:6], type(exc).__name__)
             self.request_finalize("servers_unreachable")
             return False
-        self.grant = cr.VisitGrant(creds, display_name=self.lanlan_name,
-                                   invite_code=self.invite_code if self.side == "guest" else None)
+        self.grant = cr.VisitGrant(
+            creds,
+            display_name=self.lanlan_name,
+            invite_code=self.invite_code if self.side == "guest" else None,
+            target_user_id=self.target_user_id if self.side == "host" else None,
+            direct=self.direct,
+        )
         try:
             # Bound local file-lock/disk accounting so pending visits cannot hold routing forever.
             await asyncio.wait_for(self.deps.record_account(creds.account, creds.visit_uid), _ACCOUNT_RECORD_S)
@@ -1064,7 +1112,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             self.request_finalize("busy")
             self._cancel_room_once()
             return False
-        if self.side == "host" and not creds.invite_code:
+        if self.side == "host" and not self.direct and not creds.invite_code:
             logger.warning("visit %s: host credentials without an invite code", self.visit_id[:6])
             self.request_finalize("servers_unreachable")
             return False
@@ -1253,8 +1301,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
 
             self.liveness.wait_deadline = now + VISIT_INVITE_WAIT_S
             self._set_phase(PHASE_INVITE_READY)
-            await self.push(PHASE_INVITE_READY, invite_code=creds.invite_code,
-                            invite_expires_at=creds.invite_expires_at, transport=creds.transport)
+            invite_frame = {
+                "invite_expires_at": creds.invite_expires_at,
+                "transport": creds.transport,
+            }
+            if not self.direct:
+                invite_frame["invite_code"] = creds.invite_code
+            else:
+                invite_frame["target_user_id"] = self.target_user_id
+            await self.push(PHASE_INVITE_READY, **invite_frame)
         else:
             from config.visit_settings import VISIT_PEER_LOST_S
 
@@ -1384,10 +1439,14 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         creds = self.creds
         frames: list[dict] = []
         if self.side == "host" and self.phase == PHASE_INVITE_READY and creds is not None:
-            frames.append({"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
-                           "visit_id": self.visit_id, "invite_code": creds.invite_code,
-                           "invite_expires_at": creds.invite_expires_at, "transport": creds.transport,
-                           "ts": self.wall()})
+            frame = {"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
+                     "visit_id": self.visit_id, "invite_expires_at": creds.invite_expires_at,
+                     "transport": creds.transport, "ts": self.wall()}
+            if self.direct:
+                frame["target_user_id"] = self.target_user_id
+            else:
+                frame["invite_code"] = creds.invite_code
+            frames.append(frame)
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
         return frames
@@ -1405,8 +1464,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     # -- Media --
 
     def media_snapshot(self) -> dict:
-        """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``)."""
-        snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder}
+        """The full ``media`` state of this phase (§4.3; never ``true`` before ``ready``).
+
+        Voice is symmetric (OD-15 v4): both sides publish their own TTS output
+        and play the peer's, only after ``ready``, only while
+        ``visitVoiceEnabled`` is on and only when the current credentials carry
+        Servers' ``publish.audio`` as a literal true (latched, see
+        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays catgirl audio. A
+        TTS fallback keeps the track published but silent. Voice is off from
+        the moment the visit starts ending: the tap carries the shared TTS
+        chain, so once private chat is back nothing more may reach the room.
+        """
+        voice = bool(self.ready_exchanged and not self.finalizing and self.voice.enabled and self._voice_gate())
+        snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
             snap["publish"] = bool(self.ready_exchanged and self.video_ok)
         else:
@@ -1927,6 +1997,27 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     async def _exit_steps(self, reason: str) -> None:
         # 1. Finish current local line first, placing text{final} before leave and into this transcript.
         await self.close_current_line("visit_end")
+        # 1b. Voice off before private chat gets the TTS chain back (OD-15 v4): the page taps the shared assistant
+        # output. Two writes, both before the takeover is released:
+        #   - ``visit_state_change{voice_off}`` straight on the display socket (not via the queue): private replies'
+        #     TTS audio reaches the page over this same connection afterwards, so the page drops the tap before any
+        #     private audio can arrive (one connection keeps order). It is bounded by the frame write timeout; if it
+        #     failed, that connection cannot carry private audio either.
+        #   - the voice-off ``media`` snapshot (finalizing is already true), so the iframe unpublishes as well.
+        # Writes are awaited, never cancelled (a cut-off frame is worse than a late one).
+        if self.ready_exchanged and self._audio_gate:
+            page_off = self.spawn(self.host.send_frame({
+                "type": "visit_state_change", "action": "voice_off", "side": self.side,
+                "visit_id": self.visit_id, "ts": self.wall(),
+            }), name="voice-off-page")
+            media_off = self.spawn(self.send_media(), name="voice-off") if self.transport_alive() else None
+            await asyncio.wait([page_off], timeout=_VOICE_OFF_PAGE_S)
+            if media_off is not None:
+                await asyncio.wait([media_off], timeout=_VOICE_OFF_SEND_S)
+            confirmed = page_off.done() and not page_off.cancelled() and page_off.exception() is None and page_off.result()
+            if not confirmed:
+                logger.warning("visit %s: voice-off frame not confirmed on the page before takeover release",
+                               self.visit_id[:6])
         # 2. Close data channels in background: drain -> leave -> retransmission grace, blocking no later steps.
         closing = self._closing_task = asyncio.ensure_future(self._close_channel(reason))
         # 3. Retain callbacks temporarily, immediately release takeover so family resumes ordinary chat.
@@ -2810,6 +2901,8 @@ async def start_visit(
     *,
     crop: str = VISIT_CROP_DEFAULT,
     invite_code: Optional[str] = None,
+    target_user_id: Optional[str] = None,
+    direct: bool = False,
     visit_id: Optional[str] = None,
     host: Optional[VisitHost] = None,
     deps: Optional[RuntimeDeps] = None,
@@ -2890,7 +2983,8 @@ async def start_visit(
             raise VisitRefused(403, {"code": "VISIT_BANNED"})
         rt = VisitRuntime(
             lanlan_name=name, side=side, visit_id=vid, host=host, character_uid=gate.character_uid or "",
-            persona_text=gate.text or "", crop=crop, invite_code=invite_code, deps=deps,
+            persona_text=gate.text or "", crop=crop, invite_code=invite_code,
+            target_user_id=target_user_id, direct=direct, deps=deps,
             clock=clock, wall=wall,
         )
     except BaseException:

@@ -62,7 +62,7 @@ The project is not “vanilla JS only.” It includes static/Jinja JavaScript, R
 
 ## Catgirl visit: local development loopback
 
-Visits (design record: [Catgirl visiting infrastructure](/design/visit-infrastructure); Servers contract: [Servers contract](/design/visit-servers-contract)) are off unless `NEKO_VISIT_ENABLED=1`. What the code supports today:
+Visits (design record: [Catgirl visiting infrastructure](/design/visit-infrastructure); Servers contract: [Servers contract](/design/visit-servers-contract)) are enabled by default. Set `NEKO_VISIT_ENABLED=0` to hide the entry points and disable starting or joining new visits during an emergency rollback. What the code supports today:
 
 - **Servers is still required.** Credentials (`POST /api/visit/credentials`) and the ticket public keys (`GET /api/visit/pubkeys`) are always fetched from `NEKO_SOCIAL_BASE_URL` (default: the production community site) with the signed-in community OAuth session. There is no built-in local Servers stand-in, and ticket verification fails closed when the public-key list has never been fetched, so a loopback test needs a Servers test environment that implements the contract, plus one community account per side (redeeming your own invite is rejected).
 - **Dev signing key.** `NEKO_VISIT_DEV_KEYFILE=<path>` adds that Ed25519 key's public half under the reserved dev kid. Verification follows the production code path; there is no skip-verify branch. Create a key and sign tickets with the same key using `scripts/visit_dev_mint.py`. A Servers test environment can return those tickets as `identity_ticket`:

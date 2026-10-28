@@ -22,6 +22,16 @@ from utils.music_crawlers import (
 # ==========================================
 
 @pytest.fixture(autouse=True)
+def _isolate_playback_authorization(monkeypatch):
+    """These tests isolate metadata/source selection; real authorization is covered
+    with HTTP transports in test_music_candidate_playability.py.
+    """
+    async def authorized(self, tracks, *, allow_unverified=False):
+        return tracks
+
+    monkeypatch.setattr(NeteaseCrawler, 'filter_playable_tracks', authorized)
+
+@pytest.fixture(autouse=True)
 async def clear_music_caches():
     """Clear global caches before each test to prevent interference."""
     # Clear the deduplication cache.
@@ -2030,7 +2040,7 @@ async def test_ordinary_personalized_keyword_uses_public_search():
     assert response['success'] is True
     assert [item['name'] for item in response['data']] == ['Yellow']
     mock_netease.personalized_recommendations.assert_not_awaited()
-    mock_netease.search.assert_awaited_once_with('Yellow', 5)
+    mock_netease.search.assert_awaited_once_with('Yellow', 5, allow_unverified=True)
 
 
 @pytest.mark.unit

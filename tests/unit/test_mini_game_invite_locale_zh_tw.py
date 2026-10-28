@@ -30,6 +30,7 @@ import pytest
 
 from config.prompts.prompts_proactive import (
     MINI_GAME_INVITE_LINES_BY_GAME,
+    MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES,
     MINI_GAME_INVITE_OPTION_LABELS,
     normalize_mini_game_invite_locale,
 )
@@ -145,7 +146,7 @@ def test_option_payload_renders_traditional_labels(spelling):
     """The payload builder does an exact ``.get``; an unnormalized tag would
     have fallen through to the Simplified labels without any error."""
     payload = _build_mini_game_invite_options_payload(
-        invite_lang=spelling, game_type=GAME_TYPES[0], session_id="s",
+        invite_lang=spelling, game_type="soccer", session_id="s",
     )
     labels = {opt["choice"]: opt["label"] for opt in payload["options"]}
     assert labels == MINI_GAME_INVITE_OPTION_LABELS["zh-TW"]
@@ -156,10 +157,31 @@ def test_option_payload_renders_traditional_labels(spelling):
 @pytest.mark.parametrize("spelling", SIMPLIFIED_SPELLINGS)
 def test_option_payload_still_renders_simplified_labels(spelling):
     payload = _build_mini_game_invite_options_payload(
-        invite_lang=spelling, game_type=GAME_TYPES[0], session_id="s",
+        invite_lang=spelling, game_type="soccer", session_id="s",
     )
     labels = {opt["choice"]: opt["label"] for opt in payload["options"]}
     assert labels == MINI_GAME_INVITE_OPTION_LABELS["zh"]
+
+
+@pytest.mark.parametrize("game_type", tuple(MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES))
+def test_option_overrides_cover_every_locale_with_matching_script(game_type):
+    """A per-game override must exist for every shared locale, and zh-TW stays Traditional."""
+    rows = MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES[game_type]
+    assert set(rows) == set(MINI_GAME_INVITE_OPTION_LABELS)
+    assert all(set(row) <= set(OPTION_KEYS) and row for row in rows.values())
+    assert not set(SIMPLIFIED_ONLY) & set("".join(rows["zh-TW"].values()))
+
+
+@pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS + SIMPLIFIED_SPELLINGS)
+def test_watch_together_options_override_accept_and_decline_only(spelling):
+    payload = _build_mini_game_invite_options_payload(
+        invite_lang=spelling, game_type="watch-together", session_id="s",
+    )
+    labels = {opt["choice"]: opt["label"] for opt in payload["options"]}
+    locale = "zh-TW" if spelling in TRADITIONAL_SPELLINGS else "zh"
+    override = MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES["watch-together"][locale]
+    assert labels == {**MINI_GAME_INVITE_OPTION_LABELS[locale], **override}
+    assert labels["later"] == MINI_GAME_INVITE_OPTION_LABELS[locale]["later"]
 
 
 # -- 3. Parser: short-code handling collapses zh-TW --

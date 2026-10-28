@@ -122,6 +122,12 @@ export default function MessageBlockView({
             className={`message-action-button variant-${action.variant || 'secondary'}`}
             type="button"
             disabled={action.disabled || !interactive}
+            data-compact-hit-region={presentation === 'bubble' ? 'true' : undefined}
+            data-compact-hit-region-id={presentation === 'bubble'
+              ? `history:message-action:${message.id}:${action.id}`
+              : undefined}
+            data-compact-hit-region-kind={presentation === 'bubble' ? 'message-action' : undefined}
+            data-compact-no-drag={presentation === 'bubble' ? 'true' : undefined}
             onClick={interactive ? () => onAction?.(message, action) : undefined}
           >
             {action.label}

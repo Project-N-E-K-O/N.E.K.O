@@ -332,6 +332,17 @@ class ReceiveMixin:
         self._set_phase(PHASE_AWAITING)
         creds = self.creds
         if self.side == "host":
+            if self.direct:
+                # A directed room exists only because this host's family
+                # explicitly invited this account.  The guest has just made
+                # the only remaining human decision before joining; asking
+                # the host a second time would duplicate consent and can leave
+                # an accepted invitation stuck at the door.
+                # Activation can take up to VISIT_ACTIVATION_ALLOWANCE_S. Keep
+                # the receive pipeline free for heartbeats, leave and acks while
+                # the runtime-owned acceptance task performs that bounded work.
+                self.spawn(self._auto_accept_direct(), name="direct-accept")
+                return
             from config.visit_settings import VISIT_ACCEPT_TIMEOUT_S
 
             self._accept_deadline = now + VISIT_ACCEPT_TIMEOUT_S
@@ -345,6 +356,16 @@ class ReceiveMixin:
             await self.send_media()
         else:
             await self.push(PHASE_AWAITING)
+
+    async def _auto_accept_direct(self) -> None:
+        status, body = await self.accept(True)
+        if status == 200 or self.finalizing:
+            return
+        logger.warning(
+            "visit %s: direct auto-accept failed (%s, %s)",
+            self.visit_id[:6], status, body.get("error") if isinstance(body, dict) else None,
+        )
+        self.request_finalize("declined")
 
     async def _clean_peer_name(self, raw: Optional[str], uid: str) -> str:
         from main_logic.visit.sanitize import neutralize_display_name

@@ -771,6 +771,34 @@
         // 桌面端这里不发起 OAuth：账号在托盘设置里登录，或直接在社区页登录后由桌面静默认领；
         // 仅浏览器环境未登录时在预开的弹窗里走 OAuth。
         window.addEventListener('live2d-social-click', async () => {
+            // 桌面端与浏览器都优先复用贴着社交按钮出现的页面内浮层。
+            // 面板里的“打开完整社区”设置一次性旁路标记，再复用下方 OAuth 流程。
+            if (window.__nekoOpenFullCommunityOnce) {
+                window.__nekoOpenFullCommunityOnce = false;
+            } else if (window.nekoSocialHub && typeof window.nekoSocialHub.handlePrimaryClick === 'function') {
+                // 与设置菜单一致，优先复用页面内、贴着按钮出现的浮层。
+                if (window.nekoSocialHub.handlePrimaryClick() !== false) return;
+            } else if (window.electronShell && typeof window.electronShell.openSocialHub === 'function') {
+                // 兼容尚未加载页面内浮层的旧页面；正常桌面入口不会走到这里。
+                const socialButton = Array.from(document.querySelectorAll('[id$="-btn-social"]')).find((button) => {
+                    const rect = button.getBoundingClientRect();
+                    const style = window.getComputedStyle(button);
+                    return rect.width > 0 && rect.height > 0
+                        && style.display !== 'none' && style.visibility !== 'hidden';
+                });
+                const rect = socialButton ? socialButton.getBoundingClientRect() : null;
+                const result = await window.electronShell.openSocialHub({
+                    anchorRect: rect ? {
+                        left: rect.left,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                        width: rect.width,
+                        height: rect.height,
+                    } : null,
+                });
+                if (!result || result.handled !== false) return;
+            }
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
             }

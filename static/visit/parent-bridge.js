@@ -12,6 +12,8 @@
  * - 分数累加器把任意源帧率抽成目标帧率：直通 30 fps、兼容模式（--disable-gpu-compositing，
  *   WebGL 源快照回读每帧约 8 ms）15 fps。
  * - 可见性 = 帧饥饿检测：>1 s 没有成功的 onFrame 就告诉 iframe hidden，不看页面可见性事件。
+ * - 猫娘语音（OD-15 v4）：传输页报 voice / remote_audio，交给 voice-relay.js 开关自家 TTS 旁路、
+ *   把对端语音接进自家扬声器；换 iframe / 移除 iframe 时一并收掉。
  * 除 PNGTuber 取帧期间的节拍外，本文件没有每帧循环、不自起动画帧、不建 WebSocket。
  */
 (function (root) {
@@ -107,6 +109,8 @@
     var clearTimeoutFn = env.clearTimeout || function (h) { win.clearTimeout(h); };
     var geo = env.geometry || win.NekoVisitCropGeometry;
     var assetVersion = env.assetVersion || '';
+    var relayFactory = win.NekoVisitVoiceRelay;
+    var voice = env.voice || (relayFactory ? relayFactory.createVoiceRelay({ window: win, log: function (level, msg) { logFrame(level, msg); } }) : null);
 
     var state = {
       frame: null,
@@ -144,6 +148,7 @@
       peerBadge: null,
       firstFrame: null,
       publishing: false,
+      voiceClosed: false,    // 这一场的语音已被收尾关掉（voice_off / ending）：之后的开启请求一律不理
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       authRetryVisitId: null,  // 已经因 4403 重取 token 重建过一次的场次（同一场只重来一次）
       forceTokenRefresh: false,  // 下一次鉴权跳过缓存的 token、直接重取
@@ -312,6 +317,7 @@
       state.place = null;
       state.firstFrame = null;
       state.publishing = false;
+      state.voiceClosed = false;
       state.captureFps = isCompatMode() ? CAPTURE_FPS_COMPAT : CAPTURE_FPS_DIRECT;
       state.sampler.setTarget(state.captureFps);
       state.sampler.reset();
@@ -392,6 +398,7 @@
       opts = opts || {};
       stopCapture();
       stopTick();
+      if (voice) voice.reset();
       if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
       state.readyTimer = null;
       if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -529,6 +536,8 @@
         state.readyTimer = null;
         var sink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!sink || typeof sink.setAuthToken !== 'function') return;
+        // 同一个 iframe 重新加载过：旧页面的语音旁路 / 对端语音都作废，新页面要时再报
+        if (voice) voice.reset();
         // iframe 每报一次 ready 就重新交一次 token（它重载过就要新的）；旧的重试作废
         state.authGen += 1;
         if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -538,6 +547,18 @@
         state.publishing = data.on === true;
         syncCapture();
         tick(true);
+      } else if (data.t === 'voice' || data.t === 'remote_audio') {
+        var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
+        if (!voice || !voiceSink) return;
+        // 收尾后迟到的 on:true 一律不处理：不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间），也不再播对端；关的照常处理
+        var ending = state.voiceClosed || state.phase === 'ending' || state.phase === 'ended';
+        var wantOn = data.on === true && !ending;
+        if (data.t === 'voice') {
+          voice.setLocalWanted(wantOn, voiceSink);
+        } else {
+          var peerTrack = wantOn && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
+          voice.setRemoteTrack(peerTrack);
+        }
       } else if (data.t === 'geometry') {
         if (data.crop === 'upper' || data.crop === 'full') state.cropMode = data.crop;
         if (data.cropW > 0 && data.cropH > 0) state.cropAspect = data.cropW / data.cropH;
@@ -1061,6 +1082,13 @@
       if (phase && action !== 'ended') {
         state.phase = phase;
         post({ t: 'visit_state', phase: phase });
+      }
+      // 收掉语音旁路与对端语音并锁住，本场不再开：voice_off 是后端交还私聊之前直接写在主连接上的
+      // （私聊的 TTS 音频随后走同一条连接，这一帧一定先到），ending 再兜一道。旁路接的是共享的 TTS 链，
+      // 私聊恢复后她的台词不能再进串门房间
+      if (action === 'voice_off' || action === 'ending') {
+        state.voiceClosed = true;
+        if (voice) voice.reset();
       }
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);

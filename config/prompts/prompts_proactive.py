@@ -4023,6 +4023,21 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
     },
 }
 
+# Per-game wording layered over MINI_GAME_INVITE_OPTION_LABELS for invitations that
+# are not a game round. Same locale keys; a missing option keeps the shared label.
+MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
+    "watch-together": {
+        "zh": {"accept": "一起看！", "decline": "现在不想看"},
+        "zh-TW": {"accept": "一起看！", "decline": "現在不想看"},
+        "en": {"accept": "Let's watch!", "decline": "Not in the mood"},
+        "ja": {"accept": "見よう！", "decline": "今はいいや"},
+        "ko": {"accept": "같이 보자!", "decline": "지금은 됐어"},
+        "ru": {"accept": "Давай посмотрим!", "decline": "Сейчас не хочется"},
+        "es": {"accept": "¡Vamos a verlo!", "decline": "Ahora no me apetece"},
+        "pt": {"accept": "Vamos assistir!", "decline": "Agora não estou a fim"},
+    },
+}
+
 # ---------- Invitation response keywords, text fallback ----------
 # Typed responses such as 好啊/不要/晚点说 instead of buttons are scanned at
 # backend message-handler entry; matches trigger accept/decline/later without consuming

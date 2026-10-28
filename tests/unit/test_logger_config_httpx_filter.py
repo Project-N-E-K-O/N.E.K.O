@@ -15,6 +15,13 @@ _AVAILABILITY_URL = "http://127.0.0.1:48912/internal/knowledge/availability"
 _LATEST_VERSIONS_URL = (
     "https://market.project-neko.cn/api/v1/plugins/latest-versions?ids=1,2"
 )
+_COMMUNITY = "https://community.project-neko.cn"
+_VISIT_HUB_POLL_URLS = [
+    f"{_COMMUNITY}/api/users/me",
+    f"{_COMMUNITY}/api/users/me/presence",
+    f"{_COMMUNITY}/api/users/299c447c-9c44-46d6-80c7-0aa140eb83c6/following?limit=100&offset=0",
+    f"{_COMMUNITY}/api/notifications?unread=true&limit=100&offset=0",
+]
 
 
 def _httpx_record(url, status_code, reason="OK", level=logging.INFO, args=None):
@@ -115,6 +122,27 @@ def test_success_only_list_defaults_to_empty():
 def test_success_only_patterns_cover_heartbeat_and_update_check():
     assert "/internal/knowledge/availability" in HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS
     assert "/api/v1/plugins/latest-versions" in HTTPX_SUPPRESSED_ON_SUCCESS_PATTERNS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url", _VISIT_HUB_POLL_URLS)
+def test_visit_hub_poll_hidden_on_success_kept_on_failure(url):
+    assert create_httpx_filter().filter(_httpx_record(url, 200)) is False
+    assert create_httpx_filter().filter(_httpx_record(url, 401, reason="Unauthorized")) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"{_COMMUNITY}/api/users/4c29341f-0ff5-4948-b74b-0be49cadc180/visit-invite",
+        f"{_COMMUNITY}/api/notifications/eec52e10-603b-4b13-b72b-ae4c7c9c2cce/read",
+        f"{_COMMUNITY}/api/visit/credentials",
+    ],
+)
+def test_visit_actions_stay_visible(url):
+    record = _httpx_record(url, 200, args=("POST", url, "HTTP/1.1", 200, "OK"))
+    assert create_httpx_filter().filter(record) is True
 
 
 @pytest.mark.unit

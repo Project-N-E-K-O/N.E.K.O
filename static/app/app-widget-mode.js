@@ -157,7 +157,7 @@
         setEnabled: setEnabled,
         setStealthEnabled: setStealthEnabled,
         isEnabled: function () { return clientState.enabled === true; },
-        isStealthEnabled: function () { return clientState.stealthEnabled === true; },
+        isStealthEnabled: function () { return clientState.enabled === true && clientState.stealthEnabled === true; },
         getState: getState,
     };
 

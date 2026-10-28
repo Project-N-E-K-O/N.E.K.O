@@ -9,6 +9,9 @@
  *   按侧位在这里查（guest：2D 抓帧画布 + captureStream；host：WebGL 解包画布），缺了只
  *   video_ok:false，串门照常（文字 + 字幕）。
  * 预检段不引用任何 vendor 全局；vendor SDK 只在这里、只在 iframe 内、按需加载。
+ *
+ * 媒体（§4.3 media 快照）：视频只有 guest 发、host 收（publish / subscribe）；猫娘语音两侧对称
+ * （audio_publish / audio_subscribe，OD-15 v4）：各自发布自家 TTS 旁路（voice.js），订阅对端的、交父页出声。
  */
 (function (root) {
   'use strict';
@@ -31,6 +34,7 @@
   var SOFTENC_FPS_RATIO = 0.9;        // 27 / 30：编码帧率低于目标帧率的 90 % 算软编跟不上
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
+  var AUDIO_KBPS_DEFAULT = 32;        // VISIT_AUDIO_KBPS：凭证没带 publish.audio_kbps 时的语音码率上限
   var SDK_LOAD_TIMEOUT_MS = 10000;    // 本地 SDK 脚本加载的上限：一直不报 load / error 时按加载失败上报（后端首次入房留了 25 s）
   var JOIN_ATTEMPT_TIMEOUT_MS = 10000; // 中途断线后重进时单次入房的上限：网络切换时 SDK 的入房可能既不成功也不失败
   var REJOIN_LEAVE_WAIT_MS = 5000;    // 手动重新入房前离房的上限：操作链卡住时 leave 不会结束
@@ -130,7 +134,7 @@
 
   /**
    * 拥塞阶梯级别由传输页自己决定（后端不维护），按场次记进 sessionStorage：传输 WS 重连
-   * 或 Pet 页重载（同一标签页）后接着用，不在已经拥塞的连接上先退回 560 kbps 再等一轮。
+   * 或 Pet 页重载（同一标签页）后接着用，不在已经拥塞的连接上先退回顶档（528 kbps）再等一轮。
    */
   function ladderKey(visitId) {
     return 'neko-visit-ladder:' + visitId;
@@ -202,7 +206,7 @@
     this.stopped = false;
     this.rejoining = false;
     this.captureFps = 30;
-    this.media = { publish: false, subscribe: false, crop: 'upper', ladder: 0, peerCrop: null };
+    this.media = { publish: false, subscribe: false, crop: 'upper', ladder: 0, peerCrop: null, audioPublish: false, audioSubscribe: false };
     this.peerRxFps = null;
     this.loss = null;
     this.softencSince = null;
@@ -215,6 +219,12 @@
     this.lockHighestQuality = false;
     this.publishRetries = 0;
     this.publishRetryTimer = null;
+    this.audioRetries = 0;
+    this.audioRetryTimer = null;
+    this.voiceAnnounced = false;
+    this.audioRevoked = false;   // 续期时 Servers 关了语音闸门：本场之后一律不碰音频
+    this.remoteAudio = null;
+    this.voice = NVT.voice ? new NVT.voice.VoiceBridge(env.window) : null;
     this.profileRetries = 0;
     this.profileRetryTimer = null;
     this.rejoinUntil = 0;
@@ -291,7 +301,19 @@
       // 续期：只替换本地保存的凭证，不重新入房、不重跑能力门
       if (this.creds && msg.transport === this.creds.transport) {
         this.applyCodecOverride(msg);
+        // 续期把语音闸门关了（Servers 紧急关停）：立刻停发、停播，本场不再恢复；关→开不处理（下一场生效）
+        var wasAllowed = this.audioAllowed();
+        if (!(msg.publish && msg.publish.audio === true)) {
+          if (wasAllowed) this.audioRevoked = true;
+        } else if (!wasAllowed && msg.publish) {
+          msg.publish.audio = false;
+        }
         this.creds = msg;
+        if (wasAllowed && this.audioRevoked) {
+          this.log('warn', 'voice turned off by Servers', 'audio_revoked');
+          this.setAudioPublish(false);
+          this.setAudioSubscribe(false);
+        }
         if (this.adapter) this.adapter.updateCredentials(msg);
       }
       return;
@@ -378,6 +400,7 @@
         onPeer: function (kind, vid, reason, explicit) { if (live()) self.onPeer(kind, vid, reason, explicit); },
         onState: function (state, extra) { if (live()) self.onVendorState(state, extra); },
         onRemoteTrack: function (track) { if (live()) self.onRemoteTrack(track); },
+        onRemoteAudio: function (track) { if (live()) self.onRemoteAudio(track); },
         onNetwork: function (info) { if (live() && info && typeof info.lossPct === 'number') self.loss = { value: info.lossPct, at: self.now() }; },
         onNeedRejoin: function () { if (live()) self.rejoin(); },
         onLog: function (level, msg, code) { if (live()) self.log(level, msg, code); },
@@ -479,6 +502,8 @@
     } else if (this.side === 'host' && this.media.subscribe) {
       this.adapter.setSubscribe(true);
     }
+    if (this.media.audioPublish) this.publishAudioNow();
+    if (this.media.audioSubscribe) this.adapter.setAudioSubscribe(true);
   };
 
   /**
@@ -566,6 +591,104 @@
     if (this.publishRetryTimer) clearTimeout(this.publishRetryTimer);
     this.publishRetryTimer = null;
     this.publishRetries = 0;
+  };
+
+  // ── 猫娘语音（OD-15 v4）────────────────────────────────────────────────
+
+  /** 父页按它开 / 收 TTS 旁路（同 announcePublish：只在变化时发）。 */
+  P.announceVoice = function (on) {
+    on = !!on;
+    if (this.voiceAnnounced === on) return;
+    this.voiceAnnounced = on;
+    this.post({ t: 'voice', on: on });
+  };
+
+  P.setAudioPublish = function (on) {
+    this.media.audioPublish = !!on;
+    this.announceVoice(this.media.audioPublish);
+    if (this.media.audioPublish) {
+      this.publishAudioNow();
+      return;
+    }
+    this.cancelAudioRetry();
+    if (this.adapter) this.adapter.unpublishAudio();
+  };
+
+  /** 父页交来（或收回）TTS 旁路：有了就按当前期望发布，收回就撤下音频轨。 */
+  P.onLocalVoice = function (stream) {
+    if (!this.voice || this.stopped) return;
+    this.voice.setInput(stream);
+    if (stream) {
+      this.publishAudioNow();
+      return;
+    }
+    this.cancelAudioRetry();
+    if (this.adapter) this.adapter.unpublishAudio();
+  };
+
+  /** 发布本页的语音轨；父页还没交旁路时什么也不做（交来时 onLocalVoice 再发）。失败按退避重试，同视频。 */
+  P.publishAudioNow = function () {
+    if (!this.adapter || !this.voice || this.stopped || !this.media.audioPublish || !this.audioAllowed()) return;
+    var track = this.voice.ensureTrack();
+    if (!track) return;
+    var self = this;
+    var seq = this.adapterSeq;
+    this.adapter.publishAudio(track, this.audioKbps()).then(function (ok) {
+      if (seq !== self.adapterSeq) return;
+      if (ok === true) self.audioRetries = 0;
+    }, function (err) {
+      if (seq !== self.adapterSeq) return;
+      self.log('warn', 'audio publish failed', String(err && err.code));
+      self.scheduleAudioRetry();
+    });
+  };
+
+  /** Servers 放开了猫娘语音（凭证 publish.audio 严格为 true，方案 A 闸门）；没放开时两个方向都不碰音频。 */
+  P.audioAllowed = function () {
+    if (this.audioRevoked) return false;
+    return !!(this.creds && this.creds.publish && this.creds.publish.audio === true);
+  };
+
+  /** 语音码率上限（凭证 publish.audio_kbps；旧后端没给时按 32）。 */
+  P.audioKbps = function () {
+    var kbps = this.creds && this.creds.publish && this.creds.publish.audio_kbps;
+    return typeof kbps === 'number' && kbps > 0 ? kbps : AUDIO_KBPS_DEFAULT;
+  };
+
+  P.scheduleAudioRetry = function () {
+    if (this.audioRetryTimer || this.stopped || !this.media.audioPublish) return;
+    var delay = Math.min(PUBLISH_RETRY_MAX_MS, PUBLISH_RETRY_BASE_MS * Math.pow(2, this.audioRetries));
+    this.audioRetries += 1;
+    var self = this;
+    this.audioRetryTimer = setTimeout(function () {
+      self.audioRetryTimer = null;
+      self.publishAudioNow();
+    }, delay);
+  };
+
+  P.cancelAudioRetry = function () {
+    if (this.audioRetryTimer) clearTimeout(this.audioRetryTimer);
+    this.audioRetryTimer = null;
+    this.audioRetries = 0;
+  };
+
+  P.setAudioSubscribe = function (on) {
+    this.media.audioSubscribe = !!on;
+    if (this.adapter) this.adapter.setAudioSubscribe(this.media.audioSubscribe);
+    if (!this.media.audioSubscribe) this.onRemoteAudio(null);
+  };
+
+  /** 对端音频轨来了 / 没了：挂静音元素保数据流，告诉父页来取（父页接进自家扬声器音量链）。 */
+  P.onRemoteAudio = function (track) {
+    var next = track && this.media.audioSubscribe && !this.stopped ? track : null;
+    if (next === this.remoteAudio) return;
+    this.remoteAudio = next;
+    if (this.voice) this.voice.setRemote(next, this.doc);
+    this.post({ t: 'remote_audio', on: !!next });
+  };
+
+  P.remoteAudioTrack = function () {
+    return this.remoteAudio;
   };
 
   /** SDK 自动重连失败（旧凭证鉴权失败）：用最新凭证、同一个 vid 手动重新入房。 */
@@ -704,6 +827,16 @@
       if (this.adapter) this.adapter.setPeerVid(msg.peer_vid);
     }
     if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') this.media.peerCrop = msg.peer_crop;
+    // 语音闸门：凭证 publish.audio 不是严格的 true（Servers 还没放开音频）时快照里的语音字段一律当 false
+    var audioAllowed = this.audioAllowed();
+    if (typeof msg.audio_publish === 'boolean') {
+      var pub = msg.audio_publish && audioAllowed;
+      if (pub !== this.media.audioPublish) this.setAudioPublish(pub);
+    }
+    if (typeof msg.audio_subscribe === 'boolean') {
+      var sub = msg.audio_subscribe && audioAllowed;
+      if (sub !== this.media.audioSubscribe) this.setAudioSubscribe(sub);
+    }
     if (this.side === 'guest') {
       var crop = msg.crop === 'full' || msg.crop === 'upper' ? msg.crop : this.media.crop;
       // 后端快照里的 ladder 只当下限：级别由本页的拥塞阶梯决定，快照不能把已降的级别抬回去。
@@ -734,10 +867,15 @@
     }
   };
 
-  /** 停掉全部媒体（不离房、不 stop 画布轨）：guest 取消发布，host 取消订阅。同步执行。 */
+  /** 停掉全部媒体（不离房、不 stop 画布轨）：guest 取消发布，host 取消订阅；两侧撤下语音、停播对端语音。同步执行。 */
   P.stopAllMedia = function () {
     this.media.publish = false;
     this.cancelPublishRetry();
+    this.media.audioPublish = false;
+    this.cancelAudioRetry();
+    this.announceVoice(false);
+    this.media.audioSubscribe = false;
+    this.onRemoteAudio(null);
     this.cancelProfileRetry();
     this.loss = null;
     this.peerRxFps = null;
@@ -748,6 +886,8 @@
     if (this.adapter) {
       if (this.side === 'guest') this.adapter.unpublish();
       else this.adapter.setSubscribe(false);
+      this.adapter.unpublishAudio();
+      this.adapter.setAudioSubscribe(false);
     }
     if (this.unpacker) this.unpacker.detach();
     this.remoteVideo = false;
@@ -810,6 +950,7 @@
     this.tornDown = true;
     this.cancelPublishRetry();
     this.cancelProfileRetry();
+    this.cancelAudioRetry();
     this.cancelRejoinRetry(false);
     if (this.statsTimer) clearInterval(this.statsTimer);
     this.statsTimer = null;
@@ -822,6 +963,8 @@
         // 已结束
       }
     }
+    this.remoteAudio = null;
+    if (this.voice) this.voice.close(this.doc);
     var adapter = this.adapter;
     var post = this.post;
     var destroy = function () { return adapter.destroy(); };

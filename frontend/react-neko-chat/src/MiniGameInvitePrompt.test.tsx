@@ -70,4 +70,17 @@ describe('mini-game invitation surfaces', () => {
     expect(document.body.querySelector('.mini-game-invite')).toBeNull();
     expect(screen.getByRole('button', { name: 'Chat first' })).toHaveClass('composer-choice-option');
   });
+
+  it.each(['full', 'compact'] as const)('titles a watch-together invitation as a video in %s, other games unchanged', mode => {
+    const { unmount } = render(<App chatSurfaceMode={mode} messages={[]} choicePrompt={{ ...prompt, gameType: 'watch-together' }} />);
+    const invite = document.body.querySelector('.mini-game-invite');
+    expect(invite).toHaveAttribute('aria-label', 'Watch together');
+    expect(invite).toHaveTextContent("Pick a video and I'll watch it with you");
+    // The video icon draws a screen rectangle; the game icon has none.
+    expect(invite?.querySelector('.mini-game-invite-icon svg rect')).not.toBeNull();
+    unmount();
+    render(<App chatSurfaceMode={mode} messages={[]} choicePrompt={prompt} />);
+    expect(document.body.querySelector('.mini-game-invite')).toHaveAttribute('aria-label', 'Game invitation');
+    expect(document.body.querySelector('.mini-game-invite-icon svg rect')).toBeNull();
+  });
 });
