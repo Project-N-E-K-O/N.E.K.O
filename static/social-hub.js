@@ -766,7 +766,8 @@
     var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0;
     var active = document.activeElement;
     var activeKey = active && panel.contains(active) ? active.getAttribute('data-neko-focus-key') : '';
-    // 只在焦点仍留在面板里时恢复；用户读取期间已移到别处就不抢回来。
+    // 用户已把焦点移到面板外的其他控件：放弃待恢复的焦点，不再抢回来。
+    if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) pendingFocusKey = '';
     if (!activeKey && pendingFocusKey && !state.loading && active && panel.contains(active)) activeKey = pendingFocusKey;
     if (!state.loading) pendingFocusKey = '';
     panel.replaceChildren();
@@ -803,7 +804,7 @@
       });
     }
     // 读取中按钮暂时不存在，先把焦点留在面板上，避免掉到 body。
-    if (pendingFocusKey && state.loading && !panel.contains(document.activeElement)) {
+    if (pendingFocusKey && state.loading && (!document.activeElement || document.activeElement === document.body)) {
       try { panel.focus({ preventScroll: true }); } catch (_) { panel.focus(); }
     }
     if (state.open && !standalone) requestAnimationFrame(positionPanel);
