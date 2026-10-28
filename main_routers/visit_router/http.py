@@ -21,7 +21,8 @@ Two routers, decorated with paths relative to the package router
   release switch: ``POST /rooms``, ``GET /rooms/current``,
   ``GET /invites/{invite_code}/preview``, ``GET /direct/{visit_id}/preview``,
   ``POST /rooms/{visit_id}/join``, ``POST /rooms/{visit_id}/join-direct``,
-  ``POST /rooms/{visit_id}/accept``.
+  ``POST /rooms/{visit_id}/accept``, ``POST /route/cat-action``,
+  ``POST /route/cat-pose``, and the three ``/route/cat-world-*`` endpoints.
 * :data:`data_router` -- always available (ending or inspecting a visit,
   exporting its transcript): ``POST /route/end``, ``GET /state``,
   ``GET /transcript``.
@@ -59,6 +60,7 @@ from config.prompts.prompts_visit import (
     get_visit_direct_invite_question_fallback,
 )
 from config.visit_settings import (
+    VISIT_CAT_SCENE_ENABLED,
     VISIT_CROP_DEFAULT,
     VISIT_INVITE_PREVIEW_REUSE_S,
     VISIT_LAST_SUMMARY_MAX_TOKENS,
@@ -84,7 +86,16 @@ from main_routers.visit_router.local_guard import http_denied, visit_enabled
 from utils.logger_config import get_module_logger
 from utils.mirror_meta import build_mirror_meta
 from utils.tokenize import atruncate_to_tokens
-from utils.visit_wire import VISIT_ID_RE
+from utils.visit_wire import (
+    CAT_POSE_FACINGS,
+    CAT_POSE_FIELDS,
+    CAT_POSE_MODES,
+    CAT_POSE_SLOT_TIERS,
+    CAT_WORLD_INTENT_FIELDS,
+    CAT_WORLD_INTENT_KINDS,
+    CAT_WORLD_STATE_FIELDS,
+    VISIT_ID_RE,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -97,6 +108,14 @@ data_router = APIRouter()
 _NAME_MAX_CHARS = 128
 _CROPS = ("upper", "full")
 _END_REASONS = ("recall", "route_end")
+_CAT_ASSET_IDS = frozenset(("dev_neko", "yui_neko"))
+_CAT_ACTION_KINDS = frozenset(("greet", "play", "rest", "move"))
+_CAT_ACTION_FIELDS = frozenset(("visit_id", "kind", "_csrf_token"))
+_CAT_POSE_HTTP_FIELDS = CAT_POSE_FIELDS | {"visit_id", "phase", "_csrf_token"}
+_CAT_WORLD_INTENT_HTTP_FIELDS = CAT_WORLD_INTENT_FIELDS | {"visit_id", "_csrf_token"}
+_CAT_WORLD_POINTER_FIELDS = frozenset({"visit_id", "intent_id", "x_q16", "y_q16", "_csrf_token"})
+_CAT_WORLD_STATE_HTTP_FIELDS = CAT_WORLD_STATE_FIELDS | {"visit_id", "phase", "_csrf_token"}
+_VISIT_MODES = frozenset({"model", "cat"})
 _SPEAKER_KIND = {"own_cat": "cat", "peer_cat": "cat", "own_human": "human", "peer_human": "human"}
 
 
@@ -114,6 +133,35 @@ def _servers_error(exc: cr.VisitServersError) -> JSONResponse:
 
 def _valid_name(name: Any) -> bool:
     return isinstance(name, str) and 0 < len(name) <= _NAME_MAX_CHARS and name.isprintable()
+
+
+def _valid_cat_world_state(payload: Mapping[str, Any]) -> bool:
+    integer_fields = (
+        "world_seq", "yarn_x_q16", "yarn_y_q16", "yarn_vx_q12", "yarn_vy_q12",
+        "question_x_q16", "question_y_q16", "collision_seq",
+    )
+    if any(not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool)
+           for field in integer_fields):
+        return False
+    return (
+        1 <= payload["world_seq"] <= 2 ** 32 - 1
+        and 0 <= payload["yarn_x_q16"] <= 65535
+        and 0 <= payload["yarn_y_q16"] <= 65535
+        and -4096 <= payload["yarn_vx_q12"] <= 4095
+        and -4096 <= payload["yarn_vy_q12"] <= 4095
+        and payload.get("yarn_holder") in {"none", "host", "guest"}
+        and isinstance(payload.get("yarn_active"), bool)
+        and isinstance(payload.get("question_active"), bool)
+        and 0 <= payload["question_x_q16"] <= 65535
+        and 0 <= payload["question_y_q16"] <= 65535
+        and 0 <= payload["collision_seq"] <= 2 ** 32 - 1
+    )
+
+
+def _cat_asset(payload: Mapping[str, Any]) -> Optional[str]:
+    """Validated built-in appearance group, with a legacy-client default."""
+    value = payload.get("cat_asset", "dev_neko")
+    return value if isinstance(value, str) and value in _CAT_ASSET_IDS else None
 
 
 def _config_dir() -> Path:
@@ -521,9 +569,17 @@ async def create_room(request: Request):
     name = payload.get("catgirl")
     if not _valid_name(name):
         return _error(400, "catgirl_required")
+    cat_asset = _cat_asset(payload)
+    if cat_asset is None:
+        return _error(400, "cat_asset_format")
     crop = payload.get("crop", VISIT_CROP_DEFAULT)
     if crop not in _CROPS:
         return _error(400, "crop_format")
+    visit_mode = payload.get("visit_mode", "model")
+    if visit_mode not in _VISIT_MODES:
+        return _error(400, "visit_mode_format")
+    if visit_mode == "cat" and not VISIT_CAT_SCENE_ENABLED:
+        return _error(409, "VISIT_CAT_SCENE_UNAVAILABLE")
     target_user_id = payload.get("target_user_id")
     if target_user_id is not None:
         try:
@@ -550,12 +606,12 @@ async def create_room(request: Request):
     if restart_failure is not None:
         return _servers_error(restart_failure)
     admitted = await _admit(
-        name, "host", crop=crop, target_user_id=target_user_id,
-        direct=target_user_id is not None,
+        name, "host", crop=crop, cat_asset=cat_asset, target_user_id=target_user_id,
+        direct=target_user_id is not None, cat_scene=visit_mode == "cat",
     )
     if isinstance(admitted, JSONResponse):
         return admitted
-    body = {"visit_id": admitted.visit_id, "phase": "pending"}
+    body = {"visit_id": admitted.visit_id, "phase": "pending", "visit_mode": admitted.visit_mode}
     if target_user_id is not None:
         body["target_user_id"] = target_user_id
     return JSONResponse(body, status_code=202)
@@ -693,11 +749,19 @@ async def join_direct_room(request: Request, visit_id: str):
     name = payload.get("catgirl")
     if not _valid_name(name):
         return _error(400, "catgirl_required")
+    cat_asset = _cat_asset(payload)
+    if cat_asset is None:
+        return _error(400, "cat_asset_format")
     if payload.get("confirm") is not True:
         return _error(400, "confirm_required")
     crop = payload.get("crop", VISIT_CROP_DEFAULT)
     if crop not in _CROPS:
         return _error(400, "crop_format")
+    visit_mode = payload.get("visit_mode", "model")
+    if visit_mode not in _VISIT_MODES:
+        return _error(400, "visit_mode_format")
+    if visit_mode == "cat" and not VISIT_CAT_SCENE_ENABLED:
+        return _error(409, "VISIT_CAT_SCENE_UNAVAILABLE")
     switch_off = await runtime.visit_switch_refusal()
     if switch_off is not None:
         return _refused(switch_off.status, switch_off.body)
@@ -719,11 +783,13 @@ async def join_direct_room(request: Request, visit_id: str):
         return _refused(409, {"reason": "busy"})
     admitted = await _admit(
         name, "guest", expect_account=account, expect_epoch=preview_epoch,
-        visit_id=visit_id, crop=crop, direct=True,
+        visit_id=visit_id, crop=crop, cat_asset=cat_asset, direct=True,
+        cat_scene=visit_mode == "cat",
     )
     if isinstance(admitted, JSONResponse):
         return admitted
-    return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
+    return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending",
+                         "visit_mode": admitted.visit_mode}, status_code=202)
 
 
 @router.post("/rooms/{visit_id}/join")
@@ -738,6 +804,9 @@ async def join_room(request: Request, visit_id: str):
     name = payload.get("catgirl")
     if not _valid_name(name):
         return _error(400, "catgirl_required")
+    cat_asset = _cat_asset(payload)
+    if cat_asset is None:
+        return _error(400, "cat_asset_format")
     invite_code = payload.get("invite_code")
     if not isinstance(invite_code, str) or cr.INVITE_CODE_RE.fullmatch(invite_code) is None:
         return _servers_error(cr.VisitInviteFormat())
@@ -781,7 +850,7 @@ async def join_room(request: Request, visit_id: str):
         # Logout/account switch during preview, including A→B→A, means preview no longer represents current account.
         return _refused(409, {"reason": "busy"})
     admitted = await _admit(name, "guest", expect_account=account, expect_epoch=preview_epoch,
-                            invite_code=invite_code, visit_id=visit_id, crop=crop)
+                            invite_code=invite_code, visit_id=visit_id, crop=crop, cat_asset=cat_asset)
     if isinstance(admitted, JSONResponse):
         return admitted
     return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
@@ -812,6 +881,149 @@ async def accept_guest(request: Request, visit_id: str):
         if switch_off is not None:
             return _refused(switch_off.status, switch_off.body)
     status, body = await rt.accept(accept)
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/route/cat-action")
+async def request_cat_action(request: Request):
+    """Request one authoritative cat-scene action for the current visit.
+
+    The page chooses only the public action kind. Actor identity, reliable
+    sequence and presentation seed belong to the runtime and peer wire; a
+    local caller cannot forge them through this HTTP surface.
+    """
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    # ``_csrf_token`` is transport metadata accepted by the shared mutation
+    # gate. The two business fields below are otherwise an exact allow-list.
+    if set(payload).difference(_CAT_ACTION_FIELDS):
+        return _error(400, "invalid_fields")
+    visit_id = payload.get("visit_id")
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    kind = payload.get("kind")
+    if kind not in _CAT_ACTION_KINDS:
+        return _error(400, "invalid_action")
+    rt = runtime.get_runtime_by_visit(visit_id)
+    # Unknown and another account's visits are deliberately indistinguishable.
+    if rt is None or not await _owned_by_current_account(rt):
+        return _error(404, "unknown_visit")
+    status, body = await rt.request_cat_action(kind)
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/route/cat-pose")
+async def request_cat_pose(request: Request):
+    """Publish one normalized, owner-authored cat pose sample or commit."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if set(payload).difference(_CAT_POSE_HTTP_FIELDS):
+        return _error(400, "invalid_fields")
+    visit_id = payload.get("visit_id")
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    phase = payload.get("phase")
+    if phase not in ("sample", "commit"):
+        return _error(400, "invalid_phase")
+    int_fields = ("motion_id", "sample_seq", "x_q16", "y_q16")
+    if any(not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool)
+           for field in int_fields):
+        return _error(400, "invalid_pose")
+    if not (1 <= payload["motion_id"] <= 2 ** 32 - 1
+            and 1 <= payload["sample_seq"] <= 2 ** 32 - 1
+            and 0 <= payload["x_q16"] <= 65535
+            and 0 <= payload["y_q16"] <= 65535
+            and payload.get("mode") in CAT_POSE_MODES
+            and payload.get("facing") in CAT_POSE_FACINGS
+            and CAT_POSE_SLOT_TIERS.get(payload.get("slot")) == payload.get("tier")):
+        return _error(400, "invalid_pose")
+    rt = runtime.get_runtime_by_visit(visit_id)
+    if rt is None or not await _owned_by_current_account(rt):
+        return _error(404, "unknown_visit")
+    pose = {field: payload[field] for field in CAT_POSE_FIELDS}
+    status, body = await rt.request_cat_pose(phase, pose)
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/route/cat-world-intent")
+async def request_cat_world_intent(request: Request):
+    """Submit one bounded shared-world input; sender ownership is runtime-derived."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if set(payload).difference(_CAT_WORLD_INTENT_HTTP_FIELDS):
+        return _error(400, "invalid_fields")
+    visit_id = payload.get("visit_id")
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    ints = (payload.get("intent_id"), payload.get("x_q16"), payload.get("y_q16"))
+    if (any(not isinstance(value, int) or isinstance(value, bool) for value in ints)
+            or not 1 <= payload["intent_id"] <= 2 ** 32 - 1
+            or not 0 <= payload["x_q16"] <= 65535
+            or not 0 <= payload["y_q16"] <= 65535
+            or payload.get("kind") not in CAT_WORLD_INTENT_KINDS):
+        return _error(400, "invalid_intent")
+    rt = runtime.get_runtime_by_visit(visit_id)
+    if rt is None or not await _owned_by_current_account(rt):
+        return _error(404, "unknown_visit")
+    intent = {field: payload[field] for field in CAT_WORLD_INTENT_FIELDS}
+    status, body = await rt.request_cat_world_intent(intent)
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/route/cat-world-pointer")
+async def request_cat_world_pointer(request: Request):
+    """Publish the latest normalized pointer for an active world intent."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if set(payload).difference(_CAT_WORLD_POINTER_FIELDS):
+        return _error(400, "invalid_fields")
+    visit_id = payload.get("visit_id")
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    ints = (payload.get("intent_id"), payload.get("x_q16"), payload.get("y_q16"))
+    if (any(not isinstance(value, int) or isinstance(value, bool) for value in ints)
+            or not 1 <= payload["intent_id"] <= 2 ** 32 - 1
+            or not 0 <= payload["x_q16"] <= 65535
+            or not 0 <= payload["y_q16"] <= 65535):
+        return _error(400, "invalid_pointer")
+    rt = runtime.get_runtime_by_visit(visit_id)
+    if rt is None or not await _owned_by_current_account(rt):
+        return _error(404, "unknown_visit")
+    pointer = {field: payload[field] for field in ("intent_id", "x_q16", "y_q16")}
+    status, body = await rt.request_cat_world_pointer(pointer)
+    return JSONResponse(body, status_code=status)
+
+
+@router.post("/route/cat-world-state")
+async def request_cat_world_state(request: Request):
+    """Publish host-computed shared-world state; guest runtimes reject it."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if set(payload).difference(_CAT_WORLD_STATE_HTTP_FIELDS):
+        return _error(400, "invalid_fields")
+    visit_id = payload.get("visit_id")
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    phase = payload.get("phase")
+    if phase not in ("frame", "commit"):
+        return _error(400, "invalid_phase")
+    state = {field: payload.get(field) for field in CAT_WORLD_STATE_FIELDS}
+    if not _valid_cat_world_state(state):
+        return _error(400, "invalid_state")
+    rt = runtime.get_runtime_by_visit(visit_id)
+    if rt is None or not await _owned_by_current_account(rt):
+        return _error(404, "unknown_visit")
+    status, body = await rt.request_cat_world_state(phase, state)
     return JSONResponse(body, status_code=status)
 
 
@@ -878,7 +1090,7 @@ async def current_host_room(request: Request, catgirl: str = ""):
             or rt.phase not in (runtime.PHASE_PENDING, runtime.PHASE_INVITE_READY)
             or not await _owned_by_current_account(rt)):
         return JSONResponse({"error": "no_pending_invite"}, status_code=404)
-    body: dict[str, Any] = {"visit_id": rt.visit_id, "phase": rt.phase}
+    body: dict[str, Any] = {"visit_id": rt.visit_id, "phase": rt.phase, "visit_mode": rt.visit_mode}
     if rt.target_user_id:
         body["target_user_id"] = rt.target_user_id
     creds = rt.creds
@@ -892,6 +1104,9 @@ async def current_host_room(request: Request, catgirl: str = ""):
 
 IDLE_STATE: Mapping[str, Any] = {
     "active": False, "role": None, "side": None, "visit_id": None, "phase": None, "transport": None,
+    "visit_mode": None,
+    "cat_scene": None, "self_cat_asset": None, "peer_cat_asset": None, "cat_poses": None,
+    "cat_world": None,
     "tier": None, "crop": None, "peer": None, "connected": False, "reconnecting": False, "rtt_ms": None,
     "rx_fps": None, "tx_fps": None, "reconnects": 0, "anomalies": 0, "invite_expires_at": None,
     "credentials_expires_at": None, "cross_region": False, "memory_pending": False,

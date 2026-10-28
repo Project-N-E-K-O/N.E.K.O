@@ -23,14 +23,16 @@
       ``VISIT_PEER_RECV_BPS`` (burst 16 KiB) and message bucket
       ``VISIT_PEER_RECV_MSGS_PER_S``;
     * message level (``admit``): ``ctl`` <= ``VISIT_PEER_CTL_PER_S``/s,
-      ``lossy`` <= ``VISIT_PEER_LOSSY_PER_S``/s, and ``text`` through a token
+      ``lossy`` <= ``VISIT_PEER_LOSSY_PER_S``/s, latest-wins cat ``motion``
+      <= ``VISIT_PEER_MOTION_PER_S``/s, cat shared ``world``
+      <= ``VISIT_PEER_WORLD_PER_S``/s, and ``text`` through a token
       bucket refilling ``VISIT_INBOUND_TEXT_REFILL_PER_S``/s (= 20 per 10 s)
       capped at ``VISIT_INBOUND_TEXT_BURST`` plus a per-visit hard cap
       ``VISIT_INBOUND_TEXT_MAX``.
 
     Every over-limit message is dropped and counted. A ``text`` overflow
     counts toward the room's consecutive-anomaly streak
-    (``counts_toward_streak=True``, §4.2). Frame / ctl / lossy overflows are
+    (``counts_toward_streak=True``, §4.2). Frame / ctl / lossy / motion / world overflows are
     diagnostics only, but an overflow sustained for 30 s reports
     ``sustained_overflow=True`` so the caller can finalize with
     ``peer_protocol_violation`` (§4.1).
@@ -64,6 +66,8 @@ from config.visit_settings import (
     VISIT_INBOUND_TEXT_REFILL_PER_S,
     VISIT_PEER_CTL_PER_S,
     VISIT_PEER_LOSSY_PER_S,
+    VISIT_PEER_MOTION_PER_S,
+    VISIT_PEER_WORLD_PER_S,
     VISIT_PEER_RECV_BPS,
     VISIT_PEER_RECV_MSGS_PER_S,
 )
@@ -92,11 +96,19 @@ class RateChannel(str, Enum):
     TEXT = "text"
     CTL = "ctl"
     LOSSY = "lossy"
+    MOTION = "motion"
+    WORLD = "world"
 
 
 # cmd 1 = ctl (non-text); only text in cmd 2 uses the TEXT bucket, while line_delta/line_abort use frame buckets only; cmd 3 = lossy.
-_CTL_TYPES = frozenset({"hello", "ready", "ack", "hb", "state", "wrap_up", "leave"})
+_CTL_TYPES = frozenset({
+    "hello", "ready", "cat_action", "cat_pose_commit", "ack", "hb", "state", "wrap_up", "leave",
+})
 _LOSSY_TYPES = frozenset({"typing", "stats"})
+_MOTION_TYPES = frozenset({"cat_motion"})
+_WORLD_TYPES = frozenset({
+    "cat_world_intent", "cat_world_pointer", "cat_world_frame", "cat_world_commit",
+})
 _FRAME_ONLY_TYPES = frozenset({"line_delta", "line_abort"})
 
 
@@ -112,6 +124,10 @@ def channel_for(t: str, cmd: int | None = None) -> RateChannel | None:
         return RateChannel.CTL
     if t in _LOSSY_TYPES:
         return RateChannel.LOSSY
+    if t in _MOTION_TYPES:
+        return RateChannel.MOTION
+    if t in _WORLD_TYPES:
+        return RateChannel.WORLD
     if t in _FRAME_ONLY_TYPES:
         return None
     if cmd == 1:
@@ -126,7 +142,8 @@ class RateDecision:
     """Outcome of one limiter check.
 
     ``reason`` is set only when dropped: ``recv_bytes`` / ``recv_msgs`` /
-    ``ctl_rate`` / ``lossy_rate`` / ``text_rate`` / ``text_visit_cap``.
+    ``ctl_rate`` / ``lossy_rate`` / ``motion_rate`` / ``text_rate`` /
+    ``text_visit_cap``.
     ``counts_toward_streak`` asks the caller to feed the room's
     consecutive-anomaly counter (``violation_streak``).
     ``sustained_overflow`` asks the caller to finalize with
@@ -201,6 +218,8 @@ class _SenderState:
     recv_msgs: TokenBucket
     ctl: TokenBucket
     lossy: TokenBucket
+    motion: TokenBucket
+    world: TokenBucket
     text: TokenBucket
     text_accepted: int = 0
     dropped: dict[str, int] = field(default_factory=dict)
@@ -225,6 +244,8 @@ class PeerRateLimiter:
         text_visit_max: int = VISIT_INBOUND_TEXT_MAX,
         ctl_per_s: float = VISIT_PEER_CTL_PER_S,
         lossy_per_s: float = VISIT_PEER_LOSSY_PER_S,
+        motion_per_s: float = VISIT_PEER_MOTION_PER_S,
+        world_per_s: float = VISIT_PEER_WORLD_PER_S,
         recv_bps: float = VISIT_PEER_RECV_BPS,
         recv_bytes_burst: float = _RECV_BYTES_BURST,
         recv_msgs_per_s: float = VISIT_PEER_RECV_MSGS_PER_S,
@@ -236,6 +257,8 @@ class PeerRateLimiter:
         self._text_visit_max = int(text_visit_max)
         self._ctl_per_s = float(ctl_per_s)
         self._lossy_per_s = float(lossy_per_s)
+        self._motion_per_s = float(motion_per_s)
+        self._world_per_s = float(world_per_s)
         self._recv_bps = float(recv_bps)
         self._recv_bytes_burst = float(recv_bytes_burst)
         self._recv_msgs_per_s = float(recv_msgs_per_s)
@@ -255,6 +278,8 @@ class PeerRateLimiter:
                 recv_msgs=TokenBucket.full(self._recv_msgs_per_s, self._recv_msgs_per_s, now),
                 ctl=TokenBucket.full(self._ctl_per_s, self._ctl_per_s, now),
                 lossy=TokenBucket.full(self._lossy_per_s, self._lossy_per_s, now),
+                motion=TokenBucket.full(self._motion_per_s, self._motion_per_s, now),
+                world=TokenBucket.full(self._world_per_s, self._world_per_s, now),
                 text=TokenBucket.full(self._text_refill, self._text_burst, now),
             )
             self._senders[sender] = st
@@ -264,7 +289,7 @@ class PeerRateLimiter:
         st.dropped[reason] = st.dropped.get(reason, 0) + 1
         sustained = False
         if not streak:
-            # Only diagnostic excesses (frames / ctl / lossy) use the sustained-30s criterion; text uses consecutive-anomaly counts.
+            # Only diagnostic excesses (frames / ctl / lossy / motion / world) use the sustained-30s criterion; text uses consecutive-anomaly counts.
             if st.last_overflow_at is None or now - st.last_overflow_at > _OVERFLOW_RUN_GAP_S:
                 st.overflow_since = now
             st.last_overflow_at = now
@@ -305,7 +330,8 @@ class PeerRateLimiter:
                 return self._drop(st, "text_rate", t, streak=True)
             st.text_accepted += 1
             return _ALLOWED
-        bucket = st.ctl if ch is RateChannel.CTL else st.lossy
+        bucket = (st.ctl if ch is RateChannel.CTL else st.motion if ch is RateChannel.MOTION
+                  else st.world if ch is RateChannel.WORLD else st.lossy)
         if not bucket.take(1, t):
             return self._drop(st, f"{ch.value}_rate", t, streak=False)
         return _ALLOWED

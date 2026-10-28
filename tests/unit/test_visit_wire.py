@@ -434,9 +434,28 @@ def _sample_messages() -> list[dict]:
     return [
         {"t": "hello", "seq": 1, "ticket": "aaa.bbb",
          "caps": {"video": True, "tier": "sd600", "proto": VISIT_WIRE_PROTO,
-                  "app_version": "0.7", "crop": "upper"},
+                  "app_version": "0.7", "crop": "upper",
+                  "cat_scene": 2, "cat_asset": "dev_neko"},
          "lang": "zh-CN", "jti_reuse": False},
         {"t": "ready", "seq": 2},
+        {"t": "cat_action", "seq": 3, "kind": "play", "seed": 123},
+        {"t": "cat_motion", "motion_id": 1, "sample_seq": 1,
+         "x_q16": 1234, "y_q16": 4321, "mode": "walk", "facing": "right",
+         "tier": "cat1", "slot": "movement.cat1.walking"},
+        {"t": "cat_pose_commit", "seq": 4, "motion_id": 1, "sample_seq": 2,
+         "x_q16": 2234, "y_q16": 5321, "mode": "idle", "facing": "right",
+         "tier": "cat1", "slot": "idle.cat1"},
+        {"t": "cat_world_intent", "seq": 5, "intent_id": 1, "kind": "yarn_grab",
+         "x_q16": 1200, "y_q16": 3400},
+        {"t": "cat_world_pointer", "intent_id": 1, "x_q16": 2200, "y_q16": 4400},
+        {"t": "cat_world_frame", "world_seq": 1, "yarn_active": True,
+         "yarn_x_q16": 3000, "yarn_y_q16": 4000, "yarn_vx_q12": -12,
+         "yarn_vy_q12": 23, "yarn_holder": "guest", "question_active": False,
+         "question_x_q16": 5000, "question_y_q16": 6000, "collision_seq": 0},
+        {"t": "cat_world_commit", "seq": 6, "world_seq": 2, "yarn_active": False,
+         "yarn_x_q16": 3000, "yarn_y_q16": 4000, "yarn_vx_q12": 0,
+         "yarn_vy_q12": 0, "yarn_holder": "none", "question_active": True,
+         "question_x_q16": 5000, "question_y_q16": 6000, "collision_seq": 1},
         {"t": "ack", "seq": 9},
         {"t": "hb", "lp_seen": 33, "crop": "full", "hidden": False},
         {"t": "state", "hidden": True, "crop": "upper", "tier": "sd600", "enc": "vp9"},
@@ -462,15 +481,26 @@ def test_every_message_type_round_trips_on_its_channel():
         for key, value in msg.items():
             assert out[key] == value
         assert vw.decode_msg(json.loads(text), cmd=cmd) == out
-        assert vw.is_reliable(msg["t"]) == (msg["t"] in {"hello", "ready", "wrap_up", "leave", "text"})
+        assert vw.is_reliable(msg["t"]) == (
+            msg["t"] in {
+                "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent",
+                "cat_world_commit", "wrap_up", "leave", "text",
+            }
+        )
 
 
 def test_cmd_grouping_and_reliable_set():
     assert {t for t in vw._CMD_OF if vw.cmd_of(t) == 1} == {
-        "hello", "ready", "ack", "hb", "state", "wrap_up", "leave"}
+        "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent",
+        "cat_world_commit", "ack", "hb", "state", "wrap_up", "leave"}
     assert {t for t in vw._CMD_OF if vw.cmd_of(t) == 2} == {"line_delta", "text", "line_abort"}
-    assert {t for t in vw._CMD_OF if vw.cmd_of(t) == 3} == {"typing", "stats"}
-    assert vw.RELIABLE_TYPES == {"hello", "ready", "wrap_up", "leave", "text"}
+    assert {t for t in vw._CMD_OF if vw.cmd_of(t) == 3} == {
+        "typing", "stats", "cat_motion", "cat_world_pointer", "cat_world_frame",
+    }
+    assert vw.RELIABLE_TYPES == {
+        "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent",
+        "cat_world_commit", "wrap_up", "leave", "text",
+    }
     with pytest.raises(ValueError):
         vw.cmd_of("ping")
     assert not vw.is_reliable("ping")
@@ -570,6 +600,193 @@ def test_schema_details():
     with pytest.raises(ValueError):
         vw.encode_msg({"t": "stats", "rx_fps": float("nan"), "rx_kbps": 1, "rtt_ms": 1,
                        "loss_pct": 0.0, "rx_w": 1, "rx_h": 1})
+
+
+def test_cat_hello_caps_are_additive_and_forward_compatible():
+    base_caps = {
+        "video": True, "tier": "sd600", "proto": VISIT_WIRE_PROTO,
+        "app_version": "0.7", "crop": "upper",
+    }
+    old_hello = {
+        "t": "hello", "seq": 1, "ticket": "aaa.bbb", "caps": base_caps,
+        "lang": "zh-CN", "jti_reuse": False,
+    }
+    old_out = vw.decode_msg(vw.encode_msg(old_hello), cmd=vw.CMD_CTL)
+    assert "cat_scene" not in old_out["caps"] and "cat_asset" not in old_out["caps"]
+
+    new_hello = dict(old_hello, caps={
+        **base_caps, "cat_scene": 1, "cat_asset": "dev_neko", "future_cap": {"v": 1},
+    })
+    new_out = vw.decode_msg(vw.encode_msg(new_hello), cmd=vw.CMD_CTL)
+    assert new_out["caps"]["cat_scene"] == 1
+    assert new_out["caps"]["cat_asset"] == "dev_neko"
+    assert "future_cap" not in new_out["caps"]
+
+    # A later capability version must not invalidate the whole v1 hello. The
+    # runtime decides whether that version is supported before enabling it.
+    future = dict(old_hello, caps={**base_caps, "cat_scene": 2, "cat_asset": "future_neko"})
+    assert vw.decode_msg(vw.encode_msg(future), cmd=vw.CMD_CTL)["caps"]["cat_scene"] == 2
+    longest = dict(old_hello, caps={**base_caps, "cat_scene": 1, "cat_asset": "a" * 64})
+    assert vw.decode_msg(vw.encode_msg(longest), cmd=vw.CMD_CTL)["caps"]["cat_asset"] == "a" * 64
+
+    for bad_scene in (True, 1.0, "1", 0, -1, U32_MAX + 1):
+        with pytest.raises(ValueError):
+            vw.encode_msg(dict(old_hello, caps={**base_caps, "cat_scene": bad_scene}))
+    for bad_asset in ("", "a" * 65, "猫" * 22):
+        with pytest.raises(ValueError):
+            vw.encode_msg(dict(old_hello, caps={**base_caps, "cat_scene": 1,
+                                                "cat_asset": bad_asset}))
+    invalid = vw.decode_msg(json.dumps(dict(
+        old_hello, caps={**base_caps, "cat_scene": True},
+    )), cmd=vw.CMD_CTL)
+    assert invalid["t"] == "_invalid" and invalid["seq"] == old_hello["seq"]
+
+
+def test_cat_action_is_reliable_control_and_strict():
+    for index, kind in enumerate(("greet", "play", "rest", "move"), start=1):
+        msg = {"t": "cat_action", "seq": index, "kind": kind, "seed": index - 1}
+        out = vw.decode_msg(vw.encode_msg(msg), cmd=vw.CMD_CTL)
+        assert out == {"t": "cat_action", "v": 1, "seq": index,
+                       "kind": kind, "seed": index - 1}
+        assert vw.cmd_of(msg["t"]) == vw.CMD_CTL
+        assert vw.is_reliable(msg["t"])
+
+    for seed in (0, U32_MAX):
+        msg = {"t": "cat_action", "seq": 1, "kind": "play", "seed": seed}
+        assert vw.decode_msg(vw.encode_msg(msg), cmd=vw.CMD_CTL)["seed"] == seed
+
+    bad_messages = [
+        {"t": "cat_action", "seq": 1, "kind": "eat", "seed": 1},
+        {"t": "cat_action", "seq": 1, "kind": "play", "seed": True},
+        {"t": "cat_action", "seq": 1, "kind": "play", "seed": 1.0},
+        {"t": "cat_action", "seq": 1, "kind": "play", "seed": "1"},
+        {"t": "cat_action", "seq": 1, "kind": "play", "seed": -1},
+        {"t": "cat_action", "seq": 1, "kind": "play", "seed": U32_MAX + 1},
+    ]
+    for msg in bad_messages:
+        with pytest.raises(ValueError):
+            vw.encode_msg(msg)
+    malformed = vw.decode_msg(json.dumps(bad_messages[-1]), cmd=vw.CMD_CTL)
+    assert malformed["t"] == "_invalid" and malformed["seq"] == 1
+    wrong_channel = vw.decode_msg(vw.encode_msg({
+        "t": "cat_action", "seq": 2, "kind": "rest", "seed": 4,
+    }), cmd=vw.CMD_TEXT)
+    assert wrong_channel["t"] == "_invalid" and wrong_channel["seq"] == 2
+
+
+def test_cat_action_rejects_actor_side_without_forbidding_future_fields():
+    msg = {"t": "cat_action", "seq": 7, "kind": "greet", "seed": 42}
+    with pytest.raises(ValueError):
+        vw.encode_msg(dict(msg, actor_side="guest"))
+    inbound = vw.decode_msg(json.dumps(dict(msg, actor_side="guest")), cmd=vw.CMD_CTL)
+    assert inbound["t"] == "_invalid" and inbound["seq"] == msg["seq"]
+
+    encoded = json.loads(vw.encode_msg(dict(msg, future_field={"v": 1})))
+    assert "future_field" not in encoded
+    assert vw.decode_msg(json.dumps(dict(msg, future_field={"v": 1})),
+                         cmd=vw.CMD_CTL)["t"] == "cat_action"
+
+
+def _cat_pose_message(t="cat_motion", **overrides):
+    msg = {
+        "t": t, "motion_id": 1, "sample_seq": 1, "x_q16": 0, "y_q16": 65535,
+        "mode": "walk", "facing": "right", "tier": "cat1",
+        "slot": "movement.cat1.walking",
+    }
+    if t == "cat_pose_commit":
+        msg["seq"] = 7
+    msg.update(overrides)
+    return msg
+
+
+def test_cat_pose_wire_is_normalized_bounded_and_authority_free():
+    sample = _cat_pose_message()
+    commit = _cat_pose_message(
+        "cat_pose_commit", motion_id=U32_MAX, sample_seq=U32_MAX,
+        tier="cat3", slot="idle.cat3", mode="idle", facing="left",
+    )
+    assert vw.decode_msg(vw.encode_msg(sample), cmd=vw.CMD_LOSSY) == {"v": 1, **sample}
+    assert vw.decode_msg(vw.encode_msg(commit), cmd=vw.CMD_CTL) == {"v": 1, **commit}
+    assert not vw.is_reliable("cat_motion")
+    assert vw.is_reliable("cat_pose_commit")
+
+    for field, value in (
+        ("motion_id", 0), ("motion_id", U32_MAX + 1), ("sample_seq", 0),
+        ("sample_seq", True), ("x_q16", -1), ("x_q16", 65536),
+        ("y_q16", 1.0), ("mode", "teleport"), ("facing", "up"),
+        ("tier", "cat4"), ("slot", "idle.cat4"),
+    ):
+        with pytest.raises(ValueError):
+            vw.encode_msg(_cat_pose_message(**{field: value}))
+
+    with pytest.raises(ValueError):
+        vw.encode_msg(_cat_pose_message(tier="cat2", slot="idle.cat1"))
+    for field, value in (
+        ("actor", "peer"), ("actor_side", "guest"), ("url", "https://example.test/cat.gif"),
+        ("asset_url", "/cat.gif"), ("x", 10), ("screen_y", 20), ("offset_px", 1),
+    ):
+        with pytest.raises(ValueError):
+            vw.encode_msg(_cat_pose_message(**{field: value}))
+
+    encoded = json.loads(vw.encode_msg(_cat_pose_message(future_semantic=1)))
+    assert "future_semantic" not in encoded
+
+
+def test_cat_pose_wrong_channels_are_invalid_without_losing_reliable_seq():
+    sample = _cat_pose_message()
+    with pytest.raises(ValueError):
+        vw.decode_msg(vw.encode_msg(sample), cmd=vw.CMD_CTL)
+
+    commit = _cat_pose_message("cat_pose_commit")
+    bad_commit = vw.decode_msg(vw.encode_msg(commit), cmd=vw.CMD_LOSSY)
+    assert bad_commit["t"] == "_invalid" and bad_commit["seq"] == commit["seq"]
+
+
+def _cat_world_state(t="cat_world_frame", **overrides):
+    msg = {
+        "t": t, "world_seq": 1, "yarn_active": True,
+        "yarn_x_q16": 1000, "yarn_y_q16": 2000,
+        "yarn_vx_q12": -1, "yarn_vy_q12": 2, "yarn_holder": "guest",
+        "question_active": False, "question_x_q16": 3000,
+        "question_y_q16": 4000, "collision_seq": 0,
+    }
+    if t == "cat_world_commit":
+        msg["seq"] = 9
+    msg.update(overrides)
+    return msg
+
+
+def test_cat_world_wire_is_fixed_bounded_and_authority_free():
+    intent = {"t": "cat_world_intent", "seq": 8, "intent_id": 1,
+              "kind": "question_tap", "x_q16": 0, "y_q16": 65535}
+    pointer = {"t": "cat_world_pointer", "intent_id": 1, "x_q16": 5, "y_q16": 6}
+    frame = _cat_world_state()
+    commit = _cat_world_state("cat_world_commit", world_seq=U32_MAX, collision_seq=U32_MAX)
+    for msg in (intent, commit):
+        assert vw.decode_msg(vw.encode_msg(msg), cmd=vw.CMD_CTL) == {"v": 1, **msg}
+        assert vw.is_reliable(msg["t"])
+    for msg in (pointer, frame):
+        assert vw.decode_msg(vw.encode_msg(msg), cmd=vw.CMD_LOSSY) == {"v": 1, **msg}
+        assert not vw.is_reliable(msg["t"])
+
+    for bad in (
+        dict(intent, actor="peer"), dict(pointer, x=1),
+        _cat_world_state(url="https://example.test/yarn.gif"),
+        _cat_world_state(items=[]), _cat_world_state(world_seq=0),
+        _cat_world_state(yarn_vx_q12=-4097), _cat_world_state(yarn_vy_q12=4096),
+        _cat_world_state(yarn_holder="self"), _cat_world_state(yarn_active=1),
+    ):
+        with pytest.raises(ValueError):
+            vw.encode_msg(bad)
+
+
+def test_cat_world_wrong_direction_channel_preserves_reliable_seq():
+    intent = {"t": "cat_world_intent", "seq": 8, "intent_id": 1,
+              "kind": "yarn_spawn", "x_q16": 1, "y_q16": 2}
+    invalid = vw.decode_msg(vw.encode_msg(intent), cmd=vw.CMD_LOSSY)
+    assert invalid["t"] == "_invalid" and invalid["seq"] == 8
+    with pytest.raises(ValueError):
+        vw.decode_msg(vw.encode_msg(_cat_world_state()), cmd=vw.CMD_CTL)
 
 
 @pytest.mark.parametrize("tail", [-1, VISIT_CLAUSE_MAX_MS + 1, 10 ** 9, 1.5, "800", True])

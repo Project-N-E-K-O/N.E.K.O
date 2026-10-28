@@ -46,13 +46,20 @@ from main_logic.visit.limits import RateChannel, channel_for
 from main_logic.visit.room import IncomingLineDone, IncomingLineStart, LineRef, RoomEffects
 from main_logic.visit.sanitize import clamp_peer_line, defang_markdown_media
 from main_routers.visit_router.runtime_common import (
+    PHASE_ACTIVE,
     PHASE_AWAITING,
     decode_addressee,
     finalize_reason_for_peer_leave,
     side_of_ln,
 )
 from utils.logger_config import get_module_logger
-from utils.visit_wire import LineDeltaAssembler, decode_msg, is_reliable, proto_compatible
+from utils.visit_wire import (
+    VISIT_CAT_SCENE_VERSION,
+    LineDeltaAssembler,
+    decode_msg,
+    is_reliable,
+    proto_compatible,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -83,6 +90,8 @@ class PeerInfo:
     video: bool
     lang: Optional[str]
     crop: str
+    cat_scene: Optional[int]
+    cat_asset: Optional[str]
     jti: str
 
 
@@ -299,8 +308,27 @@ class ReceiveMixin:
             if claims.sub != self.peer.uid or claims.vid != self.peer.vid:
                 self.request_finalize("peer_identity_rejected")
                 return
+            if (caps.get("cat_scene") != self.peer.cat_scene
+                    or caps.get("cat_asset") != self.peer.cat_asset):
+                self.request_finalize("peer_protocol_violation")
+                return
             self.liveness.on_peer_verified(now)
             return
+        peer_cat_scene = caps.get("cat_scene")
+        peer_cat_asset = caps.get("cat_asset")
+        peer_declares_cat = peer_cat_scene is not None or peer_cat_asset is not None
+        peer_cat_supported = (peer_cat_scene == VISIT_CAT_SCENE_VERSION
+                              and peer_cat_asset in {"dev_neko", "yui_neko"})
+        if self.cat_scene_requested:
+            if not peer_cat_supported:
+                self.request_finalize("unsupported", status_details={"reason": "peer_cat_scene_unsupported"})
+                return
+        elif peer_declares_cat:
+            # A mixed pair must never silently fall back to the legacy
+            # dialogue/audio/video visit.
+            self.request_finalize("unsupported", status_details={"reason": "local_cat_scene_disabled"})
+            return
+        self.cat_scene_active = self.cat_scene_requested and peer_cat_supported
         from main_logic.visit.subjects import derive_short_code
 
         display = await self._clean_peer_name(claims.display_name, claims.sub)
@@ -325,7 +353,10 @@ class ReceiveMixin:
             display=display,
             short_id=derive_short_code(claims.sub), video=caps.get("video") is True,
             lang=m.get("lang") if isinstance(m.get("lang"), str) else None,
-            crop=caps.get("crop") if caps.get("crop") in ("upper", "full") else "upper", jti=claims.jti,
+            crop=caps.get("crop") if caps.get("crop") in ("upper", "full") else "upper",
+            cat_scene=peer_cat_scene if isinstance(peer_cat_scene, int) else None,
+            cat_asset=peer_cat_asset if isinstance(peer_cat_asset, str) else None,
+            jti=claims.jti,
         )
         now = self.clock()  # Verification and name lookup both awaited: start the deadline at verification completion.
         self.liveness.on_peer_verified(now)
@@ -477,7 +508,13 @@ class ReceiveMixin:
             # Slow page consumers: evict oldest lossy queued frames (subtitle fragments / typing), never whole sentences
             # (bounded by per-visit sentence caps, so cannot grow indefinitely).
             for i, queued in enumerate(self._display):
-                if queued.get("type") in _DROPPABLE_DISPLAY_TYPES:
+                if (queued.get("type") in _DROPPABLE_DISPLAY_TYPES
+                        or (queued.get("type") == "visit_cat_pose"
+                            and queued.get("phase") == "sample")
+                        or (queued.get("type") == "visit_cat_world"
+                            and queued.get("phase") == "frame")
+                        or (queued.get("type") == "visit_cat_world_intent"
+                            and queued.get("kind") == "pointer")):
                     del self._display[i]
                     self.display_dropped += 1
                     break
@@ -654,6 +691,108 @@ class ReceiveMixin:
     async def _rx_stats(self, m: dict, from_vid: str, now: float) -> None:
         return None
 
+    async def _rx_cat_action(self, m: dict, from_vid: str, now: float) -> None:
+        if (not self.cat_scene_active or not self.ready_exchanged
+                or self.phase != PHASE_ACTIVE or self.finalizing):
+            return
+        # Ownership comes from the verified, vid-bound sender.  The wire
+        # schema deliberately accepts no actor-side authority from the peer.
+        self._post_display({
+            "type": "visit_cat_scene",
+            "visit_id": self.visit_id,
+            "actor": "peer",
+            "kind": m["kind"],
+            "seq": m["seq"],
+            "seed": m["seed"],
+        })
+
+    async def _rx_cat_motion(self, m: dict, from_vid: str, now: float) -> None:
+        if (not self.cat_scene_active or not self.ready_exchanged
+                or self.phase != PHASE_ACTIVE or self.finalizing):
+            return
+        if not self._cat_pose_is_newer("peer", m):
+            return
+        self._record_cat_pose("peer", "sample", m)
+
+    async def _rx_cat_pose_commit(self, m: dict, from_vid: str, now: float) -> None:
+        if (not self.cat_scene_active or not self.ready_exchanged
+                or self.phase != PHASE_ACTIVE or self.finalizing):
+            return
+        if not self._cat_pose_commit_is_newer("peer", m):
+            return
+        # A newer lossy sample may legitimately overtake an older reliable
+        # commit on another data-channel lane. Cache the recovery boundary,
+        # but never roll the currently displayed peer pose back.
+        if not self._cat_pose_is_newer("peer", m):
+            self._cache_cat_pose_commit("peer", m, seq=m["seq"])
+            return
+        self._record_cat_pose("peer", "commit", m, seq=m["seq"])
+
+    async def _rx_cat_world_intent(self, m: dict, from_vid: str, now: float) -> None:
+        # Only the guest crosses the wire with input. The authenticated,
+        # vid-bound sender is always the peer actor; no actor field is
+        # accepted by the wire schema.
+        if self.side != "host":
+            self._count_anomaly("cat_world_intent_bad_direction")
+            return
+        if not self._cat_world_active():
+            return
+        intent_id = int(m["intent_id"])
+        if intent_id <= self._cat_world_intent_cursor["peer"]:
+            return
+        self._cat_world_intent_cursor["peer"] = intent_id
+        self._post_display({
+            "type": "visit_cat_world_intent",
+            "visit_id": self.visit_id,
+            "actor": "peer",
+            "intent_id": intent_id,
+            "kind": m["kind"],
+            "x_q16": m["x_q16"],
+            "y_q16": m["y_q16"],
+        })
+
+    async def _rx_cat_world_pointer(self, m: dict, from_vid: str, now: float) -> None:
+        if self.side != "host":
+            self._count_anomaly("cat_world_pointer_bad_direction")
+            return
+        if not self._cat_world_active():
+            return
+        self._post_display({
+            "type": "visit_cat_world_intent",
+            "visit_id": self.visit_id,
+            "actor": "peer",
+            "intent_id": m["intent_id"],
+            "kind": "pointer",
+            "x_q16": m["x_q16"],
+            "y_q16": m["y_q16"],
+        }, droppable=True)
+
+    async def _rx_cat_world_frame(self, m: dict, from_vid: str, now: float) -> None:
+        # Shared-object state is computed and published only by the host.
+        if self.side != "guest":
+            self._count_anomaly("cat_world_state_bad_direction")
+            return
+        if not self._cat_world_active() or int(m["world_seq"]) <= self._cat_world_cursor:
+            return
+        self._record_cat_world("frame", m)
+
+    async def _rx_cat_world_commit(self, m: dict, from_vid: str, now: float) -> None:
+        if self.side != "guest":
+            self._count_anomaly("cat_world_state_bad_direction")
+            return
+        if not self._cat_world_active():
+            return
+        previous = self._cat_world_commit
+        if previous is not None and int(m["world_seq"]) <= int(previous["world_seq"]):
+            return
+        # A lossy frame can overtake this reliable recovery boundary. Cache
+        # the commit for snapshot/bind replay, but never roll the live world
+        # backward.
+        self._cache_cat_world_commit(m, seq=m["seq"])
+        if int(m["world_seq"]) <= self._cat_world_cursor:
+            return
+        self._record_cat_world("commit", m, seq=m["seq"])
+
     async def _rx_text(self, m: dict, from_vid: str, now: float) -> None:
         if self.room is None:
             return
@@ -792,6 +931,13 @@ class ReceiveMixin:
 _HANDLERS = {
     "hello": ReceiveMixin._rx_hello,
     "ready": ReceiveMixin._rx_ready,
+    "cat_action": ReceiveMixin._rx_cat_action,
+    "cat_motion": ReceiveMixin._rx_cat_motion,
+    "cat_pose_commit": ReceiveMixin._rx_cat_pose_commit,
+    "cat_world_intent": ReceiveMixin._rx_cat_world_intent,
+    "cat_world_pointer": ReceiveMixin._rx_cat_world_pointer,
+    "cat_world_frame": ReceiveMixin._rx_cat_world_frame,
+    "cat_world_commit": ReceiveMixin._rx_cat_world_commit,
     "ack": ReceiveMixin._rx_ack,
     "hb": ReceiveMixin._rx_hb,
     "state": ReceiveMixin._rx_state,

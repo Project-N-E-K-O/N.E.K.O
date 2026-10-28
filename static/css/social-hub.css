@@ -488,7 +488,20 @@ body.neko-social-hub-standalone {
   padding: 6px 0;
 }
 
+.neko-social-hub-mode-actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+.neko-social-hub-mode-actions .neko-social-hub-button {
+  min-width: 88px;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
 .neko-social-hub-friend .neko-social-hub-button { min-width: 90px; }
+.neko-social-hub-friend .neko-social-hub-mode-actions .neko-social-hub-button { min-width: 88px; }
 .neko-social-hub-friend.is-waiting .neko-social-hub-status { color: #dc8a2f; }
 .neko-social-hub-friend.is-connecting .neko-social-hub-status { color: #168fe5; }
 .neko-social-hub-friend.is-active .neko-social-hub-status { color: #229b61; font-weight: 650; }

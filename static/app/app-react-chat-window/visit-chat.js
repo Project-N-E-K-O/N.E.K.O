@@ -412,6 +412,7 @@
     function blankVisit() {
         return {
             visitId: null, side: null, phase: null,
+            visitMode: 'model',
             peerName: '', peerShortId: '', peerHumanLabel: '',
             inviteCode: '', inviteExpiresAt: 0, targetUserId: '', crossRegion: false,
             peerHidden: false, reconnecting: false, endingSoonAt: 0,
@@ -526,11 +527,15 @@
 
     function idleBar() {
         if (pendingDirectInvitation) {
+            var isCatInvite = pendingDirectInvitation.payload
+                && pendingDirectInvitation.payload.visit_mode === 'cat';
             return {
                 tone: 'waiting',
                 actions: [
                     barAction('direct_decline', t('visit.directInvite.decline', '拒绝'), 'secondary', { disabled: pendingDirectInvitation.busy === true }),
-                    barAction('direct_accept', t('visit.directInvite.accept', '接受'), 'primary', { disabled: pendingDirectInvitation.busy === true })
+                    barAction('direct_accept', isCatInvite
+                        ? t('visit.directInvite.acceptCat', '接受猫形态串门')
+                        : t('visit.directInvite.accept', '接受'), 'primary', { disabled: pendingDirectInvitation.busy === true })
                 ]
             };
         }
@@ -1133,6 +1138,7 @@
         if (typeof frame.peer_human_label === 'string' && frame.peer_human_label) visit.peerHumanLabel = frame.peer_human_label;
         if (typeof frame.cross_region === 'boolean') visit.crossRegion = frame.cross_region;
         if (typeof frame.target_user_id === 'string') visit.targetUserId = frame.target_user_id;
+        if (frame.visit_mode === 'cat' || frame.visit_mode === 'model') visit.visitMode = frame.visit_mode;
         visit.ownName = currentCatgirl();
         applyPreviewedPeer();
         // 后端只给已激活的场次推 ending（额度不足、登录失效等激活前失败走状态横幅 + ended）：
@@ -1686,6 +1692,12 @@
         return 'full';
     }
 
+    function readCatAsset() {
+        var registry = window.NekoCatResourceRegistry;
+        var selected = registry && registry.selectedAppearanceGroupId;
+        return selected === 'yui_neko' ? 'yui_neko' : 'dev_neko';
+    }
+
     // 建房 / 入房请求在途时换了角色：后端照样收下了那位，这一页却已不管她——立刻把那一场硬结束，免得空占角色与邀请码
     async function abandonIfCharacterSwitched(result, catgirl) {
         var visitId = result && result.status === 202 && result.body ? String(result.body.visit_id || '') : '';
@@ -1711,11 +1723,13 @@
         if (phase === 'invite_ready' && typeof body.invite_code === 'string') frame.invite_code = body.invite_code;
         if (typeof body.invite_expires_at === 'number') frame.invite_expires_at = body.invite_expires_at;
         if (typeof body.target_user_id === 'string') frame.target_user_id = body.target_user_id;
+        if (body.visit_mode === 'cat' || body.visit_mode === 'model') frame.visit_mode = body.visit_mode;
         onStateChange(frame);
         return {
             visitId: visitId, phase: phase,
             hasCode: INVITE_CODE_RE.test(String(body.invite_code || '')),
-            targetUserId: String(body.target_user_id || '')
+            targetUserId: String(body.target_user_id || ''),
+            visitMode: body.visit_mode === 'cat' ? 'cat' : 'model'
         };
     }
 
@@ -1762,10 +1776,11 @@
         }
     }
 
-    async function startInvite(targetUserId) {
+    async function startInvite(targetUserId, requestedMode) {
         var catgirl = currentCatgirl();
         if (!catgirl) return { ok: false, error: t('visit.error.noCharacter', '当前没有可串门的角色') };
         targetUserId = String(targetUserId || '');
+        requestedMode = requestedMode === 'cat' ? 'cat' : 'model';
         if (targetUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetUserId)) {
             return { ok: false, error: '好友账号格式无效，请刷新好友列表后重试' };
         }
@@ -1783,6 +1798,9 @@
                 if (String(visit.targetUserId || '') !== targetUserId) {
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                 }
+                if (visit.visitMode !== requestedMode) {
+                    return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                }
                 recoverCurrentHostInviteIfWaiting(catgirl);
                 return { ok: true };
             }
@@ -1790,6 +1808,9 @@
             if (restored) {
                 if (restored.targetUserId !== targetUserId) {
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
+                }
+                if (restored.visitMode !== requestedMode) {
+                    return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
                 }
                 if (!targetUserId && !restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
                 return { ok: true };
@@ -1803,7 +1824,10 @@
             var crop = readCrop();
             var createSeq = stateFrameSeq;
             var result = await withPersonaRetry(function () {
-                var room = { catgirl: catgirl, crop: crop };
+                var room = {
+                    catgirl: catgirl, crop: crop, cat_asset: readCatAsset(),
+                    visit_mode: requestedMode
+                };
                 if (targetUserId) room.target_user_id = targetUserId;
                 return api('POST', '/api/visit/rooms', room);
             }, catgirl);
@@ -1814,11 +1838,17 @@
                 if (String(visit.targetUserId || '') !== targetUserId) {
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                 }
+                if (visit.visitMode !== requestedMode) {
+                    return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                }
                 recoverCurrentHostInviteIfWaiting(catgirl);
                 return { ok: true };
             }
             var created = applyHostRoomResponse(result, catgirl, createSeq);
             if (created) {
+                if (created.visitMode !== requestedMode) {
+                    return { ok: false, error: '串门形态没有正确建立，请结束后重试' };
+                }
                 if (!targetUserId && !created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
                 return { ok: true };
             }
@@ -1830,6 +1860,9 @@
                     if (String(visit.targetUserId || '') !== targetUserId) {
                         return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                     }
+                    if (visit.visitMode !== requestedMode) {
+                        return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                    }
                     recoverCurrentHostInviteIfWaiting(catgirl);
                     return { ok: true };
                 }
@@ -1837,6 +1870,9 @@
                 if (recovered) {
                     if (recovered.targetUserId !== targetUserId) {
                         return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
+                    }
+                    if (recovered.visitMode !== requestedMode) {
+                        return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
                     }
                     if (!targetUserId && !recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
                     return { ok: true };
@@ -1883,15 +1919,17 @@
     }
 
     /** 好友面板使用：房间直接绑定接收账号，不生成、传递或兑换邀请码。 */
-    async function createDirectInvitation(targetUserId) {
+    async function createDirectInvitation(targetUserId, requestedMode) {
         targetUserId = String(targetUserId || '');
-        if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
+        requestedMode = requestedMode === 'cat' ? 'cat' : 'model';
+        if (visit.targetUserId === targetUserId && visit.visitMode === requestedMode
+                && visit.visitId && visit.phase === 'invite_ready') {
             return {
                 target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
-                visit_id: visit.visitId, phase: visit.phase
+                visit_id: visit.visitId, phase: visit.phase, visit_mode: requestedMode
             };
         }
-        var started = await startInvite(targetUserId);
+        var started = await startInvite(targetUserId, requestedMode);
         if (!started || started.ok !== true) {
             throw new Error((started && started.error) || '没能创建定向串门房间，请稍后再试');
         }
@@ -1899,11 +1937,12 @@
             return await new Promise(function (resolve, reject) {
                 var deadline = now() + 15000;
                 var timer = setInterval(function () {
-                    if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
+                    if (visit.targetUserId === targetUserId && visit.visitMode === requestedMode
+                            && visit.visitId && visit.phase === 'invite_ready') {
                         clearInterval(timer);
                         resolve({
                             target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
-                            visit_id: visit.visitId, phase: visit.phase
+                            visit_id: visit.visitId, phase: visit.phase, visit_mode: requestedMode
                         });
                         return;
                     }
@@ -1985,7 +2024,8 @@
         };
         var result = await withPersonaRetry(function () {
             return api('POST', '/api/visit/rooms/' + encodeURIComponent(visitId) + '/join', {
-                catgirl: catgirl, invite_code: inviteCode, confirm: true, crop: readCrop()
+                catgirl: catgirl, invite_code: inviteCode, confirm: true, crop: readCrop(),
+                cat_asset: readCatAsset()
             });
         }, catgirl);
         if (await abandonIfCharacterSwitched(result, catgirl)) return null;
@@ -1993,8 +2033,9 @@
         return result;
     }
 
-    async function joinDirect(visitId, alreadyConfirmed) {
+    async function joinDirect(visitId, alreadyConfirmed, requestedMode) {
         visitId = String(visitId || '');
+        requestedMode = requestedMode === 'cat' ? 'cat' : 'model';
         if (!VISIT_ID_RE.test(visitId)) throw new Error('定向串门邀请格式无效');
         var catgirl = currentCatgirl();
         if (!catgirl) return null;
@@ -2022,7 +2063,8 @@
         };
         var result = await withPersonaRetry(function () {
             return api('POST', '/api/visit/rooms/' + encodeURIComponent(visitId) + '/join-direct', {
-                catgirl: catgirl, confirm: true, crop: readCrop()
+                catgirl: catgirl, confirm: true, crop: readCrop(), cat_asset: readCatAsset(),
+                visit_mode: requestedMode
             });
         }, catgirl);
         if (await abandonIfCharacterSwitched(result, catgirl)) return null;
@@ -2096,7 +2138,8 @@
                 id: payload.notification_id,
                 actor_id: payload.actor_id,
                 visit_id: payload.visit_id,
-                expires_at: payload.expires_at
+                expires_at: payload.expires_at,
+                visit_mode: payload.visit_mode
             });
             return;
         }
@@ -2129,7 +2172,7 @@
         }
         var result;
         try {
-            result = await joinDirect(visitId, true);
+            result = await joinDirect(visitId, true, payload.visit_mode);
         } catch (_) {
             pending.busy = false;
             render();
@@ -2223,6 +2266,7 @@
                 notification_id: notificationId,
                 actor_id: String(incoming.actor_id || incoming.actorId || ''),
                 visit_id: visitId,
+                visit_mode: incoming.visit_mode === 'cat' || incoming.visitMode === 'cat' ? 'cat' : 'model',
                 expires_at: Number(incoming.expires_at || incoming.expiresAt) || Number(preview.body.expires_at) || 0,
                 catgirl: catgirl
             };
@@ -2446,6 +2490,188 @@
             toast(t('visit.error.generic', '没能完成，请稍后再试'));
         }
         return result;
+    }
+
+    async function requestCatAction(visitId, kind) {
+        visitId = String(visitId || '');
+        kind = String(kind || '');
+        if (!VISIT_ID_RE.test(visitId) || ['greet', 'play', 'rest', 'move'].indexOf(kind) === -1) return false;
+        var result = await api('POST', '/api/visit/route/cat-action', {
+            visit_id: visitId,
+            kind: kind
+        });
+        if (result.status !== 200 && result.status !== 202) {
+            toast(t('visit.catScene.actionFailed', '猫猫这次没能行动，请稍后再试'));
+            return false;
+        }
+        return {
+            ok: true,
+            seq: result.body && Number.isSafeInteger(result.body.seq) ? result.body.seq : null
+        };
+    }
+
+    async function requestCatPose(visitId, phase, pose) {
+        visitId = String(visitId || '');
+        phase = String(phase || '');
+        if (!VISIT_ID_RE.test(visitId) || (phase !== 'sample' && phase !== 'commit')
+                || !pose || typeof pose !== 'object') return false;
+        var integerFields = ['motion_id', 'sample_seq', 'x_q16', 'y_q16'];
+        if (integerFields.some(function (key) { return !Number.isSafeInteger(pose[key]); })) return false;
+        if (pose.motion_id < 1 || pose.motion_id > 0xffffffff
+                || pose.sample_seq < 1 || pose.sample_seq > 0xffffffff
+                || pose.x_q16 < 0 || pose.x_q16 > 65535
+                || pose.y_q16 < 0 || pose.y_q16 > 65535) return false;
+        if (['idle', 'walk', 'drag', 'airborne', 'edge', 'follow'].indexOf(pose.mode) === -1
+                || ['left', 'right'].indexOf(pose.facing) === -1
+                || ['cat1', 'cat2', 'cat3'].indexOf(pose.tier) === -1) return false;
+        var slots = [
+            'idle.cat1', 'idle.cat2', 'idle.cat3',
+            'click.cat1', 'click.cat2', 'click.cat3',
+            'drag.cat1', 'drag.cat2', 'drag.cat3', 'drag.rapid',
+            'movement.cat1.walking', 'movement.cat1.stretch', 'movement.cat1.interactive',
+            'action.cat1.eat', 'action.cat1.play_yarn', 'playground.cat1.air'
+        ];
+        if (slots.indexOf(pose.slot) === -1) return false;
+        var slotTierMatch = pose.slot.match(/\.cat([123])(?:\.|$)/);
+        var expectedTier = pose.slot === 'drag.rapid'
+            ? 'cat1'
+            : (slotTierMatch ? 'cat' + slotTierMatch[1] : '');
+        if (expectedTier && pose.tier !== expectedTier) return false;
+        var result = await api('POST', '/api/visit/route/cat-pose', {
+            visit_id: visitId,
+            phase: phase,
+            motion_id: pose.motion_id,
+            sample_seq: pose.sample_seq,
+            x_q16: pose.x_q16,
+            y_q16: pose.y_q16,
+            mode: pose.mode,
+            facing: pose.facing,
+            tier: pose.tier,
+            slot: pose.slot
+        });
+        if (result.status === 200 || result.status === 202) return { ok: true };
+        var code = bodyCode(result);
+        if (result.status === 409 && code === 'VISIT_CAT_POSE_STALE') {
+            var cursor = result.body && result.body.cursor;
+            return {
+                ok: false,
+                stale: true,
+                current_motion_id: cursor && Number.isSafeInteger(cursor.motion_id)
+                    ? cursor.motion_id : null
+            };
+        }
+        // Pose samples are continuous state, not user commands. Backpressure,
+        // reconnects and teardown are recovered by the next sample/commit and
+        // must not produce a toast storm.
+        return false;
+    }
+
+    function validCatWorldQ16(value) {
+        return Number.isSafeInteger(value) && value >= 0 && value <= 65535;
+    }
+
+    async function requestCatWorldIntent(payload) {
+        payload = payload && typeof payload === 'object' ? payload : {};
+        var visitId = String(payload.visit_id || '');
+        if (!VISIT_ID_RE.test(visitId)
+                || !Number.isSafeInteger(payload.intent_id) || payload.intent_id < 1
+                || payload.intent_id > 0xffffffff
+                || ['yarn_spawn', 'yarn_grab', 'yarn_release', 'question_tap'].indexOf(payload.kind) === -1
+                || !validCatWorldQ16(payload.x_q16) || !validCatWorldQ16(payload.y_q16)) return false;
+        var result = await api('POST', '/api/visit/route/cat-world-intent', {
+            visit_id: visitId,
+            intent_id: payload.intent_id,
+            kind: payload.kind,
+            x_q16: payload.x_q16,
+            y_q16: payload.y_q16
+        });
+        if (result.status === 200 || result.status === 202) return { ok: true };
+        if (result.status === 409 && bodyCode(result) === 'VISIT_CAT_WORLD_INTENT_STALE') {
+            return {
+                ok: false,
+                stale: true,
+                current_intent_id: result.body && Number.isSafeInteger(result.body.current_intent_id)
+                    ? result.body.current_intent_id : null
+            };
+        }
+        return false;
+    }
+
+    async function requestCatWorldPointer(payload) {
+        payload = payload && typeof payload === 'object' ? payload : {};
+        var visitId = String(payload.visit_id || '');
+        if (!VISIT_ID_RE.test(visitId)
+                || !Number.isSafeInteger(payload.intent_id) || payload.intent_id < 1
+                || payload.intent_id > 0xffffffff
+                || !validCatWorldQ16(payload.x_q16) || !validCatWorldQ16(payload.y_q16)) return false;
+        var result = await api('POST', '/api/visit/route/cat-world-pointer', {
+            visit_id: visitId,
+            intent_id: payload.intent_id,
+            x_q16: payload.x_q16,
+            y_q16: payload.y_q16
+        });
+        return result.status === 200 || result.status === 202 ? { ok: true } : false;
+    }
+
+    async function requestCatWorldState(payload) {
+        payload = payload && typeof payload === 'object' ? payload : {};
+        var visitId = String(payload.visit_id || '');
+        var phase = String(payload.phase || '');
+        var intFields = [
+            'world_seq', 'yarn_x_q16', 'yarn_y_q16', 'yarn_vx_q12', 'yarn_vy_q12',
+            'question_x_q16', 'question_y_q16', 'collision_seq'
+        ];
+        if (!VISIT_ID_RE.test(visitId) || (phase !== 'frame' && phase !== 'commit')
+                || intFields.some(function (key) { return !Number.isSafeInteger(payload[key]); })
+                || payload.world_seq < 1 || payload.world_seq > 0xffffffff
+                || !validCatWorldQ16(payload.yarn_x_q16) || !validCatWorldQ16(payload.yarn_y_q16)
+                || payload.yarn_vx_q12 < -4096 || payload.yarn_vx_q12 > 4095
+                || payload.yarn_vy_q12 < -4096 || payload.yarn_vy_q12 > 4095
+                || ['none', 'host', 'guest'].indexOf(payload.yarn_holder) === -1
+                || typeof payload.yarn_active !== 'boolean'
+                || typeof payload.question_active !== 'boolean'
+                || !validCatWorldQ16(payload.question_x_q16)
+                || !validCatWorldQ16(payload.question_y_q16)
+                || payload.collision_seq < 0 || payload.collision_seq > 0xffffffff) return false;
+        var body = {
+            visit_id: visitId,
+            phase: phase,
+            world_seq: payload.world_seq,
+            yarn_active: payload.yarn_active,
+            yarn_x_q16: payload.yarn_x_q16,
+            yarn_y_q16: payload.yarn_y_q16,
+            yarn_vx_q12: payload.yarn_vx_q12,
+            yarn_vy_q12: payload.yarn_vy_q12,
+            yarn_holder: payload.yarn_holder,
+            question_active: payload.question_active,
+            question_x_q16: payload.question_x_q16,
+            question_y_q16: payload.question_y_q16,
+            collision_seq: payload.collision_seq
+        };
+        var result = await api('POST', '/api/visit/route/cat-world-state', body);
+        if (result.status === 200 || result.status === 202) return { ok: true };
+        if (result.status === 409 && bodyCode(result) === 'VISIT_CAT_WORLD_STALE') {
+            return {
+                ok: false,
+                stale: true,
+                current_world_seq: result.body && Number.isSafeInteger(result.body.current_world_seq)
+                    ? result.body.current_world_seq : null
+            };
+        }
+        return false;
+    }
+
+    async function endCatVisitForModelReturn(visitId) {
+        visitId = String(visitId || '');
+        if (!VISIT_ID_RE.test(visitId)) return false;
+        var result = await api('POST', '/api/visit/route/end', {
+            lanlan_name: currentCatgirl(),
+            visit_id: visitId,
+            reason: 'route_end'
+        });
+        if (result.status === 200 || result.status === 404) return true;
+        toast(t('visit.error.generic', '没能完成，请稍后再试'));
+        return false;
     }
 
     async function cancelDirectInvitation(visitId) {
@@ -2920,7 +3146,35 @@
             ? state.room.peer_crop
             : (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full') ? state.peer.crop : '');
         if (peerCrop) frame.peer_crop = peerCrop;
+        if (state.cat_scene === 2) frame.cat_scene = 2;
+        if (state.self_cat_asset === 'dev_neko' || state.self_cat_asset === 'yui_neko') {
+            frame.self_cat_asset = state.self_cat_asset;
+        }
+        if (state.peer_cat_asset === 'dev_neko' || state.peer_cat_asset === 'yui_neko') {
+            frame.peer_cat_asset = state.peer_cat_asset;
+        }
         window.nekoRelayVisitStateToDisplay(frame);
+        if (state.cat_scene === 2 && state.cat_poses
+                && typeof window.nekoRelayVisitCatPoseToDisplay === 'function') {
+            ['self', 'peer'].forEach(function (actor) {
+                var pose = state.cat_poses[actor];
+                if (!pose || typeof pose !== 'object') return;
+                window.nekoRelayVisitCatPoseToDisplay(Object.assign({}, pose, {
+                    type: 'visit_cat_pose',
+                    visit_id: visitId,
+                    actor: actor,
+                    phase: 'commit'
+                }));
+            });
+        }
+        if (state.cat_scene === 2 && state.cat_world
+                && typeof window.nekoRelayVisitCatWorldToDisplay === 'function') {
+            window.nekoRelayVisitCatWorldToDisplay(Object.assign({}, state.cat_world, {
+                type: 'visit_cat_world',
+                visit_id: visitId,
+                phase: 'commit'
+            }));
+        }
         // 这一帧可能先于 Pet 窗自己的重载恢复建出 iframe，恢复随即作废，它本该套上的出门样式 / 对端显隐
         // 也就没了：按后端 started → departed 的顺序补上出门，再按快照同步对端显隐（建 iframe 会清掉这两样，必须排在阶段帧之后）
         if (frame.side === 'guest' && (phase === 'active' || phase === 'wrap_up')) {
@@ -2949,6 +3203,9 @@
             if (state.cross_region === true) visit.crossRegion = true;
         } else {
             visit.crossRegion = state.cross_region === true;
+        }
+        if (state.visit_mode === 'cat' || state.visit_mode === 'model') {
+            visit.visitMode = state.visit_mode;
         }
         // 重载前的台词按 visit_line 同形重放（已有的 line_id 不重复上屏）
         (Array.isArray(state.transcript) ? state.transcript : []).forEach(function (frame) {
@@ -3210,6 +3467,12 @@
         createInviteCode: createInviteCode,
         createDirectInvitation: createDirectInvitation,
         cancelDirectInvitation: cancelDirectInvitation,
+        requestCatAction: requestCatAction,
+        requestCatPose: requestCatPose,
+        requestCatWorldIntent: requestCatWorldIntent,
+        requestCatWorldPointer: requestCatWorldPointer,
+        requestCatWorldState: requestCatWorldState,
+        endCatVisitForModelReturn: endCatVisitForModelReturn,
         // 测试用：只读快照与内部入口
         _test: {
             assembleClauses: assembleClauses,
@@ -3230,6 +3493,12 @@
             dialogs: function () { return openDialogs.slice(); }
         }
     };
+
+    window.nekoVisitCatWorldApi = Object.freeze({
+        sendIntent: requestCatWorldIntent,
+        sendPointer: requestCatWorldPointer,
+        sendState: requestCatWorldState
+    });
 
     if (isUiWindow()) {
         setTimeout(pollDirectInvitations, 500);

@@ -2351,6 +2351,40 @@ test('Windows cats outside Playground retain one native mouse or touch drag owne
   }
 });
 
+test('active cat visits leave mouse and touch dragging to the local cat DOM owner', () => {
+  for (const source of ['api', 'body-class']) for (const input of ['mouse', 'touch']) {
+    const r = runtime({ model: 'live2d' });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'darwin' };
+    if (source === 'api') r.window.nekoVisitCatScene = { isActive: () => true };
+    const native = installDragProducer(r, 'native');
+    if (source === 'body-class') {
+      r.context.document.body.classList = {
+        contains: (name) => name === 'neko-visit-cat-scene-active',
+      };
+    }
+    const dom = installDragProducer(r, 'live2d', { fromCreation: true });
+    r.context.document.createElement = () => ({});
+    let nativeStarts = 0;
+    r.window.nekoPetDrag.start = () => { nativeStarts++; return true; };
+
+    const event = input === 'mouse' ? native.down(360, 260) : native.touchDown(360, 260);
+    assert.equal(event.stopped, undefined, `${source}/${input}: native capture must not stop the DOM owner`);
+    assert.equal(event.defaultPrevented, undefined, `${source}/${input}: native capture must not prevent the DOM owner`);
+    assert.equal(nativeStarts, 0, `${source}/${input}: the shared Pet carrier must not shrink`);
+    assert.equal(r.context.document.body.dataset.nekoBallDrag, undefined);
+
+    if (input === 'mouse') {
+      dom.down(360, 260);
+      r.advance(20); dom.move(390, 240); dom.up();
+    } else {
+      dom.touchDown(360, 260, event);
+      r.advance(20); dom.touchMove(390, 240); dom.touchUp();
+    }
+    r.frame(16); r.frame(16);
+    assert.equal(r.container.getAttribute('data-dragging'), 'false', `${source}/${input}: DOM drag still completes`);
+  }
+});
+
 test('Windows ball mouse capture stops propagation before the DOM drag owner can start', () => {
   for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
     const r = runtime({ model });

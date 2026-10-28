@@ -50,7 +50,7 @@ import math
 import random
 import secrets
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +60,7 @@ from config.visit_settings import (
     VISIT_ACTIVATION_ALLOWANCE_S,
     VISIT_CAPS_PREFLIGHT_TIMEOUT_S,
     VISIT_CAPS_SDK_TIMEOUT_S,
+    VISIT_CAT_SCENE_ENABLED,
     VISIT_CROP_DEFAULT,
     VISIT_ENABLED_DEFAULT,
     VISIT_ENDING_SOON_S,
@@ -68,6 +69,8 @@ from config.visit_settings import (
     VISIT_LEAVE_GAP_GRACE_S,
     VISIT_MAX_DURATION_S,
     VISIT_MEMORY_DEFAULT,
+    VISIT_PEER_MOTION_PER_S,
+    VISIT_PEER_WORLD_PER_S,
     VISIT_REPLY_GAP_S,
     VISIT_SELF_RECONNECT_S,
     VISIT_SHUTDOWN_BUDGET_S,
@@ -79,7 +82,7 @@ from config.visit_settings import (
     VISIT_VOICE_DEFAULT,
 )
 from main_logic.visit.liveness import VisitLiveness
-from main_logic.visit.limits import PeerRateLimiter
+from main_logic.visit.limits import PeerRateLimiter, TokenBucket
 from main_logic.visit.outbox import (
     PAUSE_PEER_ABSENT,
     PAUSE_PEER_AWAY,
@@ -124,6 +127,16 @@ from utils.visit_route_state import (
     finalize_visit_route_state,
     get_visit_route_state,
 )
+from utils.visit_wire import (
+    CAT_WORLD_INTENT_FIELDS,
+    CAT_WORLD_INTENT_KINDS,
+    CAT_WORLD_STATE_FIELDS,
+    CAT_POSE_FACINGS,
+    CAT_POSE_FIELDS,
+    CAT_POSE_MODES,
+    CAT_POSE_SLOT_TIERS,
+    VISIT_CAT_SCENE_VERSION,
+)
 
 logger = get_module_logger(__name__, "Main")
 
@@ -151,6 +164,10 @@ _VOICE_STATUS_THROTTLE_S = 5.0
 _ACCOUNT_CHANGE_SEAL_WAIT_S = 30.0  # Maximum wait for active-visit upload archival before logout/account switching.
 # Maximum account-bound replay push, checking account then writing; shorter than account-switch waits so it finishes or truncates before switches proceed.
 _ACCOUNT_BOUND_PUSH_MAX_S = 10.0
+
+_CAT_ASSET_IDS = frozenset({"dev_neko", "yui_neko"})
+_CAT_ACTION_KINDS = frozenset({"greet", "play", "rest", "move"})
+_U32_MAX = 2 ** 32 - 1
 
 # ═════════════════════════════════════════════════════════════════════
 # Dependency injection.
@@ -682,9 +699,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         character_uid: str,
         persona_text: str,
         crop: str = VISIT_CROP_DEFAULT,
+        cat_asset: str = "dev_neko",
         invite_code: Optional[str] = None,
         target_user_id: Optional[str] = None,
         direct: bool = False,
+        cat_scene: bool = False,
         deps: Optional[RuntimeDeps] = None,
         clock: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
@@ -697,9 +716,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.character_uid = character_uid
         self.persona_text = persona_text
         self.crop = crop if crop in ("upper", "full") else VISIT_CROP_DEFAULT
+        self.cat_asset = cat_asset if cat_asset in _CAT_ASSET_IDS else "dev_neko"
         self.invite_code = invite_code
         self.target_user_id = target_user_id
         self.direct = direct
+        self.visit_mode = "cat" if cat_scene is True else "model"
         self.deps = deps or runtime_deps()
         self.clock = clock
         self.wall = wall
@@ -723,6 +744,27 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.room = None
         self.spool = None
         self.session = None
+        # Freeze the mode before room entry: the journal normally opens before
+        # peer hello negotiation, while a cat visit must never create one.
+        self.cat_scene_requested = bool(VISIT_CAT_SCENE_ENABLED and cat_scene is True)
+        if not self.cat_scene_requested:
+            self.visit_mode = "model"
+        self.cat_scene_active = False
+        # Each side is authoritative only for its own cat. Motion samples are
+        # latest-wins; reliable commits are the sole pose recovery boundary.
+        self._cat_pose_cursor: dict[str, tuple[int, int]] = {"self": (0, 0), "peer": (0, 0)}
+        self._cat_pose_committed_motion: dict[str, int] = {"self": 0, "peer": 0}
+        self._cat_pose_commits: dict[str, dict] = {}
+        self._cat_pose_sample_bucket = TokenBucket.full(
+            VISIT_PEER_MOTION_PER_S, 4, now,
+        )
+        # The host renderer is the sole shared-world calculator. Guest input
+        # crosses separately from the host's latest-wins frames and commits.
+        self._cat_world_intent_cursor = {"self": 0, "peer": 0}
+        self._cat_world_cursor = 0
+        self._cat_world_commit: Optional[dict] = None
+        self._cat_world_pointer_bucket = TokenBucket.full(VISIT_PEER_WORLD_PER_S, 4, now)
+        self._cat_world_frame_bucket = TokenBucket.full(VISIT_PEER_WORLD_PER_S, 4, now)
         self.voice = VoiceState(enabled=VISIT_VOICE_DEFAULT)
         self.memory_enabled: Optional[bool] = None
         self.lang: Optional[str] = None
@@ -892,6 +934,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         sent or retired (``_exit_steps``); after it the queue takes nothing.
         """
         payload = {"type": "visit_state_change", "action": action, "side": self.side,
+                   "visit_mode": self.visit_mode,
                    "visit_id": self.visit_id, "ts": self.wall()}
         payload.update({k: v for k, v in fields.items() if v is not None})
         if action == PHASE_ENDED:
@@ -1030,7 +1073,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
     def _credentials_message(self, *, refresh: bool) -> dict:
         creds = self.grant.current  # type: ignore[union-attr]
         peer_vid = self.peer.vid if self.peer is not None else None
-        audio = self._voice_gate()
+        audio = False if self.cat_scene_requested else self._voice_gate()
         return build_credentials_message(creds, side=self.side, crop=self.crop, codec=self._codec(),
                                          peer_vid=peer_vid, refresh=refresh, audio=audio)
 
@@ -1266,13 +1309,15 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # On entry, write upload headers before lines/usage/errors. Use an independent task;
         # finalization/shutdown await it before sealing, preventing empty-noop archival. Write once,
         # reusing across replacement connections' first joins.
-        opening = self._start_journal()
+        opening = None if self.cat_scene_requested else self._start_journal()
         # Bound upload-header writes so blocked disks cannot hang receives while room-entry deadlines expire as relay_lost.
-        await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
+        if opening is not None:
+            await asyncio.wait([opening], timeout=_JOURNAL_OPEN_MAX_S)
         self._first_join_gen = None
-        if not opening.done():
+        if opening is not None and not opening.done():
             logger.warning("visit %s: upload journal still opening, buffering its lines", self.visit_id[:6])
-        if opening.done() and not opening.cancelled() and opening.exception() is not None:
+        if (opening is not None and opening.done() and not opening.cancelled()
+                and opening.exception() is not None):
             # Failed upload journals lose one transcript copy, not visit operation.
             logger.warning("visit %s: upload journal not opened: %s", self.visit_id[:6],
                            type(opening.exception()).__name__)
@@ -1386,15 +1431,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if creds is None:
             return
         self._hello_sent = True
+        caps = {"video": bool(self.video_ok), "tier": creds.tier, "proto": 1,
+                "app_version": cr._app_version()[:16], "crop": self.crop}
+        if self.cat_scene_requested:
+            caps.update({"video": False, "cat_scene": VISIT_CAT_SCENE_VERSION, "cat_asset": self.cat_asset})
         self.outbox.send({
             "t": "hello", "v": 1, "ticket": creds.identity_ticket,
-            "caps": {"video": bool(self.video_ok), "tier": creds.tier, "proto": 1,
-                     "app_version": cr._app_version()[:16], "crop": self.crop},
+            "caps": caps,
             "lang": (self.lang_tag() or "und")[:16], "jti_reuse": False,
         }, now=now)
 
     def _announce_view(self) -> None:
         """Data-channel ``state{hidden, crop, tier}`` when this side's visibility changed (lossy, 1 Hz at most)."""
+        if self.cat_scene_active:
+            # Cat visits have no remote camera view.  Keeping this legacy
+            # visibility/crop traffic would only couple the action runtime to
+            # a media state that cannot affect its presentation.
+            return
         creds = self.creds
         if self.peer is None or creds is None or self._last_hidden_sent == self.local_hidden:
             return
@@ -1413,6 +1466,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 "rx_w", "rx_h")
         self.stats = {k: msg.get(k) for k in keep if isinstance(msg.get(k), (int, float))
                       and not isinstance(msg.get(k), bool) and math.isfinite(msg.get(k)) and msg.get(k) >= 0}
+        if self.cat_scene_active:
+            # Local diagnostics may still be useful, but there is no remote
+            # video stream whose receive stats need to cross the data channel.
+            return
         if msg.get("softenc_overloaded") is True:
             _vp8_next_visit = True
         if self.peer is None or not self.ready_exchanged or self.finalizing:
@@ -1440,6 +1497,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         frames: list[dict] = []
         if self.side == "host" and self.phase == PHASE_INVITE_READY and creds is not None:
             frame = {"type": "visit_state_change", "action": PHASE_INVITE_READY, "side": self.side,
+                     "visit_mode": self.visit_mode,
                      "visit_id": self.visit_id, "invite_expires_at": creds.invite_expires_at,
                      "transport": creds.transport, "ts": self.wall()}
             if self.direct:
@@ -1449,6 +1507,20 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             frames.append(frame)
         if self.side == "host" and self.phase == PHASE_AWAITING and self._invite_frame is not None:
             frames.append(dict(self._invite_frame))
+        if self.cat_scene_active:
+            for actor in ("self", "peer"):
+                pose = self._cat_pose_commits.get(actor)
+                if pose is not None:
+                    frames.append(self._cat_pose_frame(
+                        actor, "commit", pose,
+                        seq=pose.get("seq") if isinstance(pose.get("seq"), int) else None,
+                    ))
+            if self._cat_world_commit is not None:
+                frames.append(self._cat_world_frame(
+                    "commit", self._cat_world_commit,
+                    seq=self._cat_world_commit.get("seq")
+                    if isinstance(self._cat_world_commit.get("seq"), int) else None,
+                ))
         return frames
 
     def replay_for_bind(self) -> None:
@@ -1475,6 +1547,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         the moment the visit starts ending: the tap carries the shared TTS
         chain, so once private chat is back nothing more may reach the room.
         """
+        if self.cat_scene_requested:
+            # The vendor room remains the reliable data channel, but the
+            # official cat client creates no video or TTS audio tracks.
+            snap: dict[str, Any] = {
+                "crop": self.crop,
+                "ladder": self.ladder,
+                "publish": False,
+                "subscribe": False,
+                "audio_publish": False,
+                "audio_subscribe": False,
+            }
+            if self.peer is not None:
+                # Host learns the peer vid from the verified hello; the
+                # transport still needs it for targeted data-channel sends.
+                snap["peer_vid"] = self.peer.vid
+                snap["peer_crop"] = self.peer.crop
+            return snap
         voice = bool(self.ready_exchanged and not self.finalizing and self.voice.enabled and self._voice_gate())
         snap: dict[str, Any] = {"crop": self.crop, "ladder": self.ladder, "audio_publish": voice, "audio_subscribe": voice}
         if self.side == "guest":
@@ -1589,6 +1678,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             if self.finalizing:
                 return
             self._check_duration(now)
+        elif self.cat_scene_active and self.activated:
+            self._check_cat_duration(now)
         if self.spool is not None and self.spool.fsync_due(now):
             self.spawn(self.spool.fsync(now))
 
@@ -1610,6 +1701,19 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if (self.room.phase == "active" and self.last_text_at is not None and not self.room.peer_hidden
                 and now - self.last_text_at >= VISIT_IDLE_TIMEOUT_S):
             self.request_finalize("idle_timeout")
+
+    def _check_cat_duration(self, now: float) -> None:
+        """Keep the shared hard cap without dialogue wrap-up or text idle rules."""
+        if self.started_at_mono is None:
+            return
+        elapsed = now - self.started_at_mono
+        if elapsed >= VISIT_MAX_DURATION_S:
+            self.request_finalize("max_duration")
+            return
+        if not self._ending_soon_sent and elapsed >= VISIT_MAX_DURATION_S - VISIT_ENDING_SOON_S:
+            self._ending_soon_sent = True
+            ends_at = (self.started_at_wall or self.wall()) + VISIT_MAX_DURATION_S
+            self.spawn(self.push("ending_soon", ends_at=ends_at))
 
     async def _renew_grant(self) -> None:
         try:
@@ -1701,14 +1805,21 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # Earlier send_media/page writes may stall; if finalization began meanwhile, never mark the page active again.
         if self.finalizing:
             return
-        await self.push("started", peer_crop=self.room.peer_crop if self.side == "host" and self.room else None)
+        await self.push(
+            "started",
+            peer_crop=self.room.peer_crop if self.side == "host" and self.room else None,
+            cat_scene=VISIT_CAT_SCENE_VERSION if self.cat_scene_active else None,
+            self_cat_asset=self.cat_asset if self.cat_scene_active else None,
+            peer_cat_asset=(self.peer.cat_asset if self.cat_scene_active and self.peer is not None else None),
+        )
         if self.finalizing:
             return
         if self.side == "guest":
             await self.push("departed")
             if self.finalizing:
                 return
-        self.start_opening_line()
+        if not self.cat_scene_active:
+            self.start_opening_line()
 
     # -- Activation --
 
@@ -1740,6 +1851,23 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
 
     async def _activate(self) -> None:
+        peer = self.peer
+        creds = self.creds
+        if peer is None or creds is None:
+            raise RuntimeError("activation before the peer verified")
+        if self.cat_scene_requested:
+            if not self.cat_scene_active:
+                raise RuntimeError("cat-scene activation before capability agreement")
+            self.memory_enabled = False
+            self.voice = VoiceState(enabled=False)
+            self.host.park_proactive()
+            self.activated = True
+            now = self.clock()
+            self.started_at_mono = now
+            self.started_at_wall = self.wall()
+            self.last_text_at = None
+            self._set_phase(PHASE_ACTIVE)
+            return
         from config.prompts.prompts_visit import build_visit_instructions, get_family_neutral_term
         from main_logic.visit.room import VisitRoom
         from main_logic.visit.sanitize import neutralize_display_name
@@ -1750,10 +1878,6 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             protected_live_display_names,
         )
 
-        peer = self.peer
-        creds = self.creds
-        if peer is None or creds is None:
-            raise RuntimeError("activation before the peer verified")
         settings = await self.deps.settings()
         if self.finalizing:
             return
@@ -1929,6 +2053,301 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         await self.host.ack_text_session(request_id)
         return True
 
+    async def request_cat_action(self, kind: str) -> tuple[int, dict]:
+        """Queue one owner-authored action and project it locally as ``self``.
+
+        Sequence, seed and actor are runtime-owned.  The local page supplies
+        only a closed action kind, so it cannot impersonate the peer or pick a
+        transport identity.
+        """
+        if kind not in _CAT_ACTION_KINDS:
+            return 400, {"ok": False, "code": "invalid_kind"}
+        if (not self.cat_scene_active or not self.activated or not self.ready_exchanged
+                or self.phase != PHASE_ACTIVE or self.finalizing):
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        payload = {
+            "t": "cat_action",
+            "v": 1,
+            "kind": kind,
+            "seed": self.deps.rng.getrandbits(32),
+        }
+        try:
+            _pieces, nbytes = self.outbox.encoded_size(payload)
+            if not self.outbox.try_reserve(nbytes):
+                return 429, {"ok": False, "code": "VISIT_E_BUSY"}
+            seq = self.outbox.send(payload, now=self.clock())
+        except ValueError:
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        self._post_display({
+            "type": "visit_cat_scene",
+            "visit_id": self.visit_id,
+            "actor": "self",
+            "kind": kind,
+            "seq": seq,
+            "seed": payload["seed"],
+        })
+        self.kick()
+        return 202, {"ok": True, "seq": seq}
+
+    @staticmethod
+    def _valid_cat_pose(pose: Mapping[str, Any]) -> bool:
+        if set(pose) != CAT_POSE_FIELDS:
+            return False
+        ints = (pose.get("motion_id"), pose.get("sample_seq"), pose.get("x_q16"), pose.get("y_q16"))
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in ints):
+            return False
+        motion_id, sample_seq, x_q16, y_q16 = ints
+        return (
+            1 <= motion_id <= _U32_MAX
+            and 1 <= sample_seq <= _U32_MAX
+            and 0 <= x_q16 <= 65535
+            and 0 <= y_q16 <= 65535
+            and pose.get("mode") in CAT_POSE_MODES
+            and pose.get("facing") in CAT_POSE_FACINGS
+            and CAT_POSE_SLOT_TIERS.get(pose.get("slot")) == pose.get("tier")
+        )
+
+    def _cat_pose_is_newer(self, actor: str, pose: Mapping[str, Any]) -> bool:
+        key = (int(pose["motion_id"]), int(pose["sample_seq"]))
+        return (key > self._cat_pose_cursor[actor]
+                and key[0] > self._cat_pose_committed_motion[actor])
+
+    def _cat_pose_frame(
+        self, actor: str, phase: str, pose: Mapping[str, Any], *, seq: Optional[int] = None,
+    ) -> dict:
+        frame = {
+            "type": "visit_cat_pose",
+            "visit_id": self.visit_id,
+            "actor": actor,
+            "phase": phase,
+            **{field: pose[field] for field in CAT_POSE_FIELDS},
+        }
+        if seq is not None:
+            frame["seq"] = seq
+        return frame
+
+    def _cat_pose_commit_is_newer(self, actor: str, pose: Mapping[str, Any]) -> bool:
+        previous = self._cat_pose_commits.get(actor)
+        if previous is None:
+            return True
+        return (int(pose["motion_id"]), int(pose["sample_seq"])) > (
+            int(previous["motion_id"]), int(previous["sample_seq"]),
+        )
+
+    def _cache_cat_pose_commit(
+        self, actor: str, pose: Mapping[str, Any], *, seq: Optional[int] = None,
+    ) -> None:
+        self._cat_pose_committed_motion[actor] = max(
+            self._cat_pose_committed_motion[actor], int(pose["motion_id"]),
+        )
+        commit = {field: pose[field] for field in CAT_POSE_FIELDS}
+        if seq is not None:
+            commit["seq"] = seq
+        self._cat_pose_commits[actor] = commit
+
+    def _record_cat_pose(
+        self, actor: str, phase: str, pose: Mapping[str, Any], *, seq: Optional[int] = None,
+    ) -> None:
+        self._cat_pose_cursor[actor] = (int(pose["motion_id"]), int(pose["sample_seq"]))
+        if phase == "commit":
+            self._cache_cat_pose_commit(actor, pose, seq=seq)
+        self._post_display(
+            self._cat_pose_frame(actor, phase, pose, seq=seq),
+            droppable=phase == "sample",
+        )
+
+    async def request_cat_pose(self, phase: str, pose: Mapping[str, Any]) -> tuple[int, dict]:
+        """Publish one owner-authored normalized pose sample or reliable commit."""
+        if phase not in ("sample", "commit") or not self._valid_cat_pose(pose):
+            return 400, {"ok": False, "code": "VISIT_CAT_POSE_INVALID"}
+        if (not self.cat_scene_active or not self.activated or not self.ready_exchanged
+                or self.phase != PHASE_ACTIVE or self.finalizing):
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        if not self._cat_pose_is_newer("self", pose):
+            motion_id, sample_seq = self._cat_pose_cursor["self"]
+            return 409, {
+                "ok": False,
+                "code": "VISIT_CAT_POSE_STALE",
+                "cursor": {"motion_id": motion_id, "sample_seq": sample_seq},
+            }
+        now = self.clock()
+        if phase == "sample" and not self._cat_pose_sample_bucket.take(1, now):
+            return 429, {"ok": False, "code": "VISIT_CAT_MOTION_RATE"}
+        payload = {
+            "t": "cat_motion" if phase == "sample" else "cat_pose_commit",
+            "v": 1,
+            **{field: pose[field] for field in CAT_POSE_FIELDS},
+        }
+        try:
+            if phase == "commit":
+                _pieces, nbytes = self.outbox.encoded_size(payload)
+                if not self.outbox.try_reserve(nbytes):
+                    return 429, {"ok": False, "code": "VISIT_E_BUSY"}
+            seq = self.outbox.send(payload, now=now)
+        except ValueError:
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        self._record_cat_pose("self", phase, pose, seq=seq if phase == "commit" else None)
+        self.kick()
+        body = {
+            "ok": True,
+            "phase": phase,
+            "motion_id": pose["motion_id"],
+            "sample_seq": pose["sample_seq"],
+        }
+        if phase == "commit":
+            body["seq"] = seq
+        return 202, body
+
+    @staticmethod
+    def _valid_cat_world_intent(intent: Mapping[str, Any]) -> bool:
+        if set(intent) != CAT_WORLD_INTENT_FIELDS:
+            return False
+        ints = (intent.get("intent_id"), intent.get("x_q16"), intent.get("y_q16"))
+        return (
+            all(isinstance(value, int) and not isinstance(value, bool) for value in ints)
+            and 1 <= int(intent["intent_id"]) <= _U32_MAX
+            and 0 <= int(intent["x_q16"]) <= 65535
+            and 0 <= int(intent["y_q16"]) <= 65535
+            and intent.get("kind") in CAT_WORLD_INTENT_KINDS
+        )
+
+    @staticmethod
+    def _valid_cat_world_state(state: Mapping[str, Any]) -> bool:
+        if set(state) != CAT_WORLD_STATE_FIELDS:
+            return False
+        integer_fields = (
+            "world_seq", "yarn_x_q16", "yarn_y_q16", "yarn_vx_q12", "yarn_vy_q12",
+            "question_x_q16", "question_y_q16", "collision_seq",
+        )
+        if any(not isinstance(state.get(field), int) or isinstance(state.get(field), bool)
+               for field in integer_fields):
+            return False
+        return (
+            1 <= int(state["world_seq"]) <= _U32_MAX
+            and 0 <= int(state["yarn_x_q16"]) <= 65535
+            and 0 <= int(state["yarn_y_q16"]) <= 65535
+            and -4096 <= int(state["yarn_vx_q12"]) <= 4095
+            and -4096 <= int(state["yarn_vy_q12"]) <= 4095
+            and state.get("yarn_holder") in {"none", "host", "guest"}
+            and isinstance(state.get("yarn_active"), bool)
+            and isinstance(state.get("question_active"), bool)
+            and 0 <= int(state["question_x_q16"]) <= 65535
+            and 0 <= int(state["question_y_q16"]) <= 65535
+            and 0 <= int(state["collision_seq"]) <= _U32_MAX
+        )
+
+    def _cat_world_frame(
+        self, phase: str, state: Mapping[str, Any], *, seq: Optional[int] = None,
+    ) -> dict:
+        frame = {
+            "type": "visit_cat_world", "visit_id": self.visit_id, "phase": phase,
+            **{field: state[field] for field in CAT_WORLD_STATE_FIELDS},
+        }
+        if seq is not None:
+            frame["seq"] = seq
+        return frame
+
+    def _cache_cat_world_commit(self, state: Mapping[str, Any], *, seq: Optional[int] = None) -> None:
+        commit = {field: state[field] for field in CAT_WORLD_STATE_FIELDS}
+        if seq is not None:
+            commit["seq"] = seq
+        self._cat_world_commit = commit
+
+    def _record_cat_world(
+        self, phase: str, state: Mapping[str, Any], *, seq: Optional[int] = None,
+    ) -> None:
+        self._cat_world_cursor = int(state["world_seq"])
+        if phase == "commit":
+            self._cache_cat_world_commit(state, seq=seq)
+        self._post_display(self._cat_world_frame(phase, state, seq=seq), droppable=phase == "frame")
+
+    def _cat_world_active(self) -> bool:
+        return bool(self.cat_scene_active and self.activated and self.ready_exchanged
+                    and self.phase == PHASE_ACTIVE and not self.finalizing)
+
+    async def request_cat_world_intent(self, intent: Mapping[str, Any]) -> tuple[int, dict]:
+        if not self._valid_cat_world_intent(intent):
+            return 400, {"ok": False, "code": "VISIT_CAT_WORLD_INTENT_INVALID"}
+        if not self._cat_world_active():
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        intent_id = int(intent["intent_id"])
+        if intent_id <= self._cat_world_intent_cursor["self"]:
+            return 409, {"ok": False, "code": "VISIT_CAT_WORLD_INTENT_STALE",
+                         "current_intent_id": self._cat_world_intent_cursor["self"]}
+        seq = 0
+        if self.side == "guest":
+            payload = {"t": "cat_world_intent", "v": 1,
+                       **{field: intent[field] for field in CAT_WORLD_INTENT_FIELDS}}
+            try:
+                _pieces, nbytes = self.outbox.encoded_size(payload)
+                if not self.outbox.try_reserve(nbytes):
+                    return 429, {"ok": False, "code": "VISIT_E_BUSY"}
+                seq = self.outbox.send(payload, now=self.clock())
+            except ValueError:
+                return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+            self.kick()
+        self._cat_world_intent_cursor["self"] = intent_id
+        self._post_display({
+            "type": "visit_cat_world_intent", "visit_id": self.visit_id, "actor": "self",
+            **{field: intent[field] for field in CAT_WORLD_INTENT_FIELDS},
+        })
+        return 202, {"ok": True, "intent_id": intent_id, "seq": seq}
+
+    async def request_cat_world_pointer(self, pointer: Mapping[str, Any]) -> tuple[int, dict]:
+        if set(pointer) != {"intent_id", "x_q16", "y_q16"}:
+            return 400, {"ok": False, "code": "VISIT_CAT_WORLD_POINTER_INVALID"}
+        if not self._valid_cat_world_intent({**pointer, "kind": "yarn_grab"}):
+            return 400, {"ok": False, "code": "VISIT_CAT_WORLD_POINTER_INVALID"}
+        if not self._cat_world_active():
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        now = self.clock()
+        if not self._cat_world_pointer_bucket.take(1, now):
+            return 429, {"ok": False, "code": "VISIT_CAT_WORLD_RATE"}
+        if self.side == "guest":
+            try:
+                self.outbox.send({"t": "cat_world_pointer", "v": 1, **pointer}, now=now)
+            except ValueError:
+                return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+            self.kick()
+        self._post_display({
+            "type": "visit_cat_world_intent", "visit_id": self.visit_id,
+            "actor": "self", "kind": "pointer", **pointer,
+        }, droppable=True)
+        return 202, {"ok": True, "intent_id": pointer["intent_id"]}
+
+    async def request_cat_world_state(
+        self, phase: str, state: Mapping[str, Any],
+    ) -> tuple[int, dict]:
+        if phase not in {"frame", "commit"} or not self._valid_cat_world_state(state):
+            return 400, {"ok": False, "code": "VISIT_CAT_WORLD_STATE_INVALID"}
+        if not self._cat_world_active():
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        if self.side != "host":
+            return 409, {"ok": False, "code": "VISIT_CAT_WORLD_HOST_ONLY"}
+        world_seq = int(state["world_seq"])
+        if world_seq <= self._cat_world_cursor:
+            return 409, {"ok": False, "code": "VISIT_CAT_WORLD_STALE",
+                         "current_world_seq": self._cat_world_cursor}
+        now = self.clock()
+        if phase == "frame" and not self._cat_world_frame_bucket.take(1, now):
+            return 429, {"ok": False, "code": "VISIT_CAT_WORLD_RATE"}
+        payload = {"t": "cat_world_frame" if phase == "frame" else "cat_world_commit", "v": 1,
+                   **{field: state[field] for field in CAT_WORLD_STATE_FIELDS}}
+        try:
+            if phase == "commit":
+                _pieces, nbytes = self.outbox.encoded_size(payload)
+                if not self.outbox.try_reserve(nbytes):
+                    return 429, {"ok": False, "code": "VISIT_E_BUSY"}
+            seq = self.outbox.send(payload, now=now)
+        except ValueError:
+            return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        self._record_cat_world(phase, state, seq=seq if phase == "commit" else None)
+        self.kick()
+        body = {"ok": True, "phase": phase, "world_seq": world_seq}
+        if phase == "commit":
+            body["seq"] = seq
+        return 202, body
+
     # -- Finalization --
 
     def request_finalize(
@@ -2005,7 +2424,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         #     failed, that connection cannot carry private audio either.
         #   - the voice-off ``media`` snapshot (finalizing is already true), so the iframe unpublishes as well.
         # Writes are awaited, never cancelled (a cut-off frame is worse than a late one).
-        if self.ready_exchanged and self._audio_gate:
+        if self.ready_exchanged and self._audio_gate and not self.cat_scene_active:
             page_off = self.spawn(self.host.send_frame({
                 "type": "visit_state_change", "action": "voice_off", "side": self.side,
                 "visit_id": self.visit_id, "ts": self.wall(),
@@ -2046,10 +2465,10 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 # the frontend out of the misleading "ending" phase; ended below releases the temporary slot.
                 await self._publish_final_status()
         # Release failed: do not push ending; remain visit UI, rejecting/finalizing submissions until teardown retries then sends ended.
-        if self.activated:
+        if self.activated and not self.cat_scene_active:
             self.handoff = inbox_handoff.InboxHandoff(self.visit_id, finalize_at=self.clock(), clock=self.clock)
         # 4. Optional homecoming line, abandoned if family speaks first; failure cannot block archival/handback.
-        if self.activated:
+        if self.activated and not self.cat_scene_active:
             try:
                 await self.say_ritual(reason, input_stamp=input_stamp)
             except Exception as exc:  # noqa: BLE001
@@ -2092,7 +2511,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         # 6/7. Seal transcript .upload.json first -> spool finalize -> background digest/last-summary work.
         await self._finish_files(reason)
         # 8. Optional debrief only after actual visits; failures still permit handback.
-        if self.activated:
+        if self.activated and not self.cat_scene_active:
             from main_routers.visit_router.debrief import run_debrief
 
             try:
@@ -2111,6 +2530,12 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             return
         self._files_done = True
         self._files_gen = _stop_gen
+        if self.cat_scene_requested:
+            # Keep the same receive boundary as archival without creating a
+            # journal, VisitSpool, summary or memory task.
+            self._rx_closed = True
+            await self._settle_delivering(_SHUTDOWN_TASK_WAIT_S)
+            return
         if await self.seal_and_finalize(reason):
             self._spawn_memory_commits()
 
@@ -2671,25 +3096,33 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self._rx_closed = True  # Use the same instant as unregistration: accept earlier arrivals, but reject later ones (queued on_recv calls).
         # These peer messages were already accepted (the peer will not retransmit) and are still processing: wait for transcript recording (bounded) so later cancellation cannot cut it off.
         await self._settle_delivering(left(_SHUTDOWN_TASK_WAIT_S))
-        self._start_journal_for_backlog()
-        await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
-        self._flush_journal_backlog()
         sealed = False
-        if self._header_pending():
-            # The upload header is still being written: do not call seal() (it seals nothing and returns None, which would then be cached as this visit's seal);
-            # shutdown starts no background seal chain; leave the stream and spool for recovery on the next startup.
-            logger.warning("visit %s: upload header still writing at shutdown", self.visit_id[:6])
+        if self.cat_scene_requested:
+            # Cat visits never open a transcript or spool.  Mark this branch
+            # complete without even invoking the legacy seal abstraction;
+            # an unopened journal being a no-op is an implementation detail,
+            # not a contract the action-only mode should depend on.
+            self._files_done = True
+            self._files_gen = _stop_gen
         else:
-            sealing = self._start_seal("shutdown")  # The exit flow is already sealing: await that same operation instead of sealing twice.
-            await asyncio.wait([sealing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
-            sealed = sealing.done()
-            if sealed:
-                self._take_seal(sealing)
+            self._start_journal_for_backlog()
+            await self._settle_journal_open(left(_SHUTDOWN_TASK_WAIT_S))
+            self._flush_journal_backlog()
+            if self._header_pending():
+                # The upload header is still being written: do not call seal() (it seals nothing and returns None, which would then be cached as this visit's seal);
+                # shutdown starts no background seal chain; leave the stream and spool for recovery on the next startup.
+                logger.warning("visit %s: upload header still writing at shutdown", self.visit_id[:6])
             else:
-                # The outer task only waits under shield; cancelling it cannot stop the write. Register it at module level; the real disk write is registered as wait-only, never cancel.
-                self._keep_background(sealing)
-                # Disk is stuck: the thread still completes its write; the spool is not marked finalized (seal precedes finalized), so startup can recover it.
-                logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
+                sealing = self._start_seal("shutdown")  # The exit flow is already sealing: await that same operation instead of sealing twice.
+                await asyncio.wait([sealing], timeout=left(_SHUTDOWN_TASK_WAIT_S))
+                sealed = sealing.done()
+                if sealed:
+                    self._take_seal(sealing)
+                else:
+                    # The outer task only waits under shield; cancelling it cannot stop the write. Register it at module level; the real disk write is registered as wait-only, never cancel.
+                    self._keep_background(sealing)
+                    # Disk is stuck: the thread still completes its write; the spool is not marked finalized (seal precedes finalized), so startup can recover it.
+                    logger.warning("visit %s: upload seal still writing at shutdown", self.visit_id[:6])
         if self.spool is not None and sealed and not self._spool_finalized:
             self._spool_finalized = True
             # Bound the wait by the shutdown budget: stop waiting for stuck disk writes (the thread still persists them; startup recovers anything missing).
@@ -2782,7 +3215,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         return {
             "active": self.phase not in (PHASE_ENDED,),
             "role": self.side, "side": self.side, "visit_id": self.visit_id, "phase": phase,
+            "visit_mode": self.visit_mode,
             "transport": creds.transport if creds else None,
+            "cat_scene": VISIT_CAT_SCENE_VERSION if self.cat_scene_active else None,
+            "self_cat_asset": self.cat_asset if self.cat_scene_active else None,
+            "peer_cat_asset": peer.cat_asset if self.cat_scene_active and peer is not None else None,
+            "cat_poses": None if not self.cat_scene_active else {
+                actor: dict(self._cat_pose_commits[actor]) if actor in self._cat_pose_commits else None
+                for actor in ("self", "peer")
+            },
+            "cat_world": (None if not self.cat_scene_active or self._cat_world_commit is None
+                          else dict(self._cat_world_commit)),
             "tier": creds.tier if creds else None,
             "crop": self.crop,
             "peer": None if peer is None else {
@@ -2900,9 +3343,11 @@ async def start_visit(
     side: str,
     *,
     crop: str = VISIT_CROP_DEFAULT,
+    cat_asset: str = "dev_neko",
     invite_code: Optional[str] = None,
     target_user_id: Optional[str] = None,
     direct: bool = False,
+    cat_scene: bool = False,
     visit_id: Optional[str] = None,
     host: Optional[VisitHost] = None,
     deps: Optional[RuntimeDeps] = None,
@@ -2983,8 +3428,8 @@ async def start_visit(
             raise VisitRefused(403, {"code": "VISIT_BANNED"})
         rt = VisitRuntime(
             lanlan_name=name, side=side, visit_id=vid, host=host, character_uid=gate.character_uid or "",
-            persona_text=gate.text or "", crop=crop, invite_code=invite_code,
-            target_user_id=target_user_id, direct=direct, deps=deps,
+            persona_text=gate.text or "", crop=crop, cat_asset=cat_asset, invite_code=invite_code,
+            target_user_id=target_user_id, direct=direct, cat_scene=cat_scene, deps=deps,
             clock=clock, wall=wall,
         )
     except BaseException:

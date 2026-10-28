@@ -113,6 +113,7 @@ test('an incoming direct invitation is delivered to chat while the hub stays clo
         actor_id: 'friend-1',
         actor_display_name: 'Community Test',
         visit_id: 'visit-1',
+        visit_mode: 'cat',
         expires_at: 123,
       },
     },
@@ -124,6 +125,7 @@ test('an incoming direct invitation is delivered to chat while the hub stays clo
     actor_id: 'friend-1',
     display_name: 'Community Test',
     visit_id: 'visit-1',
+    visit_mode: 'cat',
     expires_at: 123,
   }]));
 });
@@ -143,7 +145,7 @@ function loadHubWithFailedSend(cancelResult) {
   const cancelled = [];
   const loaded = loadHub({
     visitChat: {
-      async createDirectInvitation() { return { visit_id: 'visit-1', expires_at: 456 }; },
+      async createDirectInvitation() { return { visit_id: 'visit-1', visit_mode: 'model', expires_at: 456 }; },
       async cancelDirectInvitation(visitId) {
         cancelled.push(visitId);
         if (cancelResult instanceof Error) throw cancelResult;
@@ -169,6 +171,7 @@ for (const [label, cancelResult] of [['returns false', false], ['throws', new Er
     assert.deepEqual(cancelled, ['visit-1']);
     assert.equal(JSON.stringify(hub._state.invitations.get('friend-1')), JSON.stringify({
       visitId: 'visit-1', phase: 'invite_ready', expiresAt: 456,
+      visitMode: 'model',
       displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
     }));
     assert.equal(hub._state.toastError, true);

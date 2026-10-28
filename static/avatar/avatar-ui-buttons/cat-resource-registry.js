@@ -99,17 +99,54 @@
         const entry = groups[groupId] && groups[groupId][slot];
         const urls = Array.isArray(entry) ? entry : (entry && entry.urls) || [];
         const metadata = (entry && !Array.isArray(entry) && entry.metadata) || {};
+        let selectedUrl = null;
+        if (urls.length) {
+            if (options.random === false) {
+                selectedUrl = urls[0];
+            } else if (Number.isSafeInteger(options.seed)) {
+                selectedUrl = urls[(options.seed >>> 0) % urls.length];
+            } else {
+                selectedUrl = urls[Math.floor(Math.random() * urls.length)];
+            }
+        }
         return {
             available: urls.length > 0,
-            url: urls.length ? (options.random === false ? urls[0] : urls[Math.floor(Math.random() * urls.length)]) : null,
+            url: selectedUrl,
             urls: urls.slice(),
             groupId,
             metadata: Object.assign({}, metadata)
         };
     }
 
+    function getAppearanceForGroup(groupId, slot, options) {
+        return readSlot(appearanceGroups, normalizeGroupId(groupId), slot, options);
+    }
+
     function getAppearance(slot, options) {
-        return readSlot(appearanceGroups, selectedAppearanceGroupId, slot, options);
+        return getAppearanceForGroup(selectedAppearanceGroupId, slot, options);
+    }
+
+    function normalizeResourcePath(value) {
+        if (typeof value !== 'string' || !value) return '';
+        try {
+            return new URL(value, global.location && global.location.href).pathname;
+        } catch (_) {
+            return value.split(/[?#]/, 1)[0];
+        }
+    }
+
+    function getAppearanceSlotForUrl(groupId, value) {
+        const path = normalizeResourcePath(value);
+        if (!path) return null;
+        const group = appearanceGroups[normalizeGroupId(groupId)] || {};
+        const slots = Object.keys(group);
+        for (let index = 0; index < slots.length; index += 1) {
+            const slot = slots[index];
+            const entry = group[slot];
+            const urls = Array.isArray(entry) ? entry : (entry && entry.urls) || [];
+            if (urls.some((url) => normalizeResourcePath(url) === path)) return slot;
+        }
+        return null;
     }
 
     function getVoice(slot, options) {
@@ -165,6 +202,8 @@
     global.NekoCatResourceRegistry = Object.freeze({
         selectedAppearanceGroupId,
         selectedVoiceGroupId,
+        getAppearanceForGroup,
+        getAppearanceSlotForUrl,
         getAppearance,
         getVoice,
         getActionCapabilities

@@ -117,6 +117,11 @@ __all__ = [
     "CMD_CTL",
     "CMD_TEXT",
     "CMD_LOSSY",
+    "VISIT_CAT_SCENE_VERSION",
+    "CAT_POSE_FIELDS",
+    "CAT_POSE_MODES",
+    "CAT_POSE_FACINGS",
+    "CAT_POSE_SLOT_TIERS",
     "RELIABLE_TYPES",
     "LEAVE_REASONS",
     "TRUNC_REASONS",
@@ -157,6 +162,7 @@ _WIDEST_LN = "h:" + "9" * _LN_MAX_DIGITS
 _LANG_MAX_BYTES = 16
 _APP_VERSION_MAX_BYTES = 16
 _TIER_MAX_BYTES = 16
+_CAT_ASSET_MAX_BYTES = 64
 _TICKET_MAX_BYTES = 2048       # Tickets are about 560 B; leave headroom. Senders enforce the complete hello's 2 KB limit.
 _LEAVE_REASON_MAX_BYTES = 32   # Receivers map unknown enum values to peer_left; limit length, not enum membership.
 _TRUNC_REASON_MAX_BYTES = 32   # Likewise new truncation reasons must not make old versions reject entire lines as _invalid.
@@ -175,10 +181,15 @@ _STATS_INTERVAL_S = 5
 CMD_CTL = 1
 CMD_TEXT = 2
 CMD_LOSSY = 3
+VISIT_CAT_SCENE_VERSION = 2
 
 _CMD_OF: dict[str, int] = {
     "hello": CMD_CTL,
     "ready": CMD_CTL,
+    "cat_action": CMD_CTL,
+    "cat_pose_commit": CMD_CTL,
+    "cat_world_intent": CMD_CTL,
+    "cat_world_commit": CMD_CTL,
     "ack": CMD_CTL,
     "hb": CMD_CTL,
     "state": CMD_CTL,
@@ -189,9 +200,15 @@ _CMD_OF: dict[str, int] = {
     "line_abort": CMD_TEXT,
     "typing": CMD_LOSSY,
     "stats": CMD_LOSSY,
+    "cat_motion": CMD_LOSSY,
+    "cat_world_pointer": CMD_LOSSY,
+    "cat_world_frame": CMD_LOSSY,
 }
 
-RELIABLE_TYPES: frozenset[str] = frozenset({"hello", "ready", "wrap_up", "leave", "text"})
+RELIABLE_TYPES: frozenset[str] = frozenset({
+    "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent",
+    "cat_world_commit", "wrap_up", "leave", "text",
+})
 """Message types that go through ``VisitOutbox`` (carry ``seq``, retransmitted until acked)."""
 
 LEAVE_REASONS: frozenset[str] = frozenset({
@@ -644,6 +661,85 @@ _Lang = Annotated[str, _utf8_cap(_LANG_MAX_BYTES)]
 _Tier = Annotated[str, _utf8_cap(_TIER_MAX_BYTES)]
 _NonNegFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 _NonNegInt = Annotated[int, Field(ge=0)]
+_CatSceneVersion = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatAsset = Annotated[str, Field(min_length=1), _utf8_cap(_CAT_ASSET_MAX_BYTES)]
+_CatActionKind = Literal["greet", "play", "rest", "move"]
+_CatMotionId = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatSampleSeq = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_Q16 = Annotated[int, Field(ge=0, le=65535)]
+_CatMotionMode = Literal["idle", "walk", "drag", "airborne", "edge", "follow"]
+_CatFacing = Literal["left", "right"]
+_CatTier = Literal["cat1", "cat2", "cat3"]
+_CatWorldIntentId = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatWorldSeq = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatWorldVelocityQ12 = Annotated[int, Field(ge=-4096, le=4095)]
+_CatWorldIntentKind = Literal["yarn_spawn", "yarn_grab", "yarn_release", "question_tap"]
+_CatWorldHolder = Literal["none", "host", "guest"]
+_CatSlot = Literal[
+    "idle.cat1", "idle.cat2", "idle.cat3",
+    "click.cat1", "click.cat2", "click.cat3",
+    "drag.cat1", "drag.cat2", "drag.cat3", "drag.rapid",
+    "movement.cat1.walking", "movement.cat1.stretch", "movement.cat1.interactive",
+    "action.cat1.eat", "action.cat1.play_yarn", "playground.cat1.air",
+]
+CAT_POSE_FIELDS = frozenset({
+    "motion_id", "sample_seq", "x_q16", "y_q16", "mode", "facing", "tier", "slot",
+})
+CAT_POSE_MODES = frozenset({"idle", "walk", "drag", "airborne", "edge", "follow"})
+CAT_POSE_FACINGS = frozenset({"left", "right"})
+CAT_POSE_SLOT_TIERS = {
+    "idle.cat1": "cat1", "idle.cat2": "cat2", "idle.cat3": "cat3",
+    "click.cat1": "cat1", "click.cat2": "cat2", "click.cat3": "cat3",
+    "drag.cat1": "cat1", "drag.cat2": "cat2", "drag.cat3": "cat3",
+    "drag.rapid": "cat1",
+    "movement.cat1.walking": "cat1", "movement.cat1.stretch": "cat1",
+    "movement.cat1.interactive": "cat1", "action.cat1.eat": "cat1",
+    "action.cat1.play_yarn": "cat1", "playground.cat1.air": "cat1",
+}
+CAT_WORLD_INTENT_FIELDS = frozenset({"intent_id", "kind", "x_q16", "y_q16"})
+CAT_WORLD_STATE_FIELDS = frozenset({
+    "world_seq", "yarn_active", "yarn_x_q16", "yarn_y_q16",
+    "yarn_vx_q12", "yarn_vy_q12", "yarn_holder",
+    "question_active", "question_x_q16", "question_y_q16", "collision_seq",
+})
+CAT_WORLD_INTENT_KINDS = frozenset({"yarn_spawn", "yarn_grab", "yarn_release", "question_tap"})
+
+_CAT_POSE_FORBIDDEN_FIELDS = frozenset({
+    "actor", "actor_side", "url", "asset_url", "resource_url",
+    "x", "y", "left", "top", "width", "height", "px", "py",
+    "pixel_x", "pixel_y", "screen_x", "screen_y", "screenX", "screenY",
+})
+
+
+def _forbid_cat_pose_authority_and_pixels(data: Any) -> Any:
+    """Reject authority, resource-location and raw-pixel fields on pose messages."""
+    if not isinstance(data, Mapping):
+        return data
+    for raw_key in data:
+        key = str(raw_key)
+        lowered = key.lower()
+        if (key in _CAT_POSE_FORBIDDEN_FIELDS or lowered.endswith("_url")
+                or lowered.endswith("_px") or lowered.startswith("pixel_")):
+            raise ValueError(f"cat pose must not carry {key}")
+    return data
+
+
+def _forbid_cat_world_authority_and_pixels(data: Any) -> Any:
+    """Shared-world messages carry normalized intent/state, never local authority or pixels."""
+    if not isinstance(data, Mapping):
+        return data
+    forbidden = {
+        "actor", "actor_side", "side", "authority", "host_authority",
+        "x", "y", "left", "top", "width", "height", "px", "py",
+        "pixel_x", "pixel_y", "screen_x", "screen_y", "screenX", "screenY",
+        "url", "asset_url", "resource_url",
+    }
+    for raw_key in data:
+        key = str(raw_key)
+        lowered = key.lower()
+        if key in forbidden or lowered.endswith("_url") or lowered.endswith("_px"):
+            raise ValueError(f"cat world must not carry {key}")
+    return data
 
 
 class _Msg(BaseModel):
@@ -662,6 +758,8 @@ class _HelloCaps(BaseModel):
     proto: _NonNegInt
     app_version: Annotated[str, _utf8_cap(_APP_VERSION_MAX_BYTES)]
     crop: _Crop
+    cat_scene: Optional[_CatSceneVersion] = None
+    cat_asset: Optional[_CatAsset] = None
 
 
 class _Hello(_Msg):
@@ -675,6 +773,114 @@ class _Hello(_Msg):
 
 class _Ready(_Msg):
     t: Literal["ready"]
+    seq: _Seq
+
+
+class _CatAction(_Msg):
+    t: Literal["cat_action"]
+    seq: _Seq
+    kind: _CatActionKind
+    seed: _U32
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_actor_side(cls, data: Any) -> Any:
+        # Actor identity is derived from the authenticated transport sender.
+        # _Msg normally ignores unknown fields for forward compatibility, but
+        # silently accepting this authority-like field would weaken that rule.
+        if isinstance(data, Mapping) and "actor_side" in data:
+            raise ValueError("cat_action must not carry actor_side")
+        return data
+
+
+class _CatPoseFields(_Msg):
+    motion_id: _CatMotionId
+    sample_seq: _CatSampleSeq
+    x_q16: _Q16
+    y_q16: _Q16
+    mode: _CatMotionMode
+    facing: _CatFacing
+    tier: _CatTier
+    slot: _CatSlot
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_pose_authority_and_pixels(data)
+
+    @model_validator(mode="after")
+    def _slot_matches_tier(self) -> "_CatPoseFields":
+        if CAT_POSE_SLOT_TIERS[self.slot] != self.tier:
+            raise ValueError("cat pose slot does not match tier")
+        return self
+
+
+class _CatMotion(_CatPoseFields):
+    t: Literal["cat_motion"]
+
+
+class _CatPoseCommit(_CatPoseFields):
+    t: Literal["cat_pose_commit"]
+    seq: _Seq
+
+
+class _CatWorldIntent(_Msg):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    t: Literal["cat_world_intent"]
+    seq: _Seq
+    intent_id: _CatWorldIntentId
+    kind: _CatWorldIntentKind
+    x_q16: _Q16
+    y_q16: _Q16
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_world_authority_and_pixels(data)
+
+
+class _CatWorldPointer(_Msg):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    t: Literal["cat_world_pointer"]
+    intent_id: _CatWorldIntentId
+    x_q16: _Q16
+    y_q16: _Q16
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_world_authority_and_pixels(data)
+
+
+class _CatWorldStateFields(_Msg):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    world_seq: _CatWorldSeq
+    yarn_active: bool
+    yarn_x_q16: _Q16
+    yarn_y_q16: _Q16
+    yarn_vx_q12: _CatWorldVelocityQ12
+    yarn_vy_q12: _CatWorldVelocityQ12
+    yarn_holder: _CatWorldHolder
+    question_active: bool
+    question_x_q16: _Q16
+    question_y_q16: _Q16
+    collision_seq: _U32
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_world_authority_and_pixels(data)
+
+
+class _CatWorldFrame(_CatWorldStateFields):
+    t: Literal["cat_world_frame"]
+
+
+class _CatWorldCommit(_CatWorldStateFields):
+    t: Literal["cat_world_commit"]
     seq: _Seq
 
 
@@ -801,6 +1007,13 @@ class _Stats(_Msg):
 _MODELS: dict[str, type[_Msg]] = {
     "hello": _Hello,
     "ready": _Ready,
+    "cat_action": _CatAction,
+    "cat_motion": _CatMotion,
+    "cat_pose_commit": _CatPoseCommit,
+    "cat_world_intent": _CatWorldIntent,
+    "cat_world_pointer": _CatWorldPointer,
+    "cat_world_frame": _CatWorldFrame,
+    "cat_world_commit": _CatWorldCommit,
     "ack": _Ack,
     "hb": _Hb,
     "state": _State,
@@ -824,7 +1037,7 @@ def cmd_of(t: str) -> int:
 
 
 def is_reliable(t: str) -> bool:
-    """True for the outbox-backed types ``hello / ready / wrap_up / leave / text``."""
+    """True for outbox-backed types, including cat actions and pose commits."""
     return t in RELIABLE_TYPES
 
 

@@ -536,17 +536,20 @@ def test_first_connection_sends_no_media_snapshot(app, session):
 
 
 def test_second_connection_supersedes_the_first_with_4409(app, session):
-    client = _client(app)
-    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
-        _auth(old)
-        _sync(old)
-        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
-            _auth(new)
-            _sync(new)
-            _expect_close(old, tw.CLOSE_SUPERSEDED)
-            assert tw.is_transport_attached(VISIT_ID, "guest")
-            # Superseded old-connection disconnection does not count as page loss.
-            assert session.liveness.events == ["page_armed"]
+    # Both sockets must share one TestClient portal.  Creating an implicit
+    # portal per websocket puts them on different event loops, so closing the
+    # superseded socket cannot wake the old receive and the test hangs.
+    with _client(app) as client:
+        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
+            _auth(old)
+            _sync(old)
+            with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
+                _auth(new)
+                _sync(new)
+                _expect_close(old, tw.CLOSE_SUPERSEDED)
+                assert tw.is_transport_attached(VISIT_ID, "guest")
+                # Superseded old-connection disconnection does not count as page loss.
+                assert session.liveness.events == ["page_armed"]
 
 
 def test_stop_is_sent_once_and_unregister_closes(app, session):
@@ -1036,14 +1039,14 @@ def test_frames_of_a_replaced_connection_never_reach_the_runtime():
 
 
 def test_superseding_a_live_socket_pauses_the_outbox_until_the_new_iframe_rejoins(app, session):
-    client = _client(app)
-    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
-        _auth(old)
-        _sync(old)
-        assert session.outbox.paused == set()
-        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
-            msgs = _rejoin_with_pause_check(new, session)
-            _expect_close(old, tw.CLOSE_SUPERSEDED)
+    with _client(app) as client:
+        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
+            _auth(old)
+            _sync(old)
+            assert session.outbox.paused == set()
+            with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
+                msgs = _rejoin_with_pause_check(new, session)
+                _expect_close(old, tw.CLOSE_SUPERSEDED)
     assert [m["type"] for m in msgs] == ["credentials", "send", "media"]
 
 
@@ -1340,16 +1343,16 @@ def test_superseding_a_live_socket_starts_the_page_grace(app):
     s.liveness = VisitLiveness("guest", 0.0)
     tw.register_transport_session(s)
     vrs.activate_visit_route(LANLAN, visit_id=VISIT_ID)
-    client = _client(app)
-    with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
-        _auth(old)
-        _barrier(old, s)
-        assert s.liveness.page_deadline is None
-        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
-            _auth(new)
-            _barrier(new, s)
-            # Old iframe superseded, new one not yet in room: require a deadline.
-            assert s.liveness.page_deadline is not None
+    with _client(app) as client:
+        with client.websocket_connect(URL, headers={"origin": ORIGIN}) as old:
+            _auth(old)
+            _barrier(old, s)
+            assert s.liveness.page_deadline is None
+            with client.websocket_connect(URL, headers={"origin": ORIGIN}) as new:
+                _auth(new)
+                _barrier(new, s)
+                # Old iframe superseded, new one not yet in room: require a deadline.
+                assert s.liveness.page_deadline is not None
 
 
 def test_failed_preflight_blocks_a_runtime_first_issue(app, session):

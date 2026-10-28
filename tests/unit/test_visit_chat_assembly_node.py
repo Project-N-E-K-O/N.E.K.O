@@ -1833,7 +1833,7 @@ def test_persona_409_is_confirmed_before_the_single_retry(report):
     assert report["persona_joins_before"] == 1       # After the first join returns 409, before retry.
     assert report["join_count"] == 2
     assert report["join_body"] == {"catgirl": "咪咪", "invite_code": "ABCDEFGH23", "confirm": True,
-                                   "crop": "full"}
+                                   "crop": "full", "cat_asset": "dev_neko"}
 
 
 def test_guest_quota_exhaustion_reuses_the_global_status_banner(report):

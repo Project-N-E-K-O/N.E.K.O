@@ -6817,9 +6817,29 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "ねこのおでかけ",
+            "active": "おでかけ中",
+            "ending": "おでかけを終了しています…",
+            "reconnecting": "再接続しています…",
+            "wrapUp": "帰る準備中",
+            "myCat": "うちのねこ",
+            "peerCat": "相手のねこ",
+            "returnModel": "モデルに戻る",
+            "controls": "うちのねこの動作",
+            "greet": "あいさつ",
+            "play": "遊ぶ",
+            "rest": "休む",
+            "returnTitle": "ねこのおでかけを終了",
+            "returnConfirm": "モデルに戻ると、このおでかけは終了します。終了しますか？",
+            "returnConfirmAction": "終了してモデルに戻る",
+            "actionUnavailable": "ねこの動作は一時的に利用できません",
+            "actionFailed": "動作を届けられませんでした。もう一度お試しください"
+        },
         "directInvite": {
             "decline": "断る",
             "accept": "受ける",
+            "acceptCat": "猫形態の訪問を受ける",
             "expired": "この招待はもう無効です",
             "responseFailed": "お断りの返事を送れませんでした。もう一度お試しください",
             "unavailable": "今はまだ出かけられません。もう一度お試しください"
@@ -6868,6 +6888,8 @@
             "cancelFailed": "今は招待を取り消せません。しばらくしてから再試行してください",
             "inviteLater": "あとで招待",
             "invite": "遊びに誘う",
+            "modelVisit": "モデル形態",
+            "catVisit": "猫形態",
             "justNow": "たった今",
             "lastSeen": "最終オンライン {{time}}",
             "offline": "オフライン",

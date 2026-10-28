@@ -1,0 +1,241 @@
+#neko-visit-cat-scene[hidden],
+.neko-visit-cat-card[hidden],
+.neko-visit-cat-card-heading[hidden],
+.neko-visit-cat-native-label[hidden] {
+    display: none !important;
+}
+
+.neko-visit-cat-scene {
+    position: fixed;
+    inset: 0;
+    z-index: 100040;
+    color: #17334b;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.neko-visit-cat-world-layer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.neko-visit-cat-card {
+    position: absolute;
+    left: var(--neko-visit-cat-x, 50%);
+    top: var(--neko-visit-cat-y, 55%);
+    z-index: var(--neko-visit-cat-layer, 1);
+    width: clamp(96px, 14vw, 122px);
+    min-width: 0;
+    transform: translate(-50%, -50%);
+    transition:
+        left var(--neko-visit-cat-move-duration, 280ms) ease,
+        top var(--neko-visit-cat-move-duration, 280ms) ease;
+    pointer-events: auto;
+}
+
+.neko-visit-cat-card-heading {
+    position: absolute;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.neko-visit-cat-owner,
+.neko-visit-cat-native-label {
+    display: block;
+    padding: 3px 9px;
+    border: 1px solid rgba(83, 149, 196, 0.28);
+    border-radius: 999px;
+    color: #315f7e;
+    background: rgba(255, 255, 255, 0.90);
+    box-shadow: 0 3px 10px rgba(36, 91, 130, 0.12);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.25;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.neko-visit-cat-native-label {
+    position: absolute;
+    z-index: 5;
+    transform: translate(-50%, calc(-100% - 4px));
+}
+
+.neko-visit-cat-art-stage {
+    display: grid;
+    place-items: center;
+    height: clamp(96px, 14vw, 122px);
+    overflow: visible;
+    pointer-events: none;
+}
+
+.neko-visit-cat-art {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    image-rendering: auto;
+    pointer-events: none;
+}
+
+.neko-visit-cat-card[data-visit-cat-action-state="action.cat1.play_yarn"] .neko-visit-cat-art {
+    width: 100%;
+    min-width: 100%;
+    max-width: none;
+}
+
+.neko-visit-cat-card[data-visit-cat-action-state="action.cat1.play_yarn"] {
+    width: clamp(168px, 24.5vw, 213.5px);
+}
+
+.neko-visit-cat-card[data-visit-cat-facing="right"] .neko-visit-cat-art {
+    transform: scaleX(-1);
+}
+
+.neko-visit-cat-collision {
+    filter: brightness(1.24) drop-shadow(0 0 8px rgba(91, 188, 238, 0.62));
+    scale: 1.04;
+}
+
+.neko-visit-cat-toolbar {
+    position: absolute;
+    left: 50%;
+    bottom: clamp(12px, 3vh, 28px);
+    z-index: 20;
+    width: min(420px, calc(100vw - 24px));
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid rgba(177, 221, 255, 0.48);
+    border-radius: 20px;
+    background:
+        radial-gradient(circle at 18% 8%, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0) 36%),
+        linear-gradient(145deg, rgba(239, 249, 255, 0.94), rgba(217, 237, 251, 0.90));
+    box-shadow: 0 14px 34px rgba(13, 44, 72, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    transform: translateX(-50%);
+    pointer-events: auto;
+}
+
+.neko-visit-cat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.neko-visit-cat-title-group {
+    display: grid;
+    gap: 2px;
+}
+
+.neko-visit-cat-title {
+    font-size: 16px;
+    line-height: 1.2;
+}
+
+.neko-visit-cat-status {
+    color: #55738d;
+    font-size: 12px;
+}
+
+.neko-visit-cat-return {
+    border: 1px solid rgba(65, 134, 184, 0.32);
+    border-radius: 999px;
+    color: #23577b;
+    background: rgba(255, 255, 255, 0.76);
+    box-shadow: 0 4px 12px rgba(36, 91, 130, 0.12);
+    cursor: pointer;
+    font: inherit;
+    padding: 7px 13px;
+    font-size: 13px;
+}
+
+.neko-visit-cat-return:hover:not(:disabled) {
+    border-color: rgba(52, 148, 207, 0.62);
+    background: rgba(255, 255, 255, 0.98);
+}
+
+.neko-visit-cat-return:focus-visible {
+    outline: 3px solid rgba(50, 158, 222, 0.28);
+    outline-offset: 2px;
+}
+
+.neko-visit-cat-return:disabled {
+    opacity: 0.48;
+    cursor: default;
+}
+
+body.neko-visit-cat-scene-active #live2d-container,
+body.neko-visit-cat-scene-active #vrm-container,
+body.neko-visit-cat-scene-active #mmd-container,
+body.neko-visit-cat-scene-active #pngtuber-container,
+body.neko-visit-cat-scene-active [id$="-floating-buttons"],
+body.neko-visit-cat-scene-active [id$="-lock-icon"] {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+[data-theme="dark"] .neko-visit-cat-toolbar {
+    border-color: rgba(133, 194, 235, 0.30);
+    color: #e4f2ff;
+    background:
+        radial-gradient(circle at 18% 8%, rgba(74, 111, 145, 0.34), rgba(24, 39, 57, 0) 38%),
+        linear-gradient(145deg, rgba(26, 43, 61, 0.95), rgba(16, 29, 43, 0.94));
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .neko-visit-cat-status {
+    color: #a9c7dd;
+}
+
+[data-theme="dark"] .neko-visit-cat-owner,
+[data-theme="dark"] .neko-visit-cat-native-label {
+    border-color: rgba(132, 193, 233, 0.26);
+    color: #d8efff;
+    background: rgba(24, 43, 60, 0.90);
+}
+
+[data-theme="dark"] .neko-visit-cat-return {
+    border-color: rgba(132, 193, 233, 0.24);
+    color: #d8efff;
+    background: rgba(76, 125, 160, 0.16);
+}
+
+@media (max-width: 560px) {
+    .neko-visit-cat-card {
+        width: clamp(92px, 28vw, 118px);
+    }
+
+    .neko-visit-cat-card[data-visit-cat-action-state="action.cat1.play_yarn"] {
+        width: clamp(161px, 49vw, 206.5px);
+    }
+
+    .neko-visit-cat-art-stage {
+        height: clamp(92px, 28vw, 118px);
+    }
+
+    .neko-visit-cat-toolbar {
+        bottom: 8px;
+        width: calc(100vw - 16px);
+        padding: 9px;
+        border-radius: 17px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-visit-cat-card,
+    .neko-visit-cat-toolbar,
+    .neko-visit-cat-return {
+        transition: none !important;
+    }
+
+    .neko-visit-cat-collision {
+        scale: 1;
+    }
+}

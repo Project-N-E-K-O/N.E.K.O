@@ -6817,9 +6817,29 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "고양이 방문",
+            "active": "방문 중",
+            "ending": "방문을 종료하는 중…",
+            "reconnecting": "다시 연결하는 중…",
+            "wrapUp": "집에 갈 준비 중",
+            "myCat": "내 고양이",
+            "peerCat": "상대 고양이",
+            "returnModel": "모델로 돌아가기",
+            "controls": "내 고양이 동작",
+            "greet": "인사하기",
+            "play": "놀기",
+            "rest": "쉬기",
+            "returnTitle": "고양이 방문 종료",
+            "returnConfirm": "모델로 돌아가면 이번 방문이 종료됩니다. 나갈까요?",
+            "returnConfirmAction": "종료하고 돌아가기",
+            "actionUnavailable": "고양이 동작을 잠시 사용할 수 없습니다",
+            "actionFailed": "동작이 전달되지 않았습니다. 다시 시도해 주세요"
+        },
         "directInvite": {
             "decline": "거절",
             "accept": "수락",
+            "acceptCat": "고양이 모습 방문 수락",
             "expired": "이 초대는 이미 만료되었습니다",
             "responseFailed": "거절 응답을 보내지 못했습니다. 다시 시도해 주세요",
             "unavailable": "지금은 아직 나갈 수 없어요. 다시 시도해 주세요"
@@ -6868,6 +6888,8 @@
             "cancelFailed": "지금은 초대를 취소할 수 없습니다. 잠시 후 다시 시도해 주세요",
             "inviteLater": "나중에 초대",
             "invite": "초대하기",
+            "modelVisit": "모델 모습",
+            "catVisit": "고양이 모습",
             "justNow": "방금",
             "lastSeen": "마지막 접속 {{time}}",
             "offline": "오프라인",

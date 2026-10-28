@@ -758,6 +758,12 @@ class TalkMixin:
             # Finalizing while takeover remains held: ordinary chat output is suppressed; this line must not leak through.
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
+        if self.cat_scene_active:
+            # Stage-one cat visits are action-only.  Refuse ordinary text at
+            # the route boundary instead of relying on the absence of a
+            # VisitRoom, which could accidentally become permissive later.
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
+            return True
         room = self.room
         if room is None or not self.activated or not self.ready_exchanged or self.phase in WAITING_PHASES:
             # Lines sent before ready is enqueued get earlier sequence numbers and are accepted then discarded by the inactive peer.

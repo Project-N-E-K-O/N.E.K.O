@@ -6817,9 +6817,29 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "Cat visit",
+            "active": "Visiting",
+            "ending": "Leaving the visit…",
+            "reconnecting": "Reconnecting…",
+            "wrapUp": "Getting ready to go home",
+            "myCat": "My cat",
+            "peerCat": "Friend's cat",
+            "returnModel": "Return to model",
+            "controls": "My cat actions",
+            "greet": "Greet",
+            "play": "Play",
+            "rest": "Rest",
+            "returnTitle": "Leave cat visit",
+            "returnConfirm": "Returning to the model will end this visit. Leave now?",
+            "returnConfirmAction": "Leave and return",
+            "actionUnavailable": "Cat actions are temporarily unavailable",
+            "actionFailed": "The action was not delivered. Try again"
+        },
         "directInvite": {
             "decline": "Decline",
             "accept": "Accept",
+            "acceptCat": "Accept cat-form visit",
             "expired": "This invitation has expired",
             "responseFailed": "Couldn't send your response. Try again",
             "unavailable": "She can't leave right now. Try again"
@@ -6868,6 +6888,8 @@
             "cancelFailed": "Couldn't cancel the invitation. Try again",
             "inviteLater": "Invite later",
             "invite": "Invite",
+            "modelVisit": "Model visit",
+            "catVisit": "Cat form",
             "justNow": "just now",
             "lastSeen": "Last online {{time}}",
             "offline": "Offline",

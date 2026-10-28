@@ -212,6 +212,7 @@ START_CALLS = [
     ("GET", "/api/visit/rooms/current?catgirl=Host", None),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/join", {"catgirl": "Guest", "invite_code": INVITE, "confirm": True}),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/accept", {"catgirl": "Host", "accept": True}),
+    ("POST", "/api/visit/route/cat-action", {"visit_id": VISIT_ID, "kind": "greet"}),
     ("GET", f"/api/visit/invites/{INVITE}/preview", None),
 ]
 DATA_CALLS = [
@@ -257,16 +258,38 @@ async def test_every_endpoint_requires_the_local_gate(env, method, path, body):
 # ── Room creation ──
 
 
-async def test_rooms_answers_202_with_only_the_visit_id(env):
-    resp = await _rooms(env)
+async def test_rooms_answers_202_with_the_visit_id_and_selected_mode(env):
+    resp = await _rooms(env, cat_asset="yui_neko")
     assert resp.status_code == 202
     body = resp.json()
-    assert set(body) == {"visit_id", "phase"} and body["phase"] == "pending"
+    assert set(body) == {"visit_id", "phase", "visit_mode"}
+    assert body["phase"] == "pending" and body["visit_mode"] == "model"
     rt = rtm.get_runtime("Host")
-    assert rt is not None and rt.visit_id == body["visit_id"] and rt.side == "host"
+    assert (rt is not None and rt.visit_id == body["visit_id"] and rt.side == "host"
+            and rt.cat_asset == "yui_neko")
     await settle()
     assert env.host.host.frames_of("visit_state_change", "pending")
     assert env.host.creds_calls == []   # Never contact Servers before capability gates.
+
+
+@pytest.mark.parametrize("visit_mode,cat_requested", [("model", False), ("cat", True)])
+async def test_room_mode_is_selected_per_visit_even_when_cat_feature_is_enabled(
+    env, monkeypatch, visit_mode, cat_requested,
+):
+    monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", True)
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
+    resp = await _rooms(env, visit_mode=visit_mode)
+    assert resp.status_code == 202 and resp.json()["visit_mode"] == visit_mode
+    rt = rtm.get_runtime("Host")
+    assert rt is not None and rt.cat_scene_requested is cat_requested
+
+
+async def test_cat_mode_refuses_explicitly_while_release_gate_is_off(env, monkeypatch):
+    monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", False)
+    resp = await _rooms(env, visit_mode="cat")
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "VISIT_CAT_SCENE_UNAVAILABLE"
+    assert _no_slot()
 
 
 async def test_user_switch_off_refuses_rooms_and_join_without_going_online(env):
@@ -297,7 +320,23 @@ async def test_user_switch_is_checked_by_the_runtime_too(env):
 async def test_rooms_rejects_bad_fields_before_reserving(env):
     assert (await _rooms(env, catgirl="")).status_code == 400
     assert (await _rooms(env, crop="giant")).json()["code"] == "crop_format"
+    assert (await _rooms(env, visit_mode="tiger")).json()["code"] == "visit_mode_format"
     assert _no_slot()
+
+
+async def test_all_room_entry_paths_reject_an_unknown_cat_asset(env):
+    host = await _rooms(env, cat_asset="pc-guessed-cat")
+    guest = await _join(env, cat_asset="pc-guessed-cat")
+    env.use(env.guest)
+    async with env.client() as c:
+        direct = await c.post(f"/api/visit/rooms/{VISIT_ID}/join-direct", headers=GOOD, json={
+            "catgirl": "Guest", "confirm": True, "crop": "full", "cat_asset": "pc-guessed-cat",
+        })
+    assert [response.status_code for response in (host, guest, direct)] == [400, 400, 400]
+    assert [response.json()["code"] for response in (host, guest, direct)] == [
+        "cat_asset_format", "cat_asset_format", "cat_asset_format",
+    ]
+    assert env.preview_calls == [] and _no_slot() and _no_slot("Guest")
 
 
 async def test_cached_preflight_failure_refuses_synchronously(env, monkeypatch):
@@ -737,12 +776,13 @@ async def test_preview_rejects_a_malformed_code_before_any_network(env):
 
 async def test_join_answers_202_and_reuses_a_recent_preview(env):
     await _preview(env)
-    resp = await _join(env)
+    resp = await _join(env, cat_asset="yui_neko")
     assert resp.status_code == 202
     assert resp.json() == {"ok": True, "visit_id": VISIT_ID, "phase": "pending"}
     assert env.preview_calls == [INVITE]      # Reuse previews within sixty seconds.
     rt = rtm.get_runtime("Guest")
-    assert rt is not None and rt.side == "guest" and rt.invite_code == INVITE
+    assert (rt is not None and rt.side == "guest" and rt.invite_code == INVITE
+            and rt.cat_asset == "yui_neko")
 
 
 async def test_join_fetches_the_preview_when_none_is_recent(env, monkeypatch):
@@ -906,6 +946,272 @@ async def test_accept_before_the_guest_arrived_is_404(env):
     assert resp.status_code == 404 and resp.json()["error"] == "no_pending_invite"
 
 
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"kind": "greet"}, "visit_id_format"),
+        ({"visit_id": "../x", "kind": "greet"}, "visit_id_format"),
+        ({"visit_id": VISIT_ID}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": "eat"}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": True}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "actor": "self"}, "invalid_fields"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "actor_side": "host"}, "invalid_fields"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "seed": 7}, "invalid_fields"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "unknown": 1}, "invalid_fields"),
+    ],
+)
+async def test_cat_action_accepts_only_visit_id_and_kind(env, body, code):
+    async with env.client() as c:
+        resp = await c.post("/api/visit/route/cat-action", headers=GOOD, json=body)
+    assert resp.status_code == 400 and resp.json()["code"] == code
+
+
+async def test_cat_action_uses_owned_runtime_and_preserves_body_csrf(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            calls.append(kind)
+            return 202, {"ok": True, "queued": kind}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post(
+                "/api/visit/route/cat-action",
+                headers={"Origin": ORIGIN, "User-Agent": UA},
+                json={"visit_id": VISIT_ID, "kind": "play", "_csrf_token": AUTOSTART_CSRF_TOKEN},
+            )
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "queued": "play"}
+    assert calls == ["play"]
+
+
+async def test_cat_action_accepts_move_as_an_owner_authored_action(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            calls.append(kind)
+            return 202, {"ok": True, "queued": kind}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post(
+                "/api/visit/route/cat-action",
+                headers=GOOD,
+                json={"visit_id": VISIT_ID, "kind": "move"},
+            )
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "queued": "move"}
+    assert calls == ["move"]
+
+
+async def test_cat_action_hides_unknown_and_another_accounts_visits(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            calls.append(kind)
+            return 200, {"ok": True}
+
+    async with env.client() as c:
+        unknown = await c.post("/api/visit/route/cat-action", headers=GOOD,
+                               json={"visit_id": VISIT_ID, "kind": "rest"})
+        rtm._by_visit[VISIT_ID] = Stub()
+        try:
+            env.account = "someone-else"
+            other = await c.post("/api/visit/route/cat-action", headers=GOOD,
+                                 json={"visit_id": VISIT_ID, "kind": "rest"})
+        finally:
+            rtm._by_visit.pop(VISIT_ID, None)
+    assert unknown.status_code == 404 and unknown.json()["code"] == "unknown_visit"
+    assert other.status_code == 404 and other.json()["code"] == "unknown_visit"
+    assert calls == []
+
+
+async def test_cat_action_passes_runtime_refusal_through(env):
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            assert kind == "greet"
+            return 409, {"ok": False, "code": "CAT_ACTION_BUSY"}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post("/api/visit/route/cat-action", headers=GOOD,
+                                    json={"visit_id": VISIT_ID, "kind": "greet"})
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 409
+    assert response.json() == {"ok": False, "code": "CAT_ACTION_BUSY"}
+
+
+_CAT_POSE_BODY = {
+    "visit_id": VISIT_ID, "phase": "sample", "motion_id": 1, "sample_seq": 1,
+    "x_q16": 1000, "y_q16": 2000, "mode": "walk", "facing": "right",
+    "tier": "cat1", "slot": "movement.cat1.walking",
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"actor": "self"}, "invalid_fields"),
+        ({"actor_side": "host"}, "invalid_fields"),
+        ({"url": "/cat.gif"}, "invalid_fields"),
+        ({"x": 10}, "invalid_fields"),
+        ({"phase": "move"}, "invalid_phase"),
+        ({"motion_id": True}, "invalid_pose"),
+        ({"sample_seq": 0}, "invalid_pose"),
+        ({"x_q16": 65536}, "invalid_pose"),
+        ({"mode": "teleport"}, "invalid_pose"),
+        ({"tier": "cat2", "slot": "movement.cat1.walking"}, "invalid_pose"),
+        ({"slot": "https://example.test/cat.gif"}, "invalid_pose"),
+    ],
+)
+async def test_cat_pose_has_a_strict_normalized_allowlist(env, change, code):
+    async with env.client() as c:
+        response = await c.post(
+            "/api/visit/route/cat-pose", headers=GOOD, json={**_CAT_POSE_BODY, **change},
+        )
+    assert response.status_code == 400 and response.json()["code"] == code
+
+
+async def test_cat_pose_uses_owned_runtime_and_preserves_body_csrf(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_pose(self, phase, pose):
+            calls.append((phase, pose))
+            return 202, {"ok": True, "phase": phase}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post(
+                "/api/visit/route/cat-pose",
+                headers={"Origin": ORIGIN, "User-Agent": UA},
+                json={**_CAT_POSE_BODY, "_csrf_token": AUTOSTART_CSRF_TOKEN},
+            )
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 202 and response.json() == {"ok": True, "phase": "sample"}
+    assert calls == [("sample", {
+        key: value for key, value in _CAT_POSE_BODY.items() if key not in {"visit_id", "phase"}
+    })]
+
+
+async def test_cat_pose_hides_unknown_and_another_accounts_visits(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_pose(self, phase, pose):
+            calls.append((phase, pose))
+            return 202, {"ok": True}
+
+    async with env.client() as c:
+        unknown = await c.post("/api/visit/route/cat-pose", headers=GOOD, json=_CAT_POSE_BODY)
+        rtm._by_visit[VISIT_ID] = Stub()
+        try:
+            env.account = "someone-else"
+            other = await c.post("/api/visit/route/cat-pose", headers=GOOD, json=_CAT_POSE_BODY)
+        finally:
+            rtm._by_visit.pop(VISIT_ID, None)
+    assert unknown.status_code == 404 and unknown.json()["code"] == "unknown_visit"
+    assert other.status_code == 404 and other.json()["code"] == "unknown_visit"
+    assert calls == []
+
+
+_CAT_WORLD_INTENT_BODY = {
+    "visit_id": VISIT_ID, "intent_id": 1, "kind": "yarn_grab",
+    "x_q16": 1000, "y_q16": 2000,
+}
+_CAT_WORLD_STATE_BODY = {
+    "visit_id": VISIT_ID, "phase": "commit", "world_seq": 1,
+    "yarn_active": True, "yarn_x_q16": 1000, "yarn_y_q16": 2000,
+    "yarn_vx_q12": 2, "yarn_vy_q12": -3, "yarn_holder": "guest",
+    "question_active": False, "question_x_q16": 3000,
+    "question_y_q16": 4000, "collision_seq": 0,
+}
+
+
+@pytest.mark.parametrize(("path", "body", "change", "code"), [
+    ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"actor": "self"}, "invalid_fields"),
+    ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"kind": "move"}, "invalid_intent"),
+    ("cat-world-pointer", _CAT_WORLD_INTENT_BODY, {"kind": None}, "invalid_fields"),
+    ("cat-world-pointer", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items() if k != "kind"},
+     {"x_q16": 65536}, "invalid_pointer"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"window_width": 100}, "invalid_fields"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_vx_q12": 4096}, "invalid_state"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_holder": "self"}, "invalid_state"),
+])
+async def test_cat_world_http_has_strict_fixed_normalized_fields(env, path, body, change, code):
+    async with env.client() as c:
+        response = await c.post(
+            f"/api/visit/route/{path}", headers=GOOD, json={**body, **change},
+        )
+    assert response.status_code == 400 and response.json()["code"] == code
+
+
+async def test_cat_world_http_forwards_owned_inputs_and_host_only_refusal(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_world_intent(self, intent):
+            calls.append(("intent", intent))
+            return 202, {"ok": True, "intent_id": intent["intent_id"]}
+
+        async def request_cat_world_pointer(self, pointer):
+            calls.append(("pointer", pointer))
+            return 202, {"ok": True, "intent_id": pointer["intent_id"]}
+
+        async def request_cat_world_state(self, phase, state):
+            calls.append(("state", phase, state))
+            return 409, {"ok": False, "code": "VISIT_CAT_WORLD_HOST_ONLY"}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            intent = await c.post("/api/visit/route/cat-world-intent", headers=GOOD,
+                                  json=_CAT_WORLD_INTENT_BODY)
+            pointer = await c.post("/api/visit/route/cat-world-pointer", headers=GOOD, json={
+                key: value for key, value in _CAT_WORLD_INTENT_BODY.items() if key != "kind"
+            })
+            state = await c.post("/api/visit/route/cat-world-state", headers=GOOD,
+                                 json=_CAT_WORLD_STATE_BODY)
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert intent.status_code == pointer.status_code == 202
+    assert state.status_code == 409 and state.json()["code"] == "VISIT_CAT_WORLD_HOST_ONLY"
+    assert calls[0] == ("intent", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items()
+                                   if k != "visit_id"})
+    assert calls[1] == ("pointer", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items()
+                                    if k not in {"visit_id", "kind"}})
+    assert calls[2][0:2] == ("state", "commit")
+    assert calls[2][2] == {k: v for k, v in _CAT_WORLD_STATE_BODY.items()
+                            if k not in {"visit_id", "phase"}}
+
+
 async def test_route_end_ends_a_waiting_visit_and_validates_its_body(env):
     visit_id = (await _rooms(env)).json()["visit_id"]
     async with env.client() as c:
@@ -971,7 +1277,7 @@ async def test_current_host_room_recovers_only_the_owned_pending_invite(env):
         env.account = "someone-else"
         hidden = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
     assert ready.status_code == 200
-    assert ready.json() == {"visit_id": rt.visit_id, "phase": "invite_ready",
+    assert ready.json() == {"visit_id": rt.visit_id, "phase": "invite_ready", "visit_mode": "model",
                             "invite_code": INVITE, "invite_expires_at": NOW + 600}
     assert hidden.status_code == 404 and INVITE not in hidden.text
 

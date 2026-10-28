@@ -1887,24 +1887,30 @@ function _dispatchNekoIdleReturnClickFromButton(button) {
     const dispatchReturnEvent = () => {
         window.dispatchEvent(event);
     };
-    if (
-        typeof window.playNekoModelCatTransition === 'function' &&
-        !_isNekoGoodbyeIdleBallButton(button)
-    ) {
-        window.playNekoModelCatTransition({
-            direction: 'cat-to-model',
-            anchorRect: rect,
-            coverRect: window._savedGoodbyeRect || null,
-            container: container
-        }).catch((error) => {
-            console.warn('[AvatarButtonMixin] model/cat return transition failed:', error);
-            container.removeAttribute('data-neko-model-cat-transitioning');
-        });
+    const commitReturn = () => {
+        if (
+            typeof window.playNekoModelCatTransition === 'function' &&
+            !_isNekoGoodbyeIdleBallButton(button)
+        ) {
+            window.playNekoModelCatTransition({
+                direction: 'cat-to-model',
+                anchorRect: rect,
+                coverRect: window._savedGoodbyeRect || null,
+                container: container
+            }).catch((error) => {
+                console.warn('[AvatarButtonMixin] model/cat return transition failed:', error);
+                container.removeAttribute('data-neko-model-cat-transitioning');
+            });
+        }
         dispatchReturnEvent();
         return true;
+    };
+    const visitCatScene = window.nekoVisitCatScene;
+    if (visitCatScene && typeof visitCatScene.guardModelReturn === 'function'
+        && visitCatScene.guardModelReturn(commitReturn)) {
+        return true;
     }
-    dispatchReturnEvent();
-    return true;
+    return commitReturn();
 }
 
 function _handleNekoIdleCat1PlaygroundCatClick(button, event) {
