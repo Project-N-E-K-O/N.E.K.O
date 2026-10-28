@@ -284,6 +284,25 @@ appearanceTest('reversing the market drawer mid-open stays continuous and return
   expect(returnIssues(recording), 'reversal end state').toEqual([])
 })
 
+appearanceTest('a second toggle click during the first panel preload cancels the open', async ({ page }) => {
+  let releasePanel!: () => void
+  const panelHeld = new Promise<void>(resolve => { releasePanel = resolve })
+  await page.route('**/assets/MarketPanel-*.js', async route => {
+    await panelHeld
+    await route.continue()
+  })
+  await openPluginWorkbench(page)
+  const panelRequested = page.waitForRequest('**/assets/MarketPanel-*.js')
+  await page.locator(MARKET_TOGGLE).click()
+  await panelRequested
+  await page.locator(MARKET_TOGGLE).click()
+  releasePanel()
+  await page.waitForResponse('**/assets/MarketPanel-*.js')
+  await page.waitForTimeout(1000)
+  await expect(page.locator(MARKET_PANEL)).toBeHidden()
+  await expect(page.locator('.plugin-workbench')).not.toHaveClass(/plugin-workbench--market-open/)
+})
+
 appearanceTest('package drawer opens with monotonic, snap-free geometry that settles', async ({ page }) => {
   await openPluginWorkbench(page)
   const recording = await recordDrawerMotion(page, {

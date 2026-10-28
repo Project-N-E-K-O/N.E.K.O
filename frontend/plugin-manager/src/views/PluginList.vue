@@ -988,9 +988,12 @@ const workbenchRef = ref<HTMLElement | null>(null)
 const DRAWER_PANELS = { package: PackageManagerPanel, mirror: GithubMirrorSourcePanel, market: MarketPanel } as const
 // 每次请求递增；等加载期间来了新请求，旧请求作废，不能覆盖用户最后的选择。
 let drawerRequest = 0
+// 最后一次请求的目标抽屉；预加载期间 visible 还没变，切换要按它判断，第二次点击才能取消打开。
+let drawerTarget: DrawerKey | null = null
 
 async function setOpenDrawer(key: DrawerKey | null): Promise<void> {
   const request = ++drawerRequest
+  drawerTarget = key
   // 首次打开先等面板模块加载完，否则面板在滑入途中从加载占位换成真实内容。
   // 加载失败不拦截打开：面板自己会显示错误和重试。
   if (key) await Promise.allSettled([DRAWER_PANELS[key].preload()])
@@ -1012,7 +1015,7 @@ async function setOpenDrawer(key: DrawerKey | null): Promise<void> {
 }
 
 function toggleDrawer(key: DrawerKey) {
-  return setOpenDrawer(drawers[key].visible ? null : key)
+  return setOpenDrawer(drawerTarget === key ? null : key)
 }
 
 function closePluginContextMenu() {
