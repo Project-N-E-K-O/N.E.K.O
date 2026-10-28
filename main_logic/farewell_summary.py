@@ -174,11 +174,10 @@ def count_user_turns(db_path: Path) -> int | None:
         return None
     from config import TIME_ORIGINAL_TABLE_NAME
 
-    uri_path = os.path.abspath(db_path).replace("\\", "/")
-    if os.name == "nt" and not uri_path.startswith("/"):
-        uri_path = "/" + uri_path
+    # as_uri() percent-encodes "#", "?" and "%" so they stay part of the filename.
+    uri = Path(os.path.abspath(db_path)).as_uri()
     try:
-        conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=0.3)
+        conn = sqlite3.connect(f"{uri}?mode=ro", uri=True, timeout=0.3)
     except sqlite3.Error:
         return None
     try:
@@ -217,7 +216,10 @@ async def build_farewell_summary() -> dict[str, Any]:
     flashback = await asyncio.to_thread(select_flashback, raw, raw_archive)
 
     payload: dict[str, Any] = {"memory_count": memory_count}
-    db_path = _time_index_db_path(get_config_manager(), context.lanlan_name, context.memory_dir)
+    # get_character_data() can stat or reload the config file: keep it off the event loop.
+    db_path = await asyncio.to_thread(
+        _time_index_db_path, get_config_manager(), context.lanlan_name, context.memory_dir,
+    )
     conversation_count = await asyncio.to_thread(count_user_turns, db_path) if db_path else None
     if conversation_count is not None:
         payload["conversation_count"] = conversation_count

@@ -199,3 +199,11 @@ async def test_route_swallows_failures(monkeypatch):
 def test_flashback_visit_row_does_not_hide_ordinary_archived_copy():
     active = [memory("same", origin="neko_visit")]
     assert pick(active, [memory("same")])["id"] == "same"
+
+
+def test_count_user_turns_with_uri_special_characters_in_path(tmp_path):
+    folder = tmp_path / "A#1 %20 猫?x"
+    folder.mkdir()
+    db = folder / "time_indexed.db"
+    make_time_db(db, [json.dumps({"type": "human"})] * 2)
+    assert S.count_user_turns(db) == 2
