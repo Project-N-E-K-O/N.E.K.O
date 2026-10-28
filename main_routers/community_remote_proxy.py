@@ -21,6 +21,8 @@ from utils.visit_wire import VISIT_ID_RE
 
 router = APIRouter(tags=["community-remote-proxy"])
 
+RECOMMENDATION_TIMEOUT_SECONDS = 2.0
+
 
 async def _community_access(request: Request):
     if await O._account_request_identity(request) is None or not C._local_request_source_allowed(request):
@@ -106,13 +108,16 @@ async def _community_notifications(client: httpx.AsyncClient, session: dict):
 async def _community_recommendations(client: httpx.AsyncClient, session: dict):
     """Recommendations are optional and must never take down the friend hub."""
     try:
-        return await _community_json(
-            client,
-            session,
-            "GET",
-            "/api/users/me/recommendations",
+        return await asyncio.wait_for(
+            _community_json(
+                client,
+                session,
+                "GET",
+                "/api/users/me/recommendations",
+            ),
+            timeout=RECOMMENDATION_TIMEOUT_SECONDS,
         )
-    except httpx.HTTPError:
+    except (TimeoutError, httpx.HTTPError):
         return 502, {"detail": "community_unavailable"}
 
 
@@ -216,7 +221,9 @@ async def visit_hub(request: Request):
             if not isinstance(item, dict) or not item.get("id"):
                 continue
             reason = item.get("reason")
-            if reason not in {"active_user", "liked_you", "recent_follower"}:
+            if not isinstance(reason, str) or reason not in {
+                "active_user", "liked_you", "recent_follower",
+            }:
                 reason = "active_user"
             recommendations.append({
                 "id": str(item["id"]),

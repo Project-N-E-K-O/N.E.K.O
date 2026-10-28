@@ -374,6 +374,7 @@
 
   async function refresh(silent) {
     silent = silent === true;
+    var refreshGeneration = openGeneration;
     if (!silent) {
       state.loading = true;
       render();
@@ -384,6 +385,8 @@
       // 登录态失效按“未登录”处理，引导重新登录，而不是显示成加载失败。
       if (!response.ok && body && body.detail === 'community_login_required') body = { logged_in: false };
       else if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取好友失败')));
+      // 浮窗关闭后重开会启动新一轮推荐；旧请求不得覆盖新一轮结果。
+      if (refreshGeneration !== openGeneration) return;
       state.loadFailed = false;
       state.loadError = '';
       state.loggedIn = body.logged_in === true;
@@ -409,6 +412,7 @@
         state.toastError = false;
       }
     } catch (error) {
+      if (refreshGeneration !== openGeneration) return;
       if (!silent) {
         state.loadFailed = true;
         state.loggedIn = false;
@@ -423,9 +427,11 @@
         state.toastError = false;
       }
     } finally {
-      if (!silent) state.loading = false;
-      render();
-      deliverIncomingToChat(0);
+      if (refreshGeneration === openGeneration) {
+        if (!silent) state.loading = false;
+        render();
+        deliverIncomingToChat(0);
+      }
     }
   }
 
@@ -697,9 +703,19 @@
       });
       var body = await json(response);
       if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.followFailed', '关注失败，请稍后重试')));
-      state.recommendations = state.recommendations.filter(function (item) {
+      var index = state.recommendations.findIndex(function (item) {
+        return item.id === recommendation.id;
+      });
+      var remaining = state.recommendations.filter(function (item) {
         return item.id !== recommendation.id;
       });
+      var next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)] || null;
+      var active = document.activeElement;
+      if (active && active.getAttribute &&
+          active.getAttribute('data-neko-focus-key') === 'recommendation-' + recommendation.id) {
+        pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community';
+      }
+      state.recommendations = remaining;
       await refresh(false);
       state.toast = tr('visit.socialHub.followedUser', '已关注 {{name}}', { name: recommendation.displayName });
     } catch (error) {
@@ -954,7 +970,8 @@
     }
     // 用户已把焦点移到面板外的其他控件：放弃待恢复的焦点，不再抢回来。
     if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) pendingFocusKey = '';
-    if (!activeKey && pendingFocusKey && !state.loading && active && panel.contains(active)) activeKey = pendingFocusKey;
+    var pendingFocusFallback = !!(pendingFocusKey && !state.loading);
+    if (!activeKey && pendingFocusFallback && active && panel.contains(active)) activeKey = pendingFocusKey;
     if (!state.loading) pendingFocusKey = '';
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
@@ -984,12 +1001,19 @@
     }
     if (state.toast) panel.appendChild(el('div', 'neko-social-hub-toast' + (state.toastError ? ' is-error' : ''), state.toast));
     friendScroller.scrollTop = oldScrollTop;
+    var restoredFocus = false;
     if (activeKey) {
-      Array.from(panel.querySelectorAll('[data-neko-focus-key]')).some(function (node) {
+      restoredFocus = Array.from(panel.querySelectorAll('[data-neko-focus-key]')).some(function (node) {
         if (node.getAttribute('data-neko-focus-key') !== activeKey) return false;
         try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
         return true;
       });
+    }
+    if (!restoredFocus && pendingFocusFallback) {
+      var communityEntry = panel.querySelector('[data-neko-focus-key="open-community"]');
+      if (communityEntry) {
+        try { communityEntry.focus({ preventScroll: true }); } catch (_) { communityEntry.focus(); }
+      }
     }
     // 读取中按钮暂时不存在，先把焦点留在面板上，避免掉到 body。
     if (pendingFocusKey && state.loading && (!document.activeElement || document.activeElement === document.body)) {

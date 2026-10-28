@@ -150,15 +150,22 @@ def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
         if request.url.path == "/api/users/me/presence":
             return httpx.Response(200, json={"status": "away"})
         if request.url.path == "/api/users/me/recommendations":
-            return httpx.Response(200, json={"items": [{
-                "id": "55555555-5555-4555-8555-555555555555",
-                "display_name": "推荐喵友",
-                "avatar_url": "/static/avatars/recommended.webp",
-                "reason": "liked_you",
-                "follows_viewer": False,
-                "online": True,
-                "score": 999,
-            }]})
+            return httpx.Response(200, json={"items": [
+                {
+                    "id": "55555555-5555-4555-8555-555555555555",
+                    "display_name": "推荐喵友",
+                    "avatar_url": "/static/avatars/recommended.webp",
+                    "reason": "liked_you",
+                    "follows_viewer": False,
+                    "online": True,
+                    "score": 999,
+                },
+                {
+                    "id": "66666666-6666-4666-8666-666666666666",
+                    "display_name": "异常原因喵友",
+                    "reason": ["untrusted"],
+                },
+            ]})
         if request.url.path == f"/api/users/{owner_id}/following":
             return httpx.Response(200, json={"items": [
                 {"id": online_id, "display_name": "在线喵友", "is_mutual": True,
@@ -199,14 +206,24 @@ def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
          "online": False, "presence_status": "offline",
          "last_seen_at": "2026-10-20T08:00:00Z"},
     ]
-    assert response.json()["recommendations"] == [{
-        "id": "55555555-5555-4555-8555-555555555555",
-        "display_name": "推荐喵友",
-        "username": None,
-        "avatar_url": "https://community.example/static/avatars/recommended.webp",
-        "reason": "liked_you",
-        "follows_viewer": False,
-    }]
+    assert response.json()["recommendations"] == [
+        {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "display_name": "推荐喵友",
+            "username": None,
+            "avatar_url": "https://community.example/static/avatars/recommended.webp",
+            "reason": "liked_you",
+            "follows_viewer": False,
+        },
+        {
+            "id": "66666666-6666-4666-8666-666666666666",
+            "display_name": "异常原因喵友",
+            "username": None,
+            "avatar_url": None,
+            "reason": "active_user",
+            "follows_viewer": False,
+        },
+    ]
 
 
 def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
@@ -287,6 +304,23 @@ async def test_recommendation_transport_failure_is_optional():
     async def upstream(_request):
         raise httpx.ConnectError("offline")
 
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        status, body = await P._community_recommendations(
+            client,
+            {"base_url": "https://community.example", "access": "cloud-secret"},
+        )
+
+    assert status == 502
+    assert body == {"detail": "community_unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_recommendation_timeout_is_optional(monkeypatch):
+    async def upstream(_request):
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json={"items": []})
+
+    monkeypatch.setattr(P, "RECOMMENDATION_TIMEOUT_SECONDS", 0.01)
     async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
         status, body = await P._community_recommendations(
             client,

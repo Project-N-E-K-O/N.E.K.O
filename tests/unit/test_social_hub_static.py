@@ -245,6 +245,9 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "body.recommendations.slice(0, 3)" in source
     assert "var replaceRecommendations = !silent || nextAccountId !== state.accountId" in source
     assert "if (replaceRecommendations)" in source
+    assert "var refreshGeneration = openGeneration" in source
+    assert "if (refreshGeneration !== openGeneration) return" in source
+    assert "if (refreshGeneration === openGeneration)" in source
     assert "renderRecommendations(panel)" in source
     assert "renderRecommendations(friendScroller)" not in source
     assert source.index("renderRecommendations(panel)") < source.index(
@@ -254,6 +257,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "'/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow'" in source
     assert "state.recommendationBusy.has(recommendation.id)" in source
     assert "function dismissRecommendation(recommendation)" in source
+    assert "pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community'" in source
+    assert "pendingFocusFallback" in source
     dismiss_source = source.split("function dismissRecommendation(recommendation)", 1)[1].split(
         "async function followRecommendation", 1
     )[0]
