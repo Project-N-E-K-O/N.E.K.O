@@ -1633,6 +1633,23 @@ const report = {};
     const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
     report.switched_create_end = end && end.body;
   }
+  // ── 后端建出的定向房间形态与请求不符：立即取消，不能留下占位中的 pending 房间 ──
+  {
+    const target = '22222222-2222-4222-8222-222222222222';
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    const routes = {
+      [currentUrl]: async () => ({ status: 404, body: { error: 'no_pending_invite' } }),
+      '/api/visit/rooms': async () => ({ status: 202, body: {
+        visit_id: VID2, phase: 'pending', visit_mode: 'model', target_user_id: target,
+      } }),
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const result = await h.chat._test.startInvite(target, 'cat');
+    const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.mode_mismatch_create_ok = result.ok;
+    report.mode_mismatch_create_end = end && end.body;
+  }
   // ── 读 state 期间到了新一场的邀请：旧快照作废，不把新一场又收掉 ──
   {
     let release;
@@ -2337,6 +2354,14 @@ def test_room_created_after_a_character_switch_is_ended(report):
     end = report["switched_create_end"]
     assert end is not None
     assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
+
+
+def test_direct_room_with_the_wrong_mode_is_ended(report):
+    assert report["mode_mismatch_create_ok"] is False
+    end = report["mode_mismatch_create_end"]
+    assert end is not None
+    assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end"
+    assert end["visit_id"] == "BBBBBBBBBBBBBBBBBBBBBB"
 
 
 def test_clicking_invite_restores_the_existing_code_without_creating_another_room(report):

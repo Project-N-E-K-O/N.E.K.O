@@ -1848,6 +1848,9 @@
             var created = applyHostRoomResponse(result, catgirl, createSeq);
             if (created) {
                 if (created.visitMode !== requestedMode) {
+                    if (targetUserId) {
+                        try { await cancelDirectInvitation(created.visitId); } catch (_) { /* keep visible for manual retry */ }
+                    }
                     return { ok: false, error: '串门形态没有正确建立，请结束后重试' };
                 }
                 if (!targetUserId && !created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);

@@ -586,6 +586,8 @@ async def create_room(request: Request):
             target_user_id = str(uuid.UUID(str(target_user_id)))
         except (ValueError, AttributeError):
             return _error(400, "target_user_id_format")
+    if visit_mode == "cat" and target_user_id is None:
+        return _error(400, "cat_visit_requires_target")
     refused = await _refuse_before_admission(request)
     if refused is not None:
         return refused

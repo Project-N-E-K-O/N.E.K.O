@@ -278,10 +278,22 @@ async def test_room_mode_is_selected_per_visit_even_when_cat_feature_is_enabled(
 ):
     monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", True)
     monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
-    resp = await _rooms(env, visit_mode=visit_mode)
+    fields = {"visit_mode": visit_mode}
+    if cat_requested:
+        fields["target_user_id"] = "22222222-2222-4222-8222-222222222222"
+    resp = await _rooms(env, **fields)
     assert resp.status_code == 202 and resp.json()["visit_mode"] == visit_mode
     rt = rtm.get_runtime("Host")
     assert rt is not None and rt.cat_scene_requested is cat_requested
+
+
+async def test_cat_mode_requires_a_direct_friend_target(env, monkeypatch):
+    monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", True)
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
+    resp = await _rooms(env, visit_mode="cat")
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "cat_visit_requires_target"
+    assert _no_slot() and env.host.creds_calls == []
 
 
 async def test_cat_mode_refuses_explicitly_while_release_gate_is_off(env, monkeypatch):
