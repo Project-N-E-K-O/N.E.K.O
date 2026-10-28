@@ -1624,7 +1624,7 @@ async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_path, monkeypatch):
+async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
@@ -1638,6 +1638,8 @@ async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_p
         if payload.get("type") == "visit_state_change" and payload.get("action") == rtm.PHASE_ENDED:
             task = rt._display_task
             queued_at_end.append((len(rt._display), task is None or task.done()))   # Remaining queue frames and sender stopped status.
+            await real_send(payload)
+            return False                                     # Closed display sockets reject without raising.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -1654,6 +1656,7 @@ async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_p
         late = [f for f in frames[ended[0]:] if f.get("line_id") in ("slow1", "slow2")]
         assert not late                                       # Stop undeliverable frames first: no whole sentences after ended.
         assert queued_at_end == [(0, True)]                   # Stop/clear display queues before ended; no concurrent writes.
+        assert "ended not sent: display channel unavailable" in caplog.text
     finally:
         host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)

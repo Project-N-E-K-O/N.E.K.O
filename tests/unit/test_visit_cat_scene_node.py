@@ -230,6 +230,8 @@ function createHarness(options) {
   let now = 0;
   const poseCalls = [];
   const endCalls = [];
+  const reconcileCalls = [];
+  const reconcileAnswers = [];
   const confirms = [];
   const confirmAnswers = [];
   let geometryEvents = 0;
@@ -308,6 +310,10 @@ function createHarness(options) {
       async endCatVisitForModelReturn(visitId) {
         endCalls.push(visitId);
         return true;
+      },
+      async confirmCatVisitEnded(visitId) {
+        reconcileCalls.push(visitId);
+        return reconcileAnswers.length ? reconcileAnswers.shift() : false;
       },
     },
     async showConfirm(message, title, options) {
@@ -440,6 +446,8 @@ function createHarness(options) {
     body,
     poseCalls,
     endCalls,
+    reconcileCalls,
+    reconcileAnswers,
     confirms,
     confirmAnswers,
     emit,
@@ -619,6 +627,29 @@ const report = {};
   report.ball_toolbar_return = {
     clicks: nativeReturnClicks,
     tier_after_exit: native.button.getAttribute('data-neko-idle-tier'),
+  };
+
+  const lostEnded = createHarness();
+  lostEnded.state('started', {
+    cat_scene: 2,
+    self_cat_asset: 'dev_neko',
+    peer_cat_asset: 'yui_neko',
+  });
+  let reconciledCommits = 0;
+  lostEnded.confirmAnswers.push(true);
+  lostEnded.reconcileAnswers.push(false, true);
+  lostEnded.win.nekoVisitCatScene.guardModelReturn(() => { reconciledCommits += 1; });
+  await lostEnded.settle();
+  lostEnded.advance(2000);
+  await lostEnded.settle();
+  const activeAfterEndingSnapshot = lostEnded.body.classList.contains('neko-visit-cat-scene-active');
+  lostEnded.advance(2000);
+  await lostEnded.settle();
+  report.lost_ended_reconciled = {
+    calls: lostEnded.reconcileCalls.slice(),
+    active_after_ending_snapshot: activeAfterEndingSnapshot,
+    active_after_idle_snapshot: lostEnded.body.classList.contains('neko-visit-cat-scene-active'),
+    commits: reconciledCommits,
   };
 
   h.state('started', {
@@ -829,6 +860,15 @@ def test_model_return_is_guarded_until_exit_is_confirmed(report):
     assert report["request_model_return_exposed"] is True
     assert report["ball_toolbar_waiting"] == {"clicks": 0, "active": True}
     assert report["ball_toolbar_return"] == {"clicks": 1, "tier_after_exit": "none"}
+
+
+def test_model_return_reconciles_when_the_ended_frame_is_lost(report):
+    assert report["lost_ended_reconciled"] == {
+        "calls": ["A" * 22, "A" * 22],
+        "active_after_ending_snapshot": True,
+        "active_after_idle_snapshot": False,
+        "commits": 1,
+    }
 
 
 def test_ended_cleans_native_binding_animation_and_scene(report):

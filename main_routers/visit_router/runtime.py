@@ -914,7 +914,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             # Previous write exceeded its deadline: still send best effort; stuck finalizing UI is worse than occasional concurrent writes.
             logger.warning("visit %s: display write never retired; sending ended anyway", self.visit_id[:6])
         try:
-            await self.host.send_frame(payload)
+            sent = await self.host.send_frame(payload)
+            if not sent:
+                logger.warning("visit %s: ended not sent: display channel unavailable", self.visit_id[:6])
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: ended not sent: %s", self.visit_id[:6], type(exc).__name__)
 
@@ -944,7 +946,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 ended = self._ended_sending = asyncio.ensure_future(self._send_after_display(display, payload))
                 self._keep_background(ended)
                 return
-            await self.host.send_frame(payload)
+            sent = await self.host.send_frame(payload)
+            if not sent:
+                logger.warning("visit %s: ended not sent: display channel unavailable", self.visit_id[:6])
             return
         self._post_display(payload)
 

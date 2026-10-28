@@ -1338,6 +1338,34 @@ const report = {};
     report.geometry_on_close = refreshes;
     report.geometry_dialog_closed = h.dialogs().length;
   }
+  // ── 返回模型的兜底对账：只有旧场次已明确结束才可提交本地形态 ──
+  {
+    const stateUrl = '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA';
+    const idle = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    const ending = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'ending' } }),
+    } });
+    const replaced = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID2, phase: 'active' } }),
+    } });
+    const failed = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 503, body: {} }),
+    } });
+    await Promise.all([idle, ending, replaced, failed].map((h) => h.chat.endCatVisitForModelReturn(VID)));
+    idle.win.lanlan_config.lanlan_name = '小橘';
+    report.cat_return_reconcile = {
+      idle: await idle.chat.confirmCatVisitEnded(VID),
+      ending: await ending.chat.confirmCatVisitEnded(VID),
+      replaced: await replaced.chat.confirmCatVisitEnded(VID),
+      failed: await failed.chat.confirmCatVisitEnded(VID),
+    };
+  }
   // ── 切换角色：上一位的串门 UI 状态清掉，不往新角色的聊天里补结束消息 ──
   {
     const routes = {
@@ -1808,6 +1836,15 @@ def test_backend_refusal_marks_that_bubble_and_restores_the_text(report):
     assert report["echo_no_dup"] == 0
     assert report["recipient_own"] == "neko_visit:own_cat"
     assert report["recipient_switch_refreshed_hit_geometry"] is True
+
+
+def test_cat_model_return_reconciliation_requires_authoritative_end(report):
+    assert report["cat_return_reconcile"] == {
+        "idle": True,
+        "ending": False,
+        "replaced": True,
+        "failed": False,
+    }
 
 
 def test_guest_side_and_wrap_up_refuse_but_ending_does_not_take_input(report):

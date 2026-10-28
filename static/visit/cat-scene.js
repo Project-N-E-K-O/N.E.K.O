@@ -29,6 +29,8 @@
   };
   var SAMPLE_INTERVAL_MS = 100;
   var COMMIT_SETTLE_MS = 360;
+  var RETURN_RECONCILE_DELAY_MS = 2000;
+  var RETURN_RECONCILE_ATTEMPTS = 6;
 
   function emptySlot(actor) {
     return {
@@ -57,6 +59,7 @@
     phase: '',
     returning: false,
     pendingModelReturn: null,
+    returnReconcileTimer: 0,
     root: null,
     layer: null,
     toolbar: null,
@@ -576,8 +579,15 @@
     emitGeometryChanged();
   }
 
+  function clearReturnReconcile() {
+    if (!scene.returnReconcileTimer) return;
+    clearTimeout(scene.returnReconcileTimer);
+    scene.returnReconcileTimer = 0;
+  }
+
   function deactivate() {
     var endedVisitId = scene.visitId;
+    clearReturnReconcile();
     clearSlotTimer(scene.slots.self);
     clearSlotTimer(scene.slots.peer);
     clearCollisionPulse(scene.slots.self);
@@ -606,6 +616,49 @@
     }
   }
 
+  function completeEndedVisit(visitId) {
+    if (!scene.active || scene.visitId !== visitId) return false;
+    var pendingReturn = scene.pendingModelReturn;
+    var shouldRestoreModel = scene.nativeSelf.entryRequested;
+    var returnButton = scene.nativeSelf.button || findReturnButton();
+    deactivate();
+    if (pendingReturn && pendingReturn.visitId === visitId
+        && typeof pendingReturn.commit === 'function') {
+      pendingReturn.commit();
+    } else if (shouldRestoreModel) {
+      commitNativeModelReturn(returnButton);
+    }
+    return true;
+  }
+
+  function scheduleReturnReconcile(visitId) {
+    clearReturnReconcile();
+    var pendingReturn = scene.pendingModelReturn;
+    if (!scene.active || scene.visitId !== visitId || !pendingReturn
+        || pendingReturn.visitId !== visitId
+        || pendingReturn.reconcileAttempts >= RETURN_RECONCILE_ATTEMPTS) return;
+    scene.returnReconcileTimer = setTimeout(function () {
+      scene.returnReconcileTimer = 0;
+      var current = scene.pendingModelReturn;
+      if (!scene.active || scene.visitId !== visitId || !current || current.visitId !== visitId) return;
+      current.reconcileAttempts += 1;
+      var chat = global.nekoVisitChat;
+      if (!chat || typeof chat.confirmCatVisitEnded !== 'function') return;
+      Promise.resolve(chat.confirmCatVisitEnded(visitId)).then(function (ended) {
+        if (!scene.active || scene.visitId !== visitId || scene.pendingModelReturn !== current) return;
+        if (ended) {
+          completeEndedVisit(visitId);
+          return;
+        }
+        scheduleReturnReconcile(visitId);
+      }).catch(function () {
+        if (scene.active && scene.visitId === visitId && scene.pendingModelReturn === current) {
+          scheduleReturnReconcile(visitId);
+        }
+      });
+    }, RETURN_RECONCILE_DELAY_MS);
+  }
+
   function onDisplayState(event) {
     var frame = event && event.detail ? event.detail : event;
     if (!frame || frame.type !== 'visit_state_change' || !VALID_VISIT_ID.test(String(frame.visit_id || ''))) return;
@@ -617,16 +670,7 @@
     }
     if (!scene.active || frame.visit_id !== scene.visitId) return;
     if (frame.action === 'ended') {
-      var pendingReturn = scene.pendingModelReturn;
-      var shouldRestoreModel = scene.nativeSelf.entryRequested;
-      var returnButton = scene.nativeSelf.button || findReturnButton();
-      deactivate();
-      if (pendingReturn && pendingReturn.visitId === frame.visit_id
-          && typeof pendingReturn.commit === 'function') {
-        pendingReturn.commit();
-      } else if (shouldRestoreModel) {
-        commitNativeModelReturn(returnButton);
-      }
+      completeEndedVisit(frame.visit_id);
       return;
     }
     if (frame.action === 'ending') {
@@ -772,15 +816,17 @@
       }
       var chat = global.nekoVisitChat;
       if (!chat || typeof chat.endCatVisitForModelReturn !== 'function') return false;
-      scene.pendingModelReturn = { visitId: visitId, commit: commitReturn };
+      scene.pendingModelReturn = { visitId: visitId, commit: commitReturn, reconcileAttempts: 0 };
       setStatus(t('visit.catScene.ending', '正在退出串门…'));
       return Promise.resolve(chat.endCatVisitForModelReturn(visitId)).then(function (ok) {
+        if (ok) scheduleReturnReconcile(visitId);
         return !!ok;
       });
     }).catch(function () {
       return false;
     }).then(function (completed) {
       if (!completed && scene.active && scene.visitId === visitId) {
+        clearReturnReconcile();
         scene.pendingModelReturn = null;
         scene.returning = false;
         setStatus(t('visit.catScene.active', '正在串门'));

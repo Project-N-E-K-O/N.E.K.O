@@ -123,6 +123,7 @@
     }
 
     var compactGeometryRefreshTimer = 0;
+    var catModelReturnProbe = { visitId: '', catgirl: '' };
 
     function render() {
         if (typeof I.renderWindow === 'function') I.renderWindow();
@@ -2663,15 +2664,35 @@
 
     async function endCatVisitForModelReturn(visitId) {
         visitId = String(visitId || '');
-        if (!VISIT_ID_RE.test(visitId)) return false;
+        var catgirl = currentCatgirl();
+        if (!VISIT_ID_RE.test(visitId) || !catgirl) return false;
         var result = await api('POST', '/api/visit/route/end', {
-            lanlan_name: currentCatgirl(),
+            lanlan_name: catgirl,
             visit_id: visitId,
             reason: 'route_end'
         });
-        if (result.status === 200 || result.status === 404) return true;
+        if (result.status === 200 || result.status === 404) {
+            catModelReturnProbe = { visitId: visitId, catgirl: catgirl };
+            return true;
+        }
         toast(t('visit.error.generic', '没能完成，请稍后再试'));
         return false;
+    }
+
+    async function confirmCatVisitEnded(visitId) {
+        visitId = String(visitId || '');
+        var catgirl = catModelReturnProbe.visitId === visitId ? catModelReturnProbe.catgirl : '';
+        if (!VISIT_ID_RE.test(visitId) || !catgirl) return false;
+        var result = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
+        if (result.status !== 200 || !result.body || typeof result.body !== 'object') return false;
+        if (result.body.active === false) {
+            catModelReturnProbe = { visitId: '', catgirl: '' };
+            return true;
+        }
+        var activeVisitId = String(result.body.visit_id || '');
+        var ended = result.body.active === true && VISIT_ID_RE.test(activeVisitId) && activeVisitId !== visitId;
+        if (ended) catModelReturnProbe = { visitId: '', catgirl: '' };
+        return ended;
     }
 
     async function cancelDirectInvitation(visitId) {
@@ -3473,6 +3494,7 @@
         requestCatWorldPointer: requestCatWorldPointer,
         requestCatWorldState: requestCatWorldState,
         endCatVisitForModelReturn: endCatVisitForModelReturn,
+        confirmCatVisitEnded: confirmCatVisitEnded,
         // 测试用：只读快照与内部入口
         _test: {
             assembleClauses: assembleClauses,

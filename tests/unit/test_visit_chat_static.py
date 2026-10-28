@@ -395,7 +395,7 @@ def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
     assert "visit_id: visitId" in action and "kind: kind" in action
     end = _function_body(chat, "endCatVisitForModelReturn")
     assert "'/api/visit/route/end'" in end
-    assert "reason: 'route_end'" in end and "lanlan_name: currentCatgirl()" in end
+    assert "reason: 'route_end'" in end and "lanlan_name: catgirl" in end
     assert "requestCatAction: requestCatAction" in chat
     pose = _function_body(chat, "requestCatPose")
     assert "'/api/visit/route/cat-pose'" in pose
@@ -405,6 +405,11 @@ def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
     assert "VISIT_CAT_POSE_STALE" in pose and "current_motion_id" in pose
     assert "requestCatPose: requestCatPose" in chat
     assert "endCatVisitForModelReturn: endCatVisitForModelReturn" in chat
+    reconcile = _function_body(chat, "confirmCatVisitEnded")
+    assert "'/api/visit/state?catgirl='" in reconcile
+    assert "result.body.active === false" in reconcile
+    assert "activeVisitId !== visitId" in reconcile
+    assert "confirmCatVisitEnded: confirmCatVisitEnded" in chat
 
     playground = _read(IDLE_PLAYGROUND)
     dispatch = _function_body(playground, "_dispatchNekoIdleReturnClickFromButton")
