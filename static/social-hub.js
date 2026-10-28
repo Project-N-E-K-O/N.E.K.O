@@ -766,7 +766,8 @@
     var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0;
     var active = document.activeElement;
     var activeKey = active && panel.contains(active) ? active.getAttribute('data-neko-focus-key') : '';
-    if (!activeKey && pendingFocusKey && !state.loading) activeKey = pendingFocusKey;
+    // 只在焦点仍留在面板里时恢复；用户读取期间已移到别处就不抢回来。
+    if (!activeKey && pendingFocusKey && !state.loading && active && panel.contains(active)) activeKey = pendingFocusKey;
     if (!state.loading) pendingFocusKey = '';
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
