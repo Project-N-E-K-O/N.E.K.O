@@ -6,7 +6,8 @@
   var standalone = window.__NEKO_SOCIAL_HUB_STANDALONE__ === true;
   var state = {
     open: standalone, loading: true, loggedIn: false,
-    toast: '', toastError: false, incoming: null, friends: [], accountId: '', account: null,
+    toast: '', toastError: false, incoming: null, friends: [], recommendations: [],
+    recommendationBusy: new Set(), accountId: '', account: null,
     presenceMenuOpen: false, presenceSaving: false,
     invitations: new Map(), restoredAccountId: ''
   };
@@ -107,6 +108,7 @@
     if (body && body.detail === 'mutual_follow_required') return tr('visit.socialHub.mutualRequired', '你们已不再互相关注，无法发送邀请');
     if (body && body.detail === 'target_offline') return tr('visit.socialHub.targetOffline', '对方当前离线，暂时不能邀请');
     if (body && body.detail === 'community_unavailable') return tr('visit.socialHub.communityUnavailable', '暂时连不上喵宇宙，请稍后重试');
+    if (body && body.detail === 'user_relationship_blocked') return tr('visit.socialHub.followBlocked', '当前关系无法关注这位用户');
     return fallback;
   }
   function normalizeFriend(item) {
@@ -133,6 +135,19 @@
       username: String(item.username || ''),
       avatarUrl: String(item.avatar_url || ''),
       presenceStatus: presenceStatus
+    };
+  }
+  function normalizeRecommendation(item) {
+    if (!item || !item.id) return null;
+    var reason = String(item.reason || 'active_user');
+    if (['active_user', 'liked_you', 'recent_follower'].indexOf(reason) === -1) reason = 'active_user';
+    return {
+      id: String(item.id),
+      displayName: String(item.display_name || item.username || '喵友'),
+      username: String(item.username || ''),
+      avatarUrl: String(item.avatar_url || ''),
+      reason: reason,
+      followsViewer: item.follows_viewer === true
     };
   }
   function normalizeIncoming(item) {
@@ -341,10 +356,17 @@
       var body = await json(response);
       if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.readFailed', '读取互关好友失败')));
       state.loggedIn = body.logged_in === true;
-      state.accountId = String(body.account && body.account.id || '');
+      var nextAccountId = String(body.account && body.account.id || '');
+      var replaceRecommendations = !silent || nextAccountId !== state.accountId;
+      state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
       state.friends = Array.isArray(body.friends)
         ? body.friends.map(normalizeFriend).filter(function (friend) { return friend.id; }) : [];
+      if (replaceRecommendations) {
+        state.recommendations = Array.isArray(body.recommendations)
+          ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(Boolean) : [];
+        state.recommendationBusy.clear();
+      }
       state.incoming = normalizeIncoming(body.incoming_invite);
       restoreInvitations();
       applyInviteResponses(body.invite_responses);
@@ -358,6 +380,8 @@
         state.loggedIn = false;
         state.account = null;
         state.friends = [];
+        state.recommendations = [];
+        state.recommendationBusy.clear();
         state.incoming = null;
         state.toast = error && error.message || tr('visit.socialHub.readFailed', '读取互关好友失败');
         state.toastError = true;
@@ -593,6 +617,74 @@
     render();
   }
 
+  function recommendationReason(recommendation) {
+    if (recommendation.reason === 'recent_follower') {
+      return tr('visit.socialHub.recommendationRecentFollower', '最近关注了你');
+    }
+    if (recommendation.reason === 'liked_you') {
+      return tr('visit.socialHub.recommendationLikedYou', '最近赞过你的内容');
+    }
+    return tr('visit.socialHub.recommendationActive', '最近很活跃');
+  }
+
+  async function followRecommendation(recommendation) {
+    if (!recommendation || state.recommendationBusy.has(recommendation.id)) return;
+    state.recommendationBusy.add(recommendation.id);
+    state.toast = '';
+    state.toastError = false;
+    render();
+    try {
+      var response = await fetch('/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow', {
+        method: 'POST', credentials: 'same-origin'
+      });
+      var body = await json(response);
+      if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.followFailed', '关注失败，请稍后重试')));
+      state.recommendations = state.recommendations.filter(function (item) {
+        return item.id !== recommendation.id;
+      });
+      await refresh(false);
+      state.toast = tr('visit.socialHub.followedUser', '已关注 {{name}}', { name: recommendation.displayName });
+    } catch (error) {
+      state.toast = error && error.message || tr('visit.socialHub.followFailed', '关注失败，请稍后重试');
+      state.toastError = true;
+    } finally {
+      state.recommendationBusy.delete(recommendation.id);
+      render();
+    }
+  }
+
+  function recommendationRow(recommendation) {
+    var row = el('li', 'neko-social-hub-friend neko-social-hub-recommendation');
+    row.appendChild(avatar(recommendation, ''));
+    var copy = el('div', 'neko-social-hub-friend-copy');
+    copy.appendChild(el('strong', 'neko-social-hub-name', recommendation.displayName));
+    copy.appendChild(el('span', 'neko-social-hub-status', recommendationReason(recommendation)));
+    row.appendChild(copy);
+    var busy = state.recommendationBusy.has(recommendation.id);
+    var action = button(
+      busy ? tr('visit.socialHub.followingUser', '关注中…') : tr('visit.socialHub.followUser', '关注'),
+      'neko-social-hub-button primary',
+      function () { followRecommendation(recommendation); }
+    );
+    focusKey(action, 'recommendation-' + recommendation.id);
+    action.disabled = busy;
+    row.appendChild(action);
+    return row;
+  }
+
+  function renderRecommendations(target) {
+    if (!state.recommendations.length) return;
+    var section = el('section', 'neko-social-hub-recommendation-section');
+    section.appendChild(el('h3', 'neko-social-hub-heading neko-social-hub-recommendation-heading',
+      tr('visit.socialHub.recommendedUsers', '你可能感兴趣的人') + ' (' + state.recommendations.length + ')'));
+    var list = el('ul', 'neko-social-hub-friends neko-social-hub-recommendations');
+    state.recommendations.forEach(function (recommendation) {
+      list.appendChild(recommendationRow(recommendation));
+    });
+    section.appendChild(list);
+    target.appendChild(section);
+  }
+
   function friendRow(friend) {
     var invitation = state.invitations.get(friend.id) || null;
     var view = invitationView(invitation);
@@ -694,7 +786,9 @@
     panel.appendChild(header);
     if (state.loggedIn && state.account) renderOwnAccount(panel);
 
-    // 账号区固定在顶部，好友分组独立滚动，避免滚动好友时丢失自己的头像和状态入口。
+    // 账号区和推荐区固定在顶部，只让好友分组独立滚动。
+    // 这样滚动条不会穿过“你可能感兴趣的人”，也不会挡住关注按钮。
+    renderRecommendations(panel);
     var friendScroller = el('div', 'neko-social-hub-friend-scroller');
     panel.appendChild(friendScroller);
     var orphanInvitations = orphanInvitationFriends();
@@ -773,7 +867,7 @@
     );
     panel.style.maxHeight = Math.max(1, Math.floor(maxHeight)) + 'px';
 
-    var width = Math.min(panel.offsetWidth || 392, availableWidth);
+    var width = Math.min(panel.offsetWidth || 360, availableWidth);
     var height = Math.min(panel.scrollHeight, maxHeight);
     var left = clamp(rightEdge - width, leftEdge, rightEdge - width);
     var top = clamp((topEdge + bottomEdge - height) / 2, topEdge, bottomEdge - height);
@@ -892,7 +986,7 @@
     socialApi.onNotifyIncoming(function (notification) {
       var payload = notification && notification.payload;
       var kind = String(notification && notification.kind || payload && payload.type || '');
-      if (kind === 'visit_invite' || kind === 'visit_invite_response') refresh();
+      if (kind === 'visit_invite' || kind === 'visit_invite_response') refresh(true);
     });
   }
 

@@ -223,6 +223,49 @@ def test_social_hub_renders_own_community_identity_and_presence_picker():
     assert ".neko-social-hub-status-dot.invisible" in styles
 
 
+def test_social_hub_renders_three_followable_recommendations_without_auto_rotating():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
+
+    assert "state.recommendations = Array.isArray(body.recommendations)" in source
+    assert "body.recommendations.slice(0, 3)" in source
+    assert "var replaceRecommendations = !silent || nextAccountId !== state.accountId" in source
+    assert "if (replaceRecommendations)" in source
+    assert "renderRecommendations(panel)" in source
+    assert "renderRecommendations(friendScroller)" not in source
+    assert source.index("renderRecommendations(panel)") < source.index(
+        "renderFriendGroup(tr('visit.socialHub.onlineFriends'"
+    )
+    assert "neko-social-hub-recommendation-section" in source
+    assert "'/api/community/users/' + encodeURIComponent(recommendation.id) + '/follow'" in source
+    assert "state.recommendationBusy.has(recommendation.id)" in source
+    assert "setInterval(function () { refresh(true); }, 60000)" in source
+    assert "recommendedUsersRefresh" not in source
+    assert ".neko-social-hub-recommendations" in styles
+    assert "width: min(360px, calc(100vw - 24px))" in styles
+    assert "max-height: min(620px, calc(100vh - 24px))" in styles
+    assert "panel.offsetWidth || 360" in source
+    assert "scrollbar-gutter: stable" in styles
+    assert "background: rgba(226, 244, 255, 0.42)" not in styles
+    assert "[data-theme=\"dark\"] .neko-social-hub-recommendations" not in styles
+    assert "tr('visit.socialHub.recommendedUsers', '你可能感兴趣的人')" in source
+
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        translations = (ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
+        for key in (
+            "recommendedUsers",
+            "recommendationRecentFollower",
+            "recommendationLikedYou",
+            "recommendationActive",
+            "followUser",
+            "followingUser",
+            "followedUser",
+            "followFailed",
+            "followBlocked",
+        ):
+            assert f'"{key}"' in translations
+
+
 def test_only_friend_area_scrolls_while_current_account_stays_fixed():
     source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")

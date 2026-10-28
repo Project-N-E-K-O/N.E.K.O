@@ -32,10 +32,10 @@ body.neko-social-hub-standalone {
   position: fixed;
   display: flex;
   flex-direction: column;
-  width: min(392px, calc(100vw - 24px));
-  max-height: min(680px, calc(100vh - 24px));
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(620px, calc(100vh - 24px));
   overflow: hidden;
-  padding: 18px 16px 14px;
+  padding: 16px 14px 12px;
   border: var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.3));
   border-radius: 12px;
   box-sizing: border-box;
@@ -70,11 +70,12 @@ body.neko-social-hub-standalone {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(93, 161, 213, 0.35) transparent;
 }
 
-.neko-social-hub-friend-scroller::-webkit-scrollbar { width: 6px; }
+.neko-social-hub-friend-scroller::-webkit-scrollbar { width: 5px; }
 .neko-social-hub-friend-scroller::-webkit-scrollbar-track { background: transparent; }
 .neko-social-hub-friend-scroller::-webkit-scrollbar-thumb {
   border-radius: 999px;
@@ -95,9 +96,9 @@ body.neko-social-hub-standalone {
 
 .neko-social-hub-header {
   flex: 0 0 auto;
-  min-height: 44px;
-  gap: 10px;
-  padding: 0 2px 14px;
+  min-height: 40px;
+  gap: 9px;
+  padding: 0 2px 12px;
 }
 
 .neko-social-hub-standalone .neko-social-hub-header {
@@ -112,15 +113,15 @@ body.neko-social-hub-standalone {
 }
 
 .neko-social-hub-logo {
-  width: 42px;
-  height: 42px;
+  width: 38px;
+  height: 38px;
   flex: 0 0 auto;
   object-fit: contain;
 }
 
 .neko-social-hub-title {
   margin: 0;
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1.15;
   font-weight: 750;
   letter-spacing: -.02em;
@@ -133,7 +134,7 @@ body.neko-social-hub-standalone {
   background: transparent;
   color: var(--hub-accent-strong);
   font: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
   cursor: pointer;
 }
@@ -158,8 +159,8 @@ body.neko-social-hub-standalone {
 
 .neko-social-hub-avatar {
   display: block;
-  width: 58px;
-  height: 58px;
+  width: 52px;
+  height: 52px;
   border: 2px solid rgba(255, 255, 255, 0.94);
   border-radius: 50%;
   object-fit: cover;
@@ -174,7 +175,7 @@ body.neko-social-hub-standalone {
   overflow: hidden;
   background: hsl(var(--neko-avatar-hue, 205) 72% 62%);
   color: #fff;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   line-height: 1;
   text-shadow: 0 1px 2px rgba(32, 63, 88, 0.22);
@@ -189,8 +190,8 @@ body.neko-social-hub-standalone {
   position: absolute;
   right: -1px;
   bottom: 2px;
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   border: 2px solid #fff;
   border-radius: 50%;
   background: #32c777;
@@ -210,9 +211,9 @@ body.neko-social-hub-standalone {
 
 .neko-social-hub-name {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   color: var(--hub-text);
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.25;
   font-weight: 720;
   white-space: nowrap;
@@ -225,7 +226,7 @@ body.neko-social-hub-standalone {
 .neko-social-hub-expiry {
   display: block;
   color: var(--hub-muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -233,10 +234,10 @@ body.neko-social-hub-standalone {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 12px;
-  min-height: 76px;
+  gap: 10px;
+  min-height: 68px;
   margin: 0 2px 4px;
-  padding: 10px 8px 12px;
+  padding: 8px 6px 10px;
   border-top: 1px solid var(--hub-line);
   border-bottom: 1px solid var(--hub-line);
   box-sizing: border-box;
@@ -357,14 +358,14 @@ body.neko-social-hub-standalone {
 .neko-social-hub-invite-actions { display: grid; flex: 0 0 92px; gap: 8px; }
 
 .neko-social-hub-button {
-  min-height: 38px;
-  padding: 0 15px;
+  min-height: 34px;
+  padding: 0 13px;
   border: 1px solid rgba(45, 165, 242, 0.38);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
   color: var(--hub-accent-strong);
   font: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
   cursor: pointer;
@@ -392,9 +393,9 @@ body.neko-social-hub-standalone {
 }
 
 .neko-social-hub-heading {
-  margin: 18px 4px 4px;
+  margin: 15px 4px 4px;
   color: var(--hub-text);
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 760;
 }
 
@@ -414,12 +415,12 @@ body.neko-social-hub-standalone {
 .neko-social-hub-empty strong { color: var(--hub-text); font-size: 15px; }
 .neko-social-hub-empty span { font-size: 13px; }
 .neko-social-hub-friend {
-  gap: 12px;
-  min-height: 78px;
-  padding: 8px 0;
+  gap: 10px;
+  min-height: 70px;
+  padding: 6px 0;
 }
 
-.neko-social-hub-friend .neko-social-hub-button { min-width: 100px; }
+.neko-social-hub-friend .neko-social-hub-button { min-width: 90px; }
 .neko-social-hub-friend.is-waiting .neko-social-hub-status { color: #dc8a2f; }
 .neko-social-hub-friend.is-connecting .neko-social-hub-status { color: #168fe5; }
 .neko-social-hub-friend.is-active .neko-social-hub-status { color: #229b61; font-weight: 650; }
@@ -427,6 +428,20 @@ body.neko-social-hub-standalone {
 .neko-social-hub-friend.is-away .neko-social-hub-status { color: #d18b20; font-weight: 650; }
 .neko-social-hub-friend.is-offline .neko-social-hub-avatar { filter: saturate(0.72); opacity: 0.82; }
 .neko-social-hub-friend.is-ending .neko-social-hub-status { color: #77879d; }
+
+.neko-social-hub-recommendation-section { flex: 0 0 auto; }
+
+.neko-social-hub-recommendation-heading {
+  margin-top: 10px;
+  color: var(--hub-accent-strong);
+}
+
+.neko-social-hub-recommendations {
+  margin: 0;
+  padding: 0 4px;
+}
+
+.neko-social-hub-recommendation .neko-social-hub-status { color: var(--hub-accent-strong); }
 
 .neko-social-hub-quota {
   gap: 12px;
