@@ -246,6 +246,78 @@
     };
 })();
 
+// 「隐藏喵宇宙入口」：给想纯单机使用的用户收起社区入口。
+// 偏好由本模块独占一个 localStorage 键（与自动变猫等猫咪设置同一做法），
+// 不进 project_neko_settings，避免其他窗口带着旧值保存时把它覆盖回去。
+// 桌面端在聚合设置页「通用 → 喵宇宙」里切换（经 NEKO-PC pet-preference-actions 调用 setHidden）。
+(function setupCommunityEntryVisibility() {
+    const STORAGE_KEY = 'neko.communityEntry.hidden';
+    const CHANGE_EVENT = 'neko-community-entry-visibility-changed';
+    let hidden = false;
+
+    try {
+        hidden = window.localStorage && window.localStorage.getItem(STORAGE_KEY) === 'true';
+    } catch (_) {
+        hidden = false;
+    }
+
+    function isHidden() {
+        return hidden === true;
+    }
+
+    function apply() {
+        document.querySelectorAll('[data-community-entry="true"]').forEach((wrapper) => {
+            wrapper.style.display = hidden ? 'none' : 'flex';
+        });
+    }
+
+    function closeOpenCommunitySurfaces() {
+        try {
+            if (window.nekoSocialHub && typeof window.nekoSocialHub.close === 'function') {
+                window.nekoSocialHub.close();
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.closeSocialEmbed === 'function') window.closeSocialEmbed();
+        } catch (_) {}
+    }
+
+    function update(next, { persist }) {
+        const changed = hidden !== next;
+        hidden = next;
+        if (persist) {
+            try {
+                if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, next ? 'true' : 'false');
+            } catch (_) {}
+        }
+        apply();
+        if (!changed) return;
+        if (next) closeOpenCommunitySurfaces();
+        try {
+            window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { hidden: next } }));
+        } catch (_) {}
+    }
+
+    function setHidden(next) {
+        update(next === true, { persist: true });
+        return isHidden();
+    }
+
+    // 其他窗口改了偏好时同步（storage 事件只在别的窗口写入时触发）。
+    window.addEventListener('storage', (event) => {
+        if (event.key !== STORAGE_KEY) return;
+        update(event.newValue === 'true', { persist: false });
+    });
+
+    window.nekoCommunityEntry = window.nekoCommunityEntry || {
+        STORAGE_KEY,
+        CHANGE_EVENT,
+        isHidden,
+        setHidden,
+        apply
+    };
+})();
+
 Object.assign(AvatarButtonMixin.methods, {
     buttons(ManagerPrototype, prefix, options) {
         ManagerPrototype.getDefaultButtonConfigs = function() {
@@ -330,6 +402,9 @@ Object.assign(AvatarButtonMixin.methods, {
             if (config.mobileOnly) {
                 btnWrapper.dataset.mobileOnly = 'true';
             }
+            if (config.id === 'social') {
+                btnWrapper.dataset.communityEntry = 'true';
+            }
             Object.assign(btnWrapper.style, {
                 position: 'relative',
                 display: 'flex',
@@ -341,6 +416,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 flex: '0 0 48px',
                 boxSizing: 'border-box'
             });
+            if (btnWrapper.dataset.communityEntry === 'true'
+                && window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden()) {
+                btnWrapper.style.display = 'none';
+            }
 
             const stopWrapperEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
@@ -501,6 +580,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 : window.innerWidth <= 768;
             buttonsContainer.querySelectorAll('[data-mobile-only="true"]').forEach((wrapper) => {
                 wrapper.style.display = isMobile ? 'flex' : 'none';
+            });
+            const communityHidden = !!(window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden());
+            buttonsContainer.querySelectorAll('[data-community-entry="true"]').forEach((wrapper) => {
+                wrapper.style.display = communityHidden ? 'none' : 'flex';
             });
         };
 

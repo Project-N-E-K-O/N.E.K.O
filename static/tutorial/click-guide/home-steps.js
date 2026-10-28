@@ -233,7 +233,9 @@
                 body: () => t('floatingOverview.body') + ' ' + t('floatingOverviewContinueHint') }),
             optional('mic', avatar('btn-mic'), { enter: close, view: () => popupView('mic') }),
             optional('agent', avatar('btn-agent'), { enter: close, view: () => popupView('agent'), windowGuide: windowGuide() }),
-            optional('social', avatar('btn-social'), { enter: close, windowGuide: windowGuide(), view() {
+            optional('social', avatar('btn-social'), { enter: close, windowGuide: windowGuide(),
+                // 用户隐藏了喵宇宙入口时按钮不在，直接跳过这一步。
+                when: () => !(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden()), view() {
                 return find('.neko-social-embed-close')
                     ? click('socialClose', '.neko-social-embed-close', () => !find('.neko-social-embed-close')) : null;
             } }),

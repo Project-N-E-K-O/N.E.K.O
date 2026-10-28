@@ -42,6 +42,13 @@
   // 缓存上次可见位置，并在隐藏时用 style.left/top 估算。
   var lastSocialCenter = null;
 
+  // 掉券演出总开关：用户关了掉券动画与音效，或在设置里隐藏了喵宇宙入口（纯单机），
+  // 都只更新券数角标，不播卡片、音效和角色联动。
+  function dropEffectsMuted() {
+    if (window.forgeDropEffectsEnabled === false) return true;
+    return !!(window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden());
+  }
+
   function tokens() {
     return T || {
       normalizeRarity: function (r) { return String(r || 'N').toUpperCase(); },
@@ -90,7 +97,7 @@
 
   function playDropSound(rarity) {
     try {
-      if (window.forgeDropEffectsEnabled === false) return;
+      if (dropEffectsMuted()) return;
       var normalized = tokens().normalizeRarity(rarity);
       var audio = dropSoundAudioByRarity[normalized] || createDropSoundAudio(normalized);
       if (!audio) return;
@@ -455,7 +462,7 @@
       }
       try {
         var payloadRevision = Number(payload && payload.__credit_state_revision) || 0;
-        if (window.forgeDropEffectsEnabled === false) {
+        if (dropEffectsMuted()) {
           // 排队期间可能已有权威刷新推进过 revision；此时这张队尾券的
           // active_count 已经陈旧，不能用它覆盖角标。
           var entryRevisionFresh = !payloadRevision || payloadRevision === creditStateRevision;
@@ -556,7 +563,7 @@
 
         var hold = reduced ? 1200 : HOLD_MS;
         setTimeout(function () {
-          if (playGeneration !== dropEffectsGeneration || window.forgeDropEffectsEnabled === false) {
+          if (playGeneration !== dropEffectsGeneration || dropEffectsMuted()) {
             try { card.remove(); } catch (_) {}
             if (!payloadRevision || payloadRevision === creditStateRevision) {
               renderForgeBadge(active, true);
@@ -696,7 +703,9 @@
   }
 
   function onDropEffectsChanged(event) {
-    if (!event || !event.detail || event.detail.enabled !== false) return;
+    if (!event || !event.detail) return;
+    // 关闭掉券特效（enabled:false）或隐藏喵宇宙入口（hidden:true）都要立刻收掉正在播的演出。
+    if (event.detail.enabled !== false && event.detail.hidden !== true) return;
     dropEffectsGeneration += 1;
     Object.keys(activeAnimationCompleters).forEach(function (eventId) {
       try { activeAnimationCompleters[eventId](); } catch (_) {}
@@ -725,6 +734,7 @@
     window.addEventListener('neko-forge-credit-drop', onCreditDropEvent);
     window.addEventListener('neko-forge-credit-state', onCreditStateEvent);
     window.addEventListener('neko-forge-drop-effects-changed', onDropEffectsChanged);
+    window.addEventListener('neko-community-entry-visibility-changed', onDropEffectsChanged);
     requestCreditStateRefresh();
     // 按钮可见时持续刷新缓存位置，隐藏后飞出仍能对准
     try {

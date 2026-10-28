@@ -151,6 +151,8 @@
     // unread_count 由 sse-client.js handleEvent 'notify' 分支派生为独立的 NOTIFY_UNREAD
     // broadcast，所以这里只负责 toast 提示。
     if (!notif) return;
+    // 用户在设置里隐藏了喵宇宙入口（纯单机）：不再弹社区消息提示。
+    if (window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden()) return;
     const title = notif.title || (notif.kind === 'reward' ? '获得奖励' : '新消息');
     try {
       if (typeof window.electronToast === 'function') {
