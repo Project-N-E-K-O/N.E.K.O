@@ -245,3 +245,64 @@ test('open hub reconciles friend presence without refreshing hub content', async
   assert.equal(calls.filter((url) => url.includes('/api/community/visit-hub')).length, 1);
   assert.equal(calls.filter((url) => url.includes('/api/community/friend-presence')).length, 1);
 });
+
+test('a late presence snapshot cannot overwrite a newer pushed state', async () => {
+  let resolvePresence;
+  const { hub } = loadHub({
+    fetch: async (url) => {
+      if (String(url).includes('/api/community/friend-presence')) {
+        return new Promise((resolve) => { resolvePresence = resolve; });
+      }
+      return { ok: true, json: async () => ({ logged_in: true, account: { id: 'account-1' } }) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.open = true;
+  hub._state.loggedIn = true;
+  hub._state.friends = [{
+    id: 'friend-1', displayName: 'Community Test', online: false,
+    presenceStatus: 'offline', lastSeenAt: '2026-10-28T04:00:00Z',
+  }];
+
+  const pending = hub._refreshPresence();
+  hub._applyPresenceChanged({
+    kind: 'presence_changed',
+    payload: {
+      user_id: 'friend-1', presence_status: 'online', online: true,
+      last_seen_at: '2026-10-28T06:01:00Z',
+    },
+  });
+  resolvePresence({ ok: true, json: async () => ({ friends: [{
+    id: 'friend-1', presence_status: 'offline', online: false,
+    last_seen_at: '2026-10-28T06:00:00Z',
+  }] }) });
+  await pending;
+
+  assert.equal(hub._state.friends[0].presenceStatus, 'online');
+  assert.equal(hub._state.friends[0].lastSeenAt, '2026-10-28T06:01:00Z');
+});
+
+test('dismissed recommendations stay hidden during an automatic follow refresh', async () => {
+  const body = {
+    logged_in: true,
+    account: { id: 'account-1' },
+    friends: [],
+    recommendations: [
+      { id: 'recommendation-a', display_name: 'A' },
+      { id: 'recommendation-c', display_name: 'C' },
+    ],
+  };
+  const { hub } = loadHub({ hubBody: body });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.recommendations = [
+    { id: 'recommendation-a', displayName: 'A' },
+    { id: 'recommendation-b', displayName: 'B' },
+  ];
+
+  hub._dismissRecommendation(hub._state.recommendations[0]);
+  await hub.refresh(false);
+
+  assert.equal(JSON.stringify(hub._state.recommendations.map((item) => item.id)), JSON.stringify([
+    'recommendation-c',
+  ]));
+});

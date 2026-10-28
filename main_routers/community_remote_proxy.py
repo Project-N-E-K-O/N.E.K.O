@@ -124,7 +124,11 @@ def _absolute_community_url(base_url: str, value) -> str | None:
 def _friend_presence_items(following) -> list[dict]:
     friends = []
     for item in following.get("items", []) if isinstance(following, dict) else []:
-        if not isinstance(item, dict) or item.get("is_mutual") is not True or not item.get("id"):
+        if (
+            not isinstance(item, dict)
+            or item.get("is_mutual") is False
+            or not item.get("id")
+        ):
             continue
         status = item.get("presence_status")
         if status not in {"online", "away", "offline"}:
@@ -146,18 +150,14 @@ async def friend_presence(request: Request):
         return error
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8)) as client:
-            me_status, me = await _community_json(client, session, "GET", "/api/users/me")
-            profile = me.get("user") if isinstance(me, dict) and isinstance(me.get("user"), dict) else me
-            if me_status != 200 or not isinstance(profile, dict) or not profile.get("id"):
-                return JSONResponse(me, status_code=me_status)
-            following_status, following = await _community_following(
-                client, session, str(profile["id"]),
+            presence_status, presence_body = await _community_json(
+                client, session, "GET", "/api/users/me/friends/presence",
             )
     except httpx.HTTPError:
         return JSONResponse({"detail": "community_unavailable"}, status_code=502)
-    if following_status != 200:
-        return JSONResponse(following, status_code=following_status)
-    return {"friends": _friend_presence_items(following)}
+    if presence_status != 200:
+        return JSONResponse(presence_body, status_code=presence_status)
+    return {"friends": _friend_presence_items(presence_body)}
 
 
 @router.get("/api/community/visit-hub")

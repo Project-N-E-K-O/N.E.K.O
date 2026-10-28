@@ -47,6 +47,9 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "/api/community/friend-presence" in source
     assert "setInterval(function () { refreshPresence(); }, 3000)" in source
     assert "if (!state.open || !state.loggedIn || presenceRefreshInFlight)" in source
+    assert "presencePushRevisions.get(friend.id)" in source
+    assert "dismissedRecommendationIds.has(item.id)" in source
+    assert "function keepPanelInViewport()" in source
     assert "notif.kind === 'presence_changed'" in (ROOT / "static" / "app-social-ui.js").read_text(encoding="utf-8")
     assert "target_offline" in source
     assert "邀请来玩" in source

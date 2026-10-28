@@ -210,7 +210,6 @@ def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
 
 
 def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
-    owner_id = "11111111-1111-4111-8111-111111111111"
     friend_id = "22222222-2222-4222-8222-222222222222"
     seen = []
 
@@ -219,15 +218,10 @@ def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
 
     async def upstream(request):
         seen.append(request)
-        if request.url.path == "/api/users/me":
-            return httpx.Response(200, json={"id": owner_id})
-        if request.url.path == f"/api/users/{owner_id}/following":
+        if request.url.path == "/api/users/me/friends/presence":
             return httpx.Response(200, json={"items": [
-                {"id": friend_id, "display_name": "Friend", "is_mutual": True,
-                 "online": True, "presence_status": "away",
+                {"id": friend_id, "online": True, "presence_status": "away",
                  "last_seen_at": "2026-10-28T06:00:00Z"},
-                {"id": "33333333-3333-4333-8333-333333333333",
-                 "is_mutual": False, "online": True},
             ]})
         return httpx.Response(404, json={"detail": "not_found"})
 
@@ -248,7 +242,9 @@ def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
         "presence_status": "away",
         "last_seen_at": "2026-10-28T06:00:00Z",
     }]}
-    assert all(request.headers["Authorization"] == "Bearer cloud-secret" for request in seen)
+    assert len(seen) == 1
+    assert seen[0].url.path == "/api/users/me/friends/presence"
+    assert seen[0].headers["Authorization"] == "Bearer cloud-secret"
     assert "cloud-secret" not in response.text
     assert "display_name" not in response.text
 

@@ -21,6 +21,9 @@
   var incomingDeliveryKey = '';
   var incomingDeliveryTimer = 0;
   var presenceRefreshInFlight = false;
+  var presencePushRevision = 0;
+  var presencePushRevisions = new Map();
+  var dismissedRecommendationIds = new Set();
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -392,7 +395,9 @@
         ? body.friends.map(normalizeFriend).filter(function (friend) { return friend.id; }) : [];
       if (replaceRecommendations) {
         state.recommendations = Array.isArray(body.recommendations)
-          ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(Boolean) : [];
+          ? body.recommendations.slice(0, 3).map(normalizeRecommendation).filter(function (item) {
+            return item && !dismissedRecommendationIds.has(item.id);
+          }) : [];
         state.recommendationBusy.clear();
       }
       state.incoming = normalizeIncoming(body.incoming_invite);
@@ -675,6 +680,7 @@
     dismissedRecommendationFocusKey = next
       ? 'recommendation-dismiss-' + next.id
       : 'open-community';
+    dismissedRecommendationIds.add(recommendation.id);
     state.recommendations = remaining;
     render();
   }
@@ -825,6 +831,7 @@
     if (!userId || ['online', 'away', 'offline'].indexOf(status) === -1) return false;
     var friend = state.friends.find(function (item) { return item.id === userId; });
     if (!friend) return false;
+    presencePushRevisions.set(userId, ++presencePushRevision);
     friend.presenceStatus = status;
     friend.online = status === 'online' || status === 'away';
     friend.lastSeenAt = String(payload.last_seen_at || friend.lastSeenAt || '');
@@ -834,6 +841,7 @@
   async function refreshPresence() {
     if (!state.open || !state.loggedIn || presenceRefreshInFlight) return false;
     presenceRefreshInFlight = true;
+    var requestRevision = presencePushRevision;
     try {
       var response = await fetch('/api/community/friend-presence', { credentials: 'same-origin' });
       var body = await json(response);
@@ -850,6 +858,7 @@
       state.friends.forEach(function (friend) {
         var item = updates.get(friend.id);
         if (!item) return;
+        if ((presencePushRevisions.get(friend.id) || 0) > requestRevision) return;
         var status = String(item.presence_status);
         var online = status === 'online' || status === 'away';
         var lastSeenAt = String(item.last_seen_at || '');
@@ -986,6 +995,7 @@
     if (pendingFocusKey && state.loading && (!document.activeElement || document.activeElement === document.body)) {
       try { panel.focus({ preventScroll: true }); } catch (_) { panel.focus(); }
     }
+    if (state.open && !standalone) requestAnimationFrame(keepPanelInViewport);
   }
 
   function panelViewport() {
@@ -1019,6 +1029,20 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(value, Math.max(min, max)));
+  }
+
+  function keepPanelInViewport() {
+    if (standalone || !panel || !state.open) return;
+    var currentTop = Number.parseFloat(panel.style.top);
+    if (!Number.isFinite(currentTop)) return;
+    var rect = panel.getBoundingClientRect();
+    var viewport = panelViewport();
+    var topEdge = viewport.top + 12;
+    var bottomEdge = viewport.bottom - 12;
+    var nextTop = currentTop;
+    if (rect.bottom > bottomEdge) nextTop -= rect.bottom - bottomEdge;
+    if (rect.top < topEdge) nextTop += topEdge - rect.top;
+    if (Math.abs(nextTop - currentTop) >= 1) panel.style.top = Math.round(nextTop) + 'px';
   }
 
   function positionPanel() {
@@ -1097,6 +1121,7 @@
     previousFocus = document.activeElement;
     var generation = ++openGeneration;
     state.open = true;
+    dismissedRecommendationIds.clear();
     if (!layer) {
       revealOpenPanel(generation);
       refresh();
@@ -1195,7 +1220,8 @@
     _applyVisitStatus: applyVisitStatus, _inviteFriend: inviteFriend,
     _orphanInvitationFriends: orphanInvitationFriends,
     _applyPresenceChanged: applyPresenceChanged,
-    _refreshPresence: refreshPresence
+    _refreshPresence: refreshPresence,
+    _dismissRecommendation: dismissRecommendation
   };
   if (standalone) requestAnimationFrame(open);
   else requestAnimationFrame(refresh);
