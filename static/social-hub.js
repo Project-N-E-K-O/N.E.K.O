@@ -18,6 +18,8 @@
   var dismissedRecommendationFocusKey = '';
   // 重试时按钮会先被“读取中”卡片替换；记住焦点目标，结果出来后再还给对应按钮。
   var pendingFocusKey = '';
+  // 关注补位可能耗时；只有用户仍停在原关注按钮时才恢复，避免覆盖其新选中的控件。
+  var pendingFocusOriginKey = '';
   var incomingDeliveryKey = '';
   var incomingDeliveryTimer = 0;
   var hubRefreshRevision = 0;
@@ -750,6 +752,7 @@
       var active = document.activeElement;
       if (active && active.getAttribute &&
           active.getAttribute('data-neko-focus-key') === 'recommendation-' + recommendation.id) {
+        pendingFocusOriginKey = 'recommendation-' + recommendation.id;
         pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community';
       }
       state.recommendations = remaining;
@@ -1015,10 +1018,26 @@
       dismissedRecommendationFocusKey = '';
     }
     // 用户已把焦点移到面板外的其他控件：放弃待恢复的焦点，不再抢回来。
-    if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) pendingFocusKey = '';
+    if (pendingFocusKey && active && active !== document.body && !panel.contains(active)) {
+      pendingFocusKey = '';
+      pendingFocusOriginKey = '';
+    }
     var pendingFocusFallback = !!(pendingFocusKey && !state.loading);
-    if (pendingFocusFallback && active && panel.contains(active)) activeKey = pendingFocusKey;
-    if (!state.loading) pendingFocusKey = '';
+    if (pendingFocusFallback) {
+      var focusStayedOnOrigin = !!(pendingFocusOriginKey && activeKey === pendingFocusOriginKey);
+      var focusedNodeDisappeared = !active || active === document.body || active === panel;
+      if (focusStayedOnOrigin || focusedNodeDisappeared) activeKey = pendingFocusKey;
+      else if (active && panel.contains(active)) {
+        // 用户在补位期间主动选择了面板内的其他控件，保留其选择。
+        pendingFocusKey = '';
+        pendingFocusOriginKey = '';
+        pendingFocusFallback = false;
+      }
+    }
+    if (!state.loading) {
+      pendingFocusKey = '';
+      pendingFocusOriginKey = '';
+    }
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));

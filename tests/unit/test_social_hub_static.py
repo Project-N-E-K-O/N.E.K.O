@@ -274,8 +274,13 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "var followAccountId = state.accountId" in source
     assert "function isCurrentFollow()" in source
     assert "function dismissRecommendation(recommendation)" in source
+    assert "var pendingFocusOriginKey = '';" in source
+    assert "pendingFocusOriginKey = 'recommendation-' + recommendation.id" in source
     assert "pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community'" in source
     assert "pendingFocusFallback" in source
+    assert "activeKey === pendingFocusOriginKey" in source
+    assert "active === document.body || active === panel" in source
+    assert "用户在补位期间主动选择了面板内的其他控件" in source
     dismiss_source = source.split("function dismissRecommendation(recommendation)", 1)[1].split(
         "async function followRecommendation", 1
     )[0]
