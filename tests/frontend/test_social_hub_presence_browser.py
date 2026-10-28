@@ -134,6 +134,7 @@ class SocialHubPresenceBrowserTests(unittest.TestCase):
         }''')
 
     def test_escape_and_tab_return_focus_without_closing_panel(self):
+        self.complete_refresh()
         self.open_menu()
         self.page.keyboard.press('End')
         expect(self.page.locator('[data-neko-focus-key="presence-invisible"]')).to_be_focused()
@@ -148,6 +149,12 @@ class SocialHubPresenceBrowserTests(unittest.TestCase):
         self.page.keyboard.press('Tab')
         expect(self.page.locator(MENU)).to_have_count(0)
         expect(self.page.locator(PANEL)).to_be_visible()
+        expect(self.page.locator('[data-neko-focus-key="recommendation-rec-0"]')).to_be_focused()
+        self.page.locator(TOGGLE).focus()
+        self.page.keyboard.press('ArrowDown')
+        self.page.keyboard.press('Shift+Tab')
+        expect(self.page.locator(MENU)).to_have_count(0)
+        expect(self.page.locator('[data-neko-focus-key="open-community"]')).to_be_focused()
         self.page.keyboard.press('Escape')
         expect(self.page.locator(PANEL)).to_be_hidden()
 
