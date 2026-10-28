@@ -200,6 +200,11 @@ async function main() {
   await flush();
   assert.equal(calls.intent.length, 1);
   assert.equal(calls.intent[0].kind, 'yarn_spawn');
+  emit('neko:idle-cat1-playground-entry-request', {
+    source: 'gravity-cat-setting', trigger: 'gravity-cat-setting',
+  });
+  await flush();
+  assert.equal(calls.intent.length, 1);
 
   // Ordinary cat visits do not create a question block.  A newer peer may
   // still explicitly publish the legacy field, which remains wire-compatible.

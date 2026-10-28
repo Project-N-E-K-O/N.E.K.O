@@ -374,8 +374,8 @@ def test_cat_scene_visible_runner_is_loaded_after_chat_api_and_uses_group_resour
     assert "data-visit-cat-action'" not in scene
     assert "neko:visit-cat-geometry-changed" in scene
     assert "global.nekoVisitCatPoseSnapshots" in scene
-    queue = _function_body(scene, "queuePose")
-    assert queue.count("scene.pose.generation !== generation") == 2
+    drain = _function_body(scene, "drainPoseQueue")
+    assert drain.count("scene.pose.generation !== item.generation") == 3
 
     css = _read(CAT_SCENE_CSS)
     assert ".neko-visit-cat-world-layer" in css
@@ -406,13 +406,15 @@ def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
     assert "requestCatPose: requestCatPose" in chat
     assert "endCatVisitForModelReturn: endCatVisitForModelReturn" in chat
 
-    dispatch = _function_body(_read(IDLE_PLAYGROUND), "_dispatchNekoIdleReturnClickFromButton")
-    guard = dispatch.index("visitCatScene.guardModelReturn(commitReturn)")
-    transition = dispatch.index("window.playNekoModelCatTransition")
+    playground = _read(IDLE_PLAYGROUND)
+    dispatch = _function_body(playground, "_dispatchNekoIdleReturnClickFromButton")
+    guard_helper = _function_body(playground, "_guardNekoVisitCatReturn")
+    guard = guard_helper.index("visitCatScene.guardModelReturn(commitReturn)")
     # The transition lives inside the deferred commit closure; the guard calls
     # that closure only after exit confirmation and a successful route end.
     assert "const commitReturn = () =>" in dispatch
-    assert guard > transition
+    assert "window.playNekoModelCatTransition" in dispatch
+    assert guard >= 0 and "_guardNekoVisitCatReturn(commitReturn)" in dispatch
     assert "return commitReturn();" in dispatch
 
 

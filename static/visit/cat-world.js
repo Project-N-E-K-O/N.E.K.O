@@ -219,6 +219,7 @@
   function onPlaygroundEntryRequest(event) {
     if (!state.active || state.ending) return;
     var detail = event && event.detail ? event.detail : {};
+    if (detail.trigger !== 'cat1-question-mark') return;
     var rect = detail.questionBlockScreenRect;
     var point = rect && Number.isFinite(Number(rect.left)) && Number.isFinite(Number(rect.top))
       ? pointFromEvent({

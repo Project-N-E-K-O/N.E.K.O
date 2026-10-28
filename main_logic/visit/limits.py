@@ -24,8 +24,8 @@
       ``VISIT_PEER_RECV_MSGS_PER_S``;
     * message level (``admit``): ``ctl`` <= ``VISIT_PEER_CTL_PER_S``/s,
       ``lossy`` <= ``VISIT_PEER_LOSSY_PER_S``/s, latest-wins cat ``motion``
-      <= ``VISIT_PEER_MOTION_PER_S``/s, cat shared ``world``
-      <= ``VISIT_PEER_WORLD_PER_S``/s, and ``text`` through a token
+      <= ``VISIT_PEER_MOTION_PER_S``/s, and separate reliable/lossy cat shared
+      world channels <= ``VISIT_PEER_WORLD_PER_S``/s each; ``text`` uses a token
       bucket refilling ``VISIT_INBOUND_TEXT_REFILL_PER_S``/s (= 20 per 10 s)
       capped at ``VISIT_INBOUND_TEXT_BURST`` plus a per-visit hard cap
       ``VISIT_INBOUND_TEXT_MAX``.
@@ -98,18 +98,19 @@ class RateChannel(str, Enum):
     LOSSY = "lossy"
     MOTION = "motion"
     WORLD = "world"
+    WORLD_RELIABLE = "world_reliable"
 
 
 # cmd 1 = ctl (non-text); only text in cmd 2 uses the TEXT bucket, while line_delta/line_abort use frame buckets only; cmd 3 = lossy.
 _CTL_TYPES = frozenset({
-    "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent", "cat_world_commit",
-    "ack", "hb", "state", "wrap_up", "leave",
+    "hello", "ready", "cat_action", "cat_pose_commit", "ack", "hb", "state", "wrap_up", "leave",
 })
 _LOSSY_TYPES = frozenset({"typing", "stats"})
 _MOTION_TYPES = frozenset({"cat_motion"})
 _WORLD_TYPES = frozenset({
     "cat_world_pointer", "cat_world_frame",
 })
+_WORLD_RELIABLE_TYPES = frozenset({"cat_world_intent", "cat_world_commit"})
 _FRAME_ONLY_TYPES = frozenset({"line_delta", "line_abort"})
 
 
@@ -127,6 +128,8 @@ def channel_for(t: str, cmd: int | None = None) -> RateChannel | None:
         return RateChannel.LOSSY
     if t in _MOTION_TYPES:
         return RateChannel.MOTION
+    if t in _WORLD_RELIABLE_TYPES:
+        return RateChannel.WORLD_RELIABLE
     if t in _WORLD_TYPES:
         return RateChannel.WORLD
     if t in _FRAME_ONLY_TYPES:
@@ -221,6 +224,7 @@ class _SenderState:
     lossy: TokenBucket
     motion: TokenBucket
     world: TokenBucket
+    world_reliable: TokenBucket
     text: TokenBucket
     text_accepted: int = 0
     dropped: dict[str, int] = field(default_factory=dict)
@@ -281,6 +285,7 @@ class PeerRateLimiter:
                 lossy=TokenBucket.full(self._lossy_per_s, self._lossy_per_s, now),
                 motion=TokenBucket.full(self._motion_per_s, self._motion_per_s, now),
                 world=TokenBucket.full(self._world_per_s, self._world_per_s, now),
+                world_reliable=TokenBucket.full(self._world_per_s, self._world_per_s, now),
                 text=TokenBucket.full(self._text_refill, self._text_burst, now),
             )
             self._senders[sender] = st
@@ -332,7 +337,8 @@ class PeerRateLimiter:
             st.text_accepted += 1
             return _ALLOWED
         bucket = (st.ctl if ch is RateChannel.CTL else st.motion if ch is RateChannel.MOTION
-                  else st.world if ch is RateChannel.WORLD else st.lossy)
+                  else st.world if ch is RateChannel.WORLD
+                  else st.world_reliable if ch is RateChannel.WORLD_RELIABLE else st.lossy)
         if not bucket.take(1, t):
             return self._drop(st, f"{ch.value}_rate", t, streak=False)
         return _ALLOWED

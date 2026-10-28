@@ -682,6 +682,34 @@ test('manual gravity setting immediately enters visible CAT1 through the existin
   assert.deepEqual(releases, ['gravity-cat-disabled']);
 });
 
+test('cat visits keep local Playground gravity but register only the local cat body', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const starts = [];
+  r.window.nekoVisitCatScene = { isActive: () => true };
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  r.context._startNekoIdleCat1PlaygroundDrop = (button, detail, options) => {
+    starts.push({ button, detail, options });
+    return true;
+  };
+  r.emit('neko:idle-cat1-playground-entry-request', {
+    source: 'gravity-cat-setting', trigger: 'gravity-cat-setting',
+  });
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].button, r.button);
+  assert.equal(starts[0].options.catOnly, true);
+
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  const register = source.slice(
+    source.indexOf('function _registerNekoIdleCat1PlaygroundPhysicsBodies'),
+    source.indexOf('function _setNekoIdleCat1PlaygroundBodyPosition')
+  );
+  assert.ok(register.indexOf('if (options.catOnly)') < register.indexOf(
+    'const target = _getNekoIdleCat1PairMoveChatTarget()'
+  ));
+});
+
 test('gravity preference on an ordinary model waits for active CAT1 and ignores a late entry after OFF', () => {
   const r = runtime();
   const { api, entries } = installPlaygroundSetting(r);

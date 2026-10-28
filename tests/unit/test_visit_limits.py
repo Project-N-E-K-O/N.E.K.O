@@ -88,6 +88,7 @@ def test_text_visit_cap():
     (RateChannel.LOSSY, VISIT_PEER_LOSSY_PER_S, "lossy_rate"),
     (RateChannel.MOTION, VISIT_PEER_MOTION_PER_S, "motion_rate"),
     (RateChannel.WORLD, VISIT_PEER_WORLD_PER_S, "world_rate"),
+    (RateChannel.WORLD_RELIABLE, VISIT_PEER_WORLD_PER_S, "world_reliable_rate"),
 ])
 def test_ctl_and_lossy_per_second(channel, rate, reason):
     clock = FakeClock()
@@ -109,6 +110,19 @@ def test_senders_are_independent():
         lim.admit("g_a", "ctl")
     assert not lim.admit("g_a", "ctl").allowed
     assert lim.admit("h_b", "ctl").allowed
+
+
+def test_reliable_world_actions_do_not_compete_with_ctl_or_lossy_world():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_PEER_CTL_PER_S):
+        assert lim.admit("g_a", RateChannel.CTL).allowed
+    for _ in range(VISIT_PEER_WORLD_PER_S):
+        assert lim.admit("g_a", RateChannel.WORLD).allowed
+    assert all(
+        lim.admit("g_a", RateChannel.WORLD_RELIABLE).allowed
+        for _ in range(6)
+    )
 
 
 def test_explicit_now_overrides_clock():
@@ -172,8 +186,8 @@ def test_channel_mapping():
     assert channel_for("cat_pose_commit") is RateChannel.CTL
     assert channel_for("typing") is RateChannel.LOSSY
     assert channel_for("cat_motion") is RateChannel.MOTION
-    assert channel_for("cat_world_intent") is RateChannel.CTL
-    assert channel_for("cat_world_commit") is RateChannel.CTL
+    assert channel_for("cat_world_intent") is RateChannel.WORLD_RELIABLE
+    assert channel_for("cat_world_commit") is RateChannel.WORLD_RELIABLE
     assert channel_for("cat_world_pointer") is RateChannel.WORLD
     assert channel_for("cat_world_frame") is RateChannel.WORLD
     assert channel_for("line_delta") is None

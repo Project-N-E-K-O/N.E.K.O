@@ -860,7 +860,7 @@ function _captureNekoIdleCat1PlaygroundStartPositions(state) {
     return snapshot;
 }
 
-function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
+function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {}) {
     const state = _getNekoIdleCat1PlaygroundDropState(button);
     const container = _getNekoIdleReturnContainerFromButton(button);
     if (!state || !container) return false;
@@ -876,6 +876,10 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button) {
         visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS
     });
     if (body) state.bodies.set(body.id, body);
+    if (options.catOnly) {
+        state.start = _captureNekoIdleCat1PlaygroundStartPositions(state);
+        return state.bodies.size > 0;
+    }
 
     const target = _getNekoIdleCat1PairMoveChatTarget();
     if (target && target.mode === 'dom' && target.shell) {
@@ -1988,13 +1992,15 @@ function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail) {
     return true;
 }
 
-function _startNekoIdleCat1PlaygroundDrop(button, detail) {
+function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {}) {
     if (!button) return false;
     if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
     const state = _acquireNekoIdleCat1PlaygroundDropLifecycle(button, detail);
     if (!state) return false;
     _setNekoIdleCat1PlaygroundCatAirArt(button);
-    if (!_registerNekoIdleCat1PlaygroundPhysicsBodies(button)) {
+    if (!_registerNekoIdleCat1PlaygroundPhysicsBodies(button, {
+        catOnly: !!options.catOnly
+    })) {
         _releaseNekoIdleCat1PlaygroundDropLifecycle(button, 'no-bodies');
         return false;
     }
@@ -2007,7 +2013,13 @@ function _startNekoIdleCat1PlaygroundDrop(button, detail) {
 function _handleNekoIdleCat1PlaygroundEntryRequest(event) {
     const visitCatScene = window.nekoVisitCatScene;
     if (visitCatScene && typeof visitCatScene.isActive === 'function' && visitCatScene.isActive()) {
-        return false;
+        const button = _getNekoIdleCat1PlaygroundEntryButton();
+        if (!button) return false;
+        const detail = event && event.detail ? event.detail : {};
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
+        _clearNekoIdleCat1QuestionMark(button);
+        _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
+        return _startNekoIdleCat1PlaygroundDrop(button, detail, { catOnly: true });
     }
     const button = _getNekoIdleCat1PlaygroundEntryButton();
     if (!button) return false;

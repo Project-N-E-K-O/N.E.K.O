@@ -315,7 +315,7 @@ VISIT_PEER_MOTION_PER_S = 12
 """Per-sender receive limit for latest-wins cat motion samples."""
 
 VISIT_PEER_WORLD_PER_S = 20
-"""Per-sender receive limit for latest-wins cat shared-world pointer/frame messages."""
+"""Per-sender limit for each reliable and latest-wins cat shared-world channel."""
 
 VISIT_PEER_RECV_BPS = 10240
 """Per-sender receive byte limit at the ``recv`` entry (10 KB/s)."""

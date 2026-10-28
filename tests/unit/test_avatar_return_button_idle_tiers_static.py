@@ -241,7 +241,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _getNekoIdleCat1PlaygroundBodyCollisionRect(body)" in source
     assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
     assert "function _refreshNekoIdleCat1PlaygroundViewportBottom()" in source
-    assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)" in source
+    assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})" in source
+    assert "if (options.catOnly)" in source
     assert "function _stepNekoIdleCat1PlaygroundPhysics(button, now)" in source
     assert "disabledCapabilities: new Set(" in source
     assert "'question-mark-keyboard'" in source
@@ -275,7 +276,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
 
     register_block = _source_slice_between(
         source,
-        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)",
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})",
         "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
         "cat1 playground register physics bodies",
     )
@@ -352,7 +353,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     question_block_clone_block = _source_slice_between(
         source,
         "function _createNekoIdleCat1PlaygroundQuestionBlockClone(rect, button)",
-        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)",
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})",
         "cat1 playground question block clone",
     )
     assert "document.createElement('button')" in question_block_clone_block
@@ -606,7 +607,7 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     click_block = _source_slice_between(
         source,
         "function _handleNekoIdleCat1PlaygroundCatClick(button, event)",
-        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {})",
         "cat1 playground cat click",
     )
     assert "state.suppressClickBodyId === 'cat'" in click_block
@@ -715,18 +716,18 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "return false;" in entry_block
     assert "_createNekoIdleCat1PlaygroundQuestionBlockCloneFromScreenRect(detail.questionBlockScreenRect, button)" in entry_block
     assert "_startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in entry_block
-    assert "_startNekoIdleCat1PlaygroundDrop(button," not in entry_block
+    assert "_startNekoIdleCat1PlaygroundDrop(button, detail, { catOnly: true })" in entry_block
 
     start_drop_block = _source_slice_between(
         source,
-        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {})",
         "function _handleNekoIdleCat1PlaygroundEntryRequest(event)",
         "cat1 playground start drop",
     )
     _assert_source_order(
         start_drop_block,
         "playground pointer listeners are installed before initial physics can settle",
-        "if (!_registerNekoIdleCat1PlaygroundPhysicsBodies(button)) {",
+        "if (!_registerNekoIdleCat1PlaygroundPhysicsBodies(button, {",
         "_installNekoIdleCat1PlaygroundPointerListeners(button);",
         "_startNekoIdleCat1PlaygroundPhysics(button);",
     )
@@ -761,7 +762,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     wait_block = _source_slice_between(
         source,
         "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)",
-        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {})",
         "cat1 playground yarn wait before drop",
     )
     assert "_requestNekoIdleCat1PlaygroundYarnTarget(detail);" in wait_block
