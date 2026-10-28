@@ -14,6 +14,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import types
 import uuid
 import weakref
@@ -70,6 +71,7 @@ from plugin.settings import (
     PROCESS_TERMINATE_TIMEOUT,
     QUEUE_GET_TIMEOUT,
 )
+from utils import process_creation
 
 
 def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
@@ -1980,12 +1982,14 @@ class PluginHost:
         if not keep_launch_options and options is not None:
             options.clear()
 
-    def _start_process(self) -> None:
+    def _start_process(
+        self, *, deadline: float | None = None, cancel_event: threading.Event | None = None,
+    ) -> None:
         # The fork hook must retain this child's own launch options while
         # clearing credentials of every other host, including in-flight starts.
         _FORKING_HOST.host = self
         try:
-            self.process.start()
+            process_creation.start(self.process, deadline=deadline, cancel_event=cancel_event)
         finally:
             del _FORKING_HOST.host
 
@@ -2016,6 +2020,8 @@ class PluginHost:
             await self.comm_manager.prepare_startup_wait()
 
         start_task: asyncio.Task | None = None
+        creation_cancelled = threading.Event()
+        creation_deadline: float | None = None
         try:
             from config.network import resolve_user_plugin_base
 
@@ -2028,9 +2034,14 @@ class PluginHost:
                 "token": self._model_gateway_token,
             })
             _refresh_child_storage_layout_env(self.logger)
-            start_task = asyncio.create_task(asyncio.to_thread(self._start_process))
+            if should_wait_for_startup:
+                creation_deadline = time.monotonic() + float(startup_timeout)
+            start_task = asyncio.create_task(asyncio.to_thread(
+                self._start_process, deadline=creation_deadline, cancel_event=creation_cancelled,
+            ))
             await asyncio.shield(start_task)
         except asyncio.CancelledError:
+            creation_cancelled.set()
             self._revoke_model_gateway_access()
             # Canceling to_thread does not stop spawn or its argument pickling.
             # Keep launch options and transport intact until the worker exits,
@@ -2044,7 +2055,7 @@ class PluginHost:
                     continue
             cleanup_task.result()
             raise
-        except BaseException:
+        except BaseException as exc:
             self._revoke_model_gateway_access()
             self.logger.error(
                 "Plugin {} process failed to start, shutting down comm_manager",
@@ -2056,6 +2067,10 @@ class PluginHost:
             except Exception:
                 pass
             await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            if isinstance(exc, process_creation.ProcessCreationTimeout):
+                raise PluginLifecycleError(
+                    self.plugin_id, "startup", f"startup timed out after {startup_timeout}s",
+                ) from exc
             raise
         finally:
             self._model_gateway_starting = False
@@ -2093,8 +2108,11 @@ class PluginHost:
 
         if should_wait_for_startup:
             try:
+                remaining = creation_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("startup deadline expired during process creation")
                 startup_result = await self.comm_manager.wait_for_startup(
-                    timeout=float(startup_timeout),
+                    timeout=remaining,
                     allow_startup_error=startup_failure_policy != "fail",
                 )
                 if isinstance(startup_result, dict) and startup_result.get("startup_error"):

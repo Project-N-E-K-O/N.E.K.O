@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
@@ -32,6 +33,7 @@ from plugin._types.isolated_metadata import (
 )
 from plugin.core import registry as registry_module
 from plugin.core.state import state
+from utils import process_creation
 
 
 _RESULT_PREFIX = "NEKO_PLUGIN_METADATA_RESULT:"
@@ -65,7 +67,8 @@ from plugin.server.application.plugins._metadata_scan_settings import (
 
 # A global semaphore once limited live metadata interpreters because discovery concurrently rescanned
 # over a dozen plugins, each occupying about 66 MB. Discovery no longer scans, removing that fan-out: the only
-# caller is start_plugin, serialized by the plugin operation lock.
+# caller is start_plugin. An autostart wave can scan/start several plugins at
+# once; only their OS creation windows share process_creation's short lock.
 #
 # Also removed the rule reclassifying timeouts as budget issues after waiting over 50 ms for a slot;
 # it presupposed callers queuing for slots.
@@ -500,6 +503,7 @@ def _scan_plugin_metadata_uncached(
             "ScanBudgetExhausted",
             "Plugin metadata scan skipped: discovery time budget exhausted",
         )
+    deadline = time.monotonic() + timeout
     request = {
         "plugin_id": plugin_id,
         "module_path": module_path,
@@ -519,14 +523,19 @@ def _scan_plugin_metadata_uncached(
         popen_kwargs["start_new_session"] = True
 
     try:
-        process = subprocess.Popen(
+        process = process_creation.popen(
             _metadata_worker_command(),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(project_root),
+            deadline=deadline,
             **popen_kwargs,
         )
+    except process_creation.ProcessCreationTimeout as exc:
+        raise PluginMetadataScanError(
+            "TimeoutExpired", f"Plugin metadata scan timed out after {timeout:g}s",
+        ) from exc
     except OSError as exc:
         raise PluginMetadataScanError(type(exc).__name__, str(exc)) from exc
 
@@ -537,9 +546,13 @@ def _scan_plugin_metadata_uncached(
         timed_out.set()
         _terminate_worker_tree(process, cleanup_lock)
 
-    timeout_timer = threading.Timer(timeout, _expire_worker)
+    remaining = deadline - time.monotonic()
+    timeout_timer = threading.Timer(max(0.0, remaining), _expire_worker)
     timeout_timer.daemon = True
-    timeout_timer.start()
+    if remaining <= 0:
+        _expire_worker()
+    else:
+        timeout_timer.start()
     try:
         if process.stdin is None or process.stdout is None:
             raise OSError("metadata worker pipes are unavailable")
