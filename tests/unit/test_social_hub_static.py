@@ -326,3 +326,8 @@ def test_header_link_hidden_without_bridge_and_network_errors_are_localized():
     # 只有服务端给出的原因原样显示；网络异常用本地化的“连不上”文案。
     assert "serverError.fromServer = true" in source
     assert "error && error.fromServer && error.message" in source
+    # 网络异常时回退到本地化的 communityUnavailable，而不是浏览器原文。
+    assignment = source[source.index("state.loadError = error && error.fromServer"):]
+    assignment = assignment[:assignment.index(";")]
+    assert "tr('visit.socialHub.communityUnavailable'" in assignment
+    assert "error.message || " not in assignment
