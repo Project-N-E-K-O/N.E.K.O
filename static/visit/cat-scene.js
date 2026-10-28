@@ -631,19 +631,37 @@
     return true;
   }
 
+  function releaseReturnReconcile(visitId) {
+    if (!scene.active || scene.visitId !== visitId) return;
+    clearReturnReconcile();
+    // Keep the confirmed commit: a late ended frame must still honor return-to-model
+    // for users who were already cats before this visit.
+    scene.returning = false;
+    setStatus(scene.phase === 'ending'
+      ? t('visit.catScene.ending', '正在退出串门…')
+      : t('visit.catScene.active', '正在串门'));
+    updateControls();
+  }
+
   function scheduleReturnReconcile(visitId) {
     clearReturnReconcile();
     var pendingReturn = scene.pendingModelReturn;
     if (!scene.active || scene.visitId !== visitId || !pendingReturn
-        || pendingReturn.visitId !== visitId
-        || pendingReturn.reconcileAttempts >= RETURN_RECONCILE_ATTEMPTS) return;
+        || pendingReturn.visitId !== visitId) return;
+    if (pendingReturn.reconcileAttempts >= RETURN_RECONCILE_ATTEMPTS) {
+      releaseReturnReconcile(visitId);
+      return;
+    }
     scene.returnReconcileTimer = setTimeout(function () {
       scene.returnReconcileTimer = 0;
       var current = scene.pendingModelReturn;
       if (!scene.active || scene.visitId !== visitId || !current || current.visitId !== visitId) return;
       current.reconcileAttempts += 1;
       var chat = global.nekoVisitChat;
-      if (!chat || typeof chat.confirmCatVisitEnded !== 'function') return;
+      if (!chat || typeof chat.confirmCatVisitEnded !== 'function') {
+        releaseReturnReconcile(visitId);
+        return;
+      }
       Promise.resolve(chat.confirmCatVisitEnded(visitId)).then(function (ended) {
         if (!scene.active || scene.visitId !== visitId || scene.pendingModelReturn !== current) return;
         if (ended) {
@@ -806,6 +824,7 @@
     if (!scene.active) return false;
     if (scene.returning) return true;
     var visitId = scene.visitId;
+    var previousPendingReturn = scene.pendingModelReturn;
     scene.returning = true;
     updateControls();
     confirmReturn().then(function (confirmed) {
@@ -827,7 +846,8 @@
     }).then(function (completed) {
       if (!completed && scene.active && scene.visitId === visitId) {
         clearReturnReconcile();
-        scene.pendingModelReturn = null;
+        scene.pendingModelReturn = previousPendingReturn
+          && previousPendingReturn.visitId === visitId ? previousPendingReturn : null;
         scene.returning = false;
         setStatus(t('visit.catScene.active', '正在串门'));
         updateControls();

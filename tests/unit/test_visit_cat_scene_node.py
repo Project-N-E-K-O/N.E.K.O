@@ -652,6 +652,35 @@ const report = {};
     commits: reconciledCommits,
   };
 
+  const exhausted = createHarness();
+  exhausted.state('started', {
+    cat_scene: 2,
+    self_cat_asset: 'dev_neko',
+    peer_cat_asset: 'yui_neko',
+  });
+  let exhaustedCommits = 0;
+  exhausted.confirmAnswers.push(true);
+  exhausted.reconcileAnswers.push(false, false, false, false, false, false);
+  exhausted.win.nekoVisitCatScene.guardModelReturn(() => { exhaustedCommits += 1; });
+  await exhausted.settle();
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    exhausted.advance(2000);
+    await exhausted.settle();
+  }
+  const exhaustedReturnButton = exhausted.root().querySelector('.neko-visit-cat-return');
+  const exhaustedButtonReenabled = exhaustedReturnButton.disabled === false;
+  exhausted.confirmAnswers.push(false);
+  exhausted.win.nekoVisitCatScene.guardModelReturn(() => { exhaustedCommits += 100; });
+  await exhausted.settle();
+  exhausted.state('ended');
+  report.exhausted_return_reconcile = {
+    calls: exhausted.reconcileCalls.length,
+    button_reenabled: exhaustedButtonReenabled,
+    confirmations: exhausted.confirms.length,
+    end_calls: exhausted.endCalls.length,
+    commits: exhaustedCommits,
+  };
+
   h.state('started', {
     cat_scene: 2,
     self_cat_asset: 'dev_neko',
@@ -867,6 +896,16 @@ def test_model_return_reconciles_when_the_ended_frame_is_lost(report):
         "calls": ["A" * 22, "A" * 22],
         "active_after_ending_snapshot": True,
         "active_after_idle_snapshot": False,
+        "commits": 1,
+    }
+
+
+def test_exhausted_reconciliation_releases_retry_without_losing_late_commit(report):
+    assert report["exhausted_return_reconcile"] == {
+        "calls": 6,
+        "button_reenabled": True,
+        "confirmations": 2,
+        "end_calls": 1,
         "commits": 1,
     }
 

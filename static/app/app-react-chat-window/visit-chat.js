@@ -2683,16 +2683,27 @@
         visitId = String(visitId || '');
         var catgirl = catModelReturnProbe.visitId === visitId ? catModelReturnProbe.catgirl : '';
         if (!VISIT_ID_RE.test(visitId) || !catgirl) return false;
+        var seqAtRequest = stateFrameSeq;
+        var localVisitAtRequest = visit.visitId;
         var result = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
         if (result.status !== 200 || !result.body || typeof result.body !== 'object') return false;
-        if (result.body.active === false) {
-            catModelReturnProbe = { visitId: '', catgirl: '' };
-            return true;
-        }
         var activeVisitId = String(result.body.visit_id || '');
-        var ended = result.body.active === true && VISIT_ID_RE.test(activeVisitId) && activeVisitId !== visitId;
-        if (ended) catModelReturnProbe = { visitId: '', catgirl: '' };
-        return ended;
+        var ended = result.body.active === false
+            || (result.body.active === true && VISIT_ID_RE.test(activeVisitId) && activeVisitId !== visitId);
+        if (!ended || currentCatgirl() !== catgirl) return false;
+        if ((stateFrameSeq !== seqAtRequest && visit.visitId !== localVisitAtRequest)
+                || (visit.visitId && visit.visitId !== visitId)) return false;
+        var hadLocalVisit = visit.visitId === visitId && inVisit();
+        var endedSide = visit.side;
+        applyState(result.body, false);
+        if (result.body.active === false) {
+            if (!hadLocalVisit) relayEndedToDisplay(visitId, endedSide);
+            dispatchVisitStatus({ action: 'ended', visit_id: visitId });
+        } else {
+            dispatchVisitStatus();
+        }
+        catModelReturnProbe = { visitId: '', catgirl: '' };
+        return true;
     }
 
     async function cancelDirectInvitation(visitId) {

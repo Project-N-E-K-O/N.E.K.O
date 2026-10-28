@@ -409,6 +409,9 @@ def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
     assert "'/api/visit/state?catgirl='" in reconcile
     assert "result.body.active === false" in reconcile
     assert "activeVisitId !== visitId" in reconcile
+    assert "stateFrameSeq !== seqAtRequest" in reconcile
+    assert "applyState(result.body, false)" in reconcile
+    assert "dispatchVisitStatus({ action: 'ended', visit_id: visitId })" in reconcile
     assert "confirmCatVisitEnded: confirmCatVisitEnded" in chat
 
     playground = _read(IDLE_PLAYGROUND)

@@ -1347,23 +1347,53 @@ const report = {};
     } });
     const ending = createHarness({ routes: {
       '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
-      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'ending' } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host' } }),
     } });
     const replaced = createHarness({ routes: {
       '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
-      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID2, phase: 'active' } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID2, phase: 'active', side: 'host' } }),
     } });
     const failed = createHarness({ routes: {
       '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
       [stateUrl]: async () => ({ status: 503, body: {} }),
     } });
+    [idle, ending, replaced, failed].forEach((h) => h.state('started'));
     await Promise.all([idle, ending, replaced, failed].map((h) => h.chat.endCatVisitForModelReturn(VID)));
-    idle.win.lanlan_config.lanlan_name = '小橘';
+
+    const switched = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    switched.state('started');
+    await switched.chat.endCatVisitForModelReturn(VID);
+    switched.win.lanlan_config.lanlan_name = '小橘';
+
+    let releaseState;
+    const stateGate = new Promise((resolve) => { releaseState = resolve; });
+    const raced = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => {
+        await stateGate;
+        return { status: 200, body: { active: false, visit_id: null, phase: null } };
+      },
+    } });
+    raced.state('started');
+    await raced.chat.endCatVisitForModelReturn(VID);
+    const racedProbe = raced.chat.confirmCatVisitEnded(VID);
+    await raced.settle();
+    raced.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 2 });
+    releaseState();
     report.cat_return_reconcile = {
       idle: await idle.chat.confirmCatVisitEnded(VID),
       ending: await ending.chat.confirmCatVisitEnded(VID),
       replaced: await replaced.chat.confirmCatVisitEnded(VID),
       failed: await failed.chat.confirmCatVisitEnded(VID),
+      switched: await switched.chat.confirmCatVisitEnded(VID),
+      raced: await racedProbe,
+      idle_active: idle.chat.isActive(),
+      idle_relayed_ended: idle.relayFrames.some((frame) => frame.action === 'ended' && frame.visit_id === VID),
+      replaced_visit: replaced.chat._test.state().visit.visitId,
+      raced_visit: raced.chat._test.state().visit.visitId,
     };
   }
   // ── 切换角色：上一位的串门 UI 状态清掉，不往新角色的聊天里补结束消息 ──
@@ -1844,6 +1874,12 @@ def test_cat_model_return_reconciliation_requires_authoritative_end(report):
         "ending": False,
         "replaced": True,
         "failed": False,
+        "switched": False,
+        "raced": False,
+        "idle_active": False,
+        "idle_relayed_ended": True,
+        "replaced_visit": "B" * 22,
+        "raced_visit": "B" * 22,
     }
 
 
