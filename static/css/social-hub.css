@@ -95,6 +95,7 @@ body.neko-social-hub-standalone {
 
 .neko-social-hub-header {
   flex: 0 0 auto;
+  flex-wrap: wrap;
   min-height: 44px;
   gap: 10px;
   padding: 0 2px 14px;
@@ -124,6 +125,7 @@ body.neko-social-hub-standalone {
   line-height: 1.15;
   font-weight: 750;
   letter-spacing: -.02em;
+  white-space: nowrap;
 }
 
 .neko-social-hub-community-link {

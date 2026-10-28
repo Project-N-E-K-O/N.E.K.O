@@ -13,6 +13,8 @@
   var layer = null;
   var panel = null;
   var previousFocus = null;
+  // 重试时按钮会先被“读取中”卡片替换；记住焦点目标，结果出来后再还给对应按钮。
+  var pendingFocusKey = '';
   var incomingDeliveryKey = '';
   var incomingDeliveryTimer = 0;
 
@@ -722,7 +724,10 @@
       hint = state.loadError && state.loadError !== tr('visit.socialHub.readFailed', '读取好友失败')
         ? state.loadError : tr('visit.socialHub.loadFailedHint', '检查一下网络，再试一次');
       actionLabel = tr('visit.socialHub.retry', '重试');
-      actionHandler = function () { refresh(); };
+      actionHandler = function () {
+        pendingFocusKey = 'empty-retry';
+        refresh();
+      };
       actionKey = 'empty-retry';
     } else if (!state.loggedIn) {
       kind = 'login';
@@ -761,6 +766,8 @@
     var oldScrollTop = oldScroller ? oldScroller.scrollTop : 0;
     var active = document.activeElement;
     var activeKey = active && panel.contains(active) ? active.getAttribute('data-neko-focus-key') : '';
+    if (!activeKey && pendingFocusKey && !state.loading) activeKey = pendingFocusKey;
+    if (!state.loading) pendingFocusKey = '';
     panel.replaceChildren();
     var header = el('header', 'neko-social-hub-header');
     header.appendChild(image('/static/icons/neko_community_on.png', '', 'neko-social-hub-logo'));
@@ -793,6 +800,10 @@
         try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
         return true;
       });
+    }
+    // 读取中按钮暂时不存在，先把焦点留在面板上，避免掉到 body。
+    if (pendingFocusKey && state.loading && !panel.contains(document.activeElement)) {
+      try { panel.focus({ preventScroll: true }); } catch (_) { panel.focus(); }
     }
     if (state.open && !standalone) requestAnimationFrame(positionPanel);
   }
