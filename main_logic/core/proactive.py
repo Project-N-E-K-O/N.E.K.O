@@ -31,7 +31,7 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
-from services.chat_sync.source import mark_tool_turn, mark_turn_origin
+from services.chat_sync.source import mark_turn_origin
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -655,7 +655,7 @@ class ProactiveMixin:
             # expected_speech_id already passed through phase2 and was just validated;
             # use that stable snapshot.
             commit_sid = expected_speech_id or self.current_speech_id
-            # Pin ordinary proactive output separately from Agent callback turns.
+            # Pin ordinary proactive output to its own origin.
             mark_turn_origin(self, commit_sid, 'proactive')
             # Enter COMMITTING. send_lanlan_response rechecks after its own final await and
             # before synchronous queue writing, preventing stale bubbles even if UI
@@ -1523,9 +1523,6 @@ class ProactiveMixin:
                     }
                     if events_before_text:
                         inject_kwargs["events_before_text"] = events_before_text
-                    # The explicit callback origin belongs only to this rotated speech ID.
-                    mark_turn_origin(self, self.current_speech_id, 'agent')
-                    mark_tool_turn(self, self.current_speech_id)
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,
@@ -1998,8 +1995,6 @@ class ProactiveMixin:
                     callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
-            # Freeze origin before asynchronous callback delivery can interleave.
-            mark_turn_origin(self, proactive_sid, 'agent')
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
             # with text_start/text_end. text_end clears the manager's in-flight

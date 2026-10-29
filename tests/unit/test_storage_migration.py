@@ -4737,11 +4737,20 @@ def test_a_locked_file_backup_keeps_the_transaction_and_completes(tmp_path, monk
 @pytest.mark.parametrize('from_anchor', [False, True])
 async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(tmp_path, from_anchor):
     """Moving storage preserves queued originals/deletes without promoting the retained copy."""
+    from contextlib import closing
+    from dataclasses import asdict
+    import hashlib
+    import json
+    import sqlite3
     from services.chat_sync.ledger import ChatDomain, ChatOriginal
     from services.chat_sync.runtime import DesktopChatSyncRuntime
     from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.writer import WriterQuarantined
+    from services.chat_sync.writer import WriterQuarantined, store_connection
     from tests.unit.test_chat_sync_runtime import BINDING, OWNER, UID, capture
+
+    def rows(path, query):
+        with closing(sqlite3.connect(path)) as conn:
+            return conn.execute(query).fetchall()
 
     config_manager = (_make_anchor_root_config_manager if from_anchor else _make_config_manager)(tmp_path)
     source_root = config_manager.app_docs_dir
@@ -4755,14 +4764,19 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
     runtime.state.activate(runtime.state.prepare_binding(domain), BINDING)
     source.commit(OWNER, UID, 'b' * 32, ChatOriginal('user', 'pending raw 中文🙂'))
     source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'local trusted history'))
-    source.commit_local_reply(UID, 'd' * 32, ChatOriginal('assistant', 'local tool reply'), 'tool')
+    reply = json.dumps(asdict(ChatOriginal('assistant', 'local tool reply')), ensure_ascii=False, sort_keys=True,
+                       separators=(',', ':'), allow_nan=False)
+    with closing(store_connection(source.path)) as conn, conn:
+        # Local-only replies saved by an earlier release move with the source file.
+        conn.execute('INSERT INTO source_local_replies (record_id,uid,origin,original,original_hash) VALUES (?,?,?,?,?)',
+                     ('d' * 32, UID, 'tool', reply, hashlib.sha256(reply.encode('utf-8')).hexdigest()))
     capture(runtime)
-    batch = runtime.ledger.seal_batch(domain, byte_budget=10000)
+    pending_originals = runtime.ledger.pending(domain)
     deletion = runtime.ledger.queue_deletion(domain, ['e' * 32])
     request = {'requestId': 'f' * 32, 'epoch': list(runtime.writer.epoch()), 'canonical': '{}'}
     runtime.state.queue_new_role(UID, request)
     runtime.state.save_choice(UID, True)
-    pending_sources = source.pending(200)
+    pending_sources = rows(source.path, 'SELECT * FROM source_originals WHERE pending=1 ORDER BY rowid')
     saved_request = runtime.state.new_role(UID)
     await runtime.close()
     originals = {path.name: path.read_bytes() for path in (source_root / 'chat_sync').iterdir() if path.is_file()}
@@ -4782,10 +4796,11 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
         assert reopened.state.binding(UID)['enabled']
         assert reopened.state.choices()[UID] is True
         assert reopened.state.new_role(UID) == saved_request
-        assert reopened.ledger.seal_batch(domain, byte_budget=10000) == batch
-        assert reopened.ledger.pending_deletions(domain) == [deletion]
+        assert reopened.ledger.pending(domain) == pending_originals
+        assert rows(reopened.ledger.path, 'SELECT deletion_id, payload FROM chat_deletions') == [
+            (deletion.deletion_id, deletion.payload)]
         moved_source = ChatOriginalSource(target_root / 'chat_sync' / 'sources.sqlite3')
-        assert moved_source.pending(200) == pending_sources
+        assert rows(moved_source.path, 'SELECT * FROM source_originals WHERE pending=1 ORDER BY rowid') == pending_sources
         assert moved_source.read_local_replies(moved_source.path, UID)[0]['text'] == 'local tool reply'
         # The retained source is an old snapshot, not another writable device.
         with pytest.raises(WriterQuarantined):

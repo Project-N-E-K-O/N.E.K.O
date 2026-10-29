@@ -166,37 +166,10 @@ async def test_version_only_poll_reconciles_config_saved_before_baseline_commit(
 
 
 @pytest.mark.asyncio
-async def test_legacy_new_only_intent_stays_narrow_until_explicit_resave(tmp_path, config):
-    """Updating the application/recovering does not grant new access to old originals."""
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    runtime, _, _ = setup_runtime(tmp_path, ProfileService())
-    runtime.profiles.adapter = DesktopProfileAdapter(config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-    try:
-        source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'legacy old'))
-        await runtime.request_new_role_sync(UID, 'Synthetic', include_history=False)
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'approved new'))
-        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
-        await runtime._advance_history(UID); await runtime._recover_originals()
-        assert len(runtime.ledger.pending(ChatDomain(OWNER, UID))) == 1
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
-        await runtime._advance_history(UID); await runtime._recover_originals()
-        assert len(runtime.ledger.pending(ChatDomain(OWNER, UID))) == 2
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
 async def test_combined_card_consent_survives_failure_before_profile_approval(tmp_path, config, monkeypatch):
-    """An already saved card's approved history must not depend on a later profile transaction succeeding."""
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
+    """An already saved card's consent must not depend on a later profile transaction succeeding."""
     runtime, _, _ = await bound(tmp_path, config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
-        source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'approved old'))
         approve = runtime.profiles.store.approve
         def fail(*_args, **_kwargs):
             raise RuntimeError('synthetic stage interruption')
@@ -204,13 +177,10 @@ async def test_combined_card_consent_survives_failure_before_profile_approval(tm
         with pytest.raises(RuntimeError, match='synthetic stage interruption'):
             await runtime.save_character_sync_choice(UID, 'Synthetic', True)
         request = runtime.state.new_role(UID)
-        assert request and request['afterSeq'] == 0
-        # Even a later unbound row cannot enlarge the old range approved by this save.
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'later unbound'))
+        assert request
         monkeypatch.setattr(runtime.profiles.store, 'approve', approve)
         await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
-        await runtime._advance_history(UID); await runtime._recover_originals()
-        assert [json.loads(row[0])['text'] for row in runtime.ledger.pending(ChatDomain(OWNER, UID))] == ['approved old']
+        assert runtime.state.new_role(UID) is None and runtime.state.new_role_errors() == {}
     finally:
         await runtime.close()
 
@@ -732,7 +702,7 @@ async def test_inactive_initial_profile_publication_completes_without_polling_or
         assert state["pending"] == 0
         assert [request.method for request in service.profile_requests] == ["PUT"]
         assert service.profile_requests[0].content == bytes(operation["body"])
-        assert len(runtime.ledger.pending(DOMAIN)) == 1 and runtime.ledger.cursor(DOMAIN) == 0
+        assert len(runtime.ledger.pending(DOMAIN)) == 1
         assert config.saves == []
 
         # Completion must not turn an inactive role into a periodic profile reader.
@@ -748,14 +718,10 @@ async def test_inactive_initial_profile_publication_completes_without_polling_or
 async def test_saved_initial_profile_finishes_off_selection_without_consuming_history(tmp_path, config, bound_before_approval):
     """A saved first choice can finish registration/binding, while history still waits."""
     from tests.unit.test_chat_sync_runtime import select_runtime_current
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
 
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
     try:
-        source.commit_unbound(UID, "f" * 32, ChatOriginal("user", "approved history waits"))
         await runtime.request_new_role_sync(UID, "Synthetic")
         saved = runtime.state.new_role(UID)
         runtime.state.record_new_role_error(UID, saved["requestId"], "chat_sync_unavailable")
@@ -772,9 +738,7 @@ async def test_saved_initial_profile_finishes_off_selection_without_consuming_hi
         retained = runtime.state.new_role(UID)
         assert "lastError" not in retained
         assert retained["requestId"] == saved["requestId"] and retained["canonical"] == saved["canonical"]
-        assert retained["afterSeq"] == saved["afterSeq"]
-        assert source.task(UID) is None
-        assert runtime.ledger.pending(DOMAIN) == [] and runtime.ledger.cursor(DOMAIN) == 0
+        assert runtime.ledger.pending(DOMAIN) == []
         assert [request.method for request in service.profile_requests] == ["PUT"]
         assert config.saves == []
 
@@ -784,7 +748,6 @@ async def test_saved_initial_profile_finishes_off_selection_without_consuming_hi
         await runtime._start_new_role_sync(presence)
         await runtime._flights["new-role"]
         assert runtime.state.new_role(UID) is None
-        assert source.approved_tasks(UID)
         assert [request.method for request in service.profile_requests] == ["PUT"]
     finally:
         await runtime.close()
@@ -1032,10 +995,6 @@ async def test_new_role_choice_is_local_durable_and_history_current_role_only(tm
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     try:
         session['logged_in'] = False
-        from services.chat_sync.source import ChatOriginalSource
-        from services.chat_sync.ledger import ChatOriginal
-        source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'saved before login'))
         assert await runtime.request_new_role_sync(UID, 'Synthetic') == {'pending': True, 'enabled': False}
         request = runtime.state.new_role(UID)
         assert not service.requests and not runtime.state.bindings()
@@ -1043,16 +1002,13 @@ async def test_new_role_choice_is_local_durable_and_history_current_role_only(tm
         select_runtime_current(runtime, 'b' * 32)
         await runtime._start_new_role_sync('synthetic-presence')
         await runtime._flights['new-role']
-        assert service.requests == [] and source.task(UID) is None
+        assert service.requests == []
         select_runtime_current(runtime)
         session['logged_in'] = True
         presence = await runtime.session_presence_provider()
         await runtime._run_new_role_sync(UID, request, presence)
         assert runtime.state.binding(UID)['enabled']
         assert runtime.state.new_role(UID) is None
-        await runtime._advance_history(UID)
-        await runtime._recover_originals()
-        assert json.loads(runtime.ledger.pending(ChatDomain(OWNER, UID))[0][0])['text'] == 'saved before login'
         operation = runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key())
         assert operation['operation_id'] == request['requestId']
         assert json.loads(operation['body'])['profile'] == decode_character_profile(request['canonical'].encode())
@@ -1123,14 +1079,10 @@ async def test_new_role_setup_stops_before_registration_when_current_role_change
 
 
 @pytest.mark.asyncio
-async def test_old_card_choice_is_durable_and_approves_trusted_preexisting_chats(tmp_path, config):
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
+async def test_old_card_choice_is_durable_and_resumes_after_login(tmp_path, config):
     runtime, service, session = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
-        source.commit_unbound(UID, 'c' * 32, ChatOriginal('user', 'old history'))
         session['logged_in'] = False
         await runtime.save_character_sync_choice(UID, 'Synthetic', False)
         assert runtime.state.choices()[UID] is False
@@ -1138,15 +1090,9 @@ async def test_old_card_choice_is_durable_and_approves_trusted_preexisting_chats
         assert not runtime.state.new_role(UID) and service.requests == []
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
         assert service.requests == []
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'new after choice'))
         session['logged_in'] = True
         await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
-        await runtime._advance_history(UID); await runtime._recover_originals()
-        texts = [json.loads(row[0])['text'] for row in runtime.ledger.pending(ChatDomain(OWNER, UID))]
-        assert texts == ['old history', 'new after choice']
-        import sqlite3
-        with sqlite3.connect(source.path) as conn:
-            assert conn.execute('SELECT original FROM source_unbound WHERE record_id=?', ('c' * 32,)).fetchone()[0] is None
+        assert runtime.state.binding(UID)['enabled'] and runtime.state.new_role(UID) is None
     finally:
         await runtime.close()
 
@@ -1234,25 +1180,6 @@ async def test_card_save_does_not_publish_an_identical_profile_again_after_setup
 
 
 @pytest.mark.asyncio
-async def test_repeated_offline_card_save_retains_the_original_approved_chat_cutoff(tmp_path, config):
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    runtime, service, session = setup_runtime(tmp_path, ProfileService())
-    runtime.profiles.adapter = DesktopProfileAdapter(config)
-    session['logged_in'] = False
-    try:
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        first = runtime.state.new_role(UID)
-        source = ChatOriginalSource(tmp_path / 'sources.sqlite3')
-        source.commit_unbound(UID, 'f' * 32, ChatOriginal('user', 'approved offline chat'))
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        assert runtime.state.new_role(UID)['afterSeq'] == first['afterSeq']
-        assert service.requests == []
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
 async def test_changed_new_role_profile_blocks_retry_until_explicit_save(tmp_path, config):
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
@@ -1271,10 +1198,8 @@ async def test_changed_new_role_profile_blocks_retry_until_explicit_save(tmp_pat
 
 @pytest.mark.asyncio
 async def test_sync_never_depends_on_an_account_character_policy_route(tmp_path, config):
-    """A service without any character policy route still enables, uploads, pulls and syncs profiles."""
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    from tests.unit.test_chat_sync_runtime import capture, finish_automatic_flights
+    """A service without any character policy route still enables and syncs profiles."""
+    from tests.unit.test_chat_sync_runtime import finish_automatic_flights
 
     class NoPolicyService(ProfileService):
         """Model a service deployed before any account policy endpoint existed."""
@@ -1291,10 +1216,8 @@ async def test_sync_never_depends_on_an_account_character_policy_route(tmp_path,
 
     runtime, service, _ = setup_runtime(tmp_path, NoPolicyService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     try:
         await runtime.configure('https://sync.test')
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'trusted earlier chat'))
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
         # The automatic scheduler consumes the saved On without any policy admission.
         await runtime.scheduler_tick()
@@ -1306,19 +1229,6 @@ async def test_sync_never_depends_on_an_account_character_policy_route(tmp_path,
         await runtime.scheduler_tick()
         await finish_automatic_flights(runtime)
         assert service.head['profile'] == PROFILE
-
-        capture(runtime)
-        result = await runtime.sync(UID, byte_budget=1_000_000, max_pull_pages=1)
-        assert result['uploaded'] >= 1 and result['pullPages'] == 1
-        # Approved history registers in its own lane; ordinary later passes drain it.
-        for _ in range(3):
-            if not runtime.ledger.pending(DOMAIN):
-                break
-            runtime.test_clock[0] += 60_000
-            await runtime.sync(UID, byte_budget=1_000_000, max_pull_pages=1)
-        # Both the approved history and the newly captured original left the outbox.
-        assert runtime.ledger.pending(DOMAIN) == []
-        assert {json.loads(raw)['text'] for raw in runtime.ledger.visible_originals(DOMAIN)} >= {'trusted earlier chat'}
 
         config.data['猫娘']['Synthetic']['_reserved']['system_prompt'] = 'updated raw setting'
         candidate = await runtime.profiles.local(UID)
@@ -1369,96 +1279,10 @@ async def test_card_pending_on_is_visible_only_for_its_pinned_authority(tmp_path
                 if reason == 'epoch':
                     request['epoch'] = ['copied-device', 'stale-lineage']
                 else:
-                    request['historyBinding']['owner_id'] = OTHER_OWNER
+                    # Choices saved by older versions pinned the bound domain they approved.
+                    request['historyBinding'] = {**runtime.state.binding(UID), 'owner_id': OTHER_OWNER}
                 runtime.state.queue_new_role(UID, request, replace=True)
         assert (await runtime.status())['syncPendingChoices'] == {}
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_manual_choice_waits_for_the_background_consumer_without_a_false_failure(tmp_path, config):
-    """The scheduler may finish the same saved grant before the UI acquires its setup lock."""
-    from contextlib import asynccontextmanager
-    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
-    runtime.profiles.adapter = DesktopProfileAdapter(config)
-    held = asyncio.Lock()
-    attempting = asyncio.Event()
-    @asynccontextmanager
-    async def observed_lock():
-        attempting.set()
-        async with held:
-            yield
-    runtime._sync_choice_lock = observed_lock()
-    try:
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        request = runtime.state.new_role(UID)
-        async with held:
-            task = asyncio.create_task(runtime.run_character_sync_choice(UID))
-            await asyncio.wait_for(attempting.wait(), 2)
-            await runtime._consume_sync_choice(UID, request, await runtime.session_presence_provider(), manual=False)
-        assert await asyncio.wait_for(task, 2) == {'completed': True, 'pending': False}
-        assert service.head['profile'] == PROFILE
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_manual_combined_choice_runs_for_the_selected_inactive_role(tmp_path, config):
-    """An explicit settings action advances its target without changing the current role."""
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    from tests.unit.test_chat_sync_runtime import select_runtime_current
-    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
-    runtime.profiles.adapter = DesktopProfileAdapter(config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-    try:
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'explicit inactive history'))
-        select_runtime_current(runtime, 'b' * 32)
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        receipt = await runtime.run_character_sync_choice(UID)
-        assert receipt == {'completed': True, 'pending': False}
-        assert runtime.state.binding(UID)['enabled']
-        assert runtime.state.new_role(UID) is None
-        assert service.head['profile'] == PROFILE
-        assert [json.loads(raw)['text'] for raw in service.records] == ['explicit inactive history']
-        assert config.data['当前猫娘'] == 'Other'
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('reason', ['logout', 'network', 'owner', 'retry'])
-async def test_manual_combined_choice_exposes_failures_and_retains_the_grant(tmp_path, config, reason):
-    """The manual UI receives real setup errors while its fixed local grant remains durable."""
-    from services.chat_sync.runtime import ChatSyncServiceError
-    runtime, service, session = setup_runtime(tmp_path, ProfileService())
-    runtime.profiles.adapter = DesktopProfileAdapter(config)
-    try:
-        if reason == 'owner':
-            await runtime.enable(UID, 'Synthetic')
-            await runtime.pause(UID)
-            service.owner = OTHER_OWNER
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        request = runtime.state.new_role(UID)
-        service.requests.clear()
-        expected = {'logout': 'chat_sync_login_required', 'network': 'chat_sync_unavailable',
-                    'owner': 'chat_sync_account_mismatch', 'retry': 'chat_sync_retry_later'}[reason]
-        if reason == 'logout':
-            session['logged_in'] = False
-            session.pop('snapshot')
-        elif reason == 'network':
-            async def unavailable(_request):
-                raise httpx.ReadError('synthetic transport interruption')
-            service.on_request = unavailable
-        elif reason == 'retry':
-            runtime.scheduler.failure('control', 'control', 0, None, ChatSyncServiceError(429, 240000))
-        with pytest.raises(ValueError, match='^' + expected + '$'):
-            await runtime.run_character_sync_choice(UID)
-        assert runtime.state.new_role(UID)['requestId'] == request['requestId']
-        assert runtime.profiles.store.next_operation(ChatDomain(OWNER, UID).key()) is None
-        if reason in {'logout', 'retry'}:
-            assert service.requests == []
     finally:
         await runtime.close()
 
@@ -1471,6 +1295,10 @@ async def test_combined_choice_blocks_a_changed_history_binding(tmp_path, config
     runtime, service, _ = await bound(tmp_path, config)
     try:
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        # Choices saved by older versions pinned the bound domain they approved.
+        with runtime.writer.locked():
+            runtime.state.queue_new_role(UID, {**runtime.state.new_role(UID), 'historyBinding': runtime.state.binding(UID)},
+                                         replace=True)
         request = runtime.state.new_role(UID)
         if binding_removed:
             original_approve = runtime.profiles.store.approve
@@ -1487,97 +1315,6 @@ async def test_combined_choice_blocks_a_changed_history_binding(tmp_path, config
         await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
         assert runtime.state.new_role_errors() == {UID: 'chat_sync_binding_changed'}
         assert service.requests == []
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_newer_card_save_fences_the_older_history_approval_commit(tmp_path, config):
-    """A superseded request cannot approve history while waiting for the local commit gate."""
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    runtime, _, _ = await bound(tmp_path, config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-    try:
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'fixed old original'))
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        old_request = runtime.state.new_role(UID)
-        original_approve = runtime.approve_history
-        async def save_newer_before_commit(uid, task_id, **kwargs):
-            await runtime.save_character_sync_choice(uid, 'Synthetic', True)
-            return await original_approve(uid, task_id, **kwargs)
-        runtime.approve_history = save_newer_before_commit
-        await runtime._run_new_role_sync(UID, old_request, await runtime.session_presence_provider())
-        assert runtime.state.new_role(UID)['requestId'] != old_request['requestId']
-        assert source.task(UID)['status'] == 'cancelled'
-        assert source.approved_tasks(UID) == []
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_combined_choice_does_not_cancel_an_open_manual_history_preview(tmp_path, config):
-    """Background consent keeps the user's reviewed task usable without duplicate registration."""
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    runtime, _, _ = await bound(tmp_path, config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-    try:
-        source.commit_unbound(UID, 'd' * 32, ChatOriginal('user', 'same trusted old original'))
-        preview = await runtime.preview_history(UID, 'Synthetic')
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
-        assert source.task(UID, preview['taskId'])['status'] == 'preview'
-        await runtime._advance_history(UID)
-        approved = await runtime.approve_history(UID, preview['taskId'])
-        assert approved['status'] == 'registered' and approved['cancelledCount'] == 1
-        assert await runtime._advance_history(UID) == 0
-        await runtime._recover_originals()
-        assert len(runtime.ledger.pending(ChatDomain(OWNER, UID))) == 1
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_explicit_history_save_includes_only_same_owner_trusted_recovery_originals(tmp_path, config):
-    """Combined history consent covers verified recovery bytes without crossing account or delete pins."""
-    from contextlib import closing
-    from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatOriginal
-    runtime, _, _ = await bound(tmp_path, config)
-    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-    try:
-        for identity, text in [('d' * 32, 'same owner recovered'), ('e' * 32, 'other owner recovered'),
-                               ('f' * 32, 'deleted recovered')]:
-            source.commit_unbound(UID, identity, ChatOriginal('user', text))
-        with closing(source._connect()) as connection, connection:
-            connection.execute('UPDATE source_unbound SET verified_owner=?', (OWNER,))
-            connection.execute('UPDATE source_unbound SET verified_owner=? WHERE record_id=?', (OTHER_OWNER, 'e' * 32))
-        await runtime.delete(UID, ['f' * 32])
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
-        await runtime._advance_history(UID)
-        await runtime._recover_originals()
-        assert [json.loads(row[0])['text'] for row in runtime.ledger.pending(ChatDomain(OWNER, UID))] == ['same owner recovered']
-        with closing(source._connect()) as connection:
-            assert connection.execute('SELECT original FROM source_unbound WHERE record_id=?', ('e' * 32,)).fetchone()[0]
-            assert connection.execute('SELECT original FROM source_unbound WHERE record_id=?', ('f' * 32,)).fetchone()[0] is None
-        assert runtime.ledger.pending_deletions(ChatDomain(OWNER, UID))
-    finally:
-        await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_combined_choice_with_no_history_does_not_leave_an_approved_empty_task(tmp_path, config):
-    """Repeated card saves cannot retain empty approved history jobs forever."""
-    from services.chat_sync.source import ChatOriginalSource
-    runtime, _, _ = await bound(tmp_path, config)
-    try:
-        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
-        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
-        source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
-        assert source.approved_tasks(UID) == []
-        assert source.task(UID)['status'] == 'registered'
     finally:
         await runtime.close()
 

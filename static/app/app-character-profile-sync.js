@@ -108,7 +108,6 @@
                                 // Refresh the existing local card list without
                                 // selecting a role or invoking a conversation.
                                 if (typeof window.loadCharacterCards === 'function') await window.loadCharacterCards();
-                                window.dispatchEvent(new CustomEvent('neko-character-profile-imported'));
                             } catch (error) {
                                 state.textContent = text(error.message === 'character_profile_name_conflict' ? 'cloudNameConflict' : 'profileChanged');
                                 create.disabled = false;
@@ -133,7 +132,7 @@
         return role.syncEnabled === true;
     }
 
-    async function afterCardSave(name, enabled, isNew) {
+    async function afterCardSave(name, enabled) {
         // A status read still in flight supplies no consent snapshot. Keep the
         // previous setting without reporting an optional sync failure.
         if (typeof enabled !== 'boolean') return;

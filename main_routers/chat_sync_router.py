@@ -41,21 +41,6 @@ class CharacterSyncChoice(BaseModel):
     includeHistory: StrictBool = False
 
 
-class ManualSyncRequest(BaseModel):
-    """Bound manual work; runtime scheduling still enforces device retry gates."""
-
-    model_config = ConfigDict(extra="forbid")
-    byteBudget: StrictInt
-    maxPullPages: StrictInt
-
-
-class DeleteOriginalsRequest(BaseModel):
-    """Delete only the stable IDs in the reviewed local operation."""
-
-    model_config = ConfigDict(extra="forbid")
-    messageIds: list[StrictStr]
-
-
 class HistoryApprovalRequest(BaseModel):
     """Approve only the exact persisted member snapshot reviewed by this user."""
 
@@ -150,20 +135,8 @@ async def status(runtime: Runtime):
             "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
             # Profile revision hints contain no raw settings or credential data.
             "profile": binding.get("profile"),
-            # Registration progress never represents cloud delivery or recovery.
-            "historyBackfill": binding.get("historyBackfill"),
         }
     return {**state, "characters": characters}
-
-
-@router.put("/configuration")
-async def configure(body: ServiceConfiguration, runtime: Runtime):
-    """Save explicit HTTPS setup while refusing to redirect existing bindings."""
-    try:
-        await runtime.configure(body.serviceUrl)
-    except ValueError as exc:
-        raise _error(exc) from None
-    return {"configured": True}
 
 
 @router.post("/wake")
@@ -198,74 +171,12 @@ async def save_sync_choice(character_uid: str, body: CharacterSyncChoice, runtim
         raise _error(ValueError("chat_sync_unavailable")) from None
 
 
-@router.post("/characters/{character_uid}/enable")
-async def enable(character_uid: str, runtime: Runtime):
-    """Bind the real saved UID to the service-verified community account."""
-    character = await _character(character_uid)
-    try:
-        binding = await runtime.enable(character_uid, character["displayName"])
-    except ValueError as exc:
-        raise _error(exc) from None
-    runtime.start_deletion_flush(character_uid)
-    return {"characterSyncId": character_uid, "ownerId": binding["owner_id"], "enabled": True}
-
-
-@router.post("/characters/{character_uid}/sync-choice/run")
-async def run_sync_choice(character_uid: str, runtime: Runtime, body: None = Body(default=None)):
-    """Run saved consent for an explicit target without suppressing login or network errors."""
-    await _character(character_uid)
-    try:
-        return await runtime.run_character_sync_choice(character_uid)
-    except ValueError as exc:
-        raise _error(exc) from None
-    except (OSError, sqlite3.Error):
-        raise _error(ValueError("chat_sync_unavailable")) from None
-
-
-@router.post("/characters/{character_uid}/pause")
-async def pause(character_uid: str, runtime: Runtime):
-    """Pause this device while preserving cloud data and local account ownership."""
-    await _character(character_uid)
-    await runtime.pause(character_uid)
-    return {"characterSyncId": character_uid, "enabled": False}
-
-
-@router.post("/characters/{character_uid}/sync")
-async def sync(character_uid: str, body: ManualSyncRequest, runtime: Runtime):
-    """Request bounded work without bypassing retries or invoking memory processing."""
-    await _character(character_uid)
-    try:
-        return await runtime.sync(character_uid, byte_budget=body.byteBudget, max_pull_pages=body.maxPullPages)
-    except ValueError as exc:
-        raise _error(exc) from None
-
-
 @router.get("/characters/{character_uid}/history")
 async def history(character_uid: str, runtime: Runtime):
     """Return canonical originals and separate local-only replies for passive display."""
     await _character(character_uid)
     return {"characterSyncId": character_uid, "originals": await runtime.history(character_uid),
             "localReplies": await runtime.local_replies(character_uid)}
-
-
-@router.post("/characters/{character_uid}/history/preview")
-async def preview_history(character_uid: str, runtime: Runtime):
-    """Show one authenticated target name and precise trusted historical count."""
-    character = await _character(character_uid)
-    try:
-        return await runtime.preview_history(character_uid, character["displayName"])
-    except ValueError as exc:
-        raise _error(exc) from None
-
-
-@router.post("/characters/{character_uid}/history/approve")
-async def approve_history(character_uid: str, body: HistoryApprovalRequest, runtime: Runtime):
-    """Queue fixed local history registration without waiting for an upload."""
-    await _character(character_uid)
-    try:
-        return await runtime.approve_history(character_uid, body.taskId)
-    except ValueError as exc:
-        raise _error(exc) from None
 
 
 @router.post("/characters/{character_uid}/profile/local")
@@ -327,30 +238,6 @@ async def resolve_profile(character_uid: str, body: ProfileResolveRequest, runti
                                            confirm_rename=body.confirmRename)
     except ValueError as exc:
         raise _error(exc) from None
-
-
-@router.post("/characters/{character_uid}/deletions")
-async def delete_originals(character_uid: str, body: DeleteOriginalsRequest, runtime: Runtime):
-    """Persist exact-ID deletion first; offline state never blocks hiding chats."""
-    await _character(character_uid)
-    try:
-        receipt = await runtime.delete(character_uid, body.messageIds)
-    except ValueError as exc:
-        raise _error(exc) from None
-    runtime.start_deletion_flush(character_uid)
-    return receipt
-
-
-@router.post("/characters/{character_uid}/clear")
-async def clear_originals(character_uid: str, runtime: Runtime):
-    """Clear known sync originals and local-only replies, excluding future messages."""
-    await _character(character_uid)
-    try:
-        receipt = await runtime.clear(character_uid)
-    except ValueError as exc:
-        raise _error(exc) from None
-    runtime.start_deletion_flush(character_uid)
-    return receipt
 
 
 async def close_runtime() -> None:

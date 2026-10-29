@@ -14,11 +14,10 @@ _ID = re.compile(r"[0-9a-f]{32}\Z")
 _EVENTS = frozenset({
     "source_committed", "session_begin", "session_end", "channel_wait", "channel_enter", "channel_end",
     "http_begin", "http_send", "http_headers", "http_body_complete", "http_end",
-    "upload_ack_committed", "download_committed", "history_notify_begin", "history_notify_end",
+    "history_notify_begin", "history_notify_end",
     "assistant_source_selected", "assistant_source_excluded", "assistant_source_finished",
-    "local_reply_committed",
 })
-_ROUTES = frozenset({"identity", "bindings", "body_batch", "deletion", "changes", "profile", "recovery", "character", "other"})
+_ROUTES = frozenset({"identity", "bindings", "profile", "recovery", "character", "other"})
 _trace = None
 
 
@@ -70,7 +69,7 @@ class ChatSyncTrace:
                 value = details.get(key)
                 if isinstance(value, str) and _ID.fullmatch(value):
                     safe[key] = value
-            if details.get("operation") in ("body", "pull", "deletion"):
+            if details.get("operation") == "pull":
                 safe["operation"] = details["operation"]
             if details.get("route") in _ROUTES:
                 safe["route"] = details["route"]
@@ -81,7 +80,6 @@ class ChatSyncTrace:
             if details.get("source_reason") in (
                 "nonchat_origin", "unknown_origin", "mirror", "invalid_identity", "invalid_text",
                 "saved", "save_unavailable", "save_failed", "terminal_excluded",
-                "local_saved", "local_save_unavailable", "local_save_failed",
             ):
                 safe["source_reason"] = details["source_reason"]
             for key in ("cursor", "status"):
@@ -120,11 +118,7 @@ def route_class(path):
         return "identity"
     if "/recovery/" in path:
         return "recovery"
-    if "/batches/" in path:
-        return "body_batch"
-    if "/deletions/" in path:
-        return "deletion"
-    for suffix, label in (("/bindings", "bindings"), ("/changes", "changes"), ("/profile", "profile")):
+    for suffix, label in (("/bindings", "bindings"), ("/profile", "profile")):
         if path.endswith(suffix):
             return label
     return "character" if re.fullmatch(r"/prototype/chat-sync/characters/[0-9a-f]{32}", path) else "other"

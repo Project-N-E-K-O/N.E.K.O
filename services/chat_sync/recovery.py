@@ -64,45 +64,6 @@ def save_outage(directory, uid, record_id, original):
                      (record_id, uid, payload, digest, time.time_ns() // 1_000_000, uuid4().hex))
 
 
-
-def save_outage_deletions(directory, uid, identities):
-    """Keep new local hiding separate from every copied deletion request."""
-    from services.chat_sync.ledger import _message_ids
-    ids = _message_ids(identities)
-    with closing(sqlite3.connect(Path(directory) / 'outage.sqlite3', timeout=10)) as conn, conn:
-        conn.execute('PRAGMA synchronous=FULL')
-        conn.execute('CREATE TABLE IF NOT EXISTS outage_deletions '
-                     '(uid TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(uid,message_id))')
-        conn.executemany('INSERT OR IGNORE INTO outage_deletions VALUES (?,?)', [(uid, identity) for identity in ids])
-        _erase_outage_originals(conn, uid, ids)
-
-
-def _erase_outage_originals(conn, uid, ids):
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='outage_originals'").fetchone():
-        conn.executemany('UPDATE outage_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=?', [(uid, identity) for identity in ids])
-
-
-def _outage_has_originals(conn, uid, ids):
-    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='outage_originals'").fetchone():
-        return False
-    return any(conn.execute(
-        'SELECT 1 FROM outage_originals WHERE uid=? AND original IS NOT NULL AND record_id IN (' + ','.join('?' for _ in page) + ') LIMIT 1',
-        (uid, *page)).fetchone() for page in (ids[offset:offset + 200] for offset in range(0, len(ids), 200)))
-
-
-def purge_outage_originals(directory, uid, ids):
-    """Erase readable outage copies of exact deleted IDs while keeping their identities."""
-    path = Path(directory) / 'outage.sqlite3'
-    if not path.exists():
-        return
-    with closing(sqlite3.connect(path, timeout=10)) as conn, conn:
-        # Most deletes have no outage copy; only an actual body needs a durable write.
-        if not _outage_has_originals(conn, uid, ids):
-            return
-        conn.execute('PRAGMA synchronous=FULL')
-        _erase_outage_originals(conn, uid, ids)
-
-
 def stage_authority(runtime):
     """Preserve immutable evidence while revoking every copied business permission."""
     directory = runtime.state.path.parent
@@ -352,31 +313,3 @@ def approve_deletions(runtime, uid, task_id, binding, fingerprint):
         if not remaining:
             conn.execute("UPDATE source_recovery_delete_tasks SET status='registered' WHERE task_id=?", (task_id,))
     return {'taskId': task_id, 'registeredCount': len(ids), 'remaining': remaining}
-
-
-def approved_deletion_tasks(runtime, uid):
-    """Continue only renewed approved fixed tasks through the existing worker."""
-    with closing(store_connection(runtime.state.path.parent / 'sources.sqlite3')) as conn:
-        return [row[0] for row in conn.execute("SELECT task_id FROM source_recovery_delete_tasks WHERE uid=? AND status='approved' ORDER BY rowid", (uid,))]
-
-
-def quarantined_local_ids(runtime, uid):
-    """Read an exact local clear boundary without accepting any copied permission."""
-    directory, identities = runtime.state.path.parent, []
-    for name, queries in (
-        ('sources.sqlite3', [('source_originals', 'record_id'), ('source_unbound', 'record_id'), ('source_recovery_candidates', 'record_id')]),
-        ('outage.sqlite3', [('outage_originals', 'record_id')]),
-    ):
-        path = directory / name
-        if not path.exists():
-            continue
-        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            for table, field in queries:
-                if table in tables:
-                    identities.extend(row[0] for row in conn.execute(f'SELECT {field} FROM {table} WHERE uid=? AND deleted=0', (uid,)))
-    with closing(sqlite3.connect(runtime.ledger.path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
-        for domain, identity in conn.execute('SELECT domain,message_id FROM chat_originals UNION SELECT domain,message_id FROM chat_downloaded'):
-            if json.loads(domain)[1] == uid:
-                identities.append(identity)
-    return list(dict.fromkeys(identities))

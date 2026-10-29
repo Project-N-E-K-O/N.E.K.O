@@ -75,7 +75,6 @@ def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
         assert(shown.includes(labels[key]));
         if(key==='errorUnknown')assert(!shown.includes(code));
         else assert(shown.includes(code));
-        assert.notEqual(shown,labels.failed);
         assert.equal(recover.disabled,false);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('LABELS', json.dumps(labels)).replace('CODE', json.dumps(code)).replace('KEY', json.dumps(key)))
@@ -100,18 +99,16 @@ def test_opening_sync_settings_shows_the_retained_failure_without_retrying(sourc
     """.replace('SOURCE', json.dumps(source)))
 
 
-def test_sync_settings_reports_pending_and_local_only_work():
+def test_sync_settings_reports_pending_work():
     run_script(r"""(async()=>{
         window.t=(key,values={})=>key+JSON.stringify(values);
         global.fetch=async()=>({ok:true,json:async()=>({characters:[{
             displayName:'Neko',characterSyncId:original.characterSyncId,binding:{pendingOriginals:3,
-                pendingDeletions:2,localOnlyOriginals:1,historyBackfill:{awaitingRegistration:4}}
+                pendingDeletions:2}
         }]})});
         await window.nekoChatSync.openSettings();
         const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
         assert(shown.includes('chatSync.pending')&&shown.includes('"originals":3')&&shown.includes('"deletions":2'));
-        assert(shown.includes('chatSync.oversizedLocalOnly')&&shown.includes('"count":1'));
-        assert(shown.includes('chatSync.historyAwaitingRegistration')&&shown.includes('"count":4'));
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
 
@@ -215,8 +212,7 @@ def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
                 characters:[{displayName:'Neko',characterSyncId:uid,binding:null}]};
             if(path.endsWith('/recovery/preview')){
                 needsRecovery=false;
-                return {history:{taskId:'f'.repeat(32),characterSyncId:uid,localName:'Neko',
-                    cloudName:'Cloud Neko',count:0,unverifiedCount:null,status:'preview'},deletions:{count:0}};
+                return {deletions:{count:0}};
             }
             if(path.endsWith('/history'))return {originals:[]};
             throw new Error('Unexpected request '+path);
@@ -419,7 +415,7 @@ def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
         changed=true;
         if(CHANGE==='closed')modal.close();
         else if(CHANGE==='role')await window.nekoChatSync.openSettings('Other');
-        release({history:{localName:'Neko',cloudName:'Cloud Neko'},deletions:{count:1,taskId:'e'.repeat(32)}});
+        release({deletions:{count:1,taskId:'e'.repeat(32),localName:'Neko',cloudName:'Cloud Neko'}});
         await pending;
         assert.equal(requests.filter(item=>item.path.endsWith('/recovery/deletions/approve')
             ||item.path.endsWith('/history/approve')).length,0);
@@ -474,8 +470,7 @@ def test_recovery_panel_tooltip_is_accessible_and_fits_the_viewport(theme, langu
 
 
 @pytest.mark.parametrize("approve_deletions", [False, True])
-@pytest.mark.parametrize("history_available", [False, True])
-def test_writer_recovery_keeps_separate_deletion_consent_without_history_controls(approve_deletions, history_available):
+def test_writer_recovery_keeps_separate_deletion_consent_without_history_controls(approve_deletions):
     """The compact recovery panel cannot publish history or copied deletes by opening it."""
     from playwright.sync_api import sync_playwright
 
@@ -486,7 +481,7 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             page = browser.new_page()
             page.route("**/*", lambda route: route.abort())
             page.set_content('<button id="chatSyncButton">Sync</button>')
-            page.evaluate("""({labels, historyAvailable}) => {
+            page.evaluate("""({labels}) => {
                 window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
                     .replace(/{{(.*?)}}/g, (_, name) => values[name]);
                 window.setInterval = () => 1;
@@ -501,16 +496,14 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
                                 ownerId: 'owner', bindingId: 'binding', generation: 1}}]};
                         if (path.endsWith('/recovery/preview')) {
                             window.needsRecovery = false;
-                            return {history: historyAvailable ? {localName: 'Synthetic', cloudName: 'Cloud Neko', count: 3} : null,
-                                historyError: historyAvailable ? null : 'chat_sync_unavailable',
-                                deletions: {taskId: 'e'.repeat(32), count: 2, localName: 'Synthetic', cloudName: 'Cloud Neko'}};
+                            return {deletions: {taskId: 'e'.repeat(32), count: 2, localName: 'Synthetic', cloudName: 'Cloud Neko'}};
                         }
                         if (path.endsWith('/recovery/deletions/approve')) return {status: 'registered'};
                         if (path.endsWith('/history')) return {originals: []};
                         throw new Error('Unexpected request: ' + path);
                     }};
                 };
-            }""", {"labels": labels, "historyAvailable": history_available})
+            }""", {"labels": labels})
             page.add_script_tag(path=str(SCRIPT))
             page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
             page.locator("#chatSyncButton").click()
@@ -528,8 +521,6 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             page.on("dialog", consent)
             modal.get_by_role("button", name=labels["recoverWriter"], exact=True).click()
             modal.get_by_role("status").filter(has_text=labels["recoveryChecked"]).wait_for()
-            if not history_available:
-                assert labels['initialHistoryFailed'] in modal.get_by_role('status').inner_text()
             assert messages and "2" in messages[0] and "Synthetic" in messages[0] and "Cloud Neko" in messages[0]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.nekotech.cn"}]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])

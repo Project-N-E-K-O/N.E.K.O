@@ -433,9 +433,9 @@ def test_card_choice_uses_effective_pending_consent_while_binding_is_still_pause
 
 
 def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_actions():
-    """Binding and history retries use the card switch, not the recovery-only panel."""
+    """Setup and binding retries use the card switch, not the recovery-only panel."""
     for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
         locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding="utf-8"))['chatSync']
-        for key in ('setupNeedsSave', 'initialHistoryFailed', 'profileNeedsBinding'):
+        for key in ('setupNeedsSave', 'profileNeedsBinding'):
             assert locale['moreOptions'].casefold() not in locale[key].casefold(), (language, key)
 

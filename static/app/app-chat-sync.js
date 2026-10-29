@@ -83,9 +83,6 @@
                     originals: binding.pendingOriginals || 0, deletions: binding.pendingDeletions || 0
                 });
             }
-            if (binding.localOnlyOriginals) statusNode.textContent += '\n' + text('oversizedLocalOnly', {count: binding.localOnlyOriginals});
-            var awaiting = binding.historyBackfill && binding.historyBackfill.awaitingRegistration;
-            if (awaiting) statusNode.textContent += '\n' + text('historyAwaitingRegistration', {count: awaiting});
         }
         updateControls();
         return true;
@@ -105,18 +102,14 @@
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             await refreshStatus();
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
-            // Recovery never grants a copied deletion or a historical upload.
-            // The existing card switch owns combined profile/history consent.
-            var deletionTarget = recovered.deletions.localName ? recovered.deletions : recovered.history;
             if (recovered.deletions.count && window.confirm(text('recoveryDeleteConfirm', {
-                    count: recovered.deletions.count, localName: deletionTarget.localName,
-                    cloudName: deletionTarget.cloudName
+                    count: recovered.deletions.count, localName: recovered.deletions.localName,
+                    cloudName: recovered.deletions.cloudName
                 }))) {
                 await api(path + '/recovery/deletions/approve', 'POST', { taskId: recovered.deletions.taskId });
             }
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
-            if (recovered.historyError) statusNode.textContent += '\n' + text('initialHistoryFailed');
         } catch (error) {
             if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
                 statusNode.textContent = describeError(error);

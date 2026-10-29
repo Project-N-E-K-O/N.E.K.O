@@ -7,14 +7,7 @@ import pytest
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
 from services.chat_sync.runtime import ChatSyncServiceError
-from services.chat_sync.scheduler import BODY_INTERVAL_MS, ChatSyncScheduler, body_eligible, body_eligible_at
-
-
-def queue(**values):
-    """Represent new originals using arrival clocks, never occurrence metadata."""
-    return {"pendingOriginals": 1, "pendingBytes": 10, "oldestEnqueuedAt": 1000,
-            "lastEnqueuedAt": 1000, "legacyPending": False, "hasSealedBatch": False,
-            "pendingDeletions": 0, **values}
+from services.chat_sync.scheduler import ChatSyncScheduler
 
 
 def test_next_wake_retains_retry_and_origin_deadlines_without_one_second_ticks(tmp_path):
@@ -93,7 +86,7 @@ def test_pull_timeout_retry_keeps_other_roles_origin_retry_after(tmp_path):
     clock = [1000]
     path = tmp_path / "scheduler.db"
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    scheduler.failure("b", "body", 3, "session", ChatSyncServiceError(429, 240000))
+    scheduler.failure("b", "profile", 3, "session", ChatSyncServiceError(429, 240000))
     scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_pull_timeout"))
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
     scheduler.arm_wake()
@@ -102,12 +95,12 @@ def test_pull_timeout_retry_keeps_other_roles_origin_retry_after(tmp_path):
         clock[0] = now
         assert not scheduler.origin_ready()
         for domain in ("a", "b"):
-            for channel in ("body", "deletion", "pull", "profile"):
-                assert not scheduler.ready(domain, channel, 3, "session", queue=queue(), manual=True)
+            for channel in ("pull", "profile", "long_term"):
+                assert not scheduler.ready(domain, channel, 3, "session", manual=True)
     clock[0] += 1
     assert scheduler.origin_ready()
     assert scheduler.ready("a", "pull", 3, "session")
-    assert scheduler.ready("b", "body", 3, "session", queue=queue(), manual=True)
+    assert scheduler.ready("b", "profile", 3, "session", manual=True)
 
 
 def test_old_transport_deadline_is_not_shortened_by_restart_wake_or_notification(tmp_path):
@@ -134,22 +127,6 @@ def test_old_transport_deadline_is_not_shortened_by_restart_wake_or_notification
     assert scheduler.ready("a", "pull", 3, "session")
 
 
-def test_short_idle_and_bounded_oldest_replace_minute_eligibility():
-    """Small batches wait 200ms; continuous arrivals wait at most 500ms."""
-    assert not body_eligible(queue(), 1199)
-    assert body_eligible(queue(), 1200)
-    assert body_eligible(queue(lastEnqueuedAt=1499), 1500)
-
-
-def test_body_deadline_distinguishes_no_work_from_batched_and_urgent_work():
-    """Only a future batch deadline asks the runtime to shorten its local tick."""
-    assert body_eligible_at(queue(pendingOriginals=0), 1000) is None
-    assert body_eligible_at(queue(), 1000) == 1200
-    assert body_eligible_at(queue(lastEnqueuedAt=1499), 1000) == 1500
-    assert body_eligible_at(queue(pendingOriginals=20), 1000) == 1000
-    assert body_eligible_at(queue(oldestEnqueuedAt=None, lastEnqueuedAt=None), 1000) is None
-
-
 def test_notification_due_wake_preserves_retry_auth_and_origin_fences(tmp_path):
     """Hints only invalidate periodic due time, never HTTP rejection deadlines."""
     clock = [1000]
@@ -167,7 +144,7 @@ def test_notification_due_wake_preserves_retry_auth_and_origin_fences(tmp_path):
     scheduler.failure("a", "pull", 1, "session", ChatSyncServiceError(403))
     scheduler.request_check("a", "pull")
     assert not scheduler.ready("a", "pull", 1, "session")
-    scheduler.failure("b", "body", 1, "session", ChatSyncServiceError(429, 240000))
+    scheduler.failure("b", "pull", 1, "session", ChatSyncServiceError(429, 240000))
     scheduler.request_check("a", "profile")
     assert not scheduler.ready("a", "profile", 1, "session")
 
@@ -249,45 +226,12 @@ def test_verified_login_repair_keeps_origin_retry_after(tmp_path):
     clock = [1000]
     scheduler = ChatSyncScheduler(tmp_path / "scheduler.db", clock=lambda: clock[0], uniform=lambda *_: 0)
     scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_login_required"))
-    scheduler.failure("b", "body", 3, "session", ChatSyncServiceError(429, 240000))
+    scheduler.failure("b", "pull", 3, "session", ChatSyncServiceError(429, 240000))
     scheduler.request_check("a", "pull", verified_login=(3, "session"))
     assert scheduler.last_error("a") is None
     assert not scheduler.ready("a", "pull", 3, "session", manual=True)
     clock[0] += 240000
     assert scheduler.ready("a", "pull", 3, "session")
-
-
-@pytest.mark.parametrize("changes,now", [
-    ({}, 61_000), ({"pendingOriginals": 20}, 1000), ({"pendingBytes": 64 * 1024}, 1000),
-    ({"lastEnqueuedAt": 300_999}, 301_000), ({"legacyPending": True, "oldestEnqueuedAt": None,
-                                           "lastEnqueuedAt": None}, 1000),
-    ({"hasSealedBatch": True}, 1000),
-])
-def test_automatic_body_eligibility(changes, now):
-    """Each approved threshold independently admits work, including old pending."""
-    assert body_eligible(queue(**changes), now)
-
-
-def test_new_messages_reset_idle_but_do_not_reset_oldest_wait():
-    """Continuous arrivals cannot postpone the oldest original past 500ms."""
-    waiting = queue(lastEnqueuedAt=1499)
-    assert not body_eligible(waiting, 1499)
-    assert body_eligible(waiting, 1500)
-    assert not body_eligible(queue(pendingOriginals=0, legacyPending=True), 999_999)
-
-
-def test_device_body_interval_fairness_and_attempt_survive_restart(tmp_path):
-    """Fair role rotation survives restart without an extra normal body cooldown."""
-    clock = [1000]
-    path = tmp_path / "scheduler.db"
-    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    assert scheduler.claim("a", "body", 1, "session", queue=queue(), manual=True)
-    restarted = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    assert restarted.ordered(["a", "b"]) == ["b", "a"]
-    assert BODY_INTERVAL_MS == 0
-    assert restarted.claim("b", "body", 1, "session", queue=queue(), manual=True)
-    assert restarted.claim("a", "deletion", 1, "session")
-    assert not restarted.claim("b", "body", 1, "session", queue=queue(), manual=True)
 
 
 def test_startup_periodic_stagger_and_retry_are_persisted(tmp_path):
@@ -300,7 +244,7 @@ def test_startup_periodic_stagger_and_retry_are_persisted(tmp_path):
     restarted.arm_wake()
     assert restarted.claim("a", "pull", 1, "session")
     restarted.success("a", "pull")
-    assert restarted.claim("a", "deletion", 1, "session")
+    assert restarted.claim("a", "long_term", 1, "session")
     clock[0] = 120_999
     assert not restarted.ready("a", "pull", 1, "session")
     clock[0] = 121_000
@@ -314,12 +258,12 @@ def test_origin_retry_after_covers_all_channels_roles_and_manual(tmp_path):
     """A response without throttle scope gates every request to the pinned origin."""
     clock = [1000]
     scheduler = ChatSyncScheduler(tmp_path / "scheduler.db", clock=lambda: clock[0], uniform=lambda *_: 0)
-    scheduler.failure("a", "body", 1, "session", ChatSyncServiceError(429, 240_000))
-    for channel in ("body", "deletion", "pull"):
-        assert not scheduler.claim("b", channel, 1, "session", queue=queue(), manual=True)
+    scheduler.failure("a", "pull", 1, "session", ChatSyncServiceError(429, 240_000))
+    for channel in ("pull", "profile", "long_term"):
+        assert not scheduler.claim("b", channel, 1, "session", manual=True)
     clock[0] += 240_000
     assert scheduler.origin_ready()
-    assert scheduler.claim("b", "deletion", 1, "session")
+    assert scheduler.claim("b", "profile", 1, "session")
 
 
 def test_fixed_error_fences_survive_restart_and_do_not_store_arbitrary_text(tmp_path):
@@ -343,8 +287,21 @@ def test_temporary_http_failures_retry_instead_of_requiring_new_consent(tmp_path
     clock = [1000]
     path = tmp_path / "scheduler.db"
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    scheduler.failure("a", "deletion", 1, "session", ChatSyncServiceError(status))
+    scheduler.failure("a", "profile", 1, "session", ChatSyncServiceError(status))
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    assert not scheduler.ready("a", "deletion", 1, "session", manual=True)
+    assert not scheduler.ready("a", "profile", 1, "session", manual=True)
     clock[0] += 5000
-    assert scheduler.ready("a", "deletion", 1, "session", manual=True)
+    assert scheduler.ready("a", "profile", 1, "session", manual=True)
+
+
+def test_last_error_ignores_rows_left_by_retired_body_and_marker_channels(tmp_path):
+    """An old body/marker failure no longer has a pass to clear it, so it is never shown."""
+    scheduler = ChatSyncScheduler(tmp_path / "scheduler.db", clock=lambda: 1000, uniform=lambda *_: 0)
+    with closing(scheduler._connect()) as conn, conn:
+        conn.executemany("INSERT INTO scheduler_tasks(domain,channel,last_attempt,last_error) VALUES (?,?,?,?)", [
+            ("a", "body", 900, "invalid_chat_batch"), ("a", "deletion", 950, "chat_sync_unavailable"),
+            ("a", "pull", 800, None),
+        ])
+    assert scheduler.last_error("a") is None
+    scheduler.failure("a", "pull", 1, "session", ValueError("chat_sync_pull_timeout"))
+    assert scheduler.last_error("a") == "chat_sync_pull_timeout"

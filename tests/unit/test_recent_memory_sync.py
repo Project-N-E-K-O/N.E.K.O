@@ -239,9 +239,6 @@ async def test_runtime_uses_only_recent_endpoint_and_checks_binding_before_apply
     service.owner = OWNER
     adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / 'memory', project_memory_dir=tmp_path / 'memory'))
     runtime, _, _ = setup_runtime(tmp_path, service, recent_memory_adapter=adapter)
-    async def forbidden_archive_provider(uid):
-        raise AssertionError('recent sync must never enumerate archived history')
-    runtime.chat_history_provider = forbidden_archive_provider
     try:
         await runtime.configure('https://sync.test')
         await runtime.enable(UID, 'Neko')
