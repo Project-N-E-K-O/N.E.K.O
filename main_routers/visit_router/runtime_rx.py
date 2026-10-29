@@ -706,6 +706,11 @@ class ReceiveMixin:
             # Goes into the next local prompt: sanitize again on receiving side and truncate to farewell limits (peers may ignore LineSpeaker caps).
             self.last_peer_goodbye = clamp_peer_line(txt)[:VISIT_GOODBYE_MAX_CHARS]
         self._post_display(self._peer_line_frame(m, ln, lp))
+        if (reply is not None and not reply.goodbye and self.room is not None
+                and self.room.pending_reply is not reply):
+            # A human line cancelled or replaced this plan while the line was being recorded:
+            # scheduling it now would replace the newer reply.
+            reply = None
         if reply is not None or say_goodbye:
             self.apply_effects(RoomEffects(reply=reply, say_goodbye=say_goodbye))
 

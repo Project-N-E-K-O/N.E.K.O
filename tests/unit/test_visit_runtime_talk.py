@@ -1842,6 +1842,43 @@ async def test_a_reply_dropped_without_speaking_is_forgotten_by_the_room(tmp_pat
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_a_reply_cancelled_while_the_peer_line_is_recorded_is_not_scheduled(tmp_path, monkeypatch):
+    # A human line that cancels the plan during the record await must not be undone once the write ends.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    plans: list = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "peer_cat":
+            await stuck.wait()
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    rt.schedule_reply = lambda plan, **kw: plans.append(plan)
+    framed: list = []
+    real_frame = rt._peer_line_frame
+
+    def frame_spy(m, ln, lp):
+        framed.append(ln)                                     # Posted right before the reply is applied, with no await between.
+        return real_frame(m, ln, lp)
+
+    rt._peer_line_frame = frame_spy
+    try:
+        ggate.set()                                           # Guest opening line (to the host cat) reaches the host.
+        await wait_for(lambda: rt.room.pending_reply is not None, timeout=10)
+        rt.room.pending_reply = None                          # What a human line does meanwhile (_cancel_pending).
+        stuck.set()
+        await wait_for(lambda: framed, timeout=10)
+        assert [p for p in plans if p is not None] == []
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_shutdown_waits_for_an_admitted_family_line_before_sealing(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
