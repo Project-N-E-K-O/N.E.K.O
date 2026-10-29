@@ -18,6 +18,7 @@ import pytest
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
 from services.chat_sync.ledger import ChatDomain, ChatOriginal, SourceLocator
+from services.chat_sync.recent_protocol import merge, mutation
 from services.chat_sync.runtime import (
     ChatSyncServiceError, DesktopChatSyncRuntime, DesktopSyncState, _load_local_ca_context, _saved_session_commit_guard,
 )
@@ -237,6 +238,75 @@ async def test_production_history_notifier_routes_only_exact_local_character_uid
         assert await runtime.current_character_uid_provider() == OTHER_UID
         character_data["当前猫娘"] = "Absent"
         assert await runtime.current_character_uid_provider() is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["delivered", "unchanged", "window-error", "paused-before-hint"])
+async def test_recent_download_history_hint_is_fenced_and_optional(tmp_path, monkeypatch, case):
+    """Only a downloaded change hints the window, under its grant, and a window failure never fails the pull."""
+    monkeypatch.setattr("memory.recent_sync.assert_cloudsave_writable", lambda *args, **kwargs: None)
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"})
+    if case != "unchanged":
+        service.rows[UID] = [{"id": "f" * 32, "role": "user", "text": "from phone", "originalTime": None}]
+    hinted = []
+
+    async def history_changed(uid):
+        hinted.append(uid)
+        if case == "window-error":
+            raise RuntimeError("synthetic window closed")
+
+    runtime.history_changed = history_changed
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        if case == "paused-before-hint":
+            sync = runtime.recent_memory.sync
+
+            async def sync_then_pause(*args, **kwargs):
+                result = await sync(*args, **kwargs)
+                await runtime.pause(UID)
+                return result
+
+            monkeypatch.setattr(runtime.recent_memory, "sync", sync_then_pause)
+        await runtime._automatic_channel("pull", await runtime.session_presence_provider())
+        assert service.recent_roles == [UID]
+        saved = json.loads((tmp_path / "memory" / "Neko" / "recent.json").read_text(encoding="utf-8"))
+        assert [row["data"]["content"] for row in saved] == ([] if case == "unchanged" else ["from phone"])
+        # A periodic pull that downloaded nothing must not make the window reload its memory.
+        assert hinted == ([UID] if case in {"delivered", "window-error"} else [])
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_recent_download_blocked_by_a_newer_local_save_continues_without_the_periodic_wait(tmp_path, monkeypatch):
+    """A download that loses to a concurrent local save asks for the next pass instead of waiting two minutes."""
+    monkeypatch.setattr("memory.recent_sync.assert_cloudsave_writable", lambda *args, **kwargs: None)
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"})
+    service.rows[UID] = [{"id": "f" * 32, "role": "user", "text": "from phone", "originalTime": None}]
+    path = tmp_path / "memory" / "Neko" / "recent.json"
+
+    async def save_during_first_download(request):
+        if request.url.path.endswith("/recent-memory") and not service.recent_roles:
+            # A local-only entry changes the file without changing the shared projection.
+            path.write_text(json.dumps([{"type": "tool", "data": {"content": "local only"}}]), encoding="utf-8")
+
+    service.on_request = save_during_first_download
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID]
+        assert runtime.recent_memory.state(DOMAIN.key())["base"] == []
+        # The periodic poll is two minutes away; only the unfinished download makes the role due now.
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID, UID]
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert [row["data"]["content"] for row in saved] == ["local only", "from phone"]
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
     finally:
         await runtime.close()
 
@@ -539,6 +609,61 @@ async def test_notification_production_transport_uses_verified_wss_and_closes(tm
 
 
 @pytest.mark.asyncio
+async def test_established_silent_wss_automatically_wakes_recent_pull(tmp_path, local_tls_files):
+    """Native keepalive notices a silent established peer, and its failure hint wakes the fallback pull."""
+    from websockets.asyncio.server import serve
+    ca_path, _, cert_path, key_path = local_tls_files
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    subscribed, pause, paused, release = asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def peer(socket):
+        await socket.recv()
+        await socket.send(json.dumps({"type": "ready"}))
+        await socket.recv()
+        await socket.send(json.dumps({"type": "subscribed"}))
+        subscribed.set()
+        await pause.wait()
+        # Stop reading without closing: only the client's keepalive can notice.
+        socket.transport.pause_reading()
+        paused.set()
+        try:
+            await release.wait()
+        finally:
+            socket.transport.resume_reading()
+
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"})
+    try:
+        async with serve(peer, "127.0.0.1", 0, ssl=context, ping_interval=None) as server:
+            try:
+                runtime._local_ca_file = str(ca_path)
+                runtime._notification_connect = runtime._connect_notifications
+                await runtime.configure(f"https://localhost:{server.sockets[0].getsockname()[1]}")
+                await runtime.enable(UID, "Neko")
+                runtime.start_scheduler()
+                await asyncio.wait_for(subscribed.wait(), 5)
+                await wait_notification(lambda: service.recent_roles)
+                # The start and subscribe hints may each pull once; wait until that settles.
+                async with asyncio.timeout(6):
+                    settled = -1
+                    while len(service.recent_roles) != settled:
+                        settled = len(service.recent_roles)
+                        await asyncio.sleep(1)
+                pause.set()
+                await paused.wait()
+                # The frozen test clock never reaches the next poll or a reconnect deadline. The
+                # 2 s ping interval, 2 s pong timeout and 1 s close wait notice the peer in about 5 s.
+                async with asyncio.timeout(10):
+                    while len(service.recent_roles) == settled:
+                        await asyncio.sleep(.02)
+            finally:
+                release.set()
+                await runtime.close()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_transport_disconnect_reconnect_deadline_is_at_most_three_seconds(tmp_path):
     """A new network failure stays bounded independently of HTTP and auth gates."""
     runtime, _, _ = setup_runtime(tmp_path)
@@ -648,10 +773,10 @@ async def test_notification_disconnect_backoff_and_foreground_keep_http_fences(t
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code", [4401, 4403, 1008])
 async def test_notification_rejection_waits_for_new_authority(tmp_path, code):
-    """Server authentication/grant rejection cannot become an infinite reconnect."""
+    """Server authentication/grant rejection cannot become an infinite reconnect or stop HTTP fallback."""
     from websockets.exceptions import ConnectionClosedError
     from websockets.frames import Close
-    runtime, service, _ = setup_runtime(tmp_path)
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"})
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
     presence = await runtime.session_presence_provider()
@@ -664,9 +789,9 @@ async def test_notification_rejection_waits_for_new_authority(tmp_path, code):
     runtime.test_clock[0] += 999999
     await runtime._manage_notifications(runtime.state.bindings(), presence)
     assert socket.connections == 1
-    service.requests.clear()
-    await runtime.scheduler_tick()
-    await finish_automatic_flights(runtime)
+    await run_scheduler_tick(runtime)
+    # The rejected hint socket stays closed while the fenced automatic pull keeps running.
+    assert service.recent_roles == [UID]
     assert socket.connections == 1
     await runtime.close()
 
@@ -1458,39 +1583,84 @@ def select_runtime_current(runtime, uid=UID):
 
 
 class RecentRoleService(SyntheticService):
-    """Answer empty recent-memory reads for any role and record which roles were read."""
+    """Serve each role's memory lanes with the real recent-memory codec and record which roles were exchanged."""
 
     def __init__(self):
         super().__init__()
         self.recent_roles = []
+        self.long_term_roles = []
+        self.rows, self.hidden, self.receipts = {}, {}, {}
+        self.lose_receipt = False
 
     async def request(self, request):
-        if request.url.path.endswith("/recent-memory"):
-            self.requests.append(request)
-            assert request.method == "GET" and request.headers["X-Neko-Chat-Binding"] == BINDING
-            uid = request.url.path.rsplit("/", 2)[1]
-            self.recent_roles.append(uid)
+        lane = request.url.path.rsplit("/", 1)[1]
+        if lane not in {"recent-memory", "long-term-memory"}:
+            return await super().request(request)
+        self.requests.append(request)
+        if self.on_request is not None:
+            await self.on_request(request)
+        assert request.headers["X-Neko-Chat-Binding"] == BINDING
+        uid = request.url.path.rsplit("/", 2)[1]
+        if lane == "long-term-memory":
+            # No learned memory has been published, so the lane only reads an empty head.
+            assert request.method == "GET"
+            self.long_term_roles.append(uid)
+            return httpx.Response(200, json={"ownerId": self.owner, "characterSyncId": uid, "revision": 0,
+                                             "completedAt": None})
+        self.recent_roles.append(uid)
+        receipts = self.receipts.setdefault(uid, {})
+        if request.method == "GET":
             return httpx.Response(200, json={"schemaVersion": 1, "ownerId": self.owner, "characterSyncId": uid,
-                                             "revision": 0, "entries": []})
-        return await super().request(request)
+                                             "revision": len(receipts), "entries": self.rows.get(uid, [])})
+        value = mutation(json.loads(request.content))
+        operation = value["operationId"]
+        if operation not in receipts:
+            self.rows[uid], self.hidden[uid] = merge(self.rows.get(uid, []), self.hidden.get(uid, []), value)
+            receipts[operation] = {"ownerId": self.owner, "characterSyncId": uid, "operationId": operation,
+                                   "revision": len(receipts) + 1}
+        if self.lose_receipt:
+            # The service committed the operation, but its receipt never reaches the device.
+            self.lose_receipt = False
+            raise httpx.ReadError("synthetic response loss")
+        return httpx.Response(200, json=receipts[operation])
 
 
-def recent_role_runtime(tmp_path, names):
-    """Give each named role an empty recent-memory file and the production pull channel."""
+def recent_row(kind, text, key=None, original_time=None):
+    """Build a saved recent.json row that already carries its stable projection identity."""
+    metadata = {} if kind == "system" else {"recent_memory_id": key, "recent_memory_time": original_time}
+    return {"type": kind, "data": {"content": text, "metadata": metadata}}
+
+
+def recent_role_runtime(tmp_path, names, *, chats=None, long_term=False):
+    """Give each named role a recent-memory file and the production memory channels.
+
+    Rows in ``chats`` already carry their identities, so reading them never rewrites the file.
+    """
     from memory.recent_sync import RecentMemoryAdapter
 
     for name in names.values():
         path = tmp_path / "memory" / name / "recent.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("[]", encoding="utf-8")
+        path.write_text(json.dumps((chats or {}).get(name, [])), encoding="utf-8")
     adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / "memory", project_memory_dir=tmp_path / "memory"))
-    runtime, service, session = setup_runtime(tmp_path, RecentRoleService(), recent_memory_adapter=adapter)
+    long_term_adapter = None
+    if long_term:
+        from memory.long_term_sync import DesktopLongTermAdapter
+        long_term_adapter = DesktopLongTermAdapter(SimpleNamespace(app_docs_dir=tmp_path / "documents"))
+    runtime, service, session = setup_runtime(tmp_path, RecentRoleService(), recent_memory_adapter=adapter,
+                                              long_term_memory_adapter=long_term_adapter)
 
     async def recent_character_name(uid):
         return names.get(uid)
 
     runtime.recent_character_name = recent_character_name
     return runtime, service, session
+
+
+async def run_scheduler_tick(runtime):
+    """Run one scheduler decision and wait for the finite channel sweeps it launched."""
+    await runtime.scheduler_tick()
+    await finish_automatic_flights(runtime)
 
 
 @pytest.mark.asyncio
@@ -1527,6 +1697,206 @@ async def test_current_role_automatic_pull_requires_enabled_current_intersection
         assert service.recent_roles == expected
         if not expected:
             assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel,switch_after", [("pull", "identity"), ("pull", "upload"), ("long_term", "identity")])
+async def test_current_role_switch_stops_the_old_role_before_its_next_memory_request(tmp_path, channel, switch_after):
+    """A response accepted for the selected role cannot carry a deselected role into its next request."""
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko", OTHER_UID: "Other"}, long_term=True,
+                                              chats={"Neko": [recent_row("human", "unsent", "1" * 32)]})
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        selected = select_runtime_current(runtime)
+
+        async def switch_role(request):
+            if (request.method, request.url.path.rsplit("/", 1)[1]) == {
+                    "identity": ("GET", "identity"), "upload": ("PUT", "recent-memory")}[switch_after]:
+                selected[0] = OTHER_UID
+
+        service.on_request = switch_role
+        service.requests.clear()
+        await runtime._automatic_channel(channel, await runtime.session_presence_provider())
+        sent = [(request.method, request.url.path.rsplit("/", 1)[1]) for request in service.requests]
+        state = runtime.recent_memory.state(DOMAIN.key())
+        if switch_after == "upload":
+            # The already-issued upload receipt still commits; only the next download stops.
+            assert sent == [("GET", "identity"), ("PUT", "recent-memory")]
+            assert state["pending"] is None and [row["text"] for row in state["base"]] == ["unsent"]
+        else:
+            # Neither the unsent chat nor a learned-memory check leaves for the deselected role.
+            assert sent == [("GET", "identity")]
+            assert state["base"] == []
+        assert state["revision"] == 0
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_current_role_switch_while_waiting_channel_lock_records_no_attempt(tmp_path, monkeypatch):
+    """A sweep queued behind another recent-memory pass rechecks the selection before admission or HTTP."""
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"},
+                                              chats={"Neko": [recent_row("human", "unsent", "1" * 32)]})
+    queued = asyncio.Event()
+    channel_pass = runtime._channel_pass
+
+    async def queued_pass(*args, **kwargs):
+        queued.set()
+        return await channel_pass(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_channel_pass", queued_pass)
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        selected = select_runtime_current(runtime)
+        presence = await runtime.session_presence_provider()
+        service.requests.clear()
+        async with runtime._recent_lock:
+            sweep = asyncio.create_task(runtime._automatic_channel("pull", presence))
+            # The selected role passed the outer filter and now waits for the channel lock.
+            await queued.wait()
+            selected[0] = OTHER_UID
+        await sweep
+        assert service.requests == []
+        assert runtime.scheduler.ready(DOMAIN.key(), "pull", runtime.state.binding(UID)["generation"], presence)
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_login_pause_idle_and_periodic_recent_pull(tmp_path):
+    """No consent or no login means no cloud work; a login pulls promptly, then every two minutes until paused."""
+    runtime, service, session = recent_role_runtime(tmp_path, {UID: "Neko"})
+    try:
+        await runtime.configure("https://sync.test")
+        await run_scheduler_tick(runtime)
+        assert service.requests == [] and "pull" not in runtime._flights
+        await runtime.enable(UID, "Neko")
+        service.requests.clear()
+        session["logged_in"] = False
+        await run_scheduler_tick(runtime)
+        assert service.requests == [] and "pull" not in runtime._flights
+        session["logged_in"] = True
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID]
+        runtime.test_clock[0] += 119_000
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID]
+        runtime.test_clock[0] += 1_000
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID, UID]
+        await runtime.pause(UID)
+        flight = runtime._flights["pull"]
+        runtime.test_clock[0] += 120_000
+        await run_scheduler_tick(runtime)
+        # A paused role launches no new channel sweep at all.
+        assert runtime._flights["pull"] is flight and service.recent_roles == [UID, UID]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_current_role_selection_and_catchup_wake_only_the_selected_role(tmp_path):
+    """Selecting a role pulls it promptly; a foreground catch-up never reschedules a deselected role."""
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko", OTHER_UID: "Other"})
+    other = ChatDomain(OWNER, OTHER_UID)
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        runtime.state.activate(runtime.state.prepare_binding(other), BINDING)
+        selected = select_runtime_current(runtime)
+        presence = await runtime.session_presence_provider()
+        await run_scheduler_tick(runtime)
+        selected[0] = OTHER_UID
+        await run_scheduler_tick(runtime)
+        # UID's periodic poll is two minutes away; only selecting it again makes it due now.
+        selected[0] = UID
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID, OTHER_UID, UID]
+        await runtime.request_catchup()
+        assert not runtime.scheduler.ready(other.key(), "pull", runtime.state.binding(OTHER_UID)["generation"], presence)
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == [UID, OTHER_UID, UID, UID]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_hint_also_wakes_the_long_term_memory_lane(tmp_path):
+    """A chat change notice makes the selected role's learned-memory check due together with its recent pull."""
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"}, long_term=True)
+    socket = SyntheticNotifications()
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        runtime._notification_connect = socket.connect
+        await runtime._manage_notifications(runtime.state.bindings(), await runtime.session_presence_provider())
+        await wait_notification(lambda: socket.receives >= 3)
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == service.long_term_roles == [UID]
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == service.long_term_roles == [UID]
+        # Learned memory has no notification channel of its own; it rides on the chat hint, not the profile one.
+        await socket.incoming.put(json.dumps({"type": "changed", "characterSyncId": UID, "channel": "chat"}))
+        await wait_notification(lambda: socket.receives >= 4)
+        await run_scheduler_tick(runtime)
+        assert service.recent_roles == service.long_term_roles == [UID, UID]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_status_counts_a_recent_memory_operation_frozen_by_a_lost_receipt(tmp_path):
+    """Status shows the frozen upload, removal and synced revision until the same operation is acknowledged."""
+    memo, first, second, third = (recent_row("system", "memo"), recent_row("human", "first", "1" * 32),
+                                  recent_row("ai", "second", "2" * 32), recent_row("human", "third", "3" * 32))
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"}, chats={"Neko": [memo, first]})
+
+    async def progress():
+        binding, = (await runtime.status())["bindings"]
+        return {key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch")}
+
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        await run_scheduler_tick(runtime)
+        assert await progress() == {"pendingOriginals": 0, "pendingDeletions": 0, "cursor": 1, "hasSealedBatch": False}
+        (tmp_path / "memory" / "Neko" / "recent.json").write_text(json.dumps([memo, second, third]), encoding="utf-8")
+        service.lose_receipt = True
+        await run_scheduler_tick(runtime)
+        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_unavailable"
+        # Two new entries and one removal stay frozen in the same unacknowledged operation.
+        assert await progress() == {"pendingOriginals": 2, "pendingDeletions": 1, "cursor": 1, "hasSealedBatch": True}
+        runtime.test_clock[0] += 3_000
+        await run_scheduler_tick(runtime)
+        assert await progress() == {"pendingOriginals": 0, "pendingDeletions": 0, "cursor": 2, "hasSealedBatch": False}
+        assert [row["text"] for row in service.rows[UID]] == ["memo", "second", "third"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_history_reads_the_recent_memory_projection_offline(tmp_path):
+    """History lists saved dialogue under its stable identity, hides the memo and needs no login or HTTP."""
+    runtime, service, session = recent_role_runtime(tmp_path, {UID: "Neko"}, chats={"Neko": [
+        recent_row("system", "private memo"), recent_row("human", "hello", "1" * 32, "1791540000123"),
+        recent_row("ai", "welcome back", "2" * 32)]})
+    session["logged_in"] = False
+    common = {"characterSyncId": UID, "originSeq": None, "originStreamId": None, "conversationId": None,
+              "replyToMessageId": None}
+    try:
+        assert await runtime.history(UID) == [
+            {**common, "messageId": "1" * 32, "role": "user", "text": "hello", "originalTime": "1791540000123"},
+            {**common, "messageId": "2" * 32, "role": "assistant", "text": "welcome back", "originalTime": None},
+        ]
+        # A role whose local character cannot be resolved has no shared projection.
+        assert await runtime.history(OTHER_UID) == []
+        assert service.requests == []
     finally:
         await runtime.close()
 
@@ -1625,7 +1995,11 @@ async def test_current_role_missing_constructor_provider_cannot_resume_saved_aut
         assert "pull" in reopened._flights
         await finish_automatic_flights(reopened)
         assert service.requests == []
-        assert reopened.state.binding(UID)["enabled"]
+        binding = reopened.state.binding(UID)
+        assert binding["enabled"]
+        # Not even an admission attempt was recorded for the saved role.
+        assert reopened.scheduler.ready(DOMAIN.key(), "pull", binding["generation"],
+                                        await reopened.session_presence_provider())
     finally:
         await reopened.close()
 
