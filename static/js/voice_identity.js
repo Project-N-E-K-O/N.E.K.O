@@ -154,6 +154,7 @@
         elements.stepTitle = document.getElementById('voice-identity-step-title');
         elements.stepBody = document.getElementById('voice-identity-step-body');
         elements.eyebrow = document.getElementById('voice-identity-eyebrow');
+        elements.processingLocation = document.getElementById('voice-identity-processing-location');
         elements.actions = document.getElementById('voice-identity-actions');
         elements.result = document.getElementById('voice-identity-result');
         elements.resultTitle = document.getElementById('voice-identity-result-title');
@@ -666,6 +667,7 @@
             && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
         if (elements.result) elements.result.hidden = !resultVisible;
         if (elements.eyebrow) elements.eyebrow.hidden = resultVisible;
+        if (elements.processingLocation) elements.processingLocation.hidden = resultVisible;
         if (elements.actions) elements.actions.hidden = resultVisible;
         if (elements.stepTitle) elements.stepTitle.hidden = resultVisible;
         if (elements.stepBody) elements.stepBody.hidden = !active || resultVisible;
