@@ -39,11 +39,14 @@ def test_resolve_avatar_telemetry_type(cfg, expected):
     assert resolve_avatar_telemetry_type(cfg) == expected
 
 
-def _patch_characters(monkeypatch, characters):
+def _patch_characters(monkeypatch, characters, *, do_not_track=False):
     import utils.config_manager as cm_mod
+    import utils.token_tracker.reporting as reporting
 
     fake_cm = types.SimpleNamespace(load_characters=lambda: characters)
     monkeypatch.setattr(cm_mod, "get_config_manager", lambda: fake_cm)
+    # Pin the opt-out flag so a developer's DO_NOT_TRACK=1 cannot change the outcome.
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", do_not_track)
 
 
 def test_record_avatar_state_counts_active_and_owned(monkeypatch):
@@ -85,14 +88,31 @@ def test_record_avatar_state_invalid_current_falls_back_to_first(monkeypatch):
     assert counters.get("avatar_type_active|type=mmd") == 1
 
 
+def test_record_avatar_state_respects_do_not_track(monkeypatch):
+    import utils.instrument as inst
+    from utils.token_tracker import record_avatar_state
+
+    _patch_characters(
+        monkeypatch,
+        {"当前猫娘": "A", "猫娘": {"A": _cat("live2d")}},
+        do_not_track=True,
+    )
+    inst.snapshot()
+    record_avatar_state()
+    counters = inst.snapshot().get("counters", {})
+    assert not any(k.startswith("avatar_type_") for k in counters)
+
+
 def test_record_avatar_state_never_raises(monkeypatch):
     import utils.instrument as inst
     import utils.config_manager as cm_mod
+    import utils.token_tracker.reporting as reporting
     from utils.token_tracker import record_avatar_state
 
     def _boom():
         raise RuntimeError("config unavailable")
 
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", False)
     monkeypatch.setattr(cm_mod, "get_config_manager", _boom)
     inst.snapshot()
     record_avatar_state()  # Must not raise.
