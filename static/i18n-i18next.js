@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Remove chat-sync labels whose controls were retired.
-    const LOCALE_VERSION = '2026-10-30-chat-sync-retired-keys';
+    const LOCALE_VERSION = '2026-10-30-chat-sync-profile-upload-key';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

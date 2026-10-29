@@ -1862,25 +1862,6 @@ body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-co
     pointer-events: auto;
 }
 
-/* Keep opt-in sync reachable in both full and compact current-chat surfaces. */
-#chatSyncButton {
-    width: 32px;
-    height: 32px;
-    border: 0;
-    border-radius: 8px;
-    color: #5f6c82;
-    background: transparent;
-    cursor: pointer;
-    pointer-events: auto;
-    flex: 0 0 auto;
-}
-
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #chatSyncButton {
-    position: absolute;
-    top: -36px;
-    right: 40px;
-}
-
 /* Only sync modals opt in to clicks; the transparent chat/body remains pass-through. */
 #chat-sync-dialog,
 #character-profile-sync-dialog {

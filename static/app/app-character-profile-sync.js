@@ -126,9 +126,6 @@
         const role = status.characters.find(item => item.displayName === name);
         if (!role) throw new Error('chat_sync_character_not_found');
         // The backend includes a durable pending resume in the effective saved choice.
-        if (typeof role.syncEnabled === 'boolean') return role.syncEnabled;
-        // A first grant still being issued is pending, not an explicit user pause.
-        if (role.binding && (role.binding.bindingId !== null || role.binding.generation > 1)) return !!role.binding.enabled;
         return role.syncEnabled === true;
     }
 
@@ -154,7 +151,7 @@
         }
     }
 
-    async function afterSave(name, initial) {
+    async function afterSave(name) {
         // Local saving already succeeded. A refusal still records divergence,
         // protecting this exact saved version from automatic remote replacement.
         try {
@@ -163,7 +160,7 @@
             if (!role || !role.binding) {
                 // Saving an unbound role still asks about upload, but consent
                 // cannot silently enable sync or invent an account/role binding.
-                if (window.confirm(text(initial ? 'profileInitialUpload' : 'profileUploadConfirm', {name: name}))) {
+                if (window.confirm(text('profileUploadConfirm', {name: name}))) {
                     window.alert(text('profileNeedsBinding'));
                 }
                 return;
@@ -172,7 +169,7 @@
             if (candidate.conflict || (candidate.renameRequired && candidate.apply_pending)) {
                 await review(role.characterSyncId, candidate); return;
             }
-            if (!candidate.dirty || !window.confirm(text(initial ? 'profileInitialUpload' : 'profileUploadConfirm', {name: name}))) return;
+            if (!candidate.dirty || !window.confirm(text('profileUploadConfirm', {name: name}))) return;
             await api('/characters/' + role.characterSyncId + '/profile/approve', {
                 localHash: candidate.local_hash, revision: candidate.head_revision});
         } catch (error) {

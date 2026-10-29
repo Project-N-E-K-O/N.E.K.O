@@ -5,7 +5,6 @@
     var dialog = null;
     var settingsCharacterName = null;
     var statusNode = null;
-    var DEFAULT_SERVICE_URL = 'https://sync.nekotech.cn';
     var operationRunning = false;
     var writerRecoveryRequired = false;
     var foregroundWakeRunning = false;
@@ -98,7 +97,7 @@
                     || activeUid !== requestedUid || !writerRecoveryRequired) return;
             statusNode.textContent = text('working');
             var path = '/characters/' + requestedUid;
-            var recovered = await api(path + '/recovery/preview', 'POST', { serviceUrl: DEFAULT_SERVICE_URL });
+            var recovered = await api(path + '/recovery/preview', 'POST');
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             await refreshStatus();
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
@@ -191,14 +190,6 @@
         },
         describeError: describeError
     };
-
-    document.addEventListener('DOMContentLoaded', function () {
-        var button = document.getElementById('chatSyncButton');
-        if (!button) return;
-        button.addEventListener('click', async function () {
-            await window.nekoChatSync.openSettings();
-        });
-    });
 
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground

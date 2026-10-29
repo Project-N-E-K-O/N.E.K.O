@@ -19,7 +19,8 @@ def run_script(assertions: str) -> None:
         const fs = require('node:fs');
         const vm = require('node:vm');
         const assert = require('node:assert/strict');
-        const documentEvents = {}, windowEvents = {}, intervals = [];
+        // Like a real document, a load event with no registered listener does nothing.
+        const documentEvents = {DOMContentLoaded(){}}, windowEvents = {}, intervals = [];
         function element() {
             return {children:[],events:{},dataset:{},open:false, setAttribute(){},
                 appendChild(child){this.children.push(child);}, addEventListener(name,callback){this.events[name]=callback;},
@@ -202,7 +203,7 @@ def test_pc_pet_ipc_bridge_delivers_hint_without_backfilling_full_chat_history()
 
 
 def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
-    """Old local test setup must not make a user's recovery request fail API validation."""
+    """A legacy saved origin never reaches recovery; the backend owns the built-in service."""
     run_script(r"""(async()=>{
         const uid='c'.repeat(32),requests=[];let needsRecovery=true;
         global.fetch=async(path,options)=>({ok:true,async json(){
@@ -219,8 +220,7 @@ def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
         }});
         await window.nekoChatSync.openSettings();
         await body.children[0].querySelector('[data-sync-action="recover"]').events.click();
-        assert.deepEqual(requests.filter(item=>item.path.endsWith('/recovery/preview')).map(item=>JSON.parse(item.body)),
-            [{serviceUrl:'https://sync.nekotech.cn'}]);
+        assert.deepEqual(requests.filter(item=>item.path.endsWith('/recovery/preview')).map(item=>item.body),[undefined]);
         assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')
             || item.path.endsWith('/recovery/deletions/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -339,8 +339,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             # This disposable page never reaches the running backend or user data.
             page.route("**/*", lambda route: route.abort())
             page.set_content(('<body class="electron-chat-window subtitle-web-host yui-guide-chat-buttons-disabled">' if kind == 'chat' else '<body>') +
-                             '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div>'
-                             '<button id="chatSyncButton">Sync</button></body>')
+                             '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div></body>')
             for href in stylesheets:
                 built = ROOT / href.lstrip("/")
                 if href.startswith("/static/react/") and not built.is_file():
@@ -364,8 +363,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             }""")
             if kind == "chat":
                 page.add_script_tag(path=str(SCRIPT))
-                page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
-                page.locator("#chatSyncButton").click()
+                page.evaluate("async () => await window.nekoChatSync.openSettings()")
                 modal = page.locator("#chat-sync-dialog")
             else:
                 page.add_script_tag(path=str(ROOT / "static/app/app-character-profile-sync.js"))
@@ -484,7 +482,7 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
         try:
             page = browser.new_page()
             page.route("**/*", lambda route: route.abort())
-            page.set_content('<button id="chatSyncButton">Sync</button>')
+            page.set_content('<body></body>')
             page.evaluate("""({labels}) => {
                 window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
                     .replace(/{{(.*?)}}/g, (_, name) => values[name]);
@@ -509,8 +507,7 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
                 };
             }""", {"labels": labels})
             page.add_script_tag(path=str(SCRIPT))
-            page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
-            page.locator("#chatSyncButton").click()
+            page.evaluate("async () => await window.nekoChatSync.openSettings()")
             modal = page.locator("#chat-sync-dialog")
             assert modal.locator('[data-sync-action]').count() == 1
             assert modal.locator('[data-sync-action="recover"]').is_enabled()
@@ -530,7 +527,7 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             expected = (labels["recoveryDeleteConfirm"].replace("{{count}}", "2")
                         .replace("{{localName}}", "Synthetic").replace("{{cloudName}}", "Cloud Neko"))
             assert messages == [expected]
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.nekotech.cn"}]
+            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => item.body === undefined)") == [True]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])
             assert page.evaluate("window.requests.some(item => ['/history/approve','/sync-choice','/enable','/sync'].some(suffix => item.path.endsWith(suffix)))") is False
             assert modal.locator('[data-sync-action="recover"]').is_disabled()
