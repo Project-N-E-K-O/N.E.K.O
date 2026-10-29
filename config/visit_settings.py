@@ -503,6 +503,12 @@ VISIT_OWN_LINES_PER_MINUTE = 6
 VISIT_REPLY_GAP_S = (1.0, 2.5)
 """Uniform random reply gap added after the peer's ``tail_ms``."""
 
+VISIT_HUMAN_REPLY_GRACE_S = 5.0
+"""Extra wait before this side's cat picks up a peer cat line that answered a human.
+
+The human gets this long to answer first; any human line cancels the pick-up.
+"""
+
 VISIT_WRAP_UP_STEP_S = 15
 """From ``begin`` until the peer's goodbye starts (first ``wu`` delta or ``wrap_up{speaking}``)."""
 

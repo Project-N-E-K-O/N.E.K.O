@@ -26,11 +26,13 @@ import pytest
 
 from config.visit_settings import (
     VISIT_ANOMALY_FINALIZE_COUNT,
+    VISIT_HUMAN_REPLY_GRACE_S,
     VISIT_INBOUND_TEXT_BURST,
     VISIT_LP_MAX,
     VISIT_LP_MAX_JUMP,
     VISIT_OUTBOX_PENDING_MAX_BYTES,
     VISIT_PIECES_MAX,
+    VISIT_REPLY_GAP_S,
 )
 from main_logic.visit.room import (
     IncomingLineDone,
@@ -777,11 +779,90 @@ def test_human_interrupt_abort_marks_pending_reply_stale():
     assert room.is_stale(plan)
 
 
-def test_reply_plan_for_line_to_my_human_is_not_created():
+def test_peer_cat_line_to_a_human_is_picked_up_after_the_grace():
+    # Without the pick-up nobody speaks after a cat answered a human: the dialogue stalls until the human types.
+    lo, hi = VISIT_REPLY_GAP_S
     room = make_room("host")
     peer = Peer(room)
+    r, eff = peer.line(0.0, to_kind="human", tail_ms=400)
+    assert eff.reply is not None and eff.reply.reply_to == r and not eff.reply.goodbye
+    assert room.pending_reply == eff.reply
+    done_at = 3.0
+    grace = VISIT_HUMAN_REPLY_GRACE_S
+    assert done_at + 0.4 + lo + grace <= eff.reply.not_before <= done_at + 0.4 + hi + grace
+    # A line addressed to this side's cat is still answered without the grace.
+    _, direct = peer.line(10.0)
+    assert direct.reply.not_before <= 13.0 + hi
+
+
+def test_human_reply_grace_is_injectable():
+    room = make_room("host", human_reply_grace_s=0.0, reply_gap_s=(0.0, 0.0))
+    _, eff = Peer(room).line(0.0, to_kind="human")
+    assert eff.reply.not_before == 3.0
+
+
+def test_local_human_line_during_the_grace_cancels_the_pick_up():
+    room = make_room("host")
+    peer, own = Peer(room), Own(room)
     _, eff = peer.line(0.0, to_kind="human")
+    assert eff.reply is not None
+    eff = room.on_local_human_line(own.new_ref(), 4.0)
+    assert eff.cancel_pending_reply
+    assert room.pending_reply is None
+
+
+def test_peer_human_line_during_the_grace_cancels_the_pick_up():
+    room = make_room("guest")
+    peer = Peer(room)
+    _, eff = peer.line(0.0, to_kind="human")
+    assert eff.reply is not None
+    eff = peer.start(peer.new_ref(), 4.0, speaker="human")
+    assert eff.cancel_pending_reply
+    assert room.pending_reply is None
+
+
+def test_peer_human_line_to_a_human_is_not_picked_up():
+    room = make_room("host")
+    _, eff = Peer(room).line(0.0, speaker="human", to_kind="human")
     assert eff.reply is None
+
+
+@pytest.mark.parametrize("reason", ["human_interrupt", "wrap_up", "visit_end", None])
+def test_peer_cat_line_to_a_human_cut_off_on_purpose_is_not_picked_up(reason):
+    room = make_room("host")
+    _, eff = Peer(room).line(0.0, to_kind="human", truncated=True, trunc_reason=reason)
+    assert eff.reply is None
+
+
+def test_picked_up_dialogue_still_wraps_up_after_six_quiet_cat_lines():
+    room = make_room("host")
+    peer, own = Peer(room), Own(room)
+    room.on_local_human_line(own.new_ref(), 0.0)
+    last, eff = peer.line(1.0, to_kind="human")
+    assert eff.reply is not None
+    t, actions = 10.0, [eff.wrap_up.action]
+    for i in range(5):
+        if i % 2 == 0:
+            last, eff = own.line(t, reply_to=last)
+        else:
+            last, eff = peer.line(t, reply_to=last)
+        actions.append(eff.wrap_up.action)
+        t += 10
+    assert actions == ["none"] * 5 + ["begin"]
+    assert room.phase == "wrap_up"
+
+
+def test_peer_cat_line_to_a_human_during_wrap_up_keeps_the_goodbye_plan():
+    room = make_room("host")
+    peer = Peer(room)
+    room.on_local_recall(0.0)
+    _, eff = peer.line(1.0, goodbye=True)
+    goodbye = room.pending_reply
+    assert goodbye is not None and goodbye.goodbye
+    _, eff = peer.line(5.0, to_kind="human")
+    assert eff.reply is None
+    assert not eff.cancel_pending_reply
+    assert room.pending_reply == goodbye
 
 
 def test_snapshot_is_plain_data():

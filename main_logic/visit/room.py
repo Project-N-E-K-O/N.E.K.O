@@ -32,6 +32,10 @@ Responsibilities kept here:
 * The one-sentence rule: six cat lines in a row without a human line, or 40
   own cat lines in this visit, start the wrap-up; at most six own cat lines
   per minute (delay only).
+* Picking the dialogue back up: a peer cat line that answered a human is
+  answered by this side's cat after an extra ``VISIT_HUMAN_REPLY_GRACE_S``
+  (the human gets to answer first; any human line cancels it), so the two
+  cats keep talking after a human joined in.
 * Staleness (``reply_to`` chain), human interruption and the guest
   "yield once" collision rule.
 * The wrap-up handshake with the 15 s step timer (stopped by the peer's first
@@ -60,6 +64,7 @@ from config.visit_settings import (
     VISIT_ANOMALY_FINALIZE_COUNT,
     VISIT_CLAUSE_MAX_MS,
     VISIT_CROP_DEFAULT,
+    VISIT_HUMAN_REPLY_GRACE_S,
     VISIT_LP_MAX,
     VISIT_LP_MAX_JUMP,
     VISIT_LP_REGRESS_MAX,
@@ -300,6 +305,7 @@ class VisitRoom:
         own_lines_per_visit: int = VISIT_OWN_LINES_PER_VISIT,
         own_lines_per_minute: int = VISIT_OWN_LINES_PER_MINUTE,
         reply_gap_s: tuple[float, float] = VISIT_REPLY_GAP_S,
+        human_reply_grace_s: float = VISIT_HUMAN_REPLY_GRACE_S,
         wrap_up_max_s: float = VISIT_WRAP_UP_MAX_S,
         wrap_up_step_s: float = VISIT_WRAP_UP_STEP_S,
         wrap_up_propose_timeout_s: float = VISIT_WRAP_UP_PROPOSE_TIMEOUT_S,
@@ -323,6 +329,7 @@ class VisitRoom:
         self._own_per_visit = int(own_lines_per_visit)
         self._own_per_minute = int(own_lines_per_minute)
         self._gap = (float(reply_gap_s[0]), float(reply_gap_s[1]))
+        self._human_grace_s = float(human_reply_grace_s)
         self._wrap_max_s = float(wrap_up_max_s)
         self._step_s = float(wrap_up_step_s)
         self._propose_timeout_s = float(wrap_up_propose_timeout_s)
@@ -576,8 +583,9 @@ class VisitRoom:
     def _gap_s(self) -> float:
         return float(self._rng.uniform(self._gap[0], self._gap[1]))
 
-    def _plan(self, reply_to: LineRef, tail_ms: int, now: float, *, goodbye: bool = False) -> ReplyPlan:
-        return ReplyPlan(reply_to=reply_to, not_before=now + tail_ms / 1000.0 + self._gap_s(),
+    def _plan(self, reply_to: LineRef, tail_ms: int, now: float, *, goodbye: bool = False,
+              extra_s: float = 0.0) -> ReplyPlan:
+        return ReplyPlan(reply_to=reply_to, not_before=now + tail_ms / 1000.0 + self._gap_s() + extra_s,
                          goodbye=goodbye)
 
     def _after_last_human(self, ref: LineRef) -> bool:
@@ -662,6 +670,10 @@ class VisitRoom:
 
     def _addressed_to_me(self, addressee_side: Optional[str], addressee_kind: Optional[str]) -> bool:
         return addressee_side == self.side and addressee_kind == "cat"
+
+    @staticmethod
+    def _addressed_to_human(addressee_kind: Optional[str]) -> bool:
+        return addressee_kind == "human"
 
     def _collision(self, reply_to: Optional[LineRef]) -> bool:
         """True when a peer cat line arrives while this side's cat is speaking.
@@ -775,7 +787,9 @@ class VisitRoom:
         but not in the consecutive streak, so the line is processed and never
         finalizes the visit). A line addressed to this side's cat produces a
         ``ReplyPlan`` with ``not_before = now + tail_ms / 1000 + U(gap)``; a
-        line truncated for an interrupting reason never gets a reply (see
+        peer cat line addressed to a human produces one that is
+        ``VISIT_HUMAN_REPLY_GRACE_S`` later (the dialogue would stall
+        otherwise); a line truncated for an interrupting reason never gets a reply (see
         ``IncomingLineDone.trunc_reason``). A final ``text`` whose speaker,
         addressee, reply target or goodbye flag contradicts the line's first
         piece is dropped as ``violation='line_meta_mismatch'``.
@@ -862,6 +876,14 @@ class VisitRoom:
         if self._phase == "active" and to_me and not silenced and not older:
             self._cancel_pending(eff)
             plan = self._plan(ev.ref, tail_ms, now)
+            self.pending_reply = plan
+            eff.reply = plan
+        elif (self._phase == "active" and speaker == "cat" and self._addressed_to_human(ad_kind)
+                and not silenced and not older):
+            # The peer cat answered a human: nobody else would speak again, so this side's cat picks the
+            # dialogue back up, later than a normal reply so the human can answer first (a human line cancels it).
+            self._cancel_pending(eff)
+            plan = self._plan(ev.ref, tail_ms, now, extra_s=self._human_grace_s)
             self.pending_reply = plan
             eff.reply = plan
         self._check_wrap_conditions(eff, now)
