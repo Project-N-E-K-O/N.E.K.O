@@ -5,24 +5,39 @@ set -e
 PIDS=()
 RELOADER_PID=""
 
-# 端口必须先规范化再导出。
+# 端口必须先校验再导出，而且**非法值要拒绝启动**，不能回落。
 #
-# 后端读端口用的是 config.network._read_port_env：非整数或超出 1-65535 时**回落到
-# 默认值**。如果这里保留原始值，就会出现"后端在默认端口起来了、nginx 却拿非法值
-# 去渲染 proxy_pass"→ nginx 拒绝启动，整个容器起不来。两边的判定必须一致。
+# 为什么不能回落：后端读端口用的是 config.network._read_port_env，它会静默回落到
+# 默认端口；但 nginx 渲染、Compose 健康检查、看门狗是**各自独立读环境变量**的。
+# 一旦入口脚本保留原始非法值，三者就会各说各话：
+#   - nginx 拿 notaport 去渲染 proxy_pass，拒绝启动；
+#   - 健康检查探 notaport → 永远失败，正常的容器被标成 unhealthy；
+#   - 看门狗 docker exec 进去也探 notaport → 把正常容器重启到预算耗尽。
+# 与其让三方对不上，不如在启动第一行就报错。
 normalize_port() {
     _port_name="$1"
     _port_default="$2"
     _port_raw="${!_port_name:-}"
-    case "$_port_raw" in
-        ''|*[!0-9]*) _port_value="" ;;
-        *) _port_value="$_port_raw" ;;
-    esac
-    if [ -z "$_port_value" ] || [ "$_port_value" -lt 1 ] || [ "$_port_value" -gt 65535 ]; then
-        [ -n "$_port_raw" ] && echo "⚠️  $_port_name=$_port_raw 不是 1-65535 的端口号，回落默认 $_port_default" >&2
-        _port_value="$_port_default"
+    if [ -z "$_port_raw" ]; then
+        export "$_port_name=$_port_default"
+        return 0
     fi
-    export "$_port_name=$_port_value"
+    # 先去掉前导零再判长度：bash 的 [ -lt ] 在超长数字（如 999999999999999999999）
+    # 上会报错返回非零，条件判反，非法值反而漏过去。
+    _port_digits=$(printf '%s' "$_port_raw" | sed 's/^0*//')
+    case "$_port_digits" in
+        ''|*[!0-9]*) _port_valid=0 ;;
+        *) if [ "${#_port_digits}" -le 5 ]; then _port_valid=1; else _port_valid=0; fi ;;
+    esac
+    if [ "$_port_valid" = "1" ] && [ "$_port_digits" -ge 1 ] && [ "$_port_digits" -le 65535 ]; then
+        export "$_port_name=$_port_digits"
+        return 0
+    fi
+    echo "❌ $_port_name=$_port_raw 不是 1-65535 的端口号，拒绝启动。" >&2
+    echo "   后端会在这个值上回落默认端口，而 nginx / 健康检查 / 看门狗各自读原始值：" >&2
+    echo "   健康检查会永远失败，看门狗会把正常容器重启到预算耗尽。" >&2
+    echo "   删掉这一行即使用默认 $_port_default。" >&2
+    exit 1
 }
 
 # 设置环境变量
