@@ -16,7 +16,7 @@ import pytest
 from memory.long_term_sync import DesktopLongTermAdapter, FILES, export_document, import_document, read_views
 from memory.event_log import EventLog, Reconciler
 from services.chat_sync.long_term import LongTermMemorySync
-from services.chat_sync.long_term_protocol import document, mutation
+from utils.long_term_memory_protocol import document, mutation
 from services.chat_sync.writer import store_connection
 from utils.file_utils import atomic_write_json
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
@@ -554,9 +554,15 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
     async def flush(uid):
         return await owner.native.consume(uid)
     monkeypatch.setattr(owner.adapter, 'flush', flush)
-    await owner.runtime._channel_pass(UID, 'long_term', manual=True)
+    presence = await owner.runtime.session_presence_provider()
+    await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET']
-    await owner.runtime._channel_pass(UID, 'long_term', manual=True)
+    # Nothing is left to upload, so the next check waits for the periodic poll.
+    assert await owner.runtime._channel_pass(UID, 'long_term', presence=presence) is None
+    assert [request.method for request in requests] == ['PUT', 'GET']
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+    owner.runtime.test_clock[0] += PULL_INTERVAL_MS
+    await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
     assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == local['operationId']
 

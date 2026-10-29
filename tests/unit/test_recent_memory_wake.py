@@ -91,10 +91,9 @@ async def test_recent_runtime_has_no_duplicate_body_scan_and_idles_until_write(t
         ticked.set()
     monkeypatch.setattr(runtime, 'scheduler_tick', tick)
     def forbidden_read(name):
-        raise AssertionError('body lane must not reread the projection')
+        raise AssertionError('an idle runtime must not reread the projection')
     monkeypatch.setattr(adapter, 'read', forbidden_read)
     try:
-        assert await runtime._channel_pass('a' * 32, 'body') is None
         runtime.start_scheduler()
         await asyncio.wait_for(ticked.wait(), 2)
         ticked.clear()

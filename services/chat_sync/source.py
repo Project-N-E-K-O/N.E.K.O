@@ -3,9 +3,9 @@
 Raw text, its arrival time and its origin order commit together. Recovery reuses
 the persisted message identities and never scans legacy text, row numbers or timestamps.
 
-Chat history includes visible Agent/tool-assisted replies; the wire carries inert
-text under the same character, consent, identity and deletion rules as other
-conversation records.
+Assistant replies are kept only when their turn proof names a chat or proactive
+origin; the wire carries inert text under the same character, consent, identity
+and deletion rules as other conversation records.
 """
 
 import asyncio
@@ -371,7 +371,7 @@ class AssistantOriginalBuffer:
             return
         if not isinstance(proof, dict) or proof.get("origin") not in ("chat", "proactive"):
             self._trace_exclusion(proof, "nonchat_origin" if isinstance(proof, dict)
-                                  and proof.get("origin") in ("agent", "avatar", "system", "tool", "mirror") else "unknown_origin")
+                                  and proof.get("origin") in ("avatar", "system") else "unknown_origin")
             return
         record_id = proof.get("recordId")
         if record_id in self._sealed:

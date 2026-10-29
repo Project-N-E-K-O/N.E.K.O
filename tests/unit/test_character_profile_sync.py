@@ -881,8 +881,8 @@ async def test_session_change_during_setup_is_retryable_and_keeps_the_saved_choi
     try:
         await runtime.request_new_role_sync(UID, "Synthetic")
         saved = runtime.state.new_role(UID)
-        with pytest.raises(ValueError, match="chat_sync_session_changed"):
-            await runtime._run_new_role_sync(UID, saved, "stale-session", manual=True)
+        # The scheduler's attempt records the retryable code instead of raising it.
+        assert await runtime._run_new_role_sync(UID, saved, "stale-session") is None
         assert runtime.state.new_role_errors() == {UID: "chat_sync_session_changed"}
         retained = runtime.state.new_role(UID)
         assert retained["requestId"] == saved["requestId"] and "error" not in retained
@@ -1418,7 +1418,7 @@ async def test_card_pending_on_is_visible_only_for_its_pinned_authority(tmp_path
                 else:
                     # Choices saved by older versions pinned the bound domain they approved.
                     request['historyBinding'] = {**runtime.state.binding(UID), 'owner_id': OTHER_OWNER}
-                runtime.state.queue_new_role(UID, request, replace=True)
+                runtime.state.queue_new_role(UID, request)
         assert (await runtime.status())['syncPendingChoices'] == {}
     finally:
         await runtime.close()
@@ -1434,8 +1434,7 @@ async def test_combined_choice_blocks_a_changed_history_binding(tmp_path, config
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
         # Choices saved by older versions pinned the bound domain they approved.
         with runtime.writer.locked():
-            runtime.state.queue_new_role(UID, {**runtime.state.new_role(UID), 'historyBinding': runtime.state.binding(UID)},
-                                         replace=True)
+            runtime.state.queue_new_role(UID, {**runtime.state.new_role(UID), 'historyBinding': runtime.state.binding(UID)})
         request = runtime.state.new_role(UID)
         if binding_removed:
             original_approve = runtime.profiles.store.approve

@@ -98,15 +98,18 @@ def test_failed_observation_is_nonfatal_and_leaves_sequence_gap(tmp_path):
 def test_assistant_source_diagnostic_only_accepts_fixed_metadata(tmp_path, event):
     path = tmp_path / "trace.jsonl"
     trace = ChatSyncTrace(path)
-    trace.emit(event, message_id="d" * 32, source_origin="agent", source_reason="nonchat_origin",
+    trace.emit(event, message_id="d" * 32, source_origin="avatar", source_reason="nonchat_origin",
                body="private-original", role_name="private-role", callback="private-callback", error="private-error")
     trace.emit(event, message_id="private-id", source_origin="private-origin", source_reason="private-reason")
+    # A reply text arriving after its sealed original is excluded under its own reason.
+    trace.emit(event, message_id="e" * 32, source_origin="chat", source_reason="late_after_seal")
     events = read_events(path)
-    assert len(events) == 2
+    assert len(events) == 3
     assert events[0]["message_id"] == "d" * 32
-    assert events[0]["source_origin"] == "agent"
+    assert events[0]["source_origin"] == "avatar"
     assert events[0]["source_reason"] == "nonchat_origin"
     assert set(events[1]) == {"v", "event", "clock_id", "seq", "wall_ms", "mono_ms"}
+    assert (events[2]["source_origin"], events[2]["source_reason"]) == ("chat", "late_after_seal")
     assert "private-" not in path.read_text(encoding="utf-8")
 
 
@@ -139,7 +142,8 @@ async def test_runtime_reports_resolver_and_http_spans_without_payloads(tmp_path
     try:
         await runtime.configure("https://synthetic.invalid")
         await runtime.enable(UID, "Neko")
-        result = await runtime._channel_pass(UID, "pull", manual=True)
+        presence = await runtime.session_presence_provider()
+        result = await runtime._channel_pass(UID, "pull", presence=presence)
         assert result["uploaded"] == 1
         events = read_events(path)
         begin = next(item for item in events if item["event"] == "session_begin")
@@ -174,7 +178,7 @@ async def test_unwritable_trace_does_not_change_successful_sync(tmp_path, monkey
         binding = await runtime.enable(UID, "Neko")
         assert binding == runtime.state.binding(UID) and binding["enabled"]
         before = trace._sequence
-        result = await runtime._channel_pass(UID, "pull", manual=True)
+        result = await runtime._channel_pass(UID, "pull", presence=await runtime.session_presence_provider())
         assert result["uploaded"] == 1
         assert recent_texts(recent) == ["private-original", "private-remote"]
         assert trace._sequence > before

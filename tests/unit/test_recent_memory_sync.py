@@ -13,8 +13,9 @@ from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F4
 from memory.recent_sync import RecentMemoryAdapter
 from services.chat_sync.ledger import ChatDomain
 from services.chat_sync.recent import RecentMemorySync
-from services.chat_sync.recent_protocol import MEMO_ID, canonical, changes, merge, mutation, snapshot
+from services.chat_sync.recent_protocol import canonical, changes, snapshot
 from services.chat_sync.writer import ChatSyncWriter
+from utils.recent_memory_protocol import MEMO_ID, merge, mutation
 
 
 OWNER = "12345678-1234-1234-1234-123456789abc"
@@ -242,12 +243,13 @@ async def test_runtime_uses_only_recent_endpoint_and_checks_binding_before_apply
     try:
         await runtime.configure('https://sync.test')
         await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
         if pause_during_download:
             with pytest.raises(ValueError, match='chat_sync_binding_changed'):
-                await runtime._channel_pass(UID, 'pull', manual=True)
+                await runtime._channel_pass(UID, 'pull', presence=presence)
             assert [item['data']['content'] for item in json.loads(path.read_text())] == ['memo', 'current chat']
         else:
-            result = await runtime._channel_pass(UID, 'pull', manual=True)
+            result = await runtime._channel_pass(UID, 'pull', presence=presence)
             assert result['uploaded'] == 2
             assert [item['data']['content'] for item in json.loads(path.read_text())] == ['memo', 'current chat', 'from phone']
             assert runtime.recent_memory.state(DOMAIN.key())['revision'] == 1

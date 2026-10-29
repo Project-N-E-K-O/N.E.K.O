@@ -19,7 +19,6 @@ class SyntheticRuntime:
     def __init__(self):
         """Keep exact IDs observable for binding and deletion assertions."""
         self.calls = []
-        self.flush_calls = []
         self.originals = [{"messageId": "b" * 32, "text": "synthetic"}]
         self.local_reply_records = []
 
@@ -47,11 +46,6 @@ class SyntheticRuntime:
         """Return local-only raw replies separately from canonical sync originals."""
         self.calls.append(("local_replies", uid))
         return list(self.local_reply_records)
-
-    def start_deletion_flush(self, uid):
-        """Represent detached sending without a real background task in route tests."""
-        assert uid == UID
-        self.flush_calls.append(uid)
 
 
 @pytest.fixture
@@ -237,17 +231,16 @@ def test_writer_recovery_routes_keep_preview_and_deletion_consent_separate(local
     })
     runtime.approve_recovery_deletions = AsyncMock(return_value={"status": "registered"})
     path = f"/api/chat-sync/characters/{UID}/recovery"
-    result = client.post(path + "/preview", json={"serviceUrl": "https://sync.nekotech.cn"})
+    result = client.post(path + "/preview")
     assert result.status_code == 200 and result.headers["Cache-Control"] == "no-store"
     assert result.json()['deletions']['taskId'] == 'e' * 32
-    runtime.recover_writer_role.assert_awaited_once_with(UID, "Neko", service_url="https://sync.nekotech.cn")
+    runtime.recover_writer_role.assert_awaited_once_with(UID, "Neko")
     runtime.approve_recovery_deletions.assert_not_awaited()
     for extra in ({"ownerId": OWNER}, {"messageIds": ["b" * 32]}, {"count": 1}):
         assert client.post(path + "/deletions/approve", json={"taskId": "e" * 32, **extra}).status_code == 422
     assert client.post(path + "/deletions/approve", json={"taskId": "e" * 32}).status_code == 200
     runtime.approve_recovery_deletions.assert_awaited_once_with(UID, "e" * 32)
-    assert client.post(f"/api/chat-sync/characters/{'f' * 32}/recovery/preview",
-                       json={"serviceUrl": "https://sync.nekotech.cn"}).status_code == 404
+    assert client.post(f"/api/chat-sync/characters/{'f' * 32}/recovery/preview").status_code == 404
 
 
 @pytest.mark.parametrize('enabled', [True, False])
@@ -266,10 +259,14 @@ def test_card_save_choice_is_local_authorized_and_rejects_extra_fields(local_cli
 
 
 @pytest.mark.parametrize("origin", ["https://untrusted.invalid", "https://sync.nekotech.cn.untrusted.invalid", "http://sync.nekotech.cn"])
-def test_browser_configuration_rejects_arbitrary_oauth_destinations(local_client, origin):
+def test_browser_cannot_choose_the_oauth_destination(local_client, origin):
+    """A supplied origin never reaches the runtime; recovery always uses its built-in service."""
+    from unittest.mock import AsyncMock
     client, runtime = local_client
+    runtime.recover_writer_role = AsyncMock(return_value={"deletions": None})
     path = f'/api/chat-sync/characters/{UID}/recovery/preview'
-    assert client.post(path, json={'serviceUrl': origin}).status_code == 422
+    assert client.post(path, json={'serviceUrl': origin}).status_code == 200
+    runtime.recover_writer_role.assert_awaited_once_with(UID, "Neko")
     assert runtime.calls == []
 
 

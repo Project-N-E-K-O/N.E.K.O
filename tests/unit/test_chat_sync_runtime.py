@@ -19,7 +19,7 @@ from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F4
 from tests.chat_sync_legacy_ledger import insert_legacy_original
 
 from services.chat_sync.ledger import ChatDomain, ChatOriginal
-from services.chat_sync.recent_protocol import merge, mutation
+from utils.recent_memory_protocol import merge, mutation
 from services.chat_sync.runtime import (
     ChatSyncServiceError, DesktopChatSyncRuntime, DesktopSyncState, _load_local_ca_context, _saved_session_commit_guard,
 )
@@ -931,7 +931,7 @@ async def test_builtin_service_changes_legacy_origin_only_inside_explicit_recove
         runtime.enable = AsyncMock(side_effect=ValueError("synthetic_stop_after_recovery"))
 
         with pytest.raises(ValueError, match="synthetic_stop_after_recovery"):
-            await runtime.recover_writer_role(UID, "Neko", service_url="https://sync.nekotech.cn")
+            await runtime.recover_writer_role(UID, "Neko")
         runtime.writer.check()
         assert runtime.state.settings()["service_url"] == "https://sync.nekotech.cn"
         binding = runtime.state.binding(UID)
@@ -1421,12 +1421,13 @@ def test_sqlite_worker_failure_is_bounded_observed_and_private(tmp_path, monkeyp
         runtime, _, _ = setup_runtime(tmp_path)
         calls = 0
 
-        def failed_arm():
+        def failed_deadline():
             nonlocal calls
             calls += 1
             raise sqlite3.OperationalError("synthetic private path and SQL")
 
-        monkeypatch.setattr(runtime.scheduler, "arm_wake", failed_arm)
+        # Every pass reads the durable deadline after its tick, so each pass fails here.
+        monkeypatch.setattr(runtime.scheduler, "next_wake_at", failed_deadline)
         # Stay above the Windows event-loop clock resolution (~15.6 ms).
         monkeypatch.setattr(module, "_RECENT_FALLBACK_SECONDS", 0.05)
         runtime.start_scheduler()
@@ -1940,7 +1941,7 @@ async def test_current_role_notification_subscription_replaces_only_selected_gra
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [ValueError("chat_sync_pull_timeout"), ChatSyncServiceError(429, 240000)])
+@pytest.mark.parametrize("failure", [ValueError("chat_sync_unavailable"), ChatSyncServiceError(429, 240000)])
 async def test_current_role_catchup_and_switch_preserve_retry_and_origin_backpressure(tmp_path, failure):
     """Selection changes and foreground hints never clear persisted error fences."""
     runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko", OTHER_UID: "Other"})
@@ -1966,10 +1967,13 @@ async def test_current_role_catchup_and_switch_preserve_retry_and_origin_backpre
         await finish_automatic_flights(runtime)
         assert service.requests == []
         assert not runtime.scheduler.ready(DOMAIN.key(), "pull", 1, presence)
-        assert runtime.scheduler.last_error(DOMAIN.key()) in {"chat_sync_pull_timeout", "chat_sync_service_rejected"}
+        assert runtime.scheduler.last_error(DOMAIN.key()) == (
+            "chat_sync_service_rejected" if origin_backoff else "chat_sync_unavailable")
         if origin_backoff:
             assert not runtime.scheduler.origin_ready()
-            assert await runtime._channel_pass(OTHER_UID, "pull", manual=True) is None
+            # Even the selected, otherwise admissible role sends nothing during the origin backoff.
+            selected[0] = OTHER_UID
+            assert await runtime._channel_pass(OTHER_UID, "pull", presence=presence) is None
             assert service.requests == []
     finally:
         await runtime.close()
@@ -2141,8 +2145,7 @@ async def test_binding_race_blocks_only_a_changed_saved_domain(tmp_path, monkeyp
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
         # Choices saved by older versions still pin the bound domain they approved.
         with runtime.writer.locked():
-            runtime.state.queue_new_role(UID, {**runtime.state.new_role(UID), 'historyBinding': runtime.state.binding(UID)},
-                                         replace=True)
+            runtime.state.queue_new_role(UID, {**runtime.state.new_role(UID), 'historyBinding': runtime.state.binding(UID)})
         saved = runtime.state.new_role(UID)
         async def response_race(*args, **kwargs):
             def replace_binding():
@@ -2162,8 +2165,7 @@ async def test_binding_race_blocks_only_a_changed_saved_domain(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('manual', [False, True])
-async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_retry(tmp_path, manual):
+async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_retry(tmp_path):
     """The real owner check must diagnose retained consent and leave all old work intact."""
     from services.chat_sync.profile_sync import DesktopProfileAdapter
     from tests.unit.test_character_profile_sync import Config, ProfileService
@@ -2180,12 +2182,7 @@ async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_
         saved, binding = runtime.state.new_role(UID), runtime.state.binding(UID)
         service.owner = OTHER_OWNER
         service.requests.clear()
-        operation = runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider(), manual=manual)
-        if manual:
-            with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
-                await operation
-        else:
-            await operation
+        await runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider())
         retained = runtime.state.new_role(UID)
         assert retained['lastError'] == 'chat_sync_account_mismatch'
         assert retained['next_at'] == saved['next_at'] and 'error' not in retained

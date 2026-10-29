@@ -563,6 +563,22 @@ def test_source_diagnostic_does_not_infer_unknown_or_mirror_sources(monkeypatch,
     assert "private-" not in str(trace.emit.call_args_list)
 
 
+@pytest.mark.parametrize("origin,reason", [
+    ("avatar", "nonchat_origin"), ("system", "nonchat_origin"), ("agent", "unknown_origin"),
+])
+def test_source_diagnostic_labels_only_produced_nonchat_origins(monkeypatch, origin, reason):
+    """Avatar and system turns are known non-chat sources; origins nothing produces stay unknown."""
+    trace = Mock(enabled=True)
+    monkeypatch.setattr(source_module, "get_trace", lambda: trace)
+    proof = {"recordId": "d" * 32, "originalTime": "123", "origin": origin}
+    buffer = AssistantOriginalBuffer()
+    buffer.append({"chat_original_source": proof, "text": "private-original"})
+    assert buffer.records == {}
+    trace.emit.assert_called_once_with(
+        "assistant_source_excluded", message_id="d" * 32, source_origin=origin, source_reason=reason,
+    )
+
+
 @pytest.mark.asyncio
 async def test_disabled_or_failed_source_diagnostic_does_not_change_behavior(tmp_path, monkeypatch):
     """Unavailable observation files cannot change source choice or consume a save."""

@@ -220,15 +220,11 @@ class DesktopSyncState:
             conn.execute("UPDATE sync_settings SET service_url=?", (service_url,))
             conn.commit()
 
-    def queue_new_role(self, uid, request, *, replace=False):
-        """Retries retain a fixed snapshot; a later explicit card save can replace its own intent."""
+    def queue_new_role(self, uid, request):
+        """Replace the saved intent; retries reuse this fixed snapshot until the next explicit save."""
         with closing(self._connect()) as conn, conn:
-            previous = conn.execute("SELECT request FROM sync_new_roles WHERE character_uid=?", (uid,)).fetchone()
-            if not replace and previous and json.loads(previous[0])["canonical"] != request["canonical"]:
-                raise ValueError("character_profile_changed")
-            if replace:
-                conn.execute("DELETE FROM sync_new_roles WHERE character_uid=?", (uid,))
-            conn.execute("INSERT OR IGNORE INTO sync_new_roles(character_uid,request) VALUES (?,?)", (uid, json.dumps(request)))
+            conn.execute("DELETE FROM sync_new_roles WHERE character_uid=?", (uid,))
+            conn.execute("INSERT INTO sync_new_roles(character_uid,request) VALUES (?,?)", (uid, json.dumps(request)))
 
     def choices(self):
         with closing(self._connect()) as conn:
@@ -412,8 +408,7 @@ class DesktopChatSyncRuntime:
         self._local_ca_file = os.environ.get(_LOCAL_CA_ENV) if http_client is None else None
         self._tls_lock = asyncio.Lock()
         self._lock = asyncio.Lock()
-        # Manual setup and automatic recovery consume the same fixed consent;
-        # only one may prepare/finish its history snapshot at a time.
+        # Only one setup attempt may consume a saved consent at a time.
         self._sync_choice_lock = asyncio.Lock()
         # This short gate never covers HTTP: pause and local response commits
         # have one order even when a worker starts after its async session check.
@@ -427,7 +422,6 @@ class DesktopChatSyncRuntime:
         self.current_character_uid_provider = current_character_uid_provider
         self._automatic_character_uid = None
         self._closing = False
-        self._login_present: bool | None = None
         self._retirement_check_at = 0
         # Injected HTTP tests stay offline unless they also supply a socket.
         self._notification_connect = notification_connect or (self._connect_notifications if http_client is None else None)
@@ -436,9 +430,6 @@ class DesktopChatSyncRuntime:
         self._notification_retry_at = 0
         self._notification_failures = 0
         self._notification_blocked_key = None
-        # Static profiles use the same owner/HTTPS fences but their own durable
-        # consent and conflict ledger. Tests never acquire a real profile adapter.
-
 
     def _service_settings(self):
         """Old service permissions require recovery before the production origin can be used."""
@@ -460,7 +451,7 @@ class DesktopChatSyncRuntime:
         with self._commit_lock:
             self.writer.recover(stage)
 
-    async def recover_writer_role(self, character_uid, local_name, *, service_url=None):
+    async def recover_writer_role(self, character_uid, local_name):
         """Verify current cloud fences before reusing any copied history candidate."""
         from services.chat_sync.writer import WriterQuarantined
         from services.chat_sync.recovery import (import_outage, pending_candidates, apply_cloud_deletions,
@@ -472,8 +463,6 @@ class DesktopChatSyncRuntime:
         except WriterQuarantined:
             await asyncio.to_thread(self.prepare_writer_recovery)
         await asyncio.to_thread(import_outage, self)
-        if service_url is not None:
-            await self.configure(service_url)
         # A new device/request and explicit service-authenticated binding revoke
         # old flights. Re-enabling alone does not approve any staged body/delete.
         await self.enable(character_uid, local_name)
@@ -570,16 +559,12 @@ class DesktopChatSyncRuntime:
 
     async def _run_scheduler(self) -> None:
         """Wake bounded local workers on saved writes, durable deadlines or the fallback interval."""
-        armed = False
         while not self._closing:
             # A burst of saved messages or an append followed by compression
             # needs one inspection, not one full read per write callback.
             await asyncio.sleep(0.2)
             self._wake.clear()
             try:
-                if not armed:
-                    await asyncio.to_thread(self.scheduler.arm_wake)
-                    armed = True
                 await self.scheduler_tick()
                 deadline = await asyncio.to_thread(self.scheduler.next_wake_at)
                 now = self.scheduler.clock()
@@ -626,12 +611,8 @@ class DesktopChatSyncRuntime:
             await self._stop_notifications()
             return
         if not presence:
-            self._login_present = False
             await self._stop_notifications()
             return
-        if self._login_present is False:
-            await asyncio.to_thread(self.scheduler.arm_wake)
-        self._login_present = True
         await self._recover_originals()
         current_uid = await self._current_character_uid()
         if current_uid != self._automatic_character_uid:
@@ -1161,21 +1142,21 @@ class DesktopChatSyncRuntime:
         async with self._lock:
             await asyncio.to_thread(self.state.configure, service_url)
 
-    def _queue_sync_choice(self, uid, name, profile, binding, epoch, *, include_history, replace):
+    def _queue_sync_choice(self, uid, name, profile, binding, epoch, *, include_history):
         """Pin one saved definition/range under the caller's writer lock before dependent work."""
         from services.chat_sync.profile_protocol import encode_character_profile
         request = {"requestId": uuid4().hex, "epoch": list(epoch), "displayName": name,
                    "canonical": encode_character_profile(profile).decode("utf-8")}
-        if replace and binding:
+        if binding:
             request["resumeGeneration"] = binding["generation"]
         if self.recent_memory is not None:
             previous = self.state.new_role(uid)
             request['recentExcludedIds'] = ([] if include_history else
                 (previous.get('recentExcludedIds', []) if previous and tuple(previous['epoch']) == epoch else
                  [row['id'] for row in self.recent_memory.adapter.read(name)['entries']]))
-        self.state.queue_new_role(uid, request, replace=replace)
+        self.state.queue_new_role(uid, request)
 
-    async def request_new_role_sync(self, character_uid, display_name, *, include_history=True, replace=False):
+    async def request_new_role_sync(self, character_uid, display_name, *, include_history=True):
         """Persist card consent locally; login and network never block saving a card."""
         binding = await asyncio.to_thread(self.state.binding, character_uid)
         if self.profiles.adapter is None:
@@ -1188,7 +1169,7 @@ class DesktopChatSyncRuntime:
                 if self.state.binding(character_uid) != binding:
                     raise ValueError("chat_sync_binding_changed")
                 self._queue_sync_choice(character_uid, display_name, profile, binding, epoch,
-                                        include_history=include_history, replace=replace)
+                                        include_history=include_history)
                 self.state.save_choice(character_uid, True)
         await asyncio.to_thread(commit)
         self.wake_scheduler()
@@ -1199,7 +1180,7 @@ class DesktopChatSyncRuntime:
         epoch = await asyncio.to_thread(self.writer.epoch)
         binding = await asyncio.to_thread(self.state.binding, uid)
         if enabled and (not binding or not binding["binding_id"] or not binding["enabled"]):
-            return await self.request_new_role_sync(uid, name, include_history=include_history, replace=True)
+            return await self.request_new_role_sync(uid, name, include_history=include_history)
         candidate = await self.profiles.local(uid) if enabled and binding and binding["binding_id"] else None
         def commit():
             with self._commit_lock, self.writer.locked():
@@ -1208,7 +1189,7 @@ class DesktopChatSyncRuntime:
                     raise ValueError("chat_sync_binding_changed")
                 if enabled and include_history:
                     # Queue first: a crash/failure during profile approval must retain the combined consent.
-                    self._queue_sync_choice(uid, name, candidate["local"], binding, epoch, include_history=True, replace=True)
+                    self._queue_sync_choice(uid, name, candidate["local"], binding, epoch, include_history=True)
                 if enabled and candidate and candidate["dirty"]:
                     self.profiles.store.approve(candidate["domain"], candidate["local_hash"], candidate["head_revision"])
                 self.state.save_choice(uid, enabled)
@@ -1223,7 +1204,7 @@ class DesktopChatSyncRuntime:
                     pending.pop("lastError", None)
                     from services.chat_sync.profile_protocol import encode_character_profile
                     pending["canonical"] = encode_character_profile(candidate["local"]).decode("utf-8")
-                    self.state.queue_new_role(uid, pending, replace=True)
+                    self.state.queue_new_role(uid, pending)
         await asyncio.to_thread(commit)
         self.wake_scheduler()
         return {"pending": enabled, "enabled": enabled}
@@ -1262,18 +1243,18 @@ class DesktopChatSyncRuntime:
         state = await asyncio.to_thread(self.profiles.store.status, ChatDomain(binding["owner_id"], uid).key()) if binding else None
         return state is None or state["base_revision"] == state["head_revision"] == 0
 
-    async def _run_new_role_sync(self, uid, request, presence, *, manual=False, initial_profile_only=False):
-        """Serialize manual setup with the scheduler's consumer of the same grant."""
+    async def _run_new_role_sync(self, uid, request, presence, *, initial_profile_only=False):
+        """Serialize every consumer of the same saved grant."""
         async with self._sync_choice_lock:
-            return await self._consume_sync_choice(uid, request, presence, manual=manual, initial_profile_only=initial_profile_only)
+            return await self._consume_sync_choice(uid, request, presence, initial_profile_only=initial_profile_only)
 
-    async def _consume_sync_choice(self, uid, request, presence, *, manual, initial_profile_only=False):
+    async def _consume_sync_choice(self, uid, request, presence, *, initial_profile_only=False):
         """Reuse binding, fixed profile approval and recent-memory exclusions under writer fences."""
         from services.chat_sync.profile_protocol import encode_character_profile
         async def active():
             if self._closing:
                 raise ValueError("chat_sync_closing")
-            if not manual and not initial_profile_only:
+            if not initial_profile_only:
                 await self._require_automatic_character(uid)
             await asyncio.to_thread(self.writer.require_epoch, tuple(request["epoch"]))
             if await self.session_presence_provider() != presence:
@@ -1362,7 +1343,7 @@ class DesktopChatSyncRuntime:
                                 if not self.state.choice_matches_binding(request, current):
                                     self.state.finish_new_role(uid)
                                 return
-                            self.state.queue_new_role(uid, {**request, "error": code}, replace=True)
+                            self.state.queue_new_role(uid, {**request, "error": code})
                 await asyncio.to_thread(block)
             elif code in {"chat_sync_account_mismatch", "chat_sync_login_required", "chat_sync_session_changed",
                           "chat_sync_session_unavailable", "chat_sync_unavailable", "chat_sync_retry_later",
@@ -1376,12 +1357,9 @@ class DesktopChatSyncRuntime:
                 except (ValueError, OSError, sqlite3.Error):
                     # A diagnostic must not replace the original failure or bypass writer recovery.
                     pass
-            if manual:
-                raise
         except (AutomaticRoleInactive, OSError, sqlite3.Error):
             # The protected intent and its durable retry deadline remain; local chat stays available.
-            if manual:
-                raise
+            pass
         finally:
             self.wake_scheduler()
 
@@ -1466,39 +1444,32 @@ class DesktopChatSyncRuntime:
             raise ValueError("chat_sync_binding_changed")
         await self._same_session(fingerprint)
 
-    async def _channel_pass(
-        self, character_uid: str, channel: str, *, presence: str | None = None, manual: bool = False,
-    ) -> dict | None:
+    async def _channel_pass(self, character_uid: str, channel: str, *, presence: str) -> dict | None:
         """Keep one correlation scope across lock admission, session and requests."""
         with self.trace.scope(span_id=self.trace.span_id(), character_uid=character_uid, operation=channel):
             self.trace.emit("channel_wait")
             try:
-                result = await self._channel_pass_inner(character_uid, channel, presence=presence, manual=manual)
+                result = await self._channel_pass_inner(character_uid, channel, presence=presence)
             except BaseException as exc:
                 self.trace.emit("channel_end", outcome="cancelled" if isinstance(exc, asyncio.CancelledError) else "error")
                 raise
             self.trace.emit("channel_end", outcome="success")
             return result
 
-    async def _channel_pass_inner(
-        self, character_uid: str, channel: str, *, presence: str | None = None, manual: bool = False,
-    ) -> dict | None:
+    async def _channel_pass_inner(self, character_uid: str, channel: str, *, presence: str) -> dict | None:
         """Admit one independently retried memory channel before sending data."""
         if channel == 'long_term' and self.long_term_memory is not None:
-            return await self._long_term_memory_pass(character_uid, presence=presence, manual=manual)
+            return await self._long_term_memory_pass(character_uid, presence=presence)
         if self.recent_memory is None:
             # Without recent memory sync there is no chat channel to run.
             return None
-        return await self._recent_memory_pass(character_uid, channel, presence=presence, manual=manual)
+        return await self._recent_memory_pass(character_uid, presence=presence)
 
-    async def _recent_memory_pass(self, uid, channel, *, presence=None, manual=False):
+    async def _recent_memory_pass(self, uid, *, presence):
         """Use the established pull admission for the bounded recent projection."""
-        if channel in {"deletion", "body"}:
-            return None
         from services.chat_sync.recent_protocol import changes
         async with self._recent_lock:
-            if not manual:
-                await self._require_automatic_character(uid)
+            await self._require_automatic_character(uid)
             binding = await asyncio.to_thread(self.state.binding, uid)
             if not binding or not binding["enabled"] or not binding["binding_id"]:
                 raise ValueError("chat_sync_not_enabled")
@@ -1526,14 +1497,13 @@ class DesktopChatSyncRuntime:
             if not await asyncio.to_thread(self.scheduler.origin_ready):
                 return None
             authenticated = await self._session()
-            presence = presence or authenticated[1]
             if presence != authenticated[1]:
                 raise ValueError("chat_sync_session_changed")
-            if not await asyncio.to_thread(self.scheduler.claim, domain.key(), "pull", binding["generation"], presence, manual=manual):
+            if not await asyncio.to_thread(self.scheduler.claim, domain.key(), "pull", binding["generation"], presence):
                 return None
             try:
                 _, request, commit = await self._bound_transport(uid, authenticated=authenticated,
-                    expected_binding=binding, automatic_only=not manual)
+                    expected_binding=binding, automatic_only=True)
                 can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
                 result = await self.recent_memory.sync(domain, name, request, commit, can_apply=can_apply)
                 await asyncio.to_thread(self.scheduler.success, domain.key(), "pull")
@@ -1551,10 +1521,9 @@ class DesktopChatSyncRuntime:
                 # declined admissions do not wake again and cannot form a loop.
                 self.wake_scheduler()
 
-    async def _long_term_memory_pass(self, uid, *, presence=None, manual=False):
+    async def _long_term_memory_pass(self, uid, *, presence):
         async with self._long_term_lock:
-            if not manual:
-                await self._require_automatic_character(uid)
+            await self._require_automatic_character(uid)
             binding = await asyncio.to_thread(self.state.binding, uid)
             if not binding or not binding['enabled'] or not binding['binding_id']:
                 raise ValueError('chat_sync_not_enabled')
@@ -1571,7 +1540,7 @@ class DesktopChatSyncRuntime:
             can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
             if can_apply():
                 applied = await self.long_term_memory.adapter.flush(uid)
-                if applied and self.history_changed and presence:
+                if applied and self.history_changed:
                     await self._notify_history_changed(binding, presence)
             if not dirty and not can_apply():
                 return None
@@ -1579,18 +1548,16 @@ class DesktopChatSyncRuntime:
                 await asyncio.to_thread(self.scheduler.request_check, domain.key(), 'long_term')
             if not await asyncio.to_thread(self.scheduler.origin_ready):
                 return None
-            if presence and not await asyncio.to_thread(self.scheduler.ready, domain.key(), 'long_term',
-                                                        binding['generation'], presence, manual=manual):
+            if not await asyncio.to_thread(self.scheduler.ready, domain.key(), 'long_term', binding['generation'], presence):
                 return None
             authenticated = await self._session()
-            presence = presence or authenticated[1]
             if presence != authenticated[1]:
                 raise ValueError('chat_sync_session_changed')
-            if not await asyncio.to_thread(self.scheduler.claim, domain.key(), 'long_term', binding['generation'], presence, manual=manual):
+            if not await asyncio.to_thread(self.scheduler.claim, domain.key(), 'long_term', binding['generation'], presence):
                 return None
             try:
                 _, request, commit = await self._bound_transport(uid, authenticated=authenticated,
-                    expected_binding=binding, automatic_only=not manual)
+                    expected_binding=binding, automatic_only=True)
                 result = await self.long_term_memory.sync(domain, grant, epoch, request, commit, can_apply=can_apply,
                                                           session_fingerprint=presence)
                 await asyncio.to_thread(self.scheduler.success, domain.key(), 'long_term')
@@ -1669,26 +1636,6 @@ class DesktopChatSyncRuntime:
             self.trace.emit("history_notify_end", span_id=span, character_uid=binding["character_uid"], outcome="error")
         else:
             self.trace.emit("history_notify_end", span_id=span, character_uid=binding["character_uid"], outcome="success")
-
-    async def flush_deletions(self, character_uid: str) -> int:
-        """Request markers now without bypassing their persisted retry deadline."""
-        receipt = await self._channel_pass(character_uid, "deletion", manual=True)
-        return receipt["deletions"] if receipt else 0
-
-    def start_deletion_flush(self, character_uid: str) -> None:
-        """Attempt network deletion after local commit without delaying local hiding."""
-        async def attempt():
-            """Keep fixed deletion requests intact on expected offline/auth failures."""
-            try:
-                await self.flush_deletions(character_uid)
-            except (ValueError, OSError, sqlite3.Error):
-                # Pending counts stay visible; retry keeps the same bytes and ID.
-                pass
-
-        # The immediate marker lane shares admission with automatic retries;
-        # repeated button presses cannot create extra accepted attempts.
-        self._track(asyncio.create_task(attempt()))
-        self.wake_scheduler()
 
     async def local_replies(self, character_uid: str) -> list[dict]:
         """Restore legacy records not yet enrolled in the shared chat history."""

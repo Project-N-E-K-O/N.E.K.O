@@ -26,13 +26,6 @@ async def _local_access(request: Request, response: Response) -> None:
 router = APIRouter(prefix="/api/chat-sync", tags=["chat-sync"], dependencies=[Depends(_local_access)])
 
 
-class ServiceConfiguration(BaseModel):
-    """Browser requests use the built-in origin; never forward OAuth to a supplied host."""
-
-    model_config = ConfigDict(extra="forbid")
-    serviceUrl: Literal["https://sync.nekotech.cn", "https://sync.nekotech.cn/"]
-
-
 class CharacterSyncChoice(BaseModel):
     """Accept explicit history consent; missing/old-client fields never expand a previous grant."""
 
@@ -247,11 +240,12 @@ async def close_runtime() -> None:
 
 
 @router.post("/characters/{character_uid}/recovery/preview")
-async def recovery_preview(character_uid: str, body: ServiceConfiguration, runtime: Runtime):
+async def recovery_preview(character_uid: str, runtime: Runtime):
     """Renew installation authority and verify one role before explicit history consent."""
     character = await _character(character_uid)
     try:
-        return await runtime.recover_writer_role(character_uid, character["displayName"], service_url=body.serviceUrl)
+        # The runtime always uses its built-in origin; the browser never supplies one.
+        return await runtime.recover_writer_role(character_uid, character["displayName"])
     except ValueError as exc:
         raise _error(exc) from None
 
@@ -264,5 +258,4 @@ async def recovery_approve_deletions(character_uid: str, body: HistoryApprovalRe
         result = await runtime.approve_recovery_deletions(character_uid, body.taskId)
     except ValueError as exc:
         raise _error(exc) from None
-    runtime.start_deletion_flush(character_uid)
     return result

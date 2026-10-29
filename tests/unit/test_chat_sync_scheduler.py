@@ -40,33 +40,33 @@ def test_new_transport_retry_uses_three_second_cap_without_periodic_poll(tmp_pat
 
 
 @pytest.mark.parametrize("attempts", [1, 8])
-def test_pull_timeout_retry_and_safe_error_survive_restart(tmp_path, attempts):
-    """A bounded download timeout remains a three-second retry after restart."""
+def test_transport_retry_and_safe_error_survive_restart(tmp_path, attempts):
+    """A transport failure remains a three-second retry after restart."""
     clock = [1000]
     path = tmp_path / "scheduler.db"
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda lo, hi: hi)
     assert scheduler.claim("a", "pull", 3, "session")
     for _ in range(attempts):
-        scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_pull_timeout"))
+        scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_unavailable"))
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
     with closing(scheduler._connect()) as conn:
         task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain='a' AND channel='pull'").fetchone()
     assert task["retry_at"] == 4000 and task["failures"] == attempts
     assert task["due_at"] == 0
     assert task["blocked_generation"] is None and task["blocked_session"] is None
-    assert scheduler.last_error("a") == "chat_sync_pull_timeout"
+    assert scheduler.last_error("a") == "chat_sync_unavailable"
     clock[0] = 3999
     assert not scheduler.ready("a", "pull", 3, "session", manual=True)
     clock[0] += 1
     assert scheduler.ready("a", "pull", 3, "session")
 
 
-def test_notification_and_verified_login_cannot_bypass_pull_timeout_retry(tmp_path):
-    """Both forms of notification wake retain the timeout's durable retry fence."""
+def test_notification_and_verified_login_cannot_bypass_transport_retry(tmp_path):
+    """Both forms of notification wake retain the transport failure's durable retry fence."""
     clock = [1000]
     scheduler = ChatSyncScheduler(tmp_path / "scheduler.db", clock=lambda: clock[0], uniform=lambda *_: 0)
     assert scheduler.claim("a", "pull", 3, "session")
-    scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_pull_timeout"))
+    scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_unavailable"))
     with closing(scheduler._connect()) as conn:
         before = dict(conn.execute("SELECT * FROM scheduler_tasks WHERE domain='a' AND channel='pull'").fetchone())
     scheduler.request_check("a", "pull")
@@ -81,15 +81,14 @@ def test_notification_and_verified_login_cannot_bypass_pull_timeout_retry(tmp_pa
     assert scheduler.claim("a", "pull", 3, "session")
 
 
-def test_pull_timeout_retry_keeps_other_roles_origin_retry_after(tmp_path):
-    """The shorter timeout retry cannot shorten an origin-wide 429 deadline."""
+def test_transport_retry_keeps_other_roles_origin_retry_after(tmp_path):
+    """The shorter transport retry cannot shorten an origin-wide 429 deadline."""
     clock = [1000]
     path = tmp_path / "scheduler.db"
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
     scheduler.failure("b", "profile", 3, "session", ChatSyncServiceError(429, 240000))
-    scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_pull_timeout"))
+    scheduler.failure("a", "pull", 3, "session", ValueError("chat_sync_unavailable"))
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    scheduler.arm_wake()
     scheduler.request_check("a", "pull", verified_login=(3, "session"))
     for now in (4000, 240999):
         clock[0] = now
@@ -103,7 +102,7 @@ def test_pull_timeout_retry_keeps_other_roles_origin_retry_after(tmp_path):
     assert scheduler.ready("b", "profile", 3, "session", manual=True)
 
 
-def test_old_transport_deadline_is_not_shortened_by_restart_wake_or_notification(tmp_path):
+def test_old_transport_deadline_is_not_shortened_by_restart_or_notification(tmp_path):
     """Previously persisted long transport retries retain their original deadline."""
     clock = [1000]
     path = tmp_path / "scheduler.db"
@@ -114,7 +113,6 @@ def test_old_transport_deadline_is_not_shortened_by_restart_wake_or_notification
         conn.execute("UPDATE scheduler_tasks SET retry_at=601000,failures=8,last_error='chat_sync_unavailable' "
                      "WHERE domain='a' AND channel='pull'")
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    scheduler.arm_wake()
     scheduler.request_check("a", "pull", verified_login=(3, "session"))
     with closing(scheduler._connect()) as conn:
         task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain='a' AND channel='pull'").fetchone()
@@ -234,14 +232,12 @@ def test_verified_login_repair_keeps_origin_retry_after(tmp_path):
     assert scheduler.ready("a", "pull", 3, "session")
 
 
-def test_startup_periodic_stagger_and_retry_are_persisted(tmp_path):
+def test_startup_periodic_poll_and_retry_are_persisted(tmp_path):
     """Startup is prompt; restart does not bypass periodic fallback or retry."""
     clock = [1000]
     path = tmp_path / "scheduler.db"
-    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda lo, hi: hi)
-    scheduler.arm_wake()
+    ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda lo, hi: hi)
     restarted = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
-    restarted.arm_wake()
     assert restarted.claim("a", "pull", 1, "session")
     restarted.success("a", "pull")
     assert restarted.claim("a", "long_term", 1, "session")
@@ -303,5 +299,47 @@ def test_last_error_ignores_rows_left_by_retired_body_and_marker_channels(tmp_pa
             ("a", "pull", 800, None),
         ])
     assert scheduler.last_error("a") is None
-    scheduler.failure("a", "pull", 1, "session", ValueError("chat_sync_pull_timeout"))
-    assert scheduler.last_error("a") == "chat_sync_pull_timeout"
+    scheduler.failure("a", "pull", 1, "session", ValueError("chat_sync_retry_later"))
+    assert scheduler.last_error("a") == "chat_sync_retry_later"
+
+
+# The scheduler_device shape every released version created before its unused
+# columns were dropped from new databases; wake_at had no default there.
+EARLIER_DEVICE_TABLE = """
+    CREATE TABLE scheduler_device (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        last_body_attempt INTEGER, origin_retry_at INTEGER NOT NULL,
+        wake_at INTEGER NOT NULL, last_domain TEXT,
+        body_at INTEGER NOT NULL DEFAULT 0)
+"""
+
+
+@pytest.mark.parametrize("earlier", [None, "empty", "far_wake"])
+def test_scheduler_opens_fresh_and_earlier_device_tables(tmp_path, earlier):
+    """New databases omit unread columns; earlier tables still open and admit without a wake gate."""
+    path = tmp_path / "scheduler.db"
+    clock = [1000]
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
+    if earlier is not None:
+        with closing(scheduler._connect()) as conn, conn:
+            conn.execute("DROP TABLE scheduler_device")
+            conn.execute(EARLIER_DEVICE_TABLE)
+            if earlier == "far_wake":
+                # A clock moved backwards leaves wake_at in the future; it no longer blocks admission.
+                conn.execute("INSERT INTO scheduler_device VALUES (1,900,0,999999999,'retired-domain',777)")
+        scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
+    with closing(scheduler._connect()) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(scheduler_device)")]
+        assert [tuple(row) for row in conn.execute("SELECT singleton, origin_retry_at FROM scheduler_device")] == [(1, 0)]
+    if earlier is None:
+        assert columns == ["singleton", "origin_retry_at", "wake_at"]
+    else:
+        assert columns == ["singleton", "last_body_attempt", "origin_retry_at", "wake_at", "last_domain", "body_at"]
+    assert scheduler.origin_ready()
+    assert scheduler.claim("a", "pull", 1, "session")
+    scheduler.failure("a", "pull", 1, "session", ChatSyncServiceError(429, 240_000))
+    assert not scheduler.origin_ready()
+    assert scheduler.next_wake_at() == 241_000
+    clock[0] = 241_000
+    assert scheduler.origin_ready()
+    assert scheduler.ready("b", "profile", 1, "session")
