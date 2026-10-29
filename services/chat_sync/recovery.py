@@ -124,10 +124,8 @@ def stage_authority(runtime):
                        "ON CONFLICT(uid) DO UPDATE SET status='pending'")
         source.execute("INSERT INTO source_recovery_roles SELECT DISTINCT uid,'pending' FROM source_recovery_delete_ids WHERE 1 "
                        "ON CONFLICT(uid) DO UPDATE SET status='pending'")
-        source.execute("UPDATE source_history_tasks SET status='quarantined'")
         source.execute("UPDATE source_recovery_delete_tasks SET status='quarantined'")
         source.execute('DELETE FROM source_origin_streams')
-        source.execute('UPDATE source_originals SET pending=0')
         source.execute('UPDATE source_unbound SET deletion_pending=0')
         # Candidate bodies can enter this table only after current cloud fences.
         # Their stable IDs/origins remain in the quarantine table meanwhile.
@@ -172,7 +170,7 @@ def import_outage(runtime):
                 source.execute('INSERT OR IGNORE INTO source_recovery_delete_ids VALUES (NULL,?,?)', (uid, identity))
                 source.execute("INSERT OR IGNORE INTO source_recovery_roles VALUES (?,'pending')", (uid,))
                 source.execute('UPDATE source_recovery_candidates SET original=NULL,payload=NULL,deleted=1 WHERE uid=? AND record_id=?', (uid, identity))
-                source.execute('UPDATE source_originals SET original=NULL,pending=0,deleted=1 WHERE uid=? AND record_id=?', (uid, identity))
+                source.execute('UPDATE source_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=?', (uid, identity))
                 source.execute('UPDATE source_unbound SET original=NULL,deleted=1,deletion_pending=0 WHERE uid=? AND record_id=?', (uid, identity))
 
 
@@ -232,7 +230,7 @@ def apply_cloud_deletions(runtime, domain, identities):
                            (domain.character_uid, identity, domain.owner_id))
             source.execute('DELETE FROM source_recovery_delete_ids WHERE uid=? AND message_id=? AND (owner IS NULL OR owner=?)',
                            (domain.character_uid, identity, domain.owner_id))
-            source.execute('UPDATE source_originals SET original=NULL,pending=0,deleted=1 WHERE uid=? AND record_id=? AND owner=?',
+            source.execute('UPDATE source_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=? AND owner=?',
                            (domain.character_uid, identity, domain.owner_id))
             source.execute('UPDATE source_unbound SET original=NULL,deleted=1,deletion_pending=0 WHERE uid=? AND record_id=?', (domain.character_uid, identity))
     runtime.ledger.purge_deleted_originals(domain)
@@ -268,10 +266,10 @@ def apply_checked_candidates(runtime, domain, candidates, results):
                 source.execute('DELETE FROM source_originals WHERE record_id=? AND uid=? AND owner=?',
                                (identity, domain.character_uid, domain.owner_id))
                 source.execute('INSERT OR IGNORE INTO source_unbound '
-                               '(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq,verified_owner) '
-                               "VALUES (?,?,'private-chat-original-v1',?,?,?,0,?,?,?)",
+                               '(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq) '
+                               "VALUES (?,?,'private-chat-original-v1',?,?,?,0,?,?)",
                                (identity, domain.character_uid, row['original'], row['original_hash'],
-                                row['queued_at_ms'] or 0, row['origin_stream_id'], row['origin_seq'], domain.owner_id))
+                                row['queued_at_ms'] or 0, row['origin_stream_id'], row['origin_seq']))
 
 
 def finish_role(runtime, domain, binding, fingerprint):

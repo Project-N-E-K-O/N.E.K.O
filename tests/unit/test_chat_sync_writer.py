@@ -913,8 +913,8 @@ async def test_repeated_outage_recovery_coalesces_identical_bound_and_unbound_pr
     source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
     with closing(store_connection(source.path)) as conn, conn:
         # An earlier history grant moved the same proven bytes into the bound lane.
-        conn.execute('INSERT INTO source_originals (record_id,owner,uid,original,original_hash,pending,deleted,'
-                     'queued_at_ms,origin_stream_id,origin_seq) SELECT record_id,?,uid,original,original_hash,1,0,'
+        conn.execute('INSERT INTO source_originals (record_id,owner,uid,original,original_hash,deleted,'
+                     'queued_at_ms,origin_stream_id,origin_seq) SELECT record_id,?,uid,original,original_hash,0,'
                      'queued_at_ms,origin_stream_id,origin_seq FROM source_unbound WHERE record_id=?', (domain.owner_id, identity))
         conn.execute('UPDATE source_unbound SET original=NULL WHERE record_id=?', (identity,))
     runtime.prepare_writer_recovery()
@@ -952,6 +952,124 @@ def test_recovery_conflicting_null_and_bound_proof_stays_hidden(tmp_path):
     assert pending_candidates(runtime, domain) == []
     with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
         assert conn.execute('SELECT count(*) FROM source_recovery_candidates WHERE status=\'unchecked\'').fetchone()[0] == 2
+
+
+# The sources.sqlite3 shape the previous main build left behind: its retired
+# tables and columns, plus history backfill rows that name the local and cloud roles.
+_EARLIER_SOURCE_TABLES = """
+DROP TABLE source_originals;
+DROP TABLE source_unbound;
+DROP TABLE source_history_tasks;
+DROP TABLE source_history_members;
+CREATE TABLE source_identity (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    database_id TEXT NOT NULL, generation TEXT NOT NULL);
+CREATE TABLE source_originals (
+    record_id TEXT PRIMARY KEY, owner TEXT NOT NULL, uid TEXT NOT NULL,
+    original TEXT, original_hash TEXT NOT NULL,
+    pending INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0,
+    queued_at_ms INTEGER, history_task_id TEXT, origin_stream_id TEXT, origin_seq INTEGER);
+CREATE TABLE source_unbound (
+    record_id TEXT PRIMARY KEY, uid TEXT NOT NULL, scope TEXT NOT NULL,
+    original TEXT, original_hash TEXT NOT NULL, queued_at_ms INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0, origin_stream_id TEXT, origin_seq INTEGER,
+    verified_owner TEXT, deletion_pending INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE source_role_reassignments (
+    old_uid TEXT PRIMARY KEY, owner TEXT NOT NULL, new_uid TEXT NOT NULL UNIQUE);
+CREATE TABLE source_history_tasks (
+    task_id TEXT PRIMARY KEY, uid TEXT NOT NULL, binding TEXT NOT NULL,
+    service_url TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    database_id TEXT NOT NULL, generation TEXT NOT NULL,
+    local_name TEXT NOT NULL, cloud_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'preview', count INTEGER NOT NULL, device_id TEXT);
+CREATE TABLE source_history_members (
+    task_id TEXT NOT NULL, record_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'waiting', original_hash TEXT, origin_stream_id TEXT, origin_seq INTEGER,
+    PRIMARY KEY(task_id,record_id));
+INSERT INTO source_identity VALUES (1, 'database', 'generation');
+INSERT INTO source_history_tasks VALUES ('task-retired', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}', 'https://sync.test',
+    'fingerprint', 'database', 'generation', 'Local Neko', 'Cloud Neko', 'approved', 1, 'device');
+INSERT INTO source_history_members VALUES ('task-retired', '66666666666666666666666666666666', 0, 'waiting', NULL, NULL, NULL);
+INSERT INTO source_history_tasks VALUES ('task-other', 'cccccccccccccccccccccccccccccccc', '{}', 'https://sync.test',
+    'fingerprint', 'database', 'generation', 'Other Neko', 'Other Neko', 'preview', 1, NULL);
+INSERT INTO source_history_members VALUES ('task-other', '77777777777777777777777777777777', 0, 'waiting', NULL, NULL, NULL);
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('earlier_release', [False, True])
+async def test_source_store_saves_recovers_and_retires_on_fresh_and_earlier_schemas(tmp_path, earlier_release):
+    """Fresh stores never create retired source tables; stores from the previous build keep working unchanged."""
+    from contextlib import nullcontext
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
+    from services.chat_sync.recovery import apply_checked_candidates, finish_role, pending_candidates
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.writer import store_connection
+    async def session():
+        return {'logged_in': False}
+    runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', session, witness_path=tmp_path / 'device' / 'writer.json',
+                                     session_commit_guard=lambda _: nullcontext())
+    try:
+        domain = ChatDomain('12345678-1234-4234-8234-123456789abc', 'a' * 32)
+        uid = domain.character_uid
+        path = runtime.state.path.parent / 'sources.sqlite3'
+        if earlier_release:
+            with closing(store_connection(path)) as conn, conn:
+                conn.executescript(_EARLIER_SOURCE_TABLES)
+        source = ChatOriginalSource(path)
+        binding = runtime.state.activate(runtime.state.prepare_binding(domain), 'b' * 32)
+        source.commit(domain.owner_id, uid, '1' * 32, ChatOriginal('user', 'bound'))
+        source.commit_unbound(uid, '2' * 32, ChatOriginal('user', 'unbound'))
+        source.commit(domain.owner_id, uid, '3' * 32, ChatOriginal('user', 'deleted during outage'))
+        with closing(sqlite3.connect(runtime.state.path.parent / 'outage.sqlite3')) as conn, conn:
+            conn.execute('CREATE TABLE outage_deletions (uid TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(uid,message_id))')
+            conn.execute('INSERT INTO outage_deletions VALUES (?,?)', (uid, '3' * 32))
+        runtime.prepare_writer_recovery()
+        binding = runtime.state.activate(runtime.state.prepare_binding(domain), 'b' * 32)
+        candidates = pending_candidates(runtime, domain)
+        assert sorted(row['record_id'] for row in candidates) == ['1' * 32, '2' * 32]
+        states = {'1' * 32: 'deleted', '2' * 32: 'missing'}
+        apply_checked_candidates(runtime, domain, candidates,
+                                 [{'messageId': row['record_id'], 'state': states[row['record_id']]} for row in candidates])
+        finish_role(runtime, domain, binding, 'session')
+        with closing(sqlite3.connect(path)) as conn:
+            # Outage and cloud deletions erase bound bodies but keep their identities.
+            assert conn.execute('SELECT record_id,original,deleted FROM source_originals ORDER BY record_id').fetchall() == [
+                ('1' * 32, None, 1), ('3' * 32, None, 1)]
+            unbound = conn.execute('SELECT record_id,uid,scope,original,deleted FROM source_unbound').fetchall()
+        assert [(row[0], row[1], row[2], json.loads(row[3])['text'], row[4]) for row in unbound] == [
+            ('2' * 32, uid, 'private-chat-original-v1', 'unbound', 0)]
+        source.commit(domain.owner_id, uid, '4' * 32, ChatOriginal('user', 'after recovery'))
+        source.commit_unbound(uid, '5' * 32, ChatOriginal('user', 'after recovery unbound'))
+        assert source.stored_ids(uid) == {str(index) * 32 for index in range(1, 6)}
+        runtime._purge_retired_character(runtime.state.binding(uid), 'session', runtime.writer.epoch())
+        with closing(sqlite3.connect(path)) as conn:
+            for table in ('source_originals', 'source_unbound', 'source_local_replies', 'source_origin_streams',
+                          'source_history_tasks', 'source_recovery_candidates', 'source_recovery_roles',
+                          'source_recovery_delete_ids', 'source_recovery_delete_tasks'):
+                assert conn.execute(f'SELECT count(*) FROM {table} WHERE uid=?', (uid,)).fetchone() == (0,), table
+            # Only the other role's legacy history task and member are left.
+            assert conn.execute('SELECT task_id FROM source_history_tasks').fetchall() == (
+                [('task-other',)] if earlier_release else [])
+            assert conn.execute('SELECT task_id FROM source_history_members').fetchall() == (
+                [('task-other',)] if earlier_release else [])
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            columns = {table: {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+                       for table in ('source_originals', 'source_unbound', 'source_history_tasks', 'source_history_members')}
+            retired_columns = {'source_originals': {'pending', 'history_task_id'}, 'source_unbound': {'verified_owner'},
+                               'source_history_tasks': {'device_id'},
+                               'source_history_members': {'original_hash', 'origin_stream_id', 'origin_seq'}}
+            if earlier_release:
+                # Leftover tables and columns are not dropped; their rows hold no chat text.
+                assert conn.execute('SELECT * FROM source_identity').fetchall() == [(1, 'database', 'generation')]
+                assert conn.execute('SELECT count(*) FROM source_role_reassignments').fetchone() == (0,)
+                assert all(retired <= columns[table] for table, retired in retired_columns.items())
+            else:
+                assert tables.isdisjoint({'source_identity', 'source_role_reassignments'})
+                assert all(retired.isdisjoint(columns[table]) for table, retired in retired_columns.items())
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

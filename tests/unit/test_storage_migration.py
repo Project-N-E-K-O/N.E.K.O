@@ -4776,7 +4776,7 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
     request = {'requestId': 'f' * 32, 'epoch': list(runtime.writer.epoch()), 'canonical': '{}'}
     runtime.state.queue_new_role(UID, request)
     runtime.state.save_choice(UID, True)
-    pending_sources = rows(source.path, 'SELECT * FROM source_originals WHERE pending=1 ORDER BY rowid')
+    bound_sources = rows(source.path, 'SELECT * FROM source_originals ORDER BY rowid')
     saved_request = runtime.state.new_role(UID)
     await runtime.close()
     originals = {path.name: path.read_bytes() for path in (source_root / 'chat_sync').iterdir() if path.is_file()}
@@ -4800,7 +4800,7 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
         assert rows(reopened.ledger.path, 'SELECT deletion_id, payload FROM chat_deletions') == [
             (deletion.deletion_id, deletion.payload)]
         moved_source = ChatOriginalSource(target_root / 'chat_sync' / 'sources.sqlite3')
-        assert rows(moved_source.path, 'SELECT * FROM source_originals WHERE pending=1 ORDER BY rowid') == pending_sources
+        assert rows(moved_source.path, 'SELECT * FROM source_originals ORDER BY rowid') == bound_sources
         assert moved_source.read_local_replies(moved_source.path, UID)[0]['text'] == 'local tool reply'
         # The retained source is an old snapshot, not another writable device.
         with pytest.raises(WriterQuarantined):

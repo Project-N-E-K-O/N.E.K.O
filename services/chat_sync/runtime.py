@@ -907,7 +907,6 @@ class DesktopChatSyncRuntime:
                               "source_history_tasks", "source_recovery_candidates", "source_recovery_roles",
                               "source_recovery_delete_ids", "source_recovery_delete_tasks"):
                     conn.execute(f"DELETE FROM {table} WHERE uid=?", (uid,))
-                conn.execute("DELETE FROM source_role_reassignments WHERE old_uid=? OR new_uid=?", (uid, uid))
             for filename, tables in (
                 ("originals.sqlite3", ("chat_pending", "chat_batches", "chat_originals", "chat_downloaded",
                                       "chat_tombstones", "chat_deletions", "chat_recovery_deletion_pages",

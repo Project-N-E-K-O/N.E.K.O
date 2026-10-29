@@ -1,7 +1,7 @@
 """Durable new private-chat originals, independent of memory projections and Steam.
 
-Raw text and a pending-ledger marker commit together. Recovery reuses persisted
-source/database identities and never scans legacy text, row numbers or timestamps.
+Raw text, its arrival time and its origin order commit together. Recovery reuses
+the persisted message identities and never scans legacy text, row numbers or timestamps.
 
 Chat history includes visible Agent/tool-assisted replies; the wire carries inert
 text under the same character, consent, identity and deletion rules as other
@@ -41,28 +41,25 @@ class ChatOriginalSource:
         if self.path.exists():
             with closing(self._connect()) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                required = {'source_identity', 'source_originals', 'source_unbound', 'source_local_replies',
+                required = {'source_originals', 'source_unbound', 'source_local_replies',
                             'source_origin_streams', 'source_history_tasks', 'source_history_members',
                             'source_recovery_candidates', 'source_recovery_roles', 'source_recovery_delete_ids',
-                            'source_recovery_delete_tasks', 'source_recovery_delete_members', 'source_role_reassignments'}
-                migrations = {'source_originals': {'queued_at_ms', 'history_task_id', 'origin_stream_id', 'origin_seq'},
-                              'source_unbound': {'origin_stream_id', 'origin_seq', 'verified_owner', 'deletion_pending'},
-                              'source_history_tasks': {'device_id'},
-                              'source_history_members': {'original_hash', 'origin_stream_id', 'origin_seq'}}
+                            'source_recovery_delete_tasks', 'source_recovery_delete_members'}
+                migrations = {'source_originals': {'queued_at_ms', 'origin_stream_id', 'origin_seq'},
+                              'source_unbound': {'origin_stream_id', 'origin_seq', 'deletion_pending'}}
                 if required <= tables and all(columns <= {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                                                for table, columns in migrations.items()):
                     return
         with closing(self._connect()) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
+            # Older versions wrote history backfill tasks that name the local and
+            # cloud roles. Nothing reads them now, but retiring a role still erases
+            # them, so fresh stores keep both history tables for that cleanup.
             connection.executescript("""
-                CREATE TABLE IF NOT EXISTS source_identity (
-                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-                    database_id TEXT NOT NULL, generation TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS source_originals (
                     record_id TEXT PRIMARY KEY, owner TEXT NOT NULL, uid TEXT NOT NULL,
                     original TEXT, original_hash TEXT NOT NULL,
-                    pending INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0,
-                    queued_at_ms INTEGER);
+                    deleted INTEGER NOT NULL DEFAULT 0, queued_at_ms INTEGER);
                 CREATE TABLE IF NOT EXISTS source_unbound (
                     record_id TEXT PRIMARY KEY, uid TEXT NOT NULL, scope TEXT NOT NULL,
                     original TEXT, original_hash TEXT NOT NULL, queued_at_ms INTEGER NOT NULL,
@@ -72,8 +69,6 @@ class ChatOriginalSource:
                     original TEXT, original_hash TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS source_origin_streams (
                     uid TEXT PRIMARY KEY, stream_id TEXT NOT NULL UNIQUE, next_seq INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS source_role_reassignments (
-                    old_uid TEXT PRIMARY KEY, owner TEXT NOT NULL, new_uid TEXT NOT NULL UNIQUE);
                 CREATE TABLE IF NOT EXISTS source_history_tasks (
                     task_id TEXT PRIMARY KEY, uid TEXT NOT NULL, binding TEXT NOT NULL,
                     service_url TEXT NOT NULL, fingerprint TEXT NOT NULL,
@@ -92,32 +87,19 @@ class ChatOriginalSource:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(source_originals)")}
             if "queued_at_ms" not in columns:
                 connection.execute("ALTER TABLE source_originals ADD COLUMN queued_at_ms INTEGER")
-            if "history_task_id" not in columns:
-                connection.execute("ALTER TABLE source_originals ADD COLUMN history_task_id TEXT")
-            # Missing historical pins remain unknown; never backfill them from
-            # the current device or raw payload during an additive migration.
-            task_columns = {row[1] for row in connection.execute("PRAGMA table_info(source_history_tasks)")}
-            if "device_id" not in task_columns:
-                connection.execute("ALTER TABLE source_history_tasks ADD COLUMN device_id TEXT")
-            member_columns = {row[1] for row in connection.execute("PRAGMA table_info(source_history_members)")}
-            if "original_hash" not in member_columns:
-                connection.execute("ALTER TABLE source_history_members ADD COLUMN original_hash TEXT")
             # Only new raw commits allocate trustworthy order. Missing legacy
             # source metadata stays NULL rather than borrowing row/time order.
-            for table in ("source_originals", "source_unbound", "source_history_members"):
+            for table in ("source_originals", "source_unbound"):
                 origin_columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 for name, kind in (("origin_stream_id", "TEXT"), ("origin_seq", "INTEGER")):
                     if name not in origin_columns:
                         connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
             unbound_columns = {row[1] for row in connection.execute("PRAGMA table_info(source_unbound)")}
-            if "verified_owner" not in unbound_columns:
-                connection.execute("ALTER TABLE source_unbound ADD COLUMN verified_owner TEXT")
             if "deletion_pending" not in unbound_columns:
                 connection.execute("ALTER TABLE source_unbound ADD COLUMN deletion_pending INTEGER NOT NULL DEFAULT 0")
                 # Retained proven deletion IDs predate this outbox flag. Their
                 # raw bytes stay erased while first binding can deliver markers.
                 connection.execute("UPDATE source_unbound SET deletion_pending=1 WHERE deleted=1")
-            connection.execute("INSERT OR IGNORE INTO source_identity VALUES (1,?,?)", (uuid4().hex, uuid4().hex))
             connection.commit()
 
     def _connect(self):
@@ -142,21 +124,6 @@ class ChatOriginalSource:
         connection.execute("UPDATE source_origin_streams SET next_seq=next_seq+1 WHERE uid=?", (uid,))
         return stream, seq
 
-    @staticmethod
-    def _require_current_uid(connection, uid, owner=None):
-        """A late producer cannot recreate source authority for a retired cloud identity."""
-        if connection.execute("SELECT 1 FROM source_role_reassignments WHERE old_uid=?", (uid,)).fetchone():
-            raise ValueError("chat_source_role_reassigned")
-        previous = connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone()
-        if owner is not None and previous and previous["owner"] != owner:
-            raise ValueError("chat_sync_owner_mismatch")
-
-    def reassignment(self, old_uid):
-        """Return the fixed local transfer so config-write crash recovery reuses the same UID."""
-        with closing(self._connect()) as connection:
-            row = connection.execute("SELECT owner,old_uid,new_uid FROM source_role_reassignments WHERE old_uid=?", (old_uid,)).fetchone()
-        return None if row is None else {"ownerId": row["owner"], "oldUid": row["old_uid"], "newUid": row["new_uid"]}
-
     def stored_ids(self, uid):
         """Include erased IDs so reading the archive cannot restore a deleted record."""
         with closing(self._connect()) as connection:
@@ -166,42 +133,32 @@ class ChatOriginalSource:
 
     def commit_unbound(self, uid, record_id, original: ChatOriginal):
         """Keep producer-proven raw bytes without assigning an account or upload task."""
-        self.commit_history(uid, [(record_id, original)])
-
-    def commit_history(self, uid, records):
-        """Import archive records in one durable transaction, preserving producer fences."""
         from utils.config_manager.reserved_schema import is_valid_character_uid
         if not is_valid_character_uid(uid):
             raise ValueError("invalid_chat_source_identity")
-        committed = []
+        if not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
+            raise ValueError("invalid_chat_source_identity")
+        payload = json.dumps(asdict(original), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._require_current_uid(connection, uid)
-            for record_id, original in records:
-                if not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
-                    raise ValueError("invalid_chat_source_identity")
-                payload = json.dumps(asdict(original), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-                digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-                if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
+            if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
+                raise ValueError("chat_source_identity_conflict")
+            old = connection.execute("SELECT uid,original_hash FROM source_unbound WHERE record_id=?", (record_id,)).fetchone()
+            bound = connection.execute("SELECT uid,original_hash FROM source_originals WHERE record_id=?", (record_id,)).fetchone()
+            if old or bound:
+                if tuple(old or bound) != (uid, digest):
                     raise ValueError("chat_source_identity_conflict")
-                old = connection.execute("SELECT uid,original_hash FROM source_unbound WHERE record_id=?", (record_id,)).fetchone()
-                bound = connection.execute("SELECT uid,original_hash FROM source_originals WHERE record_id=?", (record_id,)).fetchone()
-                if old or bound:
-                    if tuple(old or bound) != (uid, digest):
-                        raise ValueError("chat_source_identity_conflict")
-                    continue
-                stream, seq = self._allocate_origin(connection, uid)
-                connection.execute("INSERT INTO source_unbound "
-                                   "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq,verified_owner) "
-                                   "VALUES (?,?,?,?,?,?,0,?,?,?)",
-                                   (record_id, uid, "private-chat-original-v1", payload, digest, time.time_ns() // 1_000_000, stream, seq,
-                                    (connection.execute("SELECT owner FROM source_role_reassignments WHERE new_uid=?", (uid,)).fetchone() or [None])[0]))
-                committed.append(record_id)
-        for record_id in committed:
-            get_trace().emit("source_committed", character_uid=uid, message_id=record_id, local_message_id=record_id)
+                return
+            stream, seq = self._allocate_origin(connection, uid)
+            connection.execute("INSERT INTO source_unbound "
+                               "(record_id,uid,scope,original,original_hash,queued_at_ms,deleted,origin_stream_id,origin_seq) "
+                               "VALUES (?,?,?,?,?,?,0,?,?)",
+                               (record_id, uid, "private-chat-original-v1", payload, digest, time.time_ns() // 1_000_000, stream, seq))
+        get_trace().emit("source_committed", character_uid=uid, message_id=record_id, local_message_id=record_id)
 
     def commit(self, owner, uid, record_id, original: ChatOriginal):
-        """Atomically save immutable raw bytes and the recoverable pending marker."""
+        """Atomically save immutable raw bytes under the role's fixed owner."""
         ChatDomain(owner, uid)
         if not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
             raise ValueError("invalid_chat_source_identity")
@@ -209,7 +166,6 @@ class ChatOriginalSource:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._require_current_uid(connection, uid, owner)
             if connection.execute("SELECT 1 FROM source_local_replies WHERE record_id=?", (record_id,)).fetchone():
                 raise ValueError("chat_source_identity_conflict")
             old = connection.execute("SELECT * FROM source_originals WHERE record_id=?", (record_id,)).fetchone()
@@ -224,12 +180,12 @@ class ChatOriginalSource:
                 if tuple(unbound) != (uid, digest):
                     raise ValueError("chat_source_identity_conflict")
                 return
-            # Save actual arrival alongside raw bytes and pending=1. Recovery or
-            # an idempotent producer retry must never restart the waiting clock.
+            # Save actual arrival alongside raw bytes. Recovery or an
+            # idempotent producer retry must never restart the waiting clock.
             stream, seq = self._allocate_origin(connection, uid)
             connection.execute(
                 "INSERT INTO source_originals "
-                "(record_id,owner,uid,original,original_hash,pending,deleted,queued_at_ms,origin_stream_id,origin_seq) VALUES (?,?,?,?,?,1,0,?,?,?)",
+                "(record_id,owner,uid,original,original_hash,deleted,queued_at_ms,origin_stream_id,origin_seq) VALUES (?,?,?,?,?,0,?,?,?)",
                 (record_id, owner, uid, payload, digest, time.time_ns() // 1_000_000, stream, seq),
             )
         get_trace().emit("source_committed", character_uid=uid, message_id=record_id, local_message_id=record_id)
@@ -343,31 +299,6 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
             # sync failure never reports that the user's local save failed.
             print("[chat-sync] local_original_sync_unavailable")
             return None
-        return record_id
-    except ValueError as error:
-        if str(error) != "chat_source_role_reassigned":
-            raise
-        # A producer can hold the old config across the source/config-file commit gap.
-        # Follow only the fixed local lineage, retaining raw text without recreating a
-        # retired cloud identity. A newer Off is observed under the same commit gate.
-        def retain_reassigned():
-            with runtime._commit_lock:
-                target, owner, seen = uid, None, set()
-                while mapping := source.reassignment(target):
-                    if target in seen or owner not in (None, mapping["ownerId"]):
-                        raise ValueError("chat_source_integrity_error")
-                    seen.add(target)
-                    owner, target = mapping["ownerId"], mapping["newUid"]
-                current = runtime.state.binding(target)
-                if current and current["owner_id"] != owner:
-                    raise ValueError("chat_sync_owner_mismatch")
-                if current and current["enabled"] and runtime.state.choices().get(target, True):
-                    # This is the existing producer grant, never a newly created consent.
-                    source.commit(owner, target, record_id, original)
-                else:
-                    source.commit_unbound(target, record_id, original)
-        await asyncio.to_thread(retain_reassigned)
-        runtime.wake_scheduler()
         return record_id
     # Keep the original durable before the model starts; ledger replay belongs
     # to the owned scheduler, so the producer never waits for backlog processing.

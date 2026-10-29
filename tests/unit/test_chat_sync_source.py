@@ -51,11 +51,11 @@ def source_for(runtime):
     return ChatOriginalSource(Path(runtime.state.path).parent / "sources.sqlite3")
 
 
-def pending_rows(source):
-    """Read bound originals still marked pending, in durable insertion order."""
+def bound_rows(source):
+    """Read bound originals in durable insertion order."""
     with closing(sqlite3.connect(source.path)) as connection:
         connection.row_factory = sqlite3.Row
-        return [dict(row) for row in connection.execute("SELECT * FROM source_originals WHERE pending=1 ORDER BY rowid")]
+        return [dict(row) for row in connection.execute("SELECT * FROM source_originals ORDER BY rowid")]
 
 
 def legacy_local_reply(source, uid, record_id, original, origin="agent"):
@@ -66,7 +66,8 @@ def legacy_local_reply(source, uid, record_id, original, origin="agent"):
                            (record_id, uid, origin, payload, hashlib.sha256(payload.encode("utf-8")).hexdigest()))
 
 
-def test_archive_batch_uses_one_transaction_and_rolls_back_conflicting_records(tmp_path, monkeypatch):
+def test_unbound_commit_uses_one_transaction_and_rolls_back_conflicting_bytes(tmp_path, monkeypatch):
+    """One unbound original is one transaction; a retry with other bytes changes nothing."""
     source = source_for(make_runtime(tmp_path, bound=False))
     connect, statements = source._connect, []
     def counted_connection():
@@ -76,17 +77,23 @@ def test_archive_batch_uses_one_transaction_and_rolls_back_conflicting_records(t
     monkeypatch.setattr(source, "_connect", counted_connection)
     trace = Mock()
     monkeypatch.setattr(source_module, "get_trace", lambda: trace)
-    records = [(f"{index:032x}", RAW) for index in range(1, 41)]
-    records.append(("f" * 32, ChatOriginal("assistant", "assistant text")))
-    source.commit_history(UID, records)
+    assistant = ChatOriginal("assistant", "assistant text")
+    source.commit_unbound(UID, "f" * 32, assistant)
     assert statements.count("BEGIN IMMEDIATE") == statements.count("COMMIT") == 1
-    assert len(source.stored_ids(UID)) == 41
-    assert trace.emit.call_count == 41
-    before = source.stored_ids(UID)
+    assert source.stored_ids(UID) == {"f" * 32}
+    assert trace.emit.call_count == 1
+    # The same bytes again are an idempotent retry, not a second record.
+    source.commit_unbound(UID, "f" * 32, assistant)
+    assert trace.emit.call_count == 1
+    with sqlite3.connect(source.path) as connection:
+        before = connection.execute("SELECT stream_id,next_seq FROM source_origin_streams").fetchall()
     with pytest.raises(ValueError, match="identity_conflict"):
-        source.commit_history(UID, [("e" * 32, RAW), ("f" * 32, RAW)])
-    assert source.stored_ids(UID) == before
-    assert trace.emit.call_count == 41
+        source.commit_unbound(UID, "f" * 32, RAW)
+    assert source.stored_ids(UID) == {"f" * 32}
+    assert trace.emit.call_count == 1
+    with sqlite3.connect(source.path) as connection:
+        assert connection.execute("SELECT stream_id,next_seq FROM source_origin_streams").fetchall() == before
+        assert json.loads(connection.execute("SELECT original FROM source_unbound").fetchone()[0])["text"] == "assistant text"
 
 
 @pytest.mark.parametrize("bound", [False, True])
@@ -177,19 +184,19 @@ def test_source_commit_retries_keep_raw_bytes_and_arrival_time(tmp_path, monkeyp
     identity = "1" * 32
     patch_module_clock(monkeypatch, source_module, time_ns=lambda: 100_000_000)
     source.commit(OWNER, UID, identity, RAW)
-    first = pending_rows(source)[0]
+    first = bound_rows(source)[0]
     assert first["queued_at_ms"] == 100
     patch_module_clock(monkeypatch, source_module, time_ns=lambda: 900_000_000)
     source.commit(OWNER, UID, identity, RAW)
     reopened = ChatOriginalSource(source.path)
-    assert pending_rows(reopened) == [first]
+    assert bound_rows(reopened) == [first]
     assert ChatOriginal(**json.loads(first["original"])) == RAW
     assert first["record_id"] == identity
     with pytest.raises(ValueError, match="chat_source_identity_conflict"):
         source.commit(OWNER, UID, identity, ChatOriginal("user", RAW.text.strip()))
     with pytest.raises(ValueError, match="chat_source_identity_conflict"):
         source.commit(OTHER, UID, identity, RAW)
-    assert len(pending_rows(source)) == 1
+    assert len(bound_rows(source)) == 1
 
 
 def test_concurrent_commits_keep_one_identity_and_atomic_failure_leaves_no_record(tmp_path):
@@ -203,13 +210,13 @@ def test_concurrent_commits_keep_one_identity_and_atomic_failure_leaves_no_recor
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         list(executor.map(commit_same_original, range(24)))
-    assert len(pending_rows(source)) == 1
+    assert len(bound_rows(source)) == 1
     with sqlite3.connect(source.path) as connection:
         connection.execute("CREATE TRIGGER fail_source BEFORE INSERT ON source_originals "
                            "BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END")
     with pytest.raises(sqlite3.IntegrityError, match='synthetic rollback'):
         source.commit(OWNER, UID, '9' * 32, RAW)
-    assert [row["record_id"] for row in pending_rows(source)] == [identity]
+    assert [row["record_id"] for row in bound_rows(source)] == [identity]
     with sqlite3.connect(source.path) as connection:
         # Idempotent retries and rolled-back raw inserts never consume order.
         assert connection.execute("SELECT next_seq FROM source_origin_streams WHERE uid=?", (UID,)).fetchone() == (2,)
@@ -223,7 +230,7 @@ def test_source_sequence_exhaustion_keeps_stream_and_rejects_next_raw_commit(tmp
         stream = connection.execute("SELECT stream_id FROM source_origin_streams WHERE uid=?", (UID,)).fetchone()[0]
         connection.execute("UPDATE source_origin_streams SET next_seq=? WHERE uid=?", (MAX_ORIGIN_SEQ, UID))
     source.commit(OWNER, UID, "2" * 32, RAW)
-    assert pending_rows(source)[0]["origin_seq"] == MAX_ORIGIN_SEQ
+    assert bound_rows(source)[0]["origin_seq"] == MAX_ORIGIN_SEQ
     with pytest.raises(ValueError, match="^source_sequence_exhausted$"):
         source.commit_unbound(UID, "3" * 32, RAW)
     with sqlite3.connect(source.path) as connection:
@@ -272,7 +279,7 @@ async def test_save_preserves_unbound_proof_without_upload_and_keeps_paused_owne
     with sqlite3.connect(tmp_path / "sources.sqlite3") as connection:
         row = connection.execute("SELECT record_id,original FROM source_unbound").fetchone()
     assert row[0] == unbound_id and json.loads(row[1])["text"] == RAW.text
-    assert pending_rows(source_for(runtime)) == []
+    assert bound_rows(source_for(runtime)) == []
     runtime.wake_scheduler.assert_not_called()
     runtime.state.prepare_binding(DOMAIN)
     runtime.state.pause(UID)
@@ -280,7 +287,7 @@ async def test_save_preserves_unbound_proof_without_upload_and_keeps_paused_owne
     assert len(identity) == 32
     assert runtime.state.binding(UID)["enabled"] == 0
     assert runtime.ledger.visible_originals(DOMAIN) == []
-    row = pending_rows(source_for(runtime))[0]
+    row = bound_rows(source_for(runtime))[0]
     assert row["owner"] == OWNER
     assert row["record_id"] == identity
     original = ChatOriginal(**json.loads(row["original"]))
@@ -300,7 +307,7 @@ async def test_save_keeps_pending_when_ledger_temporarily_fails(tmp_path, monkey
     # An unusable ledger proves the save path never consults it.
     runtime.ledger = Mock(spec=[])
     identity = await save_original("Lan", "user", RAW.text, config_manager=manager)
-    assert pending_rows(source_for(runtime))[0]["record_id"] == identity
+    assert bound_rows(source_for(runtime))[0]["record_id"] == identity
     runtime.wake_scheduler.assert_called_once_with()
     assert runtime.ledger.mock_calls == []
 
@@ -317,7 +324,7 @@ async def test_save_does_not_wake_before_original_commit_succeeds(tmp_path, monk
     with pytest.raises(sqlite3.OperationalError, match="synthetic disk failure"):
         await save_original("Lan", "user", RAW.text, config_manager=manager)
     runtime.wake_scheduler.assert_not_called()
-    assert pending_rows(source_for(runtime)) == []
+    assert bound_rows(source_for(runtime)) == []
     assert runtime.ledger.visible_originals(DOMAIN) == []
 
 
@@ -843,10 +850,10 @@ async def test_actual_tool_dispatch_syncs_complete_reply_text(
         "visible_chunks": len(visible),
         "proof_origins": [p["origin"] for p in proofs],
         "local_reply_count": len(local),
-        "pending_upload_sources": len(pending_rows(source)),
+        "pending_upload_sources": len(bound_rows(source)),
     }
     assert local == [], report
-    pending = pending_rows(source)
+    pending = bound_rows(source)
     assert len(pending) == 1, report
     row = pending[0]
     assert json.loads(row["original"])["text"] == "".join(visible) == prefix + post_text
