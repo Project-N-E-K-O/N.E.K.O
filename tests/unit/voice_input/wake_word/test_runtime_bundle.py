@@ -148,8 +148,28 @@ def test_capacity_refuses_to_delete_published_versions(artifact):
         staged = bundle.stage_runtime(root=root)
         bundle.publish_runtime(root, staged["ticket"])
         (bundle._current(root) / "sherpa_onnx/__init__.py").write_text("broken")
-    with pytest.raises(bundle.RuntimeBundleError, match="resource_cache_unsafe"):
+    pointer = (root / "current.json").read_bytes()
+    with pytest.raises(bundle.RuntimeBundleError, match="^resource_cache_full$"):
         bundle.stage_runtime(root=root)
+    assert len(list(root.glob(bundle.WHEEL_SHA256 + "-*"))) == 3
+    assert (root / "current.json").read_bytes() == pointer
+
+
+def test_capacity_reached_after_staging_preserves_pending_and_current(artifact):
+    root, _ = artifact
+    first = bundle.stage_runtime(root=root)
+    bundle.publish_runtime(root, first["ticket"])
+    (bundle._current(root) / "sherpa_onnx/__init__.py").write_text("broken")
+    staged = bundle.stage_runtime(root=root)
+    # Another owner can consume the remaining capacity before publication.
+    for ticket in ("1" * 32, "2" * 32):
+        (root / (bundle.WHEEL_SHA256 + "-" + ticket)).mkdir()
+    pointer = (root / "current.json").read_bytes()
+    with pytest.raises(bundle.RuntimeBundleError, match="^resource_cache_full$"):
+        bundle.publish_runtime(root, staged["ticket"])
+    assert (root / "current.json").read_bytes() == pointer
+    assert (root / "pending").is_dir()
+    assert (root / "pending.id").read_text() == staged["ticket"]
     assert len(list(root.glob(bundle.WHEEL_SHA256 + "-*"))) == 3
 
 

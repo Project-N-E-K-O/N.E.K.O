@@ -72,7 +72,7 @@ def stage_runtime(*, root: Path | None = None, on_progress=None) -> dict:
             # Preserve the damaged generation; repair publishes a fresh one.
             pass
         if len(tuple(root.glob(WHEEL_SHA256 + "-*"))) >= 3:
-            raise RuntimeBundleError("resource_cache_unsafe")
+            raise RuntimeBundleError("resource_cache_full")
         report("checking")
         try:
             wheel = _verified_wheel(root)
@@ -142,7 +142,7 @@ def publish_runtime(root: Path, ticket: str) -> dict:
         _verify_directory(root, stage)
         final = _safe(root / (WHEEL_SHA256 + "-" + ticket))
         if len(tuple(root.glob(WHEEL_SHA256 + "-*"))) >= 3:
-            raise RuntimeBundleError("resource_cache_unsafe")
+            raise RuntimeBundleError("resource_cache_full")
         os.rename(stage, final)
         temporary = _safe(root / "current.pending")
         with temporary.open("w", encoding="utf-8") as output:

@@ -400,9 +400,13 @@
             return label + ': ' + stateText + (reason ? ' — ' + t('voiceIdentity.resourceReason_' + reason, t('voiceIdentity.resourceRepair', 'Check or repair this resource.')) : '');
         }
         function repairDetails() {
-            return Object.entries(resources && resources.resources || {})
-                .filter(([name, value]) => needsRepair(name, value))
-                .map(([name, value]) => resourceText(name, value)).join('\n');
+            const unresolved = Object.entries(resources && resources.resources || {})
+                .filter(([name, value]) => needsRepair(name, value));
+            const details = unresolved.map(([name, value]) => resourceText(name, value));
+            if (unresolved.some(([name, value]) => ['campp', 'silero', 'noise_reduction'].includes(name) && value.repair_action === 'app_repair')) {
+                details.push(t('voiceIdentity.resourceAppRepairHelp', 'Check for updates in desktop Settings → About, or reinstall the application running the backend. For remote deployments, contact the service administrator.'));
+            }
+            return details.join('\n');
         }
         async function refreshResources() {
             const at = epoch;
@@ -590,9 +594,10 @@
                 if (at !== epoch) { hooks.request('/resources/operations/' + encodeURIComponent(ownedOperation) + '/cancel', { method: 'POST', keepalive: true }).catch(() => {}); return; }
                 resourceFeedback.phase = 'running';
                 render(false);
-                // Include the backend download (180s), commit/refresh and
-                // retirement budgets before the page attempts cancellation.
-                const deadline = Date.now() + (kind === 'repair' ? 450000 : kind === 'download' ? 210000 : 60000);
+                // Repair may use runtime check/stage/publish (30+240+15s),
+                // model download/publish (180+5s), and primary repair (420s).
+                // Allow their 890s total plus 70s for retirement and refresh.
+                const deadline = Date.now() + (kind === 'repair' ? 960000 : kind === 'download' ? 210000 : 60000);
                 while (at === epoch && operation) {
                     const id = operation;
                     const result = await hooks.request('/resources/operations/' + encodeURIComponent(id), { method: 'GET', signal: requestAbort.signal });
@@ -681,6 +686,7 @@
         el.test.addEventListener('click', testInput);
         el['input-settings'].addEventListener('click', () => {
             if (pending || operation || hooks.enrolling()) return;
+            cancelResourceCollapse();
             inputSetupDismissed = false;
             inputSetupRequested = true;
             render();

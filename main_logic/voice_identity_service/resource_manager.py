@@ -356,7 +356,9 @@ class VoiceResourceManager:
         # overlap publication, but must never certify a stale prepared version.
         if revision == self._prepared_revision and self._prepared_noise_reduction is nr:
             for name, value in self._prepared.items():
-                if snapshot["resources"][name]["state"] == "unchecked" or name == "noise_reduction":
+                wake_failure = (name in {"wake_runtime", "wake_model"} and value["state"] == "unavailable"
+                                and snapshot["resources"][name]["reason"] != WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value)
+                if snapshot["resources"][name]["state"] == "unchecked" or name == "noise_reduction" or wake_failure:
                     snapshot["resources"][name].update(deepcopy(value), required=snapshot["resources"][name]["required"])
         snapshot["can_enroll"] = all(snapshot["resources"][name]["state"] == "ready" for name in ("campp", "silero", "noise_reduction"))
         snapshot["operation"] = self._current.snapshot() if self._current is not None else None
@@ -513,10 +515,9 @@ class VoiceResourceManager:
             else:
                 nr = self._noise_reduction_snapshot()
                 preference = await asyncio.to_thread(wake_word_preference, self._cache_root)
-                if preference["reason"] is not None:
-                    raise VoiceResourceError(WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value)
-                if operation.kind == "repair" and preference["enabled"]:
-                    await self._repair_wake_resources(operation, update_progress)
+                wake_failures = {}
+                if operation.kind == "repair" and preference["reason"] is None and preference["enabled"]:
+                    wake_failures = await self._repair_wake_resources(operation, update_progress)
                     if not self.owns(operation.operation_id):
                         raise VoiceResourceError("operation_cancelled")
                 path = wake_word_model_dir()
@@ -533,7 +534,12 @@ class VoiceResourceManager:
                                                timeout=420, on_progress=update_progress)
                 else:
                     result = await _run_worker("prepare", nr, path)
-                if cache_reason is not None:
+                result.update(wake_failures)
+                if preference["reason"] is not None:
+                    # Unknown wake settings fail closed without preventing
+                    # independent voiceprint resources from being prepared.
+                    result["wake_model"] = _resource("unavailable", WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value, True)
+                elif cache_reason is not None and "wake_model" not in wake_failures:
                     result["wake_model"] = _resource("unavailable", cache_reason, preference["enabled"])
                 if nr != self._noise_reduction_snapshot():
                     raise VoiceResourceError("audio_contract_changed")
@@ -565,27 +571,42 @@ class VoiceResourceManager:
                 operation.reason = "runtime_degraded"
             operation.state = "cancelled" if operation.reason == "operation_cancelled" else "failed"
 
-    async def _repair_wake_resources(self, operation: _Operation, update_progress) -> None:
+    async def _repair_wake_resources(self, operation: _Operation, update_progress) -> dict:
         """Prepare -> retire worker -> owner-fenced publication -> next step."""
+        failures = {}
+        def record_failure(exc, *names):
+            # These failures indicate ownership, physical retirement or commit
+            # state is unresolved. Never continue into another resource worker.
+            if exc.code in {"operation_cancelled", "resource_operation_busy", "resource_worker_shutdown_failed",
+                            "runtime_degraded", "audio_contract_changed"}:
+                raise exc
+            failures.update({name: _resource("unavailable", exc.code, True) for name in names})
         if self._cache_root is None:
-            raise VoiceResourceError("resource_storage_unavailable")
+            record_failure(VoiceResourceError("resource_storage_unavailable"), "wake_runtime", "wake_model")
+            return failures
         runtime_root = str(self._cache_root.parent / "wake-runtime")
         update_progress({"phase": "checking", "resource": "wake_runtime"})
-        checked = await _run_worker("runtime-check", False, timeout=30)
-        if not self.owns(operation.operation_id):
-            raise VoiceResourceError("operation_cancelled")
-        if not checked["ready"]:
-            staged = await _run_worker("runtime-stage", False, runtime_root, timeout=240, on_progress=update_progress)
+        staged = None
+        try:
+            checked = await _run_worker("runtime-check", False, timeout=30)
             if not self.owns(operation.operation_id):
                 raise VoiceResourceError("operation_cancelled")
-            if not staged["installed"]:
-                await self._publish_repair_step(operation, "runtime-publish", runtime_root, staged["ticket"].encode("ascii"))
+            if not checked["ready"]:
+                staged = await _run_worker("runtime-stage", False, runtime_root, timeout=240, on_progress=update_progress)
+        except VoiceResourceError as exc:
+            record_failure(exc, "wake_runtime", "wake_model")
+            return failures
+        if not self.owns(operation.operation_id):
+            raise VoiceResourceError("operation_cancelled")
+        # Publication errors remain fatal: the commit may already have happened.
+        if staged is not None and not staged["installed"]:
+            await self._publish_repair_step(operation, "runtime-publish", runtime_root, staged["ticket"].encode("ascii"))
         if not self.owns(operation.operation_id):
             raise VoiceResourceError("operation_cancelled")
         # Managed deployments supply their own model directory. Downloading an
         # unrelated cache cannot repair that path, so validate it normally.
         if wake_word_model_dir() is not None:
-            return
+            return failures
         try:
             cached = await asyncio.to_thread(resolve_cached_model_dir, self._cache_root)
         except WakeWordBundleError:
@@ -593,10 +614,15 @@ class VoiceResourceManager:
         if not self.owns(operation.operation_id):
             raise VoiceResourceError("operation_cancelled")
         if cached is None:
-            staged = await _run_worker("download", False, str(self._cache_root), timeout=180, on_progress=update_progress)
+            try:
+                staged = await _run_worker("download", False, str(self._cache_root), timeout=180, on_progress=update_progress)
+            except VoiceResourceError as exc:
+                record_failure(exc, "wake_model")
+                return failures
             if not self.owns(operation.operation_id):
                 raise VoiceResourceError("operation_cancelled")
             await self._publish_repair_step(operation, "publish", str(self._cache_root), staged["version"].encode("ascii"))
+        return failures
 
     async def _publish_repair_step(self, operation: _Operation, kind: str, path: str, payload: bytes = b"") -> None:
         if not self.owns(operation.operation_id):

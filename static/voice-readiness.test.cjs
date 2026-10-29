@@ -231,6 +231,44 @@ test('leaving the page retires a pending resource collapse', async () => {
     assert.equal(h.notices().length, 0);
 });
 
+test('manually reopening microphone settings retires the old repair collapse callback', async () => {
+    const h = resourceNoticeHarness();
+    await h.elements.get('voice-identity-repair').emit('click');
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    const stale = h.notices()[0][1];
+    h.elements.get('voice-identity-input-close').emit('click');
+    h.elements.get('voice-identity-input-settings').emit('click');
+    stale.fn();
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.notices().length, 0);
+    assert.equal(h.controller.canStart(), false);
+    h.events.get('pagehide')();
+});
+
+for (const finish of [true, false]) {
+    test(`repair supports the full staged budget and remains bounded, finish=${finish}`, async () => {
+        let now = 0; let queries = 0;
+        const h = harness({ clock: { now: () => now }, requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: false, resources: {} };
+            if (url === '/resources/operations') return { operation_id: 'long-repair' };
+            if (url.endsWith('/long-repair')) {
+                now = ++queries === 1 ? 500000 : finish ? 900000 : 960001;
+                return { state: finish && queries === 2 ? 'succeeded' : 'running' };
+            }
+            if (url.endsWith('/cancel')) return { state: 'cancelled' };
+            return {};
+        } });
+        h.root.setTimeout = callback => setTimeout(callback, 0);
+        await h.controller.refreshResources();
+        await h.elements.get('voice-identity-repair').emit('click');
+        assert.equal(queries, 2);
+        assert.equal(h.calls.filter(call => call.url.endsWith('/cancel')).length, finish ? 0 : 1);
+        assert.equal(h.controller.isPending(), false);
+        if (!finish) assert.match(h.elements.get('voice-identity-resource-message').textContent, /resource_operation_timeout/);
+        h.events.get('pagehide')();
+    });
+}
+
 test('preparation keeps its completion result when loading updates the audio contract', async () => {
     let revision = 0;
     const h = harness({ requestRouter: async url => {
@@ -1424,6 +1462,54 @@ test('unsupported remote repair stays on the page with its reason and never invo
         'Automatic repair unsupported.\nwake_runtime: missing — Check or repair this resource.');
     assert.equal(h.controller.isPending(), false);
     assert.equal(h.controller.canStart(), false);
+});
+
+for (const hostname of ['localhost', 'remote.example']) {
+    test(`packaged primary failures explain manual recovery without redirecting ${hostname}`, async () => {
+        const help = 'Settings → About, reinstall backend, or contact the service administrator.';
+        const h = harness({ translate: (key, fallback) => key === 'voiceIdentity.resourceAppRepairHelp' ? help : fallback,
+            requestRouter: async url => {
+                if (url === '/resources') return { can_enroll: false, resources: {
+                    campp: { state: 'missing', required: true, reason: 'model_unavailable', repair_action: 'app_repair' },
+                    silero: { state: 'missing', required: true, reason: 'model_unavailable', repair_action: 'app_repair' },
+                } };
+                if (url === '/resources/operations') return { operation_id: 'packaged-repair' };
+                if (url.endsWith('/packaged-repair')) return { state: 'succeeded' };
+                return {};
+            } });
+        h.root.location.hostname = hostname;
+        h.root.open = () => assert.fail('Repair must not open documentation');
+        h.root.nekoVoiceEnrollment = { openRepair: () => assert.fail('Repair must not open About automatically') };
+        const dialog = h.elements.get('voice-identity-resource-complete');
+        Object.assign(dialog, { open: false, showModal() { this.open = true; }, close() { this.open = false; this.emit('close'); } });
+        await h.controller.refreshResources();
+        await h.elements.get('voice-identity-repair').emit('click');
+        const message = h.elements.get('voice-identity-resource-message').textContent;
+        assert.match(message, /campp: missing/);
+        assert.match(message, /silero: missing/);
+        assert.equal(message.split(help).length - 1, 1);
+        assert.equal(h.elements.get('voice-identity-resource-complete').classList.contains('needs-attention'), true);
+        assert.equal(h.controller.canStart(), false);
+        assert.equal(h.calls.filter(call => call.url === '/resources/operations').length, 1);
+        h.elements.get('voice-identity-resource-complete-close').emit('click');
+    });
+}
+
+test('a packaged wake-only failure does not suggest reinstalling primary voiceprint resources', async () => {
+    const h = harness({ translate: (key, fallback) => key === 'voiceIdentity.resourceAppRepairHelp' ? 'primary reinstall guidance' : fallback,
+        requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: true, wake_enabled: true, wake_configured: true, resources: {
+                wake_model: { state: 'missing', required: true, repair_action: 'app_repair' },
+            } };
+            if (url === '/resources/operations') return { operation_id: 'wake-only' };
+            if (url.endsWith('/wake-only')) return { state: 'succeeded' };
+            return {};
+        } });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-repair').emit('click');
+    assert.match(h.elements.get('voice-identity-resource-message').textContent, /wake_model: missing/);
+    assert.doesNotMatch(h.elements.get('voice-identity-resource-message').textContent, /primary reinstall guidance/);
+    h.events.get('pagehide')();
 });
 
 test('idle storage changes refresh the device selector after invalidating trial proof', async () => {
