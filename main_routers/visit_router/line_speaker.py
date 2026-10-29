@@ -136,7 +136,7 @@ class VoiceState:
     enabled: bool
     fallen_back: bool = False
     start_failures: int = 0
-    """Start failures since the last line that started playing (lines that never tried to speak leave it as is)."""
+    """Start failures (stream open, push or end marker refused, no playback in time) since a line last started playing."""
 
     @property
     def tts_on(self) -> bool:
