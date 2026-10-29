@@ -1821,6 +1821,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.started_at_wall = self.wall()
         self.last_text_at = now
         self._set_phase(PHASE_ACTIVE)
+        if self.voice.tts_on:
+            # The first line's start timeout counts from its first push, TTS cold start included: start the worker now.
+            self.spawn(self.host.warm_speech(), name="tts-warm")
 
     async def _summary_handoff(self) -> None:
         from main_logic.visit.memory_commit import last_summary_handoff

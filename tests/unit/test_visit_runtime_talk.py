@@ -115,6 +115,30 @@ async def test_tts_chars_and_requests_are_recorded_as_usage(tmp_path, monkeypatc
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_both_sides_warm_tts_on_activation_before_the_first_line_opens_a_stream(tmp_path, monkeypatch):
+    # The first line's start timeout counts from its first push, TTS cold start included: activation starts the worker first.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            await wait_for(lambda side=side: "warm_speech" in side.host.events)
+            assert side.host.streams == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_off_does_not_warm_tts(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch, settings={"visitVoiceEnabled": False})
+    try:
+        await settle()
+        assert "warm_speech" not in host.host.events and "warm_speech" not in guest.host.events
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_family_line_order_reserve_room_persist_enqueue_mirror(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt

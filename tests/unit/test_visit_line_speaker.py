@@ -40,6 +40,11 @@ EST = [estimate_speech_ms(c) for c in CLAUSES]
 _ids = itertools.count(1)
 
 
+def _one_failure_left() -> ls.VoiceState:
+    """An earlier line already failed to start playing: the next start failure latches the visit fallback."""
+    return ls.VoiceState(enabled=True, start_failures=ls.VISIT_TTS_START_FAILURES_LATCH - 1)
+
+
 class FakeStream:
     def __init__(self, on_enqueued, finish_result=True):
         self.speech_id = f"sp-{next(_ids)}"
@@ -381,7 +386,7 @@ def test_drain_just_before_finish_then_silence_closes_by_estimate():
 
 
 def test_no_first_progress_in_4s_aborts_and_falls_back_for_the_visit():
-    h = Harness()
+    h = Harness(voice_state=_one_failure_left())
     _feed_all(h)
     h.speaker.llm_done()
     h.at(3.9)
@@ -398,6 +403,53 @@ def test_no_first_progress_in_4s_aborts_and_falls_back_for_the_visit():
     h.speaker.feed("好的。")
     assert len(h.streams) == 1 and h.speaker.mode == ls.PACED_ESTIMATE
     assert h.fallbacks == 1
+
+
+def test_one_start_timeout_paces_only_that_line_and_the_next_line_tries_tts_again():
+    h = Harness()
+    _feed_all(h)
+    h.speaker.llm_done()
+    h.at(4.0)                                     # First line of the visit: TTS cold start ate the 4 s
+    assert h.stream.aborts == 1 and h.speaker.mode == ls.PACED_ESTIMATE
+    assert not h.voice.fallen_back and h.voice.start_failures == 1 and h.fallbacks == 0
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed(CLAUSES[0])
+    assert h.speaker.mode == ls.PACED_AUDIO and len(h.streams) == 2
+
+
+def test_a_second_start_failure_in_a_row_latches_the_visit_fallback():
+    h = Harness()
+    _feed_all(h)
+    h.speaker.llm_done()
+    h.at(4.0)
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed(LINE)
+    h.speaker.llm_done()
+    h.at(8.0)
+    assert h.voice.fallen_back and h.voice.start_failures == 2 and h.fallbacks == 1
+    h.speaker = h.new_line("h:3")
+    h.speaker.feed(CLAUSES[0])
+    assert h.speaker.mode == ls.PACED_ESTIMATE and len(h.streams) == 2
+
+
+def test_a_line_that_starts_playing_resets_the_start_failure_count():
+    h = Harness()
+    _feed_all(h)
+    h.speaker.llm_done()
+    h.at(4.0)
+    assert h.voice.start_failures == 1
+    h.speaker = h.new_line("h:2")
+    h.speaker.feed(LINE)
+    h.progress(0)                                 # This line's audio started playing
+    assert h.voice.start_failures == 0
+    h.progress(10**7, ended=True, final=False)
+    h.speaker.llm_done()
+    h.progress(10**7, ended=True, final=True)
+    h.speaker = h.new_line("h:3")
+    h.speaker.feed(LINE)
+    h.speaker.llm_done()
+    h.at(20.0)                                    # A later lone failure does not latch either
+    assert not h.voice.fallen_back and h.voice.start_failures == 1 and h.fallbacks == 0
 
 
 def test_fallback_status_is_raised_once_per_visit_even_for_overlapping_lines():
@@ -444,7 +496,7 @@ def test_finish_without_worker_aborts_and_paces_by_estimate():
 
 
 def test_tts_not_ready_falls_back_without_a_stream():
-    h = Harness(open_fails=True)
+    h = Harness(open_fails=True, voice_state=_one_failure_left())
     _feed_all(h)
     h.speaker.llm_done()
     assert h.streams == [] and h.fallbacks == 1
@@ -554,7 +606,7 @@ def test_a_wire_cut_inside_a_family_name_still_fits_the_wire():
 
 
 def test_a_stream_rejecting_its_first_push_falls_back_for_the_visit():
-    h = Harness()
+    h = Harness(voice_state=_one_failure_left())
     opener = h.open_stream
 
     def closed_at_once(on_enqueued):
@@ -789,7 +841,7 @@ class _SilentStream(FakeStream):
 
 
 def test_unspoken_first_text_does_not_arm_the_start_timeout():
-    h = Harness()
+    h = Harness(voice_state=_one_failure_left())
     h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
     h.speaker.feed("（微笑）")                       # Stripped to empty: silent
@@ -814,7 +866,7 @@ def test_a_line_with_nothing_speakable_closes_by_estimate_without_disabling_voic
 
 
 def test_speakable_text_stuck_before_tts_still_times_out():
-    h = Harness()
+    h = Harness(voice_state=_one_failure_left())
     h.open_stream = lambda on_enqueued: h.streams.append(_SilentStream(on_enqueued)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
     h.speaker.feed("你好呀。")                       # Speakable, but TTS is unready and never queued it
@@ -835,7 +887,7 @@ def test_unspeakable_text_after_a_drain_does_not_restart_the_stall_clock():
 
 
 def test_end_marker_failing_before_any_playback_falls_back_for_the_visit():
-    h = Harness(finish_result=False)
+    h = Harness(finish_result=False, voice_state=_one_failure_left())
     h.speaker.feed(LINE)
     h.speaker.llm_done()
     assert h.voice.fallen_back and h.fallbacks == 1
@@ -866,7 +918,7 @@ def test_goodbye_cap_never_splits_an_emoji():
 
 async def test_late_first_enqueue_wakes_the_driver():
     streams = []
-    voice = ls.VoiceState(enabled=True)
+    voice = _one_failure_left()
     speaker = ls.LineSpeaker(
         visit_id=VISIT, header=ls.LineHeader(ln="h:1", lp=1, ad="gc", rt=""), family_names=[],
         neutral_term=NEUTRAL, voice=voice,
@@ -968,7 +1020,7 @@ def test_goodbye_cap_never_splits_conjoining_hangul_jamo():
 
 
 def test_a_rejected_end_marker_after_unclosed_markdown_falls_back_for_the_visit():
-    h = Harness(finish_result=False)
+    h = Harness(finish_result=False, voice_state=_one_failure_left())
     h.open_stream = lambda on_enqueued: h.streams.append(
         _SilentStream(on_enqueued, finish_result=False)) or h.streams[-1]
     h.speaker = h.new_line("h:2")
