@@ -191,7 +191,6 @@ function createHarness({
         'voice-identity-result',
         'voice-identity-result-title',
         'voice-identity-match-percent',
-        'voice-identity-score-help',
         'voice-identity-result-status',
     ];
     const elements = new Map(elementIds.map(id => [id, createElement()]));

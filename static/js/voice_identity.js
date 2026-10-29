@@ -158,7 +158,6 @@
         elements.result = document.getElementById('voice-identity-result');
         elements.resultTitle = document.getElementById('voice-identity-result-title');
         elements.matchPercent = document.getElementById('voice-identity-match-percent');
-        elements.scoreHelp = document.getElementById('voice-identity-score-help');
         elements.resultStatus = document.getElementById('voice-identity-result-status');
         elements.prompt = document.getElementById('voice-identity-prompt');
         elements.progress = typeof document.querySelectorAll === 'function' ? Array.from(document.querySelectorAll('#voice-identity-progress span')) : [];
@@ -681,12 +680,6 @@
             const hasScore = Number.isFinite(matchPercent);
             elements.matchPercent.hidden = !hasScore;
             elements.matchPercent.textContent = hasScore ? `${matchPercent}%` : '';
-        }
-        if (elements.scoreHelp) {
-            elements.scoreHelp.textContent = translate(
-                'voiceIdentity.verificationScoreHelp',
-                '结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。',
-            );
         }
         if (elements.resultStatus && resultVisible) {
             elements.resultStatus.textContent = enrollmentCompleteMessage();
