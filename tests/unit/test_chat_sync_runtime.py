@@ -1457,6 +1457,80 @@ def select_runtime_current(runtime, uid=UID):
     return selected
 
 
+class RecentRoleService(SyntheticService):
+    """Answer empty recent-memory reads for any role and record which roles were read."""
+
+    def __init__(self):
+        super().__init__()
+        self.recent_roles = []
+
+    async def request(self, request):
+        if request.url.path.endswith("/recent-memory"):
+            self.requests.append(request)
+            assert request.method == "GET" and request.headers["X-Neko-Chat-Binding"] == BINDING
+            uid = request.url.path.rsplit("/", 2)[1]
+            self.recent_roles.append(uid)
+            return httpx.Response(200, json={"schemaVersion": 1, "ownerId": self.owner, "characterSyncId": uid,
+                                             "revision": 0, "entries": []})
+        return await super().request(request)
+
+
+def recent_role_runtime(tmp_path, names):
+    """Give each named role an empty recent-memory file and the production pull channel."""
+    from memory.recent_sync import RecentMemoryAdapter
+
+    for name in names.values():
+        path = tmp_path / "memory" / name / "recent.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]", encoding="utf-8")
+    adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / "memory", project_memory_dir=tmp_path / "memory"))
+    runtime, service, session = setup_runtime(tmp_path, RecentRoleService(), recent_memory_adapter=adapter)
+
+    async def recent_character_name(uid):
+        return names.get(uid)
+
+    runtime.recent_character_name = recent_character_name
+    return runtime, service, session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", ["current", "other", "paused", "unbound", "none", "missing-provider"])
+async def test_current_role_automatic_pull_requires_enabled_current_intersection(tmp_path, monkeypatch, selected):
+    """Consent alone never starts an automatic pull; the selected role still needs an enabled binding."""
+    third = "d" * 32
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko", OTHER_UID: "Other", third: "Third"})
+    passes = []
+    channel_pass = runtime._channel_pass
+
+    async def observed_pass(uid, channel, **kwargs):
+        passes.append((uid, channel))
+        return await channel_pass(uid, channel, **kwargs)
+
+    monkeypatch.setattr(runtime, "_channel_pass", observed_pass)
+    try:
+        await runtime.configure("https://sync.test")
+        await runtime.enable(UID, "Neko")
+        runtime.state.activate(runtime.state.prepare_binding(ChatDomain(OWNER, OTHER_UID)), BINDING)
+        # Saved consent without a service binding must not be treated as enabled.
+        runtime.state.prepare_binding(ChatDomain(OWNER, third))
+        if selected == "paused":
+            await runtime.pause(UID)
+        if selected == "missing-provider":
+            runtime.current_character_uid_provider = None
+        else:
+            select_runtime_current(runtime, {"current": UID, "other": OTHER_UID, "paused": UID,
+                                             "unbound": third, "none": None}[selected])
+        service.requests.clear()
+        await runtime._automatic_channel("pull", await runtime.session_presence_provider())
+        expected = {"current": [UID], "other": [OTHER_UID]}.get(selected, [])
+        assert passes == [(uid, "pull") for uid in expected]
+        assert service.recent_roles == expected
+        if not expected:
+            assert service.requests == []
+    finally:
+        await runtime.close()
+
+
 @pytest.mark.asyncio
 async def test_current_role_notification_subscription_replaces_only_selected_grant(tmp_path):
     """Switching roles closes the old subscription and never subscribes all consent."""
@@ -1498,7 +1572,7 @@ async def test_current_role_notification_subscription_replaces_only_selected_gra
 @pytest.mark.parametrize("failure", [ValueError("chat_sync_pull_timeout"), ChatSyncServiceError(429, 240000)])
 async def test_current_role_catchup_and_switch_preserve_retry_and_origin_backpressure(tmp_path, failure):
     """Selection changes and foreground hints never clear persisted error fences."""
-    runtime, service, _ = setup_runtime(tmp_path)
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko", OTHER_UID: "Other"})
     other = ChatDomain(OWNER, OTHER_UID)
     try:
         await runtime.configure("https://sync.test")
@@ -1510,6 +1584,9 @@ async def test_current_role_catchup_and_switch_preserve_retry_and_origin_backpre
         selected[0] = OTHER_UID
         await runtime.scheduler_tick()
         await finish_automatic_flights(runtime)
+        # The live pull channel serves the newly selected role unless the whole origin is backing off.
+        origin_backoff = getattr(failure, "status_code", None) == 429
+        assert service.recent_roles == ([] if origin_backoff else [OTHER_UID])
         service.requests.clear()
         await runtime.request_catchup()
         selected[0] = UID
@@ -1519,9 +1596,10 @@ async def test_current_role_catchup_and_switch_preserve_retry_and_origin_backpre
         assert service.requests == []
         assert not runtime.scheduler.ready(DOMAIN.key(), "pull", 1, presence)
         assert runtime.scheduler.last_error(DOMAIN.key()) in {"chat_sync_pull_timeout", "chat_sync_service_rejected"}
-        if getattr(failure, "status_code", None) == 429:
+        if origin_backoff:
             assert not runtime.scheduler.origin_ready()
             assert await runtime._channel_pass(OTHER_UID, "pull", manual=True) is None
+            assert service.requests == []
     finally:
         await runtime.close()
 
@@ -1529,7 +1607,7 @@ async def test_current_role_catchup_and_switch_preserve_retry_and_origin_backpre
 @pytest.mark.asyncio
 async def test_current_role_missing_constructor_provider_cannot_resume_saved_automatic_consent(tmp_path):
     """A caller omitting local selection must not resume every persisted binding."""
-    runtime, service, _ = setup_runtime(tmp_path)
+    runtime, service, _ = recent_role_runtime(tmp_path, {UID: "Neko"})
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
     await runtime.close()
@@ -1538,10 +1616,13 @@ async def test_current_role_missing_constructor_provider_cannot_resume_saved_aut
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(service.request)),
         session_commit_guard=runtime.session_commit_guard,
         clock=runtime.scheduler.clock, uniform=lambda *_: 0,
+        recent_memory_adapter=runtime.recent_memory.adapter, recent_character_name=runtime.recent_character_name,
     )
     try:
         service.requests.clear()
         await reopened.scheduler_tick()
+        # The automatic pull channel really ran; it found no selected role to sync.
+        assert "pull" in reopened._flights
         await finish_automatic_flights(reopened)
         assert service.requests == []
         assert reopened.state.binding(UID)["enabled"]

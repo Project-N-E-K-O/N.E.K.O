@@ -116,6 +116,27 @@ def test_local_only_read_rejects_changed_bytes_and_does_not_initialize_missing_s
         ChatOriginalSource.read_local_replies(source.path, UID)
 
 
+def test_legacy_local_reply_read_skips_cleared_enrolled_and_other_roles(tmp_path):
+    """Older producers left cleared, enrolled and other-role rows; only this role's live ones are restored."""
+    source = ChatOriginalSource(tmp_path / "sources.sqlite3")
+    raw = ChatOriginal("assistant", RAW.text, original_time=RAW.original_time)
+    # The retired include step enrolled a local reply under its own identity in
+    # either the unbound or the bound source table.
+    source.commit_unbound(UID, "7" * 32, raw)
+    source.commit(OWNER, UID, "9" * 32, raw)
+    for record_id in ("5" * 32, "6" * 32, "7" * 32, "9" * 32):
+        legacy_local_reply(source, UID, record_id, raw)
+    legacy_local_reply(source, "b" * 32, "8" * 32, raw)
+    with closing(sqlite3.connect(source.path)) as connection, connection:
+        # The retired clear step erased the body but kept the identity.
+        connection.execute("UPDATE source_local_replies SET original=NULL,deleted=1 WHERE record_id=?", ("6" * 32,))
+    assert ChatOriginalSource.read_local_replies(source.path, UID) == [{
+        "messageId": "5" * 32, "characterSyncId": UID, "role": "assistant",
+        "text": RAW.text, "originalTime": RAW.original_time,
+    }]
+    assert [reply["messageId"] for reply in ChatOriginalSource.read_local_replies(source.path, "b" * 32)] == ["8" * 32]
+
+
 @pytest.mark.parametrize("trusted", [False, True])
 @pytest.mark.asyncio
 async def test_local_only_restore_keeps_existing_writer_visibility_fence(tmp_path, monkeypatch, trusted):

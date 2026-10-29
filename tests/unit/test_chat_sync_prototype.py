@@ -62,6 +62,9 @@ def test_recovery_client_rejects_unbound_or_incomplete_coverage(tmp_path, change
 @pytest.mark.parametrize("change", [
     {"through": 8}, {"cursor": 8}, {"cursor": 3}, {"hasMore": True}, {"deletedMessageIds": ["bad"]},
     {"cursor": 3, "hasMore": True}, {"cursor": 2, "through": 7, "hasMore": True},
+    # after=2 and cursor=7 admit at most five deleted IDs.
+    {"deletedMessageIds": [f"{index:032x}" for index in range(1, 7)]},
+    {"hasMore": 0},
 ])
 def test_recovery_client_rejects_changed_or_incomplete_fence(tmp_path, change):
     """No recovery decision can silently skip the remainder of a deletion page."""

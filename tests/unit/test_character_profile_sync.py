@@ -715,15 +715,26 @@ async def test_inactive_initial_profile_publication_completes_without_polling_or
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bound_before_approval", [False, True])
-async def test_saved_initial_profile_finishes_off_selection_without_consuming_history(tmp_path, config, bound_before_approval):
-    """A saved first choice can finish registration/binding, while history still waits."""
+async def test_saved_initial_profile_finishes_off_selection_without_consuming_history(
+        tmp_path, config, monkeypatch, bound_before_approval):
+    """A saved first choice can finish registration/binding, while its recent-memory cutoff waits for the role."""
+    from memory.recent_sync import RecentMemoryAdapter
     from tests.unit.test_chat_sync_runtime import select_runtime_current
+    from tests.unit.test_recent_memory_sync import row
 
-    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    monkeypatch.setattr("memory.recent_sync.assert_cloudsave_writable", lambda *args, **kwargs: None)
+    recent = tmp_path / "memory" / "Synthetic" / "recent.json"
+    recent.parent.mkdir(parents=True)
+    recent.write_text(json.dumps([row("human", "chat before the choice")]))
+    adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / "memory", project_memory_dir=tmp_path / "memory"))
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService(), recent_memory_adapter=adapter)
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     try:
-        await runtime.request_new_role_sync(UID, "Synthetic")
+        # A new-only choice pins the chats that existed when the card was saved.
+        await runtime.request_new_role_sync(UID, "Synthetic", include_history=False)
         saved = runtime.state.new_role(UID)
+        existing = sorted(entry["id"] for entry in adapter.read("Synthetic")["entries"])
+        assert existing and saved["recentExcludedIds"] == existing
         runtime.state.record_new_role_error(UID, saved["requestId"], "chat_sync_unavailable")
         if bound_before_approval:
             await runtime.enable(UID, "Synthetic")
@@ -738,16 +749,18 @@ async def test_saved_initial_profile_finishes_off_selection_without_consuming_hi
         retained = runtime.state.new_role(UID)
         assert "lastError" not in retained
         assert retained["requestId"] == saved["requestId"] and retained["canonical"] == saved["canonical"]
-        assert runtime.ledger.pending(DOMAIN) == []
+        assert retained["recentExcludedIds"] == existing
+        assert runtime.recent_memory.state(DOMAIN.key())["excluded"] == []
         assert [request.method for request in service.profile_requests] == ["PUT"]
         assert config.saves == []
 
-        # Returning to the role resumes its original history authorization, without republishing.
+        # Returning to the role applies its original history cutoff, without republishing.
         selected[0] = UID
         runtime.test_clock[0] += 30_000
         await runtime._start_new_role_sync(presence)
         await runtime._flights["new-role"]
         assert runtime.state.new_role(UID) is None
+        assert runtime.recent_memory.state(DOMAIN.key())["excluded"] == existing
         assert [request.method for request in service.profile_requests] == ["PUT"]
     finally:
         await runtime.close()
@@ -772,6 +785,24 @@ async def test_initial_profile_retry_gate_keeps_error_until_a_confirmed_upload(t
         await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
         assert runtime.state.new_role_errors() == {}
         assert runtime.state.new_role(UID)["requestId"] == saved["requestId"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_session_change_during_setup_is_retryable_and_keeps_the_saved_choice(tmp_path, config):
+    """A login switch mid-setup is remembered for retry; it never voids the card's consent."""
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        await runtime.request_new_role_sync(UID, "Synthetic")
+        saved = runtime.state.new_role(UID)
+        with pytest.raises(ValueError, match="chat_sync_session_changed"):
+            await runtime._run_new_role_sync(UID, saved, "stale-session", manual=True)
+        assert runtime.state.new_role_errors() == {UID: "chat_sync_session_changed"}
+        retained = runtime.state.new_role(UID)
+        assert retained["requestId"] == saved["requestId"] and "error" not in retained
+        assert service.profile_requests == []
     finally:
         await runtime.close()
 

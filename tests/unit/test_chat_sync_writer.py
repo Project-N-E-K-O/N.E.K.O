@@ -37,6 +37,13 @@ def queued_deletions(ledger, domain):
             'SELECT deletion_id, payload FROM chat_deletions WHERE domain=? ORDER BY rowid', (domain.key(),))]
 
 
+def staged_deletion_ids(runtime, domain):
+    """Read copied deletion IDs that recovery holds back for separate consent."""
+    with closing(sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3')) as conn:
+        return [row[0] for row in conn.execute(
+            'SELECT message_id FROM source_recovery_delete_ids WHERE uid=? ORDER BY rowid', (domain.character_uid,))]
+
+
 def test_normal_restart_retains_committed_head_and_rows(tmp_path):
     writer = initialized(tmp_path)
     save(writer)
@@ -139,6 +146,7 @@ def test_runtime_registers_all_databases_and_blocks_copied_binding(tmp_path):
 
 @pytest.mark.parametrize("corrupt", [None, "payload", "domain"])
 def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path, corrupt):
+    from services.chat_sync.long_term import LongTermMemorySync
     from services.chat_sync.runtime import DesktopChatSyncRuntime
     from services.chat_sync.source import ChatOriginalSource
     from services.chat_sync.ledger import ChatDomain, ChatOriginal, SourceLocator
@@ -162,9 +170,19 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
         conn.execute("INSERT INTO chat_batches VALUES (?,?,?,?)", (domain.key(), 'c' * 32, b'{}', '0' * 64))
         if corrupt:
             conn.execute("UPDATE chat_deletions SET " + corrupt + "=?", ("{broken",))
+    # Long-term ACKs, retry deadlines and the device identity are copied authority too.
+    LongTermMemorySync(runtime.state.path, None).acknowledge(domain.key(), 'op-1', revision=3)
+    runtime.scheduler.failure(domain.key(), 'long_term', runtime.state.binding(domain.character_uid)['generation'],
+                              'session', OSError())
+    device = runtime.state.settings()['device_id']
     runtime.writer.path.write_text('{broken')
     runtime.prepare_writer_recovery()
     assert runtime.state.binding(domain.character_uid)['enabled'] == 0
+    with closing(sqlite3.connect(runtime.state.path)) as conn:
+        assert conn.execute('SELECT count(*) FROM long_term_memory_state').fetchone() == (0,)
+    with closing(sqlite3.connect(runtime.scheduler.path)) as conn:
+        assert conn.execute('SELECT count(*) FROM scheduler_tasks').fetchone() == (0,)
+    assert runtime.state.settings()['device_id'] != device
     assert runtime.ledger.pending(domain) == []
     assert queued_deletions(runtime.ledger, domain) == []
     with closing(sqlite3.connect(runtime.ledger.path)) as conn:
@@ -383,7 +401,7 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_delete_approv
     await runtime.close()
 
 
-async def recovery_budget_runtime(tmp_path, on_check, *, count=7):
+async def recovery_budget_runtime(tmp_path, on_check, *, count=7, copied_deletions=()):
     """Exercise recovery with real SQLite witnesses and a synthetic authenticated HTTP service."""
     from contextlib import nullcontext
     import httpx
@@ -432,6 +450,9 @@ async def recovery_budget_runtime(tmp_path, on_check, *, count=7):
     identities = [f'{seq:032x}' for seq in range(1, count + 1)]
     for identity in identities:
         source.commit(owner, uid, identity, ChatOriginal('user', 'synthetic recovery ' + identity))
+    if copied_deletions:
+        # A marker left in the old deletion outbox is copied authority as well.
+        runtime.ledger.queue_deletion(ChatDomain(owner, uid), list(copied_deletions))
     runtime.writer.path.write_text('{broken')
     return runtime, ChatDomain(owner, uid), identities, checks
 
@@ -462,7 +483,8 @@ async def test_recovery_body_budget_splits_exact_prefix_and_retains_the_smaller_
 async def test_partial_recovery_cannot_return_stale_authority_after_cloud_name_lookup(tmp_path, monkeypatch, boundary):
     from unittest.mock import AsyncMock
     from services.chat_sync.recovery import role_pending
-    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1,
+                                                          copied_deletions=['f' * 32])
     async def directory(_request, _owner):
         if boundary == 'session':
             runtime.session_presence_provider = AsyncMock(return_value='changed-session')
@@ -478,7 +500,9 @@ async def test_partial_recovery_cannot_return_stale_authority_after_cloud_name_l
         with pytest.raises(ValueError, match=expected):
             await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
         assert role_pending(runtime, domain.character_uid)
+        # The copied marker stays held for separate consent and never becomes sendable.
         assert queued_deletions(runtime.ledger, domain) == []
+        assert staged_deletion_ids(runtime, domain) == ['f' * 32]
     finally:
         await runtime.close()
 
@@ -488,7 +512,8 @@ async def test_partial_recovery_cannot_return_stale_authority_after_cloud_name_l
 async def test_recovery_confirms_cloud_target_before_releasing_role_gate(tmp_path, monkeypatch, directory_failure):
     from unittest.mock import AsyncMock
     from services.chat_sync.recovery import role_pending
-    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1,
+                                                          copied_deletions=['f' * 32])
     directory = AsyncMock(return_value={'characters': []}, side_effect=(
         ValueError('chat_sync_unavailable') if directory_failure == 'unavailable' else None))
     monkeypatch.setattr('services.chat_sync.profile_sync.read_character_directory', directory)
@@ -497,7 +522,9 @@ async def test_recovery_confirms_cloud_target_before_releasing_role_gate(tmp_pat
         with pytest.raises(ValueError, match=expected):
             await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
         assert role_pending(runtime, domain.character_uid)
+        # The copied marker stays held for separate consent and never becomes sendable.
         assert queued_deletions(runtime.ledger, domain) == []
+        assert staged_deletion_ids(runtime, domain) == ['f' * 32]
         with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
             assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
     finally:

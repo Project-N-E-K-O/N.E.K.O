@@ -283,7 +283,10 @@ def _staged_payload(event):
         return None
     try:
         text = DesktopLongTermAdapter(runtime._config_manager).incoming_path(uid).read_text(encoding='utf-8')
-    except FileNotFoundError:
+    except (OSError, ValueError):
+        # A missing or momentarily unreadable inbox must not stall this
+        # character's later events; the inbox itself stays, and consume
+        # applies it once it can be read.
         return None
     # The digest was taken from parsed text, so a matching inbox always parses.
     return json.loads(text) if _inbox_digest(text) == digest else None
@@ -340,8 +343,8 @@ async def consume(uid):
                         if path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
                             path.unlink()
                         return False
-            # An inbox waiting for login, a binding or an epoch stays staged; only an
-            # applicable one is journaled, so retries never grow events.ndjson.
+            # An inbox waiting for login, a binding or an epoch stays staged without
+            # a journal entry; only an inbox that can apply now is journaled.
             if not _write_snapshot(name, payload, check_only=True):
                 return False
             applied = [False]

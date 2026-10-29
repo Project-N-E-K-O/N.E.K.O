@@ -360,6 +360,51 @@ async def test_replay_skips_a_reference_whose_inbox_was_replaced(owner, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_unreadable_inbox_is_skipped_without_stalling_replay_and_applies_later(owner, monkeypatch):
+    await stage(owner)
+    original = owner.native.atomic_write_json
+    def fail_facts(path, *args, **kwargs):
+        if path.name == 'facts.json':
+            raise OSError('synthetic disk failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', fail_facts)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', original)
+    inbox = owner.adapter.incoming_path(UID)
+    read_text = type(inbox).read_text
+    blocked = [True]
+    def locked_inbox(path, *args, **kwargs):
+        if blocked[0] and path == inbox:
+            raise PermissionError('inbox is being replaced')
+        return read_text(path, *args, **kwargs)
+    monkeypatch.setattr(type(inbox), 'read_text', locked_inbox)
+    await owner.replay.areconcile('Neko')
+    # The handler returned instead of failing, so later events are not held back.
+    event_id = json.loads((owner.directory / 'events.ndjson').read_text().splitlines()[-1])['event_id']
+    assert owner.native.runtime.event_log.read_sentinel('Neko') == event_id
+    blocked[0] = False
+    assert await owner.native.consume(UID)
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+
+
+@pytest.mark.asyncio
+async def test_replay_still_applies_an_event_that_carries_the_whole_snapshot(owner):
+    await stage(owner)
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+    def fail_save(name, frozen):
+        raise OSError('synthetic interrupted apply')
+    with pytest.raises(OSError):
+        owner.native.runtime.event_log.record_and_save('Neko', owner.native._EVENT, payload,
+            sync_load_view=lambda _: deepcopy(payload), sync_mutate_view=lambda _: None, sync_save_view=fail_save)
+    # Events journaled before inbox references must not depend on the inbox.
+    owner.adapter.incoming_path(UID).unlink()
+    assert await owner.replay.areconcile('Neko') == 1
+    assert read_views(owner.directory)['persona']['master']['facts'][0]['text'] == 'learned preference'
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+
+
+@pytest.mark.asyncio
 async def test_unsynced_character_capture_never_waits_for_owner_locks(owner, monkeypatch):
     owner.runtime.state.pause(UID)
     entered = []

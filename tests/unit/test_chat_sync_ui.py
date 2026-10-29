@@ -396,14 +396,17 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
 def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
     """An old recovery result cannot prompt deletion for a newly opened character."""
     run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];let release,changed=false;
-        window.confirm=()=>{throw new Error('Stale recovery requested deletion consent');};
+        const uid='c'.repeat(32),requests=[],prompts=[];let release,changed=false;
+        // Accept any prompt: a throwing confirm would be swallowed by the
+        // recovery catch and would block the approve request by itself.
+        window.confirm=message=>{prompts.push(message);return true;};
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
             if(path.endsWith('/status'))return {writerRecoveryRequired:true,characters:[{
                 displayName:changed&&CHANGE==='role'?'Other':'Neko',
                 characterSyncId:changed&&CHANGE==='uid'?'d'.repeat(32):uid,binding:null}]};
             if(path.endsWith('/recovery/preview'))return await new Promise(resolve=>{release=resolve;});
+            if(path.endsWith('/recovery/deletions/approve'))return {status:'registered'};
             throw new Error('Unexpected request '+path);
         }});
         await window.nekoChatSync.openSettings();
@@ -417,6 +420,7 @@ def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
         else if(CHANGE==='role')await window.nekoChatSync.openSettings('Other');
         release({deletions:{count:1,taskId:'e'.repeat(32),localName:'Neko',cloudName:'Cloud Neko'}});
         await pending;
+        assert.deepEqual(prompts,[]);
         assert.equal(requests.filter(item=>item.path.endsWith('/recovery/deletions/approve')
             ||item.path.endsWith('/history/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -521,7 +525,11 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             page.on("dialog", consent)
             modal.get_by_role("button", name=labels["recoverWriter"], exact=True).click()
             modal.get_by_role("status").filter(has_text=labels["recoveryChecked"]).wait_for()
-            assert messages and "2" in messages[0] and "Synthetic" in messages[0] and "Cloud Neko" in messages[0]
+            # The localized prompt places each name after its fixed role label,
+            # so swapped local and cloud names produce a different message.
+            expected = (labels["recoveryDeleteConfirm"].replace("{{count}}", "2")
+                        .replace("{{localName}}", "Synthetic").replace("{{cloudName}}", "Cloud Neko"))
+            assert messages == [expected]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.nekotech.cn"}]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])
             assert page.evaluate("window.requests.some(item => ['/history/approve','/sync-choice','/enable','/sync'].some(suffix => item.path.endsWith(suffix)))") is False
