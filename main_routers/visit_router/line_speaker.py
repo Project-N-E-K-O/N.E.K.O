@@ -136,7 +136,7 @@ class VoiceState:
     enabled: bool
     fallen_back: bool = False
     start_failures: int = 0
-    """Lines in a row whose speech never started playing; reset by a line that does."""
+    """Start failures since the last line that started playing (lines that never tried to speak leave it as is)."""
 
     @property
     def tts_on(self) -> bool:

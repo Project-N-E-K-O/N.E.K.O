@@ -262,3 +262,21 @@ def test_family_spoke_reads_only_real_user_input():
     mgr = SimpleNamespace(last_user_activity_time=200.0, last_user_message_time=100.0)
     assert ManagerHost("Host", mgr).last_user_input() == 100.0
     assert ManagerHost("Host", SimpleNamespace(last_user_activity_time=200.0)).last_user_input() == 0.0
+
+
+async def test_speech_warm_up_starts_the_tts_pipeline():
+    calls = []
+
+    async def ensure_tts_pipeline_alive():
+        calls.append(1)
+
+    await ManagerHost("Host", SimpleNamespace(ensure_tts_pipeline_alive=ensure_tts_pipeline_alive)).warm_speech()
+    assert calls == [1]
+
+
+async def test_speech_warm_up_never_raises():
+    async def ensure_tts_pipeline_alive():
+        raise RuntimeError("tts capacity")
+
+    await ManagerHost("Host", SimpleNamespace(ensure_tts_pipeline_alive=ensure_tts_pipeline_alive)).warm_speech()
+    await ManagerHost("Host", SimpleNamespace()).warm_speech()      # A manager without the entry point: nothing to warm

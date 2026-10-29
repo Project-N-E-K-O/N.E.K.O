@@ -561,7 +561,7 @@ VISIT_TTS_START_TIMEOUT_S = 4
 """No first ``visit_speech_progress`` this long after the first push → this line paces by estimate."""
 
 VISIT_TTS_START_FAILURES_LATCH = 2
-"""Lines in a row whose speech never started playing before the visit stops using TTS (one-way)."""
+"""Start failures with no line playing in between before the visit stops using TTS (one-way)."""
 
 VISIT_SPEECH_PROGRESS_STALL_S = 3
 """Playback started but no progress for this long → abort the line, finish by estimate."""
