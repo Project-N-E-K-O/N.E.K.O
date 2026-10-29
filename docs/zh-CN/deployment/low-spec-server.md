@@ -270,13 +270,12 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
    旧部署的覆盖文件里如果还有 `mem_limit`、`read_only`、`cap_drop`、`tmpfs`、`extra_hosts`、`devices`、`ulimits` 等非环境变量设置，也一并写进 `docker/compose.local.yaml` 的 `neko-main` 下。快照没有覆盖的选项（如 `devices`、`ulimits`）要对照旧覆盖文件人工核对。
 
-   注意：官方 Compose 只透传固定的几个变量（见 `docker/CONFIG_REFERENCE.md`），`DISABLE_SSL` 等其他变量写进 `.env` 也不会进入容器。快照里有这类变量时，把它们写进 `docker/compose.local.yaml`（已被 `.gitignore` 忽略），并加入 `COMPOSE_FILE`：
+   注意：官方 Compose 用 `env_file:` 注入整份 `docker/.env`，所以 `DISABLE_SSL` 这类变量**直接写进 `.env` 就会生效**，不再需要覆盖文件。（旧版 compose 是固定白名单，那时才需要下面这种写法。）只有非环境变量的设置（`mem_limit`、`devices` 等）才需要 `docker/compose.local.yaml`：
 
    ```yaml
    services:
      neko-main:
-       environment:
-         - DISABLE_SSL=${DISABLE_SSL:-}
+       mem_limit: 2g
    ```
 
    ```dotenv

@@ -193,13 +193,12 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
 
-   Note that the official Compose file passes through only a fixed list of variables (see `docker/CONFIG_REFERENCE.md`); others such as `DISABLE_SSL` do not reach the container from `.env`. If the snapshot has such variables, put them in `docker/compose.local.yaml` (ignored by git) and add it to `COMPOSE_FILE`:
+   The official Compose file injects the whole `docker/.env` via `env_file:`, so variables such as `DISABLE_SSL` **work directly from `.env`** — no override file needed. (Older compose files used a fixed whitelist, which is why this step used to be necessary.) Only non-environment settings (`mem_limit`, `devices`, ...) still belong in `docker/compose.local.yaml`:
 
    ```yaml
    services:
      neko-main:
-       environment:
-         - DISABLE_SSL=${DISABLE_SSL:-}
+       mem_limit: 2g
    ```
 
    ```dotenv

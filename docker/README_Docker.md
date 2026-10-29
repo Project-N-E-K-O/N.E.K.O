@@ -228,10 +228,14 @@ docker compose down
 哪里"始终一致 —— 不会出现改了端口却 502 的情况。
 
 ```bash
-NEKO_CONTAINER_NAME=neko-2 NEKO_HOME_DIR=./neko-home-2 \
+NEKO_CONTAINER_NAME=neko-2 NEKO_HOME_DIR=./neko-home-2 NEKO_LOGS_DIR=./logs-2 \
 NEKO_HTTP_PORT=48921 NEKO_HTTPS_PORT=48922 \
 docker compose -p neko-2 up -d
 ```
+
+`NEKO_LOGS_DIR` 也不能省：两个实例若共用 `./logs`，在源码模式 DEBUG 日志或
+后备日志开启时，两边会往同一批按「服务/日期」命名的文件里追加，并互相抢轮转 ——
+日志会交错、甚至被对方轮转掉。
 
 `-p neko-2` 不能省：只改容器名/端口而沿用同一个 Compose 项目名，Compose 仍认为是同一项目的
 同一个 `neko-main` 服务，会去**更新第一个实例**而不是起第二个。
