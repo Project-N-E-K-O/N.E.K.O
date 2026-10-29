@@ -163,59 +163,113 @@ function returnIssues(recording: Recording): string[] {
   return issues
 }
 
-// Runs inside the page: samples every frame, clicks the toggle after the first
-// (pre-click) frame, and optionally clicks it again `secondClickAt` ms later.
-function recordDrawerMotion(page: Page, options: RecordOptions) {
-  return page.evaluate<Recording, RecordOptions>(async ({ toggle, panel, duration, secondClickAt }) => {
-    const workbench = document.querySelector<HTMLElement>('.plugin-workbench')!
-    const header = document.querySelector<HTMLElement>('.workbench-header')!
-    const tracked: Element[] = []
-    const track = (element: Element | null) => {
-      if (element && !tracked.includes(element)) tracked.push(element)
-    }
-    for (const atom of workbench.querySelectorAll('[data-motion]')) {
-      if (!atom.parentElement?.closest('[data-motion]') && atom.getClientRects().length) track(atom)
-    }
-    track(document.querySelector(panel))
-    for (const surface of [...workbench.querySelectorAll('.grid-section__item [data-reflow="surface"]')].slice(0, 4)) {
-      track(surface)
-    }
-    const labels = tracked.map((element, index) => {
-      const name = element.getAttribute('data-yui-guide-id') || element.getAttribute('class')?.split(' ')[0] || element.tagName.toLowerCase()
-      return `${name} (${element.getAttribute('data-motion') ?? 'data-reflow=surface'}) #${index}`
-    })
-    const rectOf = (element: Element): Rect | null => {
-      const box = element.getBoundingClientRect()
-      return box.width > 0 && box.height > 0 ? { x: box.x, y: box.y, w: box.width, h: box.height } : null
-    }
-    const clickToggle = () => document.querySelector<HTMLElement>(toggle)!.click()
-
-    const frames: Frame[] = []
-    const start = performance.now()
-    let clickFrame = -1
-    let clickTime = 0
-    let secondClickFrame: number | null = null
-    for (;;) {
-      await new Promise(requestAnimationFrame)
-      const t = performance.now() - start
-      frames.push({
-        t,
-        compact: header.classList.contains('workbench-header--compact'),
-        running: workbench.hasAttribute('data-motion-running'),
-        rects: tracked.map(rectOf),
-      })
-      if (clickFrame < 0) {
-        clickToggle()
-        clickFrame = frames.length
-        clickTime = t
-      } else if (secondClickAt !== null && secondClickFrame === null && t - clickTime >= secondClickAt) {
-        clickToggle()
-        secondClickFrame = frames.length
+// Seek the real Web Animations in fixed 16ms steps. Wall-clock RAF gaps on a
+// busy runner are missing observations, not evidence of a geometry snap.
+// The page clock advances the production cleanup timers on that same timeline.
+async function recordDrawerMotion(page: Page, options: RecordOptions): Promise<Recording> {
+  await page.clock.install()
+  try {
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
+    const recorder = await page.evaluateHandle(({ toggle, panel, secondClickAt }) => {
+      const workbench = document.querySelector<HTMLElement>('.plugin-workbench')!
+      const header = document.querySelector<HTMLElement>('.workbench-header')!
+      const tracked: Element[] = []
+      const track = (element: Element | null) => {
+        if (element && !tracked.includes(element)) tracked.push(element)
       }
-      if (t >= duration) break
+      for (const atom of workbench.querySelectorAll('[data-motion]')) {
+        if (!atom.parentElement?.closest('[data-motion]') && atom.getClientRects().length)
+          track(atom)
+      }
+      track(document.querySelector(panel))
+      for (const surface of [
+        ...workbench.querySelectorAll('.grid-section__item [data-reflow="surface"]'),
+      ].slice(0, 4)) {
+        track(surface)
+      }
+      const labels = tracked.map((element, index) => {
+        const name =
+          element.getAttribute('data-yui-guide-id') ||
+          element.getAttribute('class')?.split(' ')[0] ||
+          element.tagName.toLowerCase()
+        return `${name} (${element.getAttribute('data-motion') ?? 'data-reflow=surface'}) #${index}`
+      })
+      const rectOf = (element: Element): Rect | null => {
+        const box = element.getBoundingClientRect()
+        return box.width > 0 && box.height > 0
+          ? { x: box.x, y: box.y, w: box.width, h: box.height }
+          : null
+      }
+      const clickToggle = () => document.querySelector<HTMLElement>(toggle)!.click()
+
+      const animations: { animation: Animation; started: number; end: number }[] = []
+      const nativeAnimate = Element.prototype.animate
+      Element.prototype.animate = function (keyframes, timing) {
+        const animation = nativeAnimate.call(this, keyframes, timing)
+        animation.pause()
+        animation.currentTime = 0
+        const end = animation.effect!.getComputedTiming().endTime
+        if (typeof end !== 'number' || !Number.isFinite(end))
+          throw new Error('Expected finite motion timing')
+        animations.push({ animation, started: performance.now(), end })
+        return animation
+      }
+      const recording: Recording = { labels, frames: [], clickFrame: -1, secondClickFrame: null }
+      const start = performance.now()
+      let clickTime = 0
+      return {
+        recording,
+        advance() {
+          for (const { animation, started, end } of animations) {
+            if (animation.playState === 'idle' || animation.playState === 'finished') continue
+            const elapsed = performance.now() - started
+            if (elapsed >= end) animation.finish()
+            else animation.currentTime = elapsed
+          }
+        },
+        sample() {
+          const t = performance.now() - start
+          recording.frames.push({
+            t,
+            compact: header.classList.contains('workbench-header--compact'),
+            running: workbench.hasAttribute('data-motion-running'),
+            rects: tracked.map(rectOf),
+          })
+          if (recording.clickFrame < 0) {
+            clickToggle()
+            recording.clickFrame = recording.frames.length
+            clickTime = t
+          } else if (
+            secondClickAt !== null &&
+            recording.secondClickFrame === null &&
+            t - clickTime >= secondClickAt
+          ) {
+            clickToggle()
+            recording.secondClickFrame = recording.frames.length
+          }
+        },
+        restore() {
+          Element.prototype.animate = nativeAnimate
+          for (const { animation } of animations)
+            if (animation.playState === 'paused') animation.play()
+        },
+      }
+    }, options)
+    try {
+      for (let time = 0; time <= options.duration + 16; time += 16) {
+        await recorder.evaluate((state) => state.advance())
+        // Let the production finished handlers retire animations before sampling.
+        await recorder.evaluate((state) => state.sample())
+        if (time < options.duration) await page.clock.runFor(16)
+      }
+      return await recorder.evaluate((state) => state.recording)
+    } finally {
+      await recorder.evaluate((state) => state.restore())
+      await recorder.dispose()
     }
-    return { labels, frames, clickFrame, secondClickFrame }
-  }, options)
+  } finally {
+    await page.clock.resume()
+  }
 }
 
 async function openPluginWorkbench(page: Page) {
@@ -325,3 +379,57 @@ appearanceTest('package drawer closes with monotonic, snap-free geometry that se
   })
   expect(smoothRunIssues(recording), 'package close geometry').toEqual([])
 })
+
+appearanceTest(
+  'fixed-step sampling remains strict when the browser is CPU throttled',
+  async ({ page }) => {
+    await openPluginWorkbench(page)
+    const session = await page.context().newCDPSession(page)
+    try {
+      await session.send('Emulation.setCPUThrottlingRate', { rate: 6 })
+      const recording = await recordDrawerMotion(page, {
+        toggle: PACKAGE_TOGGLE,
+        panel: PACKAGE_PANEL,
+        duration: RUN_MS,
+        secondClickAt: null,
+      })
+      expect(
+        recording.frames
+          .slice(1)
+          .every((frame, index) => frame.t - recording.frames[index]!.t === 16)
+      ).toBe(true)
+      expect(smoothRunIssues(recording)).toEqual([])
+    } finally {
+      await session.send('Emulation.setCPUThrottlingRate', { rate: 1 })
+      await session.detach()
+    }
+  }
+)
+
+appearanceTest(
+  'fixed-step sampling still rejects genuinely discontinuous browser animations',
+  async ({ page }) => {
+    await openPluginWorkbench(page)
+    const original = await page.evaluateHandle(() => Element.prototype.animate)
+    await page.evaluate((nativeAnimate) => {
+      Element.prototype.animate = function (keyframes, timing) {
+        const options = typeof timing === 'number' ? { duration: timing } : timing
+        return nativeAnimate.call(this, keyframes, { ...options, easing: 'steps(1, end)' })
+      }
+    }, original)
+    try {
+      const recording = await recordDrawerMotion(page, {
+        toggle: PACKAGE_TOGGLE,
+        panel: PACKAGE_PANEL,
+        duration: RUN_MS,
+        secondClickAt: null,
+      })
+      expect(smoothRunIssues(recording).some((issue) => issue.includes('jumps'))).toBe(true)
+    } finally {
+      await page.evaluate((nativeAnimate) => {
+        Element.prototype.animate = nativeAnimate
+      }, original)
+      await original.dispose()
+    }
+  }
+)
