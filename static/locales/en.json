@@ -3602,6 +3602,7 @@
         "title": "Owner Voice Profile",
         "profileStatus": "Voice profile status",
         "localOnly": "All audio is processed by the local service",
+        "processingLocation": "The local service means the host running this page’s N.E.K.O. backend. With a remote deployment, audio is sent to that host.",
         "privacyTitle": "Three reference recordings plus one verification recording",
         "privacyBody": "Use the same microphone and read complete sentences in your natural voice for three reference recordings and one verification recording. All audio is processed by the local service. The voice profile is encrypted and saved only after the backend speech and voice verification checks pass.",
         "activeRecordingBody": "Read the complete sentence below at your normal volume and pace. You can submit after 1.5 seconds of audio have been captured; acceptance depends on the backend speech and voice verification checks.",

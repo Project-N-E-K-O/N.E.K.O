@@ -3602,6 +3602,7 @@
         "title": "Perfil de voz del Owner",
         "profileStatus": "Estado del perfil de voz",
         "localOnly": "Todo el audio se procesa en el servicio local",
+        "processingLocation": "El servicio local es el equipo que ejecuta el backend N.E.K.O. de esta página. En un despliegue remoto, el audio se envía a ese equipo.",
         "privacyTitle": "Tres grabaciones de referencia y una de verificación",
         "privacyBody": "Usa el mismo micrófono y lee frases completas con tu voz natural para hacer tres grabaciones de referencia y una de verificación. Todo el audio se procesa en el servicio local. El perfil de voz solo se cifra y se guarda tras superar las comprobaciones de habla e identidad vocal del servidor.",
         "activeRecordingBody": "Lee la frase siguiente completa con tu volumen y ritmo habituales. Puedes enviar la grabación tras capturar 1,5 segundos de audio; la aceptación depende de las comprobaciones de habla e identidad vocal del servidor.",
