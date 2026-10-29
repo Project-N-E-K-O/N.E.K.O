@@ -279,7 +279,7 @@ async def test_save_preserves_unbound_proof_without_upload_and_keeps_paused_owne
     identity = await save_original("Lan", "user", RAW.text, original_time=RAW.original_time, config_manager=manager)
     assert len(identity) == 32
     assert runtime.state.binding(UID)["enabled"] == 0
-    assert runtime.ledger.pending(DOMAIN) == []
+    assert runtime.ledger.visible_originals(DOMAIN) == []
     row = pending_rows(source_for(runtime))[0]
     assert row["owner"] == OWNER
     assert row["record_id"] == identity
@@ -297,11 +297,12 @@ async def test_save_keeps_pending_when_ledger_temporarily_fails(tmp_path, monkey
         "Lan": {"_reserved": {"character_uid": UID}},
     }}))
     monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
-    runtime.ledger.capture = Mock(side_effect=RuntimeError("synthetic unavailable"))
+    # An unusable ledger proves the save path never consults it.
+    runtime.ledger = Mock(spec=[])
     identity = await save_original("Lan", "user", RAW.text, config_manager=manager)
     assert pending_rows(source_for(runtime))[0]["record_id"] == identity
     runtime.wake_scheduler.assert_called_once_with()
-    runtime.ledger.capture.assert_not_called()
+    assert runtime.ledger.mock_calls == []
 
 
 @pytest.mark.asyncio
@@ -317,7 +318,7 @@ async def test_save_does_not_wake_before_original_commit_succeeds(tmp_path, monk
         await save_original("Lan", "user", RAW.text, config_manager=manager)
     runtime.wake_scheduler.assert_not_called()
     assert pending_rows(source_for(runtime)) == []
-    assert runtime.ledger.pending(DOMAIN) == []
+    assert runtime.ledger.visible_originals(DOMAIN) == []
 
 
 @pytest.mark.asyncio

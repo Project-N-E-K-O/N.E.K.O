@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 
-from services.chat_sync.ledger import ChatDomain, ChatSyncLedger
+from services.chat_sync.ledger import ChatDomain
 from services.chat_sync.protocol import MAX_ORIGIN_SEQ
 
 
@@ -34,16 +34,10 @@ def _ids(values, *, minimum=0):
 class PrototypeChatSyncClient:
     """Read one role's recovery fences using durable identities."""
 
-    def __init__(
-        self, ledger: ChatSyncLedger, domain: ChatDomain, request: PrototypeRequest,
-        *, before_commit: Callable[[], Awaitable[None]] | None = None,
-    ):
-        """Bind an explicit ledger/domain to the caller's authenticated transport."""
-        self.ledger = ledger
+    def __init__(self, domain: ChatDomain, request: PrototypeRequest):
+        """Bind an explicit domain to the caller's authenticated transport."""
         self.domain = domain
         self.request = request
-        # Runtime adapters can fence account/consent changes before local commits.
-        self.before_commit = before_commit
         self.base_path = f"/prototype/chat-sync/characters/{domain.character_uid}"
 
     def _recovery_domain(self, value, fields):
@@ -64,8 +58,6 @@ class PrototypeChatSyncClient:
         message_ids = [item["messageId"] for item in records]
         body = json.dumps({"records": records}, separators=(",", ":"), sort_keys=True).encode("utf-8")
         value = await self.request("POST", f"{self.base_path}/recovery/check", body)
-        if self.before_commit is not None:
-            await self.before_commit()
         self._recovery_domain(value, {"ownerId", "characterSyncId", "cursor", "results"})
         results = value["results"]
         if (not _cursor(value["cursor"]) or not isinstance(results, list) or len(results) != len(message_ids)
@@ -84,8 +76,6 @@ class PrototypeChatSyncClient:
         if through is not None:
             path += f"&through={through}"
         value = await self.request("GET", path, None)
-        if self.before_commit is not None:
-            await self.before_commit()
         self._recovery_domain(value, {"ownerId", "characterSyncId", "through", "cursor", "hasMore", "deletedMessageIds"})
         end, cursor, more = value["through"], value["cursor"], value["hasMore"]
         if (not _cursor(end) or not _cursor(cursor) or not after <= cursor <= end

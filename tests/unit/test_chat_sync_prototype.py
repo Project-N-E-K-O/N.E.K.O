@@ -9,16 +9,16 @@ import sqlite3
 import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
+from tests.chat_sync_legacy_ledger import insert_legacy_original
 
-from services.chat_sync.ledger import ChatDomain, ChatOriginal, ChatSyncLedger, SourceLocator
+from services.chat_sync.ledger import ChatDomain, ChatOriginal, ChatSyncLedger
 from services.chat_sync.protocol import decode_chat_original
 from services.chat_sync.prototype import PrototypeChatSyncClient
 
 
-def test_recovery_client_checks_exact_coverage_and_fixed_deletion_fence(tmp_path):
+def test_recovery_client_checks_exact_coverage_and_fixed_deletion_fence():
     """Copied receipts cannot stand in for an authenticated metadata lookup."""
     async def scenario():
-        ledger = ChatSyncLedger(tmp_path / "recovery.db")
         records = [{"messageId": "b" * 32, "sha256": "a" * 64}]
         requests = []
 
@@ -29,16 +29,13 @@ def test_recovery_client_checks_exact_coverage_and_fixed_deletion_fence(tmp_path
                 return {**domain, "cursor": 7, "results": [{"messageId": "b" * 32, "state": "missing"}]}
             return {**domain, "through": 7, "cursor": 7, "hasMore": False, "deletedMessageIds": ["b" * 32]}
 
-        client = PrototypeChatSyncClient(ledger, DOMAIN, request)
+        client = PrototypeChatSyncClient(DOMAIN, request)
         check = await client.check_recovery(records)
         assert check["results"][0]["state"] == "missing"
         page = await client.recovery_deletions(after=2, through=7)
         assert page["deletedMessageIds"] == ["b" * 32]
         assert requests[0][2] == {"records": records}
         assert requests[1][1].endswith("/recovery/deletions?after=2&limit=200&through=7")
-        with closing(sqlite3.connect(ledger.path)) as conn:
-            assert conn.execute("SELECT count(*) FROM chat_cursors").fetchone() == (0,)
-        assert ledger.deleted_message_ids(DOMAIN) == []
     asyncio.run(scenario())
 
 
@@ -47,13 +44,13 @@ def test_recovery_client_checks_exact_coverage_and_fixed_deletion_fence(tmp_path
     {"cursor": True}, {"results": []}, {"results": [{"messageId": "c" * 32, "state": "received"}]},
     {"results": [{"messageId": "b" * 32, "state": "accepted"}]}, {"extra": True},
 ])
-def test_recovery_client_rejects_unbound_or_incomplete_coverage(tmp_path, change):
+def test_recovery_client_rejects_unbound_or_incomplete_coverage(change):
     """Validate the complete owner/role/manifest before exposing any decision."""
     async def scenario():
         async def request(*_args):
             return {"ownerId": DOMAIN.owner_id, "characterSyncId": DOMAIN.character_uid,
                     "cursor": 7, "results": [{"messageId": "b" * 32, "state": "received"}], **change}
-        client = PrototypeChatSyncClient(ChatSyncLedger(tmp_path / "recovery.db"), DOMAIN, request)
+        client = PrototypeChatSyncClient(DOMAIN, request)
         with pytest.raises(ValueError, match="invalid_chat_recovery"):
             await client.check_recovery([{"messageId": "b" * 32, "sha256": "a" * 64}])
     asyncio.run(scenario())
@@ -68,13 +65,13 @@ def test_recovery_client_rejects_unbound_or_incomplete_coverage(tmp_path, change
     {"deletedMessageIds": [f"{index:032x}" for index in range(1, 7)]},
     {"hasMore": 0},
 ])
-def test_recovery_client_rejects_changed_or_incomplete_fence(tmp_path, change):
+def test_recovery_client_rejects_changed_or_incomplete_fence(change):
     """No recovery decision can silently skip the remainder of a deletion page."""
     async def scenario():
         async def request(*_args):
             return {"ownerId": DOMAIN.owner_id, "characterSyncId": DOMAIN.character_uid,
                     "through": 7, "cursor": 7, "hasMore": False, "deletedMessageIds": [], **change}
-        client = PrototypeChatSyncClient(ChatSyncLedger(tmp_path / "recovery.db"), DOMAIN, request)
+        client = PrototypeChatSyncClient(DOMAIN, request)
         with pytest.raises(ValueError, match="invalid_chat_recovery"):
             await client.recovery_deletions(after=2, through=7)
     asyncio.run(scenario())
@@ -85,8 +82,8 @@ OTHER = ChatDomain(DOMAIN.owner_id, "b" * 32)
 
 
 def capture(ledger, index, text="same text", domain=DOMAIN):
-    """Register only synthetic sources using the already tested capture API."""
-    return ledger.capture(domain, SourceLocator("synthetic-db", "generation", str(index)), ChatOriginal("user", text))
+    """Insert only synthetic legacy originals, as an earlier release stored them."""
+    return insert_legacy_original(ledger.path, domain, ChatOriginal("user", text), ("synthetic-db", "generation", str(index)))
 
 
 def deletion_rows(ledger):
@@ -96,13 +93,12 @@ def deletion_rows(ledger):
                 conn.execute("SELECT domain, message_id FROM chat_tombstones ORDER BY rowid").fetchall())
 
 
-def test_local_delete_hides_immediately_and_keeps_later_capture(tmp_path):
-    """A deletion changes visibility at once and leaves a later capture pending."""
+def test_local_delete_hides_immediately_and_keeps_later_original(tmp_path):
+    """A deletion changes visibility at once and leaves a later original visible."""
     ledger = ChatSyncLedger(tmp_path / "sync.db")
     first = capture(ledger, 1)
     deletion = ledger.queue_deletion(DOMAIN, [first["messageId"], "f" * 32])
     assert ledger.visible_originals(DOMAIN) == []
-    assert ledger.pending(DOMAIN) == []
     second = capture(ledger, 2)
     restarted = ChatSyncLedger(ledger.path)
     markers, tombstones = deletion_rows(restarted)
@@ -111,7 +107,7 @@ def test_local_delete_hides_immediately_and_keeps_later_capture(tmp_path):
     assert restarted.deleted_message_ids(OTHER) == []
     with pytest.raises(FrozenInstanceError):
         deletion.deletion_id = "e" * 32
-    assert [decode_chat_original(raw)["messageId"] for raw, _ in restarted.pending(DOMAIN)] == [second["messageId"]]
+    assert [decode_chat_original(raw)["messageId"] for raw in restarted.visible_originals(DOMAIN)] == [second["messageId"]]
 
 
 @pytest.mark.parametrize("ids", [[], ["f" * 32, "f" * 32], ["F" * 32], ["f" * 32 + "\n"], [None]])

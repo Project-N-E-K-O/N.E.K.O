@@ -176,7 +176,8 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
     from services.chat_sync.long_term import LongTermMemorySync
     from services.chat_sync.runtime import DesktopChatSyncRuntime
     from services.chat_sync.source import ChatOriginalSource
-    from services.chat_sync.ledger import ChatDomain, ChatOriginal, SourceLocator
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
+    from tests.chat_sync_legacy_ledger import insert_legacy_original
     async def session():
         return {'logged_in': False}
     directory = tmp_path / 'runtime'
@@ -189,8 +190,9 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
     with closing(sqlite3.connect(source.path)) as conn:
         conn.row_factory = sqlite3.Row
         old = conn.execute('SELECT * FROM source_originals WHERE record_id=?', ('1' * 32,)).fetchone()
-    runtime.ledger.capture(domain, SourceLocator('db', 'generation', '1'), ChatOriginal('user', 'old'), message_id='1' * 32,
-                           proven_source_origin=(old['origin_stream_id'], old['origin_seq']))
+    # An original that an earlier release copied from the source into the ledger.
+    insert_legacy_original(runtime.ledger.path, domain, ChatOriginal('user', 'old'), ('db', 'generation', '1'),
+                           message_id='1' * 32, origin=(old['origin_stream_id'], old['origin_seq']))
     runtime.ledger.queue_deletion(domain, ['2' * 32])
     with closing(runtime.ledger._connect()) as conn, conn:
         # A batch left by an earlier upload lane is copied authority as well.
@@ -598,7 +600,9 @@ async def test_recovery_retry_reclaims_a_download_the_cloud_deleted_meanwhile(tm
         await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
         with closing(sqlite3.connect(runtime.ledger.path)) as conn:
             assert conn.execute('SELECT count(*) FROM chat_downloaded').fetchone() == (0,)
-            assert conn.execute('SELECT domain,message_id FROM chat_deleted_originals').fetchall() == [(domain.key(), ids[0])]
+            assert conn.execute('SELECT domain,message_id FROM chat_tombstones').fetchall() == [(domain.key(), ids[0])]
+            assert conn.execute('SELECT domain,message_id FROM chat_origin_identities').fetchall() == [(domain.key(), ids[0])]
+        assert runtime.ledger.visible_originals(domain) == []
     finally:
         await runtime.close()
 
@@ -921,7 +925,7 @@ async def test_repeated_outage_recovery_coalesces_identical_bound_and_unbound_pr
         requests.append(json.loads(payload))
         return {'ownerId': domain.owner_id, 'characterSyncId': domain.character_uid, 'cursor': 0,
                 'results': [{'messageId': identity, 'state': 'received'}]}
-    client = PrototypeChatSyncClient(runtime.ledger, domain, request)
+    client = PrototypeChatSyncClient(domain, request)
     checked = await client.check_recovery([{'messageId': row['record_id'], 'sha256': hashlib.sha256(row['payload']).hexdigest()} for row in candidates])
     assert len(requests) == 1 and len(requests[0]['records']) == 1
     apply_checked_candidates(runtime, domain, candidates, checked['results'])

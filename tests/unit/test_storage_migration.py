@@ -4771,7 +4771,7 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
         conn.execute('INSERT INTO source_local_replies (record_id,uid,origin,original,original_hash) VALUES (?,?,?,?,?)',
                      ('d' * 32, UID, 'tool', reply, hashlib.sha256(reply.encode('utf-8')).hexdigest()))
     capture(runtime)
-    pending_originals = runtime.ledger.pending(domain)
+    visible_originals = runtime.ledger.visible_originals(domain)
     deletion = runtime.ledger.queue_deletion(domain, ['e' * 32])
     request = {'requestId': 'f' * 32, 'epoch': list(runtime.writer.epoch()), 'canonical': '{}'}
     runtime.state.queue_new_role(UID, request)
@@ -4796,7 +4796,7 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
         assert reopened.state.binding(UID)['enabled']
         assert reopened.state.choices()[UID] is True
         assert reopened.state.new_role(UID) == saved_request
-        assert reopened.ledger.pending(domain) == pending_originals
+        assert reopened.ledger.visible_originals(domain) == visible_originals
         assert rows(reopened.ledger.path, 'SELECT deletion_id, payload FROM chat_deletions') == [
             (deletion.deletion_id, deletion.payload)]
         moved_source = ChatOriginalSource(target_root / 'chat_sync' / 'sources.sqlite3')

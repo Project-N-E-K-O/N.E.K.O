@@ -134,10 +134,8 @@ def stage_authority(runtime):
         source.execute('DELETE FROM source_unbound WHERE record_id IN (SELECT record_id FROM source_recovery_candidates)')
     with closing(store_connection(directory / 'originals.sqlite3')) as ledger, ledger:
         for table in ('chat_pending', 'chat_batches', 'chat_deletions', 'chat_originals', 'chat_downloaded',
-                      'chat_sources', 'chat_lane_rotation', 'chat_cursors', 'chat_recovery_deletion_pages'):
+                      'chat_recovery_deletion_pages'):
             ledger.execute(f'DELETE FROM {table}')
-        if ledger.execute("SELECT 1 FROM sqlite_master WHERE name='chat_oversized'").fetchone():
-            ledger.execute('DELETE FROM chat_oversized')
     with closing(store_connection(directory / 'state.sqlite3')) as state, state:
         if state.execute("SELECT 1 FROM sqlite_master WHERE name='long_term_memory_state'").fetchone():
             state.execute('DELETE FROM long_term_memory_state')

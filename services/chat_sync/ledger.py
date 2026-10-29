@@ -1,9 +1,8 @@
-"""Local chat-sync identity and pending-record foundation.
+"""Local chat-sync identity, tombstone and recovery-record store.
 
-Callers must verify private-chat provenance before capture; role labels alone
-are not proof. The opt-in runtime adapter supplies the fixed account binding.
-The ledger path must be outside Steam-restored memory directories. Async callers
-must offload these synchronous SQLite operations with asyncio.to_thread.
+The opt-in runtime adapter supplies the fixed account binding. The ledger path
+must be outside Steam-restored memory directories. Async callers must offload
+these synchronous SQLite operations with asyncio.to_thread.
 """
 
 from __future__ import annotations
@@ -16,20 +15,9 @@ from pathlib import Path
 import sqlite3
 
 from services.chat_sync.writer import store_connection
-import time
 from uuid import uuid4
 
-from services.chat_sync.protocol import (
-    MAX_ORIGIN_SEQ,
-    decode_chat_original,
-    encode_chat_original,
-    validate_sync_domain,
-)
-
-
-# Omitted timestamps mean a new local arrival; explicit None preserves a legacy
-# source's unknown arrival clock through recovery without inventing a date.
-_CAPTURE_TIME_NOW = object()
+from services.chat_sync.protocol import decode_chat_original, validate_sync_domain
 
 
 class IdentityConflict(ValueError):
@@ -60,9 +48,9 @@ class SealedChatDeletion:
     payload: bytes
 
 
-def _message_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...]:
+def _message_ids(value: object) -> tuple[str, ...]:
     """Validate explicit IDs without expanding a clear operation by device time."""
-    if not isinstance(value, list) or (not value and not allow_empty):
+    if not isinstance(value, list) or not value:
         raise ValueError("invalid_message_ids")
     if any(
         not isinstance(item, str) or len(item) != 32
@@ -71,12 +59,6 @@ def _message_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...]
     ) or len(set(value)) != len(value):
         raise ValueError("invalid_message_ids")
     return tuple(value)
-
-
-def _identifier(value: str) -> None:
-    """Reject ambiguous identities instead of normalizing a persisted key."""
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise ValueError("invalid_identity")
 
 
 @dataclass(frozen=True)
@@ -95,28 +77,6 @@ class ChatDomain:
     def key(self) -> str:
         """Use a JSON tuple so separators inside identifiers cannot collide."""
         return _encode([self.owner_id, self.character_uid, self.channel, self.scope])
-
-
-@dataclass(frozen=True)
-class SourceLocator:
-    """Persisted source identity, storage generation and record locator.
-
-    database_id and generation must come from verified durable source metadata,
-    never inferred from a path, row number, timestamp or matching text.
-    """
-
-    database_id: str
-    generation: str
-    record_id: str
-
-    def __post_init__(self):
-        """Require all source identity parts before a local alias can be created."""
-        for value in (self.database_id, self.generation, self.record_id):
-            _identifier(value)
-
-    def key(self) -> str:
-        """Keep the storage generation in the alias when row IDs are reused."""
-        return _encode([self.database_id, self.generation, self.record_id])
 
 
 @dataclass(frozen=True)
@@ -228,7 +188,7 @@ def _remember_origin_identity(conn: sqlite3.Connection, domain: ChatDomain, reco
 
 
 class ChatSyncLedger:
-    """Atomic original + alias + pending registration, independent of models.
+    """Local originals, tombstones and recovery records, independent of models.
 
     Construction does not authorize an owner or enable sync. Authorization and
     verified binding remain the responsibility of the runtime adapter.
@@ -238,15 +198,12 @@ class ChatSyncLedger:
         """Create only ledger tables; never initialize or migrate user memory."""
         self.path = path
         with closing(self._connect()) as conn:
+            # Databases written by earlier releases may also hold retired tables
+            # (chat_sources, chat_cursors, chat_oversized, ...). Their rows carry
+            # no chat text, nothing reads them, and they are left in place.
+            # chat_pending only holds rows queued by earlier releases; nothing
+            # adds to it, but its rows are erased together with their originals.
             conn.executescript("""
-                CREATE TABLE IF NOT EXISTS chat_sources (
-                    domain TEXT NOT NULL,
-                    database_id TEXT NOT NULL,
-                    generation TEXT NOT NULL,
-                    stream_id TEXT NOT NULL,
-                    next_seq INTEGER NOT NULL,
-                    PRIMARY KEY (domain, database_id, generation)
-                );
                 CREATE TABLE IF NOT EXISTS chat_originals (
                     domain TEXT NOT NULL,
                     message_id TEXT NOT NULL,
@@ -260,7 +217,6 @@ class ChatSyncLedger:
                 CREATE TABLE IF NOT EXISTS chat_pending (
                     domain TEXT NOT NULL,
                     message_id TEXT NOT NULL,
-                    queued_at_ms INTEGER,
                     PRIMARY KEY (domain, message_id),
                     FOREIGN KEY (domain, message_id)
                         REFERENCES chat_originals(domain, message_id)
@@ -271,12 +227,6 @@ class ChatSyncLedger:
                     sealed_bytes BLOB NOT NULL,
                     sha256 TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS chat_lane_rotation (
-                    domain TEXT PRIMARY KEY, new_batches INTEGER NOT NULL DEFAULT 0);
-                CREATE TABLE IF NOT EXISTS chat_identity_backfills (domain TEXT PRIMARY KEY);
-                CREATE TABLE IF NOT EXISTS chat_oversized (
-                    domain TEXT NOT NULL, message_id TEXT NOT NULL, byte_length INTEGER NOT NULL,
-                    PRIMARY KEY (domain, message_id));
                 CREATE TABLE IF NOT EXISTS chat_downloaded (
                     domain TEXT NOT NULL,
                     message_id TEXT NOT NULL,
@@ -287,10 +237,6 @@ class ChatSyncLedger:
                     domain TEXT NOT NULL,
                     message_id TEXT NOT NULL,
                     PRIMARY KEY (domain, message_id)
-                );
-                CREATE TABLE IF NOT EXISTS chat_cursors (
-                    domain TEXT NOT NULL PRIMARY KEY,
-                    cursor INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS chat_deletions (
                     domain TEXT NOT NULL,
@@ -311,27 +257,7 @@ class ChatSyncLedger:
                     PRIMARY KEY (domain, origin_stream_id, origin_seq),
                     UNIQUE (domain, message_id)
                 );
-                CREATE TABLE IF NOT EXISTS chat_deleted_originals (
-                    domain TEXT NOT NULL,
-                    message_id TEXT NOT NULL,
-                    locator TEXT,
-                    original_hash TEXT,
-                    sha256 TEXT NOT NULL,
-                    PRIMARY KEY (domain, message_id),
-                    UNIQUE (domain, locator)
-                );
             """)
-            # Serialize the additive migration across concurrent runtime handles.
-            # Existing pending rows intentionally retain NULL instead of "now".
-            conn.execute("BEGIN IMMEDIATE")
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_pending)")}
-            if "queued_at_ms" not in columns:
-                conn.execute("ALTER TABLE chat_pending ADD COLUMN queued_at_ms INTEGER")
-            # Existing accepted outbox rows remain live-chat work. A history
-            # lane is assigned only by an explicitly approved source transfer.
-            if "queue_lane" not in columns:
-                conn.execute("ALTER TABLE chat_pending ADD COLUMN queue_lane TEXT NOT NULL DEFAULT 'new'")
-            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         """Give each operation its own connection and durable SQLite commits."""
@@ -342,138 +268,6 @@ class ChatSyncLedger:
         # text. Backups, snapshots and storage-medium erasure are separate work.
         conn.execute("PRAGMA secure_delete = ON")
         return conn
-
-    def capture(
-        self, domain: ChatDomain, source: SourceLocator, original: ChatOriginal,
-        *, message_id: str | None = None, queued_at_ms: int | None | object = _CAPTURE_TIME_NOW,
-        queue_lane: str = "new",
-        proven_source_origin: tuple[str, int] | None = None,
-    ) -> dict:
-        """Capture one verified original; retry returns the same persisted ID.
-
-        The caller must recover any gap between its source commit and capture
-        by scanning verified source identities. This transaction alone does not
-        establish atomicity with the existing time-index database.
-        """
-        # A verified new source may supply its backend-generated record UID so
-        # the live bubble and later download keep one immutable message ID.
-        if message_id is not None:
-            _message_ids([message_id])
-        if queue_lane not in ("new", "history"):
-            raise ValueError("invalid_chat_queue_lane")
-        if proven_source_origin is not None:
-            # Only a producer's durable raw transaction may supply source order.
-            # Validate it before aliases/retries; never infer it from timestamps.
-            try:
-                if not isinstance(proven_source_origin, tuple) or len(proven_source_origin) != 2:
-                    raise ValueError
-                _message_ids([proven_source_origin[0]])
-                if type(proven_source_origin[1]) is not int or not 1 <= proven_source_origin[1] <= MAX_ORIGIN_SEQ:
-                    raise ValueError
-            except ValueError:
-                raise ValueError("invalid_chat_source_origin") from None
-        if queued_at_ms is not _CAPTURE_TIME_NOW and queued_at_ms is not None and (
-            type(queued_at_ms) is not int or not 0 <= queued_at_ms <= 2 ** 63 - 1
-        ):
-            raise ValueError("invalid_chat_queue_time")
-        key, locator, body = domain.key(), source.key(), _encode(original.fields())
-        conn = self._connect()
-        try:
-            # Serialize identity lookup and sequence allocation across processes.
-            conn.execute("BEGIN IMMEDIATE")
-            retired = conn.execute(
-                "SELECT message_id, original_hash FROM chat_deleted_originals WHERE domain=? AND locator=?",
-                (key, locator),
-            ).fetchone()
-            if retired:
-                if retired[1] != hashlib.sha256(body.encode("utf-8")).hexdigest():
-                    raise IdentityConflict("source_content_conflict")
-                if message_id is not None and retired[0] != message_id:
-                    raise IdentityConflict("source_identity_conflict")
-                raise ValueError("chat_original_deleted")
-            if message_id is not None and conn.execute(
-                "SELECT 1 FROM chat_tombstones WHERE domain=? AND message_id=?", (key, message_id),
-            ).fetchone():
-                raise ValueError("chat_original_deleted")
-            prior = conn.execute(
-                "SELECT original, payload FROM chat_originals WHERE domain=? AND locator=?",
-                (key, locator),
-            ).fetchone()
-            if prior:
-                # An existing source alias never creates another pending task.
-                if prior[0] != body:
-                    raise IdentityConflict("source_content_conflict")
-                if message_id is not None and json.loads(prior[1])["messageId"] != message_id:
-                    raise IdentityConflict("source_identity_conflict")
-                if proven_source_origin is not None and (
-                    json.loads(prior[1])["originStreamId"], json.loads(prior[1])["originSeq"]
-                ) != proven_source_origin:
-                    raise IdentityConflict("source_identity_conflict")
-                return json.loads(prior[1])
-            if proven_source_origin is None:
-                # Existing authorized source rows retain their original ledger
-                # allocation; an additive migration never rewrites wire identity.
-                conn.execute("INSERT OR IGNORE INTO chat_sources VALUES (?, ?, ?, ?, 1)",
-                             (key, source.database_id, source.generation, uuid4().hex))
-                stream, seq = conn.execute(
-                    "SELECT stream_id, next_seq FROM chat_sources WHERE domain=? AND database_id=? AND generation=?",
-                    (key, source.database_id, source.generation),
-                ).fetchone()
-            else:
-                stream, seq = proven_source_origin
-            # Never emit a sequence that the mobile JavaScript runtime rounds.
-            # Exhaustion requires a new verified source stream, not wraparound.
-            if seq > MAX_ORIGIN_SEQ:
-                raise ValueError("source_sequence_exhausted")
-            payload = {
-                "schemaVersion": 1,
-                "ownerId": domain.owner_id,
-                "characterSyncId": domain.character_uid,
-                "channel": domain.channel,
-                "scope": domain.scope,
-                "messageId": message_id if message_id is not None else uuid4().hex,
-                "originStreamId": stream,
-                "originSeq": seq,
-                **original.fields(),
-            }
-            encoded = encode_chat_original(payload)
-            # Prototype identity registration shares capture's original commit;
-            # it does not alter source selection or sequence allocation.
-            _remember_origin_identity(conn, domain, payload)
-            # Original bytes, source alias, pending record and sequence advance
-            # commit together. Closing an uncommitted connection rolls them back.
-            conn.execute(
-                "INSERT INTO chat_originals VALUES (?, ?, ?, ?, ?, ?)",
-                (key, payload["messageId"], locator, body, encoded, hashlib.sha256(encoded).hexdigest()),
-            )
-            # Arrival time belongs to the atomic outbox commit, never to mutable
-            # display time. Source-WAL recovery supplies its original saved clock.
-            arrived = time.time_ns() // 1_000_000 if queued_at_ms is _CAPTURE_TIME_NOW else queued_at_ms
-            conn.execute("INSERT INTO chat_pending (domain,message_id,queued_at_ms,queue_lane) VALUES (?, ?, ?, ?)",
-                         (key, payload["messageId"], arrived, queue_lane))
-            if proven_source_origin is None:
-                conn.execute("UPDATE chat_sources SET next_seq=next_seq+1 WHERE domain=? AND database_id=? AND generation=?",
-                             (key, source.database_id, source.generation))
-            conn.commit()
-            return payload
-        finally:
-            conn.close()
-
-    def pending(self, domain: ChatDomain, *, limit: int = 200) -> list[tuple[bytes, str]]:
-        """Return bounded fixed payload bytes and hashes, without marking ack."""
-        if type(limit) is not int or not 1 <= limit <= 200:
-            raise ValueError("invalid_page_size")
-        conn = self._connect()
-        try:
-            return conn.execute(
-                "SELECT o.payload, o.sha256 FROM chat_originals o JOIN chat_pending p "
-                "ON o.domain=p.domain AND o.message_id=p.message_id "
-                "WHERE o.domain=? AND NOT EXISTS (SELECT 1 FROM chat_tombstones t "
-                "WHERE t.domain=o.domain AND t.message_id=o.message_id) ORDER BY o.rowid LIMIT ?",
-                (domain.key(), limit),
-            ).fetchall()
-        finally:
-            conn.close()
 
     def queue_deletion(self, domain: ChatDomain, message_ids: list[str]) -> SealedChatDeletion:
         """Hide explicit IDs and persist their immutable deletion request atomically.
@@ -529,17 +323,9 @@ class ChatSyncLedger:
             if not row[2]:
                 conn.execute("INSERT OR IGNORE INTO chat_deletions VALUES (?,?,?,?)", (domain.key(), row[0], payload, digest))
 
-    def deleted_message_ids(self, domain: ChatDomain, message_ids: list[str] | None = None) -> list[str]:
-        """Expose permanent IDs, optionally checking only a bounded recovery page."""
-        ids = _message_ids(message_ids, allow_empty=True) if message_ids is not None else None
-        if ids == ():
-            return []
+    def deleted_message_ids(self, domain: ChatDomain) -> list[str]:
+        """Expose permanent IDs in the order their tombstones were written."""
         with closing(self._connect()) as conn:
-            if ids is not None:
-                return [row[0] for row in conn.execute(
-                    "SELECT message_id FROM chat_tombstones WHERE domain=? AND message_id IN ("
-                    + ",".join("?" for _ in ids) + ")", (domain.key(), *ids),
-                )]
             return [row[0] for row in conn.execute(
                 "SELECT message_id FROM chat_tombstones WHERE domain=? ORDER BY rowid", (domain.key(),),
             )]
@@ -563,21 +349,16 @@ class ChatSyncLedger:
                 return
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                "SELECT o.message_id,o.locator,o.original,o.payload,o.sha256 FROM chat_originals o "
+                "SELECT o.message_id,o.payload,o.sha256 FROM chat_originals o "
                 "JOIN chat_tombstones t ON t.domain=o.domain AND t.message_id=o.message_id WHERE o.domain=? "
-                "UNION ALL SELECT d.message_id,NULL,NULL,d.payload,NULL FROM chat_downloaded d "
+                "UNION ALL SELECT d.message_id,d.payload,NULL FROM chat_downloaded d "
                 "JOIN chat_tombstones t ON t.domain=d.domain AND t.message_id=d.message_id WHERE d.domain=?",
                 (key, key),
             ).fetchall()
-            for message_id, locator, original, payload, digest in rows:
+            for message_id, payload, digest in rows:
                 digest = digest or hashlib.sha256(payload).hexdigest()
                 _validate_batch_member(domain, message_id, payload, digest)
                 _remember_origin_identity(conn, domain, decode_chat_original(payload))
-                conn.execute("INSERT OR IGNORE INTO chat_deleted_originals VALUES (?, ?, ?, ?, ?)", (
-                    key, message_id, locator,
-                    hashlib.sha256(original.encode("utf-8")).hexdigest() if original is not None else None,
-                    digest,
-                ))
             sealed = conn.execute(
                 "SELECT batch_id,sealed_bytes,sha256 FROM chat_batches WHERE domain=?", (key,),
             ).fetchone()
@@ -586,7 +367,8 @@ class ChatSyncLedger:
                 deleted = {row[0] for row in conn.execute("SELECT message_id FROM chat_tombstones WHERE domain=?", (key,))}
                 if any(member[0] in deleted for member in batch.members):
                     conn.execute("DELETE FROM chat_batches WHERE domain=?", (key,))
-            for table in ("chat_pending", "chat_originals", "chat_downloaded", "chat_oversized"):
+            # Legacy chat_pending rows reference chat_originals; erase them first.
+            for table in ("chat_pending", "chat_originals", "chat_downloaded"):
                 conn.execute(f"DELETE FROM {table} WHERE domain=? AND message_id IN "
                              "(SELECT message_id FROM chat_tombstones WHERE domain=?)", (key, key))
             conn.commit()

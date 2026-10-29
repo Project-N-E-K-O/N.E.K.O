@@ -16,8 +16,9 @@ import httpx
 import pytest
 
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
+from tests.chat_sync_legacy_ledger import insert_legacy_original
 
-from services.chat_sync.ledger import ChatDomain, ChatOriginal, SourceLocator
+from services.chat_sync.ledger import ChatDomain, ChatOriginal
 from services.chat_sync.recent_protocol import merge, mutation
 from services.chat_sync.runtime import (
     ChatSyncServiceError, DesktopChatSyncRuntime, DesktopSyncState, _load_local_ca_context, _saved_session_commit_guard,
@@ -175,8 +176,9 @@ def queued_deletions(runtime):
 
 
 def capture(runtime, index=1):
-    """Register synthetic verified originals without reading user memory."""
-    return runtime.ledger.capture(DOMAIN, SourceLocator("db", "generation", str(index)), ChatOriginal("user", "  full text\n🙂  "))
+    """Insert a synthetic legacy original without reading user memory."""
+    return insert_legacy_original(runtime.ledger.path, DOMAIN, ChatOriginal("user", "  full text\n🙂  "),
+                                  ("db", "generation", str(index)))
 
 
 @pytest.mark.asyncio
@@ -198,7 +200,6 @@ async def test_local_only_reply_history_delegates_without_auth_or_sync_work(tmp_
         runtime._recover_originals.assert_not_awaited()
         assert service.requests == []
         assert runtime.state.binding(UID) is None
-        assert runtime.ledger.pending(DOMAIN) == []
         assert runtime.ledger.visible_originals(DOMAIN) == []
     finally:
         await runtime.close()
@@ -544,7 +545,7 @@ async def test_notification_subscribed_catches_up_current_role_without_consuming
         for domain in (DOMAIN, other):
             for channel in ("pull", "profile"):
                 assert runtime.scheduler.ready(domain.key(), channel, 1, presence) == (domain == DOMAIN)
-        assert len(runtime.ledger.pending(DOMAIN)) == 1
+        assert len(runtime.ledger.visible_originals(DOMAIN)) == 1
         assert service.requests == []
     finally:
         await runtime.close()
@@ -572,7 +573,7 @@ async def test_changed_notification_coalesces_only_its_channel_without_http_or_a
     await wait_notification(lambda: socket.receives >= 5)
     assert runtime.scheduler.ready(DOMAIN.key(), "profile", 1, presence)
     assert not runtime.scheduler.ready(DOMAIN.key(), "pull", 1, presence)
-    assert len(runtime.ledger.pending(DOMAIN)) == 1 and service.requests == []
+    assert len(runtime.ledger.visible_originals(DOMAIN)) == 1 and service.requests == []
     await runtime.close()
 
 
@@ -819,7 +820,7 @@ async def test_invalid_notification_never_applies_server_progress_or_payload(tmp
     await socket.incoming.put(json.dumps(frame))
     await wait_notification(lambda: runtime._notification_task.done())
     assert socket.closed and service.requests == []
-    assert len(runtime.ledger.pending(DOMAIN)) == 1
+    assert len(runtime.ledger.visible_originals(DOMAIN)) == 1
     assert runtime._notification_retry_at > runtime.scheduler.clock()
     await runtime.close()
 
@@ -2101,7 +2102,7 @@ async def test_explicit_pause_revokes_retained_on_without_a_setup_error(tmp_path
         await runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider())
         assert runtime.state.new_role_errors() == {} and service.requests == []
         if bound_role:
-            assert runtime.ledger.pending(DOMAIN)
+            assert runtime.ledger.visible_originals(DOMAIN)
             assert queued_deletions(runtime) == [(deletion.deletion_id, deletion.payload)]
             assert not runtime.state.binding(UID)['enabled']
     finally:
@@ -2172,7 +2173,7 @@ async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_
     try:
         await runtime.enable(UID, 'Synthetic')
         capture(runtime)
-        pending = runtime.ledger.pending(DOMAIN)
+        originals = runtime.ledger.visible_originals(DOMAIN)
         await runtime.pause(UID)
         await runtime.save_character_sync_choice(UID, 'Synthetic', True)
         runtime.state.defer_new_role(UID, runtime.test_clock[0] + 30_000)
@@ -2189,11 +2190,11 @@ async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_
         assert retained['lastError'] == 'chat_sync_account_mismatch'
         assert retained['next_at'] == saved['next_at'] and 'error' not in retained
         assert (await runtime.status())['syncSetupErrors'] == {UID: 'chat_sync_account_mismatch'}
-        assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
+        assert runtime.state.binding(UID) == binding and runtime.ledger.visible_originals(DOMAIN) == originals
         assert [request.url.path for request in service.requests] == ['/v1/chat-sync/identity']
         with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
             await runtime.recover_writer_role(UID, 'Synthetic')
-        assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
+        assert runtime.state.binding(UID) == binding and runtime.ledger.visible_originals(DOMAIN) == originals
         service.owner = OWNER
         await runtime._run_new_role_sync(UID, retained, await runtime.session_presence_provider())
         assert runtime.state.new_role(UID) is None and runtime.state.new_role_errors() == {}

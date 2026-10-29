@@ -482,7 +482,7 @@ class DesktopChatSyncRuntime:
             authenticated = await self._session()
             domain, request, commit = await self._bound_transport(character_uid, authenticated=authenticated,
                                                                   expected_binding=binding, recovery=True)
-            client = PrototypeChatSyncClient(self.ledger, domain, request)
+            client = PrototypeChatSyncClient(domain, request)
             after, through = 0, None
             while True:
                 page = await client.recovery_deletions(after=after, through=through)
@@ -909,10 +909,9 @@ class DesktopChatSyncRuntime:
                     conn.execute(f"DELETE FROM {table} WHERE uid=?", (uid,))
                 conn.execute("DELETE FROM source_role_reassignments WHERE old_uid=? OR new_uid=?", (uid, uid))
             for filename, tables in (
-                ("originals.sqlite3", ("chat_pending", "chat_batches", "chat_sources", "chat_originals", "chat_downloaded",
-                                      "chat_tombstones", "chat_cursors", "chat_deletions", "chat_lane_rotation",
-                                      "chat_identity_backfills", "chat_oversized", "chat_recovery_deletion_pages",
-                                      "chat_origin_identities", "chat_deleted_originals")),
+                ("originals.sqlite3", ("chat_pending", "chat_batches", "chat_originals", "chat_downloaded",
+                                      "chat_tombstones", "chat_deletions", "chat_recovery_deletion_pages",
+                                      "chat_origin_identities")),
                 ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports")),
                 ("scheduler.sqlite3", ("scheduler_tasks",)),
             ):

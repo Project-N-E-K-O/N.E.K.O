@@ -776,15 +776,14 @@ async def test_current_role_automatic_profile_keeps_inactive_approved_bytes(tmp_
 @pytest.mark.parametrize("selected_uid", [None, "b" * 32])
 async def test_inactive_initial_profile_publication_completes_without_polling_or_chat(tmp_path, config, selected_uid):
     """Initial explicit consent finishes its fixed publication after switching away."""
-    from tests.unit.test_chat_sync_runtime import select_runtime_current
-    from services.chat_sync.ledger import ChatOriginal, SourceLocator
+    from tests.unit.test_chat_sync_runtime import capture, select_runtime_current
 
     runtime, service, _ = await bound(tmp_path, config)
     try:
         local = await runtime.profiles.local(UID)
         await runtime.profiles.approve(UID, local["local_hash"], 0)
         operation = runtime.profiles.store.next_operation(local["domain"])
-        runtime.ledger.capture(DOMAIN, SourceLocator("initial", "test", "1"), ChatOriginal("user", "stays queued"))
+        record = capture(runtime)
         select_runtime_current(runtime, selected_uid)
         service.requests.clear()
         presence = await runtime.session_presence_provider()
@@ -795,7 +794,7 @@ async def test_inactive_initial_profile_publication_completes_without_polling_or
         assert state["pending"] == 0
         assert [request.method for request in service.profile_requests] == ["PUT"]
         assert service.profile_requests[0].content == bytes(operation["body"])
-        assert len(runtime.ledger.pending(DOMAIN)) == 1
+        assert [json.loads(raw)["messageId"] for raw in runtime.ledger.visible_originals(DOMAIN)] == [record["messageId"]]
         assert config.saves == []
 
         # Completion must not turn an inactive role into a periodic profile reader.
