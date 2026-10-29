@@ -1062,6 +1062,23 @@ class VisitRoom:
         while self._own_text_sends and self._own_text_sends[0] <= now - _OWN_TEXT_WINDOW_S:
             self._own_text_sends.popleft()
 
+    def hold_reply(self, plan: ReplyPlan) -> None:
+        """Book a reply the runtime scheduled itself (the own human's line to the own cat) as pending.
+
+        Only a human line may cancel it then; a later pick-up keeps away.
+        """
+        if self._phase == "active":
+            self.pending_reply = plan
+
+    def drop_reply(self, plan: ReplyPlan) -> None:
+        """The runtime dropped ``plan`` without speaking (stale, yield, wrap-up, cap).
+
+        Forgotten only when it is still the pending one, so a newer plan stays;
+        a leftover plan would otherwise keep every later pick-up away.
+        """
+        if self.pending_reply is plan:
+            self.pending_reply = None
+
     def can_accept_local_line(self, now: float) -> bool:
         """Own ``text`` hard limit: fewer than 20 in the last 10 s (cat + human).
 

@@ -845,6 +845,31 @@ def test_pick_up_never_replaces_a_pending_reply():
     assert room.pending_reply == pending
 
 
+def test_a_held_reply_keeps_the_pick_up_away_until_a_human_line():
+    room = make_room("host")
+    peer, own = Peer(room), Own(room)
+    human = own.new_ref()
+    room.on_local_human_line(human, 0.0)
+    held = ReplyPlan(reply_to=human, not_before=1.0)
+    room.hold_reply(held)
+    _, eff = peer.line(1.0, to_kind="human")
+    assert eff.reply is None and not eff.cancel_pending_reply
+    assert room.pending_reply is held
+
+
+def test_a_dropped_reply_no_longer_keeps_the_pick_up_away():
+    room = make_room("host")
+    peer = Peer(room)
+    _, eff = peer.line(0.0)
+    dropped = room.pending_reply
+    room.drop_reply(ReplyPlan(reply_to=dropped.reply_to, not_before=dropped.not_before))  # Another plan: kept.
+    assert room.pending_reply is dropped
+    room.drop_reply(dropped)
+    assert room.pending_reply is None
+    _, eff = peer.line(10.0, to_kind="human")
+    assert eff.reply is not None
+
+
 def test_peer_human_line_to_a_human_is_not_picked_up():
     room = make_room("host")
     _, eff = Peer(room).line(0.0, speaker="human", to_kind="human")

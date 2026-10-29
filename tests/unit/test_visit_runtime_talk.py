@@ -1811,8 +1811,32 @@ async def test_a_cancelled_family_line_to_the_own_cat_still_schedules_its_reply(
         await asyncio.gather(sending, return_exceptions=True)
         stuck.set()
         await wait_for(lambda: [p for p in plans if p is not None])  # Handler exited, but replies still queue.
+        # Booked in the room as well: a late peer pick-up must not replace this answer to the human.
+        assert rt.room.pending_reply is plans[-1]
     finally:
         stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_reply_dropped_without_speaking_is_forgotten_by_the_room(tmp_path, monkeypatch):
+    # A leftover pending plan would keep every later pick-up of a line to a human away.
+    from main_logic.visit.room import LineRef, ReplyPlan
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        gone = LineRef("g:900", 1, "guest")
+        rt.room._remember_aborted(gone.line_id)                # The replied line was cut off: the plan is stale.
+        plan = ReplyPlan(reply_to=gone, not_before=0.0)
+        rt.room.pending_reply = plan
+        rt.schedule_reply(plan)
+        task = rt._reply_task
+        hgate.set()                                           # Opening line finishes; the runner then drops the plan.
+        await wait_for(lambda: task.done(), timeout=10)
+        assert rt.room.pending_reply is None
+    finally:
         hgate.set()
         ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
