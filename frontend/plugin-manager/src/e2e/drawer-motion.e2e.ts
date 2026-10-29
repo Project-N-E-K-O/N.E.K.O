@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 import { PREVIEW_ORIGIN, appearanceTest, installCardLayoutFixture } from './plugin-manager-test-helpers'
+import { motionPolicy } from '../motion/policy'
 
 type Rect = { x: number; y: number; w: number; h: number }
 type Frame = { t: number; compact: boolean; running: boolean; rects: (Rect | null)[] }
@@ -20,11 +21,14 @@ type RecordOptions = {
 const COMPONENTS = ['x', 'y', 'w', 'h'] as const
 // Layout rounds to subpixels, so settled rects may differ by a fraction of a pixel.
 const TOLERANCE = 0.5
-// 480ms animation plus up to 96ms of card stagger, then 300ms of settled frames to compare.
-const RUN_MS = 1100
-const SETTLE_MS = 300
+// Recording stops SETTLE_MS after data-motion-running clears. RUN_MS only caps it:
+// the panel preload alone can delay the 480ms (+96ms stagger) run by ~500ms.
+const RUN_MS = 3000
+const SETTLE_MS = 300 + motionPolicy.reflowMaxDelay
 const SNAP_TRAVEL_MIN = 20
+// Share of the travel one 60Hz frame may cover. The reflow curve peaks at ~0.15.
 const SNAP_SHARE = 0.35
+const FRAME_MS = 1000 / 60
 const MARKET_TOGGLE = '[data-yui-guide-id="plugin-list-market-toggle"]'
 const MARKET_PANEL = '.plugin-workbench__rail--market .plugin-workbench__rail-inner[data-motion="panel"]'
 const PACKAGE_TOGGLE = '.workbench-header [data-yui-guide-id="plugin-list-package-panel-toggle"]'
@@ -69,16 +73,18 @@ function monotonicIssues(recording: Recording, index: number, label: string): st
 function snapIssues(recording: Recording, index: number, label: string): string[] {
   if (rectAt(recording.frames[0]!, index) === null) return []
   const samples = rendered(recording, index)
-  const steps = samples.slice(1).map((sample, i) => ({
-    frameIndex: sample.frameIndex,
-    size: stepSize(samples[i]!.rect, sample.rect),
-  }))
+  const steps = samples.slice(1).map((sample, i) => {
+    const dt = recording.frames[sample.frameIndex]!.t - recording.frames[samples[i]!.frameIndex]!.t
+    const size = stepSize(samples[i]!.rect, sample.rect)
+    // A dropped frame legitimately covers several frames of travel; judge the per-frame rate.
+    return { frameIndex: sample.frameIndex, dt, size, perFrame: size / Math.max(1, Math.round(dt / FRAME_MS)) }
+  })
   const travel = steps.reduce((sum, step) => sum + step.size, 0)
   if (travel <= SNAP_TRAVEL_MIN) return []
-  const largest = steps.reduce((a, b) => (b.size > a.size ? b : a), steps[0] ?? { frameIndex: 0, size: 0 })
-  if (largest.size <= SNAP_SHARE * travel + TOLERANCE) return []
+  const largest = steps.reduce((a, b) => (b.perFrame > a.perFrame ? b : a), steps[0] ?? { frameIndex: 0, dt: 0, size: 0, perFrame: 0 })
+  if (largest.perFrame <= SNAP_SHARE * travel + TOLERANCE) return []
   return [
-    `${label} jumps ${largest.size.toFixed(1)}px in one frame (frame ${largest.frameIndex}) of ${travel.toFixed(1)}px total travel`,
+    `${label} jumps ${largest.size.toFixed(1)}px in one frame (frame ${largest.frameIndex}) of ${travel.toFixed(1)}px total travel; dt=${largest.dt.toFixed(0)}ms`,
   ]
 }
 
@@ -100,9 +106,11 @@ function settledIssues(recording: Recording): string[] {
     if (frame.running) lastRunning = i
   })
   if (lastRunning < 0) return ['data-motion-running never appeared on .plugin-workbench']
-  const settle = lastRunning + 1
-  if (settle >= frames.length) return ['animation still running at the end of the recording']
-  const reference = frames.find(frame => frame.t >= frames[settle]!.t + SETTLE_MS)
+  if (lastRunning + 1 >= frames.length) return ['animation still running at the end of the recording']
+  const clearedAt = frames[lastRunning + 1]!.t
+  // Card glides start up to reflowMaxDelay after the panel, so they end that much after the flag clears.
+  const settle = frames.findIndex(frame => frame.t >= clearedAt + motionPolicy.reflowMaxDelay)
+  const reference = frames.find(frame => frame.t >= clearedAt + SETTLE_MS)
   if (!reference) return [`recording ends less than ${SETTLE_MS}ms after data-motion-running cleared`]
   return recording.labels.flatMap((label, index) => {
     for (let i = settle; i < frames.length; i++) {
@@ -126,22 +134,25 @@ function smoothRunIssues(recording: Recording): string[] {
   ]
 }
 
-// Reversal must not teleport: every step is within 2x the recent steps plus 2px.
+// Reversal must not teleport: no step after the reversal is faster than 2x the
+// fastest step of the opening part plus 2px, both per 60Hz frame. The reversed
+// run restarts its ease-out curve, so it is legitimately faster than the frames
+// just before the click, and a dropped frame covers several frames of travel.
 function reversalIssues(recording: Recording, reversalFrame: number): string[] {
   const { frames } = recording
   const step = (frameIndex: number, index: number) => {
     const before = frames[frameIndex - 1]?.rects[index] ?? null
     const after = frames[frameIndex]?.rects[index] ?? null
-    return before && after ? stepSize(before, after) : 0
+    if (!before || !after) return 0
+    return stepSize(before, after) / Math.max(1, Math.round((frames[frameIndex]!.t - frames[frameIndex - 1]!.t) / FRAME_MS))
   }
   return recording.labels.flatMap((label, index) => {
+    let peak = 0
+    for (let frame = 1; frame < reversalFrame; frame++) peak = Math.max(peak, step(frame, index))
     for (let frame = reversalFrame; frame < frames.length; frame++) {
       const delta = step(frame, index)
-      const preceding = Math.max(step(frame - 1, index), step(frame - 2, index), step(frame - 3, index))
-      if (delta > 2 * preceding + 2) {
-        return [
-          `${label} jumps ${delta.toFixed(1)}px at frame ${frame} after reversal (preceding max ${preceding.toFixed(1)}px)`,
-        ]
+      if (delta > 2 * peak + 2) {
+        return [`${label} jumps ${delta.toFixed(1)}px per frame at frame ${frame} after reversal (opening peak ${peak.toFixed(1)}px)`]
       }
     }
     return []
@@ -164,9 +175,11 @@ function returnIssues(recording: Recording): string[] {
 }
 
 // Runs inside the page: samples every frame, clicks the toggle after the first
-// (pre-click) frame, and optionally clicks it again `secondClickAt` ms later.
+// (pre-click) frame, and optionally clicks it again `secondClickAt` ms after the
+// animation starts (the panel preload delays the start by a variable amount).
+// Stops `settle` ms after data-motion-running clears, or at `duration`.
 function recordDrawerMotion(page: Page, options: RecordOptions) {
-  return page.evaluate<Recording, RecordOptions>(async ({ toggle, panel, duration, secondClickAt }) => {
+  return page.evaluate<Recording, RecordOptions & { settle: number }>(async ({ toggle, panel, duration, settle, secondClickAt }) => {
     const workbench = document.querySelector<HTMLElement>('.plugin-workbench')!
     const header = document.querySelector<HTMLElement>('.workbench-header')!
     const tracked: Element[] = []
@@ -193,29 +206,37 @@ function recordDrawerMotion(page: Page, options: RecordOptions) {
     const frames: Frame[] = []
     const start = performance.now()
     let clickFrame = -1
-    let clickTime = 0
+    let runStart: number | null = null
+    let clearedAt: number | null = null
     let secondClickFrame: number | null = null
     for (;;) {
       await new Promise(requestAnimationFrame)
       const t = performance.now() - start
+      const running = workbench.hasAttribute('data-motion-running')
       frames.push({
         t,
         compact: header.classList.contains('workbench-header--compact'),
-        running: workbench.hasAttribute('data-motion-running'),
+        running,
         rects: tracked.map(rectOf),
       })
+      if (running) {
+        runStart ??= t
+        clearedAt = null
+      } else if (runStart !== null) {
+        clearedAt ??= t
+      }
       if (clickFrame < 0) {
         clickToggle()
         clickFrame = frames.length
-        clickTime = t
-      } else if (secondClickAt !== null && secondClickFrame === null && t - clickTime >= secondClickAt) {
+      } else if (secondClickAt !== null && secondClickFrame === null && runStart !== null && t - runStart >= secondClickAt) {
         clickToggle()
         secondClickFrame = frames.length
       }
-      if (t >= duration) break
+      const secondClickDone = secondClickAt === null || secondClickFrame !== null
+      if (t >= duration || (secondClickDone && clearedAt !== null && t - clearedAt >= settle)) break
     }
     return { labels, frames, clickFrame, secondClickFrame }
-  }, options)
+  }, { ...options, settle: SETTLE_MS })
 }
 
 async function openPluginWorkbench(page: Page) {
