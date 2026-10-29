@@ -974,12 +974,16 @@ def _write_recent_browser_payload(
         # Retain projection identity through edits without accepting IDs supplied by the browser.
         from memory.recent_sync import ID_KEY, TIME_KEY
         from utils.llm_client import message_metadata
-        current_rows = json.loads(current_text)
+        try:
+            current_rows = json.loads(current_text)
+        except (TypeError, ValueError):
+            # A damaged file stays repairable by saving over it; it has no IDs to keep.
+            current_rows = []
         if not isinstance(current_rows, list):
             current_rows = []
         for item, edit in zip(payload, browser_chat or []):
             source = edit.get("source_index") if isinstance(edit, dict) else None
-            if type(source) is int and 0 <= source < len(current_rows):
+            if type(source) is int and 0 <= source < len(current_rows) and isinstance(current_rows[source], dict):
                 key = message_metadata(current_rows[source]).get(ID_KEY)
                 source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
                 if key and item.get("type") == source_type:

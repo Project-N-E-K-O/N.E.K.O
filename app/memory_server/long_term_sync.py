@@ -3,8 +3,10 @@
 import asyncio
 from contextlib import asynccontextmanager, closing, contextmanager
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import time
 from uuid import uuid4
@@ -67,6 +69,10 @@ def _binding(uid):
         service = conn.execute('SELECT service_url FROM sync_settings WHERE singleton=1').fetchone()
     service_url = (service[0] or _BUILTIN_SERVICE_URL) if service else None
     return {**dict(row), 'service_url': service_url} if row and row['enabled'] and row['binding_id'] and service_url else None
+
+
+def _publishable(uid):
+    return _authority() is not None and _binding(uid) is not None
 
 
 @asynccontextmanager
@@ -132,6 +138,13 @@ def queue_capture(name, *, force=False):
             await asyncio.sleep(delay)
             requested = _capture_requests.pop(name)
             try:
+                if not await asyncio.to_thread(_publishable, uid):
+                    # Unsynced characters must not queue behind the owner locks;
+                    # _capture would reach the same verdict after taking them.
+                    if name not in _capture_requests:
+                        _capture_intents.pop(uid, None)
+                    delay = 0.2
+                    continue
                 async with _views_locked(name):
                     captured = await _complete_file_commit(_capture, name, requested, uid)
                 if captured is not None and name not in _capture_requests:
@@ -167,7 +180,7 @@ def resume_captures(characters):
             queue_capture(name, force=force)
 
 
-def _write_snapshot(name, payload):
+def _write_snapshot(name, payload, *, check_only=False):
     fingerprint = payload.get('sessionFingerprint')
     if not isinstance(fingerprint, str) or not fingerprint:
         return False
@@ -178,14 +191,14 @@ def _write_snapshot(name, payload):
         return False
     try:
         with _session_guard(fingerprint):
-            return _write_snapshot_locked(name, payload)
+            return _write_snapshot_locked(name, payload, check_only=check_only)
     except ValueError as error:
         if str(error) in {'chat_sync_login_required', 'chat_sync_session_changed', 'chat_sync_session_unavailable'}:
             return False
         raise
 
 
-def _write_snapshot_locked(name, payload):
+def _write_snapshot_locked(name, payload, *, check_only=False):
     writer = _authority()
     if writer is None:
         return False
@@ -205,6 +218,8 @@ def _write_snapshot_locked(name, payload):
         local = adapter.read_local(binding, epoch)
         if local and local['document']['completedAt'] > remote['completedAt']:
             return False
+        if check_only:
+            return True
         operation = f'download:{remote["revision"]}'
         if local and local['operationId'] == operation and local['document'] == remote['document']:
             # A crash can occur after the file receipt and before the derived
@@ -258,9 +273,30 @@ def _replace_fact_index(name, views):
         index.replace_fact_index(name, rows)
 
 
+def _staged_payload(event):
+    """Resolve a journaled inbox reference; None once the inbox was replaced or consumed."""
+    if 'head' in event:
+        # Events journaled before inbox references carried the whole snapshot.
+        return event
+    uid, digest = event.get('characterSyncId'), event.get('inboxSha256')
+    if not isinstance(uid, str) or not re.fullmatch(r'[0-9a-f]{32}', uid) or not isinstance(digest, str):
+        return None
+    try:
+        text = DesktopLongTermAdapter(runtime._config_manager).incoming_path(uid).read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return None
+    # The digest was taken from parsed text, so a matching inbox always parses.
+    return json.loads(text) if _inbox_digest(text) == digest else None
+
+
+def _inbox_digest(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
 def register_replay(reconciler, persona_manager=None, fact_store=None):
     def replay(name, payload):
-        result = _write_snapshot(name, payload)
+        staged = _staged_payload(payload)
+        result = _write_snapshot(name, staged) if staged is not None else False
         if persona_manager is not None:
             persona_manager._personas.pop(name, None)
         if fact_store is not None:
@@ -290,7 +326,8 @@ async def consume(uid):
     async with _views_locked(name):
         await runtime.reconciler.areconcile(name)
         def commit():
-            payload = json.loads(path.read_text(encoding='utf-8'))
+            text = path.read_text(encoding='utf-8')
+            payload = json.loads(text)
             try:
                 head(payload['head'], payload['binding']['owner_id'], uid)
             except ValueError:
@@ -303,10 +340,15 @@ async def consume(uid):
                         if path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
                             path.unlink()
                         return False
+            # An inbox waiting for login, a binding or an epoch stays staged; only an
+            # applicable one is journaled, so retries never grow events.ndjson.
+            if not _write_snapshot(name, payload, check_only=True):
+                return False
             applied = [False]
             def save(_name, frozen):
                 applied[0] = _write_snapshot(_name, frozen)
-            runtime.event_log.record_and_save(name, _EVENT, payload,
+            # Journal a reference: the inbox outlives the event until it applies.
+            runtime.event_log.record_and_save(name, _EVENT, {'characterSyncId': uid, 'inboxSha256': _inbox_digest(text)},
                 sync_load_view=lambda _: deepcopy(payload), sync_mutate_view=lambda _: None, sync_save_view=save)
             # Never delete a replacement inbox installed while this event was committing.
             writer = _authority()

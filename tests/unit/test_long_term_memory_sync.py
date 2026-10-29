@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from copy import deepcopy
 import json
 import sys
@@ -306,6 +306,72 @@ async def test_obsolete_inbox_is_removed_without_appending_replacement_events(ow
     assert not owner.adapter.incoming_path(UID).exists()
     assert (events.read_bytes() if events.exists() else b'') == original_events
     assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['logout', 'switch-account', 'paused-binding', 'changed-epoch'])
+async def test_waiting_inbox_is_retained_without_growing_the_journal(owner, change):
+    await stage(owner)
+    if change == 'logout':
+        owner.session['logged_in'] = False
+    elif change == 'switch-account':
+        owner.session['snapshot']['access_token'] = 'synthetic-other-account'
+    elif change == 'paused-binding':
+        owner.runtime.state.pause(UID)
+    else:
+        payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+        payload['epoch'] = ['0' * 32, '0' * 32]
+        atomic_write_json(owner.adapter.incoming_path(UID), payload)
+    for _ in range(3):
+        assert not await owner.native.consume(UID)
+    assert not (owner.directory / 'events.ndjson').exists()
+    assert owner.adapter.incoming_path(UID).exists()
+
+
+@pytest.mark.asyncio
+async def test_journal_references_the_inbox_instead_of_copying_the_snapshot(owner):
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    lines = (owner.directory / 'events.ndjson').read_text(encoding='utf-8').splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert set(record['payload']) == {'characterSyncId', 'inboxSha256'}
+    assert 'learned preference' not in lines[0] and 'sessionFingerprint' not in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_replay_skips_a_reference_whose_inbox_was_replaced(owner, monkeypatch):
+    await stage(owner)
+    original = owner.native.atomic_write_json
+    def fail_facts(path, *args, **kwargs):
+        if path.name == 'facts.json':
+            raise OSError('synthetic disk failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', fail_facts)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', original)
+    before = {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+    await stage(owner, completed=3000, revision=2)
+    await owner.replay.areconcile('Neko')
+    assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+    assert await owner.native.consume(UID)
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:2'
+
+
+@pytest.mark.asyncio
+async def test_unsynced_character_capture_never_waits_for_owner_locks(owner, monkeypatch):
+    owner.runtime.state.pause(UID)
+    entered = []
+    @asynccontextmanager
+    async def locked(name):
+        entered.append(name)
+        yield
+    monkeypatch.setattr(owner.native, '_views_locked', locked)
+    owner.native.queue_capture('Neko', force=True)
+    await asyncio.wait_for(owner.native._capture_tasks['Neko'], 2)
+    assert entered == []
+    assert UID not in owner.native._capture_intents
 
 
 @pytest.mark.asyncio
