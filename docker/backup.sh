@@ -154,10 +154,17 @@ mkdir -p "$out_dir"
 [ ! -L "$out_dir" ] || { echo "backup: 输出目录不能是符号链接: $out_dir" >&2; exit 1; }
 # 已存在的目录不会因为 umask 变紧而改变权限：显式收紧，否则早先以 022 建的
 # 目录会继续把备份暴露给同机其它账号。
+# 属主不符必须拒绝，不能只警告：下面的锁文件是 `exec 8>"$out_dir/.neko-backup.lock"`，
+# shell 重定向会**跟随符号链接**。如果这个目录属于别的账户（或落在别人可写的位置），
+# 对方可以先放一个同名符号链接，root 的备份就会把链接目标截断。
 owner=$(stat -c '%u' "$out_dir")
-[ "$owner" = "$(id -u)" ] || {
-    echo "backup: ⚠️  输出目录 $out_dir 属于 uid $owner，不是你；无法确认权限是否正确" >&2
-}
+if [ "$owner" != "$(id -u)" ]; then
+    echo "backup: ❌ 输出目录 $out_dir 属于 uid $owner，不是当前用户" >&2
+    echo "backup:    拒绝在这里创建备份与锁文件：锁文件通过 shell 重定向创建，" >&2
+    echo "backup:    别人可写的目录里可以预置符号链接，把 root 的写入引到任意文件上。" >&2
+    echo "backup:    换一个归属自己的 --out，或先把目录交还给正确的属主。" >&2
+    exit 1
+fi
 chmod 700 "$out_dir" 2>/dev/null || \
     echo "backup: ⚠️  无法收紧 $out_dir 的权限，请确认它不对其他本机账号可读" >&2
 

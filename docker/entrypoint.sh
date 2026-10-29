@@ -5,15 +5,35 @@ set -e
 PIDS=()
 RELOADER_PID=""
 
+# 端口必须先规范化再导出。
+#
+# 后端读端口用的是 config.network._read_port_env：非整数或超出 1-65535 时**回落到
+# 默认值**。如果这里保留原始值，就会出现"后端在默认端口起来了、nginx 却拿非法值
+# 去渲染 proxy_pass"→ nginx 拒绝启动，整个容器起不来。两边的判定必须一致。
+normalize_port() {
+    _port_name="$1"
+    _port_default="$2"
+    _port_raw="${!_port_name:-}"
+    case "$_port_raw" in
+        ''|*[!0-9]*) _port_value="" ;;
+        *) _port_value="$_port_raw" ;;
+    esac
+    if [ -z "$_port_value" ] || [ "$_port_value" -lt 1 ] || [ "$_port_value" -gt 65535 ]; then
+        [ -n "$_port_raw" ] && echo "⚠️  $_port_name=$_port_raw 不是 1-65535 的端口号，回落默认 $_port_default" >&2
+        _port_value="$_port_default"
+    fi
+    export "$_port_name=$_port_value"
+}
+
 # 设置环境变量
-export NEKO_MAIN_SERVER_PORT=${NEKO_MAIN_SERVER_PORT:-48911}
-# 这三个端口同时决定「服务绑哪里」和「nginx 转发到哪」：下面的渲染层会把它们
-# 注入路由表。只改其中一个而不改另一个，会出现"服务在新端口、反代打旧端口"。
-export NEKO_MEMORY_SERVER_PORT=${NEKO_MEMORY_SERVER_PORT:-48912}
-export NEKO_TOOL_SERVER_PORT=${NEKO_TOOL_SERVER_PORT:-48915}
-export NEKO_USER_PLUGIN_SERVER_PORT=${NEKO_USER_PLUGIN_SERVER_PORT:-48916}
-export NGINX_PORT=${NGINX_PORT:-80}
-export NGINX_SSL_PORT=${NGINX_SSL_PORT:-443}
+# 这四个端口同时决定「服务绑哪里」和「nginx 转发到哪」：渲染层会把它们注入路由表。
+# 只改其中一个而不改另一个，会出现"服务在新端口、反代打旧端口"。
+normalize_port NEKO_MAIN_SERVER_PORT 48911
+normalize_port NEKO_MEMORY_SERVER_PORT 48912
+normalize_port NEKO_TOOL_SERVER_PORT 48915
+normalize_port NEKO_USER_PLUGIN_SERVER_PORT 48916
+normalize_port NGINX_PORT 80
+normalize_port NGINX_SSL_PORT 443
 export SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
 export SSL_DAYS=${SSL_DAYS:-365000}  # 1000年
 export NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}  # 是否启用自动重载，默认启用
