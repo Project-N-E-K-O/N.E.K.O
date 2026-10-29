@@ -1110,7 +1110,8 @@ class VisitRoom:
         A goodbye line yields ``wrap_up=WrapUpDecision('speaking', ln=...)``,
         which the runtime sends before any piece of that line (both subtitle
         modes) and enters the wrap-up if still active. A normal line enters
-        the per-minute window.
+        the per-minute window. The pending reply is cleared only when this
+        line carries it out (same ``reply_to``) or is the goodbye.
         """
         eff = RoomEffects()
         if self._phase == "ending":
@@ -1119,7 +1120,12 @@ class VisitRoom:
         self.local_speaking_since = now
         self._local_speaking_goodbye = bool(goodbye)
         self._local_speaking_reply_to = reply_to
-        self.pending_reply = None
+        pending = self.pending_reply
+        if pending is not None and (goodbye or (reply_to is not None
+                                                and pending.reply_to.line_id == reply_to.line_id)):
+            # Only the plan this line carries out stops pending: an opening line (or a reply to another
+            # line) leaves alone a plan the receive path is still about to schedule after its record write.
+            self.pending_reply = None
         self._own_text_reserved.add(ref.line_id)
         if goodbye:
             w = self._wrap

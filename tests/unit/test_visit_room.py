@@ -870,6 +870,32 @@ def test_a_dropped_reply_no_longer_keeps_the_pick_up_away():
     assert eff.reply is not None
 
 
+def test_an_own_line_clears_only_the_pending_reply_it_carries_out():
+    room = make_room("host")
+    peer, own = Peer(room), Own(room)
+    r, eff = peer.line(0.0)
+    pending = room.pending_reply
+    assert pending is not None
+    room.on_local_line_started(own.new_ref(), None, False, 4.0)       # Opening line: not this plan.
+    assert room.pending_reply is pending
+    other = peer.new_ref()
+    room.on_local_line_started(own.new_ref(), other, False, 5.0)      # A reply to another line: not this plan.
+    assert room.pending_reply is pending
+    room.on_local_line_started(own.new_ref(), r, False, 6.0)          # Carries it out.
+    assert room.pending_reply is None
+
+
+def test_an_own_goodbye_line_clears_the_pending_goodbye_plan():
+    # The goodbye line starts with reply_to None, yet it carries out the host's planned see-off.
+    room = make_room("host")
+    peer, own = Peer(room), Own(room)
+    room.on_local_recall(0.0)
+    peer.line(1.0, goodbye=True)
+    assert room.pending_reply is not None and room.pending_reply.goodbye
+    room.on_local_line_started(own.new_ref(), None, True, 6.0)
+    assert room.pending_reply is None
+
+
 def test_peer_human_line_to_a_human_is_not_picked_up():
     room = make_room("host")
     _, eff = Peer(room).line(0.0, speaker="human", to_kind="human")
