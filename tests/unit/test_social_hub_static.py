@@ -42,6 +42,18 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "上次在线 " in source
     assert "if (view || friend.online)" in source
     assert "setInterval(function () { refresh(true); }, 60000)" in source
+    assert "controller.abort()" in source
+    assert "}, 8000)" in source
+    assert "signal: controller ? controller.signal : undefined" in source
+    assert "kind === 'presence_changed'" in source
+    assert "applyPresenceChanged(notification)" in source
+    assert "/api/community/friend-presence" in source
+    assert "setInterval(function () { refreshPresence(); }, 3000)" in source
+    assert "if (!state.open || !state.loggedIn || presenceRefreshInFlight)" in source
+    assert "presencePushRevisions.get(friend.id)" in source
+    assert "dismissedRecommendationIds.has(item.id)" in source
+    assert "function keepPanelInViewport()" in source
+    assert "notif.kind === 'presence_changed'" in (ROOT / "static" / "app-social-ui.js").read_text(encoding="utf-8")
     assert "target_offline" in source
     assert "邀请来玩" in source
     assert "使用邀请码（备用）" not in source
@@ -63,6 +75,11 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "window.visualViewport" in source
     assert "top = clamp(rect.top, topEdge, bottomEdge - height)" in source
     assert "panel.style.maxHeight = Math.max(1, Math.floor(maxHeight)) + 'px'" in source
+    assert "panel.offsetHeight || panel.scrollHeight" in source
+    render_source = source.split("function render()", 1)[1].split(
+        "function panelViewport()", 1
+    )[0]
+    assert "positionPanel" not in render_source
 
 
 def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
@@ -223,6 +240,136 @@ def test_social_hub_renders_own_community_identity_and_presence_picker():
     assert ".neko-social-hub-status-dot.invisible" in styles
 
 
+def test_social_hub_renders_three_followable_recommendations_without_auto_rotating():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
+
+    assert "state.recommendations = Array.isArray(body && body.recommendations)" in source
+    assert "body.recommendations.slice(0, 3)" in source
+    assert "var accountChanged = nextAccountId !== state.accountId" in source
+    assert "if (accountChanged) {" in source
+    assert "dismissedRecommendationIds.clear()" in source
+    assert "replaceRecommendationsRequested = replaceRecommendationsRequested === true" in source
+    assert "var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged" in source
+    assert "if (shouldReplaceRecommendations) applyRecommendationSnapshot" in source
+    assert "var refreshGeneration = openGeneration" in source
+    assert "var refreshRevision = ++hubRefreshRevision" in source
+    assert "var appliedRefreshRevision = 0" in source
+    assert "var appliedRecommendationRevision = 0" in source
+    assert "var loadingRefreshRevision = 0" in source
+    assert "if (refreshRevision < appliedRefreshRevision)" in source
+    assert "appliedRefreshRevision = refreshRevision" in source
+    assert "function applyRecommendationSnapshot(body, revision)" in source
+    assert "revision < appliedRecommendationRevision" in source
+    assert "(replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId" in source
+    recommendation_snapshot = source.split("function applyRecommendationSnapshot", 1)[1].split(
+        "async function refresh", 1
+    )[0]
+    assert "state.recommendationBusy.clear()" not in recommendation_snapshot
+    account_change = source.split("if (accountChanged) {", 1)[1].split("}", 1)[0]
+    assert "state.recommendationBusy.clear()" in account_change
+    assert "refreshRevision === loadingRefreshRevision" in source
+    assert "var presenceRevisionAtStart = presencePushRevision" in source
+    assert "var requestAccountId = state.accountId" in source
+    assert "var requestGeneration = openGeneration" in source
+    assert "openGeneration !== requestGeneration || state.accountId !== requestAccountId" in source
+    assert "if (refreshGeneration !== openGeneration) {" in source
+    assert "if (refreshGeneration === openGeneration)" in source
+    assert "function applyInvitationSnapshot(body, revision)" in source
+    assert "if (revision < invitationSnapshotRevision) return false" in source
+    stale_refresh = source.split("if (refreshGeneration !== openGeneration) {", 1)[1].split("}", 1)[0]
+    assert "applyInvitationSnapshot(body, refreshRevision)" in stale_refresh
+    assert "renderRecommendations(panel)" in source
+    assert "renderRecommendations(friendScroller)" not in source
+    assert source.index("renderRecommendations(panel)") < source.index(
+        "renderFriendGroup(tr('visit.socialHub.onlineFriends'"
+    )
+    assert "neko-social-hub-recommendation-section" in source
+    assert "'/follow?expected_account_id=' + encodeURIComponent(followAccountId)" in source
+    assert "state.recommendationBusy.has(recommendation.id)" in source
+    assert "await refresh(true, true)" in source
+    assert "await refresh(false)" not in source
+    assert "var followGeneration = openGeneration" in source
+    assert "var followAccountId = state.accountId" in source
+    assert "var activeAtFollow = document.activeElement" in source
+    assert "var restoreFollowFocus = !!(activeAtFollow" in source
+    assert "function isCurrentFollow()" in source
+    assert "function dismissRecommendation(recommendation)" in source
+    assert "var pendingFocusOriginKey = '';" in source
+    assert "pendingFocusOriginKey = followFocusKey" in source
+    assert "pendingFocusKey = next ? 'recommendation-' + next.id : 'open-community'" in source
+    assert "pendingFocusFallback" in source
+    assert "activeKey === pendingFocusOriginKey" in source
+    assert "active === document.body || active === panel" in source
+    assert "用户在补位期间主动选择了面板内的其他控件" in source
+    dismiss_source = source.split("function dismissRecommendation(recommendation)", 1)[1].split(
+        "async function followRecommendation", 1
+    )[0]
+    assert "state.recommendations = remaining" in dismiss_source
+    assert "fetch(" not in dismiss_source
+    assert "refresh(" not in dismiss_source
+    assert "neko-social-hub-recommendation-dismiss" in source
+    assert ".neko-social-hub-recommendation-dismiss" in styles
+    assert "min-height: 48px" in styles
+    assert "width: 38px" in styles
+    assert "setInterval(function () { refresh(true); }, 60000)" in source
+    assert "recommendedUsersRefresh" not in source
+    assert ".neko-social-hub-recommendations" in styles
+    assert "width: min(360px, calc(100vw - 24px))" in styles
+    assert "max-height: min(620px, calc(100vh - 24px))" in styles
+    assert "panel.offsetWidth || 360" in source
+    assert "scrollbar-gutter: stable" in styles
+    assert "background: rgba(226, 244, 255, 0.42)" not in styles
+    assert "[data-theme=\"dark\"] .neko-social-hub-recommendations" not in styles
+    assert "tr('visit.socialHub.recommendedUsers', '你可能感兴趣的人')" in source
+    assert "' (' + state.recommendations.length + ')'" not in source
+    assert "if (minutes < 1) return tr('visit.socialHub.justNow', '刚刚')" in source
+    assert "formatter.format(0, 'minute')" not in source
+
+    open_source = source.split("function open()", 1)[1].split("function close()", 1)[0]
+    assert "if (state.open && panel && !standalone) return true" in open_source
+    assert "layer.hidden = true" in open_source
+    assert "state.recommendations = []" in open_source
+    assert "var loadingRevealTimer = setTimeout" in open_source
+    assert "}, 300)" in open_source
+    assert "clearTimeout(loadingRevealTimer)" in open_source
+    assert "refresh().finally(function ()" in open_source
+    assert "if (layer.hidden) revealOpenPanel(generation)" in open_source
+    assert open_source.index("layer.hidden = true") < open_source.index("refresh().finally")
+    reveal_source = source.split("function revealOpenPanel(generation)", 1)[1].split(
+        "function open()", 1
+    )[0]
+    assert "generation !== openGeneration" in reveal_source
+    assert "layer.hidden = false" in reveal_source
+
+    dismiss_labels = {
+        "en": "Hide {{name}} for now",
+        "ja": "{{name}}を一時的に非表示",
+        "ko": "{{name}}님 잠시 숨기기",
+        "zh-CN": "暂时隐藏 {{name}}",
+        "zh-TW": "暫時隱藏 {{name}}",
+        "ru": "Временно скрыть {{name}}",
+        "pt": "Ocultar {{name}} por enquanto",
+        "es": "Ocultar a {{name}} por ahora",
+    }
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        translations = (ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
+        for key in (
+            "recommendedUsers",
+            "recommendationRecentFollower",
+            "recommendationLikedYou",
+            "recommendationActive",
+            "followUser",
+            "followingUser",
+            "followedUser",
+            "followFailed",
+            "followBlocked",
+            "dismissRecommendation",
+        ):
+            assert f'"{key}"' in translations
+        assert f'"dismissRecommendation": "{dismiss_labels[locale]}"' in translations
+
+
 def test_only_friend_area_scrolls_while_current_account_stays_fixed():
     source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
@@ -317,3 +464,17 @@ def test_retry_keeps_keyboard_focus_and_narrow_header_wraps():
     # 窄屏下入口按钮放不下时换到第二行，而不是被面板裁掉。
     header = styles[styles.index(".neko-social-hub-header {"):]
     assert "flex-wrap: wrap" in header[:header.index("}")]
+
+
+def test_header_link_hidden_without_bridge_and_network_errors_are_localized():
+    source = (ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    # 独立窗口打不开社区时，右上角入口也不显示。
+    assert "if (canOpenCommunity()) header.appendChild(focusKey(communityLink, 'open-community'))" in source
+    # 只有服务端给出的原因原样显示；网络异常用本地化的“连不上”文案。
+    assert "serverError.fromServer = true" in source
+    assert "error && error.fromServer && error.message" in source
+    # 网络异常时回退到本地化的 communityUnavailable，而不是浏览器原文。
+    assignment = source[source.index("state.loadError = error && error.fromServer"):]
+    assignment = assignment[:assignment.index(";")]
+    assert "tr('visit.socialHub.communityUnavailable'" in assignment
+    assert "error.message || " not in assignment

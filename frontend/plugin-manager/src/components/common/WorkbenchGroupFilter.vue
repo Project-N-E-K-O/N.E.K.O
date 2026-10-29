@@ -8,6 +8,7 @@
       class="wb-segmented"
       :class="{ 'wb-segmented--all-selected': allSelected }"
       :data-yui-guide-id="guideId"
+      data-motion="move"
       @update:model-value="(v: string[]) => $emit('update:selectedIds', v)"
     >
       <el-checkbox-button
@@ -30,6 +31,7 @@
       size="small"
       class="wb-segmented"
       :data-yui-guide-id="guideId"
+      data-motion="move"
       @update:model-value="(v: string) => $emit('update:selectedIds', [v])"
     >
       <el-radio-button

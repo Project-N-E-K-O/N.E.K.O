@@ -755,6 +755,10 @@ export default {
       surfaceUnavailable: 'Surface indisponível',
       surfaceEntryMissing: 'O arquivo de entrada declarado por esta Surface não existe. Verifique o caminho entry no plugin.toml.',
       surfaceWarnings: 'A declaração de UI do plugin precisa de atenção',
+      focus: 'Foco',
+      focusHint: 'Oculta a barra lateral e a moldura da página para o painel ocupar a janela inteira',
+      exitFocus: 'Sair do foco',
+      exitFocusHint: 'Sair do modo foco (Esc)',
       controlError: 'Erro de controle da UI do plugin',
       hostedRuntimePending: 'O contêiner Vue reconheceu esta Surface. Renderizadores TSX, Markdown e Auto serão conectados em uma fase posterior.'
     }

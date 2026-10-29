@@ -1,4 +1,4 @@
-import { nextTick, readonly, ref, watch, type Ref, type WatchSource } from 'vue'
+import { nextTick, onScopeDispose, readonly, ref, watch, type Ref, type WatchSource } from 'vue'
 import { useResizeObserver } from '@vueuse/core'
 
 /**
@@ -46,15 +46,36 @@ export function useCollapsibleLabels(
     }
   }
 
+  // 布局过渡期间按钮和文字的宽度是动画中间值，量出来不作数；跳过的这次在过渡结束、
+  // 尺寸已是终态时补上，否则过渡中途窗口变宽，文字会一直收着直到下一次尺寸变化。
+  let settling: MutationObserver | null = null
+  function observedUpdate() {
+    const running = container.value?.closest('[data-motion-running]')
+    if (!running) {
+      update()
+      return
+    }
+    if (settling) return
+    settling = new MutationObserver(() => {
+      // 新过渡接替旧过渡时属性在同一任务里先移除再设上，等它真正移除。
+      if (running.hasAttribute('data-motion-running')) return
+      settling?.disconnect()
+      settling = null
+      observedUpdate()
+    })
+    settling.observe(running, { attributes: true, attributeFilter: ['data-motion-running'] })
+  }
+  onScopeDispose(() => settling?.disconnect())
+
   // 只响应宽度变化：收起文字会改变高度，按高度触发会来回切换。
   useResizeObserver(container, (entries) => {
     const width = entries[0]?.contentRect.width ?? 0
     if (width === observedWidth) return
     observedWidth = width
-    update()
+    observedUpdate()
   })
   // 字体晚到、徽标数字变化等会在容器宽度不变时撑宽按钮组；收起状态下 update 只看容器宽度，不会来回切换。
-  useResizeObserver(groups, update)
+  useResizeObserver(groups, observedUpdate)
 
   watch(contentKey, async () => {
     compact.value = false
@@ -63,5 +84,6 @@ export function useCollapsibleLabels(
     update()
   }, { flush: 'post' })
 
-  return { compact: readonly(compact) }
+  // relayout 让调用方在切换到新布局后、测量终态前同步决定收起与否，之后的观察者便无需再改。
+  return { compact: readonly(compact), relayout: update }
 }

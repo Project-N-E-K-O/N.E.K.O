@@ -63,6 +63,7 @@ from config.visit_settings import (
     VISIT_CROP_DEFAULT,
     VISIT_ENABLED_DEFAULT,
     VISIT_ENDING_SOON_S,
+    VISIT_HUMAN_REPLY_GRACE_S,
     VISIT_IDLE_TIMEOUT_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
     VISIT_LEAVE_GAP_GRACE_S,
@@ -204,6 +205,7 @@ class RuntimeDeps:
     schedule_upload: Callable[[str], Any] = None  # type: ignore[assignment]
     rng: random.Random = field(default_factory=random.Random)
     reply_gap_s: tuple[float, float] = VISIT_REPLY_GAP_S
+    human_reply_grace_s: float = VISIT_HUMAN_REPLY_GRACE_S
 
     def __post_init__(self) -> None:
         if self.record_account is None:
@@ -1811,7 +1813,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 spawn_visit_background(self.character_uid, lambda: self._finalize_late_spool(reason))
             return
         self.room = VisitRoom(self.side, peer_crop=peer.crop, rng=self.deps.rng,
-                              reply_gap_s=self.deps.reply_gap_s)
+                              reply_gap_s=self.deps.reply_gap_s,
+                              human_reply_grace_s=self.deps.human_reply_grace_s)
         self.activated = True
         now = self.clock()
         self.started_at_mono = now

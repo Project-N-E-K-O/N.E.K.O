@@ -893,6 +893,10 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
 
     const handleStart = (clientX, clientY) => {
         if (isDragging) return;
+        // Match the shared avatar drag gate: Playground owns this gesture,
+        // including the wait for its entry to finish.
+        const button = returnButtonContainer.querySelector('.neko-idle-return-btn');
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
             detail: {
                 reason: 'return-ball-drag-start',
@@ -1071,6 +1075,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             e.stopImmediatePropagation();
             return;
         }
+        const button = returnButtonContainer.querySelector('.neko-idle-return-btn');
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
         if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); handleStart(e.clientX, e.clientY);
         }
@@ -1091,6 +1097,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
 
     returnButtonContainer.addEventListener('touchstart', (e) => {
+        const button = returnButtonContainer.querySelector('.neko-idle-return-btn');
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
         if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); const touch = e.touches[0]; handleStart(touch.clientX, touch.clientY);
         }

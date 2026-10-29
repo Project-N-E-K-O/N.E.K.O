@@ -2,13 +2,14 @@
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Watch together</title>
 <link rel="stylesheet" href="/static/game/games/watch-together/watch-together.css?v={{ static_asset_version }}">
+<script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
 </head><body>
 <main class="wt">
 <header class="topbar">
   <h1 data-i18n="watchTogether.title">Watch together</h1>
   <span id="companion-name" class="chip"></span>
   <span class="spacer"></span>
-  <button id="exit" class="btn ghost" data-i18n="watchTogether.exit">Exit</button>
+  <button id="exit" class="btn ghost" type="button" data-neko-window-control="close" data-i18n="watchTogether.exit">Exit</button>
 </header>
 
 <section class="stage" id="stage">

@@ -1,6 +1,7 @@
 <template>
   <div
     class="plugin-workbench"
+    ref="workbenchRef"
     :class="{
       'plugin-workbench--market-open': drawers.market.visible,
       'plugin-workbench--package-open': drawers.package.visible,
@@ -14,13 +15,18 @@
       :aria-hidden="!drawers.market.visible"
       :inert="!drawers.market.visible"
     >
-      <Transition name="drawer-start">
-        <div v-show="drawers.market.visible" class="plugin-workbench__rail-inner">
+      <Transition :css="false" @leave="holdLeave" @leave-cancelled="cancelLeave">
+        <div
+          v-show="drawers.market.visible"
+          class="plugin-workbench__rail-inner"
+          data-motion="panel"
+          data-motion-edge="start"
+        >
           <MarketPanel
             v-if="drawers.market.everOpened"
             embedded
             :active="drawers.market.visible"
-            @close="drawers.market.visible = false"
+            @close="setOpenDrawer(null)"
           />
         </div>
       </Transition>
@@ -30,8 +36,10 @@
       class="plugin-workbench__main"
       data-yui-guide-id="plugin-list-main"
     >
-      <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
-        <template #header>
+      <div class="plugin-list-shell" data-yui-guide-id="plugin-list-card-shell">
+        <div class="plugin-list-shell__skin" data-motion="skin" aria-hidden="true" />
+        <div class="plugin-list-shell__edge" data-motion="move" aria-hidden="true" />
+        <div class="plugin-list-shell__header">
           <div
             ref="workbenchHeaderRef"
             class="workbench-header"
@@ -44,13 +52,14 @@
                 class="market-trigger"
                 :class="{ 'market-trigger--active': drawers.market.visible }"
                 type="button"
+                data-motion="resize"
                 data-yui-guide-id="plugin-list-market-toggle"
                 :title="drawers.market.visible ? $t('market.closeMarket') : $t('market.openMarket')"
                 :aria-label="headerActionsCompact ? (drawers.market.visible ? $t('market.closeMarket') : $t('market.openMarket')) : undefined"
                 @click="toggleDrawer('market')"
               >
                 <el-icon class="market-trigger__icon"><ShoppingCart /></el-icon>
-                <span v-if="!headerActionsCompact" class="market-trigger__label">
+                <span class="market-trigger__label motion-label" data-motion-label>
                   {{ drawers.market.visible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
                 </span>
                 <el-icon class="market-trigger__arrow">
@@ -60,6 +69,7 @@
               <el-button
                 v-if="marketUrl"
                 class="plugin-update-trigger"
+                data-motion="resize"
                 :loading="pluginUpdatesStore.checking"
                 plain
                 data-yui-guide-id="plugin-list-update-check"
@@ -68,7 +78,7 @@
                 @click="handleCheckUpdates"
               >
                 <el-icon><Top /></el-icon>
-                <span v-if="!headerActionsCompact">{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
+                <span class="motion-label" data-motion-label>{{ pluginUpdatesStore.checking ? $t('pluginUpdates.buttonBusy') : $t('pluginUpdates.button') }}</span>
                 <span
                   v-if="pluginUpdatesStore.candidates.length > 0"
                   class="plugin-update-trigger__badge"
@@ -77,6 +87,7 @@
               <el-button
                 v-if="marketUrl && marketAuth.auth_state === 'pending'"
                 class="market-auth-trigger"
+                data-motion="resize"
                 :loading="marketLogoutBusy"
                 aria-live="polite"
                 :aria-label="headerActionsCompact ? `${$t('market.authVerificationPendingLabel')} · ${$t('market.logout')}` : undefined"
@@ -85,7 +96,7 @@
                 @click="confirmMarketLogout"
               >
                 <el-icon><User /></el-icon>
-                <span v-if="!headerActionsCompact">{{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}</span>
+                <span class="motion-label" data-motion-label>{{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}</span>
               </el-button>
               <el-popover
                 v-else-if="marketUrl && marketAuth.authenticated"
@@ -98,12 +109,13 @@
                 <template #reference>
                   <el-button
                     class="market-auth-trigger market-auth-trigger--connected"
+                    data-motion="resize"
                     :loading="marketAuthBusy"
                     :title="$t('market.accountConnected', { name: marketAuthDisplayName })"
                     plain
                   >
                     <el-icon><User /></el-icon>
-                    <span v-if="!headerActionsCompact">{{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}</span>
+                    <span class="motion-label" data-motion-label>{{ $t('market.accountConnected', { name: marketAuthDisplayName }) }}</span>
                   </el-button>
                 </template>
                 <div class="market-account-card" v-loading="marketAccountSummaryBusy">
@@ -143,19 +155,21 @@
               <el-button
                 v-else-if="marketUrl"
                 class="market-auth-trigger"
+                data-motion="resize"
                 :loading="marketAuthBusy"
                 :title="$t('market.login')"
                 plain
                 @click="startMarketLogin()"
               >
                 <el-icon><User /></el-icon>
-                <span v-if="!headerActionsCompact">{{ $t('market.login') }}</span>
+                <span class="motion-label" data-motion-label>{{ $t('market.login') }}</span>
               </el-button>
             </div>
 
             <!-- 三级：导入是唯一主按钮；其余为描边次按钮，开关态用浅底；低频视图选项和全部重载收进“更多”。 -->
             <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions">
               <el-button
+                data-motion="resize"
                 :type="multiSelectEnabled ? 'primary' : 'default'"
                 :plain="multiSelectEnabled"
                 :aria-pressed="multiSelectEnabled"
@@ -165,11 +179,12 @@
                 @click="toggleMultiSelectMode"
               >
                 <el-icon><Finished /></el-icon>
-                <span v-if="!headerActionsCompact">{{ $t('plugins.multiSelect') }}</span>
+                <span class="motion-label" data-motion-label>{{ $t('plugins.multiSelect') }}</span>
               </el-button>
-              <span class="header-actions__divider" aria-hidden="true" />
+              <span class="header-actions__divider" data-motion="move" aria-hidden="true" />
               <el-button
                 class="package-trigger"
+                data-motion="resize"
                 :class="{ 'package-trigger--active': drawers.package.visible }"
                 :aria-pressed="drawers.package.visible"
                 :aria-label="headerActionsCompact ? $t('plugins.openPackageManager') : undefined"
@@ -178,9 +193,10 @@
                 @click="toggleDrawer('package')"
               >
                 <el-icon><Box /></el-icon>
-                <span v-if="!headerActionsCompact">{{ $t('plugins.openPackageManager') }}</span>
+                <span class="motion-label" data-motion-label>{{ $t('plugins.openPackageManager') }}</span>
               </el-button>
               <el-button
+                data-motion="resize"
                 :type="drawers.mirror.visible ? 'primary' : 'default'"
                 :plain="drawers.mirror.visible"
                 :aria-pressed="drawers.mirror.visible"
@@ -190,11 +206,12 @@
                 @click="toggleDrawer('mirror')"
               >
                 <el-icon><Connection /></el-icon>
-                <span v-if="!headerActionsCompact">{{ $t('plugins.openMirrorSource') }}</span>
+                <span class="motion-label" data-motion-label>{{ $t('plugins.openMirrorSource') }}</span>
               </el-button>
-              <span class="header-actions__divider" aria-hidden="true" />
+              <span class="header-actions__divider" data-motion="move" aria-hidden="true" />
               <el-dropdown trigger="click" :persistent="false" @command="handleMoreAction">
                 <el-button
+                  data-motion="resize"
                   :aria-label="$t('plugins.moreActions')"
                   :title="$t('plugins.moreActions')"
                   data-testid="plugin-list-more-actions"
@@ -229,8 +246,9 @@
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
-              <span class="header-actions__divider" aria-hidden="true" />
+              <span class="header-actions__divider" data-motion="move" aria-hidden="true" />
               <el-button
+                data-motion="resize"
                 :disabled="loading"
                 :aria-label="headerActionsCompact ? $t('common.refresh') : undefined"
                 :title="headerActionsCompact ? $t('common.refresh') : undefined"
@@ -238,15 +256,17 @@
                 @click="handleRefresh"
               >
                 <el-icon><Refresh /></el-icon>
-                <span v-if="!headerActionsCompact">{{ $t('common.refresh') }}</span>
+                <span class="motion-label" data-motion-label>{{ $t('common.refresh') }}</span>
               </el-button>
               <el-button
+                data-motion="resize"
                 type="primary"
                 :disabled="importing"
                 data-yui-guide-id="plugin-list-import"
                 @click="importDialogVisible = true"
               >
                 <el-icon><Upload /></el-icon>
+                <!-- 主操作在窄头部也保留文字，不参与收起。 -->
                 <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
               </el-button>
             </div>
@@ -268,63 +288,67 @@
                   guide-id="plugin-list-type-filter"
                 />
                 <WorkbenchLayoutSwitcher
+                  data-motion="move"
                   v-model:layout-mode="layoutMode"
                   :choices="layoutChoices"
                   guide-id="plugin-list-layout-mode"
                 />
               </template>
             </WorkbenchFilterBar>
+            <div class="plugin-list-shell__rule" data-motion="skin" aria-hidden="true" />
           </div>
-        </template>
-
-        <div v-if="listRefreshError || listRefreshWarning" class="plugin-list-feedback" data-testid="plugin-list-feedback">
-          <ErrorMessage
-            :message="listRefreshError ? (hasListData ? t('messages.refreshPartialFailure') : t('plugins.listLoadFailed')) : listRefreshWarning"
-            :type="hasListData ? 'warning' : 'error'"
-            :closable="false"
-          />
-          <el-button :disabled="loading" @click="handleRefresh">{{ t('market.retry') }}</el-button>
         </div>
-        <LoadingSpinner
-          v-if="loading && rawPlugins.length === 0"
-          :loading="true"
-          :text="$t('common.loading')"
-        />
-        <template v-else-if="rawPlugins.length === 0">
-          <EmptyState v-if="!listRefreshError" :description="$t('plugins.noPlugins')" />
-        </template>
-        <EmptyState
-          v-else-if="filteredPurePlugins.length + filteredAdapters.length === 0"
-          :description="t('plugins.noMatches')"
-        >
-          <el-button @click="clearFilters">{{ t('plugins.clearFilters') }}</el-button>
-        </EmptyState>
 
-        <template v-else>
-          <div
-            v-for="section in pluginSections"
-            :key="section.key"
-          >
-            <PluginGridSection
-              :title="section.title"
-              :icon="section.icon"
-              :items="section.items"
-              :motion-phase="filterText.trim() ? 'filter' : 'initial'"
-              :layout-mode="layoutMode"
-              :multi-select-enabled="multiSelectEnabled"
-              :selected-plugin-ids="selectedPluginIds"
-              :show-metrics="showMetrics"
-              :show-source-detail="showSourceDetail"
-              :identity-plugin-ids="duplicateDisplayNamePluginIds"
-              :variant="section.variant"
-              @item-click="handlePluginPrimaryAction"
-              @item-open-ui="handlePluginUiAction"
-              @item-contextmenu="handlePluginContextMenu"
-              @toggle-selection="togglePluginSelection"
+        <div class="plugin-list-shell__body">
+          <div v-if="listRefreshError || listRefreshWarning" class="plugin-list-feedback" data-testid="plugin-list-feedback">
+            <ErrorMessage
+              :message="listRefreshError ? (hasListData ? t('messages.refreshPartialFailure') : t('plugins.listLoadFailed')) : listRefreshWarning"
+              :type="hasListData ? 'warning' : 'error'"
+              :closable="false"
             />
+            <el-button :disabled="loading" @click="handleRefresh">{{ t('market.retry') }}</el-button>
           </div>
-        </template>
-      </el-card>
+          <LoadingSpinner
+            v-if="loading && rawPlugins.length === 0"
+            :loading="true"
+            :text="$t('common.loading')"
+          />
+          <template v-else-if="rawPlugins.length === 0">
+            <EmptyState v-if="!listRefreshError" :description="$t('plugins.noPlugins')" />
+          </template>
+          <EmptyState
+            v-else-if="filteredPurePlugins.length + filteredAdapters.length === 0"
+            :description="t('plugins.noMatches')"
+          >
+            <el-button @click="clearFilters">{{ t('plugins.clearFilters') }}</el-button>
+          </EmptyState>
+
+          <template v-else>
+            <div
+              v-for="section in pluginSections"
+              :key="section.key"
+            >
+              <PluginGridSection
+                :title="section.title"
+                :icon="section.icon"
+                :items="section.items"
+                :motion-phase="filterText.trim() ? 'filter' : 'initial'"
+                :layout-mode="layoutMode"
+                :multi-select-enabled="multiSelectEnabled"
+                :selected-plugin-ids="selectedPluginIds"
+                :show-metrics="showMetrics"
+                :show-source-detail="showSourceDetail"
+                :identity-plugin-ids="duplicateDisplayNamePluginIds"
+                :variant="section.variant"
+                @item-click="handlePluginPrimaryAction"
+                @item-open-ui="handlePluginUiAction"
+                @item-contextmenu="handlePluginContextMenu"
+                @toggle-selection="togglePluginSelection"
+              />
+            </div>
+          </template>
+        </div>
+      </div>
     </section>
 
     <aside
@@ -332,13 +356,18 @@
       :aria-hidden="!drawers.package.visible"
       :inert="!drawers.package.visible"
     >
-      <Transition name="drawer-end">
-        <div v-show="drawers.package.visible" class="plugin-workbench__rail-inner">
+      <Transition :css="false" @leave="holdLeave" @leave-cancelled="cancelLeave">
+        <div
+          v-show="drawers.package.visible"
+          class="plugin-workbench__rail-inner"
+          data-motion="panel"
+          data-motion-edge="end"
+        >
           <PackageManagerPanel
             v-if="drawers.package.everOpened"
             embedded
             :external-selected-plugin-ids="selectedPluginIds"
-            @close="drawers.package.visible = false"
+            @close="setOpenDrawer(null)"
           />
         </div>
       </Transition>
@@ -349,11 +378,16 @@
       :aria-hidden="!drawers.mirror.visible"
       :inert="!drawers.mirror.visible"
     >
-      <Transition name="drawer-end">
-        <div v-show="drawers.mirror.visible" class="plugin-workbench__rail-inner">
+      <Transition :css="false" @leave="holdLeave" @leave-cancelled="cancelLeave">
+        <div
+          v-show="drawers.mirror.visible"
+          class="plugin-workbench__rail-inner"
+          data-motion="panel"
+          data-motion-edge="end"
+        >
           <GithubMirrorSourcePanel
             v-if="drawers.mirror.everOpened"
-            @close="drawers.mirror.visible = false"
+            @close="setOpenDrawer(null)"
           />
         </div>
       </Transition>
@@ -517,6 +551,7 @@ import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useBatchActions } from '@/composables/useBatchActions'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { useCollapsibleLabels } from '@/composables/useCollapsibleLabels'
+import { transitionLayout, holdLeave, cancelLeave } from '@/motion/scheduler'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -543,6 +578,7 @@ const importing = ref(false)
 const importDialogVisible = ref(false)
 type DrawerKey = 'package' | 'mirror' | 'market'
 interface DrawerState {
+  /** The panel is shown (sliding in or open). */
   visible: boolean
   everOpened: boolean
 }
@@ -945,20 +981,41 @@ function toggleMultiSelectMode() {
   toggleMultiSelect()
 }
 
-// Drawers are mutually exclusive: opening one closes the others.
-function openDrawer(key: DrawerKey) {
-  for (const other of DRAWER_KEYS) {
-    drawers[other].visible = other === key
+// 抽屉开关的唯一入口：布局立即切换，之后所有元素从各自的绘制位置 FLIP 到新位置
+// （面板滑入滑出，卡片和头部按钮原地过渡）。抽屉互斥：打开一个即关闭其余。
+const workbenchRef = ref<HTMLElement | null>(null)
+
+const DRAWER_PANELS = { package: PackageManagerPanel, mirror: GithubMirrorSourcePanel, market: MarketPanel } as const
+// 每次请求递增；等加载期间来了新请求，旧请求作废，不能覆盖用户最后的选择。
+let drawerRequest = 0
+// 最后一次请求的目标抽屉；预加载期间 visible 还没变，切换要按它判断，第二次点击才能取消打开。
+let drawerTarget: DrawerKey | null = null
+
+async function setOpenDrawer(key: DrawerKey | null): Promise<void> {
+  const request = ++drawerRequest
+  drawerTarget = key
+  // 首次打开先等面板模块加载完，否则面板在滑入途中从加载占位换成真实内容。
+  // 加载失败不拦截打开：面板自己会显示错误和重试。
+  if (key) await Promise.allSettled([DRAWER_PANELS[key].preload()])
+  if (request !== drawerRequest) return
+  const apply = async () => {
+    for (const other of DRAWER_KEYS) {
+      drawers[other].visible = other === key
+    }
+    if (key) drawers[key].everOpened = true
+    await nextTick()
+    relayoutHeaderLabels()
+    await nextTick()
   }
-  drawers[key].everOpened = true
+  const workbench = workbenchRef.value
+  if (!workbench) {
+    return apply()
+  }
+  return transitionLayout(workbench, apply)
 }
 
 function toggleDrawer(key: DrawerKey) {
-  if (drawers[key].visible) {
-    drawers[key].visible = false
-  } else {
-    openDrawer(key)
-  }
+  return setOpenDrawer(drawerTarget === key ? null : key)
 }
 
 function closePluginContextMenu() {
@@ -1031,7 +1088,7 @@ async function showTutorialContextMenu() {
   if (!plugin) {
     return
   }
-  drawers.package.visible = false
+  if (drawers.package.visible) await setOpenDrawer(null)
   await nextTick()
   const target = document.querySelector('[data-yui-guide-id="plugin-list-card"]') as HTMLElement | null
   const rect = target?.getBoundingClientRect()
@@ -1055,7 +1112,7 @@ function openTutorialPluginDetail() {
 function handleTutorialAction(event: Event) {
   const action = (event as CustomEvent<{ action?: string }>).detail?.action
   if (action === 'open-package-panel') {
-    openDrawer('package')
+    void setOpenDrawer('package')
     return
   }
   if (action === 'show-plugin-context-menu') {
@@ -1121,7 +1178,7 @@ const reloadAllDisabled = computed(() => reloadingAll.value || runningPlugins.va
 const workbenchHeaderRef = ref<HTMLElement | null>(null)
 const headerMarketRef = ref<HTMLElement | null>(null)
 const headerActionsRef = ref<HTMLElement | null>(null)
-const { compact: headerActionsCompact } = useCollapsibleLabels(
+const { compact: headerActionsCompact, relayout: relayoutHeaderLabels } = useCollapsibleLabels(
   workbenchHeaderRef,
   [headerMarketRef, headerActionsRef],
   () => [
@@ -1330,11 +1387,7 @@ watch(
   (tab) => {
     const shouldOpen = tab === 'packages'
     if (drawers.package.visible !== shouldOpen) {
-      if (shouldOpen) {
-        openDrawer('package')
-      } else {
-        drawers.package.visible = false
-      }
+      void setOpenDrawer(shouldOpen ? 'package' : null)
     }
   },
   { immediate: true },
@@ -1403,7 +1456,7 @@ onUnmounted(() => {
    工作台绑成视口高度后，底部会一直露出一条 80px 的空白带，面板背景到不了底。
    改成：只在该模式下给**可滚内容**加底部内边距（它们本来就是滚动容器），
    最后一行依旧能滚到浮动条上方；抽屉的高度则是 padding box，绝对定位的内容会自动让位。 */
-.plugin-workbench--multi-select .plugin-list-card :deep(.el-card__body),
+.plugin-workbench--multi-select .plugin-list-shell__body,
 .plugin-workbench--multi-select .plugin-workbench__rail-inner > * {
   padding-bottom: 80px;
 }
@@ -1412,14 +1465,14 @@ onUnmounted(() => {
   flex: 1 1 0;
   min-width: 0;
   /* 列表栅不再由内容撑高：撑高就会把抽屉一起拉长（见 .plugin-workbench 上的说明）。
-     改为自己滞：卡片体内阶滚动（el-card__body 本身已是 overflow:auto）。 */
+     改为自己滞：卡片体内阶滚动（列表壳的 body 本身是 overflow:auto）。 */
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* 只命中最外层列表卡片；切记不要写成后代选择器，否则会连网格里的插件卡片一起 flex 化。 */
-.plugin-workbench__main > .el-card {
+/* 只命中最外层列表外壳；切记不要写成后代选择器，否则会连网格里的插件卡片一起 flex 化。 */
+.plugin-workbench__main > .plugin-list-shell {
   flex: 1 1 0;
   min-height: 0;
 }
@@ -1432,8 +1485,8 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   contain: layout paint size;
-  /* 宽度不做过渡：开关抽屉时列表宽度一步到位，卡片由网格的 reflow 动画一次滑到新位置；
-     宽度连续过渡会让列数多次跨阈值、reflow 反复重启。滑入滑出只交给 rail-inner 的 transform。 */
+  /* 宽度不做过渡：开关抽屉时列表宽度一步到位，卡片和头部由 transitionLayout 的 FLIP 一次滑到新位置；
+     宽度连续过渡会让列数多次跨阈值、布局反复重算。滑入滑出只交给 rail-inner 的 transform。 */
   margin: 0;
 }
 
@@ -1450,12 +1503,17 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* 关闭时 rail 宽度立即归零（列表一步到位），面板还在滑出：这段时间取消 rail 的裁剪，
-   让面板从列表上方滑出工作区，由 .app-body 的圆角裁掉。z-index 盖过正在 reflow 的卡片。 */
-.plugin-workbench__rail:has(> :is(.drawer-start-leave-active, .drawer-end-leave-active)) {
+/* 运行布局过渡期间（transitionLayout 置位）面板会滑出零宽的 rail 之外：取消 rail 的裁剪，
+   由 .app-body 的圆角裁掉。z-index 盖过正在过渡的卡片和头部。 */
+.plugin-workbench[data-motion-running] .plugin-workbench__rail {
   z-index: 1;
   overflow: visible;
   contain: layout size;
+}
+
+/* 滑动时 rail 宽度为零，max-width: 100% 会把面板压成 0 宽。 */
+.plugin-workbench[data-motion-running] .plugin-workbench__rail-inner {
+  max-width: none;
 }
 
 /* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入滑出。
@@ -1481,30 +1539,6 @@ onUnmounted(() => {
   padding-right: var(--shell-spacing);
 }
 
-/* 与网格 reflow 同一条曲线和时长，面板滑入滑出和卡片让位是同一个动作。 */
-.drawer-start-enter-active,
-.drawer-start-leave-active,
-.drawer-end-enter-active,
-.drawer-end-leave-active {
-  transition: transform var(--motion-duration-layout) var(--motion-ease-layout);
-}
-
-/* rail 已归零，max-width: 100% 会把滑出中的面板压成 0 宽。 */
-.drawer-start-leave-active,
-.drawer-end-leave-active {
-  max-width: none;
-}
-
-.drawer-start-enter-from,
-.drawer-start-leave-to {
-  transform: translate3d(-100%, 0, 0);
-}
-
-.drawer-end-enter-from,
-.drawer-end-leave-to {
-  transform: translate3d(100%, 0, 0);
-}
-
 .plugin-workbench__rail-inner > * {
   width: 100%;
   /*
@@ -1515,16 +1549,62 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
-.plugin-list-card {
-  border: none;
-  border-radius: 0;
-  background: var(--surface-workspace);
-  box-shadow: none;
+/* 列表外壳：原先的 el-card 外观（无边框、无圆角、工作区底色），头部与主体各自分区。 */
+.plugin-list-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  color: var(--el-text-color-primary);
 }
 
-.plugin-list-card :deep(> .el-card__header) {
+/* 外壳的底色画在绝对定位的 skin 上：抽屉开关时 skin 从旧边缘滑到新边缘（transitionLayout 的 skin），
+   外壳本身一步到位。外壳不能裁剪，否则 skin 滑动时会被裁掉。 */
+.plugin-list-shell__skin {
+  position: absolute;
+  inset: 0;
   background: var(--surface-workspace);
-  border-bottom-color: var(--surface-border);
+}
+
+/* 过渡期间在左缘画出边界，跟着抽屉一起移动。它单独做平移，不随 skin 横向缩放，所以始终是 1px。 */
+.plugin-list-shell__edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  visibility: hidden;
+  background: var(--surface-border);
+}
+
+.plugin-workbench[data-motion-running] .plugin-list-shell__edge {
+  visibility: visible;
+}
+
+.plugin-list-shell > :not(.plugin-list-shell__skin, .plugin-list-shell__edge) {
+  position: relative;
+}
+
+/* 头部内边距与 el-card 默认一致；底边不用 border，改由绝对定位的 rule 画在同一位置。 */
+.plugin-list-shell__header {
+  padding: 18px 20px 19px;
+  box-sizing: border-box;
+}
+
+.plugin-list-shell__rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--surface-border);
+}
+
+.plugin-list-shell__body {
+  flex-grow: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+  box-sizing: border-box;
 }
 
 /* 单行头部：左侧市场组，右侧动作组；空间不足时动作组整体换到下一行，不拆散。 */
@@ -1574,6 +1654,27 @@ onUnmounted(() => {
 
 .workbench-header--compact .market-trigger {
   padding: 8px 10px;
+  /* 收起的文字宽为零，间距改由图标的右边距承担，收起后的宽度与原先的纯图标按钮一致。 */
+  gap: 0;
+}
+
+.workbench-header--compact .market-trigger__icon {
+  margin-right: 8px;
+}
+
+/* 文字参与过渡：收起时宽度与透明度归零，展开时由 transitionLayout 动画回到原宽。 */
+.motion-label {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* 收起时标签宽度归零；Element Plus 的图标后缀间距规则特异性更高，这里需要同等特异性才能压住它。 */
+.workbench-header--compact .motion-label[data-motion-label] {
+  max-width: 0;
+  opacity: 0;
+  margin-left: 0;
 }
 
 /* “更多”菜单被 teleport 到 body，只有本模板写进插槽的节点带 scoped 属性。 */

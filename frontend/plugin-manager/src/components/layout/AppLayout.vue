@@ -54,8 +54,12 @@
       </div>
     </div>
 
-    <div class="app-shell">
-      <aside class="app-sidebar" :class="{ 'app-sidebar--collapsed': sidebarCollapsed }">
+    <div class="app-shell" :class="{ 'app-shell--focused': workspaceFocused }">
+      <aside
+        v-show="!workspaceFocused"
+        class="app-sidebar"
+        :class="{ 'app-sidebar--collapsed': sidebarCollapsed }"
+      >
         <Sidebar @collapse-change="sidebarCollapsed = $event" />
       </aside>
 
@@ -91,9 +95,11 @@ import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
+import { useWorkspaceFocus } from '@/composables/useWorkspaceFocus'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const { focused: workspaceFocused } = useWorkspaceFocus()
 const sidebarCollapsed = ref(false)
 
 // The update check, its popup and the install-progress UI stay off the
@@ -518,6 +524,11 @@ onBeforeUnmount(() => {
 }
 
 .app-sidebar--collapsed { width: var(--sidebar-collapsed-width); }
+
+.app-shell--focused {
+  gap: 0;
+  padding: 0;
+}
 
 .app-body {
   flex: 1;

@@ -1811,6 +1811,98 @@ async def test_a_cancelled_family_line_to_the_own_cat_still_schedules_its_reply(
         await asyncio.gather(sending, return_exceptions=True)
         stuck.set()
         await wait_for(lambda: [p for p in plans if p is not None])  # Handler exited, but replies still queue.
+        # Booked in the room as well: a late peer pick-up must not replace this answer to the human.
+        assert rt.room.pending_reply is plans[-1]
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_reply_dropped_without_speaking_is_forgotten_by_the_room(tmp_path, monkeypatch):
+    # A leftover pending plan would keep every later pick-up of a line to a human away.
+    from main_logic.visit.room import LineRef, ReplyPlan
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        gone = LineRef("g:900", 1, "guest")
+        rt.room._remember_aborted(gone.line_id)                # The replied line was cut off: the plan is stale.
+        plan = ReplyPlan(reply_to=gone, not_before=0.0)
+        rt.room.pending_reply = plan
+        rt.schedule_reply(plan)
+        task = rt._reply_task
+        hgate.set()                                           # Opening line finishes; the runner then drops the plan.
+        await wait_for(lambda: task.done(), timeout=10)
+        assert rt.room.pending_reply is None
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_reply_cancelled_while_the_peer_line_is_recorded_is_not_scheduled(tmp_path, monkeypatch):
+    # A human line that cancels the plan during the record await must not be undone once the write ends.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    plans: list = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "peer_cat":
+            await stuck.wait()
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    rt.schedule_reply = lambda plan, **kw: plans.append(plan)
+    framed: list = []
+    real_frame = rt._peer_line_frame
+
+    def frame_spy(m, ln, lp):
+        framed.append(ln)                                     # Posted right before the reply is applied, with no await between.
+        return real_frame(m, ln, lp)
+
+    rt._peer_line_frame = frame_spy
+    try:
+        ggate.set()                                           # Guest opening line (to the host cat) reaches the host.
+        await wait_for(lambda: rt.room.pending_reply is not None, timeout=10)
+        rt.room.pending_reply = None                          # What a human line does meanwhile (_cancel_pending).
+        stuck.set()
+        await wait_for(lambda: framed, timeout=10)
+        assert [p for p in plans if p is not None] == []
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_an_own_line_starting_while_the_peer_line_is_recorded_keeps_the_reply(tmp_path, monkeypatch):
+    # An opening line that starts during the record await is not this plan: the reply must still be scheduled.
+    from main_logic.visit.room import LineRef
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    plans: list = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "peer_cat":
+            await stuck.wait()
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    rt.schedule_reply = lambda plan, **kw: plans.append(plan)
+    try:
+        ggate.set()                                           # Guest opening line (to the host cat) reaches the host.
+        await wait_for(lambda: rt.room.pending_reply is not None, timeout=10)
+        pending = rt.room.pending_reply
+        rt.room.on_local_line_started(LineRef("h:950", rt.room.next_lp(), "host"), None, False, clock())
+        stuck.set()
+        await wait_for(lambda: pending in plans, timeout=10)
     finally:
         stuck.set()
         hgate.set()

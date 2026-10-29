@@ -21,6 +21,8 @@ from utils.visit_wire import VISIT_ID_RE
 
 router = APIRouter(tags=["community-remote-proxy"])
 
+RECOMMENDATION_TIMEOUT_SECONDS = 2.0
+
 
 async def _community_access(request: Request):
     if await O._account_request_identity(request) is None or not C._local_request_source_allowed(request):
@@ -30,9 +32,14 @@ async def _community_access(request: Request):
     access = snapshot.get("access_token")
     if not access or status.get("rejected") or not status.get("logged_in"):
         return None, JSONResponse({"detail": "community_login_required"}, status_code=401)
+    verified_profile = status.get("verified_profile") or {}
+    account_id = C._normalize_local_user_id(
+        verified_profile.get("local_user_id") or snapshot.get("local_user_id")
+    )
     return {
         "access": access,
         "base_url": C._social_base_url().rstrip("/"),
+        "account_id": account_id,
     }, None
 
 
@@ -103,9 +110,76 @@ async def _community_notifications(client: httpx.AsyncClient, session: dict):
     return 502, {"detail": "community_invalid_response"}
 
 
+async def _community_recommendations(client: httpx.AsyncClient, session: dict):
+    """Recommendations are optional and must never take down the friend hub."""
+    try:
+        return await asyncio.wait_for(
+            _community_json(
+                client,
+                session,
+                "GET",
+                "/api/users/me/recommendations",
+            ),
+            timeout=RECOMMENDATION_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, httpx.HTTPError):
+        return 502, {"detail": "community_unavailable"}
+
+
+async def _community_friend_presence(client: httpx.AsyncClient, session: dict):
+    """Use the compact endpoint, with a rollout-only fallback for older Verse."""
+    status, body = await _community_json(
+        client, session, "GET", "/api/users/me/friends/presence",
+    )
+    if status != 404:
+        return status, body
+    me_status, me = await _community_json(client, session, "GET", "/api/users/me")
+    profile = me.get("user") if isinstance(me, dict) and isinstance(me.get("user"), dict) else me
+    if me_status != 200 or not isinstance(profile, dict) or not profile.get("id"):
+        return me_status, me
+    return await _community_following(client, session, str(profile["id"]))
+
+
 def _absolute_community_url(base_url: str, value) -> str | None:
     text = str(value or "").strip()
     return urljoin(base_url + "/", text) if text else None
+
+
+def _friend_presence_items(following) -> list[dict]:
+    friends = []
+    for item in following.get("items", []) if isinstance(following, dict) else []:
+        if (
+            not isinstance(item, dict)
+            or item.get("is_mutual") is False
+            or not item.get("id")
+        ):
+            continue
+        status = item.get("presence_status")
+        if not isinstance(status, str) or status not in {"online", "away", "offline"}:
+            status = "online" if item.get("online") is True else "offline"
+        friends.append({
+            "id": str(item["id"]),
+            "online": status in {"online", "away"},
+            "presence_status": status,
+            "last_seen_at": item.get("last_seen_at"),
+        })
+    return friends
+
+
+@router.get("/api/community/friend-presence")
+async def friend_presence(request: Request):
+    """Return a small live-presence snapshot without rotating hub content."""
+    session, error = await _community_access(request)
+    if error is not None:
+        return error
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8)) as client:
+            presence_status, presence_body = await _community_friend_presence(client, session)
+    except httpx.HTTPError:
+        return JSONResponse({"detail": "community_unavailable"}, status_code=502)
+    if presence_status != 200:
+        return JSONResponse(presence_body, status_code=presence_status)
+    return {"friends": _friend_presence_items(presence_body)}
 
 
 @router.get("/api/community/visit-hub")
@@ -121,33 +195,61 @@ async def visit_hub(request: Request):
             if me_status != 200 or not isinstance(profile, dict) or not profile.get("id"):
                 return JSONResponse(me, status_code=me_status)
             user_id = str(profile["id"])
-            (following_status, following), (notification_status, notifications), (presence_status_code, presence_body) = await asyncio.gather(
+            (
+                (following_status, following),
+                (notification_status, notifications),
+                (presence_status_code, presence_body),
+                (recommendation_status, recommendation_body),
+            ) = await asyncio.gather(
                 _community_following(client, session, user_id),
                 _community_notifications(client, session),
                 _community_json(client, session, "GET", "/api/users/me/presence"),
+                _community_recommendations(client, session),
             )
     except httpx.HTTPError:
         return JSONResponse({"detail": "community_unavailable"}, status_code=502)
     if following_status != 200:
         return JSONResponse(following, status_code=following_status)
 
+    presence_by_id = {item["id"]: item for item in _friend_presence_items(following)}
     friends = []
     for item in following.get("items", []) if isinstance(following, dict) else []:
         if not isinstance(item, dict) or item.get("is_mutual") is not True or not item.get("id"):
             continue
+        presence = presence_by_id[str(item["id"])]
         friends.append({
             "id": str(item["id"]),
             "display_name": item.get("display_name") or item.get("username") or "喵友",
             "username": item.get("username"),
             "avatar_url": _absolute_community_url(session["base_url"], item.get("avatar_url")),
-            "online": item.get("online") is True,
-            "presence_status": (
-                item.get("presence_status")
-                if item.get("presence_status") in {"online", "away", "offline"}
-                else "online" if item.get("online") is True else "offline"
-            ),
-            "last_seen_at": item.get("last_seen_at"),
+            "online": presence["online"],
+            "presence_status": presence["presence_status"],
+            "last_seen_at": presence["last_seen_at"],
         })
+
+    recommendations = []
+    recommendation_items = (
+        recommendation_body.get("items")
+        if recommendation_status == 200 and isinstance(recommendation_body, dict)
+        else None
+    )
+    if isinstance(recommendation_items, list):
+        for item in recommendation_items[:3]:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            reason = item.get("reason")
+            if not isinstance(reason, str) or reason not in {
+                "active_user", "liked_you", "recent_follower",
+            }:
+                reason = "active_user"
+            recommendations.append({
+                "id": str(item["id"]),
+                "display_name": item.get("display_name") or item.get("username") or "喵友",
+                "username": item.get("username"),
+                "avatar_url": _absolute_community_url(session["base_url"], item.get("avatar_url")),
+                "reason": reason,
+                "follows_viewer": item.get("follows_viewer") is True,
+            })
 
     incoming = None
     incoming_invite_ids = []
@@ -212,11 +314,44 @@ async def visit_hub(request: Request):
             ),
         },
         "friends": friends,
+        "recommendations": recommendations,
         "notifications_ok": notifications_ok,
         "incoming_invite_ids": incoming_invite_ids,
         "incoming_invite": incoming,
         "invite_responses": invite_responses,
     }
+
+
+@router.post("/api/community/users/{target_user_id}/follow")
+async def follow_recommended_user(request: Request, target_user_id: str):
+    """Relay one explicit follow without exposing the saved cloud token."""
+    session, error = await _community_access(request)
+    if error is not None:
+        return error
+    try:
+        target = str(uuid.UUID(target_user_id))
+    except ValueError:
+        return JSONResponse({"detail": "invalid_target_user"}, status_code=400)
+    expected_account_id = request.query_params.get("expected_account_id")
+    if expected_account_id is not None:
+        expected_account_id = C._normalize_local_user_id(expected_account_id)
+        if (
+            not expected_account_id
+            or not session["account_id"]
+            or expected_account_id != session["account_id"]
+        ):
+            return JSONResponse({"detail": "community_account_changed"}, status_code=409)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12)) as client:
+            status_code, body = await _community_json(
+                client,
+                session,
+                "POST",
+                f"/api/users/{target}/follow",
+            )
+    except httpx.HTTPError:
+        return JSONResponse({"detail": "community_unavailable"}, status_code=502)
+    return JSONResponse(body, status_code=status_code)
 
 
 @router.put("/api/community/presence")

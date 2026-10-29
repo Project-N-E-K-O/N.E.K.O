@@ -755,6 +755,10 @@ export default {
       surfaceUnavailable: 'Surface unavailable',
       surfaceEntryMissing: 'The entry file declared by this surface does not exist. Check the entry path in plugin.toml.',
       surfaceWarnings: 'Plugin UI declaration needs attention',
+      focus: 'Focus',
+      focusHint: 'Hide the sidebar and page chrome so the panel fills the window',
+      exitFocus: 'Exit focus',
+      exitFocusHint: 'Exit focus mode (Esc)',
       controlError: 'Plugin UI control error',
       hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.'
     }

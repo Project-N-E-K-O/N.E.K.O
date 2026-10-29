@@ -3,6 +3,8 @@
     class="plugin-detail"
     :class="{
       'plugin-detail--fill': isFillTab,
+      'plugin-detail--focus': focusActive,
+      'plugin-detail--focusable': focusAvailable,
       'config-layout-active': activeTab === 'config',
       'config-page-scroll': activeTab === 'config' && configPageScroll,
     }"
@@ -19,7 +21,7 @@
         <div class="card-header" data-yui-guide-id="plugin-detail-header">
           <div class="header-left" data-yui-guide-id="plugin-detail-title">
             <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
-            <h2>{{ pluginDisplayText.name }}</h2>
+            <h2 :title="pluginDisplayText.name">{{ pluginDisplayText.name }}</h2>
           </div>
           <div class="header-status">
             <div v-if="surfacesLoading" class="surfaces-loading" role="status" data-testid="surfaces-loading">
@@ -27,16 +29,40 @@
               <span class="surfaces-loading__text">{{ $t('plugins.ui.loading') }}</span>
             </div>
           </div>
-          <div data-yui-guide-id="plugin-detail-actions">
+          <div class="header-actions" data-yui-guide-id="plugin-detail-actions">
             <PluginActions :plugin-id="pluginId" />
           </div>
         </div>
       </template>
 
+      <div v-if="focusActive" class="focus-bar" data-testid="focus-bar">
+        <span class="focus-bar__title" :title="pluginDisplayText.name">{{ pluginDisplayText.name }}</span>
+        <el-button
+          size="small"
+          :icon="ScaleToOriginal"
+          :title="$t('plugins.ui.exitFocusHint')"
+          data-testid="focus-exit"
+          @click="focusRequested = false"
+        >{{ $t('plugins.ui.exitFocus') }}</el-button>
+      </div>
+
       <div v-if="!surfacesLoading && surfaceLoadError" role="alert" data-testid="surfaces-error">
         {{ surfaceLoadError }}
         <el-button data-testid="surfaces-retry" @click="retrySurfaces">{{ $t('market.retry') }}</el-button>
       </div>
+      <!-- 专注入口挂在主 tab 行右端：它只作用于面板，和 tab 放一起比挤进页头操作区更贴切 -->
+      <button
+        v-if="focusAvailable"
+        type="button"
+        class="focus-toggle"
+        :title="$t('plugins.ui.focusHint')"
+        :aria-label="$t('plugins.ui.focusHint')"
+        data-testid="focus-enter"
+        @click="focusRequested = true"
+      >
+        <el-icon aria-hidden="true"><FullScreen /></el-icon>
+        <span>{{ $t('plugins.ui.focus') }}</span>
+      </button>
       <el-tabs :model-value="activeTab" @update:model-value="selectTab" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane v-if="displayedPanelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
@@ -199,7 +225,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Loading } from '@element-plus/icons-vue'
+import { ArrowLeft, FullScreen, Loading, ScaleToOriginal } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginActions from '@/components/plugin/PluginActions.vue'
@@ -221,6 +247,7 @@ import {
   refreshHostedPanelFrames,
 } from '@/views/pluginDetailHostedPanelRefresh'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
+import { useWorkspaceFocusOwner } from '@/composables/useWorkspaceFocus'
 import {
   pickPrimaryPanelSurface,
   renderablePanelSurfaces as selectRenderablePanelSurfaces,
@@ -256,6 +283,20 @@ const surfaceActivationRevisions = ref<Record<string, number>>({})
 const fillTabs = new Set(['panel', 'guide', 'logs'])
 const isFillTab = computed(() => fillTabs.has(activeTab.value))
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
+// Focus mode belongs to the panel tab: leaving it (e.g. a surface opening the
+// logs tab) also ends focus, so coming back starts with the normal chrome.
+const focusRequested = ref(false)
+const focusActive = computed(() => focusRequested.value && activeTab.value === 'panel')
+const focusAvailable = computed(() => activeTab.value === 'panel' && !focusActive.value)
+useWorkspaceFocusOwner(focusActive)
+watch(activeTab, (tab) => {
+  if (tab !== 'panel') focusRequested.value = false
+})
+// Keys typed inside a surface iframe stay in that document, so a game keeps
+// its own Esc; this only fires when focus is on the host page.
+function exitFocusOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape' && focusActive.value && !event.defaultPrevented) focusRequested.value = false
+}
 let currentSurfaceLoadId = 0
 let surfaceController: AbortController | null = null
 let detailGeneration = 0
@@ -577,9 +618,14 @@ async function loadDetail() {
   }
 }
 
-onMounted(() => { detailMounted = true; void loadDetail() })
+onMounted(() => {
+  detailMounted = true
+  window.addEventListener('keydown', exitFocusOnEscape)
+  void loadDetail()
+})
 onBeforeUnmount(() => {
   detailMounted = false
+  window.removeEventListener('keydown', exitFocusOnEscape)
   surfaceController?.abort('detail-disposed')
   surfaceController = null
   detailGeneration += 1
@@ -746,15 +792,120 @@ watch(
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  .config-layout-active .card-header {
-    flex-wrap: wrap;
-  }
-  .config-layout-active .header-left {
-    min-width: 0;
-  }
-  .config-layout-active .header-left h2 {
-    overflow-wrap: anywhere;
-  }
+}
+
+/* ── 专注模式 ─────────────────────────────────────────────────────────────
+   面板 tab 里把整个工作区交给插件 UI（网页小游戏要的就是面积）。AppLayout 负责
+   藏侧边栏、去外壳内边距；这里藏卡片页头、主 tab 和卡片内边距，只留一个浮动胶囊
+   用于退出，平时半透明，悬停或键盘聚焦时才完全显示，尽量不挡游戏。Esc 也能退出。
+   全部是样式切换，iframe 不重新挂载，游戏状态不丢。 */
+.plugin-detail--focus > :deep(.el-card > .el-card__header) {
+  display: none;
+}
+
+.plugin-detail--focus > :deep(.el-card) {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.plugin-detail--focus > :deep(.el-card > .el-card__body) {
+  padding: 0;
+}
+
+/* 只藏主 tab 行；多 surface 的子 tab 是专注时唯一的切换入口，保留 */
+.plugin-detail--focus > :deep(.el-card > .el-card__body > .el-tabs > .el-tabs__header) {
+  display: none;
+}
+
+.plugin-detail--focus .surface-section {
+  padding: 0;
+}
+
+/* 专注入口：贴在主 tab 行右端，垂直居中于 40px 的 tab 行，样式和 tab 文字同级，
+   不和页头的启停按钮抢视觉。tab 行右侧留出它的宽度，窄窗口下 tab 滚动也不会钻到它下面。 */
+.plugin-detail--focusable > :deep(.el-card > .el-card__body) {
+  position: relative;
+}
+
+.plugin-detail--focusable > :deep(.el-card > .el-card__body > .el-tabs > .el-tabs__header) {
+  padding-right: 88px;
+}
+
+.focus-toggle {
+  position: absolute;
+  top: calc(var(--el-card-padding) + 6px);
+  right: var(--el-card-padding);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    color var(--motion-duration-normal) var(--motion-ease-standard),
+    background-color var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.focus-toggle:hover {
+  color: var(--el-color-primary);
+  background: var(--surface-inset);
+  border-color: var(--surface-border);
+}
+
+.focus-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-toggle { transition: none; }
+}
+
+.focus-bar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 902;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px 6px 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-card) 94%, transparent);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
+  backdrop-filter: blur(12px);
+  opacity: 0.35;
+  transition: opacity var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.focus-bar:hover,
+.focus-bar:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-bar { transition: none; }
+}
+
+.focus-bar__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── 撑满型 tab 的高度链 ─────────────────────────────────────────────
@@ -857,16 +1008,30 @@ watch(
   to { opacity: 1; }
 }
 
+/* 标题区按 0 基准参与换行判断，只要放得下最小宽度就和按钮同一行，按钮组从不被压缩；
+   长名称单行截断（悬停看全名）。窗口窄到连最小宽度都放不下时，按钮组整体换到下一行。
+   标题区的增长系数远大于 .header-status，剩余空间先给标题长到 max-content，余下的才留给加载提示。 */
 .card-header {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
+  row-gap: 12px;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 1000 1 0;
+  min-width: 220px;
+  max-width: max-content;
+}
+
+/* 不随标题伸缩；窄屏下最多占满一行，按钮组在这个宽度内自行换行，不伸出卡片。 */
+.header-actions {
+  flex: none;
+  max-width: 100%;
+  margin-left: auto;
 }
 
 .is-disabled {
@@ -876,7 +1041,11 @@ watch(
 
 .header-left h2 {
   margin: 0;
+  min-width: 0;
   font-size: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .info-section {

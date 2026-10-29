@@ -45,7 +45,9 @@
     function setStatus(key, fallback) {
         var node = $('theater-selector-status');
         node.textContent = t(key, fallback);
+        node.setAttribute('aria-label', node.textContent);
         node.setAttribute('data-i18n', key);
+        node.setAttribute('data-i18n-aria', key);
     }
     function setFeedback(text, isError) {
         var node = $('theater-inline-feedback');

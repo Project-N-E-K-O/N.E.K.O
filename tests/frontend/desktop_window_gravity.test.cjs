@@ -1555,6 +1555,104 @@ function installDragProducer(r, model, { fromCreation = false } = {}) {
   };
 }
 
+function installPlaygroundPointerDrag(r) {
+  const body = attachPlaygroundBody(r, { width: 122, height: 122 });
+  const state = r.button.__nekoIdleCat1PlaygroundDropState;
+  Object.assign(state, { pointerBodyId: '', pointerId: null, draggingBodyId: '', phase: 'settled',
+    token: 1, lastTickAt: 0, maxDeltaMs: 50, gravityPxPerSecond2: 2600 });
+  Object.assign(r.context, {
+    _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX: 5,
+    _NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL: 'air.gif',
+    _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx: () => ({ left: 0, right: 0, top: 0, bottom: 0 }),
+    _getNekoIdleCat1PlaygroundViewportBottomPx: () => r.window.innerHeight,
+    _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
+    _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
+    _getNekoIdleCat1PlaygroundViewportRightPx: () => r.window.innerWidth,
+  });
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  for (const name of ['_isNekoIdleCat1PlaygroundEntryPending', '_isNekoIdleCat1PlaygroundEntryOrDropActive',
+    '_isNekoIdleCat1PlaygroundCapabilityBlocked', '_getNekoIdleCat1PlaygroundScreenPoint',
+    '_recordNekoIdleCat1PlaygroundPointerSample', '_dispatchNekoIdleCat1PlaygroundDragState',
+    '_resolveNekoIdleCat1PlaygroundPointerClient', '_setNekoIdleCat1PlaygroundBodyPosition',
+    '_applyNekoIdleCat1PlaygroundBodyRotation', '_updateNekoIdleCat1PlaygroundBodyBounds',
+    '_setNekoIdleCat1PlaygroundCatAirArt', '_handleNekoIdleCat1PlaygroundPointerDownForBody',
+    '_handleNekoIdleCat1PlaygroundPointerMove', '_resolveNekoIdleCat1PlaygroundBodyCollisions',
+    '_stepNekoIdleCat1PlaygroundPhysics', '_startNekoIdleCat1PlaygroundPhysics']) {
+    const start = source.indexOf(`function ${name}(`);
+    assert.notEqual(start, -1, name);
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+  }
+  let physicsSteps = 0;
+  const stepPhysics = r.context._stepNekoIdleCat1PlaygroundPhysics;
+  r.context._stepNekoIdleCat1PlaygroundPhysics = (...args) => {
+    physicsSteps++;
+    return stepPhysics(...args);
+  };
+  const journeySource = fs.readFileSync(path.join(avatar, 'idle-journey-and-presentation.js'), 'utf8');
+  const positionStart = journeySource.indexOf('function _setNekoIdleCat1ContainerPosition(');
+  vm.runInContext(journeySource.slice(positionStart, journeySource.indexOf('\n}', positionStart) + 2), r.context);
+  const pointer = (x, y) => ({ pointerId: 17, button: 0, buttons: 1,
+    clientX: x, clientY: y, screenX: x + r.window.screenX, screenY: y + r.window.screenY,
+    stopPropagation() {}, preventDefault() {} });
+  return {
+    body, state, physicsSteps: () => physicsSteps,
+    down: (x, y) => r.context._handleNekoIdleCat1PlaygroundPointerDownForBody(r.button, body, pointer(x, y)),
+    move: (x, y) => r.context._handleNekoIdleCat1PlaygroundPointerMove(r.button, pointer(x, y)),
+  };
+}
+
+for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) for (const input of ['mouse', 'touch']) {
+  test(`Playground ${model} ${input} drag has one position owner while moving and stationary`, () => {
+    const r = runtime({ model });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
+    const ordinary = installDragProducer(r, model, { fromCreation: true });
+    const playground = installPlaygroundPointerDrag(r);
+    let ordinaryStarts = 0;
+    r.window.addEventListener('neko:return-ball-manual-move', event => {
+      if (event.detail.reason === 'return-ball-drag-start') ordinaryStarts++;
+    });
+    assert.equal(playground.down(360, 260), true);
+    const compatibilityEvent = input === 'mouse' ? ordinary.down(360, 260) : ordinary.touchDown(360, 260);
+    assert.notEqual(compatibilityEvent.defaultPrevented, true, 'ordinary dragging must leave Playground input untouched');
+    for (const [x, y] of [[400, 220], [400, 220], [420, 240]]) {
+      assert.equal(playground.move(x, y), true);
+      if (input === 'mouse') ordinary.move(x, y); else ordinary.touchMove(x, y);
+      r.frame();
+      assert.equal(r.container.style.transform, 'none', 'compatibility events must not add a second displacement');
+      assert.equal(parseFloat(r.container.style.left), x - 60);
+      assert.equal(parseFloat(r.container.style.top), y - 60);
+      const position = [playground.body.x, playground.body.y, r.container.style.left, r.container.style.top];
+      const stepsBeforeRest = playground.physicsSteps();
+      for (let frame = 0; frame < 12; frame++) r.frame();
+      assert.ok(playground.physicsSteps() > stepsBeforeRest, 'the production physics loop must run while held stationary');
+      assert.deepEqual([playground.body.x, playground.body.y, r.container.style.left, r.container.style.top], position,
+        'a held stationary pointer must keep the cat at its last pointer position');
+    }
+    assert.equal(ordinaryStarts, 0, 'the ordinary drag must not start alongside Playground');
+    assert.equal(r.container.getAttribute('data-dragging'), null);
+  });
+
+  test(`pending Playground entry blocks ordinary ${model} ${input} drag`, () => {
+    const r = runtime({ model });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'win32' };
+    const ordinary = installDragProducer(r, model, { fromCreation: true });
+    const playground = installPlaygroundPointerDrag(r);
+    playground.state.active = false;
+    r.button.__nekoIdleCat1PlaygroundPendingEntry = {};
+    const position = [r.container.style.left, r.container.style.top, r.container.style.transform];
+    const compatibilityEvent = input === 'mouse' ? ordinary.down(360, 260) : ordinary.touchDown(360, 260);
+    assert.notEqual(compatibilityEvent.defaultPrevented, true, 'pending Playground input must not be cancelled');
+    if (input === 'mouse') {
+      ordinary.move(400, 220); ordinary.up();
+    } else {
+      ordinary.touchMove(400, 220); ordinary.touchUp();
+    }
+    r.frame();
+    assert.deepEqual([r.container.style.left, r.container.style.top, r.container.style.transform], position);
+    assert.equal(r.container.getAttribute('data-dragging'), null);
+  });
+}
+
 test('real DOM drag producers for every model hand their release to the shared gravity layer', () => {
   for (const model of ['live2d', 'vrm', 'mmd', 'pngtuber']) {
     const r = runtime({ model }); r.sample();

@@ -168,6 +168,14 @@ class CustomStaticFiles(StaticFiles):
 class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
     """The repository ``static/`` mount; also answers retired asset URLs."""
 
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # Windows file associations may classify .mjs as text/plain. Only
+        # repository assets get this override, not user model/mod directories.
+        if path.endswith(".mjs"):
+            response.headers["Content-Type"] = "application/javascript"
+        return response
+
 
 class AvatarToolStaticFiles(CustomStaticFiles):
     """Expose generated media only; private records never enter HTTP space."""

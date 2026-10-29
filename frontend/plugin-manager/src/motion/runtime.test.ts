@@ -4,7 +4,9 @@ import { createApp, defineComponent, h, nextTick, ref, withDirectives } from 'vu
 import { cancelMotion, playMotion } from './runtime'
 import { vMotion } from './directive'
 import { useGridMotionController } from './grid'
+import { transitionLayout } from './scheduler'
 import MotionTransition from './MotionTransition.vue'
+
 
 const elements: HTMLElement[] = []
 const nativeAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
@@ -261,7 +263,6 @@ it('skips layout reads and pinning for bulk grid removals beyond the animated wi
 function reflowGrid(columns: () => number, width = () => 800) {
   const grid = document.createElement('div')
   Object.defineProperty(grid, 'clientWidth', { get: width })
-  vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 600))
   const { element: item, animation: itemAnimation } = fixture()
   const { element: surface, animate: surfaceAnimate } = fixture()
   const { element: content, animate: contentAnimate } = fixture()
@@ -363,4 +364,39 @@ it('reverses a glide from where the card is drawn, not from its last slot', () =
   app.unmount()
 })
 
+it('glides a card from its old screen x when the grid itself moves sideways (a drawer docking)', () => {
+  const { controller, app } = mountGridController()
+  let width = 800
+  const { grid, item, surfaceAnimate, place } = reflowGrid(() => 2, () => width)
 
+  controller.reflowColumns(grid)
+  // The grid's own left moves by +300 and its width steps down with the drawer.
+  width = 500
+  place(new DOMRect(300, 0, 300, 200))
+  controller.reflowColumns(grid)
+
+  const [frames] = vi.mocked(item.animate).mock.calls[0] as unknown as [Keyframe[]]
+  const [surfaceFrames] = vi.mocked(surfaceAnimate).mock.calls[0] as unknown as [Keyframe[]]
+  expect(frames[0]).toEqual({ transform: 'translate(-300px, 0px)' })
+  expect(surfaceFrames[0]).toMatchObject({ transform: 'scale(1.3333333333333333, 1)' })
+  app.unmount()
+})
+
+it('re-records card boxes through the layout transition hook before the layout moves', async () => {
+  const { controller, app } = mountGridController()
+  let width = 800
+  const { grid, item, place } = reflowGrid(() => 2, () => width)
+
+  controller.reflowColumns(grid)
+  // The card is drawn at x=100 when the layout change begins, not where it was measured.
+  place(new DOMRect(100, 0, 400, 200))
+  await transitionLayout(document.createElement('div'), () => {
+    width = 600
+    place(new DOMRect(400, 0, 300, 200))
+  })
+  controller.reflowColumns(grid)
+
+  const [frames] = vi.mocked(item.animate).mock.calls[0] as unknown as [Keyframe[]]
+  expect(frames[0]).toEqual({ transform: 'translate(-300px, 0px)' })
+  app.unmount()
+})

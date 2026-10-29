@@ -1,117 +1,18 @@
 import { expect, test, type Page } from '@playwright/test'
-import { PREVIEW_ORIGIN, contrastFailures, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
-
-const ADAPTER_ID = 'adapter#appearance'
-const ADAPTER_NAME = 'Boundary adapter'
-const adapter = {
-  id: ADAPTER_ID,
-  name: ADAPTER_NAME,
-  description: '',
-  version: '1.0.0',
-  type: 'adapter',
-  status: 'stopped',
-  runtime_enabled: true,
-  runtime_auto_start: false,
-  entries: [],
-  list_actions: [],
-}
+import {
+  ADAPTER_ID,
+  ADAPTER_NAME,
+  PREVIEW_ORIGIN,
+  appearanceTest,
+  contrastFailures,
+  installCardLayoutFixture,
+} from './plugin-manager-test-helpers'
 
 // The titlebar offers every light and dark palette from one theme menu.
 async function chooseTheme(page: Page, name: string) {
   await page.locator('.window-titlebar').getByTestId('theme-switcher').click()
   await page.getByRole('menuitem', { name, exact: true }).click()
 }
-
-async function isolateAppearanceApis(page: Page) {
-  const unexpectedRequests: string[] = []
-  // Only the built application may reach the preview server. An unanticipated
-  // API or external request must never fall through to Vite's backend proxy.
-  await page.route('**/*', async (route) => {
-    const request = route.request()
-    const url = new URL(request.url())
-    const staticResource = ['document', 'script', 'stylesheet', 'image', 'font'].includes(
-      request.resourceType()
-    )
-    if (url.origin === PREVIEW_ORIGIN && url.pathname.startsWith('/ui/') && staticResource) {
-      await route.continue()
-      return
-    }
-    unexpectedRequests.push(`${request.method()} ${url.pathname}`)
-    await route.abort('blockedbyclient')
-  })
-  await page.routeWebSocket('**/*', () => {})
-  await stubCorePluginManagerApis(page)
-  await page.route('**/plugins?*', (route) =>
-    route.fulfill({ json: { plugins: [adapter], message: '' } })
-  )
-  await page.route('**/plugin/status', (route) =>
-    route.fulfill({ json: { plugins: { [ADAPTER_ID]: 'stopped' } } })
-  )
-  await page.route('**/plugins/refresh', (route) =>
-    route.fulfill({
-      json: {
-        success: true,
-        added: [],
-        updated: [],
-        removed: [],
-        removed_running: [],
-        unchanged: [],
-        failed: [],
-        scanned_count: 0,
-      },
-    })
-  )
-  await page.route('**/market/status', (route) =>
-    route.fulfill({
-      json: {
-        market_url: 'https://market.example.test',
-        market_web_url: 'https://market.example.test',
-      },
-    })
-  )
-  await page.route('**/market/bridge-token', (route) =>
-    route.fulfill({ json: { bridge_token: 'appearance-test-token' } })
-  )
-  await page.route('**/market/oauth/status', (route) =>
-    route.fulfill({ json: { authenticated: false, auth_state: 'disconnected' } })
-  )
-  await page.route('**/market/installed?*', (route) => route.fulfill({ json: { items: [] } }))
-  await page.route('**/plugin-cli/plugins', (route) =>
-    route.fulfill({ json: { plugins: [], plugin_refs: [], count: 0 } })
-  )
-  await page.route('**/plugin-cli/packages', (route) =>
-    route.fulfill({ json: { packages: [], count: 0, target_dir: '' } })
-  )
-  await page.route('**/plugins/adapter%23appearance?*', (route) => route.fulfill({ json: adapter }))
-  await page.route('**/plugin/adapter%23appearance/surfaces*', (route) =>
-    route.fulfill({ json: { surfaces: [], warnings: [] } })
-  )
-  await page.route('**/plugin/adapter%23appearance/ui-info', (route) =>
-    route.fulfill({ json: { has_ui: false, ui_path: null, static_dir: null, static_files: [] } })
-  )
-  await page.route('**/plugin/adapter%23appearance/ui/?*', (route) =>
-    route.fulfill({ status: 404, contentType: 'text/html', body: 'No custom UI in this fixture' })
-  )
-  return unexpectedRequests
-}
-
-// The only writer of the stored locale: init scripts run in no guaranteed
-// order, so a test needing another locale overrides this option instead.
-const appearanceTest = test.extend<{ appLocale: string; isolateNetwork: void }>({
-  appLocale: ['en-US', { option: true }],
-  isolateNetwork: [
-    async ({ page, appLocale }, use) => {
-      const requests = await isolateAppearanceApis(page)
-      await page.addInitScript(locale => {
-        window.localStorage.setItem('locale', locale)
-        window.localStorage.setItem('neko-dark-mode', 'false')
-      }, appLocale)
-      await use()
-      expect(requests, 'all HTTP requests must use explicit fixtures').toEqual([])
-    },
-    { auto: true },
-  ],
-})
 
 appearanceTest('keeps narrow rules in view and does not interrupt typing when hover dismissal runs', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -372,43 +273,6 @@ test.describe('sidebar zh-CN label rendering', () => {
   })
 })
 
-// Exercise the production card/grid with short-only and mixed-content rows.
-async function installCardLayoutFixture(page: Page, count = 8) {
-  const plugins = Array.from({ length: count }, (_, index) => ({
-    id: `layout_${index}`,
-    name: index < 4 ? ['猫娘小游戏', 'NEKO Live', 'RVC歌声合成', '微信集成'][index]! :
-      'A deliberately long plugin name that must remain readable / 长名称插件',
-    description: index % 2 ? 'A short description.' :
-      '通过 OpenClaw API 连接微信个人号，支持扫码登录、消息监听和发送。A longer description for mixed content.',
-    version: index === 5 ? '2026.10.21-preview-with-a-long-version-identifier' : '1.0.0',
-    type: 'plugin',
-    status: index % 2 ? 'stopped' : 'running',
-    runtime_enabled: true,
-    runtime_auto_start: index % 2 === 0,
-    entry_count: index,
-    entries: [],
-    install_source: index === 1 ? {
-      source: 'market',
-      source_detail: { plugin_market_id: '42', version: '1.0.0', channel: 'stable' },
-    } : index === 4 ? {
-      source: 'imported',
-      source_detail: { package_filename: 'a-long-imported-plugin-bundle.npkg', package_sha256: 'c'.repeat(64) },
-    } : { source: 'builtin' },
-    list_actions: index % 2 ? [] : [{ id: 'open_ui', kind: 'ui', requires_running: true }],
-  }))
-  await page.route('**/plugins?*', route => route.fulfill({ json: { plugins, message: '' } }))
-  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
-    route.fulfill({ json: { items: [{ plugin_id: '42', version: '2.0.0' }] } })
-  )
-  await page.route('**/plugin/status', route => route.fulfill({ json: {
-    plugins: Object.fromEntries(plugins.map(plugin => [plugin.id, {
-      plugin_id: plugin.id,
-      source: 'main_process_synthetic',
-      status: { status: plugin.status },
-    }])),
-  } }))
-}
-
 /**
  * Layout targets for plugin cards, expressed as relations rather than pixels:
  * - a card is exactly three sections: header (name + state), body, footer;
@@ -580,10 +444,11 @@ appearanceTest('workbench header keeps one action row and collapses labels when 
   await page.setViewportSize({ width: 800, height: 1000 })
   await expect(header).toHaveClass(/workbench-header--compact/)
   const packageToggle = actions.locator('[data-yui-guide-id="plugin-list-package-panel-toggle"]')
-  await expect(packageToggle).not.toContainText('Package')
+  await expect(packageToggle.locator('[data-motion-label]')).toBeHidden()
   await expect(packageToggle).toHaveAccessibleName('Package Manager')
   await expect(actions.locator('[data-yui-guide-id="plugin-list-refresh"]')).toHaveAccessibleName('Refresh')
-  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]')).toContainText('Import')
+  // 收起的文字仍在 DOM 里，只是宽度为零；必须查可见性，不能只查文本。
+  await expect(actions.locator('[data-yui-guide-id="plugin-list-import"]').getByText('Import')).toBeVisible()
   expect(await header.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
 })
 

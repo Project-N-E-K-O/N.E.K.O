@@ -60,6 +60,8 @@ function mountBindings(initialPluginId = 'vision_plugin') {
     setup: (props, { slots }) => () => h('button', { disabled: props.disabled || props.loading }, slots.default?.()),
   }))
   app.component('el-tag', defineComponent((_, { slots }) => () => h('span', slots.default?.())))
+  app.component('el-icon', defineComponent((_, { slots }) => () => h('i', slots.default?.())))
+  app.component('el-tooltip', defineComponent((_, { slots }) => () => h('span', [slots.default?.(), slots.content?.()])))
   app.component('el-alert', defineComponent({
     props: { title: String, description: String },
     setup: (props) => () => h('div', { role: 'status' }, `${props.title} ${props.description ?? ''}`),
@@ -100,6 +102,16 @@ function change(select: HTMLSelectElement, value: string) {
   select.dispatchEvent(new Event('change'))
 }
 
+function content(host: HTMLElement): HTMLElement {
+  const element = host.querySelector<HTMLElement>('#model-bindings-content')
+  if (!element) throw new Error('No binding content')
+  return element
+}
+
+function toggle(host: HTMLElement): HTMLButtonElement | null {
+  return host.querySelector<HTMLButtonElement>('button[aria-controls="model-bindings-content"]')
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   api.getModelBindings.mockResolvedValue(bindings())
@@ -108,7 +120,10 @@ beforeEach(() => {
   api.deleteModelBinding.mockResolvedValue({ success: true, version: 1 })
 })
 
-afterEach(() => { mounted.splice(0).forEach((cleanup) => cleanup()) })
+afterEach(() => {
+  mounted.splice(0).forEach((cleanup) => cleanup())
+  localStorage.clear()
+})
 
 describe('PluginModelBindings', () => {
   it('renders nothing and does not fetch slots for plugins with no declared model purposes', async () => {
@@ -195,6 +210,38 @@ describe('PluginModelBindings', () => {
     expect(host.textContent).toContain('new vision')
     expect(selectFor(host).value).toBe('')
     expect(selectFor(host).disabled).toBe(false)
+  })
+
+  it('starts collapsed when ready and remembers the choice per plugin', async () => {
+    api.getModelBindings.mockResolvedValue(bindings('vision_plugin', capable.id))
+    const first = mountBindings()
+    await flush()
+    expect(content(first.host).style.display).toBe('none')
+    expect(toggle(first.host)?.getAttribute('aria-expanded')).toBe('false')
+    toggle(first.host)!.click()
+    await flush()
+    expect(content(first.host).style.display).toBe('')
+    expect(localStorage.getItem('neko.pluginModelBindings.collapsed.vision_plugin')).toBe('false')
+    mounted.splice(0).forEach((cleanup) => cleanup())
+
+    const second = mountBindings()
+    await flush()
+    expect(content(second.host).style.display).toBe('')
+    expect(toggle(second.host)?.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('keeps unfinished bindings open without a collapse control, even if collapsed before', async () => {
+    localStorage.setItem('neko.pluginModelBindings.collapsed.vision_plugin', 'true')
+    const { host } = mountBindings()
+    await flush()
+    expect(content(host).style.display).toBe('')
+    expect(toggle(host)).toBeNull()
+    expect(host.querySelector('[data-usage-id="vision"]')?.textContent).toContain('modelBindings.status.unbound')
+    expect(host.querySelector('[data-usage-id="optional"]')?.textContent).not.toContain('modelBindings.status.unbound')
+    change(selectFor(host), capable.id)
+    await flush()
+    expect(content(host).style.display).toBe('')
+    expect(toggle(host)?.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('allows retrying a failed declaration load', async () => {

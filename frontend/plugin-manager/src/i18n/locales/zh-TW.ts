@@ -755,6 +755,10 @@ export default {
       surfaceUnavailable: 'Surface 暫不可用',
       surfaceEntryMissing: '該 Surface 宣告的入口檔案不存在，請檢查 plugin.toml 中的 entry 路徑。',
       surfaceWarnings: '外掛 UI 宣告存在需要處理的問題',
+      focus: '專注',
+      focusHint: '隱藏側邊欄和頁面框架，讓面板佔滿視窗',
+      exitFocus: '退出專注',
+      exitFocusHint: '退出專注模式（Esc）',
       controlError: '外掛介面控制項錯誤',
       hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
     }

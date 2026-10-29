@@ -234,7 +234,10 @@ for (const width of [1000, 375]) {
     const loadingOffset = await tabsOffset()
     const gap = (await page.locator('.header-status').boundingBox())!
     const actions = (await page.locator('[data-yui-guide-id="plugin-detail-actions"]').boundingBox())!
-    expect(gap.x + gap.width, '提示区伸进了操作按钮').toBeLessThanOrEqual(actions.x)
+    // 窄屏下操作按钮会换到下一行，只比 x 会误报；按矩形是否相交判断。
+    const overlaps = gap.x < actions.x + actions.width && actions.x < gap.x + gap.width
+      && gap.y < actions.y + actions.height && actions.y < gap.y + gap.height
+    expect(overlaps, '提示区盖住了操作按钮').toBe(false)
 
     release()
     await expect(hint).toHaveCount(0)
@@ -242,6 +245,38 @@ for (const width of [1000, 375]) {
     expect(await tabsOffset(), '提示消失后标签页移动了').toBe(loadingOffset)
   })
 }
+
+// ── 窄屏操作按钮：带“打开界面”时整组排不下一行，必须换行而不是伸出卡片被裁 ──────
+test('[w=375] 带打开界面的操作按钮组在窄屏换行，每个按钮都在卡片内', async ({ page }) => {
+  await stubLayoutPluginApis(page)
+  await page.route('**/plugins?*', (route) =>
+    route.fulfill({
+      json: {
+        plugins: [
+          {
+            id: PLUGIN_ID,
+            name: '布局样本',
+            description: '用于布局回归的样本插件。',
+            version: '1.0.0',
+            type: 'plugin',
+            status: 'running',
+            entries: MANY_ENTRIES,
+            list_actions: [{ id: 'open_ui', kind: 'ui', label: 'Open the plugin control panel', target: '/ui/stub' }],
+          },
+        ],
+        message: '',
+      },
+    }),
+  )
+  await page.setViewportSize({ width: 375, height: 800 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`)
+  const buttons = page.locator('[data-yui-guide-id="plugin-detail-actions"] .el-button')
+  await expect(buttons).toHaveCount(3)
+  const card = (await page.locator('[data-yui-guide-id="plugin-detail-card"]').boundingBox())!
+  for (const box of await buttons.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()))) {
+    expect(box.right, '操作按钮伸出了卡片').toBeLessThanOrEqual(card.x + card.width)
+  }
+})
 
 // ── 长内容 tab：必须继续由 .app-main 滚动，不能被压到一屏后被裁 ──────────────
 test('长内容 tab（入口点）仍由外层滚动，内容没有被裁', async ({ page }) => {

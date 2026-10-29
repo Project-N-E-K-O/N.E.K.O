@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh all eight language resources for the voice guide and latest main updates.
-    const LOCALE_VERSION = '2026-10-28-pr3507-resource-setup-main-sync';
+    // Merge the voice guide/resource-setup keys with social-hub recommendation and presence keys.
+    const LOCALE_VERSION = '2026-10-29-pr3507-voice-guide-social-hub-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

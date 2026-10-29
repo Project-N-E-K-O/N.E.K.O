@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { setTimeout: setNativeTimeout, clearTimeout: clearNativeTimeout } = require('node:timers');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -14,6 +15,20 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function withDeadline(promise, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setNativeTimeout(() => reject(new Error(message)), 2000);
+      }),
+    ]);
+  } finally {
+    clearNativeTimeout(timer);
+  }
 }
 
 function createEnvironment() {
@@ -847,6 +862,77 @@ async function main() {
   assert(exitGame.disposed, 'page exit did not dispose the SDK client');
   assert(exitEnvironment.intervals.size === 0 && exitEnvironment.windowListeners.size === 0,
     'page exit left managed timers or listeners resident');
+
+  for (const exitType of ['pagehide', 'beforeunload']) {
+    for (const outcome of ['success', 'rejected', 'failed', 'rejected-before-exit', 'failed-before-exit']) {
+      const pendingExitEnvironment = createEnvironment();
+      const pendingEndResponse = deferred();
+      const pendingEndCalls = [];
+      let pendingExitPreserved = false;
+      const pendingExitTransport = {
+        ...transport,
+        logger: logger(),
+        getRuntimeState() { return { sessionId: 'pending-end-exit', characterName: '' }; },
+        applyRuntimeState() { return { sessionId: 'pending-end-exit', characterName: 'Yui' }; },
+        end(payload, options = {}) {
+          pendingEndCalls.push({ payload, options });
+          return options.useBeacon ? Promise.resolve({ ok: true }) : pendingEndResponse.promise;
+        },
+        dispose(options = {}) {
+          pendingExitPreserved = options.preservePendingOperations?.includes('route_end') === true;
+        },
+      };
+      const pendingExitGame = await window.NekoMiniGame.connect({
+        id: 'lifecycle-ending-page-exit',
+        version: '1.0.0',
+        requiredCapabilities: ['runtime', 'logging'],
+      }, {
+        transport: pendingExitTransport,
+        windowImpl: pendingExitEnvironment.windowImpl,
+        documentImpl: pendingExitEnvironment.documentImpl,
+      });
+      pendingExitGame.runtime.configure({
+        heartbeat: false,
+        outputs: false,
+        pageExit: { payload: ({ type }) => ({ reason: type }) },
+      });
+      await pendingExitGame.runtime.start({});
+      const endingDuringExit = pendingExitGame.runtime.end({ reason: 'user_exit' })
+        .then(() => null, error => error);
+      assert(pendingExitGame.runtime.state === 'ending' && pendingEndCalls.length === 1,
+        'the test did not hold a real SDK end request pending');
+      assert(pendingExitEnvironment.windowListeners.get('pagehide')?.size === 1
+        && pendingExitEnvironment.windowListeners.get('beforeunload')?.size === 1,
+      'a pending end request removed its page-exit fallback');
+      const settleBeforeExit = outcome.endsWith('-before-exit');
+      const settleEnd = () => {
+        if (outcome.startsWith('failed')) pendingEndResponse.reject(new Error('end failure'));
+        else pendingEndResponse.resolve({ ok: outcome === 'success' });
+      };
+      if (settleBeforeExit) {
+        settleEnd();
+        await withDeadline(endingDuringExit, `end did not settle before ${exitType}: ${outcome}`);
+        assert(pendingExitGame.runtime.state === 'degraded'
+          && pendingExitEnvironment.windowListeners.get('pagehide')?.size === 1
+          && pendingExitEnvironment.windowListeners.get('beforeunload')?.size === 1,
+        'an end failure before closing did not restore the page-exit fallback');
+      }
+      pendingExitEnvironment.windowImpl.dispatch(exitType);
+      pendingExitEnvironment.windowImpl.dispatch(exitType === 'pagehide' ? 'beforeunload' : 'pagehide');
+      assert(pendingEndCalls.length === 2 && pendingEndCalls[1].options.useBeacon === true,
+        'closing during end did not send exactly one fallback beacon');
+      assert(pendingEndCalls[1].payload.reason === exitType
+        && pendingEndCalls[1].payload.sdk_route_instance_id === pendingEndCalls[0].payload.sdk_route_instance_id,
+      'the fallback beacon lost its event or route generation');
+      assert(pendingExitGame.disposed && pendingExitPreserved,
+        'page exit did not dispose while preserving pending route release');
+      if (!settleBeforeExit) settleEnd();
+      await withDeadline(endingDuringExit, `end did not settle after ${exitType}: ${outcome}`);
+      assert(pendingExitEnvironment.windowListeners.size === 0
+        && pendingExitEnvironment.intervals.size === 0 && pendingExitGame.disposed,
+      'end settlement resurrected the exited client lifecycle');
+    }
+  }
 
   const startingExitEnvironment = createEnvironment();
   const blockedStart = deferred();

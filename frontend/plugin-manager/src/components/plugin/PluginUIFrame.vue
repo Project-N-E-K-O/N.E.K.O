@@ -34,6 +34,7 @@
       :data-load-generation="iframeGeneration"
       class="plugin-iframe"
       sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
+      allow="fullscreen"
       @load="onIframeLoad"
       @error="onIframeError"
     />

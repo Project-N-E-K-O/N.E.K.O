@@ -24,8 +24,10 @@
     })();
   </script>
   <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
 </head>
 <body style="--air-basketball-ball-image:url('/static/game/games/air_basketball/assets/neko-basketball.png?v={{ air_basketball_asset_version | default('0') }}')">
+  <button id="close-game" class="round-button close-game" type="button" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"><span aria-hidden="true">×</span></button>
   <main class="game-shell">
     <header class="match-header">
       <div class="brand"><span class="brand-ball">●</span><span data-i18n="airBasketball.title">空气投篮</span></div>
