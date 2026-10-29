@@ -833,6 +833,18 @@ def test_late_peer_line_older_than_the_latest_human_line_is_not_picked_up():
     assert room.pending_reply is None
 
 
+def test_pick_up_never_replaces_a_pending_reply():
+    room = make_room("host")
+    peer = Peer(room)
+    _, eff = peer.line(0.0)
+    pending = room.pending_reply
+    assert eff.reply is not None and pending == eff.reply
+    _, eff = peer.line(1.0, to_kind="human")
+    assert eff.reply is None
+    assert not eff.cancel_pending_reply
+    assert room.pending_reply == pending
+
+
 def test_peer_human_line_to_a_human_is_not_picked_up():
     room = make_room("host")
     _, eff = Peer(room).line(0.0, speaker="human", to_kind="human")

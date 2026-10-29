@@ -884,10 +884,11 @@ class VisitRoom:
             # dialogue back up, later than a normal reply so the human can answer first (a human line cancels it).
             # A line older than the latest human line is skipped: that human line owns the floor, and the
             # reply to it (scheduled by the runtime for a line to the own cat) must not be replaced.
-            self._cancel_pending(eff)
-            plan = self._plan(ev.ref, tail_ms, now, extra_s=self._human_grace_s)
-            self.pending_reply = plan
-            eff.reply = plan
+            # A reply already pending stays: only a human line may cancel one (OD-08 v2).
+            if self.pending_reply is None:
+                plan = self._plan(ev.ref, tail_ms, now, extra_s=self._human_grace_s)
+                self.pending_reply = plan
+                eff.reply = plan
         self._check_wrap_conditions(eff, now)
         if self._phase != "active" and eff.reply is not None and not eff.reply.goodbye:
             eff.reply = None
