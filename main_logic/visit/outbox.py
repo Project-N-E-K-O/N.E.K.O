@@ -21,7 +21,7 @@ Design: ``docs/design/visit-infrastructure.md`` sections 3.5.4 / 3.5.5, 4.1
 ``VisitOutbox`` is the authoritative backend outbound queue of one side:
 
 * Every outgoing payload goes through :meth:`VisitOutbox.send`. Reliable
-  types (``hello / ready / wrap_up / leave / text``) get a monotonic ``seq``
+  types (``hello / ready / cat_action / cat_pose_commit / wrap_up / leave / text``) get a monotonic ``seq``
   starting at 1 and stay in memory until a cumulative ``ack`` covers them;
   everything else is queued once and never retransmitted.
 * :meth:`VisitOutbox.due` returns what may go on the wire *now*, as
@@ -154,8 +154,12 @@ PAUSE_PEER_AWAY = "peer_away"            # Peer provisionally left, within 35s r
 _LEAVE_UNSENT_CAP_FACTOR = 2   # Wait at most 2×VISIT_LEAVE_GAP_GRACE_S for queued leave to send.
 _LEAVE_RESEND_INTERVAL_S = 1.0   # After leave sends, retransmit leave/unacknowledged items every second (§4.2 leave).
 _QUEUE_MAX_ITEMS = 200           # Outgoing queue cap; invalidate droppable types first on excess (§4.3 send same value).
-_COALESCED_TYPES = frozenset({"ack", "hb", "state"})   # Keep newest queue item only; next replaces it.
-_LOSSY_PAUSABLE = frozenset({"line_delta", "typing", "stats"})  # Pause enqueue under tx_backpressure.
+_COALESCED_TYPES = frozenset({
+    "ack", "hb", "state", "cat_motion", "cat_world_pointer", "cat_world_frame",
+})   # Keep newest queue item per type only; next replaces it.
+_LOSSY_PAUSABLE = frozenset({
+    "line_delta", "typing", "stats", "cat_motion", "cat_world_pointer", "cat_world_frame",
+})  # Pause enqueue under tx_backpressure.
 _DELTA_FIRST_FIELDS = ("sp", "ad", "rt", "wu")
 _U32_MAX = 2 ** 32 - 1
 
@@ -531,7 +535,7 @@ class VisitOutbox:
         return float(self._clock()) if now is None else float(now)
 
     def set_backpressure(self, on: bool) -> None:
-        """``tx_backpressure`` from the iframe: while on, new ``line_delta / typing / stats`` are dropped."""
+        """While iframe backpressure is on, drop new deltas, typing, stats and cat motion."""
         self._backpressure = bool(on)
 
     def send(self, msg: Mapping[str, Any], *, now: Optional[float] = None,
@@ -549,9 +553,9 @@ class VisitOutbox:
         transmission). ``final_piece=True`` marks the last ``line_delta`` of
         a line, which is never merged into a previous piece.
 
-        ``ack`` / ``hb`` / ``state`` still waiting in the queue are replaced
+        ``ack`` / ``hb`` / ``state`` / cat motion / cat-world lossy frames still waiting are replaced
         by the newer one. While ``tx_backpressure`` is on, ``typing`` /
-        ``stats`` are dropped and a ``line_delta`` drops the rest of its line
+        ``stats`` / cat motion / cat-world lossy frames are dropped and a ``line_delta`` drops the rest of its line
         (returns 0); a line whose pieces were dropped (backpressure or a
         backlog over ``VISIT_DELTA_BACKLOG_DROP_S``) gets no further pieces,
         its ``text`` closes it. After :meth:`close` has started nothing is
@@ -586,6 +590,7 @@ class VisitOutbox:
                 for item in self._queue:
                     if item.t == t:
                         item.payload, item.pieces, item.nbytes = payload, pieces, nbytes
+                        item.enq_at = now
                         return 0
             self._queue.append(_Item(t=t, cmd=cmd, payload=payload, enq_at=now,
                                      nbytes=nbytes, pieces=pieces))

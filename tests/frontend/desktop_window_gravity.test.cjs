@@ -682,6 +682,34 @@ test('manual gravity setting immediately enters visible CAT1 through the existin
   assert.deepEqual(releases, ['gravity-cat-disabled']);
 });
 
+test('cat visits keep local Playground gravity but register only the local cat body', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const starts = [];
+  r.window.nekoVisitCatScene = { isActive: () => true };
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  r.context._startNekoIdleCat1PlaygroundDrop = (button, detail, options) => {
+    starts.push({ button, detail, options });
+    return true;
+  };
+  r.emit('neko:idle-cat1-playground-entry-request', {
+    source: 'gravity-cat-setting', trigger: 'gravity-cat-setting',
+  });
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].button, r.button);
+  assert.equal(starts[0].options.catOnly, true);
+
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  const register = source.slice(
+    source.indexOf('function _registerNekoIdleCat1PlaygroundPhysicsBodies'),
+    source.indexOf('function _setNekoIdleCat1PlaygroundBodyPosition')
+  );
+  assert.ok(register.indexOf('if (options.catOnly)') < register.indexOf(
+    'const target = _getNekoIdleCat1PairMoveChatTarget()'
+  ));
+});
+
 test('gravity preference on an ordinary model waits for active CAT1 and ignores a late entry after OFF', () => {
   const r = runtime();
   const { api, entries } = installPlaygroundSetting(r);
@@ -2348,6 +2376,40 @@ test('Windows cats outside Playground retain one native mouse or touch drag owne
     assert.equal(event.stopped, true, `${model}/${input}: native capture keeps ownership`);
     assert.equal(nativeStarts, 1, `${model}/${input}: native carrier must move`);
     assert.equal(dragStarts, 1, `${model}/${input}: DOM must not duplicate the drag`);
+  }
+});
+
+test('active cat visits leave mouse and touch dragging to the local cat DOM owner', () => {
+  for (const source of ['api', 'body-class']) for (const input of ['mouse', 'touch']) {
+    const r = runtime({ model: 'live2d' });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'darwin' };
+    if (source === 'api') r.window.nekoVisitCatScene = { isActive: () => true };
+    const native = installDragProducer(r, 'native');
+    if (source === 'body-class') {
+      r.context.document.body.classList = {
+        contains: (name) => name === 'neko-visit-cat-scene-active',
+      };
+    }
+    const dom = installDragProducer(r, 'live2d', { fromCreation: true });
+    r.context.document.createElement = () => ({});
+    let nativeStarts = 0;
+    r.window.nekoPetDrag.start = () => { nativeStarts++; return true; };
+
+    const event = input === 'mouse' ? native.down(360, 260) : native.touchDown(360, 260);
+    assert.equal(event.stopped, undefined, `${source}/${input}: native capture must not stop the DOM owner`);
+    assert.equal(event.defaultPrevented, undefined, `${source}/${input}: native capture must not prevent the DOM owner`);
+    assert.equal(nativeStarts, 0, `${source}/${input}: the shared Pet carrier must not shrink`);
+    assert.equal(r.context.document.body.dataset.nekoBallDrag, undefined);
+
+    if (input === 'mouse') {
+      dom.down(360, 260);
+      r.advance(20); dom.move(390, 240); dom.up();
+    } else {
+      dom.touchDown(360, 260, event);
+      r.advance(20); dom.touchMove(390, 240); dom.touchUp();
+    }
+    r.frame(16); r.frame(16);
+    assert.equal(r.container.getAttribute('data-dragging'), 'false', `${source}/${input}: DOM drag still completes`);
   }
 });
 

@@ -26,7 +26,9 @@ from config.visit_settings import (
     VISIT_INBOUND_TEXT_BURST,
     VISIT_PEER_CTL_PER_S,
     VISIT_PEER_LOSSY_PER_S,
+    VISIT_PEER_MOTION_PER_S,
     VISIT_PEER_RECV_MSGS_PER_S,
+    VISIT_PEER_WORLD_PER_S,
 )
 from main_logic.visit.limits import (
     Blocklist,
@@ -84,6 +86,9 @@ def test_text_visit_cap():
 @pytest.mark.parametrize("channel,rate,reason", [
     (RateChannel.CTL, VISIT_PEER_CTL_PER_S, "ctl_rate"),
     (RateChannel.LOSSY, VISIT_PEER_LOSSY_PER_S, "lossy_rate"),
+    (RateChannel.MOTION, VISIT_PEER_MOTION_PER_S, "motion_rate"),
+    (RateChannel.WORLD, VISIT_PEER_WORLD_PER_S, "world_rate"),
+    (RateChannel.WORLD_RELIABLE, VISIT_PEER_WORLD_PER_S, "world_reliable_rate"),
 ])
 def test_ctl_and_lossy_per_second(channel, rate, reason):
     clock = FakeClock()
@@ -105,6 +110,32 @@ def test_senders_are_independent():
         lim.admit("g_a", "ctl")
     assert not lim.admit("g_a", "ctl").allowed
     assert lim.admit("h_b", "ctl").allowed
+
+
+def test_reliable_world_actions_do_not_compete_with_ctl_or_lossy_world():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_PEER_CTL_PER_S):
+        assert lim.admit("g_a", RateChannel.CTL).allowed
+    for _ in range(VISIT_PEER_WORLD_PER_S):
+        assert lim.admit("g_a", RateChannel.WORLD).allowed
+    assert all(
+        lim.admit("g_a", RateChannel.WORLD_RELIABLE).allowed
+        for _ in range(6)
+    )
+
+
+def test_cat_reliable_updates_survive_an_exhausted_control_bucket():
+    clock = FakeClock()
+    lim = PeerRateLimiter(clock=clock)
+    for _ in range(VISIT_PEER_CTL_PER_S):
+        assert lim.admit("g_a", channel_for("ack")).allowed
+    assert not lim.admit("g_a", channel_for("hb")).allowed
+    for message_type in ("cat_action", "cat_pose_commit"):
+        assert all(
+            lim.admit("g_a", channel_for(message_type)).allowed
+            for _ in range(6)
+        )
 
 
 def test_explicit_now_overrides_clock():
@@ -165,7 +196,14 @@ def test_channel_mapping():
     assert channel_for("text") is RateChannel.TEXT
     assert channel_for("hello") is RateChannel.CTL
     assert channel_for("ack") is RateChannel.CTL
+    assert channel_for("cat_action") is RateChannel.WORLD_RELIABLE
+    assert channel_for("cat_pose_commit") is RateChannel.WORLD_RELIABLE
     assert channel_for("typing") is RateChannel.LOSSY
+    assert channel_for("cat_motion") is RateChannel.MOTION
+    assert channel_for("cat_world_intent") is RateChannel.WORLD_RELIABLE
+    assert channel_for("cat_world_commit") is RateChannel.WORLD_RELIABLE
+    assert channel_for("cat_world_pointer") is RateChannel.WORLD
+    assert channel_for("cat_world_frame") is RateChannel.WORLD
     assert channel_for("line_delta") is None
     assert channel_for("future", cmd=1) is RateChannel.CTL
     assert channel_for("future", cmd=3) is RateChannel.LOSSY

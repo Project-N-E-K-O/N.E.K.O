@@ -1338,6 +1338,64 @@ const report = {};
     report.geometry_on_close = refreshes;
     report.geometry_dialog_closed = h.dialogs().length;
   }
+  // ── 返回模型的兜底对账：只有旧场次已明确结束才可提交本地形态 ──
+  {
+    const stateUrl = '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA';
+    const idle = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    const ending = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host' } }),
+    } });
+    const replaced = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID2, phase: 'active', side: 'host' } }),
+    } });
+    const failed = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 503, body: {} }),
+    } });
+    [idle, ending, replaced, failed].forEach((h) => h.state('started'));
+    await Promise.all([idle, ending, replaced, failed].map((h) => h.chat.endCatVisitForModelReturn(VID)));
+
+    const switched = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    switched.state('started');
+    await switched.chat.endCatVisitForModelReturn(VID);
+    switched.win.lanlan_config.lanlan_name = '小橘';
+
+    let releaseState;
+    const stateGate = new Promise((resolve) => { releaseState = resolve; });
+    const raced = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => {
+        await stateGate;
+        return { status: 200, body: { active: false, visit_id: null, phase: null } };
+      },
+    } });
+    raced.state('started');
+    await raced.chat.endCatVisitForModelReturn(VID);
+    const racedProbe = raced.chat.confirmCatVisitEnded(VID);
+    await raced.settle();
+    raced.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 2 });
+    releaseState();
+    report.cat_return_reconcile = {
+      idle: await idle.chat.confirmCatVisitEnded(VID),
+      ending: await ending.chat.confirmCatVisitEnded(VID),
+      replaced: await replaced.chat.confirmCatVisitEnded(VID),
+      failed: await failed.chat.confirmCatVisitEnded(VID),
+      switched: await switched.chat.confirmCatVisitEnded(VID),
+      raced: await racedProbe,
+      idle_active: idle.chat.isActive(),
+      idle_relayed_ended: idle.relayFrames.some((frame) => frame.action === 'ended' && frame.visit_id === VID),
+      replaced_visit: replaced.chat._test.state().visit.visitId,
+      raced_visit: raced.chat._test.state().visit.visitId,
+    };
+  }
   // ── 切换角色：上一位的串门 UI 状态清掉，不往新角色的聊天里补结束消息 ──
   {
     const routes = {
@@ -1575,6 +1633,23 @@ const report = {};
     const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
     report.switched_create_end = end && end.body;
   }
+  // ── 后端建出的定向房间形态与请求不符：立即取消，不能留下占位中的 pending 房间 ──
+  {
+    const target = '22222222-2222-4222-8222-222222222222';
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    const routes = {
+      [currentUrl]: async () => ({ status: 404, body: { error: 'no_pending_invite' } }),
+      '/api/visit/rooms': async () => ({ status: 202, body: {
+        visit_id: VID2, phase: 'pending', visit_mode: 'model', target_user_id: target,
+      } }),
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const result = await h.chat._test.startInvite(target, 'cat');
+    const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.mode_mismatch_create_ok = result.ok;
+    report.mode_mismatch_create_end = end && end.body;
+  }
   // ── 读 state 期间到了新一场的邀请：旧快照作废，不把新一场又收掉 ──
   {
     let release;
@@ -1810,6 +1885,21 @@ def test_backend_refusal_marks_that_bubble_and_restores_the_text(report):
     assert report["recipient_switch_refreshed_hit_geometry"] is True
 
 
+def test_cat_model_return_reconciliation_requires_authoritative_end(report):
+    assert report["cat_return_reconcile"] == {
+        "idle": True,
+        "ending": False,
+        "replaced": True,
+        "failed": False,
+        "switched": False,
+        "raced": False,
+        "idle_active": False,
+        "idle_relayed_ended": True,
+        "replaced_visit": "B" * 22,
+        "raced_visit": "B" * 22,
+    }
+
+
 def test_guest_side_and_wrap_up_refuse_but_ending_does_not_take_input(report):
     assert report["guest_accepted"] is False and report["guest_disabled"] is True
     assert report["wrap_accepted"] is False
@@ -1833,7 +1923,7 @@ def test_persona_409_is_confirmed_before_the_single_retry(report):
     assert report["persona_joins_before"] == 1       # After the first join returns 409, before retry.
     assert report["join_count"] == 2
     assert report["join_body"] == {"catgirl": "咪咪", "invite_code": "ABCDEFGH23", "confirm": True,
-                                   "crop": "full"}
+                                   "crop": "full", "cat_asset": "dev_neko"}
 
 
 def test_guest_quota_exhaustion_reuses_the_global_status_banner(report):
@@ -2264,6 +2354,14 @@ def test_room_created_after_a_character_switch_is_ended(report):
     end = report["switched_create_end"]
     assert end is not None
     assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
+
+
+def test_direct_room_with_the_wrong_mode_is_ended(report):
+    assert report["mode_mismatch_create_ok"] is False
+    end = report["mode_mismatch_create_end"]
+    assert end is not None
+    assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end"
+    assert end["visit_id"] == "BBBBBBBBBBBBBBBBBBBBBB"
 
 
 def test_clicking_invite_restores_the_existing_code_without_creating_another_room(report):

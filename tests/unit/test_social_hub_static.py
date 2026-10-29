@@ -32,15 +32,21 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
     assert "/api/community/visit-hub" in source
     assert "/api/community/visit-invitations" in source
-    assert "bridge.createDirectInvite(friend.id)" in source
-    assert "visit.createDirectInvitation(friend.id)" in source
+    assert "bridge.createDirectInvite(friend.id, requestedMode)" in source
+    assert "visit.createDirectInvitation(friend.id, requestedMode)" in source
+    assert "visit_mode: actualMode" in source
+    assert "actualMode !== requestedMode" in source
+    assert "visit.socialHub.modeMismatch" in source
+    assert "模型串门" in source
+    assert "猫形态" in source
     assert "visit_id: visitId" in source
     assert "invite_code: code" not in source
     assert "在线好友" in source
     assert "离线好友" in source
     assert "friend.online" in source
     assert "上次在线 " in source
-    assert "if (view || friend.online)" in source
+    assert "if (view)" in source
+    assert "else if (friend.online)" in source
     assert "setInterval(function () { refresh(true); }, 60000)" in source
     assert "controller.abort()" in source
     assert "}, 8000)" in source
@@ -99,13 +105,15 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
 
     assert "DIRECT_INVITE_ACTION = 'visit_direct_invite_decision'" in chat
     assert "/question?catgirl=" in chat
-    assert "barAction('direct_accept', t('visit.directInvite.accept'" in chat
+    assert "barAction('direct_accept', isCatInvite" in chat
+    assert "t('visit.directInvite.acceptCat'" in chat
+    assert "t('visit.directInvite.accept'" in chat
     assert "barAction('direct_decline', t('visit.directInvite.decline'" in chat
     assert "barAction('invite'," not in chat
     assert "barAction('go'," not in chat
     assert "barAction('cancel'," not in chat
     assert "barAction('copy'," not in chat
-    assert "joinDirect(visitId, true)" in chat
+    assert "joinDirect(visitId, true, payload.visit_mode)" in chat
     assert "presentDirectInvitation: presentDirectInvitation" in chat
     assert "pollDirectInvitations: pollDirectInvitations" in chat
     assert "action.action === DIRECT_INVITE_ACTION" in chat
@@ -138,7 +146,7 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     assert present_direct.index("/question?catgirl=") < present_direct.rindex("/deliver-question")
     assert "directInvitationExpired(payload)" in direct_action
     assert "result.status === 404 || result.status === 410" in direct_action
-    assert "try {\n            result = await joinDirect(visitId, true);" in direct_action
+    assert "try {\n            result = await joinDirect(visitId, true, payload.visit_mode);" in direct_action
     assert "pending.busy = false" in direct_action
     assert "resolvedDirectInvitationIds.has(notificationId)" in present_direct
     assert "!releaseEnabled || !userSwitchOn()" in present_direct

@@ -194,6 +194,7 @@
       avatarUrl: String(item.actor_avatar_url || ''),
       visitId: String(item.visit_id || ''),
       inviteCode: String(item.invite_code || ''),
+      visitMode: item.visit_mode === 'cat' ? 'cat' : 'model',
       expiresAt: Number(item.expires_at) || 0
     };
   }
@@ -238,6 +239,7 @@
         if (!friendId || !phase || !restoredVisitId || invitationExpired(item)) return;
         state.invitations.set(friendId, {
           visitId: restoredVisitId, phase: phase,
+          visitMode: item && item.visitMode === 'cat' ? 'cat' : 'model',
           expiresAt: Number(item.expiresAt) || 0,
           displayName: String(item.displayName || ''),
           avatarUrl: String(item.avatarUrl || '')
@@ -365,6 +367,7 @@
       actor_id: incoming.actorId,
       display_name: incoming.displayName,
       visit_id: incoming.visitId,
+      visit_mode: incoming.visitMode,
       expires_at: incoming.expiresAt
     })).then(function (delivered) {
       if (delivered) return;
@@ -711,21 +714,23 @@
       return false;
     }
   }
-  async function inviteFriend(friendId) {
+  async function inviteFriend(friendId, requestedMode) {
     var friend = state.friends.find(function (item) { return item.id === friendId; });
+    requestedMode = requestedMode === 'cat' ? 'cat' : 'model';
     if (!friend || state.invitations.has(friendId)) return;
     if (activeInvitation(friendId)) return showToast(tr('visit.socialHub.activeInvite', '请先结束当前的邀请或串门，再邀请其他喵友'), true);
     var bridge = host();
     var visit = window.nekoVisitChat;
     var createInvite = bridge && typeof bridge.createDirectInvite === 'function'
-      ? function () { return bridge.createDirectInvite(friend.id); }
+      ? function () { return bridge.createDirectInvite(friend.id, requestedMode); }
       : visit && typeof visit.createDirectInvitation === 'function'
-        ? function () { return visit.createDirectInvitation(friend.id); } : null;
+        ? function () { return visit.createDirectInvitation(friend.id, requestedMode); } : null;
     if (!createInvite) {
       return showToast(tr('visit.socialHub.desktopRequired', '请在桌面版 Neko 中发送定向邀请'), true);
     }
     setInvitation(friendId, {
       visitId: '', phase: 'sending', expiresAt: 0,
+      visitMode: requestedMode,
       displayName: friend.displayName, avatarUrl: friend.avatarUrl
     });
     showToast(tr('visit.socialHub.preparingRoom', '正在为 {{name}} 准备房间…', { name: friend.displayName }), false);
@@ -736,12 +741,17 @@
       if (!visitId) throw new Error(tr('visit.socialHub.roomMissing', '没有拿到定向串门房间'));
       createdVisitId = visitId;
       var expiresAt = Number(invite.expires_at || invite.expiresAt) || 0;
+      var actualMode = invite && (invite.visit_mode || invite.visitMode) || 'model';
+      if ((actualMode !== 'cat' && actualMode !== 'model') || actualMode !== requestedMode) {
+        throw new Error(tr('visit.socialHub.modeMismatch', '串门形态没有正确建立，请结束后重试'));
+      }
       var response = await fetch('/api/community/visit-invitations', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           target_user_id: friend.id,
           visit_id: visitId,
+          visit_mode: actualMode,
           expires_at: expiresAt || undefined
         })
       });
@@ -749,6 +759,7 @@
       if (!response.ok) throw new Error(detailText(body, tr('visit.socialHub.sendFailed', '邀请没有发出去，请稍后重试')));
       setInvitation(friendId, {
         visitId: visitId, phase: 'invite_ready', expiresAt: expiresAt,
+        visitMode: requestedMode,
         displayName: friend.displayName, avatarUrl: friend.avatarUrl
       });
       state.toast = tr('visit.socialHub.invited', '已向 {{name}} 发出串门邀请', { name: friend.displayName });
@@ -761,6 +772,7 @@
           // The room is still waiting; keep the cancel button so it can be closed later.
           setInvitation(friendId, {
             visitId: createdVisitId, phase: 'invite_ready', expiresAt: Number(expiresAt) || 0,
+            visitMode: requestedMode,
             displayName: friend.displayName, avatarUrl: friend.avatarUrl
           });
           state.toast = tr('visit.socialHub.cancelFailed', '邀请暂时无法取消，请稍后重试');
@@ -941,15 +953,27 @@
     row.appendChild(copy);
     // 离线好友只展示身份与最近在线信息。已有邀请状态仍可显示状态按钮，
     // 但普通离线行不能从 DOM 中触发新的串门邀请。
-    if (view || friend.online) {
+    if (view) {
       var action = button(view ? view.action : (busyElsewhere ? tr('visit.socialHub.inviteLater', '稍后再邀') : tr('visit.socialHub.invite', '邀请来玩')),
         'neko-social-hub-button' + (!view && !busyElsewhere ? ' primary' : ''), function () {
         if (view && view.canCancel) cancelInvitation(friend.id, invitation);
-        else inviteFriend(friend.id);
       });
       focusKey(action, 'friend-' + friend.id);
       action.disabled = (!!view && !view.canCancel) || busyElsewhere;
       row.appendChild(action);
+    } else if (friend.online) {
+      var actions = el('div', 'neko-social-hub-mode-actions');
+      var modelAction = button(tr('visit.socialHub.modelVisit', '模型串门'),
+        'neko-social-hub-button primary', function () { inviteFriend(friend.id, 'model'); });
+      var catAction = button(tr('visit.socialHub.catVisit', '猫形态'),
+        'neko-social-hub-button', function () { inviteFriend(friend.id, 'cat'); });
+      focusKey(modelAction, 'friend-' + friend.id + '-model');
+      focusKey(catAction, 'friend-' + friend.id + '-cat');
+      modelAction.disabled = busyElsewhere;
+      catAction.disabled = busyElsewhere;
+      actions.appendChild(modelAction);
+      actions.appendChild(catAction);
+      row.appendChild(actions);
     }
     return row;
   }

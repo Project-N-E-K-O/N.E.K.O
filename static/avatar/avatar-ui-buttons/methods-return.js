@@ -206,30 +206,35 @@ Object.assign(AvatarButtonMixin.methods, {
                     return;
                 }
                 e.stopPropagation();
-                const desktopInteractions = window.NekoDesktopWindowInteractions;
-                if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
-                    desktopInteractions.cancel(returnBtn, {
-                        reason: 'return-click',
-                        restoreArt: false
-                    });
-                } else {
-                    [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
-                        if (runner && typeof runner.cancel === 'function') {
-                            runner.cancel(returnBtn, {
-                                reason: 'return-click',
-                                restoreArt: false
-                            });
-                        }
-                    });
+                const commitReturn = () => {
+                    const desktopInteractions = window.NekoDesktopWindowInteractions;
+                    if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
+                        desktopInteractions.cancel(returnBtn, {
+                            reason: 'return-click',
+                            restoreArt: false
+                        });
+                    } else {
+                        [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
+                            if (runner && typeof runner.cancel === 'function') {
+                                runner.cancel(returnBtn, {
+                                    reason: 'return-click',
+                                    restoreArt: false
+                                });
+                            }
+                        });
+                    }
+                    window.NekoDesktopWindowGravity?.cancel(returnBtn);
+                    _clearNekoIdleCat1QuestionMark(returnBtn);
+                    _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
+                    _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1Journey(returnBtn);
+                    _dispatchNekoIdleReturnClickFromButton(returnBtn);
+                };
+                if (!_guardNekoVisitCatReturn(commitReturn)) {
+                    commitReturn();
                 }
-                window.NekoDesktopWindowGravity?.cancel(returnBtn);
-                _clearNekoIdleCat1QuestionMark(returnBtn);
-                _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
-                _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1Journey(returnBtn);
-                _dispatchNekoIdleReturnClickFromButton(returnBtn);
             });
 
             const thoughtBubble = document.createElement('span');
@@ -283,13 +288,11 @@ Object.assign(AvatarButtonMixin.methods, {
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
             _applyNekoIdleReturnPresentation(returnBtn, currentTier);
-            // Windows cats can switch to continuous DOM dragging after creation
-            // (including a ball -> cat appearance change). Register that path up
-            // front; the native capture listener still owns ordinary ball drags.
-            if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()
-                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32') {
-                this._setupReturnButtonDrag(returnButtonContainer);
-            }
+            // Keep the DOM drag owner available on every platform. The native
+            // capture listener still stops ordinary multi-window drags before
+            // they reach it; cat visits deliberately release that capture so
+            // only the local cat moves inside the shared Pet window.
+            this._setupReturnButtonDrag(returnButtonContainer);
 
             return returnButtonContainer;
         };

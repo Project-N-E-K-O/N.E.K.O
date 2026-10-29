@@ -241,7 +241,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "function _getNekoIdleCat1PlaygroundBodyCollisionRect(body)" in source
     assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
     assert "function _refreshNekoIdleCat1PlaygroundViewportBottom()" in source
-    assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)" in source
+    assert "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})" in source
+    assert "if (options.catOnly)" in source
     assert "function _stepNekoIdleCat1PlaygroundPhysics(button, now)" in source
     assert "disabledCapabilities: new Set(" in source
     assert "'question-mark-keyboard'" in source
@@ -275,7 +276,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
 
     register_block = _source_slice_between(
         source,
-        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)",
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})",
         "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
         "cat1 playground register physics bodies",
     )
@@ -352,7 +353,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     question_block_clone_block = _source_slice_between(
         source,
         "function _createNekoIdleCat1PlaygroundQuestionBlockClone(rect, button)",
-        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button)",
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})",
         "cat1 playground question block clone",
     )
     assert "document.createElement('button')" in question_block_clone_block
@@ -606,7 +607,7 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     click_block = _source_slice_between(
         source,
         "function _handleNekoIdleCat1PlaygroundCatClick(button, event)",
-        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {})",
         "cat1 playground cat click",
     )
     assert "state.suppressClickBodyId === 'cat'" in click_block
@@ -715,18 +716,18 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "return false;" in entry_block
     assert "_createNekoIdleCat1PlaygroundQuestionBlockCloneFromScreenRect(detail.questionBlockScreenRect, button)" in entry_block
     assert "_startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in entry_block
-    assert "_startNekoIdleCat1PlaygroundDrop(button," not in entry_block
+    assert "_startNekoIdleCat1PlaygroundDrop(button, detail, { catOnly: true })" in entry_block
 
     start_drop_block = _source_slice_between(
         source,
-        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {})",
         "function _handleNekoIdleCat1PlaygroundEntryRequest(event)",
         "cat1 playground start drop",
     )
     _assert_source_order(
         start_drop_block,
         "playground pointer listeners are installed before initial physics can settle",
-        "if (!_registerNekoIdleCat1PlaygroundPhysicsBodies(button)) {",
+        "if (!_registerNekoIdleCat1PlaygroundPhysicsBodies(button, {",
         "_installNekoIdleCat1PlaygroundPointerListeners(button);",
         "_startNekoIdleCat1PlaygroundPhysics(button);",
     )
@@ -761,7 +762,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     wait_block = _source_slice_between(
         source,
         "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)",
-        "function _startNekoIdleCat1PlaygroundDrop(button, detail)",
+        "function _startNekoIdleCat1PlaygroundDrop(button, detail, options = {})",
         "cat1 playground yarn wait before drop",
     )
     assert "_requestNekoIdleCat1PlaygroundYarnTarget(detail);" in wait_block
@@ -934,7 +935,8 @@ def test_model_cat_transition_contract_is_present():
     assert "dispatchClickEvent();" in source
     assert "window.playNekoModelCatTransition" in avatar_source
     assert "window.dispatchEvent(event);" in avatar_source
-    assert "dispatchReturnEvent();" in avatar_source
+    assert "const commitReturn = () => {" in avatar_source
+    assert "if (_guardNekoVisitCatReturn(commitReturn)) return true;" in avatar_source
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
     assert "nekoModelCatRevealPlaybackToken = 0" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
@@ -2060,11 +2062,8 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     mmd_source = MMD_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function _isNekoNativeReturnBallDragDisabled()" in avatar_source
-    assert (
-        "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()"
-        "\n                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32')"
-    ) in avatar_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in avatar_source
+    assert "Keep the DOM drag owner available on every platform" in avatar_source
     assert "Live2DManager.prototype.setupReturnButtonContainerDrag = function(container)" in live2d_source
     assert "this.setupReturnButtonContainerDrag(returnButtonContainer)" not in live2d_source
     assert "this._setupReturnButtonDrag(container)" not in live2d_source
@@ -3388,7 +3387,11 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
         "if (isThoughtBubbleEventTarget(event)) return;",
         "beginDrag(event.screenX, event.screenY, event);",
     )
-    assert "state.handleTouchStart = (event) => {\n            if (isThoughtBubbleEventTarget(event)) return;" in app_ui_source
+    assert (
+        "state.handleTouchStart = (event) => {"
+        "\n            if (isVisitCatSceneActiveForReturnBallDrag()) return;"
+        "\n            if (isThoughtBubbleEventTarget(event)) return;"
+    ) in app_ui_source
     native_touch_drag_block = _source_slice_between(
         app_ui_source,
         "state.handleTouchStart = (event) => {",
@@ -3841,10 +3844,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "'return-ball-drag-end'" in app_ui_source
     assert "movedDistancePx: movedDistancePx" in app_ui_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
-    assert (
-        "if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()"
-        "\n                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32')"
-    ) in source
+    assert "Keep the DOM drag owner available on every platform" in source
 
 
 def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():

@@ -113,6 +113,7 @@ test('an incoming direct invitation is delivered to chat while the hub stays clo
         actor_id: 'friend-1',
         actor_display_name: 'Community Test',
         visit_id: 'visit-1',
+        visit_mode: 'cat',
         expires_at: 123,
       },
     },
@@ -124,6 +125,7 @@ test('an incoming direct invitation is delivered to chat while the hub stays clo
     actor_id: 'friend-1',
     display_name: 'Community Test',
     visit_id: 'visit-1',
+    visit_mode: 'cat',
     expires_at: 123,
   }]));
 });
@@ -143,7 +145,7 @@ function loadHubWithFailedSend(cancelResult) {
   const cancelled = [];
   const loaded = loadHub({
     visitChat: {
-      async createDirectInvitation() { return { visit_id: 'visit-1', expires_at: 456 }; },
+      async createDirectInvitation() { return { visit_id: 'visit-1', visit_mode: 'model', expires_at: 456 }; },
       async cancelDirectInvitation(visitId) {
         cancelled.push(visitId);
         if (cancelResult instanceof Error) throw cancelResult;
@@ -169,6 +171,7 @@ for (const [label, cancelResult] of [['returns false', false], ['throws', new Er
     assert.deepEqual(cancelled, ['visit-1']);
     assert.equal(JSON.stringify(hub._state.invitations.get('friend-1')), JSON.stringify({
       visitId: 'visit-1', phase: 'invite_ready', expiresAt: 456,
+      visitMode: 'model',
       displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
     }));
     assert.equal(hub._state.toastError, true);
@@ -180,6 +183,35 @@ test('a failed send clears the invitation once its room is cancelled', async () 
   await hub._inviteFriend('friend-1');
 
   assert.deepEqual(cancelled, ['visit-1']);
+  assert.equal(hub._state.invitations.has('friend-1'), false);
+  assert.equal(hub._state.toastError, true);
+});
+
+test('a cat invitation cancels a room created in a different mode before community publish', async () => {
+  const cancelled = [];
+  const published = [];
+  const { hub } = loadHub({
+    visitChat: {
+      async createDirectInvitation() {
+        return { visit_id: 'visit-1', visit_mode: 'model', expires_at: 456 };
+      },
+      async cancelDirectInvitation(visitId) { cancelled.push(visitId); return true; },
+    },
+    fetch: async (url) => {
+      if (String(url).includes('/api/community/visit-invitations')) published.push(String(url));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._state.accountId = 'account-1';
+  hub._state.friends = [{
+    id: 'friend-1', displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
+  }];
+
+  await hub._inviteFriend('friend-1', 'cat');
+
+  assert.deepEqual(cancelled, ['visit-1']);
+  assert.deepEqual(published, []);
   assert.equal(hub._state.invitations.has('friend-1'), false);
   assert.equal(hub._state.toastError, true);
 });

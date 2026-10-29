@@ -192,6 +192,10 @@ class TalkMixin:
         self.journal.note_usage(delta)
 
     def _note_journal_anomaly(self) -> None:
+        if self.cat_scene_requested:
+            # Cat visits never open an upload journal. The anomaly is already
+            # counted by _count_anomaly; buffering it here could never flush.
+            return
         if self._journal_buffering():
             self._journal_backlog.append({"kind": "anomaly", "ts": self.wall()})
             return
@@ -759,6 +763,12 @@ class TalkMixin:
         if self.finalizing:
             # Finalizing while takeover remains held: ordinary chat output is suppressed; this line must not leak through.
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
+            return True
+        if self.cat_scene_active:
+            # Stage-one cat visits are action-only.  Refuse ordinary text at
+            # the route boundary instead of relying on the absence of a
+            # VisitRoom, which could accidentally become permissive later.
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
             return True
         room = self.room
         if room is None or not self.activated or not self.ready_exchanged or self.phase in WAITING_PHASES:
