@@ -821,6 +821,18 @@ def test_peer_human_line_during_the_grace_cancels_the_pick_up():
     assert room.pending_reply is None
 
 
+def test_late_peer_line_older_than_the_latest_human_line_is_not_picked_up():
+    # The peer cat started answering before the local human spoke; its final lands after the human line.
+    room = make_room("host")
+    peer, own = Peer(room), Own(room)
+    old = peer.new_ref()
+    peer.start(old, 0.0, to_kind="human")
+    room.on_local_human_line(own.new_ref(), 1.0)
+    eff = peer.done(old, 2.0, to_kind="human")
+    assert eff.reply is None
+    assert room.pending_reply is None
+
+
 def test_peer_human_line_to_a_human_is_not_picked_up():
     room = make_room("host")
     _, eff = Peer(room).line(0.0, speaker="human", to_kind="human")

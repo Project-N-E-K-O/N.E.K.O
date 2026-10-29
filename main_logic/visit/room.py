@@ -879,9 +879,11 @@ class VisitRoom:
             self.pending_reply = plan
             eff.reply = plan
         elif (self._phase == "active" and speaker == "cat" and self._addressed_to_human(ad_kind)
-                and not silenced and not older):
+                and not silenced and not older and self._after_last_human(ev.ref)):
             # The peer cat answered a human: nobody else would speak again, so this side's cat picks the
             # dialogue back up, later than a normal reply so the human can answer first (a human line cancels it).
+            # A line older than the latest human line is skipped: that human line owns the floor, and the
+            # reply to it (scheduled by the runtime for a line to the own cat) must not be replaced.
             self._cancel_pending(eff)
             plan = self._plan(ev.ref, tail_ms, now, extra_s=self._human_grace_s)
             self.pending_reply = plan
