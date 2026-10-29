@@ -72,6 +72,15 @@ def set_steamworks(steamworks: Optional[Any]) -> None:
         _steamworks = steamworks
 
 
+def can_probe_steamworks() -> bool:
+    """Whether this process owns a Steamworks probe (a live handle or a registered initializer).
+
+    Only main_server registers the initializer. agent_server / memory_server never
+    touch the SDK, so a ``None`` handle there says nothing about whether Steam is in use.
+    """
+    return _steamworks is not None or _steamworks_initializer is not None
+
+
 def set_steamworks_initializer(initializer: Optional[Callable[[], Optional[Any]]]) -> None:
     """Register a process-local Steamworks initializer for lazy reconnects.
 
