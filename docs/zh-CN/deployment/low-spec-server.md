@@ -285,7 +285,9 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    启动前在 `docker/` 列出将传入容器的变量名（只显示名字，不显示值），确认快照里的应用变量都在其中：
 
    ```bash
-   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   # 变量名直接取自 .env（env_file 会整份注入），不依赖 compose 版本如何处理 config 的输出。
+   # 权威核对放在第 6 步：起容器后用 docker inspect 看真实的 .Config.Env。
+   grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=' | sort
    ```
 6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对（先删掉上一次留下的新快照，采集失败时比对会报 `COMPARE FAILED`，不会拿旧文件得出 `identical`）：
 

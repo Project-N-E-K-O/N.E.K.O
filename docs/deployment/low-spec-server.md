@@ -208,7 +208,10 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    Before starting, list the variable names that will reach the container from `docker/` (names only, no values) and confirm every application variable from the snapshot is present:
 
    ```bash
-   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   # Names come straight from .env (env_file injects the whole file), so this does not
+   # depend on how a given compose version renders env_file entries in "config" output.
+   # The authoritative check happens in step 6, via docker inspect on .Config.Env.
+   grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=' | sort
    ```
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot (the previous new-container snapshot is removed first, so a failed collection makes the comparison print `COMPARE FAILED` instead of `identical` from a stale file):
 

@@ -361,10 +361,15 @@ sudo sh backup.sh --container neko-2 --home ./neko-home-2    # 多实例
 Compose 自带 `healthcheck`，**三个后端服务任何一个挂掉都会判为 unhealthy**：
 
 ```bash
-docker inspect --format '{{.State.Health.Status}}' neko    # starting → healthy / unhealthy
+# 多实例时把容器名换成该实例的 NEKO_CONTAINER_NAME
+docker inspect --format '{{.State.Health.Status}}' "${NEKO_CONTAINER_NAME:-neko}"
 ```
 
-它走的是**容器内回环直探后端端口**（`127.0.0.1:48911/48912/48915`）。这一点不能改：从宿主打
+它走的是**容器内回环直探后端端口**（默认 `127.0.0.1:48911/48912/48915`）。多实例时探的是
+**该容器自己的** `NEKO_*_SERVER_PORT` —— 端口非法会让容器拒绝启动，不会出现"服务在一个端口、
+探针在另一个端口"。
+
+之所以必须走容器内回环：从宿主打
 `/health` 会撞实例访问门禁拿 401，探针会永远"不健康"，编排层就会反复重启一个本来正常的容器。
 
 **但 unhealthy 不会触发重启** —— Docker 的 `restart` 策略只对进程退出生效。healthcheck 提供的是

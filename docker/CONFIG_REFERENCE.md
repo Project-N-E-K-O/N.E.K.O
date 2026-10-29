@@ -98,7 +98,10 @@
 
 > **Docker 中**：`docker/entrypoint.sh` 只启动记忆、主服务、Agent 三个进程，对外由 Nginx 提供访问。容器内 `NGINX_PORT` 默认 80，`NGINX_SSL_PORT` 默认 443；官方 compose 把宿主机 48911 映射到 80、48912 映射到 443。
 >
-> **四个上游端口都跟随环境变量**：`NEKO_MAIN_SERVER_PORT`（48911）、`NEKO_MEMORY_SERVER_PORT`（48912）、`NEKO_TOOL_SERVER_PORT`（48915）、`NEKO_USER_PLUGIN_SERVER_PORT`（48916）。入口脚本会把它们渲染进 Nginx 路由表，所以「服务绑哪里」和「反代转发到哪」始终一致，可以放心改。非法值（非整数或超出 1–65535）会被规范化为默认端口并打印告警，与后端 `config.network._read_port_env` 的回落规则一致 —— 不会出现「后端起来了、Nginx 拒绝启动」。
+> **四个上游端口都跟随环境变量**：`NEKO_MAIN_SERVER_PORT`（48911）、`NEKO_MEMORY_SERVER_PORT`（48912）、`NEKO_TOOL_SERVER_PORT`（48915）、`NEKO_USER_PLUGIN_SERVER_PORT`（48916）。入口脚本会把它们渲染进 Nginx 路由表，所以「服务绑哪里」和「反代转发到哪」始终一致，可以放心改。**非法值（非整数或超出 1–65535）会让容器拒绝启动**，并在日志第一段说明是哪个变量：
+回落是行不通的 —— 后端会静默回落到默认端口，而 Nginx 渲染、Compose 健康检查、看门狗
+各自读环境变量，三方对不上，结果是「健康的容器被标成 unhealthy、被看门狗重启到预算耗尽」。
+留空或删掉这一行则使用默认值。
 
 > **插件安全与 NAS 兼容**：官方 HTTP/HTTPS 代理同时转发插件操作与 `/security/csrf-token`，浏览器自动获取和附加校验 token。**不用官方 Docker、自己写 Nginx/Caddy 规则时，必须把 `/security/csrf-token` 转发到插件服务（48916）**：它不在原有插件代理前缀（`plugins?|plugin/|plugin-cli/|…`）之下，落到主服务会导致插件启停、安装等需要 token 的操作失败，插件管理器会提示无法获取安全令牌。通过 NAS IP 和宿主机映射端口访问不需要额外配置 Origin/token。外层 HTTPS 反代转容器 HTTP 时，非 loopback NAS 地址允许 hostname 兜底，不比较协议与端口；这也意味着同一 NAS hostname 的其他应用端口进入来源信任边界。自定义域名沿用 `NEKO_TRUSTED_HOSTS`；公网访问认证与网络隔离仍由部署层负责。此校验防跨站操作，不提供用户登录认证。Vite `5173` 仅在开发者显式设置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS` 后允许，不应加入普通 NAS 部署配置。插件页面直接调用的路由（`/runs`、`ui-api`、插件配置等）默认只校验来源、不强制 token，以保障市场插件继续可用；公网部署可设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 强制 token，代价是尚未适配的插件页面会失效。完整合同见 [`local-mutation-auth.md`](../docs/design/security/local-mutation-auth.md)。
 
@@ -328,11 +331,8 @@ Agent API Key 的取法：
   `environment:` 里另外显式列出的那些（`TZ`、实例访问相关、自有域名相关、`XDG_DATA_HOME` / `NEKO_STORAGE_*`、四个上游端口）是为了给默认值并固定语义；同名变量以 `environment:` 为准。
   旧的「只透传固定白名单」说法已经作废：那时 `.env` 只用于 `${...}` 插值，API Key 填了也进不了容器。
 
-  ```yaml
-  - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-  - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-  - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-  ```
+  > 旧版 compose 只透传固定白名单，那时需要把 API 变量逐条加进 `environment:`。
+  > **现在不需要了** —— 直接写进 `.env` 即可；再往 `environment:` 里加只会造成"两处维护"。
 
   用 `docker run` 时，改用 `-e NEKO_CORE_API_KEY=...` 传入。
 - 启动日志里的 `Core API:` / `Assist API:` 每次启动都会打印，打印的是环境变量的值（未设置时为 `qwen`），不一定是文件里实际生效的值。
