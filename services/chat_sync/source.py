@@ -43,8 +43,7 @@ class ChatOriginalSource:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 required = {'source_originals', 'source_unbound', 'source_local_replies',
                             'source_origin_streams', 'source_history_tasks', 'source_history_members',
-                            'source_recovery_candidates', 'source_recovery_roles', 'source_recovery_delete_ids',
-                            'source_recovery_delete_tasks', 'source_recovery_delete_members'}
+                            'source_recovery_candidates', 'source_recovery_roles', 'source_recovery_delete_ids'}
                 migrations = {'source_originals': {'queued_at_ms', 'origin_stream_id', 'origin_seq'},
                               'source_unbound': {'origin_stream_id', 'origin_seq', 'deletion_pending'}}
                 if required <= tables and all(columns <= {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}

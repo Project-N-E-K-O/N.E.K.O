@@ -199,8 +199,9 @@ class ChatSyncLedger:
         self.path = path
         with closing(self._connect()) as conn:
             # Databases written by earlier releases may also hold retired tables
-            # (chat_sources, chat_cursors, chat_oversized, ...). Their rows carry
-            # no chat text, nothing reads them, and they are left in place.
+            # (chat_sources, chat_cursors, chat_oversized, chat_recovery_deletion_pages,
+            # ...). Their rows carry no chat text, nothing reads them, and they
+            # are left in place.
             # chat_pending only holds rows queued by earlier releases; nothing
             # adds to it, but its rows are erased together with their originals.
             conn.executescript("""
@@ -245,10 +246,6 @@ class ChatSyncLedger:
                     sha256 TEXT NOT NULL,
                     PRIMARY KEY (domain, deletion_id)
                 );
-                CREATE TABLE IF NOT EXISTS chat_recovery_deletion_pages (
-                    domain TEXT NOT NULL, task_id TEXT NOT NULL, page_hash TEXT NOT NULL,
-                    deletion_id TEXT NOT NULL UNIQUE, payload BLOB NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY(domain,task_id,page_hash));
                 CREATE TABLE IF NOT EXISTS chat_origin_identities (
                     domain TEXT NOT NULL,
                     origin_stream_id TEXT NOT NULL,
@@ -302,26 +299,6 @@ class ChatSyncLedger:
             ])
             conn.commit()
         return tuple(requests)
-
-    def queue_recovery_deletions(self, domain: ChatDomain, task_id: str, message_ids: list[str]) -> None:
-        """Retain a renewed page's fixed request and ACK across the source progress gap."""
-        _message_ids([task_id])
-        ids = _message_ids(message_ids)
-        if len(ids) > 200:
-            raise ValueError("invalid_message_ids")
-        payload = _encode({"messageIds": list(ids)}).encode("utf-8")
-        digest = hashlib.sha256(payload).hexdigest()
-        with closing(self._connect()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("INSERT OR IGNORE INTO chat_recovery_deletion_pages VALUES (?,?,?,?,?,0)",
-                         (domain.key(), task_id, digest, uuid4().hex, payload))
-            row = conn.execute("SELECT deletion_id,payload,acked FROM chat_recovery_deletion_pages "
-                               "WHERE domain=? AND task_id=? AND page_hash=?", (domain.key(), task_id, digest)).fetchone()
-            if row[1] != payload:
-                raise IdentityConflict("original_content_conflict")
-            conn.executemany("INSERT OR IGNORE INTO chat_tombstones VALUES (?,?)", [(domain.key(), value) for value in ids])
-            if not row[2]:
-                conn.execute("INSERT OR IGNORE INTO chat_deletions VALUES (?,?,?,?)", (domain.key(), row[0], payload, digest))
 
     def deleted_message_ids(self, domain: ChatDomain) -> list[str]:
         """Expose permanent IDs in the order their tombstones were written."""

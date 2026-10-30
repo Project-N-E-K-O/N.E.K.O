@@ -34,13 +34,6 @@ class CharacterSyncChoice(BaseModel):
     includeHistory: StrictBool = False
 
 
-class HistoryApprovalRequest(BaseModel):
-    """Approve only the exact persisted member snapshot reviewed by this user."""
-
-    model_config = ConfigDict(extra="forbid")
-    taskId: StrictStr
-
-
 class ProfileChoiceRequest(BaseModel):
     """Pin the saved local candidate and cloud revision shown in the consent UI."""
 
@@ -241,21 +234,10 @@ async def close_runtime() -> None:
 
 @router.post("/characters/{character_uid}/recovery/preview")
 async def recovery_preview(character_uid: str, runtime: Runtime):
-    """Renew installation authority and verify one role before explicit history consent."""
+    """Renew installation authority and verify one role against the cloud."""
     character = await _character(character_uid)
     try:
         # The runtime always uses its built-in origin; the browser never supplies one.
         return await runtime.recover_writer_role(character_uid, character["displayName"])
     except ValueError as exc:
         raise _error(exc) from None
-
-
-@router.post("/characters/{character_uid}/recovery/deletions/approve")
-async def recovery_approve_deletions(character_uid: str, body: HistoryApprovalRequest, runtime: Runtime):
-    """Approve only the exact current-owner deletion set reviewed in recovery UI."""
-    await _character(character_uid)
-    try:
-        result = await runtime.approve_recovery_deletions(character_uid, body.taskId)
-    except ValueError as exc:
-        raise _error(exc) from None
-    return result

@@ -38,7 +38,7 @@ def queued_deletions(ledger, domain):
 
 
 def staged_deletion_ids(runtime, domain):
-    """Read copied deletion IDs that recovery holds back for separate consent."""
+    """Read copied deletion IDs that recovery keeps staged until the role finishes."""
     with closing(sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3')) as conn:
         return [row[0] for row in conn.execute(
             'SELECT message_id FROM source_recovery_delete_ids WHERE uid=? ORDER BY rowid', (domain.character_uid,))]
@@ -380,7 +380,7 @@ async def test_quarantined_source_fails_closed_when_saved_consent_is_unreadable(
 
 
 @pytest.mark.asyncio
-async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_delete_approval(tmp_path):
+async def test_cloud_recovery_checks_copied_ack_and_keeps_unsent_deletions_local(tmp_path):
     from contextlib import nullcontext
     import httpx
     from services.chat_sync.runtime import DesktopChatSyncRuntime
@@ -404,7 +404,7 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_delete_approv
             return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'cursor': 1,
                 'results': [{'messageId': item['messageId'], 'state': states[item['messageId']]} for item in body['records']]})
         if request.url.path == '/prototype/chat-sync/characters':
-            # Another cloud role listed first must not lend its name to the confirmation.
+            # Another cloud role listed first does not hide the target role.
             return httpx.Response(200, json={'characters': [{'characterSyncId': 'c' * 32, 'displayName': 'Other Neko'},
                                                             {'characterSyncId': uid, 'displayName': 'Cloud Neko'}]})
         if request.url.path.endswith('/' + uid):
@@ -421,23 +421,22 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_delete_approv
     runtime.ledger.queue_deletion(domain, ['2' * 32])
     runtime.writer.path.write_text('{broken')
     snapshot = await runtime.recover_writer_role(uid, 'Local Neko')
-    assert snapshot['deletions']['count'] == 1
-    # The deletion confirmation names both the local role and its matching cloud role.
-    assert snapshot['deletions']['localName'] == 'Local Neko'
-    assert snapshot['deletions']['cloudName'] == 'Cloud Neko'
+    assert snapshot == {'deletions': {'count': 1}}
     assert {json.loads(raw)['messageId'] for raw in runtime.ledger.visible_originals(domain)} == {'3' * 32}
+    # The unsent marker stays a local tombstone and is never queued for the cloud.
     assert queued_deletions(runtime.ledger, domain) == []
+    assert '2' * 32 in runtime.ledger.deleted_message_ids(domain)
+    assert staged_deletion_ids(runtime, domain) == []
     assert '/prototype/chat-sync/characters/' + uid + '/recovery/check' in calls
-    await runtime.approve_recovery_deletions(uid, snapshot['deletions']['taskId'])
-    assert [ids for _, ids in queued_deletions(runtime.ledger, domain)] == [('2' * 32,)]
     await runtime.close()
 
 
-async def recovery_budget_runtime(tmp_path, on_check, *, count=7, copied_deletions=(), cloud_deletions=()):
+async def recovery_budget_runtime(tmp_path, on_check, *, count=7, copied_deletions=(), cloud_deletions=(), prepare=None):
     """Exercise recovery with real SQLite witnesses and a synthetic authenticated HTTP service.
 
     The deletion page reads ``cloud_deletions`` on every request, so a caller-owned
     list can report a cloud deletion made between two recovery attempts.
+    ``prepare(runtime, domain)`` adds local state while the writer is still healthy.
     """
     from contextlib import nullcontext
     import httpx
@@ -489,6 +488,8 @@ async def recovery_budget_runtime(tmp_path, on_check, *, count=7, copied_deletio
     if copied_deletions:
         # A marker left in the old deletion outbox is copied authority as well.
         runtime.ledger.queue_deletion(ChatDomain(owner, uid), list(copied_deletions))
+    if prepare is not None:
+        prepare(runtime, ChatDomain(owner, uid))
     runtime.writer.path.write_text('{broken')
     return runtime, ChatDomain(owner, uid), identities, checks
 
@@ -547,7 +548,7 @@ async def test_partial_recovery_cannot_return_stale_authority_after_cloud_name_l
         if boundary != 'writer':
             # Recovery already repaired the writer, so only this role keeps its retry entry.
             assert await role_recovery_required(runtime) is True
-        # The copied marker stays held for separate consent and never becomes sendable.
+        # The copied marker stays staged and never becomes sendable.
         assert queued_deletions(runtime.ledger, domain) == []
         assert staged_deletion_ids(runtime, domain) == ['f' * 32]
     finally:
@@ -571,11 +572,9 @@ async def test_recovery_confirms_cloud_target_before_releasing_role_gate(tmp_pat
         assert role_pending(runtime, domain.character_uid)
         # Recovery already repaired the writer, so only this role keeps its retry entry.
         assert await role_recovery_required(runtime) is True
-        # The copied marker stays held for separate consent and never becomes sendable.
+        # The copied marker stays staged and never becomes sendable.
         assert queued_deletions(runtime.ledger, domain) == []
         assert staged_deletion_ids(runtime, domain) == ['f' * 32]
-        with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
-            assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
     finally:
         await runtime.close()
 
@@ -625,23 +624,127 @@ async def test_recovery_check_reporting_a_deletion_erases_retained_local_bodies(
         await runtime.close()
 
 
+# Unsent local deletions an earlier release could leave for this role, one per
+# source, plus rows that belong to another role or another account.
+OTHER_ACCOUNT = '12345678-1234-4234-8234-123456789abd'
+OTHER_ROLE = 'c' * 32
+UNSENT_BOUND, UNSENT_UNKNOWN_OWNER, UNSENT_OUTAGE, UNSENT_UNBOUND = 'a1' * 16, 'a2' * 16, 'a3' * 16, 'a4' * 16
+
+
+def seed_unsent_deletions(runtime, domain):
+    """Stage every kind of unsent deletion, sharing IDs with other roles and accounts."""
+    from services.chat_sync.ledger import ChatOriginal
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.writer import store_connection
+    uid = domain.character_uid
+    path = runtime.state.path.parent / 'sources.sqlite3'
+    ChatOriginalSource(path).commit_unbound(uid, UNSENT_UNBOUND, ChatOriginal('user', 'deleted before binding'))
+    with closing(store_connection(path)) as conn, conn:
+        conn.execute('UPDATE source_unbound SET original=NULL,deleted=1,deletion_pending=1 WHERE record_id=?', (UNSENT_UNBOUND,))
+        conn.executemany('INSERT INTO source_recovery_delete_ids VALUES (?,?,?)', [
+            (domain.owner_id, uid, UNSENT_BOUND), (None, uid, UNSENT_BOUND), (None, uid, UNSENT_UNKNOWN_OWNER),
+            (domain.owner_id, OTHER_ROLE, UNSENT_UNKNOWN_OWNER), (domain.owner_id, OTHER_ROLE, 'b1' * 16),
+            (OTHER_ACCOUNT, uid, UNSENT_BOUND), (OTHER_ACCOUNT, uid, 'b2' * 16)])
+    with closing(sqlite3.connect(runtime.state.path.parent / 'outage.sqlite3')) as conn, conn:
+        # Earlier releases recorded deletions made during an outage in this table.
+        conn.execute('CREATE TABLE outage_deletions (uid TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(uid,message_id))')
+        conn.execute('INSERT INTO outage_deletions VALUES (?,?)', (uid, UNSENT_OUTAGE))
+
+
+def staged_deletion_rows(runtime):
+    with closing(sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3')) as conn:
+        return conn.execute('SELECT owner,uid,message_id FROM source_recovery_delete_ids ORDER BY owner,uid,message_id').fetchall()
+
+
+def tombstone_rows(runtime):
+    with closing(sqlite3.connect(runtime.ledger.path)) as conn:
+        return conn.execute('SELECT domain,message_id FROM chat_tombstones ORDER BY domain,message_id').fetchall()
+
+
+def untouched_staged_rows(domain):
+    return [(domain.owner_id, OTHER_ROLE, UNSENT_UNKNOWN_OWNER), (domain.owner_id, OTHER_ROLE, 'b1' * 16),
+            (OTHER_ACCOUNT, domain.character_uid, UNSENT_BOUND), (OTHER_ACCOUNT, domain.character_uid, 'b2' * 16)]
+
+
+def staged_for_role(domain):
+    uid = domain.character_uid
+    return {(domain.owner_id, uid, UNSENT_BOUND), (None, uid, UNSENT_BOUND), (None, uid, UNSENT_UNKNOWN_OWNER),
+            (None, uid, UNSENT_OUTAGE), (None, uid, UNSENT_UNBOUND)}
+
+
+def kept_tombstones(domain):
+    return [(domain.key(), identity) for identity in sorted((UNSENT_BOUND, UNSENT_UNKNOWN_OWNER, UNSENT_OUTAGE, UNSENT_UNBOUND))]
+
+
 @pytest.mark.asyncio
-async def test_recovery_deletion_approval_refuses_superseded_or_rebound_previews(tmp_path):
-    """Consent covers only the newest preview under the binding that produced it."""
+async def test_recovery_keeps_the_roles_unsent_deletions_as_tombstones(tmp_path):
+    """Finishing a role records its own unsent deletions once and leaves other roles and accounts alone."""
     from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
     runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1,
-                                                          copied_deletions=['9' * 32])
+                                                          prepare=seed_unsent_deletions)
     try:
-        first = (await runtime.recover_writer_role(domain.character_uid, 'Local Neko'))['deletions']
-        second = (await runtime.recover_writer_role(domain.character_uid, 'Local Neko'))['deletions']
-        assert first['count'] == second['count'] == 1
-        with pytest.raises(ValueError, match='chat_sync_history_changed'):
-            await runtime.approve_recovery_deletions(domain.character_uid, first['taskId'])
-        await runtime.pause(domain.character_uid)
-        await runtime.enable(domain.character_uid, 'Local Neko')
-        with pytest.raises(ValueError, match='chat_sync_history_changed'):
-            await runtime.approve_recovery_deletions(domain.character_uid, second['taskId'])
+        assert tombstone_rows(runtime) == []
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert result == {'deletions': {'count': 4}}
+        assert tombstone_rows(runtime) == kept_tombstones(domain)
+        assert staged_deletion_rows(runtime) == untouched_staged_rows(domain)
         assert queued_deletions(runtime.ledger, domain) == []
+        assert not role_pending(runtime, domain.character_uid) and role_pending(runtime, OTHER_ROLE)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_later_quarantine_and_recovery_do_not_count_kept_deletions_again(tmp_path):
+    """Kept deletions, including those still listed in the outage store, are reported only once."""
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1,
+                                                          prepare=seed_unsent_deletions)
+    try:
+        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 4}}
+        runtime.writer.path.write_text('{broken')
+        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 0}}
+        assert tombstone_rows(runtime) == kept_tombstones(domain)
+        assert staged_deletion_rows(runtime) == untouched_staged_rows(domain)
+        assert not role_pending(runtime, domain.character_uid)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('crash', ['tombstones', 'staged_ids'])
+async def test_interrupted_recovery_finish_converges_when_recovery_runs_again(tmp_path, monkeypatch, crash):
+    """A crash before or after the tombstone commit loses no deletion and leaves no duplicate."""
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    from services.chat_sync.writer import _WriterConnection
+    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1,
+                                                          prepare=seed_unsent_deletions)
+    statement = {'tombstones': 'INSERT OR IGNORE INTO chat_tombstones',
+                 'staged_ids': 'DELETE FROM source_recovery_delete_ids'}[crash]
+    real_executemany = _WriterConnection.executemany
+
+    def interrupted(self, sql, parameters, /):
+        parameters = list(parameters)
+        if sql.startswith(statement) and parameters:
+            raise RuntimeError('synthetic crash while finishing recovery')
+        return real_executemany(self, sql, parameters)
+
+    try:
+        monkeypatch.setattr(_WriterConnection, 'executemany', interrupted)
+        with pytest.raises(RuntimeError, match='synthetic crash'):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        monkeypatch.setattr(_WriterConnection, 'executemany', real_executemany)
+        # The staged IDs outlive the crash; tombstones exist only if their commit finished.
+        assert set(staged_deletion_rows(runtime)) == staged_for_role(domain) | set(untouched_staged_rows(domain))
+        assert tombstone_rows(runtime) == ([] if crash == 'tombstones' else kept_tombstones(domain))
+        assert role_pending(runtime, domain.character_uid)
+        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 4}}
+        assert tombstone_rows(runtime) == kept_tombstones(domain)
+        assert staged_deletion_rows(runtime) == untouched_staged_rows(domain)
+        assert not role_pending(runtime, domain.character_uid)
     finally:
         await runtime.close()
 
@@ -1025,6 +1128,25 @@ INSERT INTO source_history_members VALUES ('task-retired', '66666666666666666666
 INSERT INTO source_history_tasks VALUES ('task-other', 'cccccccccccccccccccccccccccccccc', '{}', 'https://sync.test',
     'fingerprint', 'database', 'generation', 'Other Neko', 'Other Neko', 'preview', 1, NULL);
 INSERT INTO source_history_members VALUES ('task-other', '77777777777777777777777777777777', 0, 'waiting', NULL, NULL, NULL);
+CREATE TABLE source_recovery_delete_tasks (
+    task_id TEXT PRIMARY KEY, uid TEXT NOT NULL, owner TEXT NOT NULL,
+    binding TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'preview');
+CREATE TABLE source_recovery_delete_members (
+    task_id TEXT NOT NULL, message_id TEXT NOT NULL, registered INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(task_id,message_id));
+INSERT INTO source_recovery_delete_tasks VALUES ('delete-task', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    '12345678-1234-4234-8234-123456789abc', '{}', 'fingerprint', 'approved');
+INSERT INTO source_recovery_delete_members VALUES ('delete-task', '88888888888888888888888888888888', 1);
+"""
+
+# The previous main build also kept approved recovery deletion pages in the ledger.
+_EARLIER_LEDGER_TABLES = """
+CREATE TABLE chat_recovery_deletion_pages (
+    domain TEXT NOT NULL, task_id TEXT NOT NULL, page_hash TEXT NOT NULL,
+    deletion_id TEXT NOT NULL UNIQUE, payload BLOB NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(domain,task_id,page_hash));
+INSERT INTO chat_recovery_deletion_pages VALUES ('["12345678-1234-4234-8234-123456789abc","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","chat","private-chat"]',
+    'delete-task', 'page', '99999999999999999999999999999999', '{"messageIds":["88888888888888888888888888888888"]}', 1);
 """
 
 
@@ -1049,6 +1171,8 @@ async def test_source_store_saves_recovers_and_retires_on_fresh_and_earlier_sche
         if earlier_release:
             with closing(store_connection(path)) as conn, conn:
                 conn.executescript(_EARLIER_SOURCE_TABLES)
+            with closing(store_connection(runtime.ledger.path)) as conn, conn:
+                conn.executescript(_EARLIER_LEDGER_TABLES)
         source = ChatOriginalSource(path)
         binding = runtime.state.activate(runtime.state.prepare_binding(domain), 'b' * 32)
         source.commit(domain.owner_id, uid, '1' * 32, ChatOriginal('user', 'bound'))
@@ -1064,7 +1188,10 @@ async def test_source_store_saves_recovers_and_retires_on_fresh_and_earlier_sche
         states = {'1' * 32: 'deleted', '2' * 32: 'missing'}
         apply_checked_candidates(runtime, domain, candidates,
                                  [{'messageId': row['record_id'], 'state': states[row['record_id']]} for row in candidates])
-        finish_role(runtime, domain, binding, 'session')
+        # The outage deletion never reached the cloud; it stays a local tombstone.
+        assert finish_role(runtime, domain, binding, 'session') == {'count': 1}
+        assert '3' * 32 in runtime.ledger.deleted_message_ids(domain)
+        assert staged_deletion_ids(runtime, domain) == []
         with closing(sqlite3.connect(path)) as conn:
             # Outage and cloud deletions erase bound bodies but keep their identities.
             assert conn.execute('SELECT record_id,original,deleted FROM source_originals ORDER BY record_id').fetchall() == [
@@ -1079,7 +1206,7 @@ async def test_source_store_saves_recovers_and_retires_on_fresh_and_earlier_sche
         with closing(sqlite3.connect(path)) as conn:
             for table in ('source_originals', 'source_unbound', 'source_local_replies', 'source_origin_streams',
                           'source_history_tasks', 'source_recovery_candidates', 'source_recovery_roles',
-                          'source_recovery_delete_ids', 'source_recovery_delete_tasks'):
+                          'source_recovery_delete_ids'):
                 assert conn.execute(f'SELECT count(*) FROM {table} WHERE uid=?', (uid,)).fetchone() == (0,), table
             # Only the other role's legacy history task and member are left.
             assert conn.execute('SELECT task_id FROM source_history_tasks').fetchall() == (
@@ -1092,20 +1219,34 @@ async def test_source_store_saves_recovers_and_retires_on_fresh_and_earlier_sche
             retired_columns = {'source_originals': {'pending', 'history_task_id'}, 'source_unbound': {'verified_owner'},
                                'source_history_tasks': {'device_id'},
                                'source_history_members': {'original_hash', 'origin_stream_id', 'origin_seq'}}
+            retired_tables = {'source_identity', 'source_role_reassignments',
+                              'source_recovery_delete_tasks', 'source_recovery_delete_members'}
             if earlier_release:
                 # Leftover tables and columns are not dropped; their rows hold no chat text.
                 assert conn.execute('SELECT * FROM source_identity').fetchall() == [(1, 'database', 'generation')]
                 assert conn.execute('SELECT count(*) FROM source_role_reassignments').fetchone() == (0,)
                 assert all(retired <= columns[table] for table, retired in retired_columns.items())
+                # Quarantine, recovery and retirement leave the retired deletion task rows as they were.
+                assert conn.execute('SELECT task_id,uid,status FROM source_recovery_delete_tasks').fetchall() == [
+                    ('delete-task', uid, 'approved')]
+                assert conn.execute('SELECT * FROM source_recovery_delete_members').fetchall() == [
+                    ('delete-task', '8' * 32, 1)]
             else:
-                assert tables.isdisjoint({'source_identity', 'source_role_reassignments'})
+                assert tables.isdisjoint(retired_tables)
                 assert all(retired.isdisjoint(columns[table]) for table, retired in retired_columns.items())
+        with closing(sqlite3.connect(runtime.ledger.path)) as conn:
+            ledger_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if earlier_release:
+                assert conn.execute('SELECT task_id,deletion_id,acked FROM chat_recovery_deletion_pages').fetchall() == [
+                    ('delete-task', '9' * 32, 1)]
+            else:
+                assert 'chat_recovery_deletion_pages' not in ledger_tables
     finally:
         await runtime.close()
 
 
 @pytest.mark.asyncio
-async def test_recovery_deletion_preview_coalesces_outage_and_bound_marker_ids(tmp_path):
+async def test_recovery_finish_coalesces_outage_and_bound_marker_ids_into_tombstones(tmp_path):
     from services.chat_sync.recovery import finish_role
     runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
     runtime.ledger.queue_deletion(domain, ['1' * 32, '2' * 32])
@@ -1117,39 +1258,10 @@ async def test_recovery_deletion_preview_coalesces_outage_and_bound_marker_ids(t
         conn.executemany('INSERT INTO outage_deletions VALUES (?,?)', [(domain.character_uid, '1' * 32), (domain.character_uid, '5' * 32)])
     runtime.prepare_writer_recovery()
     binding = runtime.state.activate(runtime.state.prepare_binding(domain), 'b' * 32)
-    snapshot = finish_role(runtime, domain, binding, 'session')
-    assert snapshot['count'] == 3
-    with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
-        assert conn.execute('SELECT message_id FROM source_recovery_delete_members WHERE task_id=? ORDER BY message_id',
-                            (snapshot['taskId'],)).fetchall() == [('1' * 32,), ('2' * 32,), ('5' * 32,)]
-
-
-def test_approved_recovery_deletion_pages_resume_and_ack_gap_does_not_recreate_request(tmp_path, monkeypatch):
-    from services.chat_sync.recovery import approve_deletions
-    from services.chat_sync.writer import _WriterConnection
-    runtime, domain, binding, snapshot = deletion_recovery_task(tmp_path, 403)
-    real_execute = _WriterConnection.executemany
-    def fail_progress(self, sql, parameters=()):
-        if sql.startswith('UPDATE source_recovery_delete_members SET registered'):
-            raise RuntimeError('synthetic gap after ledger commit')
-        return real_execute(self, sql, parameters)
-    monkeypatch.setattr(_WriterConnection, 'executemany', fail_progress)
-    with pytest.raises(RuntimeError):
-        approve_deletions(runtime, domain.character_uid, snapshot['taskId'], binding, 'session')
-    first, _ = queued_deletions(runtime.ledger, domain)[0]
-    monkeypatch.setattr(_WriterConnection, 'executemany', real_execute)
-    with closing(runtime.ledger._connect()) as conn, conn:
-        # The marker sender acknowledged this page before the progress write.
-        conn.execute('DELETE FROM chat_deletions WHERE deletion_id=?', (first,))
-        conn.execute('UPDATE chat_recovery_deletion_pages SET acked=1 WHERE deletion_id=?', (first,))
-    first_progress = approve_deletions(runtime, domain.character_uid, snapshot['taskId'], binding, 'session')
-    assert first_progress['remaining'] == 203
+    assert finish_role(runtime, domain, binding, 'session') == {'count': 3}
+    assert sorted(runtime.ledger.deleted_message_ids(domain)) == ['1' * 32, '2' * 32, '5' * 32]
+    assert staged_deletion_ids(runtime, domain) == []
     assert queued_deletions(runtime.ledger, domain) == []
-    second = approve_deletions(runtime, domain.character_uid, snapshot['taskId'], binding, 'session')
-    third = approve_deletions(runtime, domain.character_uid, snapshot['taskId'], binding, 'session')
-    assert second['remaining'] == 3
-    assert third['remaining'] == 0
-    assert [len(ids) for _, ids in queued_deletions(runtime.ledger, domain)] == [200, 3]
 
 
 @pytest.mark.asyncio

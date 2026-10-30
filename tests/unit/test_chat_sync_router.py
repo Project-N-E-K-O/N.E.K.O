@@ -222,25 +222,21 @@ def test_unknown_local_character_cannot_address_bound_cloud_role(local_client, s
     assert runtime.calls == []
 
 
-def test_writer_recovery_routes_keep_preview_and_deletion_consent_separate(local_client):
-    """Cloud checks only preview; exact reviewed task IDs authorize deletions later."""
+def test_writer_recovery_reports_kept_deletions_without_a_separate_approval_route(local_client):
+    """Recovery itself keeps earlier local deletions; no later request can send them to the cloud."""
     from unittest.mock import AsyncMock
     client, runtime = local_client
-    runtime.recover_writer_role = AsyncMock(return_value={
-        "deletions": {"taskId": "e" * 32, "count": 1, "localName": 'Neko', "cloudName": 'Cloud Neko'},
-    })
-    runtime.approve_recovery_deletions = AsyncMock(return_value={"status": "registered"})
+    runtime.recover_writer_role = AsyncMock(return_value={"deletions": {"count": 2}})
     path = f"/api/chat-sync/characters/{UID}/recovery"
     result = client.post(path + "/preview")
     assert result.status_code == 200 and result.headers["Cache-Control"] == "no-store"
-    assert result.json()['deletions']['taskId'] == 'e' * 32
+    assert result.json() == {"deletions": {"count": 2}}
     runtime.recover_writer_role.assert_awaited_once_with(UID, "Neko")
-    runtime.approve_recovery_deletions.assert_not_awaited()
-    for extra in ({"ownerId": OWNER}, {"messageIds": ["b" * 32]}, {"count": 1}):
-        assert client.post(path + "/deletions/approve", json={"taskId": "e" * 32, **extra}).status_code == 422
-    assert client.post(path + "/deletions/approve", json={"taskId": "e" * 32}).status_code == 200
-    runtime.approve_recovery_deletions.assert_awaited_once_with(UID, "e" * 32)
+    response = client.post(path + "/deletions/approve", json={"taskId": "e" * 32})
+    assert response.status_code in (404, 405)
+    assert not [route.path for route in routes.router.routes if route.path.endswith("/approve") and "/recovery/" in route.path]
     assert client.post(f"/api/chat-sync/characters/{'f' * 32}/recovery/preview").status_code == 404
+    assert runtime.recover_writer_role.await_count == 1
 
 
 @pytest.mark.parametrize('enabled', [True, False])

@@ -464,7 +464,7 @@ class DesktopChatSyncRuntime:
             await asyncio.to_thread(self.prepare_writer_recovery)
         await asyncio.to_thread(import_outage, self)
         # A new device/request and explicit service-authenticated binding revoke
-        # old flights. Re-enabling alone does not approve any staged body/delete.
+        # old flights. Re-enabling alone does not publish any staged body/delete.
         await self.enable(character_uid, local_name)
         async with self._lock:
             binding = await asyncio.to_thread(self.state.binding, character_uid)
@@ -496,25 +496,14 @@ class DesktopChatSyncRuntime:
                 await commit(apply_checked_candidates, self, domain, selected, result['results'])
                 offset += len(selected)
             roles = await read_character_directory(request, binding['owner_id'])
-            cloud_name = next((role['displayName'] for role in roles['characters'] if role['characterSyncId'] == character_uid), None)
-            if cloud_name is None:
+            # The bound account must still list this role before its gate opens.
+            if not any(role['characterSyncId'] == character_uid for role in roles['characters']):
                 raise ValueError('chat_sync_character_not_found')
             await self._guard(binding, authenticated[1])
             # The recovery transport keeps the role gate pending during the checks above.
             # Release it only after every fallible authority check has completed.
             deletions = await commit(finish_role, self, domain, binding, authenticated[1])
-            deletions.update(localName=local_name, cloudName=cloud_name)
         return {'deletions': deletions}
-
-    async def approve_recovery_deletions(self, character_uid, task_id):
-        """Register renewed exact deletion consent through the existing marker lane."""
-        from services.chat_sync.recovery import approve_deletions
-        binding = await asyncio.to_thread(self.state.binding, character_uid)
-        authenticated = await self._session()
-        _, _, commit = await self._bound_transport(character_uid, authenticated=authenticated, expected_binding=binding)
-        result = await commit(approve_deletions, self, character_uid, task_id, binding, authenticated[1])
-        self.wake_scheduler()
-        return result
 
     async def close(self) -> None:
         """Release this adapter's HTTP transport during orderly shutdown."""
@@ -881,17 +870,15 @@ class DesktopChatSyncRuntime:
             if self.state.binding(uid) != binding:
                 raise ValueError("chat_sync_binding_changed")
             with closing(store_connection(directory / "sources.sqlite3")) as conn, conn:
-                for members, tasks in (("source_history_members", "source_history_tasks"),
-                                       ("source_recovery_delete_members", "source_recovery_delete_tasks")):
-                    conn.execute(f"DELETE FROM {members} WHERE task_id IN (SELECT task_id FROM {tasks} WHERE uid=?)", (uid,))
+                conn.execute("DELETE FROM source_history_members WHERE task_id IN "
+                             "(SELECT task_id FROM source_history_tasks WHERE uid=?)", (uid,))
                 for table in ("source_originals", "source_unbound", "source_local_replies", "source_origin_streams",
                               "source_history_tasks", "source_recovery_candidates", "source_recovery_roles",
-                              "source_recovery_delete_ids", "source_recovery_delete_tasks"):
+                              "source_recovery_delete_ids"):
                     conn.execute(f"DELETE FROM {table} WHERE uid=?", (uid,))
             for filename, tables in (
                 ("originals.sqlite3", ("chat_pending", "chat_batches", "chat_originals", "chat_downloaded",
-                                      "chat_tombstones", "chat_deletions", "chat_recovery_deletion_pages",
-                                      "chat_origin_identities")),
+                                      "chat_tombstones", "chat_deletions", "chat_origin_identities")),
                 ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports")),
                 ("scheduler.sqlite3", ("scheduler_tasks",)),
             ):

@@ -263,6 +263,7 @@ def test_sync_locale_namespace_is_complete(locale):
     assert actual.keys() == baseline.keys()
     assert "{{originals}}" in actual["pending"]
     assert "{{deletions}}" in actual["pending"]
+    assert "{{count}}" in actual["recoveryCloudCopiesKept"]
 
 
 @pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end'])
@@ -392,11 +393,9 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
 
 @pytest.mark.parametrize("change", ["closed", "role", "uid"])
 def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
-    """An old recovery result cannot prompt deletion for a newly opened character."""
+    """An old recovery result cannot report its outcome for a newly opened character."""
     run_script(r"""(async()=>{
         const uid='c'.repeat(32),requests=[],prompts=[];let release,changed=false;
-        // Accept any prompt: a throwing confirm would be swallowed by the
-        // recovery catch and would block the approve request by itself.
         window.confirm=message=>{prompts.push(message);return true;};
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
@@ -404,7 +403,6 @@ def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
                 displayName:changed&&CHANGE==='role'?'Other':'Neko',
                 characterSyncId:changed&&CHANGE==='uid'?'d'.repeat(32):uid,binding:null}]};
             if(path.endsWith('/recovery/preview'))return await new Promise(resolve=>{release=resolve;});
-            if(path.endsWith('/recovery/deletions/approve'))return {status:'registered'};
             throw new Error('Unexpected request '+path);
         }});
         await window.nekoChatSync.openSettings();
@@ -416,8 +414,10 @@ def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
         changed=true;
         if(CHANGE==='closed')modal.close();
         else if(CHANGE==='role')await window.nekoChatSync.openSettings('Other');
-        release({deletions:{count:1,taskId:'e'.repeat(32),localName:'Neko',cloudName:'Cloud Neko'}});
+        release({deletions:{count:1}});
         await pending;
+        const shown=modal.querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(!shown.includes('recoveryChecked')&&!shown.includes('recoveryCloudCopiesKept'),shown);
         assert.deepEqual(prompts,[]);
         assert.equal(requests.filter(item=>item.path.endsWith('/recovery/deletions/approve')
             ||item.path.endsWith('/history/approve')).length,0);
@@ -471,9 +471,9 @@ def test_recovery_panel_tooltip_is_accessible_and_fits_the_viewport(theme, langu
             browser.close()
 
 
-@pytest.mark.parametrize("approve_deletions", [False, True])
-def test_writer_recovery_keeps_separate_deletion_consent_without_history_controls(approve_deletions):
-    """The compact recovery panel cannot publish history or copied deletes by opening it."""
+@pytest.mark.parametrize("kept", [0, 2])
+def test_writer_recovery_reports_kept_deletions_without_prompting_or_history_controls(kept):
+    """Recovery shows its result without a confirmation dialog, an approval request or history controls."""
     from playwright.sync_api import sync_playwright
 
     labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
@@ -483,7 +483,7 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             page = browser.new_page()
             page.route("**/*", lambda route: route.abort())
             page.set_content('<body></body>')
-            page.evaluate("""({labels}) => {
+            page.evaluate("""({labels, kept}) => {
                 window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
                     .replace(/{{(.*?)}}/g, (_, name) => values[name]);
                 window.setInterval = () => 1;
@@ -498,14 +498,13 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
                                 ownerId: 'owner', bindingId: 'binding', generation: 1}}]};
                         if (path.endsWith('/recovery/preview')) {
                             window.needsRecovery = false;
-                            return {deletions: {taskId: 'e'.repeat(32), count: 2, localName: 'Synthetic', cloudName: 'Cloud Neko'}};
+                            return {deletions: {count: kept}};
                         }
-                        if (path.endsWith('/recovery/deletions/approve')) return {status: 'registered'};
                         if (path.endsWith('/history')) return {originals: []};
                         throw new Error('Unexpected request: ' + path);
                     }};
                 };
-            }""", {"labels": labels})
+            }""", {"labels": labels, "kept": kept})
             page.add_script_tag(path=str(SCRIPT))
             page.evaluate("async () => await window.nekoChatSync.openSettings()")
             modal = page.locator("#chat-sync-dialog")
@@ -513,22 +512,22 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             assert modal.locator('[data-sync-action="recover"]').is_enabled()
             assert modal.locator('[data-history-action], details').count() == 0
             assert page.evaluate("window.requests.every(item => item.body === undefined)")
-            messages = []
+            dialogs = []
 
-            def consent(dialog):
-                messages.append(dialog.message)
-                dialog.accept() if approve_deletions else dialog.dismiss()
+            def record(dialog):
+                dialogs.append(dialog.message)
+                dialog.dismiss()
 
-            page.on("dialog", consent)
+            page.on("dialog", record)
             modal.get_by_role("button", name=labels["recoverWriter"], exact=True).click()
             modal.get_by_role("status").filter(has_text=labels["recoveryChecked"]).wait_for()
-            # The localized prompt places each name after its fixed role label,
-            # so swapped local and cloud names produce a different message.
-            expected = (labels["recoveryDeleteConfirm"].replace("{{count}}", "2")
-                        .replace("{{localName}}", "Synthetic").replace("{{cloudName}}", "Cloud Neko"))
-            assert messages == [expected]
+            expected = labels["recoveryChecked"]
+            if kept:
+                expected += "\n" + labels["recoveryCloudCopiesKept"].replace("{{count}}", str(kept))
+            assert modal.get_by_role("status").text_content() == expected
+            assert dialogs == []
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => item.body === undefined)") == [True]
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])
+            assert page.evaluate("window.requests.some(item => item.path.endsWith('/approve'))") is False
             assert page.evaluate("window.requests.some(item => ['/history/approve','/sync-choice','/enable','/sync'].some(suffix => item.path.endsWith(suffix)))") is False
             assert modal.locator('[data-sync-action="recover"]').is_disabled()
         finally:

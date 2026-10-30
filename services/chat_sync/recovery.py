@@ -29,12 +29,6 @@ CREATE TABLE IF NOT EXISTS source_recovery_delete_ids (
     owner TEXT, uid TEXT NOT NULL, message_id TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS source_recovery_delete_domain
     ON source_recovery_delete_ids(uid,message_id,COALESCE(owner,''));
-CREATE TABLE IF NOT EXISTS source_recovery_delete_tasks (
-    task_id TEXT PRIMARY KEY, uid TEXT NOT NULL, owner TEXT NOT NULL,
-    binding TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'preview');
-CREATE TABLE IF NOT EXISTS source_recovery_delete_members (
-    task_id TEXT NOT NULL, message_id TEXT NOT NULL, registered INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(task_id,message_id));
 '''
 
 
@@ -124,15 +118,13 @@ def stage_authority(runtime):
                        "ON CONFLICT(uid) DO UPDATE SET status='pending'")
         source.execute("INSERT INTO source_recovery_roles SELECT DISTINCT uid,'pending' FROM source_recovery_delete_ids WHERE 1 "
                        "ON CONFLICT(uid) DO UPDATE SET status='pending'")
-        source.execute("UPDATE source_recovery_delete_tasks SET status='quarantined'")
         source.execute('DELETE FROM source_origin_streams')
         source.execute('UPDATE source_unbound SET deletion_pending=0')
         # Candidate bodies can enter this table only after current cloud fences.
         # Their stable IDs/origins remain in the quarantine table meanwhile.
         source.execute('DELETE FROM source_unbound WHERE record_id IN (SELECT record_id FROM source_recovery_candidates)')
     with closing(store_connection(directory / 'originals.sqlite3')) as ledger, ledger:
-        for table in ('chat_pending', 'chat_batches', 'chat_deletions', 'chat_originals', 'chat_downloaded',
-                      'chat_recovery_deletion_pages'):
+        for table in ('chat_pending', 'chat_batches', 'chat_deletions', 'chat_originals', 'chat_downloaded'):
             ledger.execute(f'DELETE FROM {table}')
     with closing(store_connection(directory / 'state.sqlite3')) as state, state:
         if state.execute("SELECT 1 FROM sqlite_master WHERE name='long_term_memory_state'").fetchone():
@@ -155,7 +147,21 @@ def import_outage(runtime):
     path = directory / 'outage.sqlite3'
     if not path.exists():
         return
-    with closing(sqlite3.connect(path)) as outage, closing(store_connection(directory / 'sources.sqlite3')) as source, source:
+    accounts = {}
+    for binding in runtime.state.bindings():
+        try:
+            accounts[binding['character_uid']] = ChatDomain(binding['owner_id'], binding['character_uid']).key()
+        except ValueError:
+            continue
+    with closing(sqlite3.connect(path)) as outage, closing(store_connection(directory / 'originals.sqlite3')) as ledger, \
+            closing(store_connection(directory / 'sources.sqlite3')) as source, source:
+
+        def unrecorded(uid, identity):
+            """The outage store keeps its rows, so skip IDs an earlier recovery already kept as tombstones."""
+            key = accounts.get(uid)
+            return key is None or ledger.execute('SELECT 1 FROM chat_tombstones WHERE domain=? AND message_id=?',
+                                                 (key, identity)).fetchone() is None
+
         tables = {row[0] for row in outage.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         rows = outage.execute('SELECT * FROM outage_originals') if 'outage_originals' in tables else []
         for identity, uid, original, digest, queued, stream, seq, deleted in rows:
@@ -163,11 +169,12 @@ def import_outage(runtime):
                            '(record_id,uid,original,original_hash,queued_at_ms,origin_stream_id,origin_seq,kind,deleted) '
                            "VALUES (?,?,?,?,?,?,?,'local',?)", (identity, uid, original, digest, queued, stream, seq, deleted))
             source.execute("INSERT OR IGNORE INTO source_recovery_roles VALUES (?,'pending')", (uid,))
-            if deleted:
+            if deleted and unrecorded(uid, identity):
                 source.execute('INSERT OR IGNORE INTO source_recovery_delete_ids VALUES (NULL,?,?)', (uid, identity))
         if 'outage_deletions' in tables:
             for uid, identity in outage.execute('SELECT uid,message_id FROM outage_deletions'):
-                source.execute('INSERT OR IGNORE INTO source_recovery_delete_ids VALUES (NULL,?,?)', (uid, identity))
+                if unrecorded(uid, identity):
+                    source.execute('INSERT OR IGNORE INTO source_recovery_delete_ids VALUES (NULL,?,?)', (uid, identity))
                 source.execute("INSERT OR IGNORE INTO source_recovery_roles VALUES (?,'pending')", (uid,))
                 source.execute('UPDATE source_recovery_candidates SET original=NULL,payload=NULL,deleted=1 WHERE uid=? AND record_id=?', (uid, identity))
                 source.execute('UPDATE source_originals SET original=NULL,deleted=1 WHERE uid=? AND record_id=?', (uid, identity))
@@ -273,39 +280,25 @@ def apply_checked_candidates(runtime, domain, candidates, results):
 
 
 def finish_role(runtime, domain, binding, fingerprint):
-    """Freeze a separately reviewed deletion set and release the normal role gate."""
-    task_id = uuid4().hex
-    with closing(store_connection(runtime.state.path.parent / 'sources.sqlite3')) as conn, conn:
-        conn.execute("UPDATE source_recovery_delete_tasks SET status='cancelled' WHERE uid=? AND status='preview'", (domain.character_uid,))
-        conn.execute('INSERT INTO source_recovery_delete_tasks(task_id,uid,owner,binding,fingerprint) VALUES (?,?,?,?,?)',
-                     (task_id, domain.character_uid, domain.owner_id, json.dumps(binding, sort_keys=True), fingerprint))
-        conn.execute('INSERT INTO source_recovery_delete_members(task_id,message_id) '
-                     'SELECT DISTINCT ?,message_id FROM source_recovery_delete_ids WHERE uid=? AND (owner IS NULL OR owner=?)',
-                     (task_id, domain.character_uid, domain.owner_id))
-        count = conn.execute('SELECT count(*) FROM source_recovery_delete_members WHERE task_id=?', (task_id,)).fetchone()[0]
+    """Keep this role's unsent local deletions as tombstones and release its role gate.
+
+    These IDs were deleted on this device before recovery, and their local
+    copies are already hidden. Nothing sends them to the cloud any more, so
+    recovery keeps them as local tombstones and reports how many there were.
+    The caller's bound commit has already fenced ``binding`` and the session
+    ``fingerprint``; this step does not read them.
+    """
+    sources = runtime.state.path.parent / 'sources.sqlite3'
+    with closing(store_connection(sources)) as conn:
+        ids = [row[0] for row in conn.execute(
+            'SELECT DISTINCT message_id FROM source_recovery_delete_ids WHERE uid=? AND (owner IS NULL OR owner=?) '
+            'ORDER BY message_id', (domain.character_uid, domain.owner_id))]
+    # Tombstones commit first. A crash before the staged IDs are dropped only
+    # repeats an idempotent write when recovery runs again.
+    with closing(store_connection(runtime.ledger.path)) as ledger, ledger:
+        ledger.executemany('INSERT OR IGNORE INTO chat_tombstones VALUES (?,?)', [(domain.key(), value) for value in ids])
+    with closing(store_connection(sources)) as conn, conn:
+        conn.executemany('DELETE FROM source_recovery_delete_ids WHERE uid=? AND message_id=? AND (owner IS NULL OR owner=?)',
+                         [(domain.character_uid, value, domain.owner_id) for value in ids])
         conn.execute("UPDATE source_recovery_roles SET status='verified' WHERE uid=?", (domain.character_uid,))
-    return {'taskId': task_id, 'count': count}
-
-
-def approve_deletions(runtime, uid, task_id, binding, fingerprint):
-    """Reuse the ordinary pure-marker outbox after exact renewed deletion consent."""
-    path = runtime.state.path.parent / 'sources.sqlite3'
-    with closing(store_connection(path)) as conn, conn:
-        conn.row_factory = sqlite3.Row
-        task = conn.execute('SELECT * FROM source_recovery_delete_tasks WHERE task_id=? AND uid=?', (task_id, uid)).fetchone()
-        if task is None or task['status'] not in ('preview', 'approved'):
-            raise ValueError('chat_sync_history_changed')
-        pinned = json.loads(task['binding'])
-        if (any(pinned[key] != binding[key] for key in ('owner_id', 'character_uid', 'binding_id', 'request_id'))
-                or (task['status'] == 'preview' and (task['fingerprint'] != fingerprint or pinned != binding))):
-            raise ValueError('chat_sync_history_changed')
-        conn.execute("UPDATE source_recovery_delete_tasks SET status='approved' WHERE task_id=?", (task_id,))
-        ids = [row[0] for row in conn.execute('SELECT message_id FROM source_recovery_delete_members WHERE task_id=? AND registered=0 ORDER BY rowid LIMIT 200', (task_id,))]
-    if ids:
-        runtime.ledger.queue_recovery_deletions(ChatDomain(binding['owner_id'], uid), task_id, ids)
-    with closing(store_connection(path)) as conn, conn:
-        conn.executemany('UPDATE source_recovery_delete_members SET registered=1 WHERE task_id=? AND message_id=?', [(task_id, identity) for identity in ids])
-        remaining = conn.execute('SELECT count(*) FROM source_recovery_delete_members WHERE task_id=? AND registered=0', (task_id,)).fetchone()[0]
-        if not remaining:
-            conn.execute("UPDATE source_recovery_delete_tasks SET status='registered' WHERE task_id=?", (task_id,))
-    return {'taskId': task_id, 'registeredCount': len(ids), 'remaining': remaining}
+    return {'count': len(ids)}

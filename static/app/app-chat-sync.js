@@ -101,14 +101,10 @@
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             await refreshStatus();
             if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
-            if (recovered.deletions.count && window.confirm(text('recoveryDeleteConfirm', {
-                    count: recovered.deletions.count, localName: recovered.deletions.localName,
-                    cloudName: recovered.deletions.cloudName
-                }))) {
-                await api(path + '/recovery/deletions/approve', 'POST', { taskId: recovered.deletions.taskId });
-            }
-            if (!dialog.open || characterName() !== requestedName || activeUid !== requestedUid) return;
             statusNode.textContent = text('recoveryChecked');
+            // Earlier local deletions that never reached the cloud stay local only.
+            var kept = recovered.deletions.count;
+            if (kept) statusNode.textContent += '\n' + text('recoveryCloudCopiesKept', { count: kept });
         } catch (error) {
             if (dialog.open && characterName() === requestedName && activeUid === requestedUid) {
                 statusNode.textContent = describeError(error);
