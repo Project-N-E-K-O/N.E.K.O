@@ -460,7 +460,7 @@ def test_compaction_under_concurrent_writers_never_loses_the_anchor(tmp_path):
         while not stop.is_set():
             try:
                 eid = _record(log, {"writer": k, "n": n, "pad": "z" * 300})
-            except BaseException as e:  # noqa: BLE001 - surfaced by the assert below
+            except Exception as e:  # noqa: BLE001 - surfaced by the assert below
                 errors.append(e)
                 return
             with written_lock:
@@ -795,6 +795,89 @@ def test_write_fence_blocks_compaction(tmp_path):
     assert _read_bytes(_events_path(tmp_path)) == body
 
 
+@contextmanager
+def _fence_spy(on_enter=None):
+    """Replace the cloud-save write fence with one that records when it is held."""
+    held = {"now": False, "entered": 0}
+
+    @contextmanager
+    def fake_transaction(*_args, **_kwargs):
+        held["entered"] += 1
+        held["now"] = True
+        try:
+            if on_enter is not None:
+                on_enter()
+            yield
+        finally:
+            held["now"] = False
+
+    with patch("utils.cloudsave_runtime.cloudsave_writable_transaction", fake_transaction):
+        yield held
+
+
+def test_archive_shards_are_read_before_the_write_fence_is_taken(tmp_path):
+    """Shard reads happen in the first pass; under the fence the cached index answers."""
+    from memory import archive_shards
+    from memory.evidence_handlers import make_archive_copy_check
+
+    log = _fresh_log(str(tmp_path))
+    archived = _line("archived", days_ago=60, type_="reflection.state_changed", payload={
+        "reflection_id": "r1", "from": "confirmed", "to": "archived",
+        "archive_shard_path": "2026-09-01_aaaaaaaa.json",
+        "entry_snapshot": {"id": "r1", "archived_at": "2026-09-01T10:00:00"}})
+    _write_journal(tmp_path, [archived, _line("old", days_ago=60), _line("anchor", days_ago=50)])
+    _write_sentinel(tmp_path, "anchor")
+    real_index = archive_shards.shard_entry_index_sync
+    reads = []
+    with _knobs(), _fence_spy() as held:
+        def spy_index(archive_dir):
+            reads.append(held["now"])
+            return real_index(archive_dir)
+        with patch.object(archive_shards, "shard_entry_index_sync", spy_index):
+            result = log.compact_applied_history(
+                NAME, now=NOW, needs_journal_copy=make_archive_copy_check(_char_dir(tmp_path)))
+    assert result.outcome == "compacted" and result.pinned == 1
+    assert reads == [False] and held["entered"] == 1
+
+
+@pytest.mark.parametrize("change", ["append", "sentinel_moved", "replay_started", "replay_paused"])
+def test_changes_while_the_write_fence_is_taken_are_rescanned(tmp_path, change):
+    """The fenced pass plans again, so writes that landed meanwhile are kept or stop it."""
+    log = _fresh_log(str(tmp_path))
+    _write_journal(tmp_path, [_line("old", days_ago=60), _line("anchor", days_ago=50), _line("tail", days_ago=40)])
+    _write_sentinel(tmp_path, "anchor")
+    rounds = []
+
+    def move():
+        if change == "append":
+            with open(_events_path(tmp_path), "a", encoding="utf-8") as f:
+                f.write(_line("late", days_ago=0) + "\n")
+        elif change == "sentinel_moved":
+            _write_sentinel(tmp_path, "tail")
+        elif change == "replay_started":
+            rounds.append(log.replay_round(NAME))
+            rounds[-1].__enter__()
+        else:
+            log._record_replay_outcome(NAME, drained=False)
+
+    with _knobs(), _fence_spy(on_enter=move):
+        body = _read_bytes(_events_path(tmp_path))
+        result = log.compact_applied_history(NAME, now=NOW)
+    for active in rounds:
+        active.__exit__(None, None, None)
+    after = _read_bytes(_events_path(tmp_path))
+    ids = [json.loads(raw)["event_id"] for raw in after.decode("utf-8").splitlines() if raw]
+    if change == "append":
+        # The late line is part of the tail the fenced pass read.
+        assert result.outcome == "compacted" and ids == ["anchor", "tail", "late"]
+    elif change == "sentinel_moved":
+        # The fenced pass anchors on the sentinel it reads now.
+        assert result.outcome == "compacted" and ids == ["tail"]
+    else:
+        expected = {"replay_started": "replay_in_progress", "replay_paused": "replay_paused"}[change]
+        assert result.outcome == expected and after == body
+
+
 def test_journal_changed_under_the_scan_is_left_alone(tmp_path, monkeypatch):
     log = _fresh_log(str(tmp_path))
     _write_journal(tmp_path, [_line("old", days_ago=60), _line("anchor", days_ago=50)])
@@ -809,7 +892,7 @@ def test_journal_changed_under_the_scan_is_left_alone(tmp_path, monkeypatch):
         if os.path.normcase(os.path.abspath(str(path))) != target:
             return st
         calls["n"] += 1
-        if calls["n"] < 3:  # trigger check, then st0
+        if calls["n"] < 4:  # trigger check, first-pass st0, fenced-pass st0
             return st
         return SimpleNamespace(st_ino=st.st_ino, st_size=st.st_size + 1,
                                st_mtime_ns=st.st_mtime_ns)
@@ -819,7 +902,7 @@ def test_journal_changed_under_the_scan_is_left_alone(tmp_path, monkeypatch):
         result = log.compact_applied_history(NAME, now=NOW)
 
     assert result.outcome == "journal_changed"
-    assert calls["n"] == 3
+    assert calls["n"] == 4
     assert _read_bytes(_events_path(tmp_path)) == body
 
 
@@ -1023,7 +1106,7 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
                     sync_mutate_view=lambda _v: None,
                     sync_save_view=lambda _n, _v: None,
                 )
-            except BaseException as e:  # noqa: BLE001 - surfaced by the assert below
+            except Exception as e:  # noqa: BLE001 - surfaced by the assert below
                 errors.append(e)
                 return
             n += 1
@@ -1034,7 +1117,7 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
         while not stop.is_set():
             try:
                 result = log.compact_applied_history(NAME, now=far_future)
-            except BaseException as e:  # noqa: BLE001 - surfaced by the assert below
+            except Exception as e:  # noqa: BLE001 - surfaced by the assert below
                 errors.append(e)
                 return
             outcomes[result.outcome] = outcomes.get(result.outcome, 0) + 1

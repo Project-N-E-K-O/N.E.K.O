@@ -244,9 +244,17 @@ both give `read_since(sentinel)` the same answer. Before writing, the new body i
 parsed in memory with the same line iteration replay uses, and must contain the
 anchor followed by exactly the old tail's ids. Compaction never creates a
 directory: paths are built without `ensure_character_dir`, and the final write
-refuses to recreate a vanished parent. The pre-write checks and the replace run
-inside `cloudsave_writable_transaction`, taken before the per-character lock,
-which keeps a cloud import or restore from interleaving.
+refuses to recreate a vanished parent.
+
+It runs in two phases so the shared write fence stays short. The scan, the
+archive-shard lookups and the self-check run under the per-character lock alone.
+Only the replace runs inside `cloudsave_writable_transaction`, taken before the
+per-character lock (the order a cloud import already uses), which keeps a cloud
+import or restore from interleaving. Under the fence the second phase re-checks
+that no replay round started or paused, that the sentinel still names the same
+anchor, and that the file identity matches the scanned one; anything that moved
+in between returns `journal_changed` (or the replay outcome) and leaves the body
+for the next round.
 
 **Why not seeds.** An earlier helper replaced the body with "seed" events derived
 from the views and reset the sentinel to `null`. That dropped any unapplied tail,

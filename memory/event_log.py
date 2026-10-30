@@ -175,6 +175,17 @@ class CompactionResult(NamedTuple):
     pinned_event_ids: tuple[str, ...] = ()
 
 
+class _CompactionPlan(NamedTuple):
+    """A scanned, self-checked replacement body waiting for the write fence."""
+
+    body: str
+    sentinel: str
+    st0: os.stat_result
+    dropped_lines: int
+    dropped_bytes: int
+    stats: dict
+
+
 def _iter_journal_stream(
     stream: Iterable[str],
 ) -> Iterator[tuple[int, str, dict | None]]:
@@ -788,10 +799,19 @@ class EventLog:
 
         Never creates a directory: paths come from the no-create character
         directory, and the final write refuses to recreate a vanished
-        parent. The pre-write checks and the replace run inside
-        cloudsave_writable_transaction, taken BEFORE the character lock --
-        the order a cloud import already uses (fence first, character lock
-        later, through reload and long-term sync).
+        parent.
+
+        Two passes keep the shared write fence short. The first pass runs
+        under the character lock alone: it returns early when there is
+        nothing to do, and it warms ``needs_journal_copy`` (the archive
+        check reads each side's shards at most once and caches the index).
+        The second pass runs inside cloudsave_writable_transaction, taken
+        BEFORE the character lock -- the order a cloud import already uses
+        (fence first, character lock later, through reload and long-term
+        sync) -- and re-plans from a fresh scan before replacing, so writes
+        that landed between the passes are simply part of what it reads.
+        Under the fence only the journal is read again; shard reads already
+        happened outside it.
 
         ``needs_journal_copy`` exceptions propagate and nothing is written.
         Blocking file IO: call from a worker thread, or use
@@ -811,6 +831,11 @@ class EventLog:
         if st.st_size < _COMPACT_TRIGGER_BYTES and not _first_line_says_due(path, now):
             return CompactionResult('not_due')
 
+        with self._get_lock(name):
+            warm = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+        if isinstance(warm, CompactionResult):
+            return warm
+
         from utils.cloudsave_runtime import (
             MaintenanceModeError,
             cloudsave_writable_transaction,
@@ -822,28 +847,76 @@ class EventLog:
                 target=f'memory/{name}/{_EVENTS_FILENAME}',
             ):
                 with self._get_lock(name):
-                    return self._compact_locked(
-                        name, char_dir, path, needs_journal_copy, now,
-                    )
+                    if not os.path.isdir(char_dir):
+                        return CompactionResult('no_character_dir', **warm.stats)
+                    plan = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+                    if isinstance(plan, CompactionResult):
+                        return plan
+                    return self._commit_compaction_locked(name, char_dir, path, plan)
         except MaintenanceModeError:
-            return CompactionResult('write_blocked')
+            return CompactionResult('write_blocked', **warm.stats)
 
-    def _compact_locked(
+    def _admit_compaction_unlocked(self, name: str) -> tuple[CompactionResult | None, str | None]:
+        """Replay and sentinel gates checked on every planning pass. Caller holds the character lock."""
+        if self._replay_round_active(name):
+            return CompactionResult('replay_in_progress'), None
+        if self.replay_paused_in_process(name):
+            return CompactionResult('replay_paused'), None
+        state, sentinel = self._read_sentinel_state_unlocked(name)
+        if state != 'ok':
+            return CompactionResult(f'sentinel_{state}'), None
+        return None, sentinel
+
+    def _commit_compaction_locked(
         self,
         name: str,
         char_dir: str,
         path: str,
+        plan: _CompactionPlan,
+    ) -> CompactionResult:
+        """Replace the body planned in this same lock hold. Caller holds the fence and the character lock."""
+        if not os.path.isdir(char_dir):
+            return CompactionResult('no_character_dir', **plan.stats)
+        try:
+            st1 = os.stat(path)
+        except FileNotFoundError:
+            return CompactionResult('journal_changed', **plan.stats)
+        except OSError:
+            return CompactionResult('journal_unreadable', **plan.stats)
+        if _file_identity(st1) != _file_identity(plan.st0):
+            # Another process appended, or a restore replaced the file.
+            return CompactionResult('journal_changed', **plan.stats)
+
+        try:
+            atomic_write_text(path, plan.body, encoding='utf-8', create_parents=False)
+        except FileNotFoundError:
+            if not os.path.isdir(char_dir):
+                return CompactionResult('no_character_dir', **plan.stats)
+            return CompactionResult('write_failed', **plan.stats)
+        except PermissionError as e:
+            if getattr(e, 'winerror', None) in _BUSY_WINERRORS:
+                return CompactionResult('busy', **plan.stats)
+            return CompactionResult('write_failed', **plan.stats)
+        except OSError:
+            return CompactionResult('write_failed', **plan.stats)
+        return CompactionResult(
+            'compacted',
+            dropped_lines=plan.dropped_lines,
+            dropped_bytes=plan.dropped_bytes,
+            **plan.stats,
+        )
+
+    def _plan_compaction_locked(
+        self,
+        name: str,
+        path: str,
         needs_journal_copy: Callable[[dict], bool] | None,
         now: datetime,
-    ) -> CompactionResult:
-        """Body of compact_applied_history. Caller holds the character lock."""
-        if self._replay_round_active(name):
-            return CompactionResult('replay_in_progress')
-        if self.replay_paused_in_process(name):
-            return CompactionResult('replay_paused')
-        state, sentinel = self._read_sentinel_state_unlocked(name)
-        if state != 'ok':
-            return CompactionResult(f'sentinel_{state}')
+    ) -> CompactionResult | _CompactionPlan:
+        """First phase: scan and self-check. Caller holds the character lock only."""
+        skip, sentinel = self._admit_compaction_unlocked(name)
+        if skip is not None:
+            return skip
         try:
             st0 = os.stat(path)
         except FileNotFoundError:
@@ -928,37 +1001,7 @@ class EventLog:
                 f"与原文不一致），放弃写盘；锚点 {sentinel}，尾巴 {len(old_tail_ids)} 条"
             )
             return CompactionResult('self_check_failed', **stats)
-
-        if not os.path.isdir(char_dir):
-            return CompactionResult('no_character_dir', **stats)
-        try:
-            st1 = os.stat(path)
-        except FileNotFoundError:
-            return CompactionResult('journal_changed', **stats)
-        except OSError:
-            return CompactionResult('journal_unreadable', **stats)
-        if _file_identity(st1) != _file_identity(st0):
-            # Another process appended, or a restore replaced the file.
-            return CompactionResult('journal_changed', **stats)
-
-        try:
-            atomic_write_text(path, body, encoding='utf-8', create_parents=False)
-        except FileNotFoundError:
-            if not os.path.isdir(char_dir):
-                return CompactionResult('no_character_dir', **stats)
-            return CompactionResult('write_failed', **stats)
-        except PermissionError as e:
-            if getattr(e, 'winerror', None) in _BUSY_WINERRORS:
-                return CompactionResult('busy', **stats)
-            return CompactionResult('write_failed', **stats)
-        except OSError:
-            return CompactionResult('write_failed', **stats)
-        return CompactionResult(
-            'compacted',
-            dropped_lines=dropped_lines,
-            dropped_bytes=dropped_bytes,
-            **stats,
-        )
+        return _CompactionPlan(body, sentinel, st0, dropped_lines, dropped_bytes, stats)
 
     # ── _record_and_save (RFC §3.4) ─────────────────────────────
 
