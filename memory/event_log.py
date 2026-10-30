@@ -767,6 +767,7 @@ class EventLog:
         name: str,
         *,
         needs_journal_copy: Callable[[dict], bool] | None = None,
+        sources_unchanged: Callable[[], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         """Drop already-applied history in front of the sentinel.
@@ -811,11 +812,14 @@ class EventLog:
         (fence first, character lock later, through reload and long-term
         sync) -- and re-plans from a fresh scan before replacing, so writes
         that landed between the passes are simply part of what it reads.
-        Under the fence only the journal is read again; shard reads already
-        happened outside it. Before re-planning it refuses inputs swapped
-        since the first pass (a replaced or shortened journal, or shard
-        files that changed, as a restore would leave), since the cached
-        archive index could then vouch for copies that are gone.
+        Under the fence the journal is read again, but an archive index the
+        first pass already built is not (a side the first pass never needed
+        is still read there on first use). Before re-planning it refuses
+        inputs swapped since the first pass: a replaced or shortened journal,
+        or -- when ``sources_unchanged`` is given -- shard files that changed,
+        as a restore would leave; the cached archive index could then vouch
+        for copies that are gone. Pass the archive check's own
+        ``sources_unchanged`` together with it.
 
         ``needs_journal_copy`` exceptions propagate and nothing is written.
         Blocking file IO: call from a worker thread, or use
@@ -853,7 +857,7 @@ class EventLog:
                 with self._get_lock(name):
                     if not os.path.isdir(char_dir):
                         return CompactionResult('no_character_dir', **warm.stats)
-                    moved = self._moved_since_warm(path, warm, needs_journal_copy)
+                    moved = self._moved_since_warm(path, warm, sources_unchanged)
                     if moved is not None:
                         return CompactionResult(moved, **warm.stats)
                     plan = self._plan_compaction_locked(name, path, needs_journal_copy, now)
@@ -867,7 +871,7 @@ class EventLog:
     def _moved_since_warm(
         path: str,
         warm: _CompactionPlan,
-        needs_journal_copy: Callable[[dict], bool] | None,
+        sources_unchanged: Callable[[], bool] | None,
     ) -> str | None:
         """Refuse a fenced pass whose first-pass inputs were swapped underneath it.
 
@@ -885,7 +889,6 @@ class EventLog:
             return 'journal_unreadable'
         if st.st_ino != warm.st0.st_ino or st.st_size < warm.st0.st_size:
             return 'journal_changed'
-        sources_unchanged = getattr(needs_journal_copy, 'sources_unchanged', None)
         if sources_unchanged is not None and not sources_unchanged():
             return 'archives_changed'
         return None
@@ -1141,11 +1144,13 @@ class EventLog:
         name: str,
         *,
         needs_journal_copy: Callable[[dict], bool] | None = None,
+        sources_unchanged: Callable[[], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         return await asyncio.to_thread(
             self.compact_applied_history, name,
-            needs_journal_copy=needs_journal_copy, now=now,
+            needs_journal_copy=needs_journal_copy,
+            sources_unchanged=sources_unchanged, now=now,
         )
 
     async def arecord_and_save(

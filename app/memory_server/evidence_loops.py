@@ -1153,8 +1153,9 @@ async def _acompact_event_log_one(raw_name: str) -> None:
         if not await asyncio.to_thread(os.path.isdir, char_dir):
             return
         from memory.evidence_handlers import make_archive_copy_check
+        check = make_archive_copy_check(char_dir)
         result = await event_log.acompact_applied_history(
-            name, needs_journal_copy=make_archive_copy_check(char_dir),
+            name, needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
         )
         _log_event_log_compaction(name, result)
     except Exception as e:

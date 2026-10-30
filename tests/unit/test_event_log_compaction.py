@@ -877,9 +877,10 @@ def test_a_restore_between_the_passes_never_trusts_the_stale_archive_index(tmp_p
             with open(shard, "w", encoding="utf-8") as f:
                 json.dump([], f)
 
+    check = make_archive_copy_check(_char_dir(tmp_path))
     with _knobs(), _fence_spy(on_enter=restore):
         result = log.compact_applied_history(
-            NAME, now=NOW, needs_journal_copy=make_archive_copy_check(_char_dir(tmp_path)))
+            NAME, now=NOW, needs_journal_copy=check, sources_unchanged=check.sources_unchanged)
     assert result.outcome == ("journal_changed" if swap == "journal_restored" else "archives_changed")
     # The archive event, the only copy once the shard lost it, is still in the journal.
     assert b'"archived"' in _read_bytes(journal)

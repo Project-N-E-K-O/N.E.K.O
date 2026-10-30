@@ -257,12 +257,16 @@ since the first pass: a journal that was replaced or shortened returns
 `journal_changed`, and shards whose files changed return `archives_changed`,
 because a restore in between could otherwise make a missing archive copy look
 present in the cached index. Appends are not a swap. It then plans again from a
-fresh scan of the journal (archive lookups hit the cached index, no shard is read
-under the fence), so lines appended or a sentinel moved between the passes are
+fresh scan of the journal (an archive index the first pass built is not read
+again under the fence; a side the first pass never needed is still read there on
+first use), so lines appended or a sentinel moved between the passes are
 simply part of what it reads; a replay round that started or paused returns its
-replay outcome. Only a change between this fenced scan and the replace (another
-process appending) returns `journal_changed`. Every skip leaves the body for the
-next round.
+replay outcome. Right before the replace it compares the file identity once more;
+a change that check observes (another process appended after the fenced scan)
+returns `journal_changed`. An append by another process after that last check and
+before the replace can still be overwritten (see the known limitations below);
+in-process writers cannot interleave because they need the character lock. Every
+skip leaves the body for the next round.
 
 **Why not seeds.** An earlier helper replaced the body with "seed" events derived
 from the views and reset the sentinel to `null`. That dropped any unapplied tail,
