@@ -126,10 +126,11 @@ function smoothRunIssues(recording: Recording): string[] {
   ]
 }
 
-// Reversal must not teleport: every step is within 2x the forward run's largest
-// step plus 2px. The reversal restarts the easing from the drawn position, so it
-// may move as fast as the forward run did right after the click, not only as
-// fast as its decelerated last steps.
+// Reversal must not teleport: the forward run up to the reversal is snap-free,
+// and every later step is within 2x the forward run's largest step plus 2px.
+// The reversal restarts the easing from the drawn position, so it may move as
+// fast as the forward run did right after the click, not only as fast as its
+// decelerated last steps.
 function reversalIssues(recording: Recording, reversalFrame: number): string[] {
   const { frames } = recording
   const step = (frameIndex: number, index: number) => {
@@ -139,8 +140,20 @@ function reversalIssues(recording: Recording, reversalFrame: number): string[] {
   }
   return recording.labels.flatMap((label, index) => {
     let forward = 0
+    let forwardFrame = recording.clickFrame
+    let travel = 0
     for (let frame = recording.clickFrame; frame < reversalFrame; frame++) {
-      forward = Math.max(forward, step(frame, index))
+      const delta = step(frame, index)
+      travel += delta
+      if (delta > forward) {
+        forward = delta
+        forwardFrame = frame
+      }
+    }
+    if (travel > SNAP_TRAVEL_MIN && forward > SNAP_SHARE * travel + TOLERANCE) {
+      return [
+        `${label} jumps ${forward.toFixed(1)}px at frame ${forwardFrame} before reversal of ${travel.toFixed(1)}px forward travel`,
+      ]
     }
     for (let frame = reversalFrame; frame < frames.length; frame++) {
       const delta = step(frame, index)
@@ -429,17 +442,23 @@ appearanceTest(
   'fixed-step sampling holds the clock while a slow first panel module loads',
   async ({ page }) => {
     // Far longer than the recording takes in real time to reach its 200ms second click.
+    let panelRequests = 0
     await page.route('**/assets/MarketPanel-*.js', async route => {
+      panelRequests++
       await new Promise(resolve => setTimeout(resolve, 500))
       await route.fallback()
     })
     await openPluginWorkbench(page)
+    // A failed preload still opens the drawer, so prove the slow module really loaded.
+    const panelResponse = page.waitForResponse('**/assets/MarketPanel-*.js')
     const recording = await recordDrawerMotion(page, {
       toggle: MARKET_TOGGLE,
       panel: MARKET_PANEL,
       duration: RUN_MS,
       secondClickAt: 200,
     })
+    expect(panelRequests, 'MarketPanel module request was delayed').toBe(1)
+    expect((await panelResponse).ok(), 'MarketPanel module loaded').toBe(true)
     const reversal = recording.secondClickFrame
     expect(reversal, 'second click ran').not.toBeNull()
     expect(recording.frames[reversal!]!.running, 'second click landed mid-animation').toBe(true)
