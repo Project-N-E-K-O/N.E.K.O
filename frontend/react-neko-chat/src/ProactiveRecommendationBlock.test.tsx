@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import App from './App';
 import MessageBlockView from './MessageBlockView';
 import { parseChatMessage, type MessageBlock } from './message-schema';
@@ -55,15 +55,30 @@ describe('proactive recommendation presentation', () => {
       expect(container.querySelector('[data-message-id="assistant-spoken"] .screen-observation-exposure')).not.toBeNull();
     });
 
-    it('stays out of the compact prompt while the caption reports its exposure', () => {
-      const onMessageAction = vi.fn();
-      const speaking = parseChatMessage({ ...spoken, status: 'streaming' });
-      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[speaking, observation]}
-        onMessageAction={onMessageAction} />);
-      expect(container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
-      expect(container.querySelector('.compact-chat-capsule-button .screen-observation-exposure')).not.toBeNull();
-      expect(shownCalls(onMessageAction).length).toBeGreaterThan(0);
-      expect(shownCalls(onMessageAction).every(([target]) => target === observation)).toBe(true);
+    it('stays out of the compact prompt and reports exposure only once the caption shows the line', async () => {
+      vi.useFakeTimers();
+      try {
+        const onMessageAction = vi.fn();
+        const speaking = parseChatMessage({ ...spoken, status: 'streaming' });
+        const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[speaking, observation]}
+          onMessageAction={onMessageAction} />);
+        expect(container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+        // Speech has not started, so the caption shows nothing yet.
+        expect(container.querySelector('.compact-chat-capsule-text')?.textContent).toBe('');
+        expect(container.querySelector('.screen-observation-exposure')).toBeNull();
+        expect(shownCalls(onMessageAction)).toHaveLength(0);
+        act(() => {
+          window.dispatchEvent(new CustomEvent('neko-speech-playback-state', { detail: {
+            active: true, audioContextTime: 0, playbackStartAudioTime: 0, playbackEndAudioTime: 1, updatedAt: Date.now() } }));
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+        expect(container.querySelector('.compact-chat-capsule-text')?.textContent).not.toBe('');
+        expect(container.querySelector('.compact-chat-capsule-button .screen-observation-exposure')).not.toBeNull();
+        expect(shownCalls(onMessageAction).length).toBeGreaterThan(0);
+        expect(shownCalls(onMessageAction).every(([target]) => target === observation)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
   it('retires a direct meme bubble after closing or the next user turn', () => {

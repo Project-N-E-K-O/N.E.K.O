@@ -6524,7 +6524,7 @@ function CompactChatApp({
                           >
                             {compactPreviewDisplayContent}
                           </span>
-                          {compactMessagePreview?.isAssistant ? (
+                          {compactMessagePreview?.isAssistant && !compactSuppressAssistantFallback && compactPreviewDisplayText ? (
                             <ScreenObservationExposure messages={messages} turnId={compactMessagePreview.turnId}
                               onAction={onMessageAction} />
                           ) : null}
