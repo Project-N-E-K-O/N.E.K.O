@@ -140,6 +140,8 @@ def fields(rest):
 
 fail = set(os.environ.get("FAKE_GH_FAIL", "").split(","))
 if args[:2] == ["api", "--paginate"]:
+    if "list" in fail:
+        save(1)
     keep = jq_condition(args[args.index("--jq") + 1])
     print("\n".join(str(r["id"]) for r in state["releases"] if keep(r)))
     save()
@@ -282,6 +284,19 @@ def test_retag_failure_leaves_a_published_staging_release(tmp_path: Path) -> Non
     assert code != 0
     assert state["releases"] == [{"id": 101, "tag_name": "nightly-staging-7-1", "draft": False}]
     assert sum("-f tag_name=nightly" in call for call in state["log"]) == 3
+
+
+def test_release_listing_failure_never_widens_deletion(tmp_path: Path) -> None:
+    leftovers = [
+        {"id": 50, "tag_name": "nightly-staging-5-1", "draft": True},
+        {"id": 60, "tag_name": "nightly-staging-6-1", "draft": False},
+    ]
+    code, state = _publish(tmp_path, [OLD_NIGHTLY, *leftovers], fail="list")
+
+    assert code != 0
+    assert OLD_NIGHTLY in state["releases"]
+    assert all(r in state["releases"] for r in leftovers)
+    assert not any(call.startswith("api -X DELETE") for call in state["log"])
 
 
 def test_later_failed_run_keeps_the_only_published_staging_release(tmp_path: Path) -> None:
