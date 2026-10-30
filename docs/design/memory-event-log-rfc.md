@@ -267,7 +267,11 @@ the only archival copy; the archive shards keep that text by design either way.
 by a later live write (see the known limitation below) sits in front of the
 anchor. Compaction leaves the character alone for the rest of the process in
 which the pause happened; after a restart such an event is pruned like any other
-applied history once it falls out of the window.
+applied history once it falls out of the window. That guard only knows about
+replay rounds. A live `record_and_save` whose event was appended but whose view
+save then failed leaves the same kind of unapplied event, and the next live
+write orphans it without any round pausing; compaction prunes that one in the
+same process, once it falls out of the window.
 
 ## Concurrency and consistency boundaries
 

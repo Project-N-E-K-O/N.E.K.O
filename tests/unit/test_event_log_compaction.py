@@ -848,3 +848,173 @@ def test_size_trigger_alone_is_enough(tmp_path):
         result = log.compact_applied_history(NAME, now=NOW)
     assert result.outcome == "compacted"
     assert _kept_ids(tmp_path) == ["anchor"]
+
+
+@pytest.mark.parametrize("ts", [
+    "1969-07-20T20:17:00+00:00",  # before the epoch: OSError on Windows
+    "0001-01-01T00:00:00+14:00",  # OverflowError on every platform
+    "9999-12-31T23:59:59-12:00",
+])
+@pytest.mark.parametrize("position", ["first_line", "before_anchor"])
+def test_an_aware_ts_the_platform_cannot_localize_counts_as_old(tmp_path, ts, position):
+    """One hand-edited ts must not make every compaction of this journal
+    raise; the journal would then never shrink again. It counts as old,
+    like any other unusable ts."""
+    log = _fresh_log(str(tmp_path))
+    lines = [_line("old", days_ago=60), _line("anchor", days_ago=50)]
+    lines.insert(0 if position == "first_line" else 1, _line("weird", ts=ts))
+    _write_journal(tmp_path, lines)
+    _write_sentinel(tmp_path, "anchor")
+
+    with patch.object(event_log_module, "_RETAIN_APPLIED_MAX_BYTES", 1 << 20):
+        result = log.compact_applied_history(NAME, now=NOW)
+
+    assert result.outcome == "compacted"
+    assert _kept_ids(tmp_path) == ["anchor"]
+
+
+# ── an interrupted write ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("stage", ["before_replace", "after_replace", "fsync_fails"])
+def test_an_interrupted_write_leaves_a_body_with_the_same_tail(tmp_path, stage):
+    """Crash points inside the one write: before the replace the old body
+    stays, after it the new one is in place, and either way replay sees the
+    same tail, the sentinel is untouched and no temp file is left behind.
+    The next run converges."""
+    from utils import file_utils
+
+    log = _fresh_log(str(tmp_path))
+    lines = [
+        _line("old1", days_ago=60), _line("old2", days_ago=55),
+        _line("anchor", days_ago=50), _line("t1", days_ago=40), "{corrupt",
+        _line("t2", days_ago=30),
+    ]
+    _write_journal(tmp_path, lines)
+    _write_sentinel(tmp_path, "anchor")
+    tail_before = _tail_ids(log)
+    assert tail_before == ["t1", "t2"]
+    body_before = _read_bytes(_events_path(tmp_path))
+    sentinel_before = _read_bytes(_sentinel_path(tmp_path))
+    real_replace = file_utils._replace_with_busy_retry
+    real_fsync = file_utils.os.fsync
+
+    def interrupted_replace(temp_path, target_path):
+        if stage == "after_replace":
+            real_replace(temp_path, target_path)
+        raise KeyboardInterrupt
+
+    def failing_fsync(fd):
+        raise OSError(5, "simulated I/O error")
+
+    with _knobs():
+        if stage == "fsync_fails":
+            with patch.object(file_utils.os, "fsync", failing_fsync):
+                result = log.compact_applied_history(NAME, now=NOW)
+            assert result.outcome == "write_failed"
+        else:
+            with patch.object(file_utils, "_replace_with_busy_retry", interrupted_replace), \
+                    pytest.raises(KeyboardInterrupt):
+                log.compact_applied_history(NAME, now=NOW)
+    assert real_fsync is file_utils.os.fsync
+
+    assert _read_bytes(_sentinel_path(tmp_path)) == sentinel_before
+    assert _tail_ids(log) == tail_before
+    if stage == "after_replace":
+        assert _journal_lines(tmp_path) == lines[2:]
+    else:
+        assert _read_bytes(_events_path(tmp_path)) == body_before
+    assert sorted(os.listdir(_char_dir(tmp_path))) == ["events.ndjson", "events_applied.json"]
+    assert not log._replay_round_active(NAME)
+
+    with _knobs():
+        again = log.compact_applied_history(NAME, now=NOW)
+    assert again.outcome == ("nothing_to_drop" if stage == "after_replace" else "compacted")
+    assert _journal_lines(tmp_path) == lines[2:]
+    assert _tail_ids(log) == tail_before
+
+
+# ── real threads: replay, live writes and compaction at once ─────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", range(3))
+async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_path, seed):
+    """No scripted interleaving: a replay round with a slow handler, a live
+    writer moving the sentinel under it (so the round freezes and rescans
+    from its own last-applied event), and a compactor hammering the same
+    journal. Every event the round owed must still be applied. Removing
+    the replay-round guard turns this red (the rescan anchor is cut away).
+    """
+    log = _fresh_log(str(tmp_path))
+    rec = Reconciler(log)
+    for i in range(30):
+        log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"i": f"h{i}"})
+    log.advance_sentinel(NAME, log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"i": "anchor"}))
+    owed = {f"t{i}" for i in range(25)}
+    for i in range(25):
+        log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"i": f"t{i}"})
+    applied: list[str] = []
+    applied_lock = threading.Lock()
+    rng = random.Random(seed)
+    delays = {f"t{i}": rng.choice([0.0, 0.001, 0.002]) for i in range(25)}
+
+    def handler(_name, payload):
+        time.sleep(delays.get(payload["i"], 0.0))
+        with applied_lock:
+            applied.append(payload["i"])
+        return True
+
+    rec.register(EVT_REFLECTION_EVIDENCE_UPDATED, handler)
+    stop = threading.Event()
+    outcomes: dict[str, int] = {}
+    errors: list[BaseException] = []
+    view: dict = {}
+
+    def writer():
+        n = 0
+        while not stop.is_set():
+            try:
+                log.record_and_save(
+                    NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"i": f"live{n}"},
+                    sync_load_view=lambda _n: view,
+                    sync_mutate_view=lambda _v: None,
+                    sync_save_view=lambda _n, _v: None,
+                )
+            except BaseException as e:  # noqa: BLE001 - surfaced by the assert below
+                errors.append(e)
+                return
+            n += 1
+            time.sleep(0.003)
+
+    def compactor():
+        far_future = datetime.now() + timedelta(days=90)
+        while not stop.is_set():
+            try:
+                result = log.compact_applied_history(NAME, now=far_future)
+            except BaseException as e:  # noqa: BLE001 - surfaced by the assert below
+                errors.append(e)
+                return
+            outcomes[result.outcome] = outcomes.get(result.outcome, 0) + 1
+            time.sleep(0.0005)
+
+    threads = [threading.Thread(target=writer, daemon=True),
+               threading.Thread(target=compactor, daemon=True)]
+    with _knobs():
+        for t in threads:
+            t.start()
+        try:
+            await asyncio.wait_for(rec.areconcile(NAME), 30)
+        finally:
+            stop.set()
+            for t in threads:
+                t.join(10)
+
+        assert not errors, errors[:3]
+        assert outcomes.get("replay_in_progress", 0) > 0, outcomes
+        missing = sorted(owed - set(applied))
+        assert not missing, f"本轮欠下的事件丢了 {len(missing)} 条: {missing[:5]} {outcomes}"
+
+        before = _tail_ids(log)
+        log.compact_applied_history(NAME, now=datetime.now() + timedelta(days=90))
+        assert _tail_ids(log) == before

@@ -232,14 +232,20 @@ def _naive_local(value: datetime) -> datetime:
 
 
 def _event_ts_local(value: object) -> datetime | None:
-    """Parse a record's ``ts``; None when it is missing or not ISO 8601."""
+    """Parse a record's ``ts``; None when it is missing or not usable.
+
+    Not usable covers more than "not ISO 8601": an aware value the platform
+    cannot move to local time raises OverflowError (year 1 / 9999 next to
+    an offset) or, on Windows, OSError (anything before 1970). One such
+    hand-edited line must count as old, like any unparseable ts, instead of
+    failing every compaction of that journal.
+    """
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
+        return _naive_local(datetime.fromisoformat(value))
+    except (ValueError, OverflowError, OSError):
         return None
-    return _naive_local(parsed)
 
 
 def _first_line_says_due(path: str, now: datetime) -> bool:
