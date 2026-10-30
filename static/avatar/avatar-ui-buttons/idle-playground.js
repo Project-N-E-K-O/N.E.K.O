@@ -1439,7 +1439,13 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
     if (catBody && catBody.grounded && state.phase !== 'dragging') {
         const art = button && button.querySelector('.neko-idle-return-art');
         if (art) {
+            const previousHull = catBody.visibleInsetRatios;
             _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1), _NEKO_IDLE_TIER_CAT1, { animate: false });
+            // This may be the final RAF; Web has no desktop observer to apply the new hull later.
+            _updateNekoIdleCat1PlaygroundBodyBounds(catBody);
+            if (catBody.visibleInsetRatios !== previousHull) {
+                _setNekoIdleCat1PlaygroundBodyPosition(catBody, catBody.x, catBody.y, { force: true });
+            }
         }
     }
     if (allGrounded && (state.phase === 'dropping' || state.phase === 'ballistic')) {
