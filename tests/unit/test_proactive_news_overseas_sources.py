@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from main_logic.proactive_chat.candidate_selection import _format_phase1_link_candidate
+from main_logic.proactive_chat.candidate_selection import (
+    _format_phase1_link_candidate,
+    _selected_web_link_from_match,
+)
 from main_logic.proactive_chat.sources import _extract_links_from_raw
 from utils.web_scraper import google_trends_feed, steam_store_feed
 from utils.web_scraper.google_trends_feed import (
@@ -838,3 +841,34 @@ async def test_overseas_news_treats_a_cancelled_sub_task_as_failure():
 
     assert result["success"] is True
     assert result["news"]["success"] is False
+
+
+@pytest.mark.unit
+def test_selected_grounded_link_keeps_canonical_title_and_source():
+    matched = {
+        "title": "Moon | Sweepers",
+        "url": "https://store.steampowered.com/app/1/",
+        "source": "Steam",
+        "mode": "news",
+        "grounded_news": True,
+        "description_hint": "Top seller.",
+    }
+    escaped_echo = {"title": r"Moon \u007c Sweepers", "source": "steam store"}
+
+    selected = _selected_web_link_from_match(matched, escaped_echo)
+
+    assert selected["title"] == "Moon | Sweepers"
+    assert selected["source"] == "Steam"
+    assert selected["description_hint"] == "Top seller."
+    assert selected["grounded_news"] is True
+
+
+@pytest.mark.unit
+def test_selected_link_for_other_sources_keeps_model_wording():
+    matched = {"title": "微博话题", "url": "https://s.weibo.com/1", "source": "微博", "mode": "news"}
+
+    selected = _selected_web_link_from_match(matched, {"title": "微博话题（热）", "source": "微博热搜"})
+
+    assert selected["title"] == "微博话题（热）"
+    assert selected["source"] == "微博热搜"
+    assert selected["mode"] == "news"

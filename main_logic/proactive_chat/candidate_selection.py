@@ -78,6 +78,41 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     return f"{index}. {title}{suffix}"
 
 
+def _selected_web_link_from_match(
+    matched: dict[str, Any], web_parsed: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the selected web link from a matched Phase 1 candidate.
+
+    Community cards and overseas grounded news render escaped text in Phase 1,
+    so the model may echo escaped titles; keep their canonical title and source
+    for Phase 2 and the public link. Other sources keep the model's wording.
+    """
+
+    keep_canonical = matched.get("mode") == "community" or bool(
+        matched.get("grounded_news")
+    )
+    canonical_title = matched.get("title", "")
+    canonical_source = matched.get("source", "")
+    selected = dict(matched)
+    selected.update(
+        {
+            "title": (
+                canonical_title
+                if keep_canonical
+                else web_parsed.get("title", canonical_title)
+            ),
+            "url": matched["url"],
+            "source": (
+                canonical_source
+                if keep_canonical
+                else web_parsed.get("source", canonical_source)
+            ),
+            "mode": matched.get("mode", "web"),
+        }
+    )
+    return selected
+
+
 def _number_phase1_links_by_source(
     links: list[dict[str, Any]], *, source_positions: dict[str, int] | None = None
 ) -> list[tuple[int, dict[str, Any]]]:
