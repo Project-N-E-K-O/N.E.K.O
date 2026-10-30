@@ -1018,3 +1018,77 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
         before = _tail_ids(log)
         log.compact_applied_history(NAME, now=datetime.now() + timedelta(days=90))
         assert _tail_ids(log) == before
+
+
+# ── order of what is kept, first-line trigger, a dir lost before the checks ──
+
+
+def test_pinned_and_window_lines_keep_their_journal_order(tmp_path):
+    """Lines kept in front of the anchor stay in journal order, pinned and
+    window lines interleaved as they were. Replay never reads them while
+    the sentinel holds, but the full-replay fallback (sentinel lost) and the
+    age trigger (first line) both do, and an archive event must not jump
+    ahead of the evidence updates written before it."""
+    log = _fresh_log(str(tmp_path))
+    lines = [
+        _line("w1", days_ago=6),
+        _line("p1", days_ago=60),
+        _line("w2", days_ago=5),
+        _line("drop", days_ago=40),
+        _line("p2", days_ago=50),
+        _line("w3", days_ago=4),
+        _line("anchor", days_ago=3),
+        _line("t1", days_ago=2),
+    ]
+    _write_journal(tmp_path, lines)
+    _write_sentinel(tmp_path, "anchor")
+
+    with _knobs(days=7, cap=1 << 20):
+        result = log.compact_applied_history(
+            NAME, now=NOW, needs_journal_copy=lambda rec: rec.get("event_id") in {"p1", "p2"},
+        )
+
+    assert result.outcome == "compacted"
+    assert result.pinned == 2
+    assert _kept_ids(tmp_path) == ["w1", "p1", "w2", "p2", "w3", "anchor", "t1"]
+
+
+@pytest.mark.parametrize("first_line", [
+    "{corrupt",
+    json.dumps({"event_id": "no_ts", "type": EVT_REFLECTION_EVIDENCE_UPDATED, "payload": {}}),
+    "[1, 2]",
+])
+def test_an_unusable_first_line_makes_a_small_journal_due(tmp_path, first_line):
+    """The age trigger cannot read an age off this line, so it counts as
+    old; otherwise a small journal starting with one would only ever be
+    reached by the size trigger."""
+    log = _fresh_log(str(tmp_path))
+    _write_journal(tmp_path, [first_line, _line("recent", days_ago=1), _line("anchor", days_ago=0.5)])
+    _write_sentinel(tmp_path, "anchor")
+
+    with patch.object(event_log_module, "_RETAIN_APPLIED_DAYS", 0):
+        result = log.compact_applied_history(NAME, now=NOW)
+
+    assert result.outcome == "compacted"
+    assert _kept_ids(tmp_path) == ["anchor"]
+
+
+def test_character_dir_removed_before_the_prewrite_checks(tmp_path):
+    """Unsubscribe can remove the directory while the body is being built.
+    The pre-write check reports it as such, writes nothing and creates
+    nothing."""
+    log = _fresh_log(str(tmp_path))
+    _write_journal(tmp_path, [_line("old", days_ago=60), _line("anchor", days_ago=50)])
+    _write_sentinel(tmp_path, "anchor")
+    real_check = event_log_module._body_keeps_tail
+
+    def check_then_remove_dir(body, sentinel, old_tail_ids):
+        ok = real_check(body, sentinel, old_tail_ids)
+        shutil.rmtree(_char_dir(tmp_path))
+        return ok
+
+    with _knobs(), patch.object(event_log_module, "_body_keeps_tail", check_then_remove_dir):
+        result = log.compact_applied_history(NAME, now=NOW)
+
+    assert result.outcome == "no_character_dir"
+    assert not os.path.exists(_char_dir(tmp_path))
