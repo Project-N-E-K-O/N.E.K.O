@@ -1261,7 +1261,7 @@ async def test_news_skips_xhh_source_outside_china_region():
         result = await fetch_news_content(limit=2)
 
     assert result["region"] == "non-china"
-    assert result["news"] is twitter
+    assert result["news"] == twitter
     assert "xhh" not in result
     fetch_xhh.assert_not_awaited()
     formatted = format_news_content(result)

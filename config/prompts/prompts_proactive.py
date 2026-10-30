@@ -3705,6 +3705,55 @@ PROACTIVE_NEWS_PHASE2_CONTEXT = {
 }
 
 
+# Overseas news (Twitter/X trends, Google Trends) is dropped when a trend term
+# or its headline mentions death, violent crime, terror, or disasters: a
+# playful companion should not open with them. Trends arrive in any language
+# regardless of the UI language, so every list is checked.
+# Matching (utils/web_scraper/news_filters.py): CJK terms match as substrings;
+# Latin/Cyrillic terms match whole words, and a trailing "*" makes a term a
+# prefix (for inflected forms).
+OVERSEAS_NEWS_BLOCKED_TERMS = {
+    "zh": [
+        "死亡", "身亡", "丧生", "遇难", "罹难", "遇害", "杀人", "命案", "枪击", "刺伤",
+        "砍伤", "自杀", "坠亡", "恐袭", "爆炸", "地震", "海啸", "讣告", "去世", "逝世",
+    ],
+    "zh-TW": [
+        "死亡", "身亡", "喪生", "遇難", "罹難", "遇害", "殺人", "命案", "槍擊", "刺傷",
+        "砍傷", "自殺", "墜亡", "恐攻", "爆炸", "地震", "海嘯", "訃聞", "去世", "逝世",
+    ],
+    "en": [
+        "killed", "killing", "killings", "murder*", "homicide", "manslaughter",
+        "shooting", "shootings", "gunman", "gunfire", "stabbing", "stabbed",
+        "massacre", "terrorist*", "terror attack", "suicide", "died", "dies",
+        "passed away", "obituary", "funeral", "fatal", "fatally", "fatalities",
+        "death toll", "casualties", "bombing", "earthquake", "tsunami", "wildfire",
+        "plane crash", "car crash",
+    ],
+    "ja": [
+        "死亡", "死去", "亡くな", "殺人", "殺害", "銃撃", "発砲", "刺さ", "刺殺", "遺体",
+        "自殺", "訃報", "テロ", "爆発", "地震", "津波", "事故死",
+    ],
+    "ko": [
+        "사망", "숨져", "숨진", "살인", "피살", "총격", "흉기", "자살", "부고", "별세",
+        "테러", "폭발", "지진", "쓰나미",
+    ],
+    "ru": [
+        "погиб*", "убит*", "убийств*", "стрельб*", "смерт*", "умер*", "скончал*",
+        "теракт*", "взрыв*", "самоубийств*", "землетрясен*", "катастроф*",
+    ],
+    "es": [
+        "muerto", "muertos", "muere", "murió", "muerte", "asesinato*", "asesinad*",
+        "tiroteo*", "apuñal*", "suicidio", "atentado*", "explosión", "terremoto",
+        "fallece", "falleció", "fallecido*",
+    ],
+    "pt": [
+        "morto", "mortos", "morre", "morreu", "morte", "assassinato*", "assassinad*",
+        "tiroteio*", "esfaque*", "suicídio", "atentado*", "explosão", "terremoto",
+        "falece", "faleceu", "falecido*",
+    ],
+}
+
+
 def get_proactive_news_phase2_context_locale(lang: str) -> dict[str, str]:
     """Phase 2 material labels for a selected overseas news candidate."""
     return PROACTIVE_NEWS_PHASE2_CONTEXT.get(

@@ -16,7 +16,8 @@
 
 Reads the public, login-free trending RSS feed. The feed is per country, so the
 country is derived from the user's language to keep topics in a language the
-user actually reads. Trends without any linked news article are dropped.
+user actually reads. Trends without any usable linked news article are dropped,
+as are trends about death, violence, or disasters (see ``news_filters``).
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from utils.external_http_client import get_external_http_client
 from utils.language_utils import get_global_language_full
 
 from ._shared import get_random_user_agent, logger
+from .news_filters import is_gambling_url, is_junk_headline, is_tragic_news_text
 
 
 _TRENDS_RSS_URL = "https://trends.google.com/trending/rss"
@@ -87,18 +89,22 @@ def parse_google_trends_rss(xml_text: str, *, limit: int = 10) -> list[dict[str,
             url = _plain(news_item.findtext(f"{_HT_NS}news_item_url"), 500)
             if not title or not url.startswith(("https://", "http://")):
                 continue
+            # Live feeds link sportsbook pages and image files as "news".
+            if is_gambling_url(url) or is_junk_headline(title):
+                continue
             news.append({
                 "title": title,
                 "url": url,
                 "source": _plain(news_item.findtext(f"{_HT_NS}news_item_source"), 80),
             })
-            if len(news) >= _MAX_NEWS_PER_TREND:
-                break
         if not news:
             # A bare search term gives the model nothing to stand on: live runs
             # showed it either says nothing or guesses wrong (a stock ticker
             # described as a "mysterious number"), so skip it.
             continue
+        if is_tragic_news_text(word) or any(is_tragic_news_text(entry["title"]) for entry in news):
+            continue
+        news = news[:_MAX_NEWS_PER_TREND]
         trends.append({
             "word": word,
             "traffic": _plain(item.findtext(f"{_HT_NS}approx_traffic"), 20),

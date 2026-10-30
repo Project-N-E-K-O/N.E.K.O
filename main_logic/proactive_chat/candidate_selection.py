@@ -29,14 +29,17 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     """Render useful candidate evidence without leaking bulky raw metadata."""
 
     is_community_card = item.get("mode") == "community"
+    # Overseas news summaries (Steam store copy, news headlines) are untrusted
+    # free text too; titles stay raw so Phase 1 selection still matches them.
+    escape_summary = bool(item.get("grounded_news"))
 
-    def _field_text(value: Any) -> str:
+    def _field_text(value: Any, *, field: str = "") -> str:
         text = " ".join(str(value or "").split())
-        if not is_community_card:
-            return text
-        # Community card fields are public, untrusted text inside a prompt
-        # section whose structural delimiters use ``=`` and ``|``.
-        return _escape_phase1_community_text(text)
+        if is_community_card or (escape_summary and field == "description_hint"):
+            # Community card fields are public, untrusted text inside a prompt
+            # section whose structural delimiters use ``=`` and ``|``.
+            return _escape_phase1_community_text(text)
+        return text
 
     title = str(item.get("phase1_title") or _field_text(item.get("title"))).strip()
     details: list[str] = []
@@ -57,7 +60,7 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
                 if _field_text(tag)
             )
         else:
-            value = _field_text(raw_value)
+            value = _field_text(raw_value, field=field)
         if not value:
             continue
         if field == "description_hint":

@@ -151,6 +151,13 @@ def parse_steam_item_details(payload: Any) -> dict[str, dict[str, Any]]:
     response = payload.get("response") if isinstance(payload, dict) else None
     store_items = response.get("store_items") if isinstance(response, dict) else None
     details: dict[str, dict[str, Any]] = {}
+    if store_items and not any(
+        isinstance(item, dict) and "content_descriptorids" in item for item in store_items
+    ):
+        # A batch of top sellers normally includes some mature titles. If none
+        # carries the field, Steam may have renamed it and the adult filter
+        # would silently pass everything.
+        logger.warning("Steam GetItems 返回中没有任何 content_descriptorids 字段，成人内容过滤可能失效")
     for item in store_items or []:
         if not isinstance(item, dict) or item.get("success", 1) != 1:
             continue

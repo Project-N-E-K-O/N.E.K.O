@@ -47,6 +47,7 @@ from .youtube_feed import fetch_youtube_home_feed
 from .twitch_feed import fetch_twitch_live_streams
 from .google_trends_feed import fetch_google_trends, google_trend_headline
 from .steam_store_feed import fetch_steam_featured, steam_game_details
+from .news_filters import is_tragic_news_text
 from .bilibili_content import fetch_bilibili_radar
 
 
@@ -889,6 +890,18 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
         response["error"] = "; ".join(errors) if errors else "Twitch 与 YouTube 获取失败（无错误详情）"
     return response
 
+def _drop_tragic_twitter_trends(twitter_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove overseas Twitter trends about death, violence, or disasters."""
+    kept = [
+        item for item in twitter_result.get('trending', []) or []
+        if not is_tragic_news_text(item.get('word', '') or item.get('name', ''))
+    ]
+    filtered = {**twitter_result, 'trending': kept}
+    if not kept:
+        filtered['success'] = False
+        filtered['error'] = 'Twitter returned only filtered trends'
+    return filtered
+
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch news/trending-topic content based on the user's region
@@ -956,13 +969,16 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
             fetch_steam_featured(limit),
             return_exceptions=True,
         )
-        if isinstance(twitter_result, Exception):
+        # BaseException: a sub-task cancelled on its own comes back as CancelledError.
+        if isinstance(twitter_result, BaseException):
             logger.warning(f"Twitter 热门话题获取失败: {twitter_result}")
             twitter_result = {'success': False, 'error': str(twitter_result)}
-        if isinstance(google_trends_result, Exception):
+        elif twitter_result.get('success'):
+            twitter_result = _drop_tragic_twitter_trends(twitter_result)
+        if isinstance(google_trends_result, BaseException):
             logger.warning(f"Google Trends 获取失败: {google_trends_result}")
             google_trends_result = {'success': False, 'error': str(google_trends_result), 'trending': []}
-        if isinstance(steam_result, Exception):
+        if isinstance(steam_result, BaseException):
             logger.warning(f"Steam 商店热门获取失败: {steam_result}")
             steam_result = {'success': False, 'error': str(steam_result), 'games': []}
 
