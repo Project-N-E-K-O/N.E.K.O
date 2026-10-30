@@ -245,6 +245,7 @@ def _run_first_peek_notice_harness(
     *,
     storage_throws: bool = False,
     drop_first_toast: bool = False,
+    i18n_echoes_key: bool = False,
 ) -> dict:
     script = textwrap.dedent(
         f"""
@@ -272,7 +273,7 @@ def _run_first_peek_notice_harness(
             dispatchEvent(event) {{
               for (const callback of listeners.get(event.type) || []) callback(event);
             }},
-            t(key, options) {{ return 'i18n:' + key; }},
+            t(key, options) {{ return {json.dumps(i18n_echoes_key)} ? key : 'i18n:' + key; }},
             showStatusToast(message, durationMs) {{
               // Mirrors the real toast: a higher-priority notice on screen
               // makes it drop this one without rendering anything.
@@ -398,3 +399,12 @@ def test_first_edge_peek_notice_dropped_by_busier_toast_is_retried() -> None:
     ]
     assert outcome["reloadedNotices"] == []
     assert outcome["stored"] == "1"
+
+
+def test_first_edge_peek_notice_never_shows_a_raw_i18n_key() -> None:
+    outcome = _run_first_peek_notice_harness(None, i18n_echoes_key=True)
+
+    assert len(outcome["firstNotices"]) == 1
+    message = outcome["firstNotices"][0]["message"]
+    assert message != "settings.widgetMode.firstPeekNotice"
+    assert "贴边探身" in message

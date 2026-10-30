@@ -25,6 +25,8 @@
                 text = window.t(key, Object.assign({ defaultValue: fallback }, params || {}));
             }
         } catch (_) {}
+        // The pre-init fallback t() echoes the key back; never show a raw key.
+        if (text === key) text = fallback;
         if (!params) return text || fallback;
         return String(text || fallback).replace(/\{(\w+)\}/g, function (_, name) {
             return Object.prototype.hasOwnProperty.call(params, name) ? params[name] : _;
