@@ -802,6 +802,36 @@ def test_old_history_is_not_left_in_a_directory_recreated_during_the_write(tmp_p
     assert sorted(os.listdir(_char_dir(tmp_path))) == ["recent.json"], "旧日志被写进了重建的角色目录"
 
 
+def test_a_failed_directory_check_after_the_write_keeps_the_new_journal(tmp_path, monkeypatch):
+    """Only a positively different directory is undone: a stat error after a
+    successful replace must not erase the journal (and its unapplied tail)."""
+    log = _fresh_log(str(tmp_path))
+    _write_journal(tmp_path, [_line("old", days_ago=60), _line("anchor", days_ago=50), _line("tail", days_ago=40)])
+    _write_sentinel(tmp_path, "anchor")
+    char_dir = os.path.normcase(os.path.abspath(_char_dir(tmp_path)))
+    real_stat, real_write = os.stat, event_log_module.atomic_write_text
+    written = {"done": False}
+
+    def write_then_flag(path, content, **kwargs):
+        result = real_write(path, content, **kwargs)
+        written["done"] = True
+        return result
+
+    def flaky_dir_stat(path, *args, **kwargs):
+        if written["done"] and os.path.normcase(os.path.abspath(str(path))) == char_dir:
+            raise PermissionError(13, "synthetic sharing violation")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(event_log_module, "atomic_write_text", write_then_flag)
+    monkeypatch.setattr(event_log_module.os, "stat", flaky_dir_stat)
+    with _knobs():
+        result = log.compact_applied_history(NAME, now=NOW)
+
+    assert result.outcome == "compacted"
+    ids = [json.loads(raw)["event_id"] for raw in _read_bytes(_events_path(tmp_path)).decode("utf-8").splitlines() if raw]
+    assert ids == ["anchor", "tail"]
+
+
 def test_write_fence_blocks_compaction(tmp_path):
     from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY
 

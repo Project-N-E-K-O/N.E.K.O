@@ -945,8 +945,13 @@ class EventLog:
             return CompactionResult('write_failed', **plan.stats)
         try:
             dir_after = _dir_identity(os.stat(char_dir))
+        except FileNotFoundError:
+            # Removed after the replace, journal included: nothing left to undo.
+            return CompactionResult('no_character_dir', **plan.stats)
         except OSError:
-            dir_after = None
+            # Cannot tell. Only a positively different directory is undone;
+            # the replace itself succeeded and the new body is valid in place.
+            dir_after = dir_before
         if dir_after != dir_before:
             # An unsubscribe removed the directory and a late writer (a
             # reflection task, /cache) recreated it between the checks and the
