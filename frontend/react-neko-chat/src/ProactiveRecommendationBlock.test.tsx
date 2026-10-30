@@ -11,18 +11,60 @@ const message = (block: ContentBlock) => parseChatMessage({ id: 'proactive-conte
 
 describe('proactive recommendation presentation', () => {
   beforeEach(() => window.localStorage.clear());
-  it('delivers new memes and screen observations directly without fabricating acceptance', () => {
+  it('delivers new memes directly without fabricating acceptance', () => {
     const action = vi.fn();
     const meme: ContentBlock = { ...base, category: 'meme', directDelivery: true };
     const view = render(<MessageBlockView block={meme} message={message(meme)} onAction={action} />);
     expect(view.container.querySelector('img')).toHaveAttribute('src', '/api/meme/proxy-image?url=https%3A%2F%2Fexample.com%2Fstory');
     expect(screen.queryByRole('button', { name: 'Show me' })).toBeNull();
     expect(action.mock.calls.some(([, event]) => event.action === 'proactive_recommendation_decision')).toBe(false);
-    const vision: ContentBlock = { ...base, category: 'vision', directDelivery: true, content: { title: 'You are tending a farm.', source: '', url: '' } };
-    view.rerender(<MessageBlockView block={vision} message={message(vision)} onAction={action} />);
-    expect(screen.getByText('You are tending a farm.')).toBeInTheDocument();
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
-    expect(screen.queryByText('Interest saved')).toBeNull();
+  });
+
+  describe('direct screen observations', () => {
+    const line = 'You are tending a farm.';
+    const vision: ContentBlock = { ...base, category: 'vision', directDelivery: true, content: { title: line, source: '', url: '' } };
+    const observation = parseChatMessage({ id: 'proactive-recommendation-screen', role: 'assistant', author: 'Neko',
+      time: '12:00 PM', turnId: 'screen-turn', blocks: [vision] });
+    const spoken = parseChatMessage({ id: 'assistant-spoken', role: 'assistant', author: 'Neko',
+      time: '12:00:01', turnId: 'screen-turn', status: 'sent', blocks: [{ type: 'text', text: line }] });
+    const shownCalls = (onAction: ReturnType<typeof vi.fn>) => onAction.mock.calls
+      .filter(([, event]) => event.action === 'proactive_recommendation_shown');
+
+    it('draws nothing of its own and reports no exposure without its spoken line', () => {
+      const onAction = vi.fn();
+      const { container } = render(<MessageBlockView block={vision} message={observation} onAction={onAction} />);
+      expect(container.querySelector('.proactive-recommendation')).toBeNull();
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it('shows the spoken line once in full chat and reports exposure from that bubble', () => {
+      const onMessageAction = vi.fn();
+      const { container } = render(<App chatSurfaceMode="full" messages={[spoken, observation]} onMessageAction={onMessageAction} />);
+      expect(screen.getAllByText(line)).toHaveLength(1);
+      expect(container.querySelector('[data-message-id="proactive-recommendation-screen"]')).toBeNull();
+      expect(container.querySelector('[data-message-id="assistant-spoken"] .screen-observation-exposure'))
+        .toHaveAttribute('data-recommendation-id', base.recommendationId);
+      expect(shownCalls(onMessageAction)).toEqual([[observation, expect.objectContaining({
+        payload: { recommendationId: base.recommendationId } })]]);
+    });
+
+    it('anchors exposure to the last bubble of a split turn only', () => {
+      const first = parseChatMessage({ ...spoken, id: 'assistant-first', blocks: [{ type: 'text', text: 'First half.' }] });
+      const { container } = render(<App chatSurfaceMode="full" messages={[first, spoken, observation]} />);
+      expect(container.querySelectorAll('.screen-observation-exposure')).toHaveLength(1);
+      expect(container.querySelector('[data-message-id="assistant-spoken"] .screen-observation-exposure')).not.toBeNull();
+    });
+
+    it('stays out of the compact prompt while the caption reports its exposure', () => {
+      const onMessageAction = vi.fn();
+      const speaking = parseChatMessage({ ...spoken, status: 'streaming' });
+      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[speaking, observation]}
+        onMessageAction={onMessageAction} />);
+      expect(container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+      expect(container.querySelector('.compact-chat-capsule-button .screen-observation-exposure')).not.toBeNull();
+      expect(shownCalls(onMessageAction).length).toBeGreaterThan(0);
+      expect(shownCalls(onMessageAction).every(([target]) => target === observation)).toBe(true);
+    });
   });
   it('retires a direct meme bubble after closing or the next user turn', () => {
     const block: ContentBlock = { ...base, category: 'meme', directDelivery: true };

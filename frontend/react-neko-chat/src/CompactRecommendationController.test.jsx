@@ -78,7 +78,10 @@ describe('compact countdown through the recommendation controller', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1); });
       expect(events.filter(event => event.kind === 'accepted')).toEqual([expect.objectContaining({ reason: 'countdown_elapsed' })]);
       expect(play).toHaveBeenCalledTimes(1);
-      expect(view.container.querySelector('[data-proactive-category]')).toHaveAttribute('data-proactive-category', category);
+      // A direct screen observation repeats its spoken line, so only a meme takes the slot afterwards.
+      const shown = view.container.querySelector('[data-proactive-category]');
+      if (category === 'meme') expect(shown).toHaveAttribute('data-proactive-category', category);
+      else expect(shown).toBeNull();
     } finally {
       act(() => window.dispatchEvent(new Event('pagehide')));
       view.unmount();
