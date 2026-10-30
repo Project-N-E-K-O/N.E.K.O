@@ -166,18 +166,33 @@
         }
     }
 
+    function isStatusToastShowing(message) {
+        if (typeof window.showStatusToast !== 'function') return true;
+        try {
+            const textEl = document.getElementById('status-toast-text');
+            return !!(textEl && textEl.textContent === message);
+        } catch (_) {
+            return false;
+        }
+    }
+
     function showFirstPeekNotice(event) {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         // Only a freshly created anchor is a real peek; visibility toggles of an
         // existing anchor (stealth, interaction) are not.
         if (!detail || detail.active !== true || detail.reason !== 'anchor-created') return;
         if (firstPeekNoticeShown || hasSeenFirstPeekNotice()) return;
-        firstPeekNoticeShown = true;
-        try { window.localStorage.setItem(FIRST_PEEK_NOTICE_STORAGE_KEY, '1'); } catch (_) {}
-        showNotice(t(
+        const message = t(
             'settings.widgetMode.firstPeekNotice',
             '她躲到屏幕边上了，把她拖回来就能恢复。不需要的话，可以在托盘菜单的“设置”里关闭“启用贴边探身”。'
-        ), FIRST_PEEK_NOTICE_DURATION_MS);
+        );
+        showNotice(message, FIRST_PEEK_NOTICE_DURATION_MS);
+        // showStatusToast silently drops a notice while a higher-priority one is
+        // on screen; only count it as seen once it actually rendered, otherwise
+        // the next peek tries again.
+        if (!isStatusToastShowing(message)) return;
+        firstPeekNoticeShown = true;
+        try { window.localStorage.setItem(FIRST_PEEK_NOTICE_STORAGE_KEY, '1'); } catch (_) {}
     }
 
     window.addEventListener('neko:live2d-peek-changed', showFirstPeekNotice);

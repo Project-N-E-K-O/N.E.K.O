@@ -240,16 +240,23 @@ def test_widget_mode_has_no_web_settings_control_or_dom_sync() -> None:
     assert "document.querySelectorAll" not in client_source
 
 
-def _run_first_peek_notice_harness(stored_value: str | None) -> dict:
+def _run_first_peek_notice_harness(
+    stored_value: str | None,
+    *,
+    storage_throws: bool = False,
+    drop_first_toast: bool = False,
+) -> dict:
     script = textwrap.dedent(
         f"""
         const fs = require('fs');
         const vm = require('vm');
         const source = fs.readFileSync({json.dumps(str(APP_WIDGET_MODE_PATH))}, 'utf8');
 
+        let dropNextToast = {json.dumps(drop_first_toast)};
         function load(storage) {{
           const listeners = new Map();
           const notices = [];
+          const toastText = {{ textContent: '' }};
           class CustomEventLike {{
             constructor(type, init = {{}}) {{
               this.type = type;
@@ -266,11 +273,24 @@ def _run_first_peek_notice_harness(stored_value: str | None) -> dict:
               for (const callback of listeners.get(event.type) || []) callback(event);
             }},
             t(key, options) {{ return 'i18n:' + key; }},
-            showStatusToast(message, durationMs) {{ notices.push({{ message, durationMs }}); }},
+            showStatusToast(message, durationMs) {{
+              // Mirrors the real toast: a higher-priority notice on screen
+              // makes it drop this one without rendering anything.
+              if (dropNextToast) {{
+                dropNextToast = false;
+                notices.push({{ message, durationMs, dropped: true }});
+                return;
+              }}
+              toastText.textContent = message;
+              notices.push({{ message, durationMs }});
+            }},
           }};
           const context = {{
             window: win,
-            document: {{ readyState: 'loading' }},
+            document: {{
+              readyState: 'loading',
+              getElementById(id) {{ return id === 'status-toast-text' ? toastText : null; }},
+            }},
             console,
             CustomEvent: CustomEventLike,
             fetch: async () => ({{ ok: false, status: 503, async json() {{ return {{}}; }} }}),
@@ -289,10 +309,15 @@ def _run_first_peek_notice_harness(stored_value: str | None) -> dict:
         const data = new Map();
         const initial = {json.dumps(stored_value)};
         if (initial !== null) data.set('neko_widget_mode_first_peek_notice_seen', initial);
-        const storage = {{
-          getItem(key) {{ return data.has(key) ? data.get(key) : null; }},
-          setItem(key, value) {{ data.set(key, String(value)); }},
-        }};
+        const storage = {json.dumps(storage_throws)}
+          ? {{
+              getItem() {{ throw new Error('SecurityError'); }},
+              setItem() {{ throw new Error('QuotaExceededError'); }},
+            }}
+          : {{
+              getItem(key) {{ return data.has(key) ? data.get(key) : null; }},
+              setItem(key, value) {{ data.set(key, String(value)); }},
+            }};
 
         const first = load(storage);
         // Visibility toggles of an existing anchor and peek clears are not a new peek.
@@ -352,3 +377,24 @@ def test_first_edge_peek_notice_is_localized_without_honorifics() -> None:
         assert notice.strip(), locale
         for honorific in ("主人", "Master", "ご主人", "주인", "Хозяин"):
             assert honorific not in notice, locale
+
+
+def test_first_edge_peek_notice_shows_once_per_session_without_storage() -> None:
+    outcome = _run_first_peek_notice_harness(None, storage_throws=True)
+
+    assert outcome["firstNotices"] == [
+        {"message": "i18n:settings.widgetMode.firstPeekNotice", "durationMs": 10000}
+    ]
+    assert outcome["stored"] is None
+
+
+def test_first_edge_peek_notice_dropped_by_busier_toast_is_retried() -> None:
+    outcome = _run_first_peek_notice_harness(None, drop_first_toast=True)
+
+    message = "i18n:settings.widgetMode.firstPeekNotice"
+    assert outcome["firstNotices"] == [
+        {"message": message, "durationMs": 10000, "dropped": True},
+        {"message": message, "durationMs": 10000},
+    ]
+    assert outcome["reloadedNotices"] == []
+    assert outcome["stored"] == "1"
