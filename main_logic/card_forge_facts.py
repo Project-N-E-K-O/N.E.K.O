@@ -640,7 +640,7 @@ def _select_archive_facts(
         exclude_keys=exclude_keys,
         lang=lang,
     )
-    dated =[item for item in candidates if _fact_memory_datetime(item) is not None]
+    dated = [item for item in candidates if _fact_memory_datetime(item) is not None]
     archive_stats = {
         "archiveRawCount": archive_raw_count,
         "archiveFilteredCount": stats.get("filteredCount", 0),
