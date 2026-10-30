@@ -238,3 +238,117 @@ def test_widget_mode_has_no_web_settings_control_or_dom_sync() -> None:
         assert forbidden not in popup_source
     assert "input[id$=\"-widget-mode\"]" not in client_source
     assert "document.querySelectorAll" not in client_source
+
+
+def _run_first_peek_notice_harness(stored_value: str | None) -> dict:
+    script = textwrap.dedent(
+        f"""
+        const fs = require('fs');
+        const vm = require('vm');
+        const source = fs.readFileSync({json.dumps(str(APP_WIDGET_MODE_PATH))}, 'utf8');
+
+        function load(storage) {{
+          const listeners = new Map();
+          const notices = [];
+          class CustomEventLike {{
+            constructor(type, init = {{}}) {{
+              this.type = type;
+              this.detail = init.detail;
+            }}
+          }}
+          const win = {{
+            localStorage: storage,
+            addEventListener(type, callback) {{
+              if (!listeners.has(type)) listeners.set(type, []);
+              listeners.get(type).push(callback);
+            }},
+            dispatchEvent(event) {{
+              for (const callback of listeners.get(event.type) || []) callback(event);
+            }},
+            t(key, options) {{ return 'i18n:' + key; }},
+            showStatusToast(message, durationMs) {{ notices.push({{ message, durationMs }}); }},
+          }};
+          const context = {{
+            window: win,
+            document: {{ readyState: 'loading' }},
+            console,
+            CustomEvent: CustomEventLike,
+            fetch: async () => ({{ ok: false, status: 503, async json() {{ return {{}}; }} }}),
+            Promise,
+            Object,
+            JSON,
+          }};
+          vm.createContext(context);
+          vm.runInContext(source, context, {{ filename: 'app-widget-mode.js' }});
+          const peek = (detail) => win.dispatchEvent(
+            new CustomEventLike('neko:live2d-peek-changed', {{ detail }})
+          );
+          return {{ notices, peek }};
+        }}
+
+        const data = new Map();
+        const initial = {json.dumps(stored_value)};
+        if (initial !== null) data.set('neko_widget_mode_first_peek_notice_seen', initial);
+        const storage = {{
+          getItem(key) {{ return data.has(key) ? data.get(key) : null; }},
+          setItem(key, value) {{ data.set(key, String(value)); }},
+        }};
+
+        const first = load(storage);
+        // Visibility toggles of an existing anchor and peek clears are not a new peek.
+        first.peek({{ active: true, visible: false, phase: 'hidden', reason: 'interaction-state' }});
+        first.peek({{ active: false, phase: 'unanchored', reason: 'drag-away-from-edge' }});
+        const beforeAnchor = first.notices.length;
+        first.peek({{ active: true, visible: true, phase: 'peeking', reason: 'anchor-created' }});
+        first.peek({{ active: true, visible: true, phase: 'peeking', reason: 'anchor-created' }});
+
+        // A reload of the page must remember that the notice was already shown.
+        const reloaded = load(storage);
+        reloaded.peek({{ active: true, visible: false, phase: 'hidden', reason: 'anchor-created' }});
+
+        console.log(JSON.stringify({{
+          beforeAnchor,
+          firstNotices: first.notices,
+          reloadedNotices: reloaded.notices,
+          stored: data.get('neko_widget_mode_first_peek_notice_seen') || null,
+        }}));
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, (
+        "node harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_first_edge_peek_shows_notice_once_and_persists() -> None:
+    outcome = _run_first_peek_notice_harness(None)
+
+    assert outcome["beforeAnchor"] == 0
+    assert outcome["firstNotices"] == [
+        {"message": "i18n:settings.widgetMode.firstPeekNotice", "durationMs": 10000}
+    ]
+    assert outcome["reloadedNotices"] == []
+    assert outcome["stored"] == "1"
+
+
+def test_first_edge_peek_notice_is_skipped_once_seen() -> None:
+    outcome = _run_first_peek_notice_harness("1")
+
+    assert outcome["firstNotices"] == []
+    assert outcome["reloadedNotices"] == []
+
+
+def test_first_edge_peek_notice_is_localized_without_honorifics() -> None:
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        payload = json.loads(
+            (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        notice = payload["settings"]["widgetMode"]["firstPeekNotice"]
+        assert notice.strip(), locale
+        for honorific in ("主人", "Master", "ご主人", "주인", "Хозяин"):
+            assert honorific not in notice, locale

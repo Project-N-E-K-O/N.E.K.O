@@ -3908,7 +3908,8 @@
             "disabledNotice": "Edge Peek is off. Live2D is visible and draggable again.",
             "stealthEnabledNotice": "Stealth Mode is on.",
             "stealthDisabledNotice": "Stealth Mode is off. Yui will remain peeking from the edge.",
-            "toggleFailed": "Failed to switch Edge Peek. Please try again later."
+            "toggleFailed": "Failed to switch Edge Peek. Please try again later.",
+            "firstPeekNotice": "She has tucked herself against the screen edge. Drag her back out to restore her. If you don’t want this, turn off “Enable Edge Peek” under Settings in the tray menu."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",

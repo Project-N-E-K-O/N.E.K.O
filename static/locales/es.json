@@ -3908,7 +3908,8 @@
             "disabledNotice": "Asomarse por el borde está desactivado. Live2D vuelve a estar visible y se puede arrastrar.",
             "stealthEnabledNotice": "El modo oculto está activado.",
             "stealthDisabledNotice": "El modo oculto está desactivado. Yui seguirá asomándose por el borde.",
-            "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde."
+            "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde.",
+            "firstPeekNotice": "Se ha escondido en el borde de la pantalla. Arrástrala de vuelta para recuperarla. Si no quieres esto, desactiva «Activar asomarse por el borde» en Ajustes, desde el menú de la bandeja."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",

@@ -3908,7 +3908,8 @@
             "disabledNotice": "가장자리 엿보기가 꺼졌습니다. Live2D가 다시 표시되고 드래그할 수 있습니다.",
             "stealthEnabledNotice": "은신 모드가 켜졌습니다.",
             "stealthDisabledNotice": "은신 모드가 꺼졌습니다. Yui가 가장자리에서 계속 모습을 내밉니다.",
-            "toggleFailed": "가장자리 엿보기를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
+            "toggleFailed": "가장자리 엿보기를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "firstPeekNotice": "화면 가장자리에 숨었어요. 드래그해서 다시 꺼내면 원래대로 돌아옵니다. 원하지 않으면 트레이 메뉴의 ‘설정’에서 ‘가장자리 엿보기 사용’을 끌 수 있습니다."
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",

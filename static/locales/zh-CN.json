@@ -3908,7 +3908,8 @@
             "disabledNotice": "贴边探身已关闭。Live2D 已恢复可见和可拖动状态。",
             "stealthEnabledNotice": "隐身模式已开启。",
             "stealthDisabledNotice": "隐身模式已关闭，Yui 将保持贴边探身。",
-            "toggleFailed": "贴边探身切换失败，请稍后重试。"
+            "toggleFailed": "贴边探身切换失败，请稍后重试。",
+            "firstPeekNotice": "她躲到屏幕边上了，把她拖回来就能恢复。不需要的话，可以在托盘菜单的“设置”里关闭“启用贴边探身”。"
         },
         "toggles": {
             "allowInterrupt": "允许打断",
