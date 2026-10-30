@@ -744,3 +744,95 @@ def test_slotted_wire_payload_has_no_hand_copied_controls():
     assert set(payload) <= identity | set(ENTRY_CONTRACT_FIELDS)
     assert payload["timeout"] == 100
     assert payload["quick_action_config"] == {"icon": None, "priority": 0}
+
+
+def test_router_entries_reach_the_execution_table_with_their_timeout(isolated_registry):
+    """`__routers__` entries must reach event_handlers, or execution uses the global default timeout."""
+    from plugin.sdk.plugin import PluginRouter
+
+    class Router(PluginRouter):
+        @plugin_entry(id="slow", timeout=120)
+        async def slow(self):
+            pass
+
+        @plugin_entry(id="probe", timeout=1)
+        async def shadowed(self):
+            pass
+
+    class Plugin(ContractPlugin):
+        __routers__ = [Router]
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.slow"].meta.timeout == 120
+    assert state.event_handlers["contract:plugin_entry:slow"].meta.timeout == 120
+    # An entry on the plugin class itself wins; the router does not override it
+    assert state.event_handlers["contract.probe"].meta.timeout == 5
+    assert ("contract", "slow") not in registry.plugin_entry_method_map
+
+
+def test_router_instance_entries_use_the_prefixed_runtime_id(isolated_registry):
+    """A prefixed router instance registers `x_slow`, the id runtime and preview use; non-entries stay out."""
+    from plugin.sdk.plugin import PluginRouter, lifecycle
+
+    class Router(PluginRouter):
+        @plugin_entry(id="slow", timeout=120)
+        async def slow(self):
+            pass
+
+        @lifecycle(id="startup")
+        async def startup(self, **_):
+            pass
+
+    class Plugin(ContractPlugin):
+        __routers__ = [Router(prefix="x_")]
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.x_slow"].meta.timeout == 120
+    assert "contract.slow" not in state.event_handlers
+    assert not any("startup" in key for key in state.event_handlers)
+    preview_ids = {e["id"] for e in registry._extract_entries_preview("contract", Plugin, {}, {})}
+    assert "x_slow" in preview_ids and "slow" not in preview_ids
+
+
+def test_malformed_routers_do_not_break_plugin_scan(isolated_registry):
+    class Plugin(ContractPlugin):
+        __routers__ = 42  # not iterable
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.probe"].meta.timeout == 5
+
+
+def test_router_id_clashes_resolve_the_same_on_host_and_worker(isolated_registry):
+    """Host timeout must belong to the handler the worker runs: last router wins, plugin class beats routers."""
+    from unittest.mock import MagicMock
+
+    from plugin.sdk.plugin import NekoPluginBase, PluginRouter
+
+    class First(PluginRouter):
+        @plugin_entry(id="dup", timeout=1)
+        async def dup(self):
+            pass
+
+    class Second(PluginRouter):
+        @plugin_entry(id="dup", timeout=120)
+        async def dup(self):
+            pass
+
+        @plugin_entry(id="probe", timeout=60)
+        async def probe(self):
+            pass
+
+    class Plugin(ContractPlugin, NekoPluginBase):
+        __routers__ = [First, Second]
+
+        def __init__(self, ctx):
+            super().__init__(ctx)
+            for router_cls in self.__routers__:
+                self.include_router(router_cls())
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    runtime = Plugin(MagicMock()).collect_entries()
+    for eid in ("dup", "probe"):
+        assert state.event_handlers[f"contract.{eid}"].meta.timeout == runtime[eid].meta.timeout
+    assert runtime["dup"].meta.timeout == 120
+    assert runtime["probe"].meta.timeout == 5
