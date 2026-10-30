@@ -353,9 +353,14 @@ same process, once it falls out of the window.
     callers that take a publication hold. Cloud downloads and workshop
     unsubscribe take none and do not drain. Unsubscribe can remove the directory
     at any moment; compaction therefore never creates a directory and returns
-    `no_character_dir` instead of writing into a vanished one. Cloud import and
-    restore run under the cloud-apply fence, which the compaction write
-    transaction excludes.
+    `no_character_dir` instead of writing into a vanished one. One window is
+    left, the same one every atomic writer in that directory has: a removal
+    that overlaps the temp file's write and fsync either lists the directory
+    before that file appears or, on Windows, cannot delete it while it is
+    open, so `rmtree` fails, the directory survives, and the replace then puts
+    the compacted journal into it (the sentinel may already be gone).
+    Cloud import and restore run under the cloud-apply fence, which the
+    compaction write transaction excludes.
 - Outbox recovery and event replay solve different failure windows: the outbox
   retries background operations; the journal repairs covered mutations after the
   operation has chosen a concrete state transition.
