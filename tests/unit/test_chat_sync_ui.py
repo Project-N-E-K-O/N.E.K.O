@@ -483,6 +483,7 @@ def test_writer_recovery_reports_kept_deletions_without_prompting_or_history_con
             page = browser.new_page()
             page.route("**/*", lambda route: route.abort())
             page.set_content('<body></body>')
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
             page.evaluate("""({labels, kept}) => {
                 window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
                     .replace(/{{(.*?)}}/g, (_, name) => values[name]);
@@ -525,6 +526,8 @@ def test_writer_recovery_reports_kept_deletions_without_prompting_or_history_con
             if kept:
                 expected += "\n" + labels["recoveryCloudCopiesKept"].replace("{{count}}", str(kept))
             assert modal.get_by_role("status").text_content() == expected
+            # The stylesheet keeps each status sentence on its own rendered line.
+            assert modal.get_by_role("status").inner_text() == expected
             assert dialogs == []
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => item.body === undefined)") == [True]
             assert page.evaluate("window.requests.some(item => item.path.endsWith('/approve'))") is False
