@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh resource repair stages and model names shown beside the progress bar.
-    const LOCALE_VERSION = '2026-10-30-voice-processing-host';
+    const LOCALE_VERSION = '2026-10-30-news-source-tooltip';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

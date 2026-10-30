@@ -3933,7 +3933,7 @@
             "proactiveVisionChat": "Screen Share",
             "proactiveVisionChatTooltip": "Requires Proactive Chat enabled and Privacy Mode disabled",
             "proactiveNewsChat": "News Website",
-            "proactiveNewsChatTooltip": "Use trending topics and Xiaoheihe home content for proactive chat",
+            "proactiveNewsChatTooltip": "Uses Twitter/X trending topics for proactive chat (Weibo, Tieba and Xiaoheihe in mainland China)",
             "proactiveCommunityChat": "nekoverse",
             "proactiveCommunityChatTooltip": "Use public cards from the nekoverse discover feed for proactive chat",
             "proactiveVideoChat": "Video Website",

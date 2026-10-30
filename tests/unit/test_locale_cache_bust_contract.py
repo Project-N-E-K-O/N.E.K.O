@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-10-30-voice-processing-host",
         "2026-10-29-visit-invitation-input",
         "2026-10-30-voice-repair-recovery",
         "2026-10-30-local-audio-copy",

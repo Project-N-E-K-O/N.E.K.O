@@ -3933,7 +3933,7 @@
             "proactiveVisionChat": "画面共有",
             "proactiveVisionChatTooltip": "自発的会話を有効にし、プライバシーモードを無効にする必要があります",
             "proactiveNewsChat": "ニュースサイト",
-            "proactiveNewsChatTooltip": "トレンド話題と小黒盒のホーム内容をもとに話しかける",
+            "proactiveNewsChatTooltip": "Twitter/X のトレンド話題をもとに話しかける（中国本土では微博・百度貼吧・小黒盒）",
             "proactiveCommunityChat": "ミャオ宇宙",
             "proactiveCommunityChatTooltip": "ミャオ宇宙の発見ページにある公開カードを使って話しかける",
             "proactiveVideoChat": "動画サイト",

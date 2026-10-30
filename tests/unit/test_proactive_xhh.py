@@ -1233,7 +1233,7 @@ async def test_news_aggregates_weibo_tieba_and_xhh():
 
 
 @pytest.mark.asyncio
-async def test_news_keeps_xhh_source_outside_china_region():
+async def test_news_skips_xhh_source_outside_china_region():
     twitter = {
         "success": True,
         "trending": [{"word": "#topic", "url": "https://twitter.com/topic"}],
@@ -1248,7 +1248,7 @@ async def test_news_keeps_xhh_source_outside_china_region():
     ), patch(
         "utils.web_scraper.trending_content.fetch_xhh_feed_content",
         new=AsyncMock(return_value=xhh),
-    ), patch(
+    ) as fetch_xhh, patch(
         "utils.web_scraper.trending_content.fetch_neko_community_feed",
         new=AsyncMock(),
     ) as fetch_community:
@@ -1256,10 +1256,32 @@ async def test_news_keeps_xhh_source_outside_china_region():
 
     assert result["region"] == "non-china"
     assert result["news"] is twitter
-    assert result["xhh"] is xhh
+    assert "xhh" not in result
+    fetch_xhh.assert_not_awaited()
     formatted = format_news_content(result)
-    assert "Xiaoheihe Home" in formatted
+    assert "Xiaoheihe Home" not in formatted
+    assert "#topic" in formatted
     fetch_community.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_news_outside_china_reports_twitter_failure():
+    with patch(
+        "utils.web_scraper.trending_content.is_china_region",
+        return_value=False,
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_twitter_trending",
+        new=AsyncMock(side_effect=RuntimeError("twitter down")),
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_xhh_feed_content",
+        new=AsyncMock(),
+    ) as fetch_xhh:
+        result = await fetch_news_content(limit=2)
+
+    assert result["success"] is False
+    assert result["region"] == "non-china"
+    assert "twitter down" in result["error"]
+    fetch_xhh.assert_not_awaited()
 
 
 def test_news_links_round_robin_weibo_and_xhh():
