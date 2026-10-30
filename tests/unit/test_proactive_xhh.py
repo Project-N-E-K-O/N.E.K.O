@@ -1246,6 +1246,12 @@ async def test_news_skips_xhh_source_outside_china_region():
         "utils.web_scraper.trending_content.fetch_twitter_trending",
         new=AsyncMock(return_value=twitter),
     ), patch(
+        "utils.web_scraper.trending_content.fetch_google_trends",
+        new=AsyncMock(return_value={"success": False, "error": "trends down", "trending": []}),
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_steam_featured",
+        new=AsyncMock(return_value={"success": False, "error": "steam down", "games": []}),
+    ), patch(
         "utils.web_scraper.trending_content.fetch_xhh_feed_content",
         new=AsyncMock(return_value=xhh),
     ) as fetch_xhh, patch(
@@ -1265,13 +1271,19 @@ async def test_news_skips_xhh_source_outside_china_region():
 
 
 @pytest.mark.asyncio
-async def test_news_outside_china_reports_twitter_failure():
+async def test_news_outside_china_reports_all_source_failures():
     with patch(
         "utils.web_scraper.trending_content.is_china_region",
         return_value=False,
     ), patch(
         "utils.web_scraper.trending_content.fetch_twitter_trending",
         new=AsyncMock(side_effect=RuntimeError("twitter down")),
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_google_trends",
+        new=AsyncMock(return_value={"success": False, "error": "trends down", "trending": []}),
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_steam_featured",
+        new=AsyncMock(return_value={"success": False, "error": "steam down", "games": []}),
     ), patch(
         "utils.web_scraper.trending_content.fetch_xhh_feed_content",
         new=AsyncMock(),
@@ -1281,6 +1293,8 @@ async def test_news_outside_china_reports_twitter_failure():
     assert result["success"] is False
     assert result["region"] == "non-china"
     assert "twitter down" in result["error"]
+    assert "trends down" in result["error"]
+    assert "steam down" in result["error"]
     fetch_xhh.assert_not_awaited()
 
 

@@ -126,6 +126,26 @@ def _extract_links_from_raw(
                         {"title": title, "url": url, "source": "小黑盒"}
                     )
 
+            google_trends_links: list[dict] = []
+            google_trends = raw_data.get("google_trends", {}) or {}
+            for item in google_trends.get("trending", []) or []:
+                title = item.get("word", "")
+                url = item.get("url", "")
+                if title and url:
+                    google_trends_links.append(
+                        {"title": title, "url": url, "source": "Google Trends"}
+                    )
+
+            steam_links: list[dict] = []
+            steam = raw_data.get("steam", {}) or {}
+            for game in steam.get("games", []) or []:
+                title = game.get("title", "")
+                url = game.get("url", "")
+                if title and url:
+                    steam_links.append(
+                        {"title": title, "url": url, "source": "Steam"}
+                    )
+
             tieba_links: list[dict] = []
             tieba = raw_data.get("tieba", {}) or {}
             posts = tieba.get("posts", []) or (tieba.get("tieba", {}) or {}).get(
@@ -148,7 +168,13 @@ def _extract_links_from_raw(
 
             links.extend(
                 _interleave_link_groups(
-                    [weibo_or_twitter, xhh_links, tieba_links]
+                    [
+                        weibo_or_twitter,
+                        google_trends_links,
+                        steam_links,
+                        xhh_links,
+                        tieba_links,
+                    ]
                 )
             )
 
