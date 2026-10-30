@@ -379,6 +379,12 @@ same process, once it falls out of the window.
     before that file appears or, on Windows, cannot delete it while it is
     open, so `rmtree` fails, the directory survives, and the replace then puts
     the compacted journal into it (the sentinel may already be gone).
+    A removal followed by a late writer (a reflection task, `/cache`)
+    recreating the directory around the replace is caught: compaction
+    compares the directory identity before and after the write and removes
+    the journal it just put into the new directory, so a same-named role
+    never inherits the old history. Unsubscribe still takes no lease hold;
+    making it take one is outside the journal's scope.
     Cloud import and restore run under the cloud-apply fence, which the
     compaction write transaction excludes.
 - Outbox recovery and event replay solve different failure windows: the outbox

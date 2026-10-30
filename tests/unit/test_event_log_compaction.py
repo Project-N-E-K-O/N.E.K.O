@@ -779,6 +779,29 @@ def test_character_dir_removed_just_before_the_write_is_not_recreated(tmp_path):
     assert not os.path.exists(_char_dir(tmp_path)), "压缩把已删除的角色目录建回来了"
 
 
+def test_old_history_is_not_left_in_a_directory_recreated_during_the_write(tmp_path):
+    """Unsubscribe removes the directory and a late writer (a reflection task,
+    /cache) recreates it before the replace: the old journal must not end up
+    in the new directory, where a same-named role would inherit it."""
+    log = _fresh_log(str(tmp_path))
+    _write_journal(tmp_path, [_line("old", days_ago=60), _line("anchor", days_ago=50)])
+    _write_sentinel(tmp_path, "anchor")
+    real_write = event_log_module.atomic_write_text
+
+    def remove_recreate_then_write(path, content, **kwargs):
+        shutil.rmtree(_char_dir(tmp_path))
+        os.makedirs(_char_dir(tmp_path))
+        with open(os.path.join(_char_dir(tmp_path), "recent.json"), "w", encoding="utf-8") as f:
+            f.write("[]")
+        return real_write(path, content, **kwargs)
+
+    with _knobs(), patch.object(event_log_module, "atomic_write_text", remove_recreate_then_write):
+        result = log.compact_applied_history(NAME, now=NOW)
+
+    assert result.outcome == "no_character_dir"
+    assert sorted(os.listdir(_char_dir(tmp_path))) == ["recent.json"], "旧日志被写进了重建的角色目录"
+
+
 def test_write_fence_blocks_compaction(tmp_path):
     from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY
 

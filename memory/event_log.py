@@ -286,6 +286,11 @@ def _first_line_says_due(path: str, now: datetime) -> bool:
     return False
 
 
+def _dir_identity(st: os.stat_result) -> tuple[int, int]:
+    """Which directory a path names right now; a recreated one differs."""
+    return (st.st_dev, st.st_ino)
+
+
 def _file_identity(st: os.stat_result) -> tuple[int, int, int]:
     return (st.st_ino, st.st_size, st.st_mtime_ns)
 
@@ -912,7 +917,9 @@ class EventLog:
         plan: _CompactionPlan,
     ) -> CompactionResult:
         """Replace the body planned in this same lock hold. Caller holds the fence and the character lock."""
-        if not os.path.isdir(char_dir):
+        try:
+            dir_before = _dir_identity(os.stat(char_dir))
+        except OSError:
             return CompactionResult('no_character_dir', **plan.stats)
         try:
             st1 = os.stat(path)
@@ -936,6 +943,21 @@ class EventLog:
             return CompactionResult('write_failed', **plan.stats)
         except OSError:
             return CompactionResult('write_failed', **plan.stats)
+        try:
+            dir_after = _dir_identity(os.stat(char_dir))
+        except OSError:
+            dir_after = None
+        if dir_after != dir_before:
+            # An unsubscribe removed the directory and a late writer (a
+            # reflection task, /cache) recreated it between the checks and the
+            # replace. The journal in the new directory can only be ours --
+            # every journal writer needs the character lock held here -- so
+            # take it back rather than hand the old history to the new one.
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return CompactionResult('no_character_dir', **plan.stats)
         return CompactionResult(
             'compacted',
             dropped_lines=plan.dropped_lines,
