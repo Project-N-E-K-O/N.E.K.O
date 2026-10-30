@@ -127,7 +127,13 @@ def jq_condition(expr):
     cond = re.search(r'startswith\("nightly-staging-"\)\) and \((.*)\)\) \| \.id$', expr).group(1)
     cond = cond.replace(".draft | not", "not r['draft']").replace(".draft", "r['draft']")
     cond = re.sub(r'\.tag_name == "([^"]*)"', r"r['tag_name'] == '\1'", cond)
+    cond = re.sub(r"\.id != (\d+)", r"r['id'] != \1", cond)
     return lambda r: r["tag_name"].startswith("nightly-staging-") and eval(cond)
+
+
+def listed(r):
+    # "stale": the list endpoint still shows the tag a release had before its last PATCH.
+    return {**r, "tag_name": r.get("listed_tag", r["tag_name"])} if "stale" in fail else r
 
 
 def fields(rest):
@@ -143,7 +149,7 @@ if args[:2] == ["api", "--paginate"]:
     if "list" in fail:
         save(1)
     keep = jq_condition(args[args.index("--jq") + 1])
-    print("\n".join(str(r["id"]) for r in state["releases"] if keep(r)))
+    print("\n".join(str(r["id"]) for r in state["releases"] if keep(listed(r))))
     save()
 if args[0] == "api" and args[1] != "-X":
     print(release(int(args[1].rsplit("/", 1)[1]))["tag_name"])
@@ -166,6 +172,8 @@ if args[:3] == ["api", "-X", "PATCH"]:
         save(1)
     if "retag" in fail and patch.get("tag_name") == "nightly":
         save(1)
+    if "stale" in fail and "tag_name" in patch:
+        r.setdefault("listed_tag", r["tag_name"])
     r.update({k: v for k, v in patch.items() if k in ("tag_name", "draft")})
     if not r["draft"] and r["tag_name"] not in state["tags"]:
         state["tags"].append(r["tag_name"])
@@ -260,6 +268,20 @@ def test_successful_publish_replaces_old_nightly_and_cleans_staging(tmp_path: Pa
     assert code == 0
     assert state["releases"] == [{"id": 101, "tag_name": "nightly", "draft": False}]
     assert state["tags"] == ["nightly"]
+
+
+def test_cleanup_with_stale_release_list_keeps_new_nightly(tmp_path: Path) -> None:
+    # Right after the retag, the list endpoint may still show the new release under
+    # its staging tag; the cleanup must not mistake it for a leftover.
+    leftover = {"id": 60, "tag_name": "nightly-staging-6-1", "draft": False}
+    code, state = _publish(tmp_path, [OLD_NIGHTLY, leftover], fail="stale")
+
+    assert code == 0
+    assert [(r["id"], r["tag_name"], r["draft"]) for r in state["releases"]] == [
+        (101, "nightly", False)
+    ]
+    assert "nightly" in state["tags"]
+    assert not any(call == "api -X DELETE repos/owner/repo/releases/101" for call in state["log"])
 
 
 def test_successful_publish_without_previous_nightly(tmp_path: Path) -> None:

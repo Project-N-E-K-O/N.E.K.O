@@ -1515,6 +1515,8 @@ jobs:
             local id tag
             for id in $(staging_release_ids "$1"); do
               tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${id}" --jq .tag_name)" || continue
+              # 列表接口可能还是旧数据：单条读回来已经不是 staging tag 的，一律不删
+              [[ "$tag" == nightly-staging-* ]] || continue
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${id}" || true
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" >/dev/null 2>&1 || true
             done
@@ -1593,8 +1595,9 @@ jobs:
               echo "Published nightly release ${staging_id}"
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${STAGING_TAG}" >/dev/null 2>&1 \
                 || echo "::warning::Could not delete tag ${STAGING_TAG}"
-              # 之前运行第 4 步失败留下的公开 staging release，现在有新 nightly 了才清
-              delete_releases '.draft | not'
+              # 之前运行第 4 步失败留下的公开 staging release，现在有新 nightly 了才清。
+              # 显式排除本次 id：刚改完 tag，列表接口可能还按旧 tag 把它列进来
+              delete_releases "(.draft | not) and .id != ${staging_id}"
               exit 0
             fi
             echo "::warning::Moving the release to the nightly tag failed (attempt ${attempt}/3)"
