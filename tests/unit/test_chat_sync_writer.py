@@ -894,6 +894,38 @@ def test_recovery_keeps_same_message_id_in_distinct_domains(tmp_path):
         assert conn.execute('SELECT count(*) FROM source_recovery_delete_ids').fetchone()[0] == 2
 
 
+@pytest.mark.parametrize('known', ['origin', 'message'])
+def test_recovery_receipt_cannot_rebind_a_known_origin_identity(tmp_path, known):
+    """A cloud receipt cannot pair an origin slot or a message ID with a second partner."""
+    from services.chat_sync.ledger import IdentityConflict
+    from services.chat_sync.protocol import encode_chat_original
+    from services.chat_sync.recovery import apply_checked_candidates, pending_candidates
+    from services.chat_sync.writer import store_connection
+    runtime, domain, _, _ = deletion_recovery_task(tmp_path, 0)
+    payload = encode_chat_original({'schemaVersion': 1, 'ownerId': domain.owner_id,
+        'characterSyncId': domain.character_uid, 'channel': 'chat', 'scope': 'private-chat',
+        'messageId': '1' * 32, 'originStreamId': '2' * 32, 'originSeq': 1, 'role': 'user', 'text': 'copied',
+        'originalTime': None, 'timezone': None, 'conversationId': None, 'replyToMessageId': None})
+    with closing(store_connection(runtime.ledger.path)) as conn, conn:
+        conn.execute('INSERT INTO chat_downloaded VALUES (?,?,?)', (domain.key(), '1' * 32, payload))
+    runtime.prepare_writer_recovery()
+    candidates = pending_candidates(runtime, domain)
+    assert [row['record_id'] for row in candidates] == ['1' * 32]
+    # Staging keeps every committed identity. One of them already pairs the
+    # candidate's origin slot, or its message ID, with a different partner.
+    known_identity = ('2' * 32, 1, '3' * 32) if known == 'origin' else ('2' * 32, 2, '1' * 32)
+    with closing(store_connection(runtime.ledger.path)) as conn, conn:
+        conn.execute('INSERT INTO chat_origin_identities VALUES (?,?,?,?)', (domain.key(), *known_identity))
+    with pytest.raises(IdentityConflict, match='^origin_identity_conflict$'):
+        apply_checked_candidates(runtime, domain, candidates, [{'messageId': '1' * 32, 'state': 'received'}])
+    # Nothing becomes visible and the candidate stays unchecked for a later decision.
+    assert runtime.ledger.visible_originals(domain) == []
+    assert [row['record_id'] for row in pending_candidates(runtime, domain)] == ['1' * 32]
+    with closing(sqlite3.connect(runtime.ledger.path)) as conn:
+        assert conn.execute('SELECT origin_stream_id,origin_seq,message_id FROM chat_origin_identities').fetchall() == [
+            known_identity]
+
+
 @pytest.mark.asyncio
 async def test_repeated_outage_recovery_coalesces_identical_bound_and_unbound_proof(tmp_path):
     import hashlib

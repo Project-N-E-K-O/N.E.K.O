@@ -432,6 +432,16 @@ def test_card_choice_uses_effective_pending_consent_while_binding_is_still_pause
     """)
 
 
+def test_card_choice_reads_only_the_effective_choice_never_the_binding_flag():
+    """A saved Off stays off even while a first grant's binding is still enabled."""
+    run_script(r"""(async()=>{
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncEnabled:false,syncPending:false,binding:{enabled:true,bindingId:null,generation:1}}]});
+        assert.equal(await window.nekoCharacterProfileSync.getSyncChoice('Synthetic'),false);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
 def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_actions():
     """Setup and binding retries use the card switch, not the recovery-only panel."""
     for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
