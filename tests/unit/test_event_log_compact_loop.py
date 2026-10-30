@@ -174,6 +174,26 @@ def test_skip_warnings_are_once_per_process_per_character(caplog):
     assert warn.call_count == 3
 
 
+@pytest.mark.parametrize("outcome", ["write_failed", "journal_unreadable"])
+def test_a_journal_that_keeps_failing_is_reported_once(outcome):
+    """Persistent IO failures must surface at the default level, once per character."""
+    _, evidence_loops, _, _ = _modules()
+    with patch.object(evidence_loops, "_event_log_compact_warned", {}), \
+            patch.object(evidence_loops.logger, "warning") as warn:
+        for _ in range(3):
+            evidence_loops._log_event_log_compaction("悠怡", CompactionResult(outcome))
+    assert warn.call_count == 1
+
+
+@pytest.mark.parametrize("outcome", ["busy", "journal_changed", "write_blocked", "not_due"])
+def test_transient_or_routine_skips_stay_at_debug(outcome):
+    _, evidence_loops, _, _ = _modules()
+    with patch.object(evidence_loops, "_event_log_compact_warned", {}), \
+            patch.object(evidence_loops.logger, "warning") as warn:
+        evidence_loops._log_event_log_compaction("悠怡", CompactionResult(outcome))
+    assert warn.call_count == 0
+
+
 def test_loop_is_spawned_in_the_background_not_awaited_on_startup():
     memory_server, evidence_loops, gates, runtime = _modules()
     src = inspect.getsource(memory_server.ensure_memory_server_runtime_initialized)

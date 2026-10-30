@@ -1062,12 +1062,16 @@ async def _periodic_archive_sweep_loop():
 
 # Skip reasons that repeat every round until someone (or a restart) clears
 # them: one warning per process per character, not one every six hours.
+# write_failed / journal_unreadable are here too: a journal that can never be
+# rewritten would otherwise stop shrinking without any visible trace.
 _EVENT_LOG_COMPACT_WARN_ONCE = frozenset({
     'replay_paused',
     'sentinel_not_found',
     'sentinel_unreadable',
     'sentinel_malformed',
     'self_check_failed',
+    'write_failed',
+    'journal_unreadable',
 })
 # {character: {warning kind}} -- per-process dedupe, never persisted.
 _event_log_compact_warned: dict[str, set[str]] = {}
