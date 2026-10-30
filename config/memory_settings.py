@@ -113,6 +113,12 @@ MAX_KNOWN_POOL_FACTS = 30
 # signal loop (40s), with negligible IO/CPU impact.
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
+# Event-journal compaction loop interval (memory/event_log.py
+# compact_applied_history). Each round costs one stat plus one line read per
+# character until a journal is due (>= 512 KiB or first line >= 30 days old),
+# so a slow cadence is plenty; journals grow a few KB per day.
+EVENT_LOG_COMPACT_INTERVAL_SECONDS = 6 * 3600
+
 # §3.6 render budget (placeholder for PR-3).
 # Private/base legacy mode (empty subjects) uses two global pools; scoped rendering
 # (groups, nonempty subjects) gives each subject its own pools, backed by

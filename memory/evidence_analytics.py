@@ -27,8 +27,12 @@ Why a separate module (instead of inside `evidence.py`):
 V1 scope (RFC §3.10.4):
 - Exposes only the single aggregation function `funnel_counts`; no UI / CLI /
   cross-character aggregation
-- Linear scan at read time, O(N); the events.ndjson compaction threshold is
-  10k lines, a full scan takes <200ms (RFC §3.10.3), no dedicated index needed
+- Linear scan at read time, O(N); background compaction normally keeps
+  events.ndjson around 512 KiB or less (the largest real journal measured,
+  641 KB, parsed in ~4 ms), so no dedicated index is needed
+- Counts only what is still in the journal: already-applied history older than
+  the retention window (7 days / 256 KiB by default, see
+  EventLog.compact_applied_history) has been pruned
 
 Forward compatibility notes (PR-2 / PR-3 coordination):
 - `persona_entries_archived` depends on PR-2 writing the `archive_shard_path`
@@ -185,8 +189,12 @@ def funnel_counts(
           payload carries `archive_shard_path`, the archive convention
           PR-2 introduces).
 
-    Performance: O(N) over file lines, no indexing.  RFC §3.10.3 budgets
-    <200ms for the 10k-line compaction threshold.
+    Retention: events pruned by journal compaction are not counted; with
+    the default window only the last 7 days (at most 256 KiB) of applied
+    history remain, plus pinned archive events and any unapplied tail.
+
+    Performance: O(N) over file lines, no indexing. Compaction bounds the
+    journal at roughly 512 KiB, a few milliseconds to scan.
     """
     counts: dict = {bucket: 0 for bucket in _FUNNEL_BUCKETS}
     path = _events_path(lanlan_name)

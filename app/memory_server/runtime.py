@@ -1151,6 +1151,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
+            # events.ndjson applied-history pruning; first round 300 s after startup.
+            _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())
             _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())
