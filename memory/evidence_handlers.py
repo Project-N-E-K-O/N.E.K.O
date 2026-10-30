@@ -523,6 +523,7 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
     from memory.archive_shards import (
         PERSONA_ARCHIVE_DIRNAME,
         REFLECTION_ARCHIVE_DIRNAME,
+        _list_shard_files,
         archive_copy_fingerprint,
         shard_entry_index_sync,
     )
@@ -540,6 +541,28 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
         ),
     }
     indexes: dict[str, dict[str, frozenset[str]] | None] = {}
+    # Identity of each side's shard files as they were when its index was read.
+    signatures: dict[str, tuple | None] = {}
+
+    def _shard_signature(archive_dir: str) -> tuple | None:
+        try:
+            files = []
+            for fn, _, _ in _list_shard_files(archive_dir):
+                st = os.stat(os.path.join(archive_dir, fn))
+                files.append((fn, st.st_ino, st.st_size, st.st_mtime_ns))
+            return tuple(files)
+        except OSError:
+            return None
+
+    def _sources_unchanged() -> bool:
+        """True when every shard read so far is still the file that was indexed.
+
+        Compaction calls this under the write fence before trusting an index
+        built outside it: a restore that swapped the shards in between could
+        otherwise make a missing archive copy look present. Stat only.
+        """
+        return all(sig is not None and _shard_signature(archive_dir) == sig
+                   for archive_dir, sig in signatures.items())
 
     def _needs_journal_copy(record: dict) -> bool:
         side = sides.get(record.get('type'))
@@ -556,12 +579,14 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
         if not isinstance(entry_id, str) or not entry_id:
             return False
         if archive_dir not in indexes:
+            signatures[archive_dir] = _shard_signature(archive_dir)
             indexes[archive_dir] = shard_entry_index_sync(archive_dir)
         index = indexes[archive_dir]
         if index is None:
             return True
         return archive_copy_fingerprint(snapshot) not in index.get(entry_id, frozenset())
 
+    _needs_journal_copy.sources_unchanged = _sources_unchanged
     return _needs_journal_copy
 
 

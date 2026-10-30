@@ -840,6 +840,51 @@ def test_archive_shards_are_read_before_the_write_fence_is_taken(tmp_path):
     assert reads == [False] and held["entered"] == 1
 
 
+def _archived_with_copy(tmp_path) -> str:
+    """An applied archive event whose copy sits in the reflection shards (so it may go)."""
+    from memory.archive_shards import REFLECTION_ARCHIVE_DIRNAME
+
+    snapshot = {"id": "r1", "archived_at": "2026-09-01T10:00:00"}
+    shard_dir = os.path.join(_char_dir(tmp_path), REFLECTION_ARCHIVE_DIRNAME)
+    os.makedirs(shard_dir, exist_ok=True)
+    with open(os.path.join(shard_dir, "2026-09-01_aaaaaaaa.json"), "w", encoding="utf-8") as f:
+        json.dump([snapshot], f)
+    return _line("archived", days_ago=60, type_="reflection.state_changed", payload={
+        "reflection_id": "r1", "from": "confirmed", "to": "archived",
+        "archive_shard_path": "2026-09-01_aaaaaaaa.json", "entry_snapshot": snapshot})
+
+
+@pytest.mark.parametrize("swap", ["journal_restored", "shards_restored"])
+def test_a_restore_between_the_passes_never_trusts_the_stale_archive_index(tmp_path, swap):
+    """A restore after the first pass may bring back an archive event without its shard copy."""
+    from memory.archive_shards import REFLECTION_ARCHIVE_DIRNAME
+    from memory.evidence_handlers import make_archive_copy_check
+
+    log = _fresh_log(str(tmp_path))
+    _write_journal(tmp_path, [_archived_with_copy(tmp_path), _line("old", days_ago=60), _line("anchor", days_ago=50)])
+    _write_sentinel(tmp_path, "anchor")
+    journal = _events_path(tmp_path)
+    shard = os.path.join(_char_dir(tmp_path), REFLECTION_ARCHIVE_DIRNAME, "2026-09-01_aaaaaaaa.json")
+
+    def restore():
+        if swap == "journal_restored":
+            # A restore copies files back: same bytes, a new file.
+            with open(journal + ".restored", "wb") as f:
+                f.write(_read_bytes(journal))
+            os.replace(journal + ".restored", journal)
+        else:
+            # The restored shards predate the archive append.
+            with open(shard, "w", encoding="utf-8") as f:
+                json.dump([], f)
+
+    with _knobs(), _fence_spy(on_enter=restore):
+        result = log.compact_applied_history(
+            NAME, now=NOW, needs_journal_copy=make_archive_copy_check(_char_dir(tmp_path)))
+    assert result.outcome == ("journal_changed" if swap == "journal_restored" else "archives_changed")
+    # The archive event, the only copy once the shard lost it, is still in the journal.
+    assert b'"archived"' in _read_bytes(journal)
+
+
 @pytest.mark.parametrize("change", ["append", "sentinel_moved", "replay_started", "replay_paused"])
 def test_changes_while_the_write_fence_is_taken_are_rescanned(tmp_path, change):
     """The fenced pass plans again, so writes that landed meanwhile are kept or stop it."""
@@ -892,7 +937,7 @@ def test_journal_changed_under_the_scan_is_left_alone(tmp_path, monkeypatch):
         if os.path.normcase(os.path.abspath(str(path))) != target:
             return st
         calls["n"] += 1
-        if calls["n"] < 4:  # trigger check, first-pass st0, fenced-pass st0
+        if calls["n"] < 5:  # trigger, first-pass st0, fenced swap check, fenced-pass st0
             return st
         return SimpleNamespace(st_ino=st.st_ino, st_size=st.st_size + 1,
                                st_mtime_ns=st.st_mtime_ns)
@@ -902,7 +947,7 @@ def test_journal_changed_under_the_scan_is_left_alone(tmp_path, monkeypatch):
         result = log.compact_applied_history(NAME, now=NOW)
 
     assert result.outcome == "journal_changed"
-    assert calls["n"] == 4
+    assert calls["n"] == 5
     assert _read_bytes(_events_path(tmp_path)) == body
 
 

@@ -161,7 +161,8 @@ class CompactionResult(NamedTuple):
     no_character_dir, no_journal, journal_unreadable, journal_changed,
     write_blocked, replay_in_progress, replay_paused, sentinel_absent,
     sentinel_null, sentinel_unreadable, sentinel_malformed,
-    sentinel_not_found, self_check_failed, busy, write_failed. Every
+    sentinel_not_found, self_check_failed, busy, write_failed,
+    archives_changed. Every
     outcome other than ``compacted`` leaves events.ndjson byte-for-byte
     unchanged.
     """
@@ -811,7 +812,10 @@ class EventLog:
         sync) -- and re-plans from a fresh scan before replacing, so writes
         that landed between the passes are simply part of what it reads.
         Under the fence only the journal is read again; shard reads already
-        happened outside it.
+        happened outside it. Before re-planning it refuses inputs swapped
+        since the first pass (a replaced or shortened journal, or shard
+        files that changed, as a restore would leave), since the cached
+        archive index could then vouch for copies that are gone.
 
         ``needs_journal_copy`` exceptions propagate and nothing is written.
         Blocking file IO: call from a worker thread, or use
@@ -849,12 +853,42 @@ class EventLog:
                 with self._get_lock(name):
                     if not os.path.isdir(char_dir):
                         return CompactionResult('no_character_dir', **warm.stats)
+                    moved = self._moved_since_warm(path, warm, needs_journal_copy)
+                    if moved is not None:
+                        return CompactionResult(moved, **warm.stats)
                     plan = self._plan_compaction_locked(name, path, needs_journal_copy, now)
                     if isinstance(plan, CompactionResult):
                         return plan
                     return self._commit_compaction_locked(name, char_dir, path, plan)
         except MaintenanceModeError:
             return CompactionResult('write_blocked', **warm.stats)
+
+    @staticmethod
+    def _moved_since_warm(
+        path: str,
+        warm: _CompactionPlan,
+        needs_journal_copy: Callable[[dict], bool] | None,
+    ) -> str | None:
+        """Refuse a fenced pass whose first-pass inputs were swapped underneath it.
+
+        Appends between the passes are fine: the fenced pass re-reads the
+        journal. A replaced or shortened journal (a restore copies the whole
+        character directory) or changed archive shards are not: the archive
+        index cached by the first pass may then claim copies that no longer
+        exist. Returns the outcome to report, or None to go ahead.
+        """
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return 'journal_changed'
+        except OSError:
+            return 'journal_unreadable'
+        if st.st_ino != warm.st0.st_ino or st.st_size < warm.st0.st_size:
+            return 'journal_changed'
+        sources_unchanged = getattr(needs_journal_copy, 'sources_unchanged', None)
+        if sources_unchanged is not None and not sources_unchanged():
+            return 'archives_changed'
+        return None
 
     def _admit_compaction_unlocked(self, name: str) -> tuple[CompactionResult | None, str | None]:
         """Replay and sentinel gates checked on every planning pass. Caller holds the character lock."""

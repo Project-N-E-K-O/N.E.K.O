@@ -246,15 +246,23 @@ anchor followed by exactly the old tail's ids. Compaction never creates a
 directory: paths are built without `ensure_character_dir`, and the final write
 refuses to recreate a vanished parent.
 
-It runs in two phases so the shared write fence stays short. The scan, the
-archive-shard lookups and the self-check run under the per-character lock alone.
-Only the replace runs inside `cloudsave_writable_transaction`, taken before the
-per-character lock (the order a cloud import already uses), which keeps a cloud
-import or restore from interleaving. Under the fence the second phase re-checks
-that no replay round started or paused, that the sentinel still names the same
-anchor, and that the file identity matches the scanned one; anything that moved
-in between returns `journal_changed` (or the replay outcome) and leaves the body
-for the next round.
+It runs in two passes so the shared write fence stays short. The first pass
+runs under the per-character lock alone: it returns early when there is nothing
+to drop, and it is where the archive check reads each side's shards once and
+caches their index (recording each shard file's identity). The second pass runs
+inside `cloudsave_writable_transaction`, taken before the per-character lock
+(the order a cloud import already uses), which keeps a cloud import or restore
+from interleaving with the replace. It first refuses inputs that were swapped
+since the first pass: a journal that was replaced or shortened returns
+`journal_changed`, and shards whose files changed return `archives_changed`,
+because a restore in between could otherwise make a missing archive copy look
+present in the cached index. Appends are not a swap. It then plans again from a
+fresh scan of the journal (archive lookups hit the cached index, no shard is read
+under the fence), so lines appended or a sentinel moved between the passes are
+simply part of what it reads; a replay round that started or paused returns its
+replay outcome. Only a change between this fenced scan and the replace (another
+process appending) returns `journal_changed`. Every skip leaves the body for the
+next round.
 
 **Why not seeds.** An earlier helper replaced the body with "seed" events derived
 from the views and reset the sentinel to `null`. That dropped any unapplied tail,
