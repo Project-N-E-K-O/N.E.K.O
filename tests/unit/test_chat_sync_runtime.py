@@ -651,13 +651,16 @@ async def test_established_silent_wss_automatically_wakes_recent_pull(tmp_path, 
                         settled = len(service.recent_roles)
                         await asyncio.sleep(1)
                 pause.set()
-                await paused.wait()
+                await asyncio.wait_for(paused.wait(), 5)
                 # The frozen test clock never reaches the next poll or a reconnect deadline. The
                 # 2 s ping interval, 2 s pong timeout and 1 s close wait notice the peer in about 5 s.
                 async with asyncio.timeout(10):
                     while len(service.recent_roles) == settled:
                         await asyncio.sleep(.02)
             finally:
+                # An early failure must not leave the peer handler waiting, or the
+                # server would wait for it forever while closing.
+                pause.set()
                 release.set()
                 await runtime.close()
     finally:
@@ -1595,7 +1598,10 @@ class RecentRoleService(SyntheticService):
         self.lose_receipt = False
 
     async def request(self, request):
-        lane = request.url.path.rsplit("/", 1)[1]
+        parent, lane = request.url.path.rsplit("/", 2)[1:]
+        if parent in {"recent-memory", "long-term-memory"}:
+            # Lane sub-resources this fake does not implement answer 404, as an older service would.
+            return httpx.Response(404, json={"error": "not_found"})
         if lane not in {"recent-memory", "long-term-memory"}:
             return await super().request(request)
         self.requests.append(request)
