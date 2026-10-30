@@ -629,11 +629,13 @@ async def test_recovery_check_reporting_a_deletion_erases_retained_local_bodies(
 OTHER_ACCOUNT = '12345678-1234-4234-8234-123456789abd'
 OTHER_ROLE = 'c' * 32
 UNSENT_BOUND, UNSENT_UNKNOWN_OWNER, UNSENT_OUTAGE, UNSENT_UNBOUND = 'a1' * 16, 'a2' * 16, 'a3' * 16, 'a4' * 16
+UNSENT_OUTAGE_COPY = 'a5' * 16
 
 
 def seed_unsent_deletions(runtime, domain):
     """Stage every kind of unsent deletion, sharing IDs with other roles and accounts."""
     from services.chat_sync.ledger import ChatOriginal
+    from services.chat_sync.recovery import save_outage
     from services.chat_sync.source import ChatOriginalSource
     from services.chat_sync.writer import store_connection
     uid = domain.character_uid
@@ -649,6 +651,11 @@ def seed_unsent_deletions(runtime, domain):
         # Earlier releases recorded deletions made during an outage in this table.
         conn.execute('CREATE TABLE outage_deletions (uid TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(uid,message_id))')
         conn.execute('INSERT INTO outage_deletions VALUES (?,?)', (uid, UNSENT_OUTAGE))
+    # An outage copy deleted later on this device kept only its identity in
+    # outage_originals, without a row in outage_deletions.
+    save_outage(runtime.state.path.parent, uid, UNSENT_OUTAGE_COPY, ChatOriginal('user', 'deleted outage copy'))
+    with closing(sqlite3.connect(runtime.state.path.parent / 'outage.sqlite3')) as conn, conn:
+        conn.execute('UPDATE outage_originals SET original=NULL,deleted=1 WHERE record_id=?', (UNSENT_OUTAGE_COPY,))
 
 
 def staged_deletion_rows(runtime):
@@ -669,11 +676,12 @@ def untouched_staged_rows(domain):
 def staged_for_role(domain):
     uid = domain.character_uid
     return {(domain.owner_id, uid, UNSENT_BOUND), (None, uid, UNSENT_BOUND), (None, uid, UNSENT_UNKNOWN_OWNER),
-            (None, uid, UNSENT_OUTAGE), (None, uid, UNSENT_UNBOUND)}
+            (None, uid, UNSENT_OUTAGE), (None, uid, UNSENT_UNBOUND), (None, uid, UNSENT_OUTAGE_COPY)}
 
 
 def kept_tombstones(domain):
-    return [(domain.key(), identity) for identity in sorted((UNSENT_BOUND, UNSENT_UNKNOWN_OWNER, UNSENT_OUTAGE, UNSENT_UNBOUND))]
+    return [(domain.key(), identity) for identity in sorted((UNSENT_BOUND, UNSENT_UNKNOWN_OWNER, UNSENT_OUTAGE, UNSENT_UNBOUND,
+                                                             UNSENT_OUTAGE_COPY))]
 
 
 @pytest.mark.asyncio
@@ -686,7 +694,7 @@ async def test_recovery_keeps_the_roles_unsent_deletions_as_tombstones(tmp_path)
     try:
         assert tombstone_rows(runtime) == []
         result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
-        assert result == {'deletions': {'count': 4}}
+        assert result == {'deletions': {'count': 5}}
         assert tombstone_rows(runtime) == kept_tombstones(domain)
         assert staged_deletion_rows(runtime) == untouched_staged_rows(domain)
         assert queued_deletions(runtime.ledger, domain) == []
@@ -703,7 +711,7 @@ async def test_later_quarantine_and_recovery_do_not_count_kept_deletions_again(t
     runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1,
                                                           prepare=seed_unsent_deletions)
     try:
-        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 4}}
+        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 5}}
         runtime.writer.path.write_text('{broken')
         assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 0}}
         assert tombstone_rows(runtime) == kept_tombstones(domain)
@@ -741,7 +749,7 @@ async def test_interrupted_recovery_finish_converges_when_recovery_runs_again(tm
         assert set(staged_deletion_rows(runtime)) == staged_for_role(domain) | set(untouched_staged_rows(domain))
         assert tombstone_rows(runtime) == ([] if crash == 'tombstones' else kept_tombstones(domain))
         assert role_pending(runtime, domain.character_uid)
-        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 4}}
+        assert (await runtime.recover_writer_role(domain.character_uid, 'Local Neko')) == {'deletions': {'count': 5}}
         assert tombstone_rows(runtime) == kept_tombstones(domain)
         assert staged_deletion_rows(runtime) == untouched_staged_rows(domain)
         assert not role_pending(runtime, domain.character_uid)
