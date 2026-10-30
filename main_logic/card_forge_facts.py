@@ -795,7 +795,8 @@ async def build_forge_facts_payload(
     legacy_excluded_keys = await asyncio.to_thread(
         _legacy_excluded_fact_keys, raw, raw_archive, excluded_ids,
     )
-    lang = get_global_language_full()
+    # A cold language cache probes the OS synchronously (subprocesses on macOS): keep it off the event loop.
+    lang = await asyncio.to_thread(get_global_language_full)
     facts, stats = await asyncio.to_thread(
         _select_forge_facts_with_stats,
         shareable_raw,
