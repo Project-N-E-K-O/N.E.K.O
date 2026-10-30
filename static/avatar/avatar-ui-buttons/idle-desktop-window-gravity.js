@@ -22,8 +22,8 @@
     const MAX_FRAME_SECONDS = 0.05;
     const MAX_SAMPLE_SECONDS = 0.8;
     const CONTACT_EPSILON = 0.5;
-    // A stable body hull across action animations, measured from the idle GIF.
-    // The playground supplies its existing airborne body hull instead.
+    // Fallback for callers without a Playground body. Real bodies supply the
+    // current asset's stable, frame-union hull through the resource registry.
     const insets = Object.freeze({ left: 89 / 512, top: 49 / 512, right: 118 / 512, bottom: 19 / 512 });
     let current = null;
     let latest = null;
@@ -106,8 +106,12 @@
 
     function getBody(button) {
         const playground = button && button.__nekoIdleCat1PlaygroundDropState;
-        return playground && playground.active && !playground.released
+        const body = playground && playground.active && !playground.released
             && playground.bodies && playground.bodies.get('cat') || null;
+        if (body && typeof _syncNekoIdleCat1PlaygroundCatVisibleInsets === 'function') {
+            _syncNekoIdleCat1PlaygroundCatVisibleInsets(body, button);
+        }
+        return body;
     }
 
     function contains(bounds, position) {
@@ -580,7 +584,9 @@
                 if (paused(state)) return;
                 const actual = rect(state.container.getBoundingClientRect());
                 if (!actual) return;
-                if (actual.width !== state.size.width || actual.height !== state.size.height) {
+                const body = getBody(state.button);
+                if (actual.width !== state.size.width || actual.height !== state.size.height
+                    || (body && body.visibleInsetRatios && body.visibleInsetRatios !== state.hull)) {
                     if (latest) updateBounds(state, latest);
                 }
                 // Tier/layout changes can bypass the shared movement helper.
@@ -591,7 +597,7 @@
             });
             removalObserver.observe(state.container.parentNode, { childList: true });
             removalObserver.observe(state.container, {
-                attributes: true, attributeFilter: ['style', 'class', 'data-neko-idle-tier'], subtree: true,
+                attributes: true, attributeFilter: ['style', 'class', 'src', 'data-neko-idle-tier'], subtree: true,
             });
         }
         const body = getBody(state.button);
@@ -717,8 +723,9 @@
         state.revision = result.revision;
         const body = getBody(state.button);
         const hull = body && body.visibleInsetRatios || insets;
+        const hullChanged = hull !== state.hull;
         const coordinateChange = origin.x !== state.origin.x || origin.y !== state.origin.y
-            || size.width !== state.size.width || size.height !== state.size.height || hull !== state.hull;
+            || size.width !== state.size.width || size.height !== state.size.height || hullChanged;
         const previous = state.bounds;
         const signature = sceneSignature(scene);
         const sceneChanged = signature !== state.sceneSignature || coordinateChange;
@@ -737,7 +744,16 @@
         // Account for elapsed motion against the previous walls before applying
         // a fresh sample. Resetting lastStepAt here without stepping discards
         // most falling time when window updates arrive as often as RAFs.
-        if ((geometryChanged || sceneChanged) && !paused(state)) advancePhysics(state, sampleAt);
+        if (hullChanged && body && !body.dragging) {
+            // The Playground already anchored the new art to the same support.
+            // Do not integrate that corrected position against the old hull.
+            state.x = body.x;
+            state.y = body.y;
+            state.vx = clampSpeed(body.vx);
+            state.vy = clampSpeed(body.vy);
+            state.grounded = body.grounded;
+            state.lastStepAt = sampleAt;
+        } else if ((geometryChanged || sceneChanged) && !paused(state)) advancePhysics(state, sampleAt);
         if (originDx || originDy) {
             state.x += originDx;
             state.y += originDy;
@@ -1046,6 +1062,9 @@
         if (!playgroundActive) return false;
         const state = current;
         if (!state || state.button !== button || body !== getBody(button) || paused(state)) return false;
+        if (body.visibleInsetRatios && body.visibleInsetRatios !== state.hull && latest) {
+            updateBounds(state, latest);
+        }
         const previous = { x: state.x, y: state.y };
         const elapsed = Math.max(0, (timestamp - state.lastStepAt) / 1000);
         state.x = body.x; state.y = body.y;
@@ -1063,6 +1082,9 @@
         const state = current;
         if (!state || body !== getBody(state.button)) return false;
         if (body.dragging) return false;
+        if (body.visibleInsetRatios && body.visibleInsetRatios !== state.hull && latest) {
+            updateBounds(state, latest);
+        }
         const previous = { x: state.x, y: state.y };
         state.x = body.x; state.y = body.y;
         state.vx = clampSpeed(body.vx); state.vy = clampSpeed(body.vy);

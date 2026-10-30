@@ -23,6 +23,45 @@
     );
     const selectedVoiceGroupId = selectedAppearanceGroupId;
 
+    // Union of opaque pixels across each GIF's frames. Keep collision geometry
+    // stable during playback, but select it by the actual asset, not cat tier.
+    const appearanceBounds = {
+        'idle/cat-idle-cat1.gif': [512, 512, 89, 49, 394, 493],
+        'idle/cat-idle-cat2.gif': [512, 512, 22, 151, 491, 406],
+        'idle/cat-idle-cat3.gif': [512, 512, 54, 140, 462, 461],
+        'click/cat-idle-cat1-click.gif': [512, 512, 89, 48, 396, 494],
+        'click/cat-idle-cat2-click.gif': [512, 512, 22, 141, 492, 406],
+        'click/cat-idle-cat3-click.gif': [512, 512, 41, 141, 462, 460],
+        'drag/cat-idle-cat-move-1.gif': [512, 512, 113, 1, 444, 507],
+        'drag/cat-idle-cat-move-2.gif': [512, 512, 112, 2, 415, 497],
+        'drag/cat-idle-cat-move-3.gif': [512, 512, 87, 7, 419, 508],
+        'drag/cat-idle-cat-move-4.gif': [512, 512, 88, 7, 415, 501],
+        'drag/cat-idle-cat-move-5.gif': [512, 512, 112, 3, 415, 497],
+        'movement/cat-idle-cat4-1.gif': [512, 512, 26, 59, 501, 460],
+        'movement/cat-idle-cat4-2.gif': [512, 512, 23, 59, 509, 460],
+        'movement/cat-idle-cat4-3.gif': [512, 512, 17, 56, 487, 455],
+        'action/cat-idle-cat1-eat.gif': [512, 512, 88, 49, 469, 494],
+        'action/cat-idle-cat-play-1.gif': [896, 512, 133, 44, 896, 486]
+    };
+    const appearanceInsets = new Map();
+    for (const [asset, [width, height, left, top, right, bottom]] of Object.entries(appearanceBounds)) {
+        // The wide play animation fills a 175% image box; other art fills 100%.
+        const boxWidth = asset === 'action/cat-idle-cat-play-1.gif' ? 1.75 : 1;
+        const scale = Math.min(boxWidth / width, 1 / height);
+        const x = (1 - width * scale) / 2;
+        const y = (1 - height * scale) / 2;
+        const normal = Object.freeze({ left: x + left * scale, top: y + top * scale,
+            right: x + (width - right) * scale, bottom: y + (height - bottom) * scale });
+        const mirrored = Object.freeze({ ...normal, left: normal.right, right: normal.left });
+        appearanceInsets.set(`/static/assets/cat-resources/appearance/dev_neko/${asset}`, { normal, mirrored });
+    }
+
+    function getAppearanceVisibleInsets(url, options = {}) {
+        const path = String(url || '').replace(/^https?:\/\/[^/]+/i, '').split(/[?#]/)[0];
+        const entry = appearanceInsets.get(path);
+        return entry ? (options.facingRight ? entry.mirrored : entry.normal) : null;
+    }
+
     const appearanceGroups = {
         dev_neko: {
             'idle.cat1': ['/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif'],
@@ -166,6 +205,7 @@
         selectedAppearanceGroupId,
         selectedVoiceGroupId,
         getAppearance,
+        getAppearanceVisibleInsets,
         getVoice,
         getActionCapabilities
     });
