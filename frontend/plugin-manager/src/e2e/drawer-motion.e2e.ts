@@ -459,6 +459,11 @@ appearanceTest(
     })
     expect(panelRequests, 'MarketPanel module request was delayed').toBe(1)
     expect((await panelResponse).ok(), 'MarketPanel module loaded').toBe(true)
+    // A module that loads but fails to evaluate renders the error placeholder instead.
+    await expect(
+      page.locator(`${MARKET_PANEL} [data-yui-guide-id="market-panel-root"]`),
+      'MarketPanel component rendered'
+    ).toBeAttached()
     const reversal = recording.secondClickFrame
     expect(reversal, 'second click ran').not.toBeNull()
     expect(recording.frames[reversal!]!.running, 'second click landed mid-animation').toBe(true)
