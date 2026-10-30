@@ -961,6 +961,8 @@ class EventLog:
             try:
                 os.remove(path)
             except OSError:
+                # Best effort: the directory may be going away again. The
+                # outcome below still tells the loop nothing was compacted.
                 pass
             return CompactionResult('no_character_dir', **plan.stats)
         return CompactionResult(
