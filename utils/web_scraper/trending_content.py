@@ -1676,6 +1676,9 @@ def _format_steam_featured(games: List[Dict], limit: int = 5) -> List[str]:
         line = f"{i}. {game.get('title', '')}"
         if details:
             line += f" ({details})"
+        description = game.get('description', '')
+        if description:
+            line += "\n   " + description
         output_lines.append(line)
     output_lines.append("")
     return output_lines

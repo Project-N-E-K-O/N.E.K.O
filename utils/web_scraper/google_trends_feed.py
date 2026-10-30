@@ -16,13 +16,12 @@
 
 Reads the public, login-free trending RSS feed. The feed is per country, so the
 country is derived from the user's language to keep topics in a language the
-user actually reads.
+user actually reads. Trends without any linked news article are dropped.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 from utils.external_http_client import get_external_http_client
@@ -95,13 +94,18 @@ def parse_google_trends_rss(xml_text: str, *, limit: int = 10) -> list[dict[str,
             })
             if len(news) >= _MAX_NEWS_PER_TREND:
                 break
+        if not news:
+            # A bare search term gives the model nothing to stand on: live runs
+            # showed it either says nothing or guesses wrong (a stock ticker
+            # described as a "mysterious number"), so skip it.
+            continue
         trends.append({
             "word": word,
             "traffic": _plain(item.findtext(f"{_HT_NS}approx_traffic"), 20),
             "news": news,
             # The feed's own <link> points back at the feed, so link the top
-            # article instead and fall back to a web search for the topic.
-            "url": news[0]["url"] if news else f"https://www.google.com/search?q={quote(word)}",
+            # article instead.
+            "url": news[0]["url"],
         })
         if len(trends) >= limit:
             break
@@ -121,13 +125,15 @@ async def fetch_google_trends(limit: int = 10, geo: str | None = None) -> dict[s
         response.raise_for_status()
         trends = parse_google_trends_rss(response.text, limit=limit)
     except Exception as error:
-        logger.warning(f"Google Trends 获取失败: geo={resolved_geo} error={error}")
+        # Timeouts stringify to an empty message; keep the type for diagnosis.
+        message = f"{type(error).__name__}: {error}"
+        logger.warning(f"Google Trends 获取失败: geo={resolved_geo} error={message}")
         return {
             "success": False,
             "source": "google_trends",
             "geo": resolved_geo,
             "trending": [],
-            "error": f"Google Trends: {error}",
+            "error": f"Google Trends: {message}",
         }
     if not trends:
         return {
