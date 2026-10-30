@@ -40,6 +40,8 @@ from utils.web_scraper import (
     format_trending_content,
     format_video_content,
     format_window_context_content,
+    google_trend_headline,
+    steam_game_details,
 )
 
 from .content_logging import (
@@ -132,9 +134,13 @@ def _extract_links_from_raw(
                 title = item.get("word", "")
                 url = item.get("url", "")
                 if title and url:
-                    google_trends_links.append(
-                        {"title": title, "url": url, "source": "Google Trends"}
-                    )
+                    link = {"title": title, "url": url, "source": "Google Trends"}
+                    # Phase 1 renders linked candidates instead of
+                    # formatted_content, so carry the headline on the link.
+                    headline = google_trend_headline(item)
+                    if headline:
+                        link["description_hint"] = headline
+                    google_trends_links.append(link)
 
             steam_links: list[dict] = []
             steam = raw_data.get("steam", {}) or {}
@@ -142,9 +148,11 @@ def _extract_links_from_raw(
                 title = game.get("title", "")
                 url = game.get("url", "")
                 if title and url:
-                    steam_links.append(
-                        {"title": title, "url": url, "source": "Steam"}
-                    )
+                    link = {"title": title, "url": url, "source": "Steam"}
+                    details = steam_game_details(game)
+                    if details:
+                        link["description_hint"] = details
+                    steam_links.append(link)
 
             tieba_links: list[dict] = []
             tieba = raw_data.get("tieba", {}) or {}

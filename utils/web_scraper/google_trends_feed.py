@@ -62,6 +62,18 @@ def _plain(value: str | None, max_chars: int) -> str:
     return " ".join(str(value or "").split())[:max_chars]
 
 
+def google_trend_headline(trend: dict[str, Any]) -> str:
+    """Top headline of a trend with its publisher, or an empty string."""
+    news = trend.get("news") or []
+    if not news:
+        return ""
+    headline = str(news[0].get("title") or "")
+    source = str(news[0].get("source") or "")
+    if not headline:
+        return ""
+    return f"{headline} - {source}" if source else headline
+
+
 def parse_google_trends_rss(xml_text: str, *, limit: int = 10) -> list[dict[str, Any]]:
     """Parse the trending RSS feed into normalized trend items."""
     root = ET.fromstring(xml_text)

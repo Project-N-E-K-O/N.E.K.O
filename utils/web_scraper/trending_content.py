@@ -45,8 +45,8 @@ from .platform_helpers import (
 )
 from .youtube_feed import fetch_youtube_home_feed
 from .twitch_feed import fetch_twitch_live_streams
-from .google_trends_feed import fetch_google_trends
-from .steam_store_feed import fetch_steam_featured
+from .google_trends_feed import fetch_google_trends, google_trend_headline
+from .steam_store_feed import fetch_steam_featured, steam_game_details
 from .bilibili_content import fetch_bilibili_radar
 
 
@@ -1661,32 +1661,21 @@ def _format_google_trends(trending_list: List[Dict], geo: str = '', limit: int =
         traffic = item.get('traffic', '')
         if traffic:
             line += f" ({traffic} searches)"
-        news = item.get('news') or []
-        if news:
-            headline = news[0].get('title', '')
-            source = news[0].get('source', '')
-            if headline:
-                line += "\n   " + headline + (f" - {source}" if source else "")
+        headline = google_trend_headline(item)
+        if headline:
+            line += "\n   " + headline
         output_lines.append(line)
     output_lines.append("")
     return output_lines
-
-_STEAM_CATEGORY_LABELS = {'top_seller': 'Top seller', 'new_release': 'New release'}
 
 def _format_steam_featured(games: List[Dict], limit: int = 5) -> List[str]:
     """Format Steam store top sellers and new releases"""
     output_lines = ["【Steam Store】"]
     for i, game in enumerate(games[:limit], 1):
-        details = []
-        label = _STEAM_CATEGORY_LABELS.get(game.get('category', ''))
-        if label:
-            details.append(label)
-        discount = game.get('discount_percent') or 0
-        if discount:
-            details.append(f"{discount}% off")
+        details = steam_game_details(game)
         line = f"{i}. {game.get('title', '')}"
         if details:
-            line += f" ({', '.join(details)})"
+            line += f" ({details})"
         output_lines.append(line)
     output_lines.append("")
     return output_lines

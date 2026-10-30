@@ -45,6 +45,7 @@ _LANGUAGE_TO_STORE = {
 # Featured category key -> label stored on each item
 _CATEGORIES = (("top_sellers", "top_seller"), ("new_releases", "new_release"))
 _STEAM_TYPE_GAME = 0
+_CATEGORY_LABELS = {"top_seller": "Top seller", "new_release": "New release"}
 
 
 def steam_store_locale_for_language(language: str | None) -> tuple[str, str]:
@@ -53,6 +54,18 @@ def steam_store_locale_for_language(language: str | None) -> tuple[str, str]:
     if code in _LANGUAGE_TO_STORE:
         return _LANGUAGE_TO_STORE[code]
     return _LANGUAGE_TO_STORE.get(code.split("-", 1)[0].lower(), _DEFAULT_LANGUAGE)
+
+
+def steam_game_details(game: dict[str, Any]) -> str:
+    """Category and discount of a store item, e.g. "Top seller, 25% off"."""
+    details: list[str] = []
+    label = _CATEGORY_LABELS.get(str(game.get("category") or ""))
+    if label:
+        details.append(label)
+    discount = game.get("discount_percent") or 0
+    if discount:
+        details.append(f"{discount}% off")
+    return ", ".join(details)
 
 
 def _store_item(value: Any, category: str) -> dict[str, Any] | None:

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from main_logic.proactive_chat.candidate_selection import _format_phase1_link_candidate
 from main_logic.proactive_chat.sources import _extract_links_from_raw
 from utils.web_scraper import google_trends_feed, steam_store_feed
 from utils.web_scraper.google_trends_feed import (
@@ -366,3 +367,31 @@ def test_overseas_news_links_round_robin_all_sources():
     assert links[1]["url"] == "https://news.example.com/game7"
     assert links[2]["url"] == "https://store.steampowered.com/app/10/"
     assert links[-1]["title"] == "Shared Game"
+
+
+@pytest.mark.unit
+def test_overseas_news_links_carry_headline_and_store_details_into_phase1():
+    raw = {
+        "region": "non-china",
+        "news": {"success": False},
+        "google_trends": GOOGLE_TRENDS_OK,
+        "steam": STEAM_OK,
+    }
+
+    links = _extract_links_from_raw("news", raw)
+    by_title = {link["title"]: link for link in links}
+
+    assert by_title["World Series"]["description_hint"] == (
+        "Game 7 heads to extra innings - Example News"
+    )
+    # A trend without any news item has nothing to add.
+    assert "description_hint" not in by_title["Halloween costumes"]
+    assert by_title["Shared Game"]["description_hint"] == "Top seller, 25% off"
+    assert by_title["New Game A"]["description_hint"] == "New release"
+
+    # Phase 1 renders linked candidates instead of formatted_content, so the
+    # headline must survive into the rendered candidate line.
+    rendered = _format_phase1_link_candidate(1, by_title["World Series"])
+    assert "简介: Game 7 heads to extra innings - Example News" in rendered
+    rendered_game = _format_phase1_link_candidate(1, by_title["Shared Game"])
+    assert "简介: Top seller, 25% off" in rendered_game
