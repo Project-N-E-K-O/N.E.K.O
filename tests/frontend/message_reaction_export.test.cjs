@@ -209,6 +209,19 @@ test('screen-observation Markdown remains literal text without adding links or i
   }
 });
 
+test('a direct screen observation exports its spoken line once, from the spoken bubble', async () => {
+  // No Markdown-escapable punctuation, so both copies would match if both were exported.
+  const line = 'You are tending a farm';
+  const spoken = message({ id: 'assistant-spoken', role: 'assistant', reaction: undefined, turnId: 'screen-turn',
+    blocks: [{ type: 'text', text: line }] });
+  const observation = { ...recommendation('vision', { category: 'vision', directDelivery: true,
+    content: { title: line, source: '', url: '' } }), turnId: 'screen-turn' };
+  const f = fixture([spoken, observation]);
+  await f.api.copyCompactInlineSelection({ messageIds: [spoken.id, observation.id], format: 'markdown' });
+  assert.equal(f.clipboard[0].split(line).length - 1, 1);
+  assert.equal(f.errors.length, 0);
+});
+
 test('recommendation escaping leaves pre-existing text and link Markdown unchanged', async () => {
   const text = 'Existing **Markdown** &copy; <https://example.test>.';
   const title = 'Old &copy; link', url = 'https://example.test/story?x=1&copy;=2';

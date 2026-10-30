@@ -418,6 +418,14 @@
         return window.reactChatWindowHost || null;
     }
 
+    // Mirror isDirectScreenObservation in react-neko-chat/message-schema.ts: the
+    // block repeats its turn's spoken line, which is exported from that bubble.
+    function isDirectScreenObservationBlock(block) {
+        var content = (block && block.content) || {};
+        return !!block && block.type === 'proactive_recommendation' && !!block.directDelivery
+            && block.category === 'vision' && !content.url && !!String(content.title || '').trim();
+    }
+
     function getReactMessages() {
         var host = getReactChatHost();
         if (!host || typeof host.getState !== 'function') return [];
@@ -432,6 +440,7 @@
                 if (message.role === 'system' && message.blocks.length > 0 && message.blocks.every(function (b) {
                     return b && b.type === 'topic-hint';
                 })) return false;
+                if (message.blocks.length > 0 && message.blocks.every(isDirectScreenObservationBlock)) return false;
                 return true;
             });
         } catch (error) {
@@ -495,7 +504,7 @@
             }
             if (block.type !== 'proactive_recommendation') return [block];
             var content = block.content || {};
-            if (block.category === 'chat') return [];
+            if (block.category === 'chat' || isDirectScreenObservationBlock(block)) return [];
             var url = '';
             try {
                 var parsed = new URL(content.url);

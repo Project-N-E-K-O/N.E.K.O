@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react';
 import type { ChatMessage, MessageAction } from './message-schema';
 
-export function useRecommendationExposure(message: ChatMessage, recommendationId: string, interactive: boolean,
+export function useRecommendationExposure<T extends HTMLElement = HTMLDivElement>(message: ChatMessage, recommendationId: string, interactive: boolean,
   action: string, onAction?: (message: ChatMessage, action: MessageAction) => void) {
-  const root = useRef<HTMLDivElement>(null);
+  const root = useRef<T>(null);
   const actionRef = useRef(onAction);
   actionRef.current = onAction;
   useEffect(() => {
