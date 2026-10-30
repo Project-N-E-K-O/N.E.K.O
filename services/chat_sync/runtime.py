@@ -1135,7 +1135,7 @@ class DesktopChatSyncRuntime:
                 "cursor": state["revision"], "hasSealedBatch": bool(pending), "localOnlyOriginals": 0}
 
     async def configure(self, service_url: str) -> None:
-        """Serialize service setup with binding and manual sync operations."""
+        """Serialize service setup with binding and recovery operations."""
         if self._fixed_service_url and _service_url(service_url) != self._fixed_service_url:
             raise ValueError("invalid_chat_sync_service_url")
         self._check_local_ca_origin(service_url)

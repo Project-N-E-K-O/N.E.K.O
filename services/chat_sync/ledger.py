@@ -118,8 +118,8 @@ class ChatOriginal:
 
 
 def _encode(value: object) -> str:
-    """Encode internal SQLite keys and original-field comparison values."""
-    # Wire payloads use encode_chat_original; local locators are not wire data.
+    """Encode SQLite domain keys and fixed deletion/batch bodies canonically."""
+    # Chat original payloads use encode_chat_original instead.
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
@@ -333,8 +333,8 @@ class ChatSyncLedger:
     def purge_deleted_originals(self, domain: ChatDomain) -> None:
         """Reclaim current raw copies after durable tombstones, retaining identity.
 
-        A sealed body containing a deleted record is cancelled rather than
-        rewritten. Its other members remain pending for a new fixed snapshot.
+        A legacy sealed body containing a deleted record is dropped rather
+        than rewritten; nothing seals new bodies.
         This repeatable cleanup is for the dedicated sync ledger only.
         """
         key = domain.key()

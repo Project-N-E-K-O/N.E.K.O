@@ -260,7 +260,7 @@ def _saved_capture_consent(directory, uid):
 
 async def save_original(lanlan_name, role, text, *, record_id=None, original_time=None, config_manager=None,
                         character_uid=None):
-    """Commit a new accepted original before best-effort ledger delivery, without HTTP."""
+    """Commit a new accepted original locally, without HTTP."""
     from services.chat_sync.runtime import get_desktop_chat_sync_runtime
     from utils.config_manager import get_config_manager
 
@@ -300,8 +300,8 @@ async def save_original(lanlan_name, role, text, *, record_id=None, original_tim
             print("[chat-sync] local_original_sync_unavailable")
             return None
         return record_id
-    # Keep the original durable before the model starts; ledger replay belongs
-    # to the owned scheduler, so the producer never waits for backlog processing.
+    # Keep the original durable before the model starts; the producer only
+    # wakes the owned scheduler and never waits for its network work.
     # This first transaction is the crash-recovery barrier. Scheduling an unsaved
     # body in the background would lose accepted originals on process termination.
     runtime.wake_scheduler()
