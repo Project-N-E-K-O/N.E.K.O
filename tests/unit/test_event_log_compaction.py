@@ -185,6 +185,48 @@ def test_the_tail_after_the_anchor_survives_verbatim(tmp_path):
     assert _tail_ids(log) == before
 
 
+def test_a_crlf_journal_from_windows_compacts_like_an_lf_one(tmp_path):
+    """Every journal written on Windows is CRLF-terminated (text-mode append),
+    and a cloud save can carry one to another OS where new appends are LF.
+    The anchor match, the tail, the self-check and the next append must not
+    depend on the terminator. CI runs on Linux, where the writer never
+    produces CRLF, so the bytes are written by hand here."""
+    log = _fresh_log(str(tmp_path))
+    ids = [str(uuid.uuid4()) for _ in range(6)]
+    head = [_line(ids[0], days_ago=60), _line(ids[1], days_ago=55)]
+    tail = [
+        _line(ids[2], days_ago=50),
+        "{corrupt",
+        _line(ids[3], days_ago=2),
+        _line(ids[4], days_ago=1),
+    ]
+    os.makedirs(_char_dir(tmp_path), exist_ok=True)
+    crlf_part = "\r\n".join(head + tail[:3]) + "\r\n"
+    lf_part = tail[3] + "\n"
+    with open(_events_path(tmp_path), "wb") as f:
+        f.write((crlf_part + lf_part).encode("utf-8"))
+    _write_sentinel(tmp_path, ids[2])
+    sentinel_bytes = _read_bytes(_sentinel_path(tmp_path))
+    before = _tail_ids(log)
+    assert before == [ids[3], ids[4]]
+
+    with _knobs():
+        result = log.compact_applied_history(NAME, now=NOW)
+
+    assert result.outcome == "compacted"
+    assert result.dropped_lines == len(head)
+    assert result.pending_tail == 2
+    assert _journal_lines(tmp_path) == tail
+    body = _read_bytes(_events_path(tmp_path))
+    assert b"\r\r" not in body
+    assert body.endswith(os.linesep.encode())
+    assert _read_bytes(_sentinel_path(tmp_path)) == sentinel_bytes
+    assert _tail_ids(log) == before
+
+    new_id = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "r"})
+    assert _tail_ids(log) == before + [new_id]
+
+
 # ── skip cases leave the journal untouched ───────────────────────────
 
 
