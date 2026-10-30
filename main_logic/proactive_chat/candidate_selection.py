@@ -29,19 +29,24 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     """Render useful candidate evidence without leaking bulky raw metadata."""
 
     is_community_card = item.get("mode") == "community"
-    # Overseas news summaries (Steam store copy, news headlines) are untrusted
-    # free text too; titles stay raw so Phase 1 selection still matches them.
-    escape_summary = bool(item.get("grounded_news"))
+    # Overseas news titles and summaries (trend terms, headlines, Steam store
+    # copy) are untrusted free text too. Escaping the title keeps a literal
+    # " | " from truncating phase1_rendered_title; matching also checks it.
+    escape_grounded = bool(item.get("grounded_news"))
 
     def _field_text(value: Any, *, field: str = "") -> str:
         text = " ".join(str(value or "").split())
-        if is_community_card or (escape_summary and field == "description_hint"):
+        if is_community_card or (
+            escape_grounded and field in {"title", "description_hint"}
+        ):
             # Community card fields are public, untrusted text inside a prompt
             # section whose structural delimiters use ``=`` and ``|``.
             return _escape_phase1_community_text(text)
         return text
 
-    title = str(item.get("phase1_title") or _field_text(item.get("title"))).strip()
+    title = str(
+        item.get("phase1_title") or _field_text(item.get("title"), field="title")
+    ).strip()
     details: list[str] = []
     field_labels = (
         ("source", "来源"),
