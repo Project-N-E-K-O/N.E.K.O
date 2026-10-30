@@ -42,8 +42,10 @@ _GAMBLING_HOST_FRAGMENTS = (
     "williamhill",
     "pokerstars",
     "1xbet",
-    "stake.com",
 )
+# Gambling domains whose name is too generic for substring matching
+# ("stake.com" would also hit "mistake.com"); matched as a host suffix.
+_GAMBLING_DOMAINS = ("stake.com",)
 _FILE_NAME_TITLE_RE = re.compile(r"\.(?:jpe?g|png|gif|webp|svg|bmp|pdf)$", re.IGNORECASE)
 
 
@@ -84,6 +86,8 @@ def is_tragic_news_text(text: str | None) -> bool:
 def is_gambling_url(url: str | None) -> bool:
     """True when a link points at a sportsbook / casino host."""
     host = (urlparse(str(url or "")).hostname or "").lower()
+    if any(host == domain or host.endswith("." + domain) for domain in _GAMBLING_DOMAINS):
+        return True
     return any(fragment in host for fragment in _GAMBLING_HOST_FRAGMENTS)
 
 
