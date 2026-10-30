@@ -231,6 +231,9 @@ class FakeHost:
         self.resubmitted.extend(callbacks)
         self.events.append("resubmit")
 
+    async def warm_speech(self) -> None:
+        self.events.append("warm_speech")
+
     def open_speech_stream(self, *, metadata, request_id, on_enqueued, on_failed=None):
         if not self.voice_streams:
             return None

@@ -14,6 +14,7 @@ import {
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
 import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
+import ScreenObservationExposure from './ScreenObservationExposure';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
   type AvatarToolEditorResultMessage,
@@ -6523,6 +6524,10 @@ function CompactChatApp({
                           >
                             {compactPreviewDisplayContent}
                           </span>
+                          {compactMessagePreview?.isAssistant && !compactSuppressAssistantFallback && compactPreviewDisplayText ? (
+                            <ScreenObservationExposure messages={messages} turnId={compactMessagePreview.turnId}
+                              onAction={onMessageAction} />
+                          ) : null}
                         </button>
                         {compactInputToolToggleButton}
                       </>

@@ -17,12 +17,41 @@
             } finally { root.clearTimeout(timer); if (config.signal) config.signal.removeEventListener('abort', abort); }
         } };
         const el = {};
-        ['microphone', 'actual-device', 'input-notice', 'input-setup', 'input-settings', 'input-close', 'input-summary', 'resource-card', 'resource-progress', 'gain', 'gain-value', 'meter', 'test', 'test-cancel', 'test-result', 'resources', 'prepare', 'download', 'repair', 'resource-cancel', 'resource-message', 'wake-enable'].forEach(name => { el[name] = document.getElementById('voice-identity-' + name); });
+        ['microphone', 'actual-device', 'input-notice', 'input-setup', 'input-settings', 'input-close', 'input-summary', 'resource-card', 'resource-overview', 'resource-progress', 'resource-progress-panel', 'resource-phase', 'resource-step', 'resource-targets', 'resource-download-info', 'gain', 'gain-value', 'meter', 'test', 'test-cancel', 'test-result', 'resources', 'prepare', 'download', 'repair', 'resource-cancel', 'resource-message', 'wake-enable'].forEach(name => { el[name] = document.getElementById('voice-identity-' + name); });
         if (!el.microphone) return null;
         const t = hooks.translate;
         const completeDialog = document.getElementById('voice-identity-resource-complete');
         const completeClose = document.getElementById('voice-identity-resource-complete-close');
         let completeNoticeTimer = null;
+        const resourceDetails = document.getElementById('voice-identity-resource-details');
+        let resourceCollapseTimer = null;
+        let resourceOverviewHidden = false;
+        function cancelResourceCollapse() {
+            if (resourceCollapseTimer !== null) root.clearTimeout(resourceCollapseTimer);
+            resourceCollapseTimer = null;
+        }
+        function canCollapseResources() {
+            return resources && resources.can_enroll === true && !resourceFeedbackIssue
+                && Object.values(resources.resources || {}).every(value => !value.required || value.state === 'ready');
+        }
+        function scheduleResourceCollapse(at) {
+            cancelResourceCollapse();
+            if (!resourceDetails || !canCollapseResources()) return;
+            const timer = root.setTimeout(() => {
+                if (resourceCollapseTimer !== timer) return;
+                resourceCollapseTimer = null;
+                if (at !== epoch || pageHidden || pending || operation || hooks.enrolling() || !canCollapseResources()) return;
+                if (typeof resourceDetails.contains === 'function' && resourceDetails.contains(document.activeElement)) {
+                    el.repair.focus();
+                }
+                resourceDetails.open = false;
+                resourceOverviewHidden = true;
+                inputSetupRequested = false;
+                render(false);
+            }, 5000);
+            resourceCollapseTimer = timer;
+        }
+        resourceDetails?.addEventListener('toggle', cancelResourceCollapse);
         function closeResourceNotice() {
             if (completeNoticeTimer !== null) root.clearTimeout(completeNoticeTimer);
             completeNoticeTimer = null;
@@ -43,6 +72,11 @@
                 : 'voiceIdentity.resourcesReadyForInput';
             help.setAttribute('data-i18n', helpKey);
             help.textContent = t(helpKey, RESOURCE_HINT_FALLBACKS[helpKey] || (needsAttention ? 'Check the resource status and repair the unavailable components.' : 'Resources are ready. Select your microphone and complete the input test below.'));
+            const unresolved = needsAttention && repairDetails();
+            if (unresolved) {
+                help.removeAttribute('data-i18n');
+                help.textContent = unresolved;
+            }
             completeDialog.showModal();
             const timer = root.setTimeout(() => {
                 if (completeNoticeTimer !== timer) return;
@@ -86,6 +120,7 @@
         let currentMessage = null;
         let inputSetupStarted = false;
         let inputSetupRequested = false;
+        let inputSetupDismissed = false;
         const SETUP_FEEDBACK_VISIBLE_MS = 3000;
         let setupFeedbackTimer = null;
         let compactSetupProof = null;
@@ -154,14 +189,70 @@
             el['resource-message'].hidden = compact;
             el['input-summary'].hidden = !inputReady || inputSetupVisible || compact;
         }
+        function transferFeedback(detail) {
+            if (!detail || typeof detail !== 'object') return null;
+            const phases = {
+                checking: ['voiceIdentity.resourcePhaseChecking', 'Checking {{resource}}'],
+                downloading: ['voiceIdentity.resourcePhaseDownloading', 'Downloading {{resource}}'],
+                verifying: ['voiceIdentity.resourcePhaseVerifying', 'Verifying {{resource}}'],
+                loading: ['voiceIdentity.resourcePhaseLoading', 'Loading {{resource}}'],
+                refreshing: ['voiceIdentity.resourcePhaseRefreshing', 'Refreshing voice resources']
+            };
+            if (!Object.prototype.hasOwnProperty.call(phases, detail.phase)) return null;
+            const name = ['campp', 'silero', 'noise_reduction', 'wake_model', 'wake_runtime'].includes(detail.resource)
+                ? t('voiceIdentity.resource_' + detail.resource, detail.resource) : '';
+            const copy = phases[detail.phase];
+            const phase = t(copy[0], copy[1].replace('{{resource}}', name), { resource: name });
+            let progress = null, text = '';
+            if (detail.phase === 'downloading' && Number.isSafeInteger(detail.downloaded_bytes) && detail.downloaded_bytes >= 0) {
+                const received = detail.downloaded_bytes;
+                const total = Number.isSafeInteger(detail.total_bytes) && detail.total_bytes > 0 && received <= detail.total_bytes ? detail.total_bytes : null;
+                const number = new Intl.NumberFormat(document.documentElement.lang || undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+                const downloaded = number.format(received / 1000000);
+                if (total !== null) {
+                    progress = received / total;
+                    const size = number.format(total / 1000000), percent = number.format(progress * 100);
+                    text = t('voiceIdentity.resourceDownloadProgressKnown', downloaded + ' / ' + size + ' MB · ' + percent + '%', { downloaded, total: size, percent });
+                } else text = t('voiceIdentity.resourceDownloadProgressUnknown', downloaded + ' MB downloaded', { downloaded });
+                if (Number.isSafeInteger(detail.attempt) && detail.attempt > 1) text += ' · ' + t('voiceIdentity.resourceDownloadRetry', 'Retry ' + detail.attempt, { attempt: detail.attempt });
+            }
+            return { phase, progress, text };
+        }
         function render(updateParent = true) {
+            if (resourceOverviewHidden && !canCollapseResources()) resourceOverviewHidden = false;
+            el['resource-overview'].hidden = resourceOverviewHidden;
             const resourceBusy = pending && resourceFeedback && resourceFeedback.epoch === epoch;
             const preparing = resourceBusy && resourceFeedback.kind === 'prepare';
             const repairing = resourceBusy && resourceFeedback.kind === 'repair';
             el['resource-card'].classList.toggle('is-loading-resources', !!resourceBusy);
+            el['resource-progress-panel'].hidden = !resourceBusy;
             el['resource-progress'].hidden = !resourceBusy;
-            if (resourceBusy && Number.isFinite(resourceFeedback.progress)) el['resource-progress'].value = resourceFeedback.progress;
+            const transfer = resourceBusy && resourceFeedback.phase === 'running' ? transferFeedback(resourceFeedback.detail) : null;
+            const progress = resourceBusy && resourceFeedback.detail ? transfer && transfer.progress : resourceBusy && resourceFeedback.progress;
+            if (resourceBusy && Number.isFinite(progress)) el['resource-progress'].value = progress;
             else el['resource-progress'].removeAttribute('value');
+            el['resource-download-info'].hidden = !transfer || !transfer.text;
+            if (transfer) el['resource-download-info'].textContent = transfer.text;
+            if (resourceBusy) {
+                const phase = resourceFeedback.phase;
+                const phaseCopy = phase === 'confirming'
+                    ? ['voiceIdentity.resourceProgressConfirming', 'Confirming the result', 3]
+                    : phase === 'running'
+                        ? repairing ? ['voiceIdentity.resourceProgressRepairing', 'Checking and repairing resources', 2]
+                            : ['voiceIdentity.resourceOperation_running', 'Resource operation running', 2]
+                        : ['voiceIdentity.resourceProgressSubmitting', 'Submitting the resource task', 1];
+                const phaseText = transfer ? transfer.phase : t(phaseCopy[0], phaseCopy[1]);
+                if (el['resource-phase'].textContent !== phaseText) el['resource-phase'].textContent = phaseText;
+                el['resource-step'].textContent = t('voiceIdentity.resourceProgressStep', 'Step ' + phaseCopy[2] + ' / 3', { current: phaseCopy[2], total: 3 });
+                el['resource-targets'].hidden = !repairing;
+                if (repairing) {
+                    const names = ['campp', 'silero'];
+                    if (resources && resources.wake_enabled) names.push('wake_runtime', 'wake_model');
+                    const labels = { campp: 'CAM++', silero: 'Silero VAD', wake_runtime: 'Sherpa ONNX', wake_model: 'Wake word model' };
+                    const targets = names.map(name => t('voiceIdentity.resource_' + name, labels[name])).join(' / ');
+                    el['resource-targets'].textContent = t('voiceIdentity.resourceRepairTargets', 'Resources: ' + targets, { resources: targets });
+                }
+            }
             const prepareKey = preparing ? 'voiceIdentity.resourcePreparing' : 'voiceIdentity.resourcePrepare';
             el.prepare.setAttribute('data-i18n', prepareKey);
             el.prepare.textContent = t(prepareKey, preparing ? 'Checking and loading…' : 'Check and load resources');
@@ -170,12 +261,12 @@
             el.repair.setAttribute('data-i18n', repairing ? 'voiceIdentity.resourceRepairing' : 'voiceIdentity.resourceRepairButton');
             el.repair.classList.toggle('is-loading', !!repairing);
             const inputReady = !!resources && resources.can_enroll === true && !!accepted && accepted.inputSnapshot === snapshot();
-            const inputSetupVisible = inputSetupStarted && (inputSetupRequested || !inputReady || trialActive);
+            const inputSetupVisible = inputSetupStarted && (trialActive || !inputSetupDismissed && (inputSetupRequested || (!inputReady && !resourceOverviewHidden)));
             el['input-setup'].hidden = !inputSetupVisible;
             el['input-settings'].hidden = !inputSetupStarted || inputSetupVisible;
             el['input-settings'].disabled = pending || !!operation || hooks.enrolling();
             el['input-settings'].setAttribute('aria-expanded', String(inputSetupVisible));
-            el['input-close'].hidden = !inputReady || pending || !!operation || hooks.enrolling();
+            el['input-close'].hidden = !inputSetupVisible || pending || !!operation || trialActive || hooks.enrolling();
             el.prepare.setAttribute('aria-expanded', String(inputSetupVisible));
             el.prepare.classList.toggle('needs-input-setup', !inputReady);
             el['input-summary'].hidden = !inputReady || inputSetupVisible;
@@ -188,7 +279,7 @@
             el.download.disabled = pending || !!operation || hooks.enrolling() || !resources || !resources.resources || !resources.resources.wake_runtime || ['missing', 'unavailable'].includes(resources.resources.wake_runtime.state);
             el['wake-enable'].disabled = pending || hooks.enrolling() || !resources || resources.wake_managed === true;
             el['wake-enable'].checked = !!(resources && resources.wake_enabled);
-            el.repair.hidden = !resources || !Object.entries(resources.resources || {}).some(([name, value]) => needsRepair(name, value));
+            el.repair.hidden = false;
             el.repair.disabled = pending || !!operation || hooks.enrolling();
             el['resource-cancel'].hidden = !operation;
             el['gain-value'].textContent = gainDb + ' dB';
@@ -242,6 +333,8 @@
         }
         function invalidate(key) {
             closeResourceNotice();
+            cancelResourceCollapse();
+            inputSetupDismissed = false;
             epoch += 1;
             accepted = null;
             if (hooks.enrolling()) {
@@ -305,6 +398,15 @@
             const stateText = t('voiceIdentity.resourceState_' + status, status);
             const reason = value && value.reason;
             return label + ': ' + stateText + (reason ? ' — ' + t('voiceIdentity.resourceReason_' + reason, t('voiceIdentity.resourceRepair', 'Check or repair this resource.')) : '');
+        }
+        function repairDetails() {
+            const unresolved = Object.entries(resources && resources.resources || {})
+                .filter(([name, value]) => needsRepair(name, value));
+            const details = unresolved.map(([name, value]) => resourceText(name, value));
+            if (unresolved.some(([name, value]) => ['campp', 'silero', 'noise_reduction'].includes(name) && value.repair_action === 'app_repair')) {
+                details.push(t('voiceIdentity.resourceAppRepairHelp', 'Check for updates in desktop Settings → About, or reinstall the application running the backend. For remote deployments, contact the service administrator.'));
+            }
+            return details.join('\n');
         }
         async function refreshResources() {
             const at = epoch;
@@ -463,11 +565,14 @@
         async function runResource(kind) {
             if (pending || operation || hooks.enrolling()) return;
             closeResourceNotice();
+            cancelResourceCollapse();
             resourceFeedbackIssue = false;
-            if (kind === 'prepare' || kind === 'repair') { inputSetupStarted = true; inputSetupRequested = true; }
+            if (resourceOverviewHidden && resourceDetails) resourceDetails.open = true;
+            resourceOverviewHidden = false;
+            if (kind === 'prepare' || kind === 'repair') { inputSetupStarted = true; inputSetupRequested = true; inputSetupDismissed = false; }
             const at = ++epoch;
             discardTestForResources(); pending = true;
-            resourceFeedback = { epoch: at, kind, progress: null };
+            resourceFeedback = { epoch: at, kind, phase: 'submitting', progress: null };
             el['resource-message'].textContent = kind === 'repair'
                 ? t('voiceIdentity.resourceRepairingHelp', 'Downloading and verifying missing voice models, then checking whether they can load. Verified downloads are kept if cancelled.')
                 : t('voiceIdentity.resourcePreparingHelp', 'Preparing voice resources. Test your microphone below when loading finishes. The first load may take a little time.');
@@ -487,17 +592,21 @@
                 render();
                 await hooks.request('/resources/operations/' + encodeURIComponent(operation) + '/start', { method: 'POST', signal: requestAbort.signal });
                 if (at !== epoch) { hooks.request('/resources/operations/' + encodeURIComponent(ownedOperation) + '/cancel', { method: 'POST', keepalive: true }).catch(() => {}); return; }
-                // Include the backend download (180s), commit/refresh and
-                // retirement budgets before the page attempts cancellation.
-                const deadline = Date.now() + (kind === 'repair' ? 450000 : kind === 'download' ? 210000 : 60000);
+                resourceFeedback.phase = 'running';
+                render(false);
+                // Repair may use runtime check/stage/publish (30+240+15s),
+                // model download/publish (180+5s), and primary repair (420s).
+                // Allow their 890s total plus 70s for retirement and refresh.
+                const deadline = Date.now() + (kind === 'repair' ? 960000 : kind === 'download' ? 210000 : 60000);
                 while (at === epoch && operation) {
                     const id = operation;
                     const result = await hooks.request('/resources/operations/' + encodeURIComponent(id), { method: 'GET', signal: requestAbort.signal });
                     if (at !== epoch || operation !== id) return;
                     resourceFeedbackIssue = ['failed', 'cancelled'].includes(result.state) || !!result.reason;
-                    el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state || '') + (Number.isFinite(result.progress) ? ' ' + Math.round(result.progress * 100) + '%' : '');
+                    el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state || '') + (!result.progress_detail && Number.isFinite(result.progress) ? ' ' + Math.round(result.progress * 100) + '%' : '');
                     if (result.reason) el['resource-message'].textContent += ' — ' + operationReason(result.reason);
                     resourceFeedback.progress = Number.isFinite(result.progress) ? Math.max(0, Math.min(1, result.progress)) : null;
+                    resourceFeedback.detail = result.progress_detail || null;
                     render(false);
                     if (['succeeded', 'failed', 'cancelled'].includes(result.state)) {
                         completionResult = result;
@@ -508,7 +617,12 @@
                     await new Promise(resolve => { pollResolve = resolve; pollTimer = root.setTimeout(resolve, 1000); });
                     pollTimer = null; pollResolve = null;
                 }
-                if (at === epoch) { await refreshResources(); await hooks.status(); }
+                if (at === epoch) {
+                    resourceFeedback.phase = 'confirming';
+                    render(false);
+                    await refreshResources();
+                    if (at === epoch) await hooks.status();
+                }
             } catch (error) {
                 if (ownedOperation) {
                     try {
@@ -528,13 +642,23 @@
                         if (operation === ownedOperation && cancelError.status === 400 && cancelError.message === 'invalid_resource_operation') operation = null;
                     }
                 }
-                if (at === epoch) { resourceFeedbackIssue = true; el['resource-message'].textContent = hooks.error(error); }
+                if (at === epoch) {
+                    resourceFeedbackIssue = true;
+                    el['resource-message'].textContent = error.message === 'resource_repair_unavailable'
+                        ? [operationReason(error.message), repairDetails()].filter(Boolean).join('\n')
+                        : hooks.error(error);
+                }
             } finally {
                 if (at === epoch) {
+                    if (kind === 'repair' && completionResult && completionResult.state === 'succeeded' && !completionResult.reason && !resourceFeedbackIssue) {
+                        const unresolved = repairDetails();
+                        if (unresolved) { resourceFeedbackIssue = true; el['resource-message'].textContent = unresolved; }
+                    }
                     pending = false; resourceFeedback = null; requestAbort = null; render();
                     if ((kind === 'prepare' || kind === 'repair') && completionResult && completionResult.state !== 'cancelled') {
                         const needsAttention = completionResult.state !== 'succeeded' || resourceFeedbackIssue || resourcesHintKey() !== 'voiceIdentity.resourcesReady';
                         showResourceNotice(at, needsAttention);
+                        if (kind === 'repair' && !needsAttention) scheduleResourceCollapse(at);
                     }
                 }
             }
@@ -562,28 +686,26 @@
         el.test.addEventListener('click', testInput);
         el['input-settings'].addEventListener('click', () => {
             if (pending || operation || hooks.enrolling()) return;
+            cancelResourceCollapse();
+            inputSetupDismissed = false;
             inputSetupRequested = true;
             render();
             el.microphone.focus();
         });
         el['input-close'].addEventListener('click', () => {
-            if (startHintKey() !== 'voiceIdentity.enrollmentReady' || hooks.enrolling()) return;
+            if (pending || operation || trialActive || hooks.enrolling()) return;
             inputSetupRequested = false;
+            inputSetupDismissed = true;
             render();
             el['input-settings'].focus();
         });
         el['test-cancel'].addEventListener('click', () => invalidate('voiceIdentity.inputTestRequired'));
         el.prepare.addEventListener('click', () => runResource('prepare'));
         el.download.addEventListener('click', () => runResource('download'));
-        el.repair.addEventListener('click', async () => {
-            if (pending || operation || hooks.enrolling()) return;
-            if (resources && resources.can_repair_models === true) return runResource('repair');
-            const local = ['localhost', '127.0.0.1', '[::1]'].includes(root.location.hostname);
-            const actions = [resources && resources.repair_action, ...Object.values(resources && resources.resources || {}).map(value => value.repair_action)];
-            if (local && actions.includes('app_repair') && root.nekoVoiceEnrollment && typeof root.nekoVoiceEnrollment.openRepair === 'function') {
-                try { await root.nekoVoiceEnrollment.openRepair(); } catch (error) { el['resource-message'].textContent = hooks.error(error); }
-            } else root.open('/api/voice-identity/resources/repair-guide', '_blank', 'noopener,noreferrer');
-        });
+        // Let the backend validate its repair capability. A discovery snapshot
+        // cannot rule out repair of an existing but unusable model. Keep an
+        // unsupported installation's reason here instead of opening raw docs.
+        el.repair.addEventListener('click', () => runResource('repair'));
         el['resource-cancel'].addEventListener('click', () => cancelOperation().catch(() => {}));
         el['wake-enable'].addEventListener('change', async () => {
             if (pending || hooks.enrolling()) return;

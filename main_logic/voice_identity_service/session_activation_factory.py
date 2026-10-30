@@ -20,6 +20,7 @@ from .activation_runtime import (
     VoiceSessionActivationRuntimeConfig,
 )
 from .activation_scoring import CampPlusActivationScorer
+from .runtime_installation import runtime_cache_root
 
 
 class OwnerVoiceSessionActivationFactory:
@@ -101,6 +102,7 @@ class OwnerVoiceSessionActivationFactory:
                 SherpaWakeWordConfig(
                     model_dir=self._wake_model_dir,
                     keywords=DEFAULT_WAKE_WORD_KEYWORDS,
+                    runtime_cache_dir=str(runtime_cache_root()),
                 )
             )
             if self._wake_model_dir is not None

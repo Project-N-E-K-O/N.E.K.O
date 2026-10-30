@@ -30,6 +30,10 @@ async def _community_access(request: Request):
     status = await O.resolve_saved_oauth_status()
     snapshot = status.get("snapshot") or {}
     access = snapshot.get("access_token")
+    if access and not status.get("logged_in") and O.status_session_saved(status):
+        # The session resolver keeps saved credentials on transient lookup or
+        # refresh failures. Match visit credentials: unavailable is not logout.
+        return None, JSONResponse({"detail": "community_unavailable"}, status_code=503)
     if not access or status.get("rejected") or not status.get("logged_in"):
         return None, JSONResponse({"detail": "community_login_required"}, status_code=401)
     verified_profile = status.get("verified_profile") or {}

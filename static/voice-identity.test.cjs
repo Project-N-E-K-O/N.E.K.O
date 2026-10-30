@@ -187,11 +187,11 @@ function createHarness({
         'voice-identity-filter',
         'voice-identity-retry',
         'voice-identity-eyebrow',
+        'voice-identity-processing-location',
         'voice-identity-actions',
         'voice-identity-result',
         'voice-identity-result-title',
         'voice-identity-match-percent',
-        'voice-identity-score-help',
         'voice-identity-result-status',
     ];
     const elements = new Map(elementIds.map(id => [id, createElement()]));
@@ -767,8 +767,9 @@ test('mutation controls stay disabled until CSRF and canonical status resolve', 
 });
 
 test('one click records three reference segments and one five-second verification segment', async () => {
-    const harness = createHarness();
+    const harness = createHarness({ showConfirm: async () => true });
     await harness.initialize();
+    assert.equal(harness.elements.get('voice-identity-processing-location').hidden, false);
 
     await harness.emit('voice-identity-start');
 
@@ -823,11 +824,15 @@ test('one click records three reference segments and one five-second verificatio
     assert.equal(harness.elements.get('voice-identity-match-percent').hidden, false);
     assert.equal(harness.elements.get('voice-identity-match-percent').textContent, '86%');
     assert.equal(harness.elements.get('voice-identity-eyebrow').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-processing-location').hidden, true);
     assert.equal(harness.elements.get('voice-identity-step-title').hidden, true);
     assert.equal(harness.elements.get('voice-identity-step-body').hidden, true);
     assert.equal(harness.elements.get('voice-identity-actions').hidden, true);
     assert.equal(harness.progressSteps.length, 4);
     assert.equal(harness.progressSteps.every(step => step.classList.contains('completed')), true);
+    await harness.emit('voice-identity-delete');
+    assert.equal(harness.elements.get('voice-identity-result').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-processing-location').hidden, false);
 });
 
 test('the first prompt is visible before recording starts', async () => {

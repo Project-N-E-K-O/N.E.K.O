@@ -460,9 +460,18 @@ export function hasProactiveRecommendationContent(block: Extract<MessageBlock, {
   }
 }
 
+// A directly delivered screen observation carries the turn's own spoken line,
+// which the ordinary assistant bubble already shows. It never draws a bubble of
+// its own; its exposure is reported from that bubble instead.
+export function isDirectScreenObservation(block: MessageBlock): boolean {
+  return block.type === 'proactive_recommendation' && !!block.directDelivery && block.category === 'vision'
+    && !block.content.url && !!block.content.title.trim();
+}
+
 export function hasVisibleMessageContent(message: ChatMessage): boolean {
   return message.blocks.length === 0 || !!message.actions?.length || message.blocks.some(block =>
-    block.type !== 'proactive_recommendation' || hasProactiveRecommendationContent(block));
+    block.type !== 'proactive_recommendation'
+      || (hasProactiveRecommendationContent(block) && !isDirectScreenObservation(block)));
 }
 
 export function parseChatMessage(input: unknown): ChatMessage {

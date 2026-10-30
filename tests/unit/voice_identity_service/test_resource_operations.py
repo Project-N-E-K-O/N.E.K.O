@@ -37,7 +37,8 @@ async def test_source_repair_is_reserved_cancelable_and_refreshes_the_prepared_s
     assert calls == []
     manager.start_reserved(reservation["operation_id"])
     await manager._current.task
-    assert calls[0] == ("repair", {"timeout": 420})
+    assert calls[0][0] == "repair" and calls[0][1]["timeout"] == 420
+    assert callable(calls[0][1]["on_progress"])
     assert calls[1] == ("refresh", reservation["operation_id"])
     assert manager.operation(reservation["operation_id"])["state"] == "succeeded"
     assert manager._prepared == ready

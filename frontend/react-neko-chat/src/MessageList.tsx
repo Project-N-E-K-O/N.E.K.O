@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MessageBubble from './MessageBubble';
+import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
 import ThinkingDots from './ThinkingDots';
 import { i18n } from './i18n';
 import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
@@ -51,6 +52,11 @@ export default function MessageList({
   const displayMessages = useMemo(
     () => messages.filter(hasVisibleMessageContent).slice(-MAX_DISPLAY_MESSAGES),
     [messages],
+  );
+
+  const exposureAnchorIds = useMemo(
+    () => getScreenObservationAnchorIds(displayMessages, messages),
+    [displayMessages, messages],
   );
 
   const observedMessageKey = useMemo(
@@ -182,6 +188,9 @@ export default function MessageList({
             isGroupedWithPrevious={shouldGroupWithPrevious(message, displayMessages[index - 1])}
             failedStatusLabel={failedStatusLabel}
             onAction={onAction}
+            exposure={exposureAnchorIds.has(message.id)
+              ? <ScreenObservationExposure messages={messages} turnId={message.turnId} onAction={onAction} />
+              : undefined}
           />
         ))}
         {footer}

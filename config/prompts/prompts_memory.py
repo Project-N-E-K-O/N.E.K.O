@@ -4257,6 +4257,85 @@ def get_group_digest_speaker_label(lang: str = "zh") -> str:
     return _loc(GROUP_DIGEST_SPEAKER_LABEL, _normalize_memory_prompt_lang(lang))
 
 
+# ---------- card forge: scope hint prefixed to scoped facts ----------
+# Scoped facts are written from the subject's point of view ("对方…", or no
+# subject at all for participant facts). The card forge only sees the text, so
+# each scoped fact is prefixed with who it is about. Keys: ``visit_`` + subject
+# kind for the neko_visit platform, the bare subject kind for every other one.
+FORGE_SCOPE_HINT = {
+    "zh": {
+        "visit_group_chat": "【串门记忆：串门时的见闻，「对方」指来往的邻居家】",
+        "visit_group_participant": "【串门记忆：说的是邻居家的猫娘】",
+        "visit_participant": "【串门记忆：说的是邻居家的人类】",
+        "group_chat": "【群聊记忆：群聊里的见闻】",
+        "group_participant": "【群聊记忆：说的是一位群友】",
+        "participant": "【外部聊天记忆：说的是一位网友】",
+    },
+    "zh-TW": {
+        "visit_group_chat": "【串門記憶：串門時的見聞，「對方」指來往的鄰居家】",
+        "visit_group_participant": "【串門記憶：說的是鄰居家的貓娘】",
+        "visit_participant": "【串門記憶：說的是鄰居家的人類】",
+        "group_chat": "【群組記憶：群組裡的見聞】",
+        "group_participant": "【群組記憶：說的是一位群組成員】",
+        "participant": "【外部聊天記憶：說的是一位網友】",
+    },
+    "en": {
+        "visit_group_chat": "[Visit memory: from a visit with a neighbor; \"the other side\" means the neighbor] ",
+        "visit_group_participant": "[Visit memory: about the neighbor's catgirl] ",
+        "visit_participant": "[Visit memory: about the neighbor's human] ",
+        "group_chat": "[Group chat memory: from a group chat] ",
+        "group_participant": "[Group chat memory: about a group member] ",
+        "participant": "[Outside chat memory: about an online contact] ",
+    },
+    "ja": {
+        "visit_group_chat": "【訪問の記憶：お隣さんとの訪問での出来事。「相手」はお隣さんのこと】",
+        "visit_group_participant": "【訪問の記憶：お隣さんの猫娘のこと】",
+        "visit_participant": "【訪問の記憶：お隣さんの人間のこと】",
+        "group_chat": "【グループチャットの記憶：グループチャットでの出来事】",
+        "group_participant": "【グループチャットの記憶：あるグループメンバーのこと】",
+        "participant": "【外部チャットの記憶：あるネット上の知り合いのこと】",
+    },
+    "ko": {
+        "visit_group_chat": "[방문 기억: 이웃집과의 방문에서 있었던 일, '상대'는 이웃집을 말함] ",
+        "visit_group_participant": "[방문 기억: 이웃집 고양이 소녀에 대한 이야기] ",
+        "visit_participant": "[방문 기억: 이웃집 사람에 대한 이야기] ",
+        "group_chat": "[그룹 채팅 기억: 그룹 채팅에서 있었던 일] ",
+        "group_participant": "[그룹 채팅 기억: 한 그룹 멤버에 대한 이야기] ",
+        "participant": "[외부 채팅 기억: 한 온라인 지인에 대한 이야기] ",
+    },
+    "ru": {
+        "visit_group_chat": "[Память о визите: из визита к соседям; «другая сторона» — это соседи] ",
+        "visit_group_participant": "[Память о визите: о кошкодевочке соседей] ",
+        "visit_participant": "[Память о визите: о человеке из семьи соседей] ",
+        "group_chat": "[Память группового чата: из группового чата] ",
+        "group_participant": "[Память группового чата: об одном участнике группы] ",
+        "participant": "[Память внешнего чата: об одном знакомом из сети] ",
+    },
+    "es": {
+        "visit_group_chat": "[Recuerdo de visita: de una visita con un vecino; «la otra parte» es el vecino] ",
+        "visit_group_participant": "[Recuerdo de visita: sobre la chica gato del vecino] ",
+        "visit_participant": "[Recuerdo de visita: sobre el humano del vecino] ",
+        "group_chat": "[Recuerdo de chat grupal: de un chat grupal] ",
+        "group_participant": "[Recuerdo de chat grupal: sobre un miembro del grupo] ",
+        "participant": "[Recuerdo de chat externo: sobre un contacto en línea] ",
+    },
+    "pt": {
+        "visit_group_chat": "[Memória de visita: de uma visita com um vizinho; \"o outro lado\" é o vizinho] ",
+        "visit_group_participant": "[Memória de visita: sobre a garota-gato do vizinho] ",
+        "visit_participant": "[Memória de visita: sobre o humano do vizinho] ",
+        "group_chat": "[Memória de chat em grupo: de um chat em grupo] ",
+        "group_participant": "[Memória de chat em grupo: sobre um membro do grupo] ",
+        "participant": "[Memória de chat externo: sobre um contato online] ",
+    },
+}
+
+
+def get_forge_scope_hint(subject_kind: str, *, visit: bool, lang: str | None) -> str:
+    """Return the scope hint prefixed to a scoped fact sent to the card forge ('' for an unknown kind)."""
+    table = _loc(FORGE_SCOPE_HINT, lang)
+    return table.get(f"visit_{subject_kind}" if visit else subject_kind, "")
+
+
 # ---------- persona_correction_prompt → i18n dict ----------
 
 PERSONA_CORRECTION_PROMPT = {

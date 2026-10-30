@@ -50,6 +50,29 @@
     // 进行中的阶段（不含 ending：后端已交还输入，亲人恢复普通聊天）
     var WAITING_PHASES = ['pending', 'invite_ready', 'joining', 'awaiting_accept'];
     var OWNED_PHASES = WAITING_PHASES.concat(['active', 'wrap_up']);
+    var START_FAILURE_CODES = {
+        quota_exceeded: 'VISIT_QUOTA_EXCEEDED',
+        login_required: 'VISIT_LOGIN_REQUIRED',
+        banned: 'VISIT_BANNED',
+        concurrency_limit: 'VISIT_CONCURRENCY_LIMIT',
+        tier_not_entitled: 'VISIT_TIER_NOT_ENTITLED',
+        cross_region_unsupported: 'VISIT_CROSS_REGION_UNSUPPORTED',
+        servers_unreachable: 'VISIT_SERVERS_UNREACHABLE',
+        unsupported: 'VISIT_UNSUPPORTED_ON_THIS_MACHINE',
+        invite_invalid: 'VISIT_INVITE_INVALID',
+        invite_expired: 'VISIT_INVITE_INVALID',
+        busy: 'VISIT_E_BUSY',
+        peer_lost: 'VISIT_PEER_LOST',
+        proto_mismatch: 'VISIT_PROTO_MISMATCH',
+        peer_identity_rejected: 'VISIT_PEER_IDENTITY_REJECTED',
+        peer_blocked: 'VISIT_PEER_IDENTITY_REJECTED',
+        relay_lost: 'VISIT_RELAY_LOST',
+        local_page_lost: 'VISIT_RELAY_LOST',
+        kicked: 'VISIT_KICKED'
+    };
+    // Retain terminal setup errors across ended resetting the visible visit,
+    // including when WebSocket failure arrives before POST /rooms returns.
+    var startFailures = new Map();
 
     // ── 小工具 ──────────────────────────────────────────────────────
 
@@ -1219,6 +1242,9 @@
 
     function onEnded(frame) {
         visitStateKnown = true;
+        if (!visit.everStarted && !startFailures.has(frame.visit_id)) {
+            rememberStartFailure(frame.visit_id, START_FAILURE_CODES[frame.reason] || '', { reason: frame.reason });
+        }
         markEnded(frame.visit_id);
         peerAvatarUrl = '';
         if (previewedPeer && previewedPeer.visitId === frame.visit_id) previewedPeer = null;
@@ -1667,6 +1693,7 @@
         }
         if (code === 'VISIT_DISABLED') return t('visit.error.disabled', '「允许串门」还没有打开，请先在设置里打开');
         if (code === 'VISIT_PERSONA_UNREVIEWED') return t('visit.persona.unreviewed', '出门前先看一眼她的串门自我介绍');
+        if (code === 'VISIT_QUOTA_EXCEEDED') return t('visit.status.VISIT_QUOTA_EXCEEDED', '今天的串门时间用完了');
         if (code === 'VISIT_UNSUPPORTED_ON_THIS_MACHINE'
                 && ((body.details && body.details.reason) || body.reason) === 'insecure_context') {
             return t('visit.error.insecure_context', '自定义后端地址需要 https 或 localhost 才能串门');
@@ -1684,6 +1711,22 @@
         if (code === 'voice_session_active') return t('visit.error.voiceSession', '先结束语音通话再串门');
         if (code === 'already_visiting') return t('visit.error.alreadyVisiting', '她已经在串门了');
         return t('visit.error.generic', '没能完成，请稍后再试');
+    }
+
+    function rememberStartFailure(visitId, code, details) {
+        if (!VISIT_ID_RE.test(visitId || '')) return;
+        startFailures.set(visitId, { code: code, details: { reason: details && details.reason } });
+        while (startFailures.size > 20) startFailures.delete(startFailures.keys().next().value);
+    }
+
+    function startFailureResult(visitId) {
+        var failure = startFailures.get(visitId);
+        if (!failure) return null;
+        return {
+            ok: false, visit_id: visitId, code: failure.code,
+            error: failure.code ? startErrorText({ status: 409, body: failure })
+                : t('visit.error.generic', '没能完成，请稍后再试')
+        };
     }
 
     // 构图偏好由设置分组（visit-settings.js，只在 index.html）写进 localStorage；chat.html 直接读同一个键
@@ -1791,12 +1834,14 @@
             if (currentCatgirl() !== catgirl) {
                 return { ok: false, error: t('visit.error.characterSwitched', '角色已切换，请重新邀请') };
             }
+            var currentFailure = startFailureResult(current.body && current.body.visit_id);
+            if (currentFailure) return currentFailure;
             if (stateFrameSeq !== currentSeq) {
                 if (String(visit.targetUserId || '') !== targetUserId) {
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                 }
                 recoverCurrentHostInviteIfWaiting(catgirl);
-                return { ok: true };
+                return { ok: true, visit_id: visit.visitId };
             }
             var restored = applyHostRoomResponse(current, catgirl, currentSeq);
             if (restored) {
@@ -1804,7 +1849,7 @@
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
                 }
                 if (!targetUserId && !restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
-                return { ok: true };
+                return { ok: true, visit_id: restored.visitId };
             }
             // 只有明确不存在待客邀请码时才新建。读取失败不能被当成“不存在”，否则可能重复建房。
             if (current.status !== 404) {
@@ -1822,28 +1867,32 @@
             if (await abandonIfCharacterSwitched(result, catgirl)) {
                 return { ok: false, error: t('visit.error.characterSwitched', '角色已切换，请重新邀请') };
             }
+            var createFailure = startFailureResult(result.body && result.body.visit_id);
+            if (createFailure) return createFailure;
             if (stateFrameSeq !== createSeq) {
                 if (String(visit.targetUserId || '') !== targetUserId) {
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                 }
                 recoverCurrentHostInviteIfWaiting(catgirl);
-                return { ok: true };
+                return { ok: true, visit_id: visit.visitId };
             }
             var created = applyHostRoomResponse(result, catgirl, createSeq);
             if (created) {
                 if (!targetUserId && !created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
-                return { ok: true };
+                return { ok: true, visit_id: created.visitId };
             }
             // GET 与 POST 之间另一窗口可能刚建好房间：再恢复一次，而不是停在 already_visiting。
             if (result.status === 409 && ((result.body || {}).reason === 'already_visiting')) {
                 var raceSeq = stateFrameSeq;
                 var raced = await api('GET', currentHostRoomUrl(catgirl));
+                var racedFailure = startFailureResult(raced.body && raced.body.visit_id);
+                if (racedFailure) return racedFailure;
                 if (stateFrameSeq !== raceSeq) {
                     if (String(visit.targetUserId || '') !== targetUserId) {
                         return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                     }
                     recoverCurrentHostInviteIfWaiting(catgirl);
-                    return { ok: true };
+                    return { ok: true, visit_id: visit.visitId };
                 }
                 var recovered = applyHostRoomResponse(raced, catgirl, raceSeq);
                 if (recovered) {
@@ -1851,7 +1900,7 @@
                         return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
                     }
                     if (!targetUserId && !recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
-                    return { ok: true };
+                    return { ok: true, visit_id: recovered.visitId };
                 }
             }
             var resultError = startErrorText(result);
@@ -1875,10 +1924,18 @@
         if (!started || started.ok !== true) {
             throw new Error((started && started.error) || '没能创建串门房间，请稍后再试');
         }
+        var expectedVisitId = started.visit_id || visit.visitId;
         return new Promise(function (resolve, reject) {
             var deadline = now() + 15000;
             var timer = setInterval(function () {
-                if (visit.inviteCode && (visit.phase === 'pending' || visit.phase === 'invite_ready')) {
+                var failure = startFailureResult(expectedVisitId);
+                if (failure) {
+                    clearInterval(timer);
+                    reject(new Error(failure.error));
+                    return;
+                }
+                if (visit.visitId === expectedVisitId && visit.inviteCode
+                        && (visit.phase === 'pending' || visit.phase === 'invite_ready')) {
                     clearInterval(timer);
                     resolve({
                         invite_code: visit.inviteCode, expires_at: visit.inviteExpiresAt || null,
@@ -1907,11 +1964,18 @@
         if (!started || started.ok !== true) {
             throw new Error((started && started.error) || '没能创建定向串门房间，请稍后再试');
         }
+        var expectedVisitId = started.visit_id || visit.visitId;
         try {
             return await new Promise(function (resolve, reject) {
                 var deadline = now() + 15000;
                 var timer = setInterval(function () {
-                    if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
+                    var failure = startFailureResult(expectedVisitId);
+                    if (failure) {
+                        clearInterval(timer);
+                        reject(new Error(failure.error));
+                        return;
+                    }
+                    if (visit.targetUserId === targetUserId && visit.visitId === expectedVisitId && visit.phase === 'invite_ready') {
                         clearInterval(timer);
                         resolve({
                             target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
@@ -1926,10 +1990,11 @@
                 }, 120);
             });
         } catch (error) {
+            var cleanupNeeded = !startFailures.has(expectedVisitId) && visit.visitId === expectedVisitId
+                && visit.targetUserId === targetUserId && WAITING_PHASES.indexOf(visit.phase) !== -1;
             // The local room may have been created even if its invite_ready frame
             // missed the 15 s UI deadline. Retire that room before unlocking the hub.
-            if (visit.targetUserId === targetUserId && visit.visitId
-                    && WAITING_PHASES.indexOf(visit.phase) !== -1) {
+            if (cleanupNeeded) {
                 await endRoute('route_end');
             }
             throw error;
@@ -2894,6 +2959,11 @@
      */
     function handleStatus(code, details) {
         details = details || {};
+        // VISIT_E_BUSY also refuses individual inputs; only ended establishes
+        // that a busy status actually terminated room setup.
+        if (code !== 'VISIT_E_BUSY' && Object.values(START_FAILURE_CODES).indexOf(code) !== -1) {
+            rememberStartFailure(details.visit_id, code, details);
+        }
         var requestId = typeof details.request_id === 'string' ? details.request_id : '';
         if (INPUT_REFUSALS.indexOf(code) !== -1 && requestId && !markNotDelivered(requestId, true)) {
             // 被拒的不是串门句（未 bind 的页面在串门期间发普通聊天、阶段切换的空档等）：按普通句收尾——

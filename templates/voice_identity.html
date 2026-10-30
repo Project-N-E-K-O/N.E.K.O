@@ -5,15 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="voiceIdentity.pageTitle">Owner 声纹</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}-local-audio-copy-v24"></script>
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
-    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}-resource-repair-v13">
+    <link rel="stylesheet" href="/static/css/voice_identity.css?v={{ static_asset_version }}-resource-panels-collapse-v22">
     <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/window_controls.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/microphone-input.js?v={{ static_asset_version }}" defer></script>
-    <script src="/static/js/voice-identity-readiness.js?v={{ static_asset_version }}-microphone-short-trial-v14" defer></script>
+    <script src="/static/js/voice-identity-readiness.js?v={{ static_asset_version }}-microphone-manual-close-v23" defer></script>
     <script src="/static/js/voice_identity.js?v={{ static_asset_version }}-resource-hints-v6" defer></script>
 </head>
 <body class="voice-identity-page">
@@ -89,7 +89,7 @@
 
                 <section class="resource-card" id="voice-identity-resource-card" aria-labelledby="voice-resource-title">
                     <div class="resource-overview">
-                        <details class="resource-details">
+                        <details class="resource-details" id="voice-identity-resource-details">
                             <summary id="voice-resource-title" data-i18n="voiceIdentity.resourceSettingsTitle">资源与唤醒设置</summary>
                             <div class="resource-details-content">
                                 <ul id="voice-identity-resources" aria-live="polite"></ul>
@@ -102,13 +102,23 @@
                                 <p id="voice-identity-download-help" class="resource-location" hidden></p>
                             </div>
                         </details>
-                        <p id="voice-identity-resource-summary" class="resource-summary" role="status" aria-live="polite"></p>
-                        <p id="voice-identity-resource-message" role="status" aria-live="polite"></p>
-                        <progress id="voice-identity-resource-progress" max="1" aria-labelledby="voice-identity-resource-summary" hidden></progress>
+                        <div id="voice-identity-resource-overview">
+                            <p id="voice-identity-resource-summary" class="resource-summary" role="status" aria-live="polite"></p>
+                            <p id="voice-identity-resource-message" role="status" aria-live="polite"></p>
+                            <div id="voice-identity-resource-progress-panel" class="resource-progress-panel" hidden>
+                                <div class="resource-progress-heading">
+                                    <span id="voice-identity-resource-phase" role="status" aria-live="polite"></span>
+                                    <span id="voice-identity-resource-step" class="resource-progress-step"></span>
+                                </div>
+                                <p id="voice-identity-resource-targets" class="resource-progress-targets" hidden></p>
+                                <progress id="voice-identity-resource-progress" max="1" aria-labelledby="voice-identity-resource-phase" hidden></progress>
+                                <p id="voice-identity-resource-download-info" class="resource-download-info" hidden></p>
+                            </div>
+                        </div>
                     </div>
                     <div class="resource-actions">
                         <button type="button" class="secondary-button" id="voice-identity-prepare" aria-controls="voice-identity-input-setup" aria-expanded="false" data-i18n="voiceIdentity.resourcePrepare">检查并加载资源</button>
-                        <button type="button" class="secondary-button" id="voice-identity-repair" data-i18n="voiceIdentity.resourceRepairButton" hidden>修复资源</button>
+                        <button type="button" class="secondary-button" id="voice-identity-repair" data-i18n="voiceIdentity.resourceRepairButton">修复资源</button>
                         <button type="button" class="secondary-button" id="voice-identity-resource-cancel" data-i18n="voiceIdentity.resourceCancel" hidden>取消资源操作</button>
                     </div>
                     <p id="voice-identity-input-summary" role="status" aria-live="polite" hidden></p>
@@ -164,7 +174,11 @@
                         <p class="step-count" id="voice-identity-step-count" aria-live="polite"
                             aria-atomic="true"></p>
                         <p class="eyebrow" id="voice-identity-eyebrow"
-                            data-i18n="voiceIdentity.localOnly">发送到此页面使用的 N.E.K.O. 服务处理</p>
+                            data-i18n="voiceIdentity.localOnly">所有音频都在本地服务中处理</p>
+                        <p class="enrollment-help" id="voice-identity-processing-location"
+                            data-i18n="voiceIdentity.processingLocation">
+                            本地服务指运行本页 N.E.K.O. 后端的主机；远程部署时，音频会发送到该主机。
+                        </p>
                         <h2 id="voice-identity-step-title" tabindex="-1"
                             data-i18n="voiceIdentity.privacyTitle">录入 3 段声纹和 1 段验证语音</h2>
                         <p id="voice-identity-step-body" class="enrollment-help" hidden></p>
@@ -177,10 +191,6 @@
                             <p class="verification-score-label"
                                 data-i18n="voiceIdentity.verificationScoreLabel">最低声纹相似度</p>
                             <strong id="voice-identity-match-percent" class="verification-score">—</strong>
-                            <p id="voice-identity-score-help" class="verification-score-help"
-                                data-i18n="voiceIdentity.verificationScoreHelp">
-                                结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。
-                            </p>
                             <p id="voice-identity-result-status" class="verification-result-status"
                                 data-i18n="voiceIdentity.verificationSavedStatus">
                                 Owner 声纹已保存，声纹激活已开启。
@@ -270,7 +280,10 @@
             <div class="voice-identity-guide-notes">
                 <h3 data-i18n="voiceIdentity.setupGuideVoiceNotesTitle">声纹说明</h3>
                 <p data-i18n="voiceIdentity.privacyBody">
-                    使用同一麦克风，以自然音量朗读完整句子，完成三段参考录音和一段验证录音。语音会发送到此页面使用的 N.E.K.O. 服务处理，仅在后端人声与声纹校验通过后加密保存声纹。
+                    使用同一麦克风，以自然音量朗读完整句子，完成三段参考录音和一段验证录音。所有音频都在本地服务中处理，仅在后端人声与声纹校验通过后加密保存声纹。
+                </p>
+                <p data-i18n="voiceIdentity.processingLocation">
+                    本地服务指运行本页 N.E.K.O. 后端的主机；远程部署时，音频会发送到该主机。
                 </p>
                 <p id="voice-identity-rule-note" data-i18n="voiceIdentity.recordingRule">
                     自然朗读完整句子，实际采集满 1.5 秒后可提交校验，并不保证通过。系统会补齐分析所需时长（前 3 段到 3 秒，第 4 段到 5 秒）。

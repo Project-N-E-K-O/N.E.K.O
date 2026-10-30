@@ -44,7 +44,9 @@ line = one :class:`SpeechStream` = one ``speech_id``:
   The LLM ending only means "no new pieces".
 * **Fallbacks** -- every TTS failure is "abort first, then pace by estimate":
   no first progress within ``VISIT_TTS_START_TIMEOUT_S`` of the first push
-  (the visit stops using TTS, ``on_tts_fallback``), no progress for
+  (a start failure: after ``VISIT_TTS_START_FAILURES_LATCH`` lines in a row
+  the visit stops using TTS, ``on_tts_fallback``; a line that starts playing
+  resets the count), no progress for
   ``VISIT_SPEECH_PROGRESS_STALL_S`` after playback started (or after
   ``finish``) without the final ``ended``, ``finish()`` answering
   ``no_worker``. Pieces then follow ``played_ms_last + (now - switch time)``;
@@ -73,6 +75,7 @@ from typing import Optional, Protocol, Union
 from config.visit_settings import (
     VISIT_GOODBYE_MAX_CHARS,
     VISIT_SPEECH_PROGRESS_STALL_S,
+    VISIT_TTS_START_FAILURES_LATCH,
     VISIT_TTS_START_TIMEOUT_S,
 )
 from main_logic.visit.sanitize import (
@@ -132,10 +135,25 @@ class VoiceState:
 
     enabled: bool
     fallen_back: bool = False
+    start_failures: int = 0
+    """Start failures (stream open, push or end marker refused, no playback in time) since a line last started playing."""
 
     @property
     def tts_on(self) -> bool:
         return self.enabled and not self.fallen_back
+
+    def note_start_failure(self) -> bool:
+        """One more line failed to start playing; True when this one latches ``fallen_back``."""
+        if self.fallen_back:
+            return False
+        self.start_failures += 1
+        if self.start_failures < VISIT_TTS_START_FAILURES_LATCH:
+            return False
+        self.fallen_back = True
+        return True
+
+    def note_start_ok(self) -> None:
+        self.start_failures = 0
 
 
 @dataclass(frozen=True)
@@ -451,6 +469,7 @@ class LineSpeaker:
         played = max(0, int(played_ms)) if isinstance(played_ms, int) else self._played_ms
         if self._play_start_at is None:
             self._play_start_at = now - played / 1000.0
+            self._voice.note_start_ok()
         # The watchdog recognizes only advancing progress: frozen playback still periodically reports unchanged played_ms,
         # so refreshing each report would prevent stall detection forever; terminal ended is handled separately
         if self._last_progress_at is None or played > self._played_ms:
@@ -714,8 +733,12 @@ class LineSpeaker:
 
     def _fallback(self, now: float, *, start_timeout: bool) -> None:
         if start_timeout and not self._voice.fallen_back:
-            self._voice.fallen_back = True
-            self._cb.on_tts_fallback()
+            latched = self._voice.note_start_failure()
+            logger.warning("visit line %s: speech did not start playing (%d in a row), %s", self.header.ln,
+                           self._voice.start_failures,
+                           "visit continues without voice" if latched else "pacing this line by estimate")
+            if latched:
+                self._cb.on_tts_fallback()
         self._to_estimate(now)
 
     def _to_estimate(self, now: float) -> None:

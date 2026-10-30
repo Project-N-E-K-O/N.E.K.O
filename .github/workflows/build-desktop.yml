@@ -998,13 +998,28 @@ jobs:
           codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
           codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
 
+      # actions/upload-artifact 打包时会把符号链接展开成实体文件、丢掉可执行位。
+      # macOS 上 Playwright 的 Chrome for Testing.app 里，Framework.framework 顶层和
+      # Versions/Current 两层符号链接都指向同一份 ~370MB 的框架，展开后同一份存了三遍，
+      # mac 包因此超过 GitHub release 单文件 2 GiB 上限（10-28/29 nightly 上传失败）。
+      # Unix 腿先打成 tar 再上传，build-electron / nightly 解开后符号链接和权限原样还原。
+      # COPYFILE_DISABLE：别让 macOS bsdtar 把扩展属性写成 ._* 文件混进包里。
+      - name: Pack Python backend (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          COPYFILE_DISABLE=1 tar -C dist/Xiao8 -czf dist/python-backend.tar.gz .
+          ls -lh dist/python-backend.tar.gz
+
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/Xiao8/
+          path: ${{ runner.os == 'Windows' && 'dist/Xiao8/' || 'dist/python-backend.tar.gz' }}
           retention-days: 7
-          compression-level: 6
+          # tar.gz 已经压过，再压一遍只费时间
+          compression-level: ${{ runner.os == 'Windows' && 6 || 0 }}
 
   # ──────────────────────────────────────────────
   # Step 2: Build Electron desktop app
@@ -1043,6 +1058,15 @@ jobs:
         with:
           name: ${{ matrix.python_artifact }}
           path: electron-app/bin
+
+      # 与 build-python 的 "Pack Python backend (Unix)" 对偶
+      - name: Unpack Python backend (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf electron-app/bin/python-backend.tar.gz -C electron-app/bin
+          rm -f electron-app/bin/python-backend.tar.gz
 
       - name: Make server binary executable (Unix)
         if: runner.os != 'Windows'
@@ -1362,15 +1386,27 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p release
           VERSION="$RELEASE_VERSION"
 
-          # Zip Python backend artifacts per platform
+          # Zip Python backend artifacts per platform.
+          # Unix 腿上传的是 python-backend.tar.gz（见 build-python 的 "Pack Python
+          # backend (Unix)"），先解开再打 zip；-y 把符号链接原样存成链接，不展开成实体文件。
           for dir in artifacts/python-backend-*; do
             [ -d "$dir" ] || continue
             name=$(basename "$dir")
             echo "Zipping $name ..."
-            (cd "$dir" && zip -qr "../../release/${name}-${VERSION}.zip" .)
+            if [ -f "$dir/python-backend.tar.gz" ]; then
+              staging="$RUNNER_TEMP/$name"
+              mkdir -p "$staging"
+              tar -xzf "$dir/python-backend.tar.gz" -C "$staging"
+              rm -f "$dir/python-backend.tar.gz"
+              (cd "$staging" && zip -qry "$GITHUB_WORKSPACE/release/${name}-${VERSION}.zip" .)
+              rm -rf "$staging"
+            else
+              (cd "$dir" && zip -qr "$GITHUB_WORKSPACE/release/${name}-${VERSION}.zip" .)
+            fi
           done
 
           # Collect Electron desktop artifacts
@@ -1412,12 +1448,24 @@ jobs:
               '{schemaVersion: 1, keyId: $key_id, signature: $signature}' > "${manifest}.sig"
           done
 
-      - name: Delete old nightly release
-        if: ${{ !inputs.windows_only }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # GitHub release 单个附件不能超过 2 GiB，超了要等上传到那个文件才报 422。
+      # 在碰旧 nightly 之前先查：超限直接红，旧 nightly 原样留着；接近上限先给警告。
+      - name: Check release asset sizes
         run: |
-          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          set -euo pipefail
+          limit=$((2 * 1024 * 1024 * 1024))
+          warn_at=$((limit * 9 / 10))
+          oversized=0
+          for f in release/*; do
+            size=$(stat -c %s "$f")
+            if (( size >= limit )); then
+              echo "::error::$(basename "$f") is ${size} bytes, over the 2 GiB GitHub release asset limit"
+              oversized=1
+            elif (( size >= warn_at )); then
+              echo "::warning::$(basename "$f") is ${size} bytes, above 90% of the 2 GiB GitHub release asset limit"
+            fi
+          done
+          exit "$oversized"
 
       - name: Create nightly release
         if: ${{ !inputs.windows_only }}
@@ -1426,6 +1474,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
           REQUESTED_SKIP_SIGNING: ${{ inputs.skip_signing }}
         run: |
+          set -euo pipefail
           VERSION="$RELEASE_VERSION"
           DATE=$(date +%Y-%m-%d)
           if [[ "$REQUESTED_SKIP_SIGNING" == "true" || "$GITHUB_EVENT_NAME" == "schedule" ]]; then
@@ -1448,7 +1497,35 @@ jobs:
             ARM64_BACKEND_ROW="${NL}| Linux arm64 (experimental) | \`python-backend-linux-arm64-*.zip\` |"
           fi
 
-          gh release create nightly release/* \
+          # 以前是先删旧 nightly 再建新的，新建或上传一失败（10-27 的 403、10-28/29 的超
+          # 2 GiB）nightly 就整个没了。现在分四步，旧 nightly 到第 3 步才删：
+          #   1. 在临时 tag 上建草稿，把附件全部传完（草稿不建 tag）；
+          #   2. 先以临时 tag 正式发布，等于先验证 GITHUB_TOKEN 能在这个提交上建 tag
+          #      ——10-27 那次 403 的根因没查实，不能假设最后改 tag 一定成功；
+          #   3. 删旧 nightly；
+          #   4. 把这份 release 的 tag 改成 nightly，再删掉临时 tag。
+          # 1、2 失败时旧 nightly 不动；4 失败时这份 release 仍以临时 tag 公开挂着，
+          # 可以手工改 tag，后续运行在自己第 4 步成功之前也不会删它。
+          STAGING_TAG="nightly-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          staging_release_ids() {  # $1: extra jq condition
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq ".[] | select((.tag_name | startswith(\"nightly-staging-\")) and ($1)) | .id"
+          }
+          delete_releases() {  # $1: extra jq condition; also removes each release's tag
+            local id tag
+            for id in $(staging_release_ids "$1"); do
+              tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${id}" --jq .tag_name)" || continue
+              # 列表接口可能还是旧数据：单条读回来已经不是 staging tag 的，一律不删
+              [[ "$tag" == nightly-staging-* ]] || continue
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${id}" || true
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" >/dev/null 2>&1 || true
+            done
+          }
+          # 草稿只会是之前运行第 1、2 步失败留下的，那时旧 nightly 没动过，草稿没有独有价值
+          delete_releases '.draft'
+
+          if ! gh release create "$STAGING_TAG" release/* \
+            --draft \
             --title "Nightly Build ${DATE}" \
             --target "${{ github.sha }}" \
             --prerelease \
@@ -1481,7 +1558,53 @@ jobs:
           ---
           Built from [\`${VERSION}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
           NOTES
-          )"
+          )"; then
+            echo "::error::Uploading the nightly draft failed; the previous nightly release is left untouched"
+            delete_releases ".draft and .tag_name == \"${STAGING_TAG}\""
+            exit 1
+          fi
+
+          staging_id="$(staging_release_ids ".tag_name == \"${STAGING_TAG}\"")"
+          if [[ -z "$staging_id" || "$staging_id" == *$'\n'* ]]; then
+            echo "::error::Expected exactly one release tagged ${STAGING_TAG}, got: ${staging_id:-none}"
+            exit 1
+          fi
+
+          # 第 2 步：以临时 tag 正式发布
+          if ! gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${staging_id}" \
+            -f target_commitish="${GITHUB_SHA}" \
+            -F draft=false \
+            -F prerelease=true >/dev/null; then
+            echo "::error::Publishing the staging release failed; the previous nightly release is left untouched"
+            delete_releases ".draft and .tag_name == \"${STAGING_TAG}\""
+            exit 1
+          fi
+
+          # 第 3 步：删旧 nightly
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release delete nightly --yes --cleanup-tag
+          fi
+          # release 没了但 tag 还在时，改 tag 会沿用旧 tag 指向的旧提交
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" >/dev/null 2>&1 || true
+
+          # 第 4 步：改 tag。第 2 步已证明能在这个提交上建 tag，这里失败只可能是临时故障，重试
+          for attempt in 1 2 3; do
+            if gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${staging_id}" \
+              -f tag_name=nightly \
+              -f target_commitish="${GITHUB_SHA}" >/dev/null; then
+              echo "Published nightly release ${staging_id}"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${STAGING_TAG}" >/dev/null 2>&1 \
+                || echo "::warning::Could not delete tag ${STAGING_TAG}"
+              # 之前运行第 4 步失败留下的公开 staging release，现在有新 nightly 了才清。
+              # 显式排除本次 id：刚改完 tag，列表接口可能还按旧 tag 把它列进来
+              delete_releases "(.draft | not) and .id != ${staging_id}"
+              exit 0
+            fi
+            echo "::warning::Moving the release to the nightly tag failed (attempt ${attempt}/3)"
+            sleep $((attempt * 15))
+          done
+          echo "::error::Release ${staging_id} is published as ${STAGING_TAG} but could not be moved to the nightly tag; retag it manually"
+          exit 1
 
       - name: Create or update Windows nightly release
         if: ${{ inputs.windows_only }}

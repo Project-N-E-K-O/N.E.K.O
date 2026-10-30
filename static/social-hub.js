@@ -447,6 +447,12 @@
         serverError.fromServer = true;
         throw serverError;
       }
+      // Missing/malformed successful JSON is a read failure, never evidence of
+      // logout. A silent refresh must keep the last confirmed account view.
+      if (!body || typeof body.logged_in !== 'boolean'
+          || (body.logged_in && (!body.account || !body.account.id))) {
+        throw new Error('community_invalid_response');
+      }
       // 浮窗内容按打开代数隔离，但邀请属于聊天事件，关闭浮窗后仍需及时投递。
       if (refreshGeneration !== openGeneration) {
         applyInvitationSnapshot(body, refreshRevision);

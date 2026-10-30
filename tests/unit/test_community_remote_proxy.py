@@ -29,6 +29,68 @@ def test_anonymous_never_opens_upstream(proxy, monkeypatch):
     assert proxy.post("/api/forge/credits/grant", content="invalid").status_code == 401
 
 
+@pytest.mark.parametrize("endpoint", ["/api/community/visit-hub", "/api/community/friend-presence"])
+def test_saved_but_temporarily_unverified_session_does_not_report_logout(proxy, monkeypatch, endpoint):
+    async def status():
+        return {
+            "logged_in": False,
+            "snapshot": {"access_token": "saved-secret", "local_user_id": "owner"},
+        }
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: pytest.fail("Unverified token must not be forwarded"))
+    response = proxy.get(endpoint)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "community_unavailable"}
+    assert "saved-secret" not in response.text
+
+
+@pytest.mark.parametrize("saved_status", [
+    {"logged_in": False, "snapshot": None},
+    {"logged_in": False, "snapshot": {"local_user_id": "owner"}},
+    {"logged_in": False, "snapshot": {"access_token": ""}},
+    {"logged_in": False, "snapshot": {"access_token": "rejected-secret"}, "rejected": True},
+])
+def test_definite_logout_still_requires_login(proxy, monkeypatch, saved_status):
+    async def status():
+        return saved_status
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: pytest.fail("Logged-out request must not reach cloud"))
+    response = proxy.get("/api/community/visit-hub")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "community_login_required"}
+
+
+def test_hub_recovers_after_temporary_session_verification_failure(proxy, monkeypatch):
+    statuses = iter([False, True])
+    seen = []
+    owner_id = "11111111-1111-4111-8111-111111111111"
+
+    async def status():
+        return {"logged_in": next(statuses), "snapshot": {"access_token": "saved-secret", "local_user_id": owner_id}}
+
+    async def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        return httpx.Response(200, json={"items": [], "total": 0})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs))
+    assert proxy.get("/api/community/visit-hub").status_code == 503
+    assert seen == []
+    recovered = proxy.get("/api/community/visit-hub")
+    assert recovered.status_code == 200
+    assert recovered.json()["logged_in"] is True
+    assert recovered.json()["account"]["id"] == owner_id
+    assert "saved-secret" not in recovered.text
+
+
 def test_desktop_simple_cross_site_post_cannot_use_cloud_account(monkeypatch):
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "false")
     monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
