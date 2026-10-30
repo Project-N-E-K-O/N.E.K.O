@@ -74,6 +74,28 @@ def test_deleted_bodies_are_erased_on_fresh_and_earlier_ledgers(tmp_path, earlie
             assert tables.isdisjoint(RETIRED_TABLES)
 
 
+@pytest.mark.parametrize("other", [ChatDomain("00000000-0000-4000-8000-000000000002", "a" * 32),
+                                   ChatDomain(DOMAIN.owner_id, "b" * 32)])
+def test_domains_are_isolated(tmp_path, other):
+    """Another owner or role never sees, hides or erases this domain's originals."""
+    path = tmp_path / "sync.db"
+    ledger = ChatSyncLedger(path)
+    first = insert_legacy_original(path, DOMAIN, ChatOriginal("user", "A"), ("db", "generation", "1"))
+    assert ledger.visible_originals(other) == []
+    second = insert_legacy_original(path, other, ChatOriginal("user", "B"), ("db", "generation", "1"))
+    assert [json.loads(raw)["messageId"] for raw in ledger.visible_originals(DOMAIN)] == [first["messageId"]]
+    assert [json.loads(raw)["messageId"] for raw in ledger.visible_originals(other)] == [second["messageId"]]
+    # The other domain deletes its own original and an ID that only this domain stores.
+    ledger.queue_deletion(other, [first["messageId"], second["messageId"]])
+    ledger.purge_deleted_originals(other)
+    assert [json.loads(raw)["messageId"] for raw in ledger.visible_originals(DOMAIN)] == [first["messageId"]]
+    assert ledger.visible_originals(other) == []
+    assert ledger.deleted_message_ids(DOMAIN) == []
+    assert sorted(ledger.deleted_message_ids(other)) == sorted([first["messageId"], second["messageId"]])
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT message_id FROM chat_originals").fetchall() == [(first["messageId"],)]
+
+
 @pytest.mark.parametrize("role", ["system", "human", "tool"])
 def test_non_chat_roles_rejected(role):
     with pytest.raises(ValueError, match="invalid_chat_original"):
