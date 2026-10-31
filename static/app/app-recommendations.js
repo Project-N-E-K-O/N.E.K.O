@@ -554,11 +554,14 @@
             if (security && typeof security.getMutationHeaders === 'function') {
                 try { Object.assign(headers, await security.getMutationHeaders()); } catch (_) {}
             }
+            // A lost report must stay retryable by the next click on this card.
+            const forget = () => { if (reportedMusicChoices.get(id) === kind) reportedMusicChoices.delete(id); };
             try {
-                await fetch('/api/proactive/music_card_decision', {
+                const response = await fetch('/api/proactive/music_card_decision', {
                     method: 'POST', headers, keepalive: true, signal: AbortSignal.timeout(5000), body
                 });
-            } catch (_) { /* cooldown is best effort; the card decision itself is unaffected */ }
+                if (!response || !response.ok) forget();
+            } catch (_) { forget(); /* cooldown is best effort; the card decision itself is unaffected */ }
         })();
     }
     async function decide(message, id, kind, automatic = false) {

@@ -65,6 +65,9 @@ def _accept(card, lanlan=LL, now=None):
     "Stop playing music please",
     # Blanking the negated clause must not hide a real refusal in the same message.
     "don't stop playing music, stop recommending songs",
+    # Only known fillers sit between the negation and "stop".
+    "I don't care just stop playing music",
+    "i don't want it stop playing music",
     "Don’t recommend songs anymore",
     "don't recommend me any more songs",
     "no more music",

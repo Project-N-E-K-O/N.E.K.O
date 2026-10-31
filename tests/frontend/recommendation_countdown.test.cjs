@@ -12,7 +12,7 @@ const settle = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(
 function surface(t, hub = new Set(), server = new Map()) {
     const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost:48911/chat', runScripts: 'outside-only', pretendToBeVisual: true });
     const w = dom.window, messages = new Map(), timers = new Map(), calls = [], plays = [], cardChoices = [];
-    let now = 100000, next = 0, hidden = false, failing = false;
+    let now = 100000, next = 0, hidden = false, failing = false, cardChoiceStatus = 200;
     const RealDate = w.Date;
     w.Date = class extends RealDate { static now() { return now; } };
     w.setTimeout = (fn, ms) => { const key = ++next; timers.set(key, { fn, at: now + ms }); return key; };
@@ -32,7 +32,7 @@ function surface(t, hub = new Set(), server = new Map()) {
     w.fetch = async (url, init) => {
         if (String(url).endsWith('/api/proactive/music_card_decision')) {
             cardChoices.push(JSON.parse(init.body));
-            return { ok: true, status: 200, json: async () => ({ success: true }) };
+            return { ok: cardChoiceStatus === 200, status: cardChoiceStatus, json: async () => ({ success: cardChoiceStatus === 200 }) };
         }
         const event = JSON.parse(init.body); calls.push(event);
         if (failing) throw Error('offline');
@@ -54,6 +54,7 @@ function surface(t, hub = new Set(), server = new Map()) {
         show: () => action('music_recommendation_shown'),
         choose: kind => action('music_recommendation_decision', kind),
         fail: value => { failing = value; },
+        failCardChoice: status => { cardChoiceStatus = status; },
         visibility(value) { hidden = value; w.document.dispatchEvent(new w.Event('visibilitychange')); },
         async advance(ms) {
             const end = now + ms;
@@ -241,4 +242,12 @@ test('the card owner is captured before waiting for request headers', async t =>
     for (const release of waiting) release();
     await settle();
     assert.equal(s.cardChoices[0].lanlan_name, 'Neko');
+});
+test('a rejected card choice report is sent again on the next click', async t => {
+    const s = surface(t); s.show(); s.fail(true); s.failCardChoice(503);
+    s.choose('skipped'); await settle();
+    s.fail(false); s.failCardChoice(200); s.choose('skipped'); await settle();
+    assert.deepEqual(s.cardChoices.map(choice => choice.decision), ['skipped', 'skipped']);
+    s.choose('skipped'); await settle();
+    assert.equal(s.cardChoices.length, 2, 'a delivered report is not repeated');
 });

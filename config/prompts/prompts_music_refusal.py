@@ -102,9 +102,12 @@ MUSIC_REFUSAL_PATTERNS_I18N: dict[str, tuple[str, ...]] = {
 }
 
 # "Don't (ever) stop playing music" asks for more, not less. The negated
-# stop is blanked before matching so "playing music" alone cannot hit.
+# stop is blanked before matching so "playing music" alone cannot hit. Only
+# known fillers may sit in between: "I don't care, just stop playing music"
+# is still a refusal.
 _NEGATED_STOP = re.compile(
-    r"\b(?:don'?t|do not|never|won'?t|can'?t|cannot|shouldn'?t)\s+(?:\w+\s+){0,2}?(?:stop|quit)\b",
+    r"\b(?:don'?t|do not|never|won'?t|can'?t|cannot|shouldn'?t)\s+"
+    r"(?:(?:ever|even|really|please|you|want to|wanna|have to|need to)\s+){0,2}(?:stop|quit)\b",
     re.IGNORECASE,
 )
 # Curly and modifier apostrophes from mobile keyboards and IMEs.
