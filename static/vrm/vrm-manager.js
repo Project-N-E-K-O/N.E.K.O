@@ -59,6 +59,8 @@ class VRMManager {
         this._animationFrameId = null;
         this._uiUpdateLoopId = null;
         this.enablePhysics = true;
+        this._physicsProfile = null;
+        this._physicsProfileModel = '';
         this._lookAtTarget = null;
         this._mouseMoveHandler = null;
         this._mouseRaycaster = null;
@@ -1558,27 +1560,8 @@ class VRMManager {
                     const sceneRotY = this.currentModel.vrm.scene.rotation.y;
                     console.log('[VRM] Scene rotation Y:', sceneRotY);
 
-                    // 减小碰撞体半径
-                    // 原因：UniVRM 导出 bug (#673) 导致碰撞体普遍过大
-                    // 50% 是经验值，修复所有测试模型
-                    // 参考：https://github.com/vrm-c/UniVRM/issues/673
-                    const COLLIDER_REDUCTION = 0.5;  // 可调整，经验默认值
-                    const collidersSet = springBoneManager.colliders;
-                    const colliders = collidersSet ? Array.from(collidersSet) : [];
-                    colliders.forEach(collider => {
-                        if (collider.shape?.radius !== undefined) {
-                            // 保存真正的原始半径（只在第一次）
-                            if (collider._rawOriginalRadius === undefined) {
-                                collider._rawOriginalRadius = collider.shape.radius;
-                            }
-                            // 应用基础缩减
-                            const reducedRadius = collider._rawOriginalRadius * COLLIDER_REDUCTION;
-                            collider.shape.radius = reducedRadius;
-                            // 保存缩减后的半径作为"工作半径"供场景缩放使用
-                            collider._originalRadius = reducedRadius;
-                        }
-                    });
-                    console.log(`[VRM] Reduced ${colliders.length} colliders by ${(1 - COLLIDER_REDUCTION) * 100}%`);
+                    const profileResult = this._applyPhysicsProfile(springBoneManager, modelUrl);
+                    console.log(`[VRM] Physics profile: source=${profileResult.source}, colliders=${profileResult.colliders}, joints=${profileResult.joints}, reset=${profileResult.reset === true}`);
                 }
 
                 this.currentModel.vrm.scene.visible = true;
@@ -1664,10 +1647,11 @@ class VRMManager {
 
         // 同时等待场景稳定和待机动画加载完成，确保模型不以 T-pose 显示
         this._loadState = 'settling';
+        const physicsProfilePromise = this.loadPhysicsProfile(modelUrl).catch(() => false);
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
             ? this._waitForSceneStability(result.vrm.scene, loadToken)
             : Promise.resolve(false);
-        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady]);
+        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady, physicsProfilePromise]);
 
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
@@ -1878,6 +1862,16 @@ class VRMManager {
                 }
             });
 
+            const joints = springBoneManager.joints
+                ? Array.from(springBoneManager.joints)
+                : [];
+            // 只缩放物理配置写过基准值的关节；没有配置的模型保持原有行为（hitRadius 不随缩放变化）
+            joints.forEach(joint => {
+                const settings = joint && joint.settings;
+                if (!settings || typeof joint._originalHitRadius !== 'number') return;
+                settings.hitRadius = joint._originalHitRadius * scaleFactor;
+            });
+
             console.log(`[VRM] Scaled ${colliders.length} colliders with factor ${scaleFactor.toFixed(3)}`);
         }
     }
@@ -1888,6 +1882,96 @@ class VRMManager {
      */
     setModelScaleScalar(scale) {
         this.setModelScale(scale, scale, scale);
+    }
+
+    _currentSceneScale() {
+        const scene = this.currentModel && this.currentModel.vrm ? this.currentModel.vrm.scene : null;
+        if (!scene || !scene.scale) return 1;
+        const s = Number(scene.scale.x);
+        return Number.isFinite(s) && s > 0 ? s : 1;
+    }
+
+    _applyPhysicsProfile(springBoneManager, modelUrl) {
+        const modelName = this._resolvePhysicsProfileModelName(modelUrl);
+        const usable = this._physicsProfile
+            && this._physicsProfile.hasProfile
+            && modelName
+            && this._physicsProfileModel === modelName;
+
+        if (usable) {
+            const sceneScale = this._currentSceneScale();
+            const applied = this._physicsProfile.apply(springBoneManager, sceneScale);
+            return {
+                source: applied.source,
+                colliders: applied.colliders,
+                joints: applied.joints,
+                reset: applied.reset
+            };
+        }
+
+        let applied = 0;
+        if (this._physicsProfile) {
+            applied = this._physicsProfile.applyDefaultReduction(springBoneManager);
+        } else {
+            const collidersSet = springBoneManager.colliders;
+            const colliders = collidersSet ? Array.from(collidersSet) : [];
+            const reduction = window.VrmPhysicsProfile
+                ? window.VrmPhysicsProfile.DEFAULT_REDUCTION
+                : 0.5;
+            colliders.forEach(collider => {
+                if (collider.shape?.radius !== undefined) {
+                    if (collider._rawOriginalRadius === undefined) {
+                        collider._rawOriginalRadius = collider.shape.radius;
+                    }
+                    const reducedRadius = collider._rawOriginalRadius * reduction;
+                    collider.shape.radius = reducedRadius;
+                    collider._originalRadius = reducedRadius;
+                    applied++;
+                }
+            });
+        }
+        return { source: 'default', colliders: applied, joints: 0, reset: false };
+    }
+
+    async loadPhysicsProfile(modelUrl) {
+        const modelName = this._resolvePhysicsProfileModelName(modelUrl);
+        if (!window.VrmPhysicsProfile || !modelName) {
+            this._physicsProfile = null;
+            this._physicsProfileModel = '';
+            return false;
+        }
+        if (!this._physicsProfile) {
+            this._physicsProfile = new window.VrmPhysicsProfile();
+        }
+        // 每次加载都重新请求（cache: no-store），调参时改了 _physics.json 重新加载即可生效
+        this._physicsProfileModel = '';
+        const profile = this._physicsProfile;
+        const loaded = await profile.load(modelName);
+        if (this._physicsProfile !== profile) {
+            return false;
+        }
+        if (loaded && profile.hasProfile && profile.lastModel === modelName) {
+            this._physicsProfileModel = modelName;
+            return true;
+        }
+        return false;
+    }
+
+    _resolvePhysicsProfileModelName(modelUrl) {
+        const url = modelUrl || this.currentModel?.url || '';
+        if (!url || typeof url !== 'string') return '';
+        const cleaned = url.split('?')[0].split('#')[0];
+        const last = cleaned.substring(cleaned.lastIndexOf('/') + 1);
+        if (!last) return '';
+        const dot = last.lastIndexOf('.');
+        const stem = dot > 0 ? last.substring(0, dot) : last;
+        if (!stem) return '';
+        // 与 ModelPathHelper.getVrmModelName 一致：文件名里本来就有 %（如 100%cute.vrm）时解码会失败，保留原名
+        try {
+            return decodeURIComponent(stem);
+        } catch (error) {
+            return stem;
+        }
     }
 
     /**
@@ -2112,6 +2196,8 @@ class VRMManager {
 
         // 12. 重置引用和状态
         this.currentModel = null;
+        this._physicsProfile = null;
+        this._physicsProfileModel = '';
         this.animationMixer = null;
         this.scene = null;
         this.camera = null;

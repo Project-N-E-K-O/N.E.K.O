@@ -29,6 +29,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -541,7 +542,7 @@ async def delete_vrm_model(request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
-        await _cleanup_vrm_emotion_mapping(target.stem)
+        await _cleanup_vrm_model_configs(target.stem)
         logger.info(f"已删除 VRM 模型: {target.name}")
 
         return JSONResponse(content={"success": True, "message": f"VRM 模型 {target.stem} 已删除"})
@@ -583,8 +584,8 @@ def _is_valid_vrm_model_name(model_name: str) -> bool:
     return model_name not in {'', '.', '..'} and re.search(r'[<>:"/\\|?*\x00-\x1f]', model_name) is None
 
 
-def _get_emotion_config_path(model_name: str) -> Path | None:
-    """Get the emotion config file path for a model."""
+def _get_vrm_config_path(model_name: str, suffix: str, *, create_dir: bool) -> Path | None:
+    """Get a per-model config path under static/vrm/configs, rejecting unsafe names."""
     if not _is_valid_vrm_model_name(model_name):
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None
@@ -593,9 +594,10 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
     # Store configuration in static/vrm/configs/.
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
-    config_dir.mkdir(parents=True, exist_ok=True)
+    if create_dir:
+        config_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = config_dir / f"{model_name}_emotion.json"
+    config_path = config_dir / f"{model_name}{suffix}"
 
     # Verify resolved paths remain inside config_dir.
     try:
@@ -605,6 +607,32 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
         return None
 
     return config_path
+
+
+def _get_emotion_config_path(model_name: str) -> Path | None:
+    """Get the emotion config file path for a model."""
+    return _get_vrm_config_path(model_name, "_emotion.json", create_dir=True)
+
+
+def _get_physics_config_path(model_name: str) -> Path | None:
+    """Get the physics profile path for a model; read-only, never creates the directory."""
+    return _get_vrm_config_path(model_name, "_physics.json", create_dir=False)
+
+
+def _drop_non_finite(value):
+    """Replace NaN/Infinity with None so the response stays valid JSON.
+
+    Python's json reader accepts NaN, Infinity and overflowing exponents, but the
+    response renderer refuses them and the request would fail with 500. Nulls are
+    skipped by the frontend's Number.isFinite checks, so the finite values still apply.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _drop_non_finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_drop_non_finite(item) for item in value]
+    return value
 
 
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
@@ -663,13 +691,16 @@ def _vrm_model_stem_exists(model_name: str, directories) -> bool:
                for directory in directories for path in _iter_vrm_model_files(directory))
 
 
-async def _cleanup_vrm_emotion_mapping(model_name: str):
+async def _cleanup_vrm_model_configs(model_name: str):
     # Built-in/user models and case-variant extensions intentionally share a mapping.
     try:
         config_mgr = get_config_manager()
         directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
         emotion_config = _get_emotion_config_path(model_name)
-        if not emotion_config or not emotion_config.is_file():
+        physics_config = _get_physics_config_path(model_name)
+        has_emotion = bool(emotion_config and emotion_config.is_file())
+        has_physics = bool(physics_config and physics_config.is_file())
+        if not has_emotion and not has_physics:
             return
         workshop = await get_subscribed_workshop_items()
         if not isinstance(workshop, dict) or not workshop.get('success'):
@@ -682,14 +713,31 @@ async def _cleanup_vrm_emotion_mapping(model_name: str):
             if folder.is_dir():
                 directories.append(folder)
                 directories.extend(child for child in folder.iterdir() if child.is_dir())
-        for directory in directories:
-            for model in _iter_vrm_model_files(directory):
-                other_config = emotion_config.parent / f"{model.stem}_emotion.json"
-                if model.stem == model_name or (other_config.is_file() and other_config.samefile(emotion_config)):
-                    return
-        emotion_config.unlink()
+
+        targets = []
+        if has_emotion:
+            targets.append((emotion_config, '_emotion.json'))
+        if has_physics:
+            targets.append((physics_config, '_physics.json'))
+
+        # Each config is handled on its own, so a locked emotion file does not keep the physics one.
+        for config_path, suffix in targets:
+            try:
+                shared = False
+                for directory in directories:
+                    for model in _iter_vrm_model_files(directory):
+                        other_config = config_path.parent / f"{model.stem}{suffix}"
+                        if model.stem == model_name or (other_config.is_file() and other_config.samefile(config_path)):
+                            shared = True
+                            break
+                    if shared:
+                        break
+                if not shared:
+                    config_path.unlink()
+            except Exception as e:
+                logger.warning(f"删除模型配置失败 ({config_path.name}): {e}")
     except Exception as e:
-        logger.warning(f"删除情感映射配置失败: {e}")
+        logger.warning(f"删除模型配置失败: {e}")
 
 
 @router.delete('/model/{model_name}')
@@ -713,9 +761,7 @@ async def delete_vrm_model(model_name: str):
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 
         vrm_path.unlink()
-
-        await _cleanup_vrm_emotion_mapping(model_name)
-
+        await _cleanup_vrm_model_configs(model_name)
         logger.info(f"已删除VRM模型: {model_name}")
         return {"success": True, "message": f"模型 {model_name} 已成功删除"}
     except Exception as e:
@@ -751,6 +797,42 @@ async def get_emotion_mapping(model_name: str):
 
     except Exception as e:
         logger.error(f"获取VRM情感映射配置失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.get('/physics_profile/{model_name}')
+async def get_physics_profile(model_name: str):
+    """Get the spring bone physics profile of a VRM model."""
+    try:
+        config_path = _get_physics_config_path(model_name)
+
+        if config_path is None:
+            error_msg = f"Invalid model name: {model_name!r}"
+            logger.error(f"获取VRM物理配置失败: {error_msg}")
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": error_msg}
+            )
+
+        if not config_path.is_file():
+            return {"success": True, "config": None, "source": "absent"}
+
+        # utf-8-sig: Unity/C# writers commonly emit a UTF-8 BOM.
+        config = await read_json_async(config_path, encoding="utf-8-sig")
+        if not isinstance(config, dict):
+            logger.warning(f"物理配置文件不是 JSON 对象，回退到默认行为: {config_path.name}")
+            return {"success": True, "config": None, "source": "corrupt"}
+        return {"success": True, "config": _drop_non_finite(config), "source": "file"}
+
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"物理配置文件 JSON 损坏，回退到默认行为: {e}")
+        return {"success": True, "config": None, "source": "corrupt"}
+
+    except Exception as e:
+        logger.error(f"获取VRM物理配置失败: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
