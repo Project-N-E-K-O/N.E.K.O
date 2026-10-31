@@ -599,6 +599,7 @@ class MMDManager {
         if (!mesh) return null;
 
         const box = new window.THREE.Box3().setFromObject(mesh);
+        if (box.isEmpty()) return null;
         const corners = [
             new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
             new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
@@ -610,11 +611,31 @@ class MMDManager {
             new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
         ];
 
+        this.camera.updateWorldMatrix(true, false);
+        for (const corner of corners) {
+            corner.applyMatrix4(this.camera.matrixWorldInverse);
+        }
+        const clipZ = -Math.max(this.camera.near, 0.0001);
+        const visibleCorners = corners.filter(corner => corner.z <= clipZ);
+        // 包围盒穿过相机时，直接投影背后的角点会反转/缩小屏幕边界。
+        // 先沿 12 条盒边裁剪到近裁剪面，保留前方角点及裁剪交点。
+        for (let i = 0; i < corners.length; i++) {
+            for (const axisBit of [1, 2, 4]) {
+                const j = i ^ axisBit;
+                if (j <= i) continue;
+                const a = corners[i], b = corners[j];
+                if ((a.z <= clipZ) !== (b.z <= clipZ)) {
+                    visibleCorners.push(a.clone().lerp(b, (clipZ - a.z) / (b.z - a.z)));
+                }
+            }
+        }
+        if (!visibleCorners.length) return null;
+
         let screenLeft = Infinity, screenRight = -Infinity;
         let screenTop = Infinity, screenBottom = -Infinity;
 
-        for (const corner of corners) {
-            corner.project(this.camera);
+        for (const corner of visibleCorners) {
+            corner.applyMatrix4(this.camera.projectionMatrix);
             const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
             const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
             screenLeft = Math.min(screenLeft, sx);
