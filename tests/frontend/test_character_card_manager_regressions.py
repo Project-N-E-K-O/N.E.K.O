@@ -2570,3 +2570,51 @@ def test_character_card_manager_card_assist_avatar_toggles_companion(
     assert state["avatarTabIndex"] == "0"
     assert state["ariaAfterFirstClick"] == "false"
     assert state["ariaAfterSecondClick"] == "true"
+
+
+@pytest.mark.frontend
+def test_character_card_manager_builtin_name_follows_saved_model_binding(
+    mock_page: Page,
+    running_server: str,
+):
+    # A user-imported model may share a built-in name; the scan keeps the static one under
+    # the plain name and suffixes the user copy, so the saved binding decides.
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        () => {
+            const staticEntry = { name: 'yui-sister', path: '/static/yui-sister/yui-sister.model3.json', source: 'static' };
+            const userEntry = {
+                name: 'yui-sister_documents',
+                path: '/user_live2d/yui-sister/yui-sister.model3.json',
+                source: 'documents'
+            };
+            const card = (assetSource, modelPath) => ({
+                _reserved: { avatar: { asset_source: assetSource, live2d: { model_path: modelPath } } }
+            });
+            const relative = 'yui-sister/yui-sister.model3.json';
+            const check = (models, data) => {
+                window.allModels = models;
+                window.currentCharacterCardModel = 'yui-sister';
+                window.currentCharacterCardModelSource = 'static';
+                return isStaticDefaultLive2DModel('yui-sister', data);
+            };
+            return {
+                localWithUserCopy: check([staticEntry, userEntry], card('local_imported', relative)),
+                localWithoutUserCopy: check([staticEntry], card('local', relative)),
+                builtinWithUserCopy: check([staticEntry, userEntry], card('builtin', relative)),
+                legacyUserPrefix: check([staticEntry, userEntry], card('', '/user_live2d/yui-sister/yui-sister.model3.json')),
+                legacyRelative: check([staticEntry, userEntry], card('', relative)),
+            };
+        }
+        """
+    )
+
+    assert state == {
+        "localWithUserCopy": False,
+        "localWithoutUserCopy": True,
+        "builtinWithUserCopy": True,
+        "legacyUserPrefix": False,
+        "legacyRelative": True,
+    }
