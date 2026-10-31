@@ -520,6 +520,8 @@
       remoteVideoAvailable: function () {
         return !!remoteVideoUser;
       },
+      // 接收端码率自保只在 LiveKit 侧做（TRTC 的超档由 Servers 按用量统计核对执行）；与 LiveKit 适配器同一字段
+      rxGuard: false,
       /** 断线 / 重连：丢掉断线前的统计快照，重连后等 SDK 的新统计。 */
       resetStats: function () {
         lastStats = null;

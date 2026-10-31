@@ -1409,7 +1409,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.kick()
 
     def on_transport_stats(self, msg: dict) -> None:
-        """iframe ``stats``: kept for ``GET /state`` and forwarded to the peer as data-channel ``stats``."""
+        """iframe ``stats``: kept for ``GET /state`` and forwarded to the peer as data-channel ``stats``.
+
+        ``video_rx_overrun`` / ``audio_rx_overrun`` (receiver-side bitrate guard, the iframe already
+        unsubscribed that track) end the visit with ``peer_protocol_violation``.
+        """
         global _vp8_next_visit
         keep = ("tx_fps", "enc_fps", "tx_kbps", "rx_fps", "rx_kbps", "rtt_ms", "loss_pct", "dc_queue",
                 "rx_w", "rx_h")
@@ -1418,6 +1422,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if msg.get("softenc_overloaded") is True:
             _vp8_next_visit = True
         if self.peer is None or not self.ready_exchanged or self.finalizing:
+            return
+        overrun = [kind for kind in ("video", "audio") if msg.get(f"{kind}_rx_overrun") is True]
+        if overrun:
+            # Receiver-side bitrate guard (§4.7): the iframe saw the peer's inbound video / voice above
+            # VISIT_RX_GUARD_RATIO x the tier cap for VISIT_RX_GUARD_WINDOW_S and already unsubscribed it.
+            # Local self-protection only: measured and reported by this machine, so never grounds for a ban.
+            for kind in overrun:
+                self._count_anomaly(f"{kind}_rx_overrun", streak=False)
+            logger.warning("visit %s: peer %s bitrate over the tier cap, ending", self.visit_id[:6], "/".join(overrun))
+            self.request_finalize("peer_protocol_violation")
             return
         wire = {"rx_fps": float, "rx_kbps": int, "rtt_ms": int, "loss_pct": float, "rx_w": int, "rx_h": int}
         if not all(k in self.stats for k in wire):
