@@ -63,6 +63,8 @@ def _accept(card, lanlan=LL, now=None):
     "不想听歌",
     "別再給我放歌了",
     "Stop playing music please",
+    # Blanking the negated clause must not hide a real refusal in the same message.
+    "don't stop playing music, stop recommending songs",
     "Don’t recommend songs anymore",
     "don't recommend me any more songs",
     "no more music",
@@ -93,6 +95,7 @@ def test_detects_music_refusal(text):
     "Please don't ever stop playing music",
     "Don’t stop playing music",
     "never stop recommending songs",
+    "I don't want to stop playing music",
     "play some music",
     "I love this song",
     "歌がいいね",
