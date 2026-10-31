@@ -93,6 +93,23 @@ def _strip_local_character_identity(character_payload: dict) -> dict:
     return character_payload
 
 
+def _is_bound_to_builtin_live2d(catgirl_data: dict, live2d_name: str, live2d_path: str) -> bool:
+    """Return True when the character's Live2D binding points at a bundled built-in model.
+
+    A user-imported model may share a built-in's name; the saved asset_source (or a
+    /user_live2d prefix on legacy bindings) tells which one the character displays.
+    """
+    if live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
+        return False
+    asset_source = str(get_reserved(catgirl_data, 'avatar', 'asset_source', default='') or '').strip().lower()
+    if asset_source in ('local', 'local_imported'):
+        return False
+    if asset_source:
+        return True
+    normalized_path = str(live2d_path or '').strip().replace('\\', '/')
+    return not normalized_path.startswith(('/user_live2d/', '/user_live2d_local/'))
+
+
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
     """Embed ZIP data into a PNG ancillary private chunk (the neKo chunk), inserted before IEND.
 
@@ -436,32 +453,32 @@ async def export_catgirl_card(name: str):
                         else:
                             live2d_name = live2d_name.split('/')[-1]
 
-                        # Locate the model directory. A user-imported model may share a built-in's
-                        # name and shadows it (user directories are searched first), so decide by
-                        # where the model actually lives, not by name alone.
-                        model_dir, _ = find_model_directory(live2d_name)
-                        model_exists = bool(model_dir) and os.path.exists(model_dir)
-                        if model_exists and is_user_imported_model(model_dir, _config_manager):
-                            # Add model files to the archive
-                            model_files_added = 0
-                            for root, _dirs, files in os.walk(model_dir):
-                                for file in files:
-                                    file_path = Path(root) / file
-                                    arc_name = f"model/{live2d_name}/{file_path.relative_to(model_dir)}"
-                                    zf.write(file_path, arc_name)
-                                    model_files_added += 1
-                            logger.info(f'已添加模型 {live2d_name} 的 {model_files_added} 个文件到压缩包')
-                            model_added = True
-                        elif live2d_name in BUILTIN_LIVE2D_MODEL_NAMES:
-                            # Bundled built-ins: recipients already have them and need not include
+                        # Check bundled built-ins, which recipients already have and need not include
+                        if _is_bound_to_builtin_live2d(catgirl_data, live2d_name, live2d_path):
                             logger.info(
                                 f'猫娘 {name} 使用的是内置模型 '
                                 f'{live2d_name}，跳过模型打包'
                             )
-                        elif model_exists:
-                            logger.warning(f'模型 {live2d_name} 不是用户导入的模型，跳过打包')
                         else:
-                            logger.warning(f'找不到模型目录: {live2d_name}')
+                            # Locate the model directory
+                            model_dir, _ = find_model_directory(live2d_name)
+                            if model_dir and os.path.exists(model_dir):
+                                # Check whether this is a user-imported model
+                                if is_user_imported_model(model_dir, _config_manager):
+                                    # Add model files to the archive
+                                    model_files_added = 0
+                                    for root, _dirs, files in os.walk(model_dir):
+                                        for file in files:
+                                            file_path = Path(root) / file
+                                            arc_name = f"model/{live2d_name}/{file_path.relative_to(model_dir)}"
+                                            zf.write(file_path, arc_name)
+                                            model_files_added += 1
+                                    logger.info(f'已添加模型 {live2d_name} 的 {model_files_added} 个文件到压缩包')
+                                    model_added = True
+                                else:
+                                    logger.warning(f'模型 {live2d_name} 不是用户导入的模型，跳过打包')
+                            else:
+                                logger.warning(f'找不到模型目录: {live2d_name}')
 
                 elif model_type in ('vrm', 'live3d'):
                     # Handle VRM/MMD models
@@ -1607,9 +1624,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        # Built-ins live in static/ and are not user-imported, so the check below
-                        # already skips them; a user model that shadows a built-in name is packed.
-                        if live2d_name:
+                        if live2d_name and not _is_bound_to_builtin_live2d(catgirl_data, live2d_name, live2d_path):
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):

@@ -1,8 +1,8 @@
-"""Card export must pack a user-imported Live2D model even when it shares a built-in's name.
+"""Card export decides built-in vs user model by the saved binding, not by name alone.
 
-User directories are searched before static/, so a user model named like a built-in
-(e.g. ``yui-sister``) is what the character actually shows; skipping it by name would
-make recipients see the bundled model instead.
+A user-imported model may share a built-in's name (e.g. ``yui-sister``). The character's
+saved ``asset_source`` says which one it displays: a local binding must pack the user's
+model, while a builtin binding must not pack a same-named user model.
 """
 
 import io
@@ -40,14 +40,15 @@ def _archive_names(png: bytes) -> list[str]:
     raise AssertionError("card has no neKo chunk")
 
 
-def _config(tmp_path):
+def _config(tmp_path, asset_source, model_path):
     config_manager = MagicMock()
     config_manager.aload_characters = AsyncMock(return_value={"猫娘": {
         "Exported": {
             "昵称": "Exported",
             "_reserved": {"avatar": {
                 "model_type": "live2d",
-                "live2d": {"model_path": "yui-sister/yui-sister.model3.json"},
+                "asset_source": asset_source,
+                "live2d": {"model_path": model_path},
             }},
         },
     }})
@@ -79,18 +80,44 @@ async def _export_both(cards, tmp_path):
     return _archive_names(bytes(plain.body)), _archive_names(bytes(portrait.body))
 
 
+_RELATIVE_PATH = "yui-sister/yui-sister.model3.json"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("user_imported", [True, False])
-async def test_builtin_name_packs_only_user_imported_model(tmp_path, user_imported):
+@pytest.mark.parametrize(
+    ("asset_source", "model_path", "found_user_model", "packed"),
+    [
+        ("local_imported", _RELATIVE_PATH, True, True),
+        ("local", _RELATIVE_PATH, True, True),
+        ("local", _RELATIVE_PATH, False, False),
+        ("builtin", _RELATIVE_PATH, True, False),
+        ("", _RELATIVE_PATH, True, False),
+    ],
+)
+async def test_builtin_name_export_follows_saved_binding(
+    tmp_path, asset_source, model_path, found_user_model, packed,
+):
     from main_routers.characters_router import cards
 
     assert "yui-sister" in cards.BUILTIN_LIVE2D_MODEL_NAMES
     model_dir = _model_dir(tmp_path)
-    with patch.object(cards, "get_config_manager", return_value=_config(tmp_path)), \
+    config = _config(tmp_path, asset_source, model_path)
+    with patch.object(cards, "get_config_manager", return_value=config), \
             patch.object(cards, "find_model_directory", return_value=(str(model_dir), "/user_live2d")), \
-            patch.object(cards, "is_user_imported_model", return_value=user_imported):
+            patch.object(cards, "is_user_imported_model", return_value=found_user_model):
         plain_names, portrait_names = await _export_both(cards, tmp_path)
 
     model_file = "model/yui-sister/yui-sister.model3.json"
-    assert (model_file in plain_names) is user_imported
-    assert (model_file in portrait_names) is user_imported
+    assert (model_file in plain_names) is packed
+    assert (model_file in portrait_names) is packed
+
+
+def test_legacy_user_live2d_prefix_counts_as_user_binding():
+    from main_routers.characters_router import cards
+
+    data = {"_reserved": {"avatar": {}}}
+    assert not cards._is_bound_to_builtin_live2d(
+        data, "yui-sister", "/user_live2d/yui-sister/yui-sister.model3.json",
+    )
+    assert cards._is_bound_to_builtin_live2d(data, "yui-sister", _RELATIVE_PATH)
+    assert not cards._is_bound_to_builtin_live2d(data, "someone-else", _RELATIVE_PATH)
