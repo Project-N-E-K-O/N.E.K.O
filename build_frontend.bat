@@ -26,6 +26,8 @@ call :unpack_live2d yui-origin
 if errorlevel 1 exit /b 1
 call :unpack_live2d yui-lolita
 if errorlevel 1 exit /b 1
+call :unpack_live2d yui-sister
+if errorlevel 1 exit /b 1
 
 rem --- 2. Plugin Manager (Vue) ---
 set "PM_DIR=%ROOT_DIR%\frontend\plugin-manager"

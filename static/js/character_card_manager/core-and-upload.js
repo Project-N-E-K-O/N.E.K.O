@@ -558,7 +558,7 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为内置模型（yui-lolita / yui-origin）
+// 检查当前模型是否为内置模型（yui-lolita / yui-origin / yui-sister）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
@@ -591,7 +591,45 @@ function isLegacyDefaultLive2DModel(modelName) {
 
 // 随包发的内置 Live2D 模型（对应后端 BUILTIN_LIVE2D_MODEL_NAMES）：收方一定有，
 // 角色卡导出/创意工坊上传都不该把它们当成用户自己导入的模型去打包。
-const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin'];
+const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin', 'yui-sister'];
+
+function isUserLive2DModelEntryFor(model, modelName) {
+    const path = String((model && model.path) || '').replace(/\\/g, '/');
+    return path.startsWith(`/user_live2d/${modelName}/`) || path.startsWith(`/user_live2d_local/${modelName}/`);
+}
+
+function hasUserImportedLive2DModelFolder(modelName) {
+    const allModels = Array.isArray(window.allModels) ? window.allModels : [];
+    return allModels.some(model => isUserLive2DModelEntryFor(model, modelName));
+}
+
+// 按角色保存的绑定在模型列表里找角色实际用的那份：与内置模型同名的用户副本在列表里带后缀，按名字找不到。
+function findCardLive2DModelInfo(models, modelName, rawData) {
+    const list = Array.isArray(models) ? models : [];
+    if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) >= 0 && isBoundToUserImportedLive2DModel(modelName, rawData)) {
+        const userCopy = list.find(model => isUserLive2DModelEntryFor(model, modelName));
+        if (userCopy) {
+            return userCopy;
+        }
+    }
+    return list.find(model => model && model.name === modelName);
+}
+
+// 用户导入的模型可以和内置模型同名（扫描时内置模型排在前面、保留原名，用户那份被加后缀），
+// 所以按名字查到的总是内置那份；以角色保存的模型绑定为准（对应后端 _is_bound_to_builtin_live2d）。
+function isBoundToUserImportedLive2DModel(modelName, rawData) {
+    const avatar = rawData && rawData._reserved && rawData._reserved.avatar;
+    const assetSource = String((avatar && avatar.asset_source) || '').trim().toLowerCase();
+    if (assetSource === 'local' || assetSource === 'local_imported') {
+        return hasUserImportedLive2DModelFolder(modelName);
+    }
+    if (assetSource) {
+        return false;
+    }
+    const live2dBinding = avatar && avatar.live2d;
+    const modelPath = String((live2dBinding && live2dBinding.model_path) || (rawData && rawData.live2d) || '').replace(/\\/g, '/');
+    return modelPath.startsWith('/user_live2d/') || modelPath.startsWith('/user_live2d_local/');
+}
 
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
     if (isLegacyDefaultLive2DModel(modelName)) {
@@ -599,6 +637,10 @@ function isStaticDefaultLive2DModel(modelName, rawData = {}) {
     }
 
     if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) < 0) {
+        return false;
+    }
+
+    if (isBoundToUserImportedLive2DModel(modelName, rawData)) {
         return false;
     }
 

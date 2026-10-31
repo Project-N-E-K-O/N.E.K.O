@@ -202,7 +202,7 @@ COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plu
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
 # 7b. Extract built-in Live2D models (assets/<name>.tar.gz → static/<name>/)
-RUN cd /app && for model in yui-origin yui-lolita; do \
+RUN cd /app && for model in yui-origin yui-lolita yui-sister; do \
         tar -xzmf "assets/$model.tar.gz" -C static/ || exit 1; \
         test -f "static/$model/$model.moc3" || exit 1; \
     done
