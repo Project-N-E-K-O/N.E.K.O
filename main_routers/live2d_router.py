@@ -150,6 +150,42 @@ def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     return None
 
 
+def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
+    """Resolve saved catalog selections through the same directory lookup as the renderer."""
+    normalized = unquote(str(path or "").strip().replace("\\", "/"))
+    if normalized.startswith('/'):
+        if not normalized.startswith(('/user_live2d/', '/user_live2d_local/', '/static/', '/workshop/')):
+            return None
+        normalized = normalized[1:]
+    parts = normalized.split("/")
+    if not normalized or ":" in normalized or any(part in {".", ".."} for part in parts):
+        return None
+    direct = _resolve_model_url_to_file_path(path, config_manager)
+    if direct is not None:
+        roots = {
+            'user_live2d': getattr(config_manager, 'readable_live2d_dir', None) or getattr(config_manager, 'live2d_dir', None),
+            'user_live2d_local': getattr(config_manager, 'live2d_dir', None),
+            'static': 'static',
+            'workshop': get_workshop_path(),
+        }
+        root = roots.get(parts[0])
+        if root is None:
+            return None
+        candidate = direct.resolve()
+        return candidate if candidate.is_relative_to(Path(root).resolve()) and candidate.is_file() else None
+    directory, _ = find_model_directory(parts[0])
+    if not directory:
+        return None
+    root = Path(directory).resolve()
+    relative = Path(*parts[1:]) if len(parts) > 1 else Path(parts[0] + ".model3.json")
+    candidate = (root / relative).resolve()
+    return candidate if candidate.is_relative_to(root) and candidate.is_file() else None
+
+
+from services.chat_sync import host as _sync_host
+_sync_host.install_model_file_resolver(_resolve_sync_model_file)
+
+
 def _extract_local_shadow_key(path: str) -> str:
     decoded_path = unquote(str(path or "").strip().replace("\\", "/"))
     parts = [part for part in decoded_path.split("/") if part]

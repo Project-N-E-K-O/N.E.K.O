@@ -3,7 +3,6 @@
 import asyncio
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -25,7 +24,8 @@ def test_only_successful_recent_writes_notify_and_listener_faults_do_not_fail_sa
     remove_broken = recent_file.subscribe_recent_changes(broken_listener)
     try:
         recent_file.write_recent_payload(path, [])
-        assert [Path(value) for value in seen] == [path]
+        assert len(seen) == 1
+        assert path.samefile(seen[0])
         recent_file.read_recent_text(path)
         assert len(seen) == 1
         def fail_write(*args, **kwargs):
@@ -186,7 +186,7 @@ async def test_saved_chat_and_compaction_sync_once_without_idle_reads_or_upload_
     remote = Server()
     class Service(SyntheticService):
         async def request(self, request):
-            if request.url.path.endswith('/recent-memory'):
+            if request.url.path.endswith(('/recent-memory', '/recent-memory/view')):
                 return httpx.Response(200, json=await remote.request(request.method, request.url.path, request.content or None))
             return await super().request(request)
     service = Service()
@@ -218,3 +218,39 @@ async def test_saved_chat_and_compaction_sync_once_without_idle_reads_or_upload_
         assert len(remote.requests) == 2
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_retired_long_term_replay_keeps_local_memory_and_drains_later_events(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from memory.event_log import EVT_FACT_ADDED, EVT_LONG_TERM_MEMORY_REPLACED, Reconciler
+    from tests.unit.test_event_log import _fresh_log
+    from app.memory_server.runtime import _register_evidence_handlers
+
+    name = 'Synthetic'
+    directory = tmp_path / name
+    directory.mkdir()
+    originals = {}
+    for filename in ('persona.json', 'facts.json', 'facts_archive.json', 'reflections.json'):
+        path = directory / filename
+        originals[path] = b'{"local":"preserved"}'
+        path.write_bytes(originals[path])
+    log = _fresh_log(str(tmp_path))
+    log.append(name, EVT_LONG_TERM_MEMORY_REPLACED, {'document': {'entries': []}})
+    final_id = log.append(name, EVT_FACT_ADDED, {'fact_id': 'later-local-fact'})
+    reconciler = Reconciler(log)
+    persona, reflections = MagicMock(), MagicMock()
+    _register_evidence_handlers(reconciler, persona, reflections)
+    from app.memory_server import long_term_sync
+    from types import SimpleNamespace
+    monkeypatch.setattr(long_term_sync.runtime, '_config_manager', SimpleNamespace(memory_dir=tmp_path))
+    long_term_sync.register_replay(reconciler)
+    applied = []
+    reconciler.register(EVT_FACT_ADDED, lambda _name, payload: (applied.append(payload['fact_id']) or True))
+
+    assert await reconciler.areconcile(name) == 1
+    assert applied == ['later-local-fact']
+    assert log.read_sentinel(name) == final_id
+    assert all(path.read_bytes() == value for path, value in originals.items())
+    assert not persona.mock_calls and not reflections.mock_calls
+    assert await reconciler.areconcile(name) == 0

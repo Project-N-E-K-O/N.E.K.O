@@ -3366,9 +3366,14 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'chat_sync_history_changed') {
-                    if (typeof response.memoryEditedName === 'string' && window.appInterpage
-                            && typeof window.appInterpage.handleMemoryEdited === 'function') {
-                        window.appInterpage.handleMemoryEdited(response.memoryEditedName).catch(function () {});
+                    document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+                    if (window.nekoChatSync && typeof window.nekoChatSync.notifyMediaChanged === 'function') {
+                        window.nekoChatSync.notifyMediaChanged().catch(function () {});
+                    }
+                    if (typeof response.memoryEditedName === 'string') {
+                        if (window.nekoChatSync && typeof window.nekoChatSync.requestMemoryRefresh === 'function') {
+                            window.nekoChatSync.requestMemoryRefresh(response.memoryEditedName);
+                        }
                         try {
                             if (typeof BroadcastChannel !== 'undefined') {
                                 const channel = new BroadcastChannel('neko_page_channel');

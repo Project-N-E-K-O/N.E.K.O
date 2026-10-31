@@ -114,3 +114,21 @@ def test_editor_preserves_server_projection_identity_and_timestamp(editor, opena
     })
     assert response.status_code == 200 and response.json()['success']
     assert json.loads(path.read_text())[0]['data']['metadata'] == metadata
+
+
+def test_repeated_browser_source_does_not_duplicate_projection_identity(editor):
+    from memory.recent_sync import ID_KEY, TIME_KEY
+    client, path, _, _ = editor
+    path.write_text(json.dumps([{'type': 'human', 'data': {'content': 'source', 'additional_kwargs': {},
+        'metadata': {ID_KEY: 'a' * 32, TIME_KEY: '1000'}}}]))
+    loaded = client.get('/api/memory/recent_file', params={'filename': 'recent_Role.json'}).json()
+    response = client.post('/api/memory/recent_file/save', json={
+        'filename': 'recent_Role.json', 'chat': [
+            {'role': 'human', 'text': 'first', 'source_index': 0},
+            {'role': 'human', 'text': 'second', 'source_index': 0}],
+        'fingerprint': loaded['fingerprint'], 'identity_token': loaded['identity_token']})
+    assert response.status_code == 200
+    rows = json.loads(path.read_text())
+    from utils.llm_client import message_metadata
+    assert message_metadata(rows[0])[ID_KEY] == 'a' * 32
+    assert ID_KEY not in message_metadata(rows[1])

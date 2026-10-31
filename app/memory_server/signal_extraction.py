@@ -692,10 +692,7 @@ async def _periodic_signal_extraction_loop():
 
                 # Build BaseMessage-like structures for extract_facts.
                 from utils.llm_client import convert_to_messages
-                message_dicts = [
-                    {'type': 'human', 'data': {'content': m}}
-                    for m in user_msgs_text
-                ]
+                message_dicts = [row for row in _extract_role_tagged_messages_from_rows(rows) if row['type'] == 'human']
                 # convert_to_messages accepts only lists, no JSON decoding (contract since PR #547).
                 # The previous json.dumps hit isinstance(data, list)==False and returned [] directly,
                 # giving messages=[] and an empty _format_conversation output. The Stage-1 prompt

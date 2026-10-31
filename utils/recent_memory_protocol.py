@@ -6,6 +6,7 @@ entry retires its projection ID; it is never an instruction to erase an archive.
 
 from copy import deepcopy
 import json
+import hashlib
 import re
 
 
@@ -43,7 +44,13 @@ def entries(value):
 
 
 def snapshot(value, owner, uid):
-    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "ownerId", "characterSyncId", "revision", "entries"}
+    expected = {"schemaVersion", "ownerId", "characterSyncId", "revision", "entries"}
+    if isinstance(value, dict) and 'expiredIds' in value:
+        expected.add('expiredIds')
+        expired = value['expiredIds']
+        if not isinstance(expired, list) or len(set(map(identity, expired))) != len(expired):
+            raise ValueError('invalid_recent_memory')
+    if (not isinstance(value, dict) or set(value) != expected
             or value["ownerId"] != owner or value["characterSyncId"] != uid
             or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
             or type(value["revision"]) is not int or not 0 <= value["revision"] <= MAX_REVISION):
@@ -90,4 +97,24 @@ An explicit memo replacement is allowed after clearing its previous value.
             hidden.discard(MEMO_ID)
         if row["id"] not in hidden:
             rows[row["id"]] = row
-    return sorted(rows.values(), key=lambda row: row['role'] != 'memo'), sorted(hidden)
+    ordinary = [row for row in rows.values() if row['role'] != 'memo']
+    timed = iter(sorted((row for row in ordinary if row['originalTime'] is not None),
+                        key=lambda row: int(row['originalTime'])))
+    # Unknown-time entries retain their source slots; no receive time is invented.
+    ordered = [row if row['originalTime'] is None else next(timed) for row in ordinary]
+    return [row for row in rows.values() if row['role'] == 'memo'] + ordered, sorted(hidden)
+
+
+def view_request(rows):
+    return canonical({'entries': [{'id': row['id'], 'sha256': hashlib.sha256(canonical(row)).hexdigest()}
+                                  for row in entries(rows)]})
+
+
+def preserve_expired(remote, local, expired):
+    combined = list(remote)
+    present = {row['id'] for row in combined}
+    for index, row in enumerate(local):
+        if row['id'] in expired and row['id'] not in present:
+            combined.insert(min(index, len(combined)), row)
+            present.add(row['id'])
+    return combined

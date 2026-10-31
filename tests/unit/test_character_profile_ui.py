@@ -439,3 +439,18 @@ def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_action
         for key in ('setupNeedsSave', 'initialHistoryFailed', 'profileNeedsBinding'):
             assert locale['moreOptions'].casefold() not in locale[key].casefold(), (language, key)
 
+
+
+def test_retryable_setup_diagnostic_never_requests_resaving_the_card():
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:error=>'reason:'+error};
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncSetupDiagnostic:'chat_sync_login_required'}]});
+        await window.nekoCharacterProfileSync.poll();
+        await window.nekoCharacterProfileSync.poll();
+        assert.deepEqual(messages,[{text:'reason:chat_sync_login_required',kind:'warning'}]);
+        assert(!messages[0].text.includes('setupNeedsSave'));
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)

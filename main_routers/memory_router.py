@@ -977,12 +977,15 @@ def _write_recent_browser_payload(
         current_rows = json.loads(current_text)
         if not isinstance(current_rows, list):
             current_rows = []
+        used_sources = set()
         for item, edit in zip(payload, browser_chat or []):
             source = edit.get("source_index") if isinstance(edit, dict) else None
-            if type(source) is int and 0 <= source < len(current_rows):
+            if (type(source) is int and 0 <= source < len(current_rows)
+                    and source not in used_sources and isinstance(current_rows[source], dict)):
                 key = message_metadata(current_rows[source]).get(ID_KEY)
                 source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
                 if key and item.get("type") == source_type:
+                    used_sources.add(source)
                     item["data"].setdefault("metadata", {})[ID_KEY] = key
                     item["data"]["metadata"][TIME_KEY] = message_metadata(current_rows[source]).get(TIME_KEY)
         # Maintain theater capsules only through /cache and /theater/forget; browser saves preserve them unchanged.

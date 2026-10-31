@@ -442,6 +442,7 @@ def make_persona_archive_handler(persona_manager):
         snapshot = payload.get('entry_snapshot')
         shard_changed = False
         if isinstance(snapshot, dict):
+            snapshot = {**snapshot, 'entity_key': entity_key}
             archive_dir = persona_manager._persona_archive_dir(name)
             try:
                 shard_changed = ensure_entry_in_named_shard_sync(

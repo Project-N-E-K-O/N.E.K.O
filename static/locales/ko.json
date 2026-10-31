@@ -1142,7 +1142,7 @@
         "compactExportHistory": "대화 기록",
         "compactHistoryToggleOpen": "대화 기록 보이기",
         "compactHistoryToggleClose": "대화 기록 숨기기",
-    "compactHistoryExport": "대화 기록 내보내기",
+        "compactHistoryExport": "대화 기록 내보내기",
         "compactExportControlsCollapse": "선택 도구 숨기기",
         "compactExportControlsExpand": "선택 도구 보이기",
         "exportAction": "내보내기",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "모두 선택",
         "exportSelectNone": "해제",
         "exportSelectInvert": "반전",
-        "exportSelectionCount": "{{selected}} / {{total}} 선택됨"
+        "exportSelectionCount": "{{selected}} / {{total}} 선택됨",
+        "imageUnavailable": "이미지를 표시할 수 없습니다.",
+        "openImage": "이미지 열기",
+        "closeImage": "닫기"
     },
     "voiceControl": {
         "startVoice": "음성 시작",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "샷 챌린지 - Badminton",
          "exit": "나가기",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "미니게임을 불러오지 못했습니다. 페이지를 닫고 다시 시도해 주세요.",
         "runtimeStartFailed": "경기를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "설정",
             "title": "게임 설정",
@@ -6416,7 +6419,7 @@
             "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 응답, 이벤트 반응, 경기 후 요약, 이어지는 대화 모두 기억에 저장되거나 참조되지 않습니다."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "자동 함께 보기",
         "stopWatching": "시청 중지",
         "resizeAvatar": "캐릭터 크기 조절",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "이 피드백 경로는 전체 채팅 기록, 녹음 파일 또는 스크린샷을 업로드하지 않습니다.",
         "informationNote": "“확인”은 안내만 닫으며 업로드 설정을 변경하지 않습니다.",
         "informationClose": "확인"
+    },
+    "cloudModel": {
+        "conflict": "두 기기에서 모델이 변경되었습니다. 사용할 버전을 선택하세요.",
+        "useCloud": "클라우드 모델 사용",
+        "keepLocal": "이 기기의 선택 유지",
+        "failed": "모델을 불러오지 못했습니다. 이전 선택을 유지합니다.",
+        "retry": "다시 시도"
     }
 }

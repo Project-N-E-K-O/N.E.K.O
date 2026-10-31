@@ -54,6 +54,9 @@ class SyntheticService:
         if self.on_request is not None:
             await self.on_request(request)
         path = request.url.path
+        if path == "/v1/chat-sync/models/capabilities":
+            # Historical synthetic services model an older text/profile-only deployment.
+            return httpx.Response(404, json={"detail": "Not Found"})
         if path == "/v1/chat-sync/identity":
             return httpx.Response(200, json={"ownerId": self.owner})
         body = json.loads(request.content) if request.content else None
@@ -127,8 +130,7 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memo
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
         fixed_service_url=fixed_service_url,
-        recent_memory_adapter=recent_memory_adapter, recent_character_name=recent_character_name,
-        long_term_memory_adapter=long_term_memory_adapter,
+        recent_memory_adapter=recent_memory_adapter, long_term_memory_adapter=long_term_memory_adapter, recent_character_name=recent_character_name,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -4006,6 +4008,8 @@ async def test_unbound_history_grant_retries_unavailable_archive_without_finishi
         pending = runtime.state.new_role(UID)
         assert pending and pending["requestId"] == saved["requestId"]
         assert pending["lastError"] == "chat_sync_unavailable"
+        assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {UID: "chat_sync_unavailable"}
         assert not service.records
         available = True
         await runtime._run_new_role_sync(UID, pending, presence)
@@ -4244,7 +4248,8 @@ async def test_failed_combined_history_cancels_only_its_own_unapproved_preview(t
         assert len(other) == 1
         assert other[0][1] == ('approved' if after_approval else 'cancelled')
         assert source.task(UID, manual['taskId'])['status'] == 'preview'
-        assert runtime.state.new_role_errors() == {UID: 'chat_sync_session_changed'}
+        assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {UID: 'chat_sync_session_changed'}
     finally:
         await runtime.close()
 
@@ -4277,7 +4282,8 @@ async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_
         retained = runtime.state.new_role(UID)
         assert retained['lastError'] == 'chat_sync_account_mismatch'
         assert retained['next_at'] == saved['next_at'] and 'error' not in retained
-        assert (await runtime.status())['syncSetupErrors'] == {UID: 'chat_sync_account_mismatch'}
+        assert (await runtime.status())['syncSetupErrors'] == {}
+        assert (await runtime.status())['syncSetupDiagnostics'] == {UID: 'chat_sync_account_mismatch'}
         assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
         assert [request.url.path for request in service.requests] == ['/v1/chat-sync/identity']
         with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
@@ -4350,4 +4356,30 @@ async def test_cancelled_setup_cleans_preview_committed_before_thread_returns(tm
         release.set()
         if worker is not None:
             await asyncio.gather(worker, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_retired_role_purges_all_memory_sync_states_without_touching_other_domains(tmp_path):
+    from memory.recent_sync import RecentMemoryAdapter
+    from memory.long_term_sync import DesktopLongTermAdapter
+    config = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / 'memory')
+    runtime, _, _ = setup_runtime(tmp_path, recent_memory_adapter=RecentMemoryAdapter(config),
+                                  long_term_memory_adapter=DesktopLongTermAdapter(config))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        domain = DOMAIN.key()
+        tables = ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply', 'long_term_memory_state')
+        with closing(runtime.state._connect()) as conn, conn:
+            for key in (domain, 'other-domain'):
+                conn.execute('INSERT INTO recent_memory_state VALUES(?,?,NULL,1)', (key, '["private chat"]'))
+                conn.execute('INSERT INTO recent_memory_preferences VALUES(?,?,NULL)', (key, '[]'))
+                conn.execute('INSERT INTO recent_memory_apply VALUES(?,?,?,1)', (key, 'receipt', '[]'))
+                conn.execute('INSERT INTO long_term_memory_state VALUES(?,?,1)', (key, 'operation'))
+        runtime._purge_retired_character(runtime.state.binding(UID), await runtime.session_presence_provider(), runtime.writer.epoch())
+        with closing(runtime.state._connect()) as conn:
+            for table in tables:
+                assert [row[0] for row in conn.execute(f'SELECT domain FROM {table}')] == ['other-domain']
+    finally:
         await runtime.close()

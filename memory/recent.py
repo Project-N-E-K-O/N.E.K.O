@@ -206,12 +206,12 @@ async def _await_recent_mutation_to_completion(func, *args):
 async def review_context_token_count(messages: list) -> int:
     """Return a stable token-size metric without blocking the event loop."""
     rows = []
-    for message in messages:
+    for index, message in enumerate(messages):
         role = getattr(message, 'type', '') or ''
         content = _review_message_content(message)
         if isinstance(message, dict):
             role = message.get('type', message.get('role', role)) or ''
-        rows.append(f"{role}: {content}")
+        rows.append(f"[source_index={index}] {role}: {content}")
     return await acount_tokens('\n\n'.join(rows))
 
 
@@ -358,6 +358,42 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
     """
     slots = _compute_review_slots(snapshot, current)
     return (len(slots), slots[-1] if slots else None)
+
+
+def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None):
+    """Resolve edits to snapshot rows, never to their destination slots."""
+    sources = [None] * len(corrected_messages) if source_indexes is None else list(source_indexes)
+    if len(sources) != len(corrected_messages):
+        raise ValueError('invalid_review_sources')
+    used = set()
+    for position, source in enumerate(sources):
+        if source is None:
+            continue
+        if (type(source) is not int or not 0 <= source < len(snapshot) or source in used
+                or snapshot[source].type != corrected_messages[position].type):
+            raise ValueError('invalid_review_sources')
+        used.add(source)
+    # Legacy responses can omit indices. Only unique matches prove an identity.
+    for position, message in enumerate(corrected_messages):
+        if sources[position] is not None:
+            continue
+        matches = [index for index, original in enumerate(snapshot) if index not in used
+                   and original.type == message.type
+                   and _review_message_content(original) == _review_message_content(message)]
+        if len(matches) == 1:
+            sources[position] = matches[0]
+            used.add(matches[0])
+    for position, message in enumerate(corrected_messages):
+        if sources[position] is not None:
+            continue
+        matches = [index for index, original in enumerate(snapshot)
+                   if index not in used and original.type == message.type]
+        unresolved = sum(source is None and corrected.type == message.type
+                         for source, corrected in zip(sources, corrected_messages, strict=True))
+        if len(matches) == unresolved == 1:
+            sources[position] = matches[0]
+            used.add(matches[0])
+    return sources
 
 
 # Setup logger
@@ -2561,13 +2597,16 @@ class CompressedRecentHistoryManager:
 
     def _commit_review_locked(
         self, file_path, lanlan_name, snapshot, corrected_messages,
-        expected_generation=None,
+        expected_generation=None, source_indexes=None,
     ) -> tuple[str, list[dict] | None, str]:
         """Locate the review window, splice the corrected messages in and persist.
 
         One critical section, run in a worker thread: the current history is
         re-read inside the lock so that batches persisted while the review LLM
         was running are not overwritten.
+
+        Source indices refer to the original review snapshot. Identity metadata
+        follows those sources, independently of the final splice positions.
 
         Returns ``(status, new_fingerprint, detail)`` where status is
         ``'patched'`` / ``'white'`` / ``'failed'`` and detail is a log fragment.
@@ -2599,13 +2638,42 @@ class CompressedRecentHistoryManager:
                 # persist nor update fingerprint, preventing anchor drift outside reviewed range.
                 return ('white', None, 'review 输出为空')
 
-            # Replace only matched ordinary-message slots; retain interleaved theater capsules/new concurrent messages in place.
-            # Shorter corrected keeps legacy behavior: delete earlier slots and write model output into latest slots.
+            try:
+                sources = _resolve_review_sources(snapshot, corrected_messages, source_indexes)
+            except ValueError:
+                return ('failed', None, 'invalid_review_sources')
+            sync_keys = ('recent_memory_id', 'recent_memory_time', 'chat_original_source')
+            has_sync_identity = any(any(key in message_metadata(current[slot]) for key in sync_keys)
+                                    for slot in review_slots)
+            if has_sync_identity and any(source is None for source in sources):
+                return ('failed', None, 'ambiguous_review_sources')
+            first_source = len(snapshot) - capacity
+            retained = []
+            for replacement, source_index in zip(corrected_messages, sources, strict=True):
+                if source_index is not None:
+                    # Concurrent compression can already have removed part of this snapshot.
+                    if source_index < first_source:
+                        continue
+                    source = message_metadata(current[review_slots[source_index - first_source]])
+                    previous = message_metadata(snapshot[source_index])
+                    if any(key in previous and previous[key] != source.get(key) for key in sync_keys):
+                        return ('failed', None, 'review_source_changed')
+                    sync_metadata = {key: source[key] for key in sync_keys if key in source}
+                    if sync_metadata:
+                        replacement = _copy_message_metadata(
+                            replacement, {**message_metadata(replacement), **sync_metadata},
+                        )
+                retained.append(replacement)
+            take_count = min(capacity, len(retained))
+            if take_count == 0:
+                return ('white', None, 'review sources no longer present')
+
+            # Keep the existing splice layout, but carry each retained message's own provenance.
             review_slot_set = set(review_slots)
             replacement_slots = review_slots[-take_count:]
             replacements = dict(zip(
                 replacement_slots,
-                corrected_messages[-take_count:],
+                retained[-take_count:],
                 strict=True,
             ))
             new_history = []
@@ -2631,12 +2699,7 @@ class CompressedRecentHistoryManager:
             )
             self._cache_history_view(file_path, lanlan_name, new_history)
 
-            # ── Issue #3 fix: compute new fingerprint from patched new_history ──
-            # Patched range in new_history is [patched_start, patched_end]:
-            #   patched_start = cutoff_idx - capacity + 1
-            #   patched_end   = patched_start + take_count - 1
-            # New fingerprint = K messages ending at patched_end. If patched_end
-            # has fewer than K-1 predecessors, take all available from index 0.
+            # Anchor the persisted replacements, excluding interleaved theater capsules.
             reviewed_prefix = [
                 message
                 for message in new_history[:patched_end + 1]
@@ -2727,7 +2790,7 @@ class CompressedRecentHistoryManager:
         name_mapping['ai'] = lanlan_name
 
         history_text = ""
-        for msg in snapshot:
+        for index, msg in enumerate(snapshot):
             if hasattr(msg, 'type') and msg.type in name_mapping:
                 role = name_mapping[msg.type]
             else:
@@ -2735,7 +2798,7 @@ class CompressedRecentHistoryManager:
 
             content = _review_message_content(msg)
 
-            history_text += f"{role}: {content}\n\n"
+            history_text += f"[source_index={index}] {role}: {content}\n\n"
 
         # Check cancellation.
         if cancel_event and cancel_event.is_set():
@@ -2832,6 +2895,7 @@ class CompressedRecentHistoryManager:
                 # prompt building / fingerprint content[:50] slicing receives nonstring
                 # data and crashes.
                 corrected_messages = []
+                source_indexes = []
                 for msg_data in review_result['corrected_dialogue']:
                     if not isinstance(msg_data, dict):
                         continue
@@ -2861,7 +2925,8 @@ class CompressedRecentHistoryManager:
                         # memos into uncompressed dialogue and polluting downstream.
                         if snapshot and isinstance(snapshot[0], SystemMessage):
                             corrected_messages.append(SystemMessage(content=content))
-                        # else: silently drop, restoring legacy behavior.
+                        else:
+                            continue
                     elif role in ['user', 'human', name_mapping['human']]:
                         corrected_messages.append(HumanMessage(content=content))
                     elif role in ['ai', 'assistant', name_mapping['ai']]:
@@ -2869,6 +2934,10 @@ class CompressedRecentHistoryManager:
                     else:
                         # Default to user message.
                         corrected_messages.append(HumanMessage(content=content))
+                    source_index = msg_data.get('source_index')
+                    if 'source_index' in msg_data and type(source_index) is not int:
+                        return ('failed', None)
+                    source_indexes.append(source_index)
 
                 # Normalize SystemMessage position: if snapshot head is memo,
                 # corrected_messages must begin with exactly one SystemMessage.
@@ -2888,17 +2957,20 @@ class CompressedRecentHistoryManager:
                     and snapshot
                     and isinstance(snapshot[0], SystemMessage)
                 ):
-                    sys_msgs = [m for m in corrected_messages if isinstance(m, SystemMessage)]
-                    others = [m for m in corrected_messages if not isinstance(m, SystemMessage)]
+                    pairs = list(zip(corrected_messages, source_indexes, strict=True))
+                    sys_msgs = [pair for pair in pairs if isinstance(pair[0], SystemMessage)]
+                    others = [pair for pair in pairs if not isinstance(pair[0], SystemMessage)]
                     if not others:
                         # Model returns only system without dialogue ≡ delete all dialogue,
                         # equivalent to empty list, requiring wasted review. Reset empty for take_count==0
                         # gate below; otherwise normalization inserts one SystemMessage,
                         # making length 1 bypass gate and erasing all dialogue except memo.
                         corrected_messages = []
+                        source_indexes = []
                     else:
-                        head = sys_msgs[0] if sys_msgs else snapshot[0]
-                        corrected_messages = [head] + others
+                        head = sys_msgs[0] if sys_msgs else (snapshot[0], 0)
+                        corrected_messages = [message for message, _ in [head, *others]]
+                        source_indexes = [source for _, source in [head, *others]]
 
                 # ── Phase C: snapshot-based capacity for tail-aligned replacement ──
                 # Read current → locate → splice → persist must share **one** critical section; previously
@@ -2913,6 +2985,7 @@ class CompressedRecentHistoryManager:
                             snapshot,
                             corrected_messages,
                             admission_generation,
+                            source_indexes,
                         )
                     )
                 except recent_file.RecentFileDeletedError:

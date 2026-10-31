@@ -10,4 +10,6 @@ from utils.recent_memory_protocol import (  # noqa: F401
     mutation,
     changes,
     merge,
+    view_request,
+    preserve_expired,
 )

@@ -91,7 +91,7 @@ class ChatSyncScheduler:
 
     def request_check(self, domain, channel, *, verified_login=None) -> None:
         """Coalesce hints; a fresh subscription may repair a local login pause."""
-        if channel not in {"pull", "profile", "long_term"}:
+        if channel not in {"pull", "profile", "model", "long_term"}:
             raise ValueError("invalid_chat_sync_channel")
         with closing(self._connect()) as conn, conn:
             conn.execute("INSERT OR IGNORE INTO scheduler_tasks(domain,channel) VALUES (?,?)", (domain, channel))
@@ -110,12 +110,19 @@ class ChatSyncScheduler:
             deadline = conn.execute("SELECT origin_retry_at FROM scheduler_device WHERE singleton=1").fetchone()[0]
         return self.clock() >= deadline
 
+    def retry_model(self, domain):
+        """An explicit model retry retains the service-wide Retry-After fence."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE scheduler_tasks SET due_at=0,retry_at=0,failures=0,blocked_generation=NULL,"
+                         "blocked_session=NULL,last_error=NULL WHERE domain=? AND channel='model'", (domain,))
+
     def next_wake_at(self) -> int | None:
         """Expose future admission deadlines so an idle host can sleep longer."""
         now = self.clock()
         with closing(self._connect()) as conn:
             origin = conn.execute("SELECT origin_retry_at FROM scheduler_device WHERE singleton=1").fetchone()[0]
-            rows = conn.execute("SELECT retry_at,due_at FROM scheduler_tasks WHERE blocked_generation IS NULL").fetchall()
+            rows = conn.execute("SELECT retry_at,due_at FROM scheduler_tasks "
+                                "WHERE blocked_generation IS NULL AND channel<>'media'").fetchall()
         deadlines = [max(origin, row['retry_at'], row['due_at']) for row in rows]
         return min((value for value in [origin, *deadlines] if value > now), default=None)
 
@@ -134,7 +141,7 @@ class ChatSyncScheduler:
                 # schema/integrity errors require explicit re-enabling instead.
                 if task["blocked_session"] is None or task["blocked_session"] == session:
                     return False
-            if channel in {"pull", "profile", "long_term"} and not manual and now < task["due_at"]:
+            if channel in {"pull", "profile", "model", "long_term"} and not manual and now < task["due_at"]:
                 return False
         if channel == "body":
             if device["last_body_attempt"] is not None and now < device["last_body_attempt"] + BODY_INTERVAL_MS:
@@ -166,7 +173,7 @@ class ChatSyncScheduler:
                 conn.execute("UPDATE scheduler_device SET last_body_attempt=?,last_domain=?,body_at=? WHERE singleton=1", (
                     now, domain, now + BODY_INTERVAL_MS,
                 ))
-            if channel in {"pull", "profile", "long_term"}:
+            if channel in {"pull", "profile", "model", "long_term"}:
                 # Periodic staggering is drawn once per attempt and survives a
                 # restart. Manual checks cannot redraw the next automatic poll.
                 stagger = 0 if manual else int(self.uniform(0, STARTUP_JITTER_MS))
@@ -238,6 +245,6 @@ class ChatSyncScheduler:
     def last_error(self, domain) -> str | None:
         """Expose only the latest fixed error for local progress UI."""
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND last_error IS NOT NULL "
+            row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND channel<>'media' AND last_error IS NOT NULL "
                                "ORDER BY last_attempt DESC LIMIT 1", (domain,)).fetchone()
         return row[0] if row else None

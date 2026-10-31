@@ -4,12 +4,13 @@ import asyncio
 from contextlib import asynccontextmanager, closing, contextmanager
 from copy import deepcopy
 import json
+import re
 from pathlib import Path
 import sqlite3
 import time
 from uuid import uuid4
 
-from memory.long_term_sync import DesktopLongTermAdapter, FILES, export_document, import_document, read_views
+from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -82,7 +83,67 @@ async def _views_locked(name):
         runtime._end_character_request(name, admission)
 
 
-def _capture(name, force, expected_uid=None):
+def _recover_snapshot(name):
+    """Restore local before-images even after login, grant, or writer loss."""
+    directory = Path(runtime._config_manager.memory_dir) / name
+    path = directory / JOURNAL
+    if not path.exists():
+        return
+    try:
+        journal = json.loads(path.read_text(encoding='utf-8'))
+        if journal.get('version') != 1 or journal.get('phase') not in ('pending', 'closed'):
+            raise ValueError('invalid_long_term_journal')
+        if journal['phase'] == 'closed':
+            path.unlink(missing_ok=True)
+            return
+        before = journal['before']
+        if not isinstance(before, dict) or not before or not all(managed_path(key) and (value is None or isinstance(value, str)) for key, value in before.items()):
+            raise ValueError('invalid_long_term_journal')
+        receipt = journal['receipt']
+        if not re.fullmatch(r'[0-9a-f]{32}-[0-9a-f]{16}\.json', receipt['filename']) or not (receipt['before'] is None or isinstance(receipt['before'], str)):
+            raise ValueError('invalid_long_term_journal')
+        restore = {directory / key: value for key, value in before.items()}
+        restore[DesktopLongTermAdapter(runtime._config_manager).directory / receipt['filename']] = receipt['before']
+        advance_view_generation(directory)
+        errors = []
+        for target, original in restore.items():
+            try:
+                if original is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    atomic_write_text(target, original)
+            except OSError as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
+        _replace_fact_index(name, read_views(directory, recovering=True))
+        runtime.fact_store._facts.pop(name, None)
+        runtime.persona_manager._personas.pop(name, None)
+        atomic_write_json(path, {'version': 1, 'phase': 'closed'}, ensure_ascii=False)
+        path.unlink(missing_ok=True)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise LongTermMemoryRecoveryRequired() from error
+    finally:
+        runtime.fact_store._facts.pop(name, None)
+        runtime.persona_manager._personas.pop(name, None)
+
+
+def _snapshot_source_evidence(name, views, incoming=None):
+    sources = {}
+    for row in [*views.get('facts', []), *views.get('archive', [])]:
+        if not isinstance(row, dict):
+            continue
+        sources.setdefault((row.get('entity'), row.get('id')), set()).update(row.get('source_message_ids') or [])
+    for row in (incoming or {}).get('entries', []):
+        if row['kind'] == 'fact':
+            sources.setdefault((row['subject'], row['id']), set()).update(row['metadata'].get('sourceMessageIds') or [])
+    ids = set().union(*(values for values in sources.values() if len(values) > 200))
+    index = getattr(runtime.fact_store, '_time_indexed', None)
+    return index.get_original_source_evidence(name, ids) if ids and index is not None else {}
+
+
+def _capture(name, force, expected_uid=None, require_consumed=False):
+    _recover_snapshot(name)
     writer = _authority()
     uid = _uid(name)
     if expected_uid is not None and uid != expected_uid:
@@ -95,12 +156,15 @@ def _capture(name, force, expected_uid=None):
             return False
         epoch = writer.epoch()
         adapter = DesktopLongTermAdapter(runtime._config_manager)
+        if require_consumed and adapter.incoming_path(uid).is_file():
+            raise ValueError('long_term_memory_incoming_pending')
         previous = adapter.read_local(binding, epoch)
         with runtime.fact_store._get_lock(name):
             views = read_views(Path(runtime._config_manager.memory_dir) / name)
         completed = max(time.time_ns() // 1_000_000, (previous['document']['completedAt'] if previous else 0) + 1)
-        document = export_document(views, completed)
-        if not force and ((not previous and not document['entries']) or (previous and previous['nativeEntries'] == document['entries'])):
+        document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
+        if not force and ((not previous and not document['entries'] and not document['evidence']['retirements'] and not document['evidence']['confirmations'])
+                          or (previous and previous['nativeEntries'] == document['entries'] and (previous['document'].get('evidence') or {'retirements': [], 'confirmations': []}) == document['evidence'])):
             return False
         # The name-to-UID mapping and current grant are still protected at publication.
         if _uid(name) != uid or _binding(uid) != binding:
@@ -132,8 +196,10 @@ def queue_capture(name, *, force=False):
             await asyncio.sleep(delay)
             requested = _capture_requests.pop(name)
             try:
+                # Incorporate downloaded facts before timestamping a new local view.
+                await consume(uid)
                 async with _views_locked(name):
-                    captured = await _complete_file_commit(_capture, name, requested, uid)
+                    captured = await _complete_file_commit(_capture, name, requested, uid, True)
                 if captured is not None and name not in _capture_requests:
                     _capture_intents.pop(uid, None)
                 delay = 0.2
@@ -168,6 +234,7 @@ def resume_captures(characters):
 
 
 def _write_snapshot(name, payload):
+    _recover_snapshot(name)
     fingerprint = payload.get('sessionFingerprint')
     if not isinstance(fingerprint, str) or not fingerprint:
         return False
@@ -216,36 +283,45 @@ def _write_snapshot_locked(name, payload):
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
         with runtime.fact_store._get_lock(name):
             existing = read_views(directory)
-            views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [])
+            source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
+            views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [], source_evidence=source_evidence)
             # Retained local edits have not been published. Keep them outside the
             # receipt baseline so a later completed organization still captures them.
-            native_entries = export_document(import_document(remote['document'], existing), remote['completedAt'])['entries']
-            before = {directory / filename: (directory / filename).read_text(encoding='utf-8')
-                      if (directory / filename).is_file() else None for filename in FILES.values()}
+            native_entries = export_document(import_document(remote['document'], existing), remote['completedAt'], source_evidence=source_evidence)['entries']
+            files = view_files(views)
+            before = {relative: (directory / relative).read_text(encoding='utf-8')
+                      if (directory / relative).is_file() else None for relative in files}
             receipt_path = adapter.local_path(binding)
-            before[receipt_path] = receipt_path.read_text(encoding='utf-8') if receipt_path.is_file() else None
+            journal = {'version': 1, 'phase': 'pending', 'before': before,
+                       'receipt': {'filename': receipt_path.name,
+                                   'before': receipt_path.read_text(encoding='utf-8') if receipt_path.is_file() else None}}
+            atomic_write_json(directory / JOURNAL, journal, ensure_ascii=False)
             try:
-                for key, filename in FILES.items():
-                    atomic_write_json(directory / filename, views[key], ensure_ascii=False, indent=2)
+                advance_view_generation(directory)
+                for relative, value in files.items():
+                    atomic_write_json(directory / relative, value, ensure_ascii=False, indent=2)
                 atomic_write_json(adapter.local_path(binding), {
                     'ownerId': binding['owner_id'], 'characterSyncId': uid, 'serviceUrl': binding['service_url'],
                     'epoch': list(epoch), 'operationId': operation, 'document': remote['document'],
                     'nativeEntries': native_entries,
                 }, ensure_ascii=False)
                 _replace_fact_index(name, views)
+                runtime.fact_store._facts.pop(name, None)
+                runtime.persona_manager._personas.pop(name, None)
+                atomic_write_json(directory / JOURNAL, {'version': 1, 'phase': 'closed'}, ensure_ascii=False)
             except BaseException as error:
-                # Restore exact prior files; the appended event/inbox retains the retry.
-                for path, original in before.items():
-                    if original is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        atomic_write_text(path, original)
+                # A failed rollback retains a durable journal and blocks all derived reads.
+                try:
+                    _recover_snapshot(name)
+                except LongTermMemoryRecoveryRequired:
+                    logger.warning('[LongTermSync] rollback incomplete; original save error retained')
                 if isinstance(error, OSError):
                     raise ValueError('long_term_memory_save_failed') from error
                 raise
             finally:
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
+            (directory / JOURNAL).unlink(missing_ok=True)
         return True
 
 
@@ -282,12 +358,14 @@ async def consume(uid):
     if name is None:
         return False
     name = validate_lanlan_name(name)
-    if name in _capture_tasks or name in _capture_requests:
+    if ((name in _capture_tasks and _capture_tasks[name] is not asyncio.current_task())
+            or name in _capture_requests):
         return False
     from . import review
     if any(name in tasks and not tasks[name].done() for tasks in (review.correction_tasks, review.compress_backup_tasks)):
         return False
     async with _views_locked(name):
+        await _complete_file_commit(_recover_snapshot, name)
         await runtime.reconciler.areconcile(name)
         def commit():
             payload = json.loads(path.read_text(encoding='utf-8'))
@@ -322,10 +400,27 @@ async def consume_for_name(name):
     try:
         if not getattr(runtime._config_manager, 'app_docs_dir', None):
             return False
-        uid = _uid(name)
-        if uid and DesktopLongTermAdapter(runtime._config_manager).incoming_path(uid).is_file():
+        def pending():
+            journal = (Path(runtime._config_manager.memory_dir) / name / JOURNAL).is_file()
+            adapter = DesktopLongTermAdapter(runtime._config_manager)
+            # No character config read is needed for the ordinary, sync-free path.
+            if not journal and not any(adapter.directory.glob('*.incoming.json')):
+                return False, None
+            uid = _uid(name)
+            return journal, uid if uid and adapter.incoming_path(uid).is_file() else None
+        journal, uid = await asyncio.to_thread(pending)
+        if not journal and uid is None:
+            return False
+        if journal:
+            async with _views_locked(name):
+                await _complete_file_commit(_recover_snapshot, name)
+        if uid:
             return await consume(uid)
+    except LongTermMemoryRecoveryRequired:
+        raise
     except Exception:
+        from memory.long_term_sync import require_consistent_views
+        await asyncio.to_thread(require_consistent_views, Path(runtime._config_manager.memory_dir) / name)
         logger.warning('[LongTermSync] incoming snapshot deferred')
     return False
 

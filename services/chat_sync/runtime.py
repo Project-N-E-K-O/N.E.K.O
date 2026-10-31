@@ -259,7 +259,12 @@ class DesktopSyncState:
     def new_role_errors(self):
         with closing(self._connect()) as conn:
             return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
-                    if (code := (request := json.loads(row[1])).get("error") or request.get("lastError"))}
+                    if (code := json.loads(row[1]).get("error"))}
+
+    def new_role_diagnostics(self):
+        with closing(self._connect()) as conn:
+            return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
+                    if not (request := json.loads(row[1])).get("error") and (code := request.get("lastError"))}
 
     def record_new_role_error(self, uid, request_id, code):
         """Keep a retryable fixed diagnostic without changing its admission deadline."""
@@ -386,6 +391,8 @@ class DesktopChatSyncRuntime:
             # the first raw producer creates a source object for this role.
             ChatOriginalSource(directory / "sources.sqlite3")
             self.profiles = DesktopProfileSync(self, directory / "profiles.sqlite3")
+            from services.chat_sync.model_sync import DesktopModelSync
+            self.models = DesktopModelSync(self, directory / "profiles.sqlite3")
             from services.chat_sync.recent import RecentMemorySync
             self.recent_memory = (RecentMemorySync(directory / "state.sqlite3", recent_memory_adapter)
                                   if recent_memory_adapter is not None else None)
@@ -698,6 +705,29 @@ class DesktopChatSyncRuntime:
                 task = asyncio.create_task(self._automatic_profiles(bindings, presence))
                 self._flights["profile"] = task
                 self._track(task)
+        previous = self._flights.get("model")
+        if self.models.adapter is not None and (previous is None or previous.done()):
+            task = asyncio.create_task(self._automatic_models(bindings, presence))
+            self._flights["model"] = task
+            self._track(task)
+
+    async def _automatic_models(self, bindings, presence):
+        for binding in bindings:
+            if not binding["enabled"] or not binding["binding_id"]:
+                continue
+            uid = binding["character_uid"]
+            domain = ChatDomain(binding["owner_id"], uid).key()
+            if not await asyncio.to_thread(self.scheduler.claim, domain, "model", binding["generation"], presence):
+                continue
+            try:
+                await self.models.step(uid)
+                await asyncio.to_thread(self.scheduler.success, domain, "model")
+            except (AutomaticRoleInactive, OSError, ValueError, sqlite3.Error) as exc:
+                if getattr(exc, "status_code", None) == 404:
+                    await asyncio.to_thread(self.scheduler.success, domain, "model")
+                else:
+                    await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
+
 
     @asynccontextmanager
     async def _connect_notifications(self, service_url):
@@ -755,6 +785,10 @@ class DesktopChatSyncRuntime:
                                 ChatDomain(binding["owner_id"], binding["character_uid"]).key(), channel,
                                 verified_login=(binding["generation"], presence) if login_verified else None,
                                 fingerprint=presence)
+        if channel == "profile" and self.models.adapter is not None:
+            await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
+                                    ChatDomain(binding["owner_id"], binding["character_uid"]).key(), "model",
+                                    fingerprint=presence)
         if channel == 'pull' and self.long_term_memory is not None:
             await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
                                     ChatDomain(binding['owner_id'], binding['character_uid']).key(), 'long_term',
@@ -951,7 +985,7 @@ class DesktopChatSyncRuntime:
                                       "chat_tombstones", "chat_cursors", "chat_deletions", "chat_lane_rotation",
                                       "chat_identity_backfills", "chat_oversized", "chat_recovery_deletion_pages",
                                       "chat_origin_identities", "chat_deleted_originals")),
-                ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports")),
+                ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports", "model_state")),
                 ("scheduler.sqlite3", ("scheduler_tasks",)),
             ):
                 with closing(store_connection(directory / filename)) as conn, conn:
@@ -964,6 +998,11 @@ class DesktopChatSyncRuntime:
                         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                             conn.execute(f"DELETE FROM {table} WHERE uid=?", (uid,))
             with closing(self.state._connect()) as conn, conn:
+                if self.recent_memory is not None:
+                    for table in ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply'):
+                        conn.execute(f"DELETE FROM {table} WHERE domain=?", (domain,))
+                if self.long_term_memory is not None:
+                    conn.execute("DELETE FROM long_term_memory_state WHERE domain=?", (domain,))
                 for table in ("sync_new_roles", "sync_choices", "sync_bindings"):
                     conn.execute(f"DELETE FROM {table} WHERE character_uid=?", (uid,))
 
@@ -1077,7 +1116,7 @@ class DesktopChatSyncRuntime:
             raise ValueError("chat_sync_retry_later")
         self._check_local_ca_origin(settings["service_url"])
         client = await self._http_client()
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "X-Neko-Cloud-Retention": "1"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         if binding_id is not None:
@@ -1094,7 +1133,7 @@ class DesktopChatSyncRuntime:
                 self.trace.emit("http_headers", status=response.status_code)
                 if response.status_code >= 300:
                     error = ChatSyncServiceError(response.status_code, _retry_after_ms(response.headers.get("Retry-After")))
-                    if response.status_code == 410 or (response.status_code == 409 and path.endswith("/profile")):
+                    if response.status_code == 410 or (response.status_code == 409 and path.endswith(("/profile", "/model-binding"))):
                         # Bound and discard error bodies; an unrelated 409 must
                         # never authorize replacing a retained profile version.
                         detail = bytearray()
@@ -1107,6 +1146,7 @@ class DesktopChatSyncRuntime:
                             parsed = json.loads(detail)
                             error.profile_conflict = response.status_code == 409 and parsed == {"detail": "profile_revision_conflict"}
                             error.character_deleted = response.status_code == 410 and parsed == {"detail": "character_deleted"}
+                            error.media_resource_missing = response.status_code == 409 and parsed == {"detail": "media_resource_not_ready"}
                         except (ValueError, UnicodeError, RecursionError):
                             pass
                     if response.status_code == 429:
@@ -1166,6 +1206,7 @@ class DesktopChatSyncRuntime:
             binding["historyBackfill"] = await self._history_status(binding["character_uid"])
         return {"serviceUrl": settings["service_url"], "deviceId": settings["device_id"], "bindings": bindings,
                 "syncSetupErrors": await asyncio.to_thread(self.state.new_role_errors),
+                "syncSetupDiagnostics": await asyncio.to_thread(self.state.new_role_diagnostics),
                 "syncPendingChoices": await asyncio.to_thread(self.state.pending_choices, await asyncio.to_thread(self.writer.epoch)),
                 "syncChoices": await asyncio.to_thread(self.state.choices), "writerRecoveryRequired": False}
 
@@ -2472,6 +2513,8 @@ async def get_desktop_chat_sync_runtime(config_manager=None) -> DesktopChatSyncR
             # Attach only the storage-selected production manager. Synthetic
             # runtimes explicitly inject their own isolated raw profile adapter.
             runtime.profiles.adapter = DesktopProfileAdapter(config_manager)
+            from services.chat_sync.model_sync import DesktopModelAdapter
+            runtime.models.adapter = DesktopModelAdapter(config_manager)
         return runtime
 
 

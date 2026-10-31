@@ -44,7 +44,7 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from memory.cursors import CursorStore
-from memory.event_log import EventLog, Reconciler
+from memory.event_log import EventLog, Reconciler, EVT_LONG_TERM_MEMORY_REPLACED
 from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
 from memory.outbox import Outbox
 from config import (

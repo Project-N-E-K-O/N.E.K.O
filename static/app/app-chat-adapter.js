@@ -628,6 +628,8 @@
                     window._isProcessingRealisticQueue = false;
                     if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
                         processRealisticQueue(window._realisticGeminiVersion || 0);
+                    } else {
+                        window.dispatchEvent(new Event('neko-realistic-queue-idle'));
                     }
                 }
             }
@@ -709,6 +711,7 @@
             } catch (_) {}
         }
         window._realisticGeminiQueue = [];
+        window.dispatchEvent(new Event('neko-realistic-queue-idle'));
         if (window.nekoReplyTail) window.nekoReplyTail.changed();
     }
 

@@ -25,6 +25,8 @@ Contracts under test:
 from __future__ import annotations
 
 import os
+import json
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -164,8 +166,12 @@ def test_tokenize_fails_closed_when_only_persona_is_missing(monkeypatch):
 
 
 def _cm(tmpdir: str):
+    from pathlib import Path
     cm = MagicMock()
     cm.memory_dir = tmpdir
+    cm.app_docs_dir = Path(tmpdir)
+    cm.local_state_dir = Path(tmpdir) / 'local_state'
+    cm.local_state_dir.mkdir(exist_ok=True)
     character_data = (
         "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
     )
@@ -672,8 +678,10 @@ async def test_pairs_are_queued_outside_the_persistence_lock(tmp_path):
     _seed(harness, "用户最近养了一只猫")
     held: list[bool] = []
 
-    async def _record(name, _pairs):
+    async def _record(name, _pairs, *, on_persisted=None):
         held.append(harness._get_persist_alock(name).locked())
+        if on_persisted is not None:
+            await on_persisted()
         return 1
 
     resolver = MagicMock()
@@ -741,7 +749,11 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         store = FactStore(time_indexed_memory=time_index)
         store._config_manager = cm
         resolver = MagicMock()
-        resolver.aenqueue_candidates = AsyncMock(return_value=1)
+        async def enqueue(_name, _pairs, *, on_persisted=None):
+            if on_persisted is not None:
+                await on_persisted()
+            return 1
+        resolver.aenqueue_candidates = AsyncMock(side_effect=enqueue)
         store.attach_dedup_resolver(resolver)
 
         async def _write(text):
@@ -1111,3 +1123,1071 @@ def test_the_backfill_keeps_arbitration_losers_indexed(tmp_path):
         asyncio.run(harness._aensure_fact_index_backfilled("小天", []))
 
     assert captured == [[("loser1", "群规是不能剧透")]]
+
+
+@pytest.mark.asyncio
+async def test_portable_retirement_blocks_history_replay_before_signal_scoring(tmp_path):
+    import json
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': [
+        {'id': 'retired', 'subject': 'master', 'text': '用户喜欢红茶', 'sourceMessageIds': ['sync:' + 'a'*32], 'retiredThroughAt': 2000}
+    ], 'confirmations': []}}))
+    from utils.llm_client import HumanMessage
+    original = HumanMessage(content='我喜欢红茶', additional_kwargs={'memory_source_id': 'sync:'+'a'*32, 'memory_source_created_at': 1000})
+    rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [1]}], source_messages=[original])
+    assert rows == []
+    assert h._mem == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['new_confirmation', 'independent_fact', 'old_expanded_sources', 'rollback', 'missing_sources'])
+async def test_portable_retirement_uses_trusted_sources_and_preserves_new_evidence(tmp_path, mode):
+    import json
+    from utils.llm_client import HumanMessage
+    from memory.facts import FactExtractionFailed
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    retirement = {'id': 'retired', 'subject': 'master', 'text': '用户喜欢红茶',
+                  'sourceMessageIds': ['sync:' + 'a'*32], 'retiredThroughAt': 2000}
+    if mode == 'rollback':
+        retirement['retiredThroughAt'] = 9_000_000_000_000
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': [retirement], 'confirmations': []}}))
+    h._allm_call_with_retries = AsyncMock(return_value=[{'index': 0, 'action': 'keep_both'}])
+    at = 3000 if mode == 'new_confirmation' else 1000
+    sources = [HumanMessage(content='original', additional_kwargs={'memory_source_id': 'sync:'+'b'*32, 'memory_source_created_at': at})]
+    text = '用户喜欢游泳' if mode == 'independent_fact' else '用户喜欢红茶'
+    fact = {'text': text, 'entity': 'master', 'source_indices': [1], 'source_created_at': '2999-01-01', 'source_message_ids': ['forged']}
+    if mode == 'missing_sources':
+        fact.pop('source_indices')
+        with pytest.raises(FactExtractionFailed):
+            await h._apersist_new_facts('小天', [fact], source_messages=sources)
+        assert not h._mem
+        return
+    rows = await h._apersist_new_facts('小天', [fact], source_messages=sources)
+    if mode == 'old_expanded_sources':
+        assert not rows and not h._mem
+    else:
+        assert rows[0]['source_message_ids'] == ['sync:'+'b'*32]
+        assert rows[0]['source_created_at'] != '2999-01-01'
+        assert rows[0]['signal_processed'] is False
+
+
+@pytest.mark.asyncio
+async def test_retired_paraphrases_are_verified_before_persistence_without_truncating_candidates(tmp_path):
+    import json
+    from utils.llm_client import HumanMessage
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    retirements = [{'id': f'retired-{i}', 'subject': 'master', 'text': f'旧独立事实 {i}',
+                    'sourceMessageIds': ['sync:'+'a'*32]} for i in range(25)]
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': retirements, 'confirmations': []}}))
+    calls = []
+    async def adjudicate(prompt, *args, **kwargs):
+        calls.append(prompt)
+        import re
+        indices = [int(value) for value in re.findall(r'^\[(\d+)\] candidate:', prompt, re.M)]
+        return [{'index': i, 'action': 'merge' if '旧独立事实 24' in prompt and i == indices[-1] else 'keep_both'} for i in indices]
+    h._allm_call_with_retries = adjudicate
+    sources = [HumanMessage(content='same raw evidence', additional_kwargs={'memory_source_id': 'sync:'+'a'*32, 'memory_source_created_at': 1000})]
+    rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': '旧独立事实二十四的另一种措辞', 'source_indices': [1]}], source_messages=sources)
+    assert not rows and not h._mem
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_retired_assertion_review_failure_does_not_write_half_a_batch(tmp_path):
+    import json
+    from utils.llm_client import HumanMessage
+    from memory.facts import FactExtractionFailed
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': [
+        {'id': 'old', 'subject': 'master', 'text': '喜欢红茶', 'sourceMessageIds': ['raw']}
+    ], 'confirmations': []}}))
+    h._allm_call_with_retries = AsyncMock(return_value=[])
+    sources = [HumanMessage(content='raw', additional_kwargs={'memory_source_id': 'raw', 'memory_source_created_at': 1000})]
+    with pytest.raises(FactExtractionFailed):
+        await h._apersist_new_facts('小天', [{'entity': 'master', 'text': 'a real independent fact', 'source_indices': [1]}], source_messages=sources)
+    assert not h._mem
+
+
+@pytest.mark.asyncio
+async def test_cancelling_retired_assertion_review_leaves_no_fact_or_signal_for_retry(tmp_path):
+    import asyncio
+    import json
+    from utils.llm_client import HumanMessage
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': [
+        {'id': 'old', 'subject': 'master', 'text': 'old assertion', 'sourceMessageIds': ['raw']}
+    ], 'confirmations': []}}))
+    reached = asyncio.Event()
+    async def blocked(*args, **kwargs):
+        reached.set()
+        await asyncio.Event().wait()
+    h._allm_call_with_retries = blocked
+    source = HumanMessage(content='raw', additional_kwargs={'memory_source_id': 'raw', 'memory_source_created_at': 1000})
+    candidate = {'entity': 'master', 'text': 'an independent assertion', 'source_indices': [1]}
+    task = asyncio.create_task(h._apersist_new_facts('小天', [candidate], source_messages=[source]))
+    await asyncio.wait_for(reached.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not h._mem
+    h._allm_call_with_retries = AsyncMock(return_value=[{'index': 0, 'action': 'keep_both'}])
+    assert len(await h._apersist_new_facts('小天', [candidate], source_messages=[source])) == 1
+    h._allm_call_with_retries = AsyncMock()
+    assert await h._apersist_new_facts('小天', [], source_messages=[source]) == []
+    h._allm_call_with_retries.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('at,expected', [(None, 0), ('1000', 0), ('3000', 1)])
+async def test_legacy_private_extractor_uses_original_message_metadata_for_retirement(tmp_path, at, expected):
+    import json
+    from utils.llm_client import HumanMessage
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    old_id = 'a'*32
+    source_id = old_id if at is None else 'b'*32
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': [
+        {'id': 'old', 'subject': 'master', 'text': '用户喜欢红茶', 'sourceMessageIds': ['sync:'+old_id], 'retiredThroughAt': 2000}
+    ], 'confirmations': []}}))
+    h._allm_extract_facts = AsyncMock(return_value=[{'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [1]}])
+    sources = [HumanMessage(content='original source', metadata={'recent_memory_id': source_id, 'recent_memory_time': at})]
+    rows = await h.extract_facts(sources, '小天')
+    assert len(rows) == expected
+
+
+def _portable_retirement(tmp_path, *, correction=False):
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    row = {'id': 'retired', 'subject': 'master', 'text': '用户喜欢红茶', 'sourceMessageIds': ['sync:' + 'a'*32]}
+    row.update({'retiredBySourceMessageIds': ['sync:' + 'c'*32]} if correction else {'retiredThroughAt': 2000})
+    state = {'evidence': {'retirements': [row], 'confirmations': []}}
+    (directory / 'long_term_portable.json').write_text(json.dumps(state))
+    return directory
+
+
+def _trusted_sync_message(identity, at, text='trusted original', cls=None):
+    from utils.llm_client import HumanMessage
+    return (cls or HumanMessage)(content=text, additional_kwargs={'memory_source_id': 'sync:'+identity*32, 'memory_source_created_at': at})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('at', [0, 1234, None])
+@pytest.mark.parametrize('entity,source,role', [
+    ('master', 'user_observation', 'human'),
+    ('neko', 'user_observation', 'human'),
+    ('neko', 'ai_disclosure', 'ai'),
+])
+async def test_fresh_character_records_trusted_fact_sources_without_retirements(tmp_path, entity, source, role, at):
+    from utils.llm_client import AIMessage, HumanMessage
+    h = _harness(tmp_path, [])
+    rows = await h._apersist_new_facts('小天', [
+        {'entity': entity, 'source': source, 'text': 'an independent grounded fact', 'source_indices': [1]}],
+        source_messages=[_trusted_sync_message('a', at, cls=AIMessage if role == 'ai' else HumanMessage)])
+    assert len(rows) == 1
+    assert rows[0]['source_message_ids'] == ['sync:' + 'a' * 32]
+    from memory.long_term_sync import timestamp
+    if at is None:
+        assert 'source_created_at' not in rows[0]
+    else:
+        assert timestamp(rows[0]['source_created_at']) == at
+    assert rows[0]['entity'] == entity
+
+
+def test_fresh_character_extraction_prompt_identifies_speakers_and_sources(tmp_path):
+    from memory.long_term_sync import retirement_source_prompt
+    from utils.llm_client import AIMessage
+    messages = [_trusted_sync_message('a', 1000, 'My notebook has a silver cover.'),
+                _trusted_sync_message('b', 2000, 'I remember your notebook.', AIMessage)]
+    rendered, instruction = retirement_source_prompt(tmp_path, messages, 'unlabelled',
+                                                     {'human': 'User', 'ai': 'Neko'})
+    assert '[SOURCE 1]' in rendered and '[SOURCE 2]' in rendered
+    assert 'human' in rendered and 'ai' in rendered
+    assert 'source_indices' in instruction
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('previous_source,new_time', [
+    ('user_observation', 2000), ('ai_disclosure', 2000),
+    ('user_observation', 500), ('ai_disclosure', 0),
+])
+async def test_reconfirmation_updates_sources_without_duplicate_fact_or_signal(tmp_path, previous_source, new_time):
+    from utils.llm_client import AIMessage
+    from memory.long_term_sync import timestamp
+    h = _harness(tmp_path, [])
+    candidate = {'entity': 'master', 'source': previous_source, 'text': 'user prefers tea', 'source_indices': [1]}
+    await h._apersist_new_facts('Neko', [candidate], source_messages=[
+        _trusted_sync_message('a', 1000, cls=AIMessage if previous_source == 'ai_disclosure' else None)])
+    h._mem[0]['signal_processed'] = True
+    h._mem[0]['absorbed'] = True
+    confirmation = {**candidate, 'source': 'user_observation'}
+    sources = [_trusted_sync_message('b', new_time)]
+    for attempt in range(2):
+        reconciled = []
+        assert await h._apersist_new_facts('Neko', [confirmation], source_messages=sources, reconciled_facts=reconciled) == []
+        assert len(reconciled) == (1 if attempt == 0 else 0)
+        assert len(h._mem) == 1
+        fact = h._mem[0]
+        assert fact['source'] == 'user_observation'
+        assert fact['source_message_ids'] == (['sync:' + 'a' * 32, 'sync:' + 'b' * 32]
+                                             if previous_source == 'user_observation' else ['sync:' + 'b' * 32])
+        assert timestamp(fact['source_created_at']) == (max(1000, new_time) if previous_source == 'user_observation' else new_time)
+        assert fact['signal_processed'] is (previous_source == 'user_observation')
+        assert fact['absorbed'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [OSError, asyncio.CancelledError])
+async def test_reconfirmation_source_update_rolls_back_before_retry(tmp_path, failure):
+    from copy import deepcopy
+    h = _harness(tmp_path, [])
+    candidate = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await h._apersist_new_facts('Neko', [candidate], source_messages=[_trusted_sync_message('a', 1000)])
+    before = deepcopy(h._mem)
+    h.asave_facts = AsyncMock(side_effect=failure())
+    with pytest.raises(failure):
+        await h._apersist_new_facts('Neko', [candidate], source_messages=[_trusted_sync_message('b', 2000)])
+    assert h._mem == before
+    h.asave_facts = AsyncMock()
+    await h._apersist_new_facts('Neko', [candidate], source_messages=[_trusted_sync_message('b', 2000)])
+    assert h._mem[0]['source_message_ids'] == ['sync:' + 'a' * 32, 'sync:' + 'b' * 32]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('old_time,new_time,expected', [(None, 2000, None), (1000, None, None), (0, 0, 0)])
+async def test_reconfirmation_preserves_unknown_time_and_epoch_zero(tmp_path, old_time, new_time, expected):
+    from memory.long_term_sync import timestamp
+    h = _harness(tmp_path, [])
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await h._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', old_time)])
+    await h._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('b', new_time)])
+    value = h._mem[0].get('source_created_at')
+    assert (timestamp(value) if value is not None else None) == expected
+
+
+@pytest.mark.asyncio
+async def test_reconfirmation_sources_survive_real_save_and_lower_trust_replay(tmp_path):
+    from memory.long_term_sync import timestamp
+    from utils.llm_client import AIMessage
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', 1000)])
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('b', 2000)])
+    await store._apersist_new_facts('Neko', [{**row, 'source': 'ai_disclosure'}],
+        source_messages=[_trusted_sync_message('c', 3000, cls=AIMessage)])
+    store._facts.clear()
+    fact = (await store.aload_facts('Neko'))[0]
+    assert fact['source_message_ids'] == ['sync:' + 'a' * 32, 'sync:' + 'b' * 32]
+    assert timestamp(fact['source_created_at']) == 2000
+    assert fact['source'] == 'user_observation'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy_source', [None, 'chat'])
+async def test_reconfirmation_keeps_legacy_user_sources_free_of_ai_evidence(tmp_path, legacy_source):
+    from copy import deepcopy
+    from utils.llm_client import AIMessage
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', 1000)])
+    fact = (await store.aload_facts('Neko'))[0]
+    if legacy_source is None:
+        fact.pop('source')
+    else:
+        fact['source'] = legacy_source
+    await store.asave_facts('Neko')
+    before = deepcopy(fact)
+    await store._apersist_new_facts('Neko', [{**row, 'source': 'ai_disclosure'}],
+        source_messages=[_trusted_sync_message('b', 2000, cls=AIMessage)])
+    store._facts.clear()
+    assert (await store.aload_facts('Neko'))[0] == before
+
+
+@pytest.mark.asyncio
+async def test_reconfirmation_unknown_source_time_survives_import_and_export(tmp_path):
+    from memory.long_term_sync import export_document, import_document, read_views
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', 0)])
+    views = read_views(tmp_path / 'Neko')
+    store._facts['Neko'] = import_document(export_document(views, 2000), views)['facts']
+    await store.asave_facts('Neko')
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('b', None)])
+    native = read_views(tmp_path / 'Neko')
+    assert 'source_created_at' not in native['facts'][0]
+    portable = export_document(native, 3000)
+    assert 'sourceCreatedAt' not in portable['entries'][0]['metadata']
+    assert 'source_created_at' not in import_document(portable, native)['facts'][0]
+
+
+@pytest.mark.asyncio
+async def test_reconfirmation_retains_all_native_sources_but_projects_recent_200(tmp_path):
+    from memory.long_term_sync import export_document, import_document, read_views
+    from utils.llm_client import HumanMessage
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    sources = [HumanMessage(content='I prefer tea.', additional_kwargs={
+        'memory_source_id': 'sync:' + f'{index:032x}', 'memory_source_created_at': 1000 + index,
+    }) for index in range(201)]
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': list(range(1, 201))}
+    await store._apersist_new_facts('Neko', [row], source_messages=sources[:200])
+    await store._apersist_new_facts('Neko', [{**row, 'source_indices': [1]}], source_messages=sources[200:])
+    native = read_views(tmp_path / 'Neko')
+    full = native['facts'][0]['source_message_ids']
+    assert len(full) == 201
+    portable = export_document(native, 3000)
+    assert portable['entries'][0]['metadata']['sourceMessageIds'] == full[-200:]
+    assert 'sourceCreatedAt' not in portable['entries'][0]['metadata']
+    roundtrip = import_document(portable, native)
+    assert roundtrip['facts'][0]['source_message_ids'] == full
+    assert roundtrip['facts'][0]['source_created_at'] == native['facts'][0]['source_created_at']
+    assert export_document(roundtrip, 3000) == portable
+    assert read_views(tmp_path / 'Neko') == native
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel', [False, True])
+async def test_reconfirmation_rolls_back_when_later_candidate_search_is_interrupted(tmp_path, cancel):
+    from copy import deepcopy
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', 1000)])
+    before = deepcopy(await store.aload_facts('Neko'))
+    entered = asyncio.Event()
+    class InterruptedIndex(_FakeIndex):
+        async def asearch_similar_facts(self, *_args):
+            entered.set()
+            if not cancel:
+                raise OSError('synthetic_search_failure')
+            await asyncio.Event().wait()
+    store._time_indexed = InterruptedIndex()
+    task = asyncio.create_task(store._apersist_new_facts('Neko', [row, {**row, 'text': 'user likes cats'}],
+        source_messages=[_trusted_sync_message('b', 2000)]))
+    await asyncio.wait_for(entered.wait(), 3)
+    if cancel:
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError if cancel else OSError):
+        await task
+    assert await store.aload_facts('Neko') == before
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('b', 2000)])
+    store._facts.clear()
+    assert len((await store.aload_facts('Neko'))[0]['source_message_ids']) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('write_fails', [False, True])
+async def test_cancelled_successful_fact_save_still_enqueues_arbitration(tmp_path, monkeypatch, write_fails):
+    import threading
+    from memory import facts
+    from memory.fact_dedup import FactDedupResolver
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user likes cats', 'source_indices': [1]}
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', 1000)])
+    existing = (await store.aload_facts('Neko'))[0]
+    store._time_indexed = _FakeIndex([(existing['id'], .9)])
+    resolver = FactDedupResolver(store)
+    store.attach_dedup_resolver(resolver)
+    entered, release = threading.Event(), threading.Event()
+    original = facts.atomic_write_json
+    def blocked(path, *args, **kwargs):
+        if str(path) == store._facts_path('Neko'):
+            entered.set()
+            assert release.wait(3)
+            if write_fails:
+                raise OSError('synthetic_write_failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(facts, 'atomic_write_json', blocked)
+    candidate = {**row, 'text': 'user enjoys cats'}
+    task = asyncio.create_task(store._apersist_new_facts('Neko', [candidate], source_messages=[_trusted_sync_message('b', 2000)]))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    assert len(await resolver.aload_pending('Neko')) == (0 if write_fails else 1)
+    assert len(await store.aload_facts('Neko')) == (1 if write_fails else 2)
+    monkeypatch.setattr(facts, 'atomic_write_json', original)
+    await store._apersist_new_facts('Neko', [candidate], source_messages=[_trusted_sync_message('b', 2000)])
+    assert len(await resolver.aload_pending('Neko')) == 1
+    assert len(await store.aload_facts('Neko')) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('write_fails', [False, True])
+async def test_cancel_during_reconfirmation_save_waits_for_consistent_committed_sources(tmp_path, monkeypatch, write_fails):
+    import threading
+    from memory import facts
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user prefers tea', 'source_indices': [1]}
+    await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('a', 1000)])
+    reached, release = threading.Event(), threading.Event()
+    original = facts.atomic_write_json
+    def blocked(path, *args, **kwargs):
+        if str(path) == store._facts_path('Neko'):
+            reached.set()
+            assert release.wait(3)
+            if write_fails:
+                raise OSError('synthetic_save_failure_after_cancel')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(facts, 'atomic_write_json', blocked)
+    task = asyncio.create_task(store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('b', 2000)]))
+    try:
+        assert await asyncio.to_thread(reached.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    cached = await store.aload_facts('Neko')
+    with open(store._facts_path('Neko'), encoding='utf-8') as handle:
+        disk = json.load(handle)
+    assert cached == disk
+    assert cached[0]['source_message_ids'] == ['sync:' + 'a' * 32] + ([] if write_fails else ['sync:' + 'b' * 32])
+    monkeypatch.setattr(facts, 'atomic_write_json', original)
+    assert await store._apersist_new_facts('Neko', [row], source_messages=[_trusted_sync_message('b', 2000)]) == []
+    assert (await store.aload_facts('Neko'))[0]['source_message_ids'] == ['sync:' + 'a' * 32, 'sync:' + 'b' * 32]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('indices', [None, [], [True], [0], [3], [2]])
+async def test_fresh_trusted_batch_rejects_unverified_user_observation_sources(tmp_path, indices):
+    from utils.llm_client import AIMessage
+    h = _harness(tmp_path, [])
+    sources = [_trusted_sync_message('a', 1000, 'My notebook has a silver cover.'),
+               _trusted_sync_message('b', 2000, 'I remember your notebook.', AIMessage)]
+    rows = await h._apersist_new_facts('小天', [
+        {'entity': 'master', 'text': 'a valid independent fact', 'source_indices': [1]},
+        {'entity': 'neko', 'text': 'an unsupported candidate', 'source_indices': indices}],
+        source_messages=sources)
+    assert [row['text'] for row in rows] == ['a valid independent fact']
+    assert all(row['text'] != 'an unsupported candidate' for row in h._mem)
+
+
+@pytest.mark.asyncio
+async def test_entity_fallback_cannot_bypass_retired_paraphrase_review(tmp_path):
+    _portable_retirement(tmp_path)
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = AsyncMock(return_value=[{'index':0,'action':'merge'}])
+    rows = await h._apersist_new_facts('小天', [{'entity':'user','text':'红茶是用户偏好的饮品','source_indices':[1]}], source_messages=[_trusted_sync_message('a',1000)])
+    print(json.dumps({'probe':'entity_fallback','review_calls':h._allm_call_with_retries.await_count,'persisted':[(r['entity'],r['signal_processed']) for r in rows]}))
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_source_fallback_cannot_treat_ai_as_user_confirmation(tmp_path):
+    from utils.llm_client import AIMessage
+    from memory.facts import FactExtractionFailed
+    _portable_retirement(tmp_path)
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = AsyncMock()
+    with pytest.raises(FactExtractionFailed):
+        await h._apersist_new_facts('小天', [{'entity':'master','source':'invalid_model_enum','text':'用户喜欢红茶','source_indices':[2]}],
+            source_messages=[_trusted_sync_message('b',3000,'unrelated user line'), _trusted_sync_message('d',4000,'AI repeats old preference', AIMessage)])
+    assert not h._mem
+
+
+
+@pytest.mark.asyncio
+async def test_available_correction_source_time_allows_genuine_new_confirmation(tmp_path):
+    _portable_retirement(tmp_path, correction=True)
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = AsyncMock()
+    try:
+        rows = await h._apersist_new_facts('小天',[{'entity':'master','text':'用户喜欢红茶','source_indices':[2]}],
+            source_messages=[_trusted_sync_message('c',2000,'correction source'),_trusted_sync_message('b',3000,'new explicit confirmation')])
+    except Exception as e:
+        print(json.dumps({'probe':'correction_time','error':str(e),'fact_count':len(h._mem)}))
+        raise
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_punctuation_sensitive_independent_fact_is_not_a_retired_assertion(tmp_path):
+    directory = _portable_retirement(tmp_path)
+    state = json.loads((directory/'long_term_portable.json').read_text())
+    state['evidence']['retirements'][0]['text'] = '用户掌握C++'
+    (directory/'long_term_portable.json').write_text(json.dumps(state))
+    h = _harness(tmp_path,[])
+    h._allm_call_with_retries = AsyncMock(return_value=[{'index':0,'action':'keep_both'}])
+    rows = await h._apersist_new_facts('小天',[{'entity':'master','text':'用户掌握C','source_indices':[1]}],
+        source_messages=[_trusted_sync_message('a',1000,'我掌握C和C++，它们是两门独立语言')])
+    print(json.dumps({'probe':'independent_punctuation','persisted_count':len(rows),'review_calls':h._allm_call_with_retries.await_count}))
+    assert len(rows) == 1
+
+
+
+@pytest.mark.asyncio
+async def test_late_correction_time_is_resolved_from_original_store_and_survives_retry(tmp_path):
+    import json
+    directory = _portable_retirement(tmp_path, correction=True)
+    h = _harness(tmp_path, [])
+    h._time_indexed.aget_original_source_evidence = AsyncMock(return_value={'sync:'+'c'*32:('human',2000)})
+    row = {'entity':'master','text':'用户喜欢红茶','source_indices':[1]}
+    assert len(await h._apersist_new_facts('小天', [row], source_messages=[_trusted_sync_message('b',3000)])) == 1
+    evidence = json.loads((directory/'long_term_portable.json').read_text())['evidence']['retirements'][0]
+    assert evidence['retiredThroughAt'] == 2000
+    assert evidence['retiredThroughAtFromCorrection'] is True
+    h._time_indexed.aget_original_source_evidence.assert_awaited_once()
+    reopened = _harness(tmp_path, [])
+    assert await reopened._apersist_new_facts('小天', [row], source_messages=[_trusted_sync_message('d',1500)]) == []
+
+
+@pytest.mark.asyncio
+async def test_retirement_clock_repair_does_not_persist_expanded_display_text(tmp_path):
+    from memory.long_term_sync import export_document, read_views
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    state = json.loads(path.read_text())
+    retirement = state['evidence']['retirements'][0]
+    retirement.pop('text')
+    text = 'Previous independent preference. ' * 200
+    dormant = {'kind': 'fact', 'subject': 'master', 'id': 'retired', 'text': text,
+               'metadata': {'createdAt': 1000, 'status': 'retracted', 'voidedAt': 2000}}
+    state['dormantEntries'] = [dormant]
+    path.write_text(json.dumps(state), encoding='utf-8')
+    h = _harness(tmp_path, [])
+    h._time_indexed.aget_original_source_evidence = AsyncMock(return_value={'sync:'+'c'*32: ('human', 2000)})
+    assert len(await h._apersist_new_facts('小天', [{'entity': 'master', 'text': text, 'source_indices': [1]}],
+                                         source_messages=[_trusted_sync_message('b', 3000)])) == 1
+    repaired = json.loads(path.read_text())
+    assert repaired['evidence']['retirements'] == [
+        {**retirement, 'retiredThroughAt': 2000, 'retiredThroughAtFromCorrection': True}]
+    assert repaired['dormantEntries'] == [dormant]
+    assert export_document(read_views(directory), 4000)['evidence']['retirements'] == repaired['evidence']['retirements']
+
+
+@pytest.mark.asyncio
+async def test_unprovenanced_facts_use_only_exact_retirement_matching(tmp_path):
+    _portable_retirement(tmp_path)
+    h = _harness(tmp_path, [])
+    h._llm_request = AsyncMock(side_effect=AssertionError('unprovenanced facts must not trigger semantic review'))
+    texts = ['用户喜欢红茶', 'The user likes black tea', 'The user has a round badge']
+    rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': text} for text in texts])
+    assert [row['text'] for row in rows] == texts[1:]
+    h._llm_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_correction_is_a_data_wait_and_not_a_terminal_model_failure(tmp_path):
+    from memory.facts import FactExtractionFailed
+    _portable_retirement(tmp_path, correction=True)
+    h = _harness(tmp_path, [])
+    for _ in range(6):
+        try:
+            await h._apersist_new_facts('小天', [{'entity':'master','text':'用户喜欢红茶','source_indices':[1]}], source_messages=[_trusted_sync_message('b',3000)])
+        except FactExtractionFailed:
+            pytest.fail('waiting for original evidence consumed the terminal model failure budget')
+        except RuntimeError as error:
+            assert str(error) == 'retired_correction_time_unavailable'
+        else:
+            pytest.fail('unknown correction time accepted an unverified assertion')
+    assert not h._mem
+
+
+def test_original_source_time_lookup_uses_only_real_user_metadata(index):
+    from datetime import datetime
+    from utils.llm_client import HumanMessage, AIMessage
+    uid = 'c'*32
+    index.store_conversation_strict('proof-time', [
+        HumanMessage(content='real correction', metadata={'recent_memory_id':uid,'recent_memory_time':'2000'}),
+        AIMessage(content='separate assistant original', metadata={'recent_memory_id':'e'*32,'recent_memory_time':'9000'}),
+        HumanMessage(content=uid, metadata={'recent_memory_id':'d'*32,'recent_memory_time':'8000'}),
+    ], '小天', datetime(2026,10,26))
+    assert index.get_original_source_evidence('小天', ['sync:'+uid]) == {'sync:'+uid:('human',2000)}
+
+
+@pytest.mark.asyncio
+async def test_neko_correction_clock_uses_assistant_sources_without_replaying_user_scores(tmp_path):
+    from utils.llm_client import AIMessage
+    directory = _portable_retirement(tmp_path, correction=True)
+    state = json.loads((directory/'long_term_portable.json').read_text())
+    state['evidence']['retirements'][0].update(subject='neko', text='猫娘喜欢红茶')
+    (directory/'long_term_portable.json').write_text(json.dumps(state))
+    h = _harness(tmp_path, [])
+    rows = await h._apersist_new_facts('小天', [{'entity':'neko','source':'ai_disclosure','text':'猫娘喜欢红茶','source_indices':[2]}],
+        source_messages=[_trusted_sync_message('c',2000,cls=AIMessage),_trusted_sync_message('b',3000,cls=AIMessage)])
+    assert len(rows) == 1 and rows[0]['signal_processed'] is True
+    assert json.loads((directory/'long_term_portable.json').read_text())['evidence']['retirements'][0]['retiredThroughAt'] == 2000
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_correction_evidence_save_finishes_repair_without_writing_facts(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    from utils import file_utils
+    directory = _portable_retirement(tmp_path, correction=True)
+    h = _harness(tmp_path, [])
+    reached, release = threading.Event(), threading.Event()
+    original = file_utils.atomic_write_json
+    def paused(path, *args, **kwargs):
+        if path.name == 'long_term_portable.json':
+            reached.set()
+            assert release.wait(3)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(file_utils, 'atomic_write_json', paused)
+    messages = [_trusted_sync_message('c',2000),_trusted_sync_message('b',3000)]
+    candidate = {'entity':'master','text':'用户喜欢红茶','source_indices':[2]}
+    task = asyncio.create_task(h._apersist_new_facts('小天', [candidate], source_messages=messages))
+    try:
+        assert await asyncio.to_thread(reached.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not h._mem
+    assert json.loads((directory/'long_term_portable.json').read_text())['evidence']['retirements'][0]['retiredThroughAt'] == 2000
+    assert len(await h._apersist_new_facts('小天', [candidate], source_messages=messages)) == 1
+
+
+
+def test_original_source_lookup_preserves_unknown_time_and_rejects_conflicting_roles(index):
+    from datetime import datetime
+    from utils.llm_client import HumanMessage, AIMessage
+    missing, conflict = 'c'*32, 'd'*32
+    index.store_conversation_strict('unknown-time', [HumanMessage(content='unknown original time',
+        metadata={'recent_memory_id':missing,'recent_memory_time':None})], '小天', datetime(2026,10,26))
+    assert index.get_original_source_evidence('小天', ['sync:'+missing]) == {}
+    index.store_conversation_strict('conflicting-identity', [
+        HumanMessage(content='first role', metadata={'recent_memory_id':conflict,'recent_memory_time':'2000'}),
+        AIMessage(content='conflicting role', metadata={'recent_memory_id':conflict,'recent_memory_time':'3000'}),
+    ], '小天', datetime(2026,10,26))
+    assert index.get_original_source_evidence('小天', ['sync:'+conflict]) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('empty', [True, False])
+async def test_empty_or_independent_batch_does_not_wait_for_unrelated_correction_sources(tmp_path, empty):
+    _portable_retirement(tmp_path, correction=True)
+    h = _harness(tmp_path, [])
+    h._time_indexed.aget_original_source_evidence = AsyncMock(side_effect=OSError('unavailable original evidence'))
+    h._allm_call_with_retries = AsyncMock(return_value=[{'index':0,'action':'keep_both'}])
+    facts = [] if empty else [{'entity':'master','text':'用户喜欢游泳','source_indices':[1]}]
+    result = await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message('a',1000)])
+    assert len(result) == (0 if empty else 1)
+    h._time_indexed.aget_original_source_evidence.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('during_lookup', [False, True])
+async def test_correction_time_repair_obeys_maintenance_at_commit(tmp_path, during_lookup):
+    from tests.unit.test_evidence_archive import _install
+    from utils.cloudsave_runtime import MaintenanceModeError
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    before = path.read_bytes()
+    _ev, fs, _pm, _re, _rec, cm = _install(str(tmp_path))
+    cm.app_docs_dir, cm.local_state_dir = tmp_path, tmp_path / 'local_state'
+    cm.local_state_dir.mkdir()
+    state = {'mode': 'normal' if during_lookup else 'maintenance_readonly'}
+    cm.load_root_state.side_effect = lambda: state
+
+    async def lookup(*_args):
+        state['mode'] = 'maintenance_readonly'
+        return {'sync:' + 'c'*32: ('human', 2000)}
+
+    fs._time_indexed = _FakeIndex()
+    fs._time_indexed.aget_original_source_evidence = lookup
+    messages = [_trusted_sync_message('b', 3000)] if during_lookup else [
+        _trusted_sync_message('c', 2000), _trusted_sync_message('b', 3000)]
+    candidate = {'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [len(messages)]}
+    with pytest.raises(MaintenanceModeError):
+        await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages)
+    assert path.read_bytes() == before
+    assert not (directory / 'facts.json').exists()
+
+
+@pytest.mark.parametrize('original_time', [
+    '2026-10-01T12:00:00+08:00', '2026-10-01T04:00:00Z',
+    '2026-09-30T23:00:00.125-05:00',
+])
+def test_original_source_lookup_recovers_valid_iso_time_without_writing_originals(index, original_time):
+    from datetime import datetime
+    from pathlib import Path
+    from utils.llm_client import HumanMessage
+    uid = 'c'*32
+    index.store_conversation_strict('iso-correction', [HumanMessage(content='real correction', metadata={
+        'chat_original_source': {'recordId': uid, 'originalTime': original_time}})], '小天', datetime(2026, 10, 26))
+    path = Path(index.db_paths['小天'])
+    before = path.read_bytes()
+    expected = int(datetime.fromisoformat(original_time).timestamp() * 1000)
+    assert index.get_original_source_evidence('小天', ['sync:' + uid]) == {'sync:' + uid: ('human', expected)}
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('original_time', [
+    None, 'not a timestamp', '2026-02-30T12:00:00Z', '2026-10-01T12:00:00+01:99',
+    '2026-10-01T12:00:00', '9007199254740991',
+])
+def test_original_source_lookup_never_substitutes_save_time_for_invalid_original_time(index, original_time):
+    from datetime import datetime
+    from utils.llm_client import HumanMessage
+    uid = 'c'*32
+    index.store_conversation_strict('unknown-original', [HumanMessage(content='original', metadata={
+        'chat_original_source': {'recordId': uid, 'originalTime': original_time}})], '小天', datetime(2026, 10, 26))
+    assert index.get_original_source_evidence('小天', ['sync:' + uid]) == {}
+
+
+@pytest.mark.parametrize('role', ['tool', 'function', 'unknown', 'system'])
+def test_original_source_lookup_rejects_persisted_non_chat_roles(index, role):
+    from datetime import datetime
+    uid = 'c'*32
+    index.store_conversation_strict('non-chat-proof', [{'type': role, 'data': {
+        'content': 'non-chat original', 'metadata': {'recent_memory_id': uid, 'recent_memory_time': '2000'}}}],
+        '小天', datetime(2026, 10, 26))
+    assert index.get_original_source_evidence('小天', ['sync:' + uid]) == {}
+
+
+@pytest.mark.asyncio
+async def test_legacy_original_correction_time_recovers_outside_current_window(index, tmp_path):
+    from datetime import datetime
+    from pathlib import Path
+    from sqlalchemy import text
+    from app.memory_server.rows import _extract_role_tagged_messages_from_rows
+    from utils.llm_client import HumanMessage, convert_to_messages
+    index.store_conversation_strict('legacy-correction', [HumanMessage(content='real old correction')],
+        '小天', datetime(2026, 10, 1))
+    with index.engines['小天'].connect() as connection:
+        originals = list(connection.execute(text('SELECT timestamp,session_id,message FROM time_indexed_original')))
+    correction = convert_to_messages(_extract_role_tagged_messages_from_rows(originals))[0].additional_kwargs
+    identity, at = correction['memory_source_id'], correction['memory_source_created_at']
+    assert identity.startswith('desktop:')
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    state = json.loads(path.read_text())
+    state['evidence']['retirements'][0]['retiredBySourceMessageIds'] = [identity]
+    path.write_text(json.dumps(state))
+    raw = Path(index.db_paths['小天'])
+    before = raw.read_bytes()
+    h = _harness(tmp_path, [])
+    h._time_indexed.aget_original_source_evidence = lambda name, ids: index.aget_original_source_evidence(name, ids)
+    candidate = {'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [1]}
+    newer = [_trusted_sync_message('b', at + 1000)]
+    assert len(await h._apersist_new_facts('小天', [candidate], source_messages=newer)) == 1
+    assert json.loads(path.read_text())['evidence']['retirements'][0]['retiredThroughAt'] == at
+    assert await h._apersist_new_facts('小天', [candidate], source_messages=newer) == []
+    reopened = _harness(tmp_path, [])
+    assert await reopened._apersist_new_facts('小天', [candidate], source_messages=[_trusted_sync_message('d', at - 1000)]) == []
+    assert raw.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_correction_time_write_failure_can_retry_without_duplicate_fact(tmp_path, monkeypatch):
+    from tests.unit.test_evidence_archive import _install
+    from utils import file_utils
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    before = path.read_bytes()
+    _ev, fs, _pm, _re, _rec, cm = _install(str(tmp_path))
+    cm.app_docs_dir, cm.local_state_dir = tmp_path, tmp_path / 'local_state'
+    cm.local_state_dir.mkdir()
+    original = file_utils.atomic_write_json
+
+    def unavailable(target, *args, **kwargs):
+        if target.name == 'long_term_portable.json':
+            raise OSError('evidence write unavailable')
+        return original(target, *args, **kwargs)
+
+    messages = [_trusted_sync_message('c', 2000), _trusted_sync_message('b', 3000)]
+    candidate = {'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [2]}
+    monkeypatch.setattr(file_utils, 'atomic_write_json', unavailable)
+    with pytest.raises(OSError, match='evidence write unavailable'):
+        await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages)
+    assert path.read_bytes() == before and not (directory / 'facts.json').exists()
+    monkeypatch.setattr(file_utils, 'atomic_write_json', original)
+    assert len(await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages)) == 1
+    assert await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages) == []
+    assert len(json.loads((directory / 'facts.json').read_text())) == 1
+
+
+def test_legacy_source_lookup_ignores_unreadable_unrelated_rows_and_quoted_identities(index):
+    from datetime import datetime
+    from sqlalchemy import text
+    from app.memory_server.rows import _extract_role_tagged_messages_from_rows
+    from utils.llm_client import HumanMessage, convert_to_messages
+    index.store_conversation_strict('legacy-source', [HumanMessage(content='real legacy correction')],
+        '小天', datetime(2026, 10, 1))
+    with index.engines['小天'].connect() as connection:
+        originals = list(connection.execute(text('SELECT timestamp,session_id,message FROM time_indexed_original')))
+    proof = convert_to_messages(_extract_role_tagged_messages_from_rows(originals))[0].additional_kwargs
+    identity, at = proof['memory_source_id'], proof['memory_source_created_at']
+    sync_id = 'sync:' + 'd'*32
+    quoted_id = 'desktop:' + 'e'*64
+    index.store_conversation_strict('other-originals', [
+        HumanMessage(content='independent original', metadata={'recent_memory_id': 'd'*32, 'recent_memory_time': '1000'}),
+        HumanMessage(content=identity + ' ' + quoted_id + ' sync:' + 'f'*32),
+    ], '小天', datetime(2026, 10, 26))
+    with index.engines['小天'].begin() as connection:
+        connection.execute(text('INSERT INTO time_indexed_original(session_id,message,timestamp) VALUES(:session,:message,:at)'),
+            {'session': 'unreadable-unrelated', 'message': '{broken', 'at': '2026-10-26'})
+    assert index.get_original_source_evidence('小天', [identity, sync_id, quoted_id, 'sync:' + 'f'*32]) == {
+        identity: ('human', at), sync_id: ('human', 1000)}
+
+
+@pytest.mark.parametrize('portable_identity', [True, False])
+@pytest.mark.parametrize('stored_at,expected', [
+    ('', None), (None, None), (' ', None), ('unreadable time', None), (b'', None),
+    (0, 0), ('1970-01-01T00:00:00Z', 0), ('2026-10-01T12:00:00+08:00', 1790827200000),
+])
+def test_original_database_time_preserves_unknown_and_epoch_zero(index, stored_at, expected, portable_identity):
+    from datetime import datetime
+    from pathlib import Path
+    from sqlalchemy import text
+    from app.memory_server.rows import _extract_role_tagged_messages_from_rows
+    from utils.llm_client import HumanMessage, convert_to_messages
+    metadata = {'recent_memory_id': 'c'*32} if portable_identity else {}
+    index.store_conversation_strict('source-clock', [HumanMessage(content='real original', metadata=metadata)],
+        '小天', datetime(2026, 10, 1))
+    with index.engines['小天'].begin() as connection:
+        connection.execute(text('UPDATE time_indexed_original SET timestamp=:at WHERE session_id=:session'),
+            {'at': stored_at, 'session': 'source-clock'})
+    raw = Path(index.db_paths['小天'])
+    before = raw.read_bytes()
+    with index.engines['小天'].connect() as connection:
+        originals = list(connection.execute(text('SELECT timestamp,session_id,message FROM time_indexed_original')))
+    source = convert_to_messages(_extract_role_tagged_messages_from_rows(originals))[0].additional_kwargs
+    identity = source['memory_source_id']
+    assert identity.startswith('sync:' if portable_identity else 'desktop:')
+    assert source == {'memory_source_id': identity, **({'memory_source_created_at': expected} if expected is not None else {})}
+    assert index.get_original_source_evidence('小天', [identity]) == (
+        {identity: ('human', expected)} if expected is not None else {})
+    assert raw.read_bytes() == before
+
+
+@pytest.mark.parametrize('original_time', ['0', '1970-01-01T00:00:00Z', '1970-01-01T08:00:00+08:00'])
+def test_explicit_epoch_zero_evidence_survives_blank_database_time(index, original_time):
+    from datetime import datetime
+    from sqlalchemy import text
+    from utils.llm_client import HumanMessage
+    identity = 'c'*32
+    index.store_conversation_strict('explicit-zero', [HumanMessage(content='epoch original', metadata={
+        'chat_original_source': {'recordId': identity, 'originalTime': original_time}})], '小天', datetime(2026, 10, 1))
+    with index.engines['小天'].begin() as connection:
+        connection.execute(text("UPDATE time_indexed_original SET timestamp='' WHERE session_id='explicit-zero'"))
+    assert index.get_original_source_evidence('小天', ['sync:' + identity]) == {'sync:' + identity: ('human', 0)}
+
+
+@pytest.mark.asyncio
+async def test_unknown_correction_clock_waits_then_recovers_real_epoch_zero_without_recounting(index, tmp_path):
+    from datetime import datetime
+    from pathlib import Path
+    from sqlalchemy import text
+    from tests.unit.test_evidence_archive import _install
+    from utils.llm_client import HumanMessage
+    from memory.long_term_sync import FactEvidenceUnavailable, read_views, export_document, import_document
+    identity = 'c'*32
+    index.store_conversation_strict('recover-clock', [HumanMessage(content='real correction',
+        metadata={'recent_memory_id': identity})], '小天', datetime(2026, 10, 1))
+    with index.engines['小天'].begin() as connection:
+        connection.execute(text("UPDATE time_indexed_original SET timestamp='' WHERE session_id='recover-clock'"))
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    before = path.read_bytes()
+    raw = Path(index.db_paths['小天'])
+    raw_before = raw.read_bytes()
+    _ev, fs, _pm, _re, _rec, cm = _install(str(tmp_path))
+    cm.app_docs_dir, cm.local_state_dir = tmp_path, tmp_path / 'local_state'
+    fs._time_indexed = _FakeIndex()
+    fs._time_indexed.aget_original_source_evidence = lambda name, ids: index.aget_original_source_evidence(name, ids)
+    candidate = {'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [1]}
+    messages = [_trusted_sync_message('b', 3000, '用户喜欢红茶')]
+    for _ in range(2):
+        with pytest.raises(FactEvidenceUnavailable):
+            await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages)
+    assert path.read_bytes() == before and raw.read_bytes() == raw_before
+    assert not (directory / 'facts.json').exists()
+
+    with index.engines['小天'].begin() as connection:
+        connection.execute(text('UPDATE time_indexed_original SET timestamp=0 WHERE session_id=:session'),
+            {'session': 'recover-clock'})
+    repaired_raw = raw.read_bytes()
+    assert len(await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages)) == 1
+    assert await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False, source_messages=messages) == []
+    assert await fs._apersist_new_facts('小天', [candidate], semantic_dedup=False,
+        source_messages=[_trusted_sync_message('d', -1000)]) == []
+    facts = json.loads((directory / 'facts.json').read_text())
+    assert len(facts) == 1 and facts[0]['signal_processed'] is False
+    portable = export_document(read_views(directory), 4000)
+    restored = import_document(portable, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    retirement = restored['sync']['evidence']['retirements'][0]
+    assert retirement['retiredThroughAt'] == 0 and retirement['retiredThroughAtFromCorrection'] is True
+    assert raw.read_bytes() == repaired_raw
+
+
+@pytest.mark.asyncio
+async def test_committed_cancel_can_retry_failed_queue_write(tmp_path,monkeypatch):
+    import threading
+    from memory import facts
+    from memory.fact_dedup import FactDedupResolver
+    with patch('memory.facts.get_config_manager',return_value=_cm(str(tmp_path))):store=FactStore()
+    row={'entity':'master','text':'user likes cats','source_indices':[1]}
+    await store._apersist_new_facts('Review',[row],source_messages=[_trusted_sync_message('a',1000)])
+    anchor=(await store.aload_facts('Review'))[0];store._time_indexed=_FakeIndex([(anchor['id'],.9)])
+    resolver=FactDedupResolver(store);store.attach_dedup_resolver(resolver)
+    entered,release=threading.Event(),threading.Event();original=facts.atomic_write_json
+    async def fail_queue(*args):raise OSError('synthetic_queue_write_failure')
+    monkeypatch.setattr(resolver,'_asave_pending',fail_queue)
+    def blocked(path,*args,**kwargs):
+        if str(path)==store._facts_path('Review'):
+            entered.set();assert release.wait(3)
+        return original(path,*args,**kwargs)
+    monkeypatch.setattr(facts,'atomic_write_json',blocked)
+    candidate={**row,'text':'user enjoys cats'}
+    task=asyncio.create_task(store._apersist_new_facts('Review',[candidate],source_messages=[_trusted_sync_message('b',2000)]))
+    try:
+        assert await asyncio.to_thread(entered.wait,2);task.cancel();await asyncio.sleep(0)
+    finally:release.set();await asyncio.gather(task,return_exceptions=True)
+    assert task.cancelled();assert len(await store.aload_facts('Review'))==2
+    monkeypatch.setattr(facts,'atomic_write_json',original)
+    # Reopen from disk: retry must not depend on an in-memory handoff.
+    with patch('memory.facts.get_config_manager',return_value=_cm(str(tmp_path))):store=FactStore()
+    resolver=FactDedupResolver(store);store.attach_dedup_resolver(resolver)
+    await store._apersist_new_facts('Review',[candidate],source_messages=[_trusted_sync_message('b',2000)])
+    pending=await resolver.aload_pending('Review')
+    assert len(pending)==1
+
+    await store._apersist_new_facts('Review',[candidate],source_messages=[_trusted_sync_message('b',2000)])
+    assert len(await resolver.aload_pending('Review')) == 1
+    assert all('_near_dup_pending' not in row for row in await store.aload_facts('Review'))
+
+
+@pytest.mark.asyncio
+async def test_failed_queue_acknowledgement_retries_before_resolution(tmp_path, monkeypatch):
+    from memory.fact_dedup import FactDedupResolver
+    with patch('memory.facts.get_config_manager', return_value=_cm(str(tmp_path))):
+        store = FactStore()
+    row = {'entity': 'master', 'text': 'user likes cats', 'source_indices': [1]}
+    await store._apersist_new_facts('Review', [row], source_messages=[_trusted_sync_message('a', 1000)])
+    anchor = (await store.aload_facts('Review'))[0]
+    store._time_indexed = _FakeIndex([(anchor['id'], .9)])
+    resolver = FactDedupResolver(store)
+    store.attach_dedup_resolver(resolver)
+    original = store.asave_facts
+    calls = 0
+    async def save(name):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise OSError('synthetic_handoff_ack_failure')
+        await original(name)
+    monkeypatch.setattr(store, 'asave_facts', save)
+    await store._apersist_new_facts('Review', [{**row, 'text': 'user enjoys cats'}], source_messages=[_trusted_sync_message('b', 2000)])
+    stale_candidate = (await store.aload_facts('Review'))[-1]
+    assert len(await resolver.aload_pending('Review')) == 1
+    assert [fact['id'] for fact in await store.aget_unabsorbed_facts('Review', min_importance=0)] == [anchor['id']]
+    resolved = []
+    async def resolve(name, **kwargs):
+        resolved.extend(await resolver.aload_pending(name))
+        await resolver._asave_pending(name, [])
+        return len(resolved)
+    monkeypatch.setattr(resolver, '_aresolve_locked', resolve)
+    assert await resolver.aresolve('Review') == 0
+    assert not resolved
+    monkeypatch.setattr(store, 'asave_facts', original)
+    # Multiple retries may wait on the same queue lock. A stale retry must not requeue keep_both.
+    await asyncio.wait_for(asyncio.gather(store.aretry_pending_near_dups('Review'), resolver.aresolve('Review'),
+                                          store.aretry_pending_near_dups('Review')), timeout=3)
+    assert len(resolved) == 1
+    assert not await resolver.aload_pending('Review')
+    assert await store.aretry_pending_near_dups('Review')
+    assert not await resolver.aload_pending('Review')
+    assert await store._aenqueue_near_dup_pairs('Review', [(stale_candidate, anchor, .9)], durable=True)
+    assert not await resolver.aload_pending('Review')
+
+
+@pytest.mark.asyncio
+async def test_idle_recovers_committed_handoffs_when_strong_memory_is_disabled(monkeypatch):
+    from types import SimpleNamespace
+    from app.memory_server import evidence_loops as loops
+    retry, resolve = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(loops.runtime, '_config_manager', SimpleNamespace(aload_characters=AsyncMock(return_value={'猫娘': {'Neko': {}}})))
+    monkeypatch.setattr(loops.runtime, 'fact_store', SimpleNamespace(aretry_pending_near_dups=retry))
+    monkeypatch.setattr(loops.runtime, 'fact_dedup_resolver', SimpleNamespace(aload_pending=AsyncMock(return_value=[{}])))
+    monkeypatch.setattr(loops.runtime, 'recent_history_manager', SimpleNamespace(aget_recent_history=AsyncMock(return_value=[]), compress_threshold=20))
+    monkeypatch.setattr(loops.gates, '_is_idle', lambda: True)
+    monkeypatch.setattr(loops.gates, '_ais_powerful_memory_enabled', AsyncMock(return_value=False))
+    monkeypatch.setattr(loops, '_resolve_fact_dedup_with_language', resolve)
+    monkeypatch.setattr(loops, '_spawn_review_with_character_language', AsyncMock())
+    sleeps = 0
+    async def one_round(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(loops.asyncio, 'sleep', one_round)
+    with pytest.raises(asyncio.CancelledError):
+        await loops._periodic_idle_maintenance_loop()
+    retry.assert_awaited_once_with('Neko')
+    resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_candidate_source_does_not_drop_valid_batch_members(tmp_path):
+    from utils.llm_client import HumanMessage, AIMessage
+    h = _harness(tmp_path, [])
+    messages = [HumanMessage(content='I enjoy tea', additional_kwargs={'memory_source_id': 'raw-user', 'memory_source_created_at': 1000}),
+                AIMessage(content='Maybe swimming', additional_kwargs={'memory_source_id': 'raw-ai', 'memory_source_created_at': 1001})]
+    rows = await h._apersist_new_facts('小天', [
+        {'entity': 'master', 'text': 'Enjoys tea', 'source_indices': [1]},
+        {'entity': 'master', 'text': 'Invented user preference', 'source_indices': [2]},
+        {'entity': 'master', 'text': 'Invalid index', 'source_indices': [99]},
+    ], source_messages=messages)
+    assert [row['text'] for row in rows] == ['Enjoys tea']
+    assert rows[0]['source_message_ids'] == ['raw-user']
+
+
+@pytest.mark.asyncio
+async def test_retirement_model_review_releases_persistence_lock_and_rechecks_evidence(tmp_path):
+    from utils.llm_client import HumanMessage
+    from memory.long_term_sync import FactEvidenceUnavailable
+    h = _harness(tmp_path, [])
+    directory = tmp_path / '小天'
+    directory.mkdir(exist_ok=True)
+    path = directory / 'long_term_portable.json'
+    path.write_text(json.dumps({'evidence': {'retirements': [
+        {'id': 'old', 'subject': 'master', 'text': 'old assertion', 'sourceMessageIds': ['raw']}
+    ], 'confirmations': []}}))
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def review(*args, **kwargs):
+        assert not h._get_persist_alock('小天').locked()
+        entered.set()
+        await release.wait()
+        return [{'index': 0, 'action': 'keep_both'}]
+    h._allm_call_with_retries = review
+    source = HumanMessage(content='new claim', additional_kwargs={'memory_source_id': 'raw', 'memory_source_created_at': 1000})
+    task = asyncio.create_task(h._apersist_new_facts('小天', [{'entity': 'master', 'text': 'new claim', 'source_indices': [1]}], source_messages=[source]))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        async with h._get_persist_alock('小天'):
+            path.write_text(json.dumps({'evidence': {'retirements': [], 'confirmations': []}}))
+        release.set()
+        with pytest.raises(FactEvidenceUnavailable):
+            await task
+        assert h._mem == []
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

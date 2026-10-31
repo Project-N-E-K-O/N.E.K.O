@@ -1,6 +1,7 @@
 """Local HTTP controls use synthetic roots, never a desktop login or user chat."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,6 +23,7 @@ class SyntheticRuntime:
         self.flush_calls = []
         self.originals = [{"messageId": "b" * 32, "text": "synthetic"}]
         self.local_reply_records = []
+        self.state = SimpleNamespace(binding=lambda _uid: None)
 
     async def status(self):
         """Return a bound role and an unrelated stale role to check local projection."""
@@ -113,6 +115,8 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
                     "localOnlyOriginals": 0,
                     "lastSyncError": None, "writerRecoveryRequired": False, "profile": None, "historyBackfill": None},
     }]
+
+
 
 
 @pytest.mark.parametrize('choices,expected', [({}, False), ({UID: False}, False), ({UID: True}, True)])
@@ -396,4 +400,30 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert client.get('/api/chat-sync/cloud/character-policy').status_code == 404
     assert client.post('/api/chat-sync/cloud/character-policy', json={}).status_code == 404
     assert client.post('/api/chat-sync/cloud/characters/' + UID + '/delete', json={}).status_code == 404
+    assert runtime.calls == []
+
+
+def test_recent_display_excludes_local_sources(local_client, tmp_path, monkeypatch):
+    from services.chat_sync import source
+    client, runtime = local_client
+    runtime.recent_memory = object()
+    runtime.state.path = tmp_path / 'state.sqlite3'
+    runtime.state.binding = lambda uid: {'owner_id': OWNER, 'enabled': 1}
+    (tmp_path / 'sources.sqlite3').touch()
+    monkeypatch.setattr(source, 'ChatOriginalSource', lambda path: SimpleNamespace(stored_ids=lambda uid: {'b' * 32}))
+    runtime.originals = [{'messageId': 'b' * 32, 'text': 'local'}, {'messageId': 'c' * 32, 'text': 'phone'}]
+    result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
+    assert result.status_code == 200
+    assert result.json()['originals'] == [{'messageId': 'c' * 32, 'text': 'phone'}]
+    assert 'media' not in result.json() and 'localMedia' not in result.json()
+
+
+@pytest.mark.parametrize('recent,enabled', [(None, 1), (object(), 0)])
+def test_recent_display_never_reads_legacy_archive_or_paused_role(local_client, recent, enabled):
+    client, runtime = local_client
+    runtime.recent_memory = recent
+    runtime.state.binding = lambda uid: {'enabled': enabled}
+    result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
+    assert result.status_code == 200
+    assert result.json()['originals'] == []
     assert runtime.calls == []

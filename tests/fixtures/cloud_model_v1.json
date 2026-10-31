@@ -1,0 +1,382 @@
+{
+  "valid": [
+    {
+      "name": "explicit_unbind",
+      "record": {
+        "schemaVersion": 1,
+        "model": null
+      },
+      "canonical": "{\"model\":null,\"schemaVersion\":1}",
+      "sha256": "eee0e7c006e43f76d1d78fea2c04320b3e2ffedc45da08c509e8be656283e68d"
+    },
+    {
+      "name": "complete_model",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      },
+      "canonical": "{\"model\":{\"compression\":{\"format\":\"zip-deflate\",\"textureMaxEdge\":1024,\"version\":1},\"files\":[{\"path\":\"猫 猫/model.model3.json\",\"sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"size\":100},{\"path\":\"猫 猫/model.moc3\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":300}],\"modelFile\":\"猫 猫/model.model3.json\",\"package\":{\"resource\":{\"resourceId\":\"77777777777777777777777777777777\"},\"sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"size\":512}},\"schemaVersion\":1}",
+      "sha256": "2cefd16c8372799a427a227ddc6b3c1c424b93a17ad46bb042c4d30b595ba1c4"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "model_traversal",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "../model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "model_duplicate",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "model_oversized",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 125829120,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "model_hash",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "not-a-hash"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "windows_device_path",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "NUL.model3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "windows_trailing_dot",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "dir./model.model3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "escaped_url_path",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "%2e%2e/model.model3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "package_receipt_collision",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": ".cloud-model.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    },
+    {
+      "name": "unicode_filesystem_collision",
+      "record": {
+        "schemaVersion": 1,
+        "model": {
+          "modelFile": "猫 猫/model.model3.json",
+          "package": {
+            "resource": {
+              "resourceId": "77777777777777777777777777777777"
+            },
+            "size": 512,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "files": [
+            {
+              "path": "猫 猫/model.model3.json",
+              "size": 100,
+              "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+            },
+            {
+              "path": "猫 猫/model.moc3",
+              "size": 300,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "café.motion3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "café.motion3.json",
+              "size": 1,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "compression": {
+            "version": 1,
+            "format": "zip-deflate",
+            "textureMaxEdge": 1024
+          }
+        }
+      }
+    }
+  ]
+}

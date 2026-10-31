@@ -38,7 +38,8 @@ def run_script(assertions: str) -> None:
             lanlan_config: { lanlan_name: 'Neko' }, t(key,values) { return values && values.name ? key+':'+values.name
                 :values && typeof values.count==='number'?key+':'+values.count:key; } };
         global.document = { addEventListener(name,callback) {documentEvents[name]=callback;},
-            getElementById(){return headerButton;},createElement:element,body };
+            getElementById(){return headerButton;},createElement:element,body,
+            dispatchEvent(event){if(documentEvents[event.type])documentEvents[event.type](event);} };
         global.fetch = () => { throw new Error('Unexpected chat-history request'); };
         vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'));
         const id = 'a'.repeat(32), other = 'b'.repeat(32);
@@ -48,6 +49,99 @@ def run_script(assertions: str) -> None:
     script = (bootstrap + assertions).replace('process.argv[1]', json.dumps(str(SCRIPT)))
     result = run_node_script("node", script, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_media_extension_does_not_restore_or_reorder_capsule_history():
+    run_script(r"""(async()=>{
+        const messages=[{id:'live',role:'user',blocks:[{type:'image',url:'local-image'}]}];
+        window.reactChatWindowHost={getState:()=>({messages}),setMessages(){throw new Error('No archive injection');}};
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.equal(window.nekoChatSync.mergeHistory,undefined);
+        assert.equal(messages[0].blocks[0].url,'local-image');
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('received_count', [50, 200])
+def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedback(received_count):
+    """Comparing an uncropped batch must not replace the host's existing 50-message window."""
+    run_script(r"""(async()=>{
+        const I=window.__appReactChatWindowParts={_sortKeySeq:0,
+            state:{messages:[],_galgameRequestSeq:0},renderWindow(){}};
+        for(const name of ['geometry-and-messages.js','message-bundle-actions-and-prompts.js']){
+            vm.runInThisContext(fs.readFileSync(HOST_PARTS+'/'+name,'utf8'));
+        }
+        I.renderWindow=()=>{};
+        const host=window.reactChatWindowHost;
+        host.getState=()=>({messages:I.state.messages.map(I.cloneMessage)});
+        let updates=0,reads=0;
+        host.setMessages=messages=>{updates++;return I.setMessages(messages);};
+        const local=[
+            {id:'local-user',role:'user',author:'User',createdAt:5000,time:'10:00',status:'sent',
+                blocks:[{type:'text',text:'local question'}]},
+            {id:'local-split-1',role:'assistant',author:'Neko',createdAt:5001,time:'10:01',status:'sent',
+                blocks:[{type:'text',text:'first local bubble'}]},
+            {id:'local-split-2',role:'assistant',author:'Neko',createdAt:5002,time:'10:01',status:'sent',
+                blocks:[{type:'text',text:'second local bubble'}]},
+        ];
+        I.setMessages(local);
+        const originals=Array.from({length:RECEIVED_COUNT},(_,index)=>({...original,
+            messageId:String(index).padStart(32,'0'),text:'received '+index,originalTime:String(1000+index)}));
+        global.fetch=async path=>({ok:true,json:async()=>path.endsWith('/status')
+            ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
+            :(reads++,{originals})});
+        const flush=()=>new Promise(resolve=>setImmediate(resolve));
+        documentEvents.DOMContentLoaded();await flush();
+        assert.equal(reads,1);assert.equal(updates,1);
+        assert.equal(I.state.messages.length,50);
+        assert.equal(I.state.messages[0].blocks[0].text,'received '+(RECEIVED_COUNT-47));
+        assert.deepEqual(I.state.messages.slice(-3).map(message=>message.id),
+            ['local-user','local-split-1','local-split-2']);
+        window._lastSubmittedRequestId='pending-reaction';
+        I.updateMessage('local-user',{status:'sent'});
+        const target=window.captureMessageReactionTarget('pending-reaction');
+        assert.ok(target);
+        I.state.galgameOptions=[{id:'keep-options'}];
+        const sequence=I.state._galgameRequestSeq;
+        const poll=intervals.find(interval=>interval.delay===30000).callback;
+        poll();await flush();
+        assert.equal(reads,2);assert.equal(updates,1,'unchanged host window must not be replaced');
+        assert.equal(I.state._galgameRequestSeq,sequence);
+        assert.deepEqual(I.state.galgameOptions,[{id:'keep-options'}]);
+        window.applyMessageReactionFromEmotion(target,{reaction:{emoji:'😊',author:'Neko'}});
+        assert.equal(I.state.messages.find(message=>message.id==='local-user').reaction.emoji,'😊');
+        originals[0].text='changed outside the display window';poll();await flush();
+        assert.equal(updates,1);
+        originals[RECEIVED_COUNT-1].text='changed visible message';poll();await flush();
+        assert.equal(updates,2);
+        assert.equal(I.state.messages.at(-4).blocks[0].text,'changed visible message');
+        assert.deepEqual(I.state.messages.slice(-3).map(message=>message.blocks[0].text),
+            ['local question','first local bubble','second local bubble']);
+        const beforeAppend=updates;
+        window._lastSubmittedRequestId='new-local-pending';
+        I.appendMessage({id:'new-local-user',role:'user',author:'User',createdAt:6000,time:'10:02',status:'sent',
+            blocks:[{type:'text',text:'a new local question'}]});
+        const appendedTarget=window.captureMessageReactionTarget('new-local-pending');
+        assert.ok(appendedTarget);
+        I.state.galgameOptions=[{id:'local-post-turn-options'}];
+        const appendedSequence=I.state._galgameRequestSeq;
+        poll();await flush();
+        assert.equal(updates,beforeAppend,'appended local sort keys must not replace unchanged content');
+        assert.equal(I.state._galgameRequestSeq,appendedSequence);
+        assert.deepEqual(I.state.galgameOptions,[{id:'local-post-turn-options'}]);
+        window.applyMessageReactionFromEmotion(appendedTarget,{reaction:{emoji:'😊',author:'Neko'}});
+        assert.equal(I.state.messages.at(-1).reaction.emoji,'😊');
+        const reorderedId='sync-recent-'+original.characterSyncId+'-'+originals[RECEIVED_COUNT-1].messageId;
+        I.updateMessage(reorderedId,{sortKey:-1});
+        assert.equal(I.state.messages[0].id,reorderedId);
+        poll();await flush();
+        assert.equal(updates,beforeAppend+1,'an actual order change must still refresh');
+        assert.equal(I.state.messages.at(-5).id,reorderedId);
+        assert.deepEqual(I.state.messages.slice(-4).map(message=>message.blocks[0].text),
+            ['local question','first local bubble','second local bubble','a new local question']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('HOST_PARTS', json.dumps(str(ROOT / 'static/app/app-react-chat-window')))
+        .replace('RECEIVED_COUNT', str(received_count)))
 
 
 @pytest.mark.parametrize('code,key', [
@@ -124,17 +218,49 @@ def test_current_socket_refreshes_recent_memory_without_backfilling_capsule_hist
     body = _block_after(source, "S.socket.onmessage = function (event) {")
     run_script(r"""
         const calls=[], broadcasts=[], socket={}, S={socket}, _thisSocket=socket;
-        window.appInterpage={handleMemoryEdited:async name=>{calls.push(name);}};
+        window.appInterpage={handleMemoryEdited:async (name,options)=>{calls.push({name,options});}};
         global.BroadcastChannel=class {postMessage(data){broadcasts.push(data);}close(){}};
-        window.reactChatWindowHost={setMessages(){throw new Error('Capsule history must remain unchanged');}};
+        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages(){throw new Error('Capsule history must remain unchanged');}};
         function onmessage(event){BODY}
         const hint={type:'chat_sync_history_changed',characterSyncId:original.characterSyncId,memoryEditedName:'Neko'};
         onmessage({data:JSON.stringify(hint)});
-        assert.deepEqual(calls,['Neko']);
+        assert.deepEqual(calls,[{name:'Neko',options:{silent:true}}]);
         assert.deepEqual(broadcasts,[{action:'recent_memory_changed',catgirl_name:'Neko'}]);
         S.socket={};onmessage({data:JSON.stringify(hint)});
-        assert.deepEqual(calls,['Neko']);
+        assert.deepEqual(calls,[{name:'Neko',options:{silent:true}}]);
     """.replace("BODY", body))
+
+
+@pytest.mark.parametrize('silent', [False, True])
+@pytest.mark.parametrize('recording', [False, True])
+def test_memory_refresh_keeps_context_reset_and_manual_notices(silent, recording):
+    """Automatic sync stays quiet while manual edits retain their existing feedback."""
+    interpage = ROOT / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'
+    run_script(r"""(async()=>{
+        const silent=SILENT,recording=RECORDING,toasts=[],sent=[];
+        let stopped=0,cleared=0,reconnected=0;
+        global.WebSocket={OPEN:1};
+        global.setTimeout=callback=>{callback();};
+        window.appState={isRecording:recording,isTextSessionActive:true,
+            socket:{readyState:1,send:data=>sent.push(JSON.parse(data))}};
+        window.stopMicCapture=options=>{assert.deepEqual(options,{normalEnd:false});stopped++;};
+        window.clearAudioQueue=async()=>{cleared++;};
+        window.showStatusToast=(message,duration)=>toasts.push({message,duration});
+        document.getElementById=id=>id==='micButton'?{click(){reconnected++;}}:null;
+        vm.runInThisContext(fs.readFileSync(INTERPAGE,'utf8'));
+        const handler=window.__appInterpageParts.handleMemoryEdited;
+        if(silent)await handler('Neko',{silent:true});
+        else await handler('Neko');
+        assert.deepEqual(sent,[{action:'end_session'}]);
+        assert.equal(window.appState.isTextSessionActive,false);
+        assert.equal(cleared,1);
+        assert.equal(stopped,recording?1:0);
+        assert.equal(reconnected,recording?1:0);
+        assert.deepEqual(toasts,silent?[]:[{message:recording?'memory.refreshingContext':'memory.refreshed',
+            duration:recording?3000:4000}]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('SILENT', json.dumps(silent)).replace('RECORDING', json.dumps(recording))
+        .replace('INTERPAGE', json.dumps(str(interpage))))
 
 
 def test_pc_pet_ipc_bridge_delivers_hint_without_backfilling_full_chat_history():
@@ -246,7 +372,7 @@ def test_foreground_wake_coalesces_visibility_and_pageshow_without_manual_sync()
                 return {ok:true,json:async()=>({characters:[]})};
             };
             documentEvents.DOMContentLoaded();
-            assert.equal(intervals.length,0);
+            assert.deepEqual(intervals.map(item=>item.delay),[30000]);
             document.visibilityState='hidden';
             await documentEvents.visibilitychange();
             assert.equal(wakeCount,0);
@@ -285,7 +411,7 @@ def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger):
             return {ok:true,json:async()=>({scheduled:true})};
         };
         documentEvents.DOMContentLoaded();
-        assert.equal(intervals.length,0);
+        assert.deepEqual(intervals.map(item=>item.delay),[30000]);
         if(trigger==='foreground')await windowEvents.pageshow();
         else if(trigger==='connect'&&windowEvents['voice-input-socket-open'])await windowEvents['voice-input-socket-open']();
         else if(trigger==='turn_end'&&windowEvents['neko-assistant-turn-end'])await windowEvents['neko-assistant-turn-end']({detail:{turnId:'live-turn'}});
@@ -537,3 +663,55 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
             assert modal.locator('[data-sync-action="recover"]').is_disabled()
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('busy', ['text', 'queue', 'audio'])
+def test_received_memory_refresh_waits_for_existing_turn_and_playback(busy):
+    run_script(r"""(async()=>{
+        let refreshed=0;
+        window.appState={assistantTurnId:'turn',assistantTurnCompletedId:'turn'};
+        window.appInterpage={handleMemoryEdited:async(name,options)=>{
+            assert.equal(name,'Neko');assert.equal(options.silent,true);refreshed++;
+        }};
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        if(BUSY==='text')window.appState.assistantTurnAwaitingBubble=true;
+        if(BUSY==='queue')window._isProcessingRealisticQueue=true;
+        if(BUSY==='audio')window.NekoSpeechPlaybackState={active:true};
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        assert.equal(refreshed,0);
+        windowEvents['neko-assistant-turn-end']();
+        assert.equal(refreshed,0);
+        window.appState.assistantTurnAwaitingBubble=false;
+        window._isProcessingRealisticQueue=false;
+        window.NekoSpeechPlaybackState={active:false};
+        windowEvents[BUSY==='audio'?'neko-speech-playback-state':'neko-realistic-queue-idle']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(refreshed,1);
+        window.nekoChatSync.requestMemoryRefresh('Other');
+        assert.equal(refreshed,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('BUSY', json.dumps(busy)))
+
+
+@pytest.mark.parametrize('busy', ['isRecording', 'voiceChatActive', 'voiceStartPending', 'isMicStarting'])
+def test_received_memory_refresh_waits_for_the_voice_session_to_end(busy):
+    run_script(r"""(async()=>{
+        let refreshed=0;
+        window.appState={userRecentSpeechTime:Date.now()-800};
+        if(BUSY==='isMicStarting')window.isMicStarting=true;
+        else window.appState[BUSY]=true;
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        window.appInterpage={handleMemoryEdited:async()=>{refreshed++;}};
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        windowEvents['voice-input-lifecycle-changed']();
+        assert.equal(refreshed,0);
+        window.isMicStarting=false;
+        window.appState.isRecording=false;
+        window.appState.voiceChatActive=false;
+        window.appState.voiceStartPending=false;
+        windowEvents['voice-input-lifecycle-changed']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(refreshed,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('BUSY', json.dumps(busy)))

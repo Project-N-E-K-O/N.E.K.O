@@ -88,6 +88,7 @@ EVT_CORRECTION_RESOLVED = "correction.resolved"
 EVT_REFLECTION_EVIDENCE_UPDATED = "reflection.evidence_updated"
 EVT_PERSONA_EVIDENCE_UPDATED = "persona.evidence_updated"
 EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
+# Retired sync event: recognized only so old journals can drain without applying it.
 EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
@@ -97,8 +98,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_PERSONA_FACT_ADDED, EVT_PERSONA_FACT_MENTIONED, EVT_PERSONA_SUPPRESSED,
     EVT_CORRECTION_QUEUED, EVT_CORRECTION_RESOLVED,
     EVT_REFLECTION_EVIDENCE_UPDATED, EVT_PERSONA_EVIDENCE_UPDATED,
-    EVT_PERSONA_ENTRY_UPDATED,
-    EVT_LONG_TERM_MEMORY_REPLACED,
+    EVT_PERSONA_ENTRY_UPDATED, EVT_LONG_TERM_MEMORY_REPLACED,
 })
 
 

@@ -1142,7 +1142,7 @@
         "compactExportHistory": "History",
         "compactHistoryToggleOpen": "Show history",
         "compactHistoryToggleClose": "Hide history",
-    "compactHistoryExport": "Export conversation history",
+        "compactHistoryExport": "Export conversation history",
         "compactExportControlsCollapse": "Hide selection controls",
         "compactExportControlsExpand": "Show selection controls",
         "exportAction": "Export",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "Select All",
         "exportSelectNone": "Clear",
         "exportSelectInvert": "Invert",
-        "exportSelectionCount": "{{selected}} / {{total}} selected"
+        "exportSelectionCount": "{{selected}} / {{total}} selected",
+        "imageUnavailable": "Image unavailable.",
+        "openImage": "Open image",
+        "closeImage": "Close"
     },
     "voiceControl": {
         "startVoice": "Start Voice",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "Badminton Challenge",
          "exit": "Exit",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "The mini-game failed to load. Please close this page and try again.",
         "runtimeStartFailed": "The match could not start. Please try again in a moment."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "Settings",
             "title": "Game settings",
@@ -6416,7 +6419,7 @@
             "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "Automatic watching",
         "stopWatching": "Stop watching",
         "resizeAvatar": "Resize companion",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "This feedback channel does not upload full chat histories, audio recordings or screenshots.",
         "informationNote": "“Got it” only closes this explanation. It does not change upload settings.",
         "informationClose": "Got it"
+    },
+    "cloudModel": {
+        "conflict": "The model changed on both devices. Choose which version to keep.",
+        "useCloud": "Use cloud model",
+        "keepLocal": "Keep this device’s selection",
+        "failed": "The model could not load. Your previous selection is retained.",
+        "retry": "Retry"
     }
 }

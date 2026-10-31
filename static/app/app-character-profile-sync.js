@@ -199,6 +199,14 @@
                         window.showMessage(setupMessage, 'warning');
                     }
                 }
+                if (role.syncSetupDiagnostic) {
+                    var diagnosticKey = role.characterSyncId + ':diagnostic:' + role.syncSetupDiagnostic;
+                    if (!reviewed.has(diagnosticKey)) {
+                        reviewed.add(diagnosticKey);
+                        var diagnostic = window.nekoChatSync && window.nekoChatSync.describeError(role.syncSetupDiagnostic);
+                        if (diagnostic) window.showMessage(diagnostic, 'warning');
+                    }
+                }
                 var profile = role.binding && role.binding.profile;
                 if (!profile) continue;
                 var key = role.characterSyncId + ':' + profile.local_hash + ':' + profile.head_revision;

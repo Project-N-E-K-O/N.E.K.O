@@ -2195,6 +2195,7 @@
     };
 
     var MAX_MESSAGES = 50;
+    window.reactChatWindowHost.maxMessages = MAX_MESSAGES;
 
     function getNextAppendSortKey() {
         var maxExistingSortKey = Array.isArray(I.state.messages)

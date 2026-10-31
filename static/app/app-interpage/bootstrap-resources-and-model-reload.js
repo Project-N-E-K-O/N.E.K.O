@@ -706,8 +706,9 @@ I.mod = window.appInterpage;
      * and postMessage code paths).
      *
      * @param {string} catgirlName  - name of the character whose memory was edited
+     * @param {Object} options - silent suppresses notices for automatic sync
      */
-    I.handleMemoryEdited = async function handleMemoryEdited(catgirlName) {
+    I.handleMemoryEdited = async function handleMemoryEdited(catgirlName, options = {}) {
         console.log(
             window.t('console.memoryEditedRefreshContext'),
             catgirlName
@@ -744,10 +745,12 @@ I.mod = window.appInterpage;
 
         // If was in voice mode, wait for session teardown then re-connect
         if (wasRecording) {
-            window.showStatusToast(
-                window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...',
-                3000
-            );
+            if (!options.silent) {
+                window.showStatusToast(
+                    window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...',
+                    3000
+                );
+            }
             // Wait for backend session to fully end
             await new Promise(function (resolve) { setTimeout(resolve, 1500); });
             // Trigger full startup flow via micButton click
@@ -757,7 +760,7 @@ I.mod = window.appInterpage;
             } catch (e) {
                 console.error('[Memory] 自动重连语音失败:', e);
             }
-        } else {
+        } else if (!options.silent) {
             window.showStatusToast(
                 window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆',
                 4000
@@ -828,7 +831,8 @@ I.mod = window.appInterpage;
             temporaryConfig: temporaryConfig || null,
             skipIdleRestore: skipIdleRestore,
             skipPersistentExpressions: skipPersistentExpressions,
-            deferRevealPrepared: deferRevealPrepared
+            deferRevealPrepared: deferRevealPrepared,
+            preservePreviousUntilLoaded: !!reloadOptions.preservePreviousUntilLoaded
         });
 
         if (window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
@@ -890,6 +894,7 @@ I.mod = window.appInterpage;
         let mmdRequestSessionId = '';
         let activeMmdLoadingSessionId = '';
         var reloadSucceeded = false;
+        var preparedLive2DModel = null;
 
         function ensureLive2DRenderActive(reason) {
             try {
@@ -962,6 +967,11 @@ I.mod = window.appInterpage;
                 var newModelType = (data.model_type || 'live2d').toLowerCase();
                 var live3dSubType = (data.live3d_sub_type || '').toLowerCase();
                 var oldModelType = window.lanlan_config?.model_type || 'live2d';
+                if (reloadOptions.preservePreviousUntilLoaded && newModelType === 'live2d' && newModelPath) {
+                    if (!window.Live2DModel || typeof window.Live2DModel.from !== 'function') throw new Error('live2d_loader_unavailable');
+                    preparedLive2DModel = await window.Live2DModel.from(newModelPath, { autoFocus: false });
+                    if ((window.lanlan_config?.lanlan_name || '') !== currentLanlanName) throw new Error('model_role_changed');
+                }
                 var nextLighting = (temporaryConfig && !Object.prototype.hasOwnProperty.call(data, 'lighting'))
                     ? (window.lanlan_config?.lighting || null)
                     : ((data.lighting && typeof data.lighting === 'object')
@@ -1473,11 +1483,14 @@ I.mod = window.appInterpage;
                             }
 
                             await window.live2dManager.loadModel(newModelPath, {
+                                preparedModel: preparedLive2DModel,
+                                preservePreviousUntilLoaded: !!reloadOptions.preservePreviousUntilLoaded,
                                 preferences: modelPreferences,
                                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                                 suppressInitialIdle: skipIdleRestore,
                                 suppressPersistentExpressions: skipPersistentExpressions
                             });
+                            preparedLive2DModel = null;
                             if (live2dContainer2) {
                                 live2dContainer2.classList.remove('hidden');
                                 live2dContainer2.style.display = 'block';
@@ -1620,6 +1633,9 @@ I.mod = window.appInterpage;
                 throw error;
             }
         } finally {
+            if (preparedLive2DModel && window.live2dManager?.currentModel !== preparedLive2DModel) {
+                preparedLive2DModel.destroy({ children: true });
+            }
             // Clear in-flight flag
             window._modelReloadInFlight = false;
             activeMMDReloadCanvasSessionId = '';

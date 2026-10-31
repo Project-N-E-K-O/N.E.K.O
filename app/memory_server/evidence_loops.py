@@ -556,13 +556,14 @@ async def _periodic_idle_maintenance_loop():
                     # fact_dedup_resolver is None when vectors are disabled
                     # or bootstrap failed — legacy hash + FTS5 dedup
                     # remains the entire dedup pipeline in that case.
-                    # Strong memory disabled: skip entirely (vector deduplication was added late in evidence-RFC).
-                    if powerful_enabled and runtime.fact_dedup_resolver is not None:
+                    # Recover already-committed handoffs even when strong memory is now disabled; only LLM review is gated.
+                    if runtime.fact_dedup_resolver is not None:
                         if not gates._is_idle():
                             break
                         try:
+                            await runtime.fact_store.aretry_pending_near_dups(name)
                             pending_dedup = await runtime.fact_dedup_resolver.aload_pending(name)
-                            if pending_dedup:
+                            if powerful_enabled and pending_dedup:
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
                                 )

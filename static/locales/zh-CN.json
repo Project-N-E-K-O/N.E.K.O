@@ -1142,7 +1142,7 @@
         "compactExportHistory": "历史对话",
         "compactHistoryToggleOpen": "展开历史对话",
         "compactHistoryToggleClose": "收起历史对话",
-    "compactHistoryExport": "导出历史对话",
+        "compactHistoryExport": "导出历史对话",
         "compactExportControlsCollapse": "隐藏选择栏",
         "compactExportControlsExpand": "显示选择栏",
         "exportAction": "导出",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "全选",
         "exportSelectNone": "取消",
         "exportSelectInvert": "反选",
-        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}"
+        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}",
+        "imageUnavailable": "图片暂时无法打开。",
+        "openImage": "查看图片",
+        "closeImage": "关闭"
     },
     "voiceControl": {
         "startVoice": "开始语音",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "羽毛球挑战 - Badminton",
          "exit": "退出",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "小游戏组件加载失败，请关闭页面后重试。",
         "runtimeStartFailed": "比赛没能启动，请稍后再试一次。"
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "设置",
             "title": "游戏设置",
@@ -6416,7 +6419,7 @@
             "hint": "关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。"
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "自动陪看",
         "stopWatching": "停止陪看",
         "resizeAvatar": "调整猫娘大小",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "此反馈通道不上传完整聊天记录、录音文件或屏幕截图。",
         "informationNote": "“我知道了”仅关闭说明，不改变上传设置。",
         "informationClose": "我知道了"
+    },
+    "cloudModel": {
+        "conflict": "两端都修改了模型，请选择保留哪个版本。",
+        "useCloud": "采用云端模型",
+        "keepLocal": "保留本机选择",
+        "failed": "模型未能加载，已保留原来的选择。",
+        "retry": "重试"
     }
 }

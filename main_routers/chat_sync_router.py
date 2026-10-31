@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 import sqlite3
 from typing import Annotated, Literal
 
@@ -129,10 +131,13 @@ async def status(runtime: Runtime):
     choices = state.pop("syncChoices", {})
     pending_choices = state.pop("syncPendingChoices", {})
     setup_errors = state.pop("syncSetupErrors", {})
+    setup_diagnostics = state.pop("syncSetupDiagnostics", {})
     characters = await _characters()
     for character in characters:
         if character["characterSyncId"] in setup_errors:
             character["syncSetupError"] = setup_errors[character["characterSyncId"]]
+        if character["characterSyncId"] in setup_diagnostics:
+            character["syncSetupDiagnostic"] = setup_diagnostics[character["characterSyncId"]]
         binding = bindings.get(character["characterSyncId"])
         paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
         # Pending On is the saved user choice even before online owner checks
@@ -244,8 +249,59 @@ async def sync(character_uid: str, body: ManualSyncRequest, runtime: Runtime):
 async def history(character_uid: str, runtime: Runtime):
     """Return canonical originals and separate local-only replies for passive display."""
     await _character(character_uid)
-    return {"characterSyncId": character_uid, "originals": await runtime.history(character_uid),
+    originals = await runtime.history(character_uid)
+    return {"characterSyncId": character_uid, "originals": originals,
             "localReplies": await runtime.local_replies(character_uid)}
+
+
+@router.get("/characters/{character_uid}/recent-display")
+async def recent_display(character_uid: str, runtime: Runtime):
+    """Render received recent messages without replaying local session bubbles or archives."""
+    await _character(character_uid)
+    binding = await asyncio.to_thread(runtime.state.binding, character_uid)
+    if runtime.recent_memory is None or not binding or not binding["enabled"]:
+        return {"characterSyncId": character_uid, "originals": []}
+    result = await history(character_uid, runtime)
+    from services.chat_sync.source import ChatOriginalSource
+    source_path = runtime.state.path.parent / "sources.sqlite3"
+    local_ids = set()
+    if source_path.is_file():
+        source = await asyncio.to_thread(ChatOriginalSource, source_path)
+        local_ids = await asyncio.to_thread(source.stored_ids, character_uid)
+    result["originals"] = [row for row in result["originals"] if row["messageId"] not in local_ids]
+    result.pop("localReplies", None)
+    return result
+
+
+
+
+
+
+@router.get("/characters/{character_uid}/model-sync")
+async def model_sync_status(character_uid: str, runtime: Runtime):
+    await _character(character_uid)
+    return await runtime.models.status(character_uid)
+
+
+@router.post("/characters/{character_uid}/model-sync/{token}")
+async def model_sync_loaded(character_uid: str, token: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"loaded"} or type(body["loaded"]) is not bool or not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(400, "invalid_model_response")
+    try:
+        return {"applied": await runtime.models.finish(character_uid, token, body["loaded"])}
+    except (ValueError, OSError):
+        raise HTTPException(409, "chat_sync_binding_changed") from None
+
+
+@router.post("/characters/{character_uid}/model-sync-action")
+async def model_sync_action(character_uid: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"action"} or body["action"] not in {"cloud", "local", "retry"}:
+        raise HTTPException(400, "invalid_model_response")
+    await runtime.models.resolve(character_uid, body["action"])
+    runtime.wake_scheduler()
+    return {"accepted": True}
 
 
 @router.post("/characters/{character_uid}/history/preview")

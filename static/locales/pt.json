@@ -1142,7 +1142,7 @@
         "compactExportHistory": "Histórico",
         "compactHistoryToggleOpen": "Mostrar histórico",
         "compactHistoryToggleClose": "Ocultar histórico",
-    "compactHistoryExport": "Exportar histórico da conversa",
+        "compactHistoryExport": "Exportar histórico da conversa",
         "compactExportControlsCollapse": "Ocultar controles de seleção",
         "compactExportControlsExpand": "Mostrar controles de seleção",
         "exportAction": "Exportar",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "Selecionar tudo",
         "exportSelectNone": "Claro",
         "exportSelectInvert": "Invertido",
-        "exportSelectionCount": "{{selected}} / {{total}} selecionado"
+        "exportSelectionCount": "{{selected}} / {{total}} selecionado",
+        "imageUnavailable": "Imagem indisponível.",
+        "openImage": "Abrir imagem",
+        "closeImage": "Fechar"
     },
     "voiceControl": {
         "startVoice": "Iniciar voz",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "Desafio de badminton",
          "exit": "Sair",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "Não foi possível carregar o minijogo. Feche esta página e tente novamente.",
         "runtimeStartFailed": "Não foi possível iniciar a partida. Tente novamente em instantes."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "Configurações",
             "title": "Configurações do jogo",
@@ -6416,7 +6419,7 @@
             "hint": "Quando desativado, as entradas do jogador, as respostas diretas de NEKO, as reações a eventos, o resumo da partida e as conversas seguintes não são salvas nem consultadas na memória."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "Assistir automaticamente",
         "stopWatching": "Parar de assistir",
         "resizeAvatar": "Redimensionar personagem",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "Este canal de feedback não envia históricos completos de conversa, gravações de áudio ou capturas de tela.",
         "informationNote": "“Entendi” apenas fecha esta explicação. Não altera as configurações de envio.",
         "informationClose": "Entendi"
+    },
+    "cloudModel": {
+        "conflict": "O modelo mudou nos dois dispositivos. Escolha uma versão.",
+        "useCloud": "Usar modelo da nuvem",
+        "keepLocal": "Manter seleção deste dispositivo",
+        "failed": "Não foi possível carregar o modelo. A seleção anterior foi mantida.",
+        "retry": "Tentar novamente"
     }
 }

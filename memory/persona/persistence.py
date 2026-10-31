@@ -145,6 +145,8 @@ class PersistenceMixin:
 
         Every call automatically syncs the character_card entries with characters.json.
         """
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         if name in self._personas:
             # Synchronize character card on every read.
             if self._sync_character_card(name, self._personas[name]):
@@ -154,8 +156,9 @@ class PersistenceMixin:
         path = self._persona_path(name)
         if os.path.exists(path):
             try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
+                with consistent_view_read(path):
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
                 if isinstance(data, dict):
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
@@ -191,11 +194,15 @@ class PersistenceMixin:
         Call sites already holding `_get_alock(name)` (e.g. inside aadd_fact)
         must use `_aensure_persona_locked` instead, to avoid the deadlock from
         the non-reentrant asyncio.Lock."""
+        from memory.long_term_sync import require_consistent_views
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         async with self._get_alock(name):
             return await self._aensure_persona_locked(name)
 
     async def _aensure_persona_locked(self, name: str) -> dict:
         """Inner body. Caller MUST hold self._get_alock(name)."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         if name in self._personas:
             if await self._async_sync_character_card(name, self._personas[name]):
                 await self.asave_persona(name, self._personas[name])
@@ -204,7 +211,8 @@ class PersistenceMixin:
         path = self._persona_path(name)
         if await asyncio.to_thread(os.path.exists, path):
             try:
-                data = await read_json_async(path)
+                with consistent_view_read(path):
+                    data = await read_json_async(path)
                 if isinstance(data, dict):
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):

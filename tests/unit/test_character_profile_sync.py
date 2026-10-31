@@ -802,12 +802,14 @@ async def test_initial_profile_retry_gate_keeps_error_until_a_confirmed_upload(t
         presence = await runtime.session_presence_provider()
         runtime.scheduler.failure(DOMAIN.key(), "profile", runtime.state.binding(UID)["generation"], presence, OSError())
         await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
-        assert runtime.state.new_role_errors() == {UID: "chat_sync_unavailable"}
+        assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {UID: "chat_sync_unavailable"}
         assert service.profile_requests == []
         assert runtime.profiles.store.status(DOMAIN.key())["pending"] == 1
         runtime.test_clock[0] += 30_000
         await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
         assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role_diagnostics() == {}
         assert runtime.state.new_role(UID)["requestId"] == saved["requestId"]
     finally:
         await runtime.close()

@@ -714,6 +714,8 @@ HISTORY_REVIEW_PROMPT = {
 
 [重要]不要删除或合并{MASTER_NAME}的负面反馈（"别再提 X / 不要再做 Y / 不想聊 Z" 等祈使句）——这些是高价值信号，下游记忆系统据此避免再次触雷。即使在你看来"冗余"或"重复"，也必须原样保留。
 
+每条历史消息的 [source_index=N] 是本次审阅的来源编号，不是正文。corrected_dialogue 每项必须原样返回对应的整数 source_index 和原角色；改写或重排时也不变，删除的消息不返回，不得伪造或重复使用编号。
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -722,7 +724,7 @@ HISTORY_REVIEW_PROMPT = {
 {
     "explanation": "简要说明发现的问题和修正内容",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "修正后的消息内容"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "修正后的消息内容"},
         ...
     ]
 }
@@ -758,6 +760,8 @@ HISTORY_REVIEW_PROMPT = {
 
 [重要]不要刪除或合併{MASTER_NAME}的負面回饋（「別再提 X / 不要再做 Y / 不想聊 Z」等祈使句）——這些是高價值訊號，下游記憶系統會據此避免再次觸雷。即使在你看來「冗餘」或「重複」，也必須原樣保留。
 
+每條歷史訊息的 [source_index=N] 是本次審閱的來源編號，不是正文。corrected_dialogue 每項必須原樣回傳對應的整數 source_index 和原角色；改寫或重排時也不變，刪除的訊息不回傳，不得偽造或重複使用編號。
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -766,7 +770,7 @@ HISTORY_REVIEW_PROMPT = {
 {
     "explanation": "簡要說明發現的問題和修正內容",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "修正後的訊息內容"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "修正後的訊息內容"},
         ...
     ]
 }
@@ -802,6 +806,8 @@ Important notes:
 
 [Important] Do NOT remove or merge the {MASTER_NAME}'s negative feedback (imperative statements like "don't mention X / stop doing Y / I don't want Z") — these are high-value signals; the downstream memory system relies on them to avoid recurring missteps. Keep them verbatim even if they appear "redundant" or "repetitive" to you.
 
+Each history message has a [source_index=N] source index for this review, not part of its content. Every corrected_dialogue item must return the same integer source_index and original role, even after editing or reordering. Omit deleted messages; never invent or reuse an index.
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -810,7 +816,7 @@ Return the corrected history in JSON format:
 {
     "explanation": "Brief description of issues found and corrections made",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Corrected message content"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "Corrected message content"},
         ...
     ]
 }
@@ -846,6 +852,8 @@ Notes:
 
 [重要] {MASTER_NAME}のネガティブフィードバック（「その話はやめて／〇〇しないで／もう聞きたくない」のような命令文）を削除・統合しないでください——これらは高価値シグナルで、後続の記憶システムはこれを頼りに再度の地雷踏みを避けます。あなたから見て「冗長」「重複」に見えても、原文どおり保持してください。
 
+各履歴メッセージの [source_index=N] は今回の確認用の元メッセージ番号であり、本文ではありません。corrected_dialogue の各項目には、編集や並べ替え後も元の整数 source_index と役割をそのまま返してください。削除した項目は返さず、番号を捏造・再使用しないでください。
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -854,7 +862,7 @@ Notes:
 {
     "explanation": "発見した問題と修正内容の簡潔な説明",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "修正後のメッセージ内容"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "修正後のメッセージ内容"},
         ...
     ]
 }""",
@@ -882,6 +890,8 @@ Notes:
 
 [중요] {MASTER_NAME}의 부정적 피드백("그 얘기는 그만 / 다시는 X 하지 마 / Y 듣고 싶지 않아" 같은 명령형)을 삭제하거나 병합하지 마세요 — 이는 고가치 신호로, 다운스트림 메모리 시스템이 이를 통해 재차 지뢰를 피합니다. 당신이 보기에 "중복" 또는 "반복"으로 보이더라도 원문 그대로 보존하세요.
 
+각 기록 메시지의 [source_index=N]은 이번 검토의 원본 번호이며 본문이 아닙니다. corrected_dialogue의 각 항목은 수정하거나 순서를 바꿔도 원래 정수 source_index와 역할을 그대로 반환해야 합니다. 삭제한 메시지는 생략하고 번호를 만들거나 재사용하지 마세요.
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -890,7 +900,7 @@ Notes:
 {
     "explanation": "발견한 문제와 수정 내용에 대한 간략한 설명",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "수정된 메시지 내용"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "수정된 메시지 내용"},
         ...
     ]
 }""",
@@ -918,6 +928,8 @@ Notes:
 
 [Важно] НЕ удаляйте и не объединяйте негативную обратную связь {MASTER_NAME} (повелительные высказывания вроде «не упоминай X / прекрати делать Y / я не хочу слышать Z») — это высокоценные сигналы, последующая система памяти опирается на них, чтобы не наступить на ту же мину снова. Сохраняйте дословно, даже если они кажутся вам «избыточными» или «повторяющимися».
 
+Метка [source_index=N] у каждого сообщения — индекс источника для этой проверки, а не часть текста. Каждый элемент corrected_dialogue должен вернуть исходный целочисленный source_index и роль даже после правки или перестановки. Удалённые сообщения не возвращайте; не выдумывайте и не используйте индекс повторно.
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -926,7 +938,7 @@ Notes:
 {
     "explanation": "Краткое описание найденных проблем и внесённых исправлений",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Исправленное содержание сообщения"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "Исправленное содержание сообщения"},
         ...
     ]
 }""",
@@ -936,6 +948,8 @@ Revisa el historial de conversación entre %s y %s, e identifica y corrige contr
 
 [Importante] NO elimines ni fusiones la retroalimentación negativa de {MASTER_NAME} (declaraciones imperativas como "no menciones X / deja de hacer Y / no quiero oír Z") — son señales de alto valor; el sistema de memoria aguas abajo depende de ellas para evitar volver a tropezar. Manténlas textualmente aunque te parezcan "redundantes" o "repetitivas".
 
+La marca [source_index=N] de cada mensaje es su índice de origen para esta revisión, no parte del contenido. Cada elemento de corrected_dialogue debe devolver el mismo entero source_index y el rol original, incluso al editarlo o reordenarlo. Omite los mensajes eliminados; no inventes ni reutilices índices.
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -944,7 +958,7 @@ Devuelve el historial corregido en formato JSON:
 {
     "explanation": "Breve descripción de los problemas encontrados y correcciones realizadas",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Contenido corregido del mensaje"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "Contenido corregido del mensaje"},
         ...
     ]
 }
@@ -960,6 +974,8 @@ Revise o histórico de conversa entre %s e %s, e identifique e corrija contradi�
 
 [Importante] NÃO remova nem mescle o feedback negativo de {MASTER_NAME} (declarações imperativas como "não mencione X / pare de fazer Y / não quero ouvir Z") — são sinais de alto valor; o sistema de memória downstream depende deles para evitar tropeçar de novo. Preserve-os literalmente mesmo que pareçam "redundantes" ou "repetitivos" para você.
 
+A marca [source_index=N] de cada mensagem é seu índice de origem nesta revisão, não parte do conteúdo. Cada item de corrected_dialogue deve devolver o mesmo inteiro source_index e o papel original, mesmo após edição ou reordenação. Omita mensagens removidas; não invente nem reutilize índices.
+
 ======以下为对话历史======
 %s
 ======以上为对话历史======
@@ -968,7 +984,7 @@ Retorne o histórico corrigido em formato JSON:
 {
     "explanation": "Breve descrição dos problemas encontrados e correções feitas",
     "corrected_dialogue": [
-        {"role": "SYSTEM_MESSAGE/%s/%s", "content": "Conteúdo corrigido da mensagem"},
+        {"source_index": 0, "role": "SYSTEM_MESSAGE/%s/%s", "content": "Conteúdo corrigido da mensagem"},
         ...
     ]
 }

@@ -31,6 +31,44 @@ def test_next_wake_retains_retry_and_origin_deadlines_without_one_second_ticks(t
     assert scheduler.next_wake_at() is None
 
 
+@pytest.mark.parametrize('active_error', [None, 'chat_sync_pull_timeout'])
+def test_retired_media_error_does_not_mask_current_status_after_restart(tmp_path, active_error):
+    path = tmp_path / 'scheduler.db'
+    scheduler = ChatSyncScheduler(path, clock=lambda: 1000, uniform=lambda *_: 0)
+    if active_error:
+        scheduler.claim('role', 'pull', 1, 'session')
+        scheduler.failure('role', 'pull', 1, 'session', ValueError(active_error))
+    with closing(scheduler._connect()) as conn, conn:
+        conn.execute("INSERT INTO scheduler_tasks(domain,channel,last_attempt,last_error) "
+                     "VALUES('role','media',2000,'chat_sync_service_rejected')")
+        before = dict(conn.execute("SELECT * FROM scheduler_tasks WHERE channel='media'").fetchone())
+    scheduler = ChatSyncScheduler(path, clock=lambda: 3000, uniform=lambda *_: 0)
+    for channel in ('body', 'deletion', 'profile', 'model', 'long_term'):
+        scheduler.success('role', channel)
+    assert scheduler.last_error('role') == active_error
+    with closing(scheduler._connect()) as conn:
+        assert dict(conn.execute("SELECT * FROM scheduler_tasks WHERE channel='media'").fetchone()) == before
+
+
+@pytest.mark.parametrize('origin_retry', [0, 9000])
+def test_retired_media_deadline_does_not_wake_current_sync_or_reset_origin_retry(tmp_path, origin_retry):
+    path = tmp_path / 'scheduler.db'
+    clock = [1000]
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
+    with closing(scheduler._connect()) as conn, conn:
+        conn.execute("INSERT INTO scheduler_tasks(domain,channel,due_at) VALUES('role','media',5000)")
+        conn.execute("INSERT INTO scheduler_tasks(domain,channel,due_at) VALUES('other','model',10000)")
+        conn.execute('UPDATE scheduler_device SET origin_retry_at=?', (origin_retry,))
+    scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
+    assert scheduler.next_wake_at() == (origin_retry or 10000)
+    assert scheduler.origin_ready() is (origin_retry == 0)
+    clock[0] = 9000
+    assert scheduler.next_wake_at() == 10000
+    assert scheduler.origin_ready()
+    clock[0] = 10000
+    assert scheduler.next_wake_at() is None
+
+
 @pytest.mark.parametrize('channel', ['pull', 'profile'])
 @pytest.mark.parametrize('attempts', [1, 8])
 def test_new_transport_retry_uses_three_second_cap_without_periodic_poll(tmp_path, channel, attempts):

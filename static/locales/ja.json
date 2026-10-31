@@ -1142,7 +1142,7 @@
         "compactExportHistory": "履歴",
         "compactHistoryToggleOpen": "履歴を表示",
         "compactHistoryToggleClose": "履歴を隠す",
-    "compactHistoryExport": "会話履歴をエクスポート",
+        "compactHistoryExport": "会話履歴をエクスポート",
         "compactExportControlsCollapse": "選択操作を隠す",
         "compactExportControlsExpand": "選択操作を表示",
         "exportAction": "エクスポート",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "すべて選択",
         "exportSelectNone": "解除",
         "exportSelectInvert": "反転",
-        "exportSelectionCount": "{{selected}} / {{total}} 件選択中"
+        "exportSelectionCount": "{{selected}} / {{total}} 件選択中",
+        "imageUnavailable": "画像を表示できません。",
+        "openImage": "画像を開く",
+        "closeImage": "閉じる"
     },
     "voiceControl": {
         "startVoice": "音声開始",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "バドミントンチャレンジ - Badminton",
          "exit": "終了",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "ミニゲームの読み込みに失敗しました。ページを閉じてもう一度お試しください。",
         "runtimeStartFailed": "試合を開始できませんでした。少し待ってからもう一度お試しください。"
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "設定",
             "title": "ゲーム設定",
@@ -6416,7 +6419,7 @@
             "hint": "オフの場合、プレイヤー入力・NEKOの直接応答・イベント反応・試合後の要約・続きの会話はいずれも記憶に入らず、参照もされません。"
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "自動視聴",
         "stopWatching": "視聴を停止",
         "resizeAvatar": "キャラクターのサイズを変更",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "このフィードバック経路では、チャット履歴全体、録音ファイル、スクリーンショットは送信しません。",
         "informationNote": "「確認しました」は説明を閉じるだけで、送信設定は変更しません。",
         "informationClose": "確認しました"
+    },
+    "cloudModel": {
+        "conflict": "両方の端末でモデルが変更されました。使用するものを選んでください。",
+        "useCloud": "クラウドのモデルを使う",
+        "keepLocal": "この端末の選択を維持",
+        "failed": "モデルを読み込めませんでした。以前の選択を維持しています。",
+        "retry": "再試行"
     }
 }

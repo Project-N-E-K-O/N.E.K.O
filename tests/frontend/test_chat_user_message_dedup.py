@@ -1,5 +1,37 @@
 import pytest
+from pathlib import Path
 from playwright.sync_api import Page, expect
+
+
+@pytest.mark.frontend
+def test_sync_memory_refresh_keeps_an_open_voice_session_running(mock_page: Page):
+    root = Path(__file__).resolve().parents[2]
+    mock_page.goto('about:blank')
+    mock_page.evaluate("""() => {
+        window.lanlan_config={lanlan_name:'Neko'};
+        window.syncProbe={stopped:0,cleared:0,sent:[]};
+        window.appState={isRecording:true,voiceChatActive:true,isTextSessionActive:true,
+            userRecentSpeechTime:Date.now()-800,
+            socket:{readyState:WebSocket.OPEN,send:raw=>window.syncProbe.sent.push(JSON.parse(raw))}};
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        window.stopMicCapture=()=>{window.syncProbe.stopped++;window.appState.isRecording=false;};
+        window.clearAudioQueue=async()=>{window.syncProbe.cleared++;};
+        window.t=key=>key;
+    }""")
+    mock_page.add_script_tag(path=str(root / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'))
+    mock_page.evaluate('() => { window.appInterpage.handleMemoryEdited=window.__appInterpageParts.handleMemoryEdited; }')
+    mock_page.add_script_tag(path=str(root / 'static/app/app-chat-sync.js'))
+    mock_page.evaluate("window.nekoChatSync.requestMemoryRefresh('Neko')")
+    assert mock_page.evaluate('window.syncProbe') == {'stopped': 0, 'cleared': 0, 'sent': []}
+    assert mock_page.evaluate('window.appState.isRecording') is True
+    mock_page.evaluate("""() => {
+        window.appState.isRecording=false;
+        window.appState.voiceChatActive=false;
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {detail:{state:'off'}}));
+    }""")
+    mock_page.wait_for_function('window.syncProbe.sent.length === 1 && window.syncProbe.cleared === 1')
+    assert mock_page.evaluate('window.syncProbe') == {'stopped': 0, 'cleared': 1, 'sent': [{'action': 'end_session'}]}
+    assert mock_page.evaluate('window.appState.isTextSessionActive') is False
 
 
 @pytest.mark.frontend
@@ -62,11 +94,212 @@ def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: 
     assert all(path == '/status' for path in sync_reads)
 
 
+@pytest.mark.frontend
+@pytest.mark.parametrize('role,body,visible', [
+    ('user', 'phone caption', 'phone caption'),
+    ('assistant', '[20261023 Fri 13:25] phone caption', 'phone caption'),
+    ('assistant', '[20261023 星期五 13:25]phone caption', 'phone caption'),
+    ('user', '[20261023 Fri 13:25] phone caption', '[20261023 Fri 13:25] phone caption'),
+])
+def test_received_recent_text_ignores_media_without_replacing_local_bubbles(mock_page: Page, running_server: str, role, body, visible):
+    role_name = ''
+    uid, identity = 'c' * 32, 'a' * 32
+    media = {}
+    originals = [{'messageId': identity, 'role': role, 'text': body, 'originalTime': '1791540000123'}]
+    def sync_api(route):
+        path = route.request.url.split('/api/chat-sync', 1)[1]
+        if path == '/status':
+            route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': uid, 'binding': {'enabled': True}}]})
+        elif path.endswith('/recent-display'):
+            route.fulfill(json={'characterSyncId': uid, 'originals': originals, 'media': media, 'localMedia': {}})
+        elif path.endswith('/history'):
+            pytest.fail('Recent display must never backfill the original archive')
+        else:
+            route.fulfill(json={})
+    mock_page.route('**/api/chat-sync/**', sync_api)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
+    mock_page.evaluate("""() => {
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.reactChatWindowHost.openWindow();
+    }""")
+    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
+    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.appState.assistantTurnAwaitingBubble = false;
+        window.appState.assistantTurnId = null;
+        window._lastSubmittedRequestId = null;
+        window.reactChatWindowHost.setMessages([{id:'local-session',role:'assistant',author:'Neko',time:'10:00',
+            blocks:[{type:'text',text:'existing local bubble'}]}]);
+        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+    }""")
+    mock_page.wait_for_function("expected => window.reactChatWindowHost.getState().messages.some(m => m.blocks.some(b => b.text === expected))", arg=visible)
+    assert originals[0]['text'] == body
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id.startsWith('sync-recent-')).createdAt") == 1791540000123
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.filter(m => m.id === 'local-session').length") == 1
+    media[identity] = {'attachments': [{'id': 'd' * 32, 'type': 'image', 'title': '',
+        'original': {'url': 'https://images.example/sent.gif'}, 'thumbnail': None}]}
+    # Wait for refreshed text before checking that legacy media fields stay ignored.
+    originals[0]['text'] = body + ' refreshed'
+    mock_page.evaluate("() => document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
+    mock_page.wait_for_function("expected => window.reactChatWindowHost.getState().messages.some(m => m.blocks.some(b => b.text === expected))", arg=visible + ' refreshed')
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id.startsWith('sync-recent-')).blocks") == [
+        {'type': 'text', 'text': visible + ' refreshed'},
+    ]
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id === 'local-session').blocks") == [
+        {'type': 'text', 'text': 'existing local bubble'},
+    ]
+    originals.clear()
+    mock_page.evaluate("() => document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
+    mock_page.wait_for_function("() => window.reactChatWindowHost.getState().messages.length === 1")
+    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages[0].id") == 'local-session'
+
+
+@pytest.mark.frontend
+def test_recent_display_preserves_order_with_existing_local_sort_keys(mock_page: Page, running_server: str):
+    uid, role_name = 'c' * 32, ''
+
+    def sync_api(route):
+        path = route.request.url.split('/api/chat-sync', 1)[1]
+        if path == '/status':
+            route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': uid,
+                                               'binding': {'enabled': True}}]})
+        elif path.endswith('/recent-display'):
+            route.fulfill(json={'characterSyncId': uid, 'media': {}, 'localMedia': {}, 'originals': [
+                {'messageId': 'a' * 32, 'role': 'user', 'text': 'ORDER_01', 'originalTime': '1000'},
+                {'messageId': 'b' * 32, 'role': 'user', 'text': 'ORDER_03', 'originalTime': '3000'},
+            ]})
+        else:
+            route.fulfill(json={})
+
+    mock_page.route('**/api/chat-sync/**', sync_api)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.reactChatWindowHost.openWindow();
+    }""")
+    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
+    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
+    mock_page.evaluate("""() => {
+        const host = window.reactChatWindowHost;
+        host.setMessages([{id:'local-two',role:'user',author:'User',time:'00:02',
+            createdAt:2000,sortKey:0,blocks:[{type:'text',text:'ORDER_02'}]}]);
+        host.setChatSurfaceMode('compact');
+        host.setCompactHistoryOpen(true);
+        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+    }""")
+    rows = mock_page.locator('.compact-export-history-message')
+    expect(rows).to_have_count(3)
+    expected = ['ORDER_01', 'ORDER_02', 'ORDER_03']
+    assert rows.evaluate_all('(items) => items.map(item => item.textContent.match(/ORDER_0[123]/)[0])') == expected
+    mock_page.evaluate("""() => {
+        window.syncDisplayUpdates = 0;
+        const host = window.reactChatWindowHost;
+        const original = host.setMessages;
+        host.setMessages = (...args) => { window.syncDisplayUpdates++; return original(...args); };
+        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+    }""")
+    mock_page.wait_for_timeout(300)
+    assert mock_page.evaluate('() => window.syncDisplayUpdates') == 0
+    assert rows.evaluate_all('(items) => items.map(item => item.textContent.match(/ORDER_0[123]/)[0])') == expected
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('page_path', ['/chat', '/chat_full'])
+def test_unchanged_recent_display_does_not_replace_the_host_window(mock_page: Page, running_server: str, page_path):
+    uid, role_name = 'c' * 32, ''
+    originals = [{'messageId': str(index).zfill(32), 'role': 'user', 'text': f'received {index}',
+                  'originalTime': str(1000 + index)} for index in range(200)]
+
+    def sync_api(route):
+        path = route.request.url.split('/api/chat-sync', 1)[1]
+        if path == '/status':
+            route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': uid,
+                                               'binding': {'enabled': True}}]})
+        elif path.endswith('/recent-display'):
+            route.fulfill(json={'characterSyncId': uid, 'originals': originals})
+        else:
+            route.fulfill(json={})
+
+    mock_page.route('**/api/chat-sync/**', sync_api)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.appState.assistantTurnAwaitingBubble = false;
+        window.appState.assistantTurnId = null;
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.reactChatWindowHost.openWindow();
+    }""")
+    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
+    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
+    mock_page.evaluate("""() => {
+        const host = window.reactChatWindowHost;
+        host.setMessages([
+            {id:'local-user',role:'user',author:'User',createdAt:5000,time:'10:00',status:'sent',
+                blocks:[{type:'text',text:'local question'}]},
+            {id:'local-split-1',role:'assistant',author:'Neko',createdAt:5001,time:'10:01',status:'sent',
+                blocks:[{type:'text',text:'first local bubble'}]},
+            {id:'local-split-2',role:'assistant',author:'Neko',createdAt:5002,time:'10:01',status:'sent',
+                blocks:[{type:'text',text:'second local bubble'}]},
+        ]);
+        host.setChatSurfaceMode('compact');
+        host.setCompactHistoryOpen(true);
+        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+    }""")
+    rows = mock_page.locator('.compact-export-history-message')
+    expect(rows).to_have_count(50)
+    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages[0].blocks[0].text') == 'received 153'
+    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages.slice(-3).map(message=>message.id)') == [
+        'local-user', 'local-split-1', 'local-split-2',
+    ]
+    mock_page.evaluate("""() => {
+        window.syncDisplayUpdates=0;
+        const host=window.reactChatWindowHost, original=host.setMessages;
+        host.setMessages=(...args)=>{window.syncDisplayUpdates++;return original(...args);};
+    }""")
+    with mock_page.expect_response('**/api/chat-sync/characters/*/recent-display') as response:
+        mock_page.evaluate("document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
+    response.value.finished()
+    mock_page.evaluate('async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);}')
+    assert mock_page.evaluate('window.syncDisplayUpdates') == 0
+    originals[-1]['text'] = 'changed visible message'
+    mock_page.evaluate("document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
+    mock_page.wait_for_function("window.reactChatWindowHost.getState().messages.at(-4).blocks[0].text==='changed visible message'")
+    assert mock_page.evaluate('window.syncDisplayUpdates') == 1
+    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages.slice(-3).map(message=>message.blocks[0].text)') == [
+        'local question', 'first local bubble', 'second local bubble',
+    ]
+    mock_page.evaluate("""() => {
+        window._lastSubmittedRequestId='new-local-pending';
+        window.reactChatWindowHost.appendMessage({id:'new-local-user',role:'user',author:'User',
+            createdAt:6000,time:'10:02',status:'sent',blocks:[{type:'text',text:'a new local question'}]});
+        window.syncPendingReaction=window.captureMessageReactionTarget('new-local-pending');
+    }""")
+    assert mock_page.evaluate('!!window.syncPendingReaction')
+    with mock_page.expect_response('**/api/chat-sync/characters/*/recent-display') as response:
+        mock_page.evaluate("document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
+    response.value.finished()
+    mock_page.evaluate('async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);}')
+    assert mock_page.evaluate('window.syncDisplayUpdates') == 1
+    mock_page.evaluate("window.applyMessageReactionFromEmotion(window.syncPendingReaction,{reaction:{emoji:'😊',author:window.lanlan_config.lanlan_name}})")
+    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages.at(-1).reaction.emoji') == '😊'
+
+
 def _open_react_chat_page(mock_page: Page, running_server: str) -> None:
     mock_page.add_init_script(
         "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
     )
-    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.goto(f"{running_server}/chat_full", wait_until="domcontentloaded")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost"
         " && window.appButtons"
@@ -74,7 +307,11 @@ def _open_react_chat_page(mock_page: Page, running_server: str) -> None:
         " && window.appState"
         " && typeof window.sendTextPayload === 'function'"
     )
-    mock_page.evaluate("() => window.reactChatWindowHost.openWindow()")
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.reactChatWindowHost.setChatSurfaceMode('full');
+        window.reactChatWindowHost.openWindow();
+    }""")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost.isMounted && window.reactChatWindowHost.isMounted()"
         " && !!document.querySelector('.composer-input')"
@@ -89,6 +326,7 @@ def _open_app_buttons_page(mock_page: Page, running_server: str) -> None:
     mock_page.wait_for_function(
         "() => window.appButtons"
         " && typeof window.appButtons.normalizeImageBlobForPendingList === 'function'"
+        " && typeof window.sendTextPayload === 'function'"
     )
 
 
@@ -107,6 +345,7 @@ def _install_chat_send_harness(
             window.lanlan_config.master_name = 'Alice';
 
             window.showStatusToast = () => {};
+            window.isNekoHomeTutorialInteractionLocked = () => false;
             window.hideVoicePreparingToast = () => {};
             window.resetProactiveChatBackoff = () => {};
             window.hasAnyChatModeEnabled = () => false;
@@ -771,6 +1010,32 @@ def test_high_entropy_image_uses_quality_ladder_before_resolution_downsampling(
             dimensions.append(size)
     assert dimensions[0] == (1921, 1921)
     assert dimensions[1] == (1920, 1920)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('caption', ['', 'with caption'])
+def test_image_submissions_keep_the_request_identity_for_each_image(mock_page: Page, running_server: str, caption):
+    _open_app_buttons_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+    result = mock_page.evaluate(
+        """async (caption) => {
+            window.isNekoHomeTutorialInteractionLocked = () => false;
+            window.appState.isTextSessionActive = true;
+            const canvas = document.createElement('canvas');
+            canvas.width = 8; canvas.height = 8;
+            const image = canvas.toDataURL('image/jpeg');
+            const sent = await window.sendTextPayload(caption, {
+                source: 'react-chat-window', requestId: 'image-submission',
+                extraImageDataUrls: [image, image], ignoreComposerAttachments: true
+            });
+            return {sent, images: window.__chatTest.sentPayloads.filter(
+                (item) => item.action === 'stream_data' && item.input_type === 'avatar_drop_image'
+            ).map((item) => ({requestId: item.request_id}))};
+        }""", caption)
+    assert result == {'sent': True, 'images': [
+        {'requestId': 'image-submission'},
+        {'requestId': 'image-submission'},
+    ]}
 
 
 @pytest.mark.frontend

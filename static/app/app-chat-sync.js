@@ -2,6 +2,7 @@
 (function () {
     'use strict';
     var activeUid = null;
+    var modelFlight = null;
     var dialog = null;
     var settingsCharacterName = null;
     var statusNode = null;
@@ -88,6 +89,34 @@
             if (awaiting) statusNode.textContent += '\n' + text('historyAwaitingRegistration', {count: awaiting});
         }
         updateControls();
+        var modelPanel = dialog.querySelector('[data-sync-model]');
+        if (modelPanel) {
+            modelPanel.replaceChildren();
+            if (activeUid && binding && binding.enabled) {
+                var modelUid = activeUid, modelName = characterName();
+                var modelStatus = await api('/characters/' + modelUid + '/model-sync').catch(function () { return {}; });
+                if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return false;
+                function modelButton(key, action) {
+                    var button = document.createElement('button');
+                    button.type = 'button';
+                    button.textContent = window.t('cloudModel.' + key);
+                    button.addEventListener('click', async function () {
+                        if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return;
+                        button.disabled = true;
+                        try { await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action }); await refreshStatus(); }
+                        finally { button.disabled = false; }
+                    });
+                    modelPanel.appendChild(button);
+                }
+                if (modelStatus.conflict) {
+                    var description = document.createElement('p'); description.textContent = window.t('cloudModel.conflict'); modelPanel.appendChild(description);
+                    modelButton('useCloud', 'cloud'); modelButton('keepLocal', 'local');
+                } else if (modelStatus.failed) {
+                    var failure = document.createElement('p'); failure.textContent = window.t('cloudModel.failed'); modelPanel.appendChild(failure);
+                    modelButton('retry', 'retry');
+                }
+            }
+        }
         return true;
     }
 
@@ -183,6 +212,9 @@
         statusNode.className = 'chat-sync-status';
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
+        var modelPanel = document.createElement('div');
+        modelPanel.dataset.syncModel = '';
+        dialog.appendChild(modelPanel);
         dialog.addEventListener('close', function () { settingsCharacterName = null; });
         document.body.appendChild(dialog);
     }
@@ -196,7 +228,9 @@
             dialog.querySelector('[data-sync-action="recover"]').disabled = true;
             try { await refreshStatus(); } catch (error) { statusNode.textContent = describeError(error); }
         },
-        describeError: describeError
+        describeError: describeError,
+        notifyMediaChanged: refreshReadyModel,
+        requestMemoryRefresh: requestMemoryRefresh
     };
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -207,14 +241,167 @@
         });
     });
 
+    async function applyReadyModel(uid, name) {
+        if (modelFlight || !document.getElementById('live2d-container') || typeof window.handleModelReload !== 'function') return;
+        var value;
+        try { value = await api('/characters/' + uid + '/model-sync'); }
+        catch (_) { return; }
+        var candidate = value && value.candidate;
+        if (!candidate || characterName() !== name || candidate.name !== name) return;
+        modelFlight = candidate.token;
+        try {
+            await window.handleModelReload(name, { temporaryConfig: {
+                model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
+            }, suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true });
+            if (characterName() !== name) return;
+            var manager = window.live2dManager;
+            var loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
+                && typeof manager.getCurrentModel === 'function' && manager.getCurrentModel());
+            var receipt = await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: loaded });
+            if (!receipt.applied && characterName() === name) await window.handleModelReload(name, { suppressToast: true });
+        } catch (_) {
+            if (characterName() === name) {
+                await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
+                await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
+            }
+        } finally { modelFlight = null; }
+    }
+
+    async function refreshReadyModel() {
+        if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
+        var name = characterName();
+        var state = await api('/status');
+        var role = state.characters.find(function (item) { return item.displayName === name; });
+        if (role && characterName() === name) await applyReadyModel(role.characterSyncId, name);
+    }
+
+    var pendingMemoryName = null;
+    var memoryRefreshFlight = false;
+    var displayFlight = false;
+    var displayPending = false;
+    var displayPrefix = 'sync-recent-';
+
+    function liveCharacterName() {
+        return window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
+    }
+
+    function liveChatBusy(host) {
+        var state = window.appState || {};
+        var completed = new Set([state.assistantTurnCompletedId, state.assistantTurnSettledId]);
+        return !!state.assistantTurnAwaitingBubble || !!window._isProcessingRealisticQueue
+            || !!state.isPlaying || !!(window.NekoSpeechPlaybackState && window.NekoSpeechPlaybackState.active)
+            || !!(state.assistantTurnId && !completed.has(state.assistantTurnId))
+            || !!(state.isRecording && state.userRecentSpeechTime && Date.now() - state.userRecentSpeechTime < 700)
+            || (state.pendingTextTurnSubmitAt && Date.now() - state.pendingTextTurnSubmitAt < 15000)
+            || ((host && host.getState().messages) || []).some(function (message) {
+                return message.status === 'sending' || (message.status === 'streaming' && !completed.has(message.turnId));
+            });
+    }
+
+    function recentMessage(record, name, uid) {
+        var body = record.role === 'assistant'
+            ? record.text.replace(/^\[\d{8} [^\]\s]+ \d{2}:\d{2}\][ \t]*/, '') : record.text;
+        var blocks = body ? [{ type: 'text', text: body }] : [];
+        if (!blocks.length) return null;
+        var timestamp = record.originalTime === null ? 0 : Number(record.originalTime);
+        if (!Number.isSafeInteger(timestamp)) timestamp = 0;
+        return { id: displayPrefix + uid + '-' + record.messageId, role: record.role,
+            author: record.role === 'assistant' ? name : text('userLabel'),
+            time: timestamp ? new Date(timestamp).toLocaleString() : text('unknownTime'),
+            createdAt: timestamp, status: 'sent', blocks: blocks };
+    }
+
+    function displaySnapshot(messages) {
+        // Array order captures display ordering; append sort keys are internal bookkeeping.
+        return JSON.stringify(messages.map(function (message) {
+            return [message.id, message.role, message.author, message.time, message.createdAt,
+                message.status, message.blocks];
+        }));
+    }
+
+    async function refreshRecentDisplay() {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.getState !== 'function' || typeof host.setMessages !== 'function'
+                || document.visibilityState === 'hidden' || liveChatBusy(host)) return;
+        if (displayFlight) { displayPending = true; return; }
+        displayFlight = true;
+        try {
+            var name = liveCharacterName();
+            var state = await api('/status');
+            var role = (state.characters || []).find(function (item) { return item.displayName === name; });
+            if (!role || !role.binding || !role.binding.enabled || liveCharacterName() !== name) return;
+            var uid = role.characterSyncId;
+            var result = await api('/characters/' + uid + '/recent-display');
+            if (liveCharacterName() !== name || window.reactChatWindowHost !== host || liveChatBusy(host)) return;
+            var received = result.originals.map(function (record) { return recentMessage(record, name, uid); }).filter(Boolean);
+            // The endpoint supplies only received recent messages. Local split bubbles stay owned by the chat host.
+            var current = host.getState().messages || [];
+            var local = current.filter(function (message) { return !message.id.startsWith(displayPrefix); });
+            var merged = local.concat(received).sort(function (a, b) {
+                return (typeof a.createdAt === 'number' ? a.createdAt : Infinity) - (typeof b.createdAt === 'number' ? b.createdAt : Infinity);
+            }).slice(-host.maxMessages).map(function (message, index) {
+                // The host sorts by explicit keys, including keys retained by local split bubbles.
+                return Object.assign({}, message, { sortKey: index });
+            });
+            if (displaySnapshot(current) !== displaySnapshot(merged)) host.setMessages(merged);
+        } finally {
+            displayFlight = false;
+            if (displayPending) { displayPending = false; refreshRecentDisplay().catch(function () {}); }
+        }
+    }
+
+    function requestMemoryRefresh(name) {
+        if (typeof name !== 'string' || name !== liveCharacterName()) return;
+        pendingMemoryName = name;
+        flushMemoryRefresh();
+    }
+
+    function flushMemoryRefresh() {
+        var state = window.appState || {};
+        // Sync must not restart an open voice session or cancel microphone startup.
+        if (state.isRecording || state.voiceChatActive || state.voiceStartPending || window.isMicStarting) return;
+        if (!pendingMemoryName || memoryRefreshFlight || liveChatBusy(window.reactChatWindowHost)) return;
+        var name = pendingMemoryName;
+        if (name !== liveCharacterName()) { pendingMemoryName = null; return; }
+        if (!window.appInterpage || typeof window.appInterpage.handleMemoryEdited !== 'function') return;
+        pendingMemoryName = null;
+        memoryRefreshFlight = true;
+        Promise.resolve(window.appInterpage.handleMemoryEdited(name, { silent: true })).catch(function () {
+            if (liveCharacterName() === name && !pendingMemoryName) pendingMemoryName = name;
+        }).finally(function () { memoryRefreshFlight = false; });
+    }
+
+    function refreshReceived() {
+        flushMemoryRefresh();
+        refreshRecentDisplay().catch(function () { /* The next committed hint or local poll retries. */ });
+    }
+    window.addEventListener('voice-input-socket-open', refreshReceived);
+    window.addEventListener('neko-assistant-turn-end', refreshReceived);
+    window.addEventListener('neko-realistic-queue-idle', refreshReceived);
+    window.addEventListener('neko-speech-playback-state', refreshReceived);
+    window.addEventListener('voice-input-lifecycle-changed', refreshReceived);
+
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground
         // wake does not perform manual sync or bypass durable retry fences.
         if (foregroundWakeRunning || document.visibilityState === 'hidden' || !document.getElementById('react-chat-window-root')) return;
         foregroundWakeRunning = true;
-        try { await api('/wake', 'POST'); } catch (_) { /* Local chat stays usable. */ }
+        try { await api('/wake', 'POST'); await refreshReadyModel(); await refreshRecentDisplay(); } catch (_) { /* Local chat stays usable. */ }
         finally { foregroundWakeRunning = false; }
     }
+    document.addEventListener('neko:chat-sync-history-changed', function () {
+        refreshReceived();
+        return refreshReadyModel().catch(function () { /* A later foreground wake retries. */ });
+    });
+    document.addEventListener('DOMContentLoaded', function () {
+        refreshReceived();
+        window.setInterval(refreshReceived, 30000);
+        if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
+        refreshReadyModel().catch(function () {});
+        window.setInterval(function () {
+            if (document.visibilityState !== 'hidden') refreshReadyModel().catch(function () {});
+        }, 30000);
+    });
     document.addEventListener('visibilitychange', foregroundCatchup);
     window.addEventListener('pageshow', foregroundCatchup);
 })();

@@ -973,6 +973,7 @@ class FactsMixin:
             shard_path = await apick_today_shard_path(archive_dir, now=now)
             shard_basename = os.path.basename(shard_path)
             archive_entry = dict(entry)
+            archive_entry['entity_key'] = entity_key
             archive_entry['archived_at'] = now_iso
             archive_entry['archive_shard_path'] = shard_basename
 

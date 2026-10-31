@@ -1142,7 +1142,7 @@
         "compactExportHistory": "Historial",
         "compactHistoryToggleOpen": "Mostrar historial",
         "compactHistoryToggleClose": "Ocultar historial",
-    "compactHistoryExport": "Exportar historial de conversación",
+        "compactHistoryExport": "Exportar historial de conversación",
         "compactExportControlsCollapse": "Ocultar controles de selección",
         "compactExportControlsExpand": "Mostrar controles de selección",
         "exportAction": "Exportar",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "Seleccionar todo",
         "exportSelectNone": "Claro",
         "exportSelectInvert": "Invertir",
-        "exportSelectionCount": "{{selected}} / {{total}} seleccionado"
+        "exportSelectionCount": "{{selected}} / {{total}} seleccionado",
+        "imageUnavailable": "Imagen no disponible.",
+        "openImage": "Abrir imagen",
+        "closeImage": "Cerrar"
     },
     "voiceControl": {
         "startVoice": "Iniciar voz",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "Desafío de bádminton",
          "exit": "Salir",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "No se pudo cargar el minijuego. Cierra esta página e inténtalo de nuevo.",
         "runtimeStartFailed": "No se pudo iniciar la partida. Inténtalo de nuevo en un momento."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "Ajustes",
             "title": "Ajustes del juego",
@@ -6416,7 +6419,7 @@
             "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "Ver automáticamente",
         "stopWatching": "Dejar de ver",
         "resizeAvatar": "Cambiar tamaño del personaje",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "Este canal de comentarios no envía historiales completos de chat, grabaciones de audio ni capturas de pantalla.",
         "informationNote": "«Entendido» solo cierra esta explicación. No cambia los ajustes de envío.",
         "informationClose": "Entendido"
+    },
+    "cloudModel": {
+        "conflict": "El modelo cambió en ambos dispositivos. Elige una versión.",
+        "useCloud": "Usar modelo de la nube",
+        "keepLocal": "Conservar selección local",
+        "failed": "No se pudo cargar el modelo. Se conserva la selección anterior.",
+        "retry": "Reintentar"
     }
 }

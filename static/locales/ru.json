@@ -1142,7 +1142,7 @@
         "compactExportHistory": "История",
         "compactHistoryToggleOpen": "Показать историю",
         "compactHistoryToggleClose": "Скрыть историю",
-    "compactHistoryExport": "Экспорт истории диалога",
+        "compactHistoryExport": "Экспорт истории диалога",
         "compactExportControlsCollapse": "Скрыть элементы выбора",
         "compactExportControlsExpand": "Показать элементы выбора",
         "exportAction": "Экспорт",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "Выбрать всё",
         "exportSelectNone": "Снять",
         "exportSelectInvert": "Инверсия",
-        "exportSelectionCount": "Выбрано {{selected}} из {{total}}"
+        "exportSelectionCount": "Выбрано {{selected}} из {{total}}",
+        "imageUnavailable": "Изображение недоступно.",
+        "openImage": "Открыть изображение",
+        "closeImage": "Закрыть"
     },
     "voiceControl": {
         "startVoice": "Начать голос",
@@ -5787,7 +5790,7 @@
             "drawCalls": "Draw calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "Бадминтонный вызов",
          "exit": "Выйти",
          "loading": {
@@ -6282,7 +6285,7 @@
         "sdkUnavailable": "Не удалось загрузить мини-игру. Закройте страницу и попробуйте снова.",
         "runtimeStartFailed": "Не удалось начать матч. Попробуйте ещё раз чуть позже."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "Настройки",
             "title": "Настройки игры",
@@ -6416,7 +6419,7 @@
             "hint": "Когда выключено, ввод игрока, прямые ответы NEKO, реакции на события, итоги матча и продолжение разговора не попадают в память и не используются из неё."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "Автоматический просмотр",
         "stopWatching": "Остановить просмотр",
         "resizeAvatar": "Изменить размер персонажа",
@@ -7225,5 +7228,12 @@
         "informationExcluded": "Этот канал отзывов не отправляет полные истории чатов, аудиозаписи или снимки экрана.",
         "informationNote": "Кнопка «Понятно» только закрывает пояснение и не меняет настройки отправки.",
         "informationClose": "Понятно"
+    },
+    "cloudModel": {
+        "conflict": "Модель изменена на обоих устройствах. Выберите версию.",
+        "useCloud": "Использовать модель из облака",
+        "keepLocal": "Сохранить выбор устройства",
+        "failed": "Не удалось загрузить модель. Предыдущий выбор сохранён.",
+        "retry": "Повторить"
     }
 }
