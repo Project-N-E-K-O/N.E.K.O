@@ -90,6 +90,7 @@ from main_logic.proactive_chat.candidate_selection import (
     _number_phase1_links_by_source,
     _phase1_linkless_modes,
     _round_robin_phase1_links,
+    _selected_web_link_from_match,
 )
 from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
@@ -1939,26 +1940,8 @@ async def handle_proactive_chat(
                     )
                 else:
                     if matched:
-                        selected_web_link = dict(matched)
-                        canonical_title = matched.get("title", "")
-                        selected_title = (
-                            canonical_title
-                            if matched.get("mode") == "community"
-                            else web_parsed.get("title", canonical_title)
-                        )
-                        selected_web_link.update(
-                            {
-                                "title": selected_title,
-                                "url": matched["url"],
-                                "source": (
-                                    matched.get("source", "")
-                                    if matched.get("mode") == "community"
-                                    else web_parsed.get(
-                                        "source", matched.get("source", "")
-                                    )
-                                ),
-                                "mode": matched.get("mode", "web"),
-                            }
+                        selected_web_link = _selected_web_link_from_match(
+                            matched, web_parsed
                         )
                         print(
                             f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"

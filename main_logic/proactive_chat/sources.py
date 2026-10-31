@@ -40,6 +40,8 @@ from utils.web_scraper import (
     format_trending_content,
     format_video_content,
     format_window_context_content,
+    google_trend_headline,
+    steam_game_summary,
 )
 
 from .content_logging import (
@@ -103,20 +105,22 @@ def _extract_links_from_raw(
     try:
         if mode == "news":
             news = raw_data.get("news", {})
+            is_china = raw_data.get("region", "china") == "china"
             weibo_or_twitter: list[dict] = []
             for item in news.get("trending", []) or []:
                 title = item.get("word", "") or item.get("name", "")
                 url = item.get("url", "")
                 if title and url:
-                    weibo_or_twitter.append(
-                        {
-                            "title": title,
-                            "url": url,
-                            "source": "微博"
-                            if raw_data.get("region", "china") == "china"
-                            else "Twitter",
-                        }
-                    )
+                    link = {
+                        "title": title,
+                        "url": url,
+                        "source": "微博" if is_china else "Twitter",
+                    }
+                    if not is_china:
+                        # Overseas candidates hand Phase 2 their source facts
+                        # (see prepare_selected_web_candidate); internal only.
+                        link["grounded_news"] = True
+                    weibo_or_twitter.append(link)
             xhh_links: list[dict] = []
             for post in raw_data.get("xhh", {}).get("posts", []) or []:
                 title = post.get("title", "")
@@ -125,6 +129,42 @@ def _extract_links_from_raw(
                     xhh_links.append(
                         {"title": title, "url": url, "source": "小黑盒"}
                     )
+
+            google_trends_links: list[dict] = []
+            google_trends = raw_data.get("google_trends", {}) or {}
+            for item in google_trends.get("trending", []) or []:
+                title = item.get("word", "")
+                url = item.get("url", "")
+                if title and url:
+                    link = {
+                        "title": title,
+                        "url": url,
+                        "source": "Google Trends",
+                        "grounded_news": True,
+                    }
+                    # Phase 1 renders linked candidates instead of
+                    # formatted_content, so carry the headline on the link.
+                    headline = google_trend_headline(item)
+                    if headline:
+                        link["description_hint"] = headline
+                    google_trends_links.append(link)
+
+            steam_links: list[dict] = []
+            steam = raw_data.get("steam", {}) or {}
+            for game in steam.get("games", []) or []:
+                title = game.get("title", "")
+                url = game.get("url", "")
+                if title and url:
+                    link = {
+                        "title": title,
+                        "url": url,
+                        "source": "Steam",
+                        "grounded_news": True,
+                    }
+                    summary = steam_game_summary(game)
+                    if summary:
+                        link["description_hint"] = summary
+                    steam_links.append(link)
 
             tieba_links: list[dict] = []
             tieba = raw_data.get("tieba", {}) or {}
@@ -148,7 +188,13 @@ def _extract_links_from_raw(
 
             links.extend(
                 _interleave_link_groups(
-                    [weibo_or_twitter, xhh_links, tieba_links]
+                    [
+                        weibo_or_twitter,
+                        google_trends_links,
+                        steam_links,
+                        xhh_links,
+                        tieba_links,
+                    ]
                 )
             )
 

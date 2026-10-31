@@ -92,6 +92,8 @@ from .trending_content import (
     normalize_neko_community_feed,
     normalize_xhh_feed,
 )
+from .google_trends_feed import fetch_google_trends, google_trend_headline
+from .steam_store_feed import fetch_steam_featured, steam_game_details, steam_game_summary
 from .twitch_feed import fetch_twitch_live_streams
 from .youtube_feed import fetch_youtube_home_feed
 from .window_context import (

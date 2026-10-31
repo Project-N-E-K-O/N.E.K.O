@@ -1487,12 +1487,20 @@ async def test_fetch_news_content_routes_non_china_to_twitter(monkeypatch):
         }
 
     async def fake_xhh(limit):
-        return {"success": False, "error": "not configured", "posts": []}
+        raise AssertionError("non-China news must not fetch Xiaoheihe")
+
+    async def fake_google_trends(limit):
+        return {"success": False, "error": "not reachable", "trending": []}
+
+    async def fake_steam(limit):
+        return {"success": False, "error": "not reachable", "games": []}
 
     async def fake_neko_community(limit):
         return {"success": False, "error": "not configured", "posts": []}
 
     monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
+    monkeypatch.setattr(trending_content, "fetch_google_trends", fake_google_trends)
+    monkeypatch.setattr(trending_content, "fetch_steam_featured", fake_steam)
     monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
     monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
     monkeypatch.setattr(trending_content, "fetch_twitter_trending", fake_twitter)

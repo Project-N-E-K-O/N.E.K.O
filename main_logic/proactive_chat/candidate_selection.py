@@ -29,16 +29,24 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     """Render useful candidate evidence without leaking bulky raw metadata."""
 
     is_community_card = item.get("mode") == "community"
+    # Overseas news titles and summaries (trend terms, headlines, Steam store
+    # copy) are untrusted free text too. Escaping the title keeps a literal
+    # " | " from truncating phase1_rendered_title; matching also checks it.
+    escape_grounded = bool(item.get("grounded_news"))
 
-    def _field_text(value: Any) -> str:
+    def _field_text(value: Any, *, field: str = "") -> str:
         text = " ".join(str(value or "").split())
-        if not is_community_card:
-            return text
-        # Community card fields are public, untrusted text inside a prompt
-        # section whose structural delimiters use ``=`` and ``|``.
-        return _escape_phase1_community_text(text)
+        if is_community_card or (
+            escape_grounded and field in {"title", "description_hint"}
+        ):
+            # Community card fields are public, untrusted text inside a prompt
+            # section whose structural delimiters use ``=`` and ``|``.
+            return _escape_phase1_community_text(text)
+        return text
 
-    title = str(item.get("phase1_title") or _field_text(item.get("title"))).strip()
+    title = str(
+        item.get("phase1_title") or _field_text(item.get("title"), field="title")
+    ).strip()
     details: list[str] = []
     field_labels = (
         ("source", "来源"),
@@ -57,7 +65,7 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
                 if _field_text(tag)
             )
         else:
-            value = _field_text(raw_value)
+            value = _field_text(raw_value, field=field)
         if not value:
             continue
         if field == "description_hint":
@@ -68,6 +76,41 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
         details.append(f"发布时间戳: {_field_text(published_at)}")
     suffix = f" | {' | '.join(details)}" if details else ""
     return f"{index}. {title}{suffix}"
+
+
+def _selected_web_link_from_match(
+    matched: dict[str, Any], web_parsed: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the selected web link from a matched Phase 1 candidate.
+
+    Community cards and overseas grounded news render escaped text in Phase 1,
+    so the model may echo escaped titles; keep their canonical title and source
+    for Phase 2 and the public link. Other sources keep the model's wording.
+    """
+
+    keep_canonical = matched.get("mode") == "community" or bool(
+        matched.get("grounded_news")
+    )
+    canonical_title = matched.get("title", "")
+    canonical_source = matched.get("source", "")
+    selected = dict(matched)
+    selected.update(
+        {
+            "title": (
+                canonical_title
+                if keep_canonical
+                else web_parsed.get("title", canonical_title)
+            ),
+            "url": matched["url"],
+            "source": (
+                canonical_source
+                if keep_canonical
+                else web_parsed.get("source", canonical_source)
+            ),
+            "mode": matched.get("mode", "web"),
+        }
+    )
+    return selected
 
 
 def _number_phase1_links_by_source(

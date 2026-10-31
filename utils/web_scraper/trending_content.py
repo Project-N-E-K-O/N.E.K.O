@@ -45,6 +45,9 @@ from .platform_helpers import (
 )
 from .youtube_feed import fetch_youtube_home_feed
 from .twitch_feed import fetch_twitch_live_streams
+from .google_trends_feed import fetch_google_trends, google_trend_headline
+from .steam_store_feed import fetch_steam_featured, steam_game_details
+from .news_filters import is_tragic_news_text
 from .bilibili_content import fetch_bilibili_radar
 
 
@@ -887,13 +890,26 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
         response["error"] = "; ".join(errors) if errors else "Twitch 与 YouTube 获取失败（无错误详情）"
     return response
 
+def _drop_tragic_twitter_trends(twitter_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove overseas Twitter trends about death, violence, or disasters."""
+    kept = [
+        item for item in twitter_result.get('trending', []) or []
+        if not is_tragic_news_text(item.get('word', '') or item.get('name', ''))
+    ]
+    filtered = {**twitter_result, 'trending': kept}
+    if not kept:
+        filtered['success'] = False
+        filtered['error'] = 'Twitter returned only filtered trends'
+    return filtered
+
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch news/trending-topic content based on the user's region
     
     Chinese region: trending Weibo topics, Tieba community discussions,
     and Xiaoheihe feed
-    non-Chinese region: Twitter trends
+    non-Chinese region: Twitter trends, Google Trends daily searches, and
+    Steam store top sellers/new releases
     
     Args:
         limit: maximum amount of content
@@ -945,21 +961,43 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
 
         # Xiaoheihe is a Chinese-language gaming community; keep it out of
         # non-China news so overseas users are not handed Chinese posts.
-        logger.info("检测到非中文区域，获取 Twitter 热门话题")
-        try:
-            twitter_result = await fetch_twitter_trending(limit)
-        except Exception as twitter_error:
-            logger.warning(f"Twitter 热门话题获取失败: {twitter_error}")
-            twitter_result = {'success': False, 'error': str(twitter_error)}
+        # Google Trends and Steam are localized by the user's language.
+        logger.info("检测到非中文区域，并行获取 Twitter、Google Trends 与 Steam 内容")
+        twitter_result, google_trends_result, steam_result = await asyncio.gather(
+            fetch_twitter_trending(limit),
+            fetch_google_trends(limit),
+            fetch_steam_featured(limit),
+            return_exceptions=True,
+        )
+        # BaseException: a sub-task cancelled on its own comes back as CancelledError.
+        if isinstance(twitter_result, BaseException):
+            logger.warning(f"Twitter 热门话题获取失败: {twitter_result}")
+            twitter_result = {'success': False, 'error': str(twitter_result)}
+        elif twitter_result.get('success'):
+            twitter_result = _drop_tragic_twitter_trends(twitter_result)
+        if isinstance(google_trends_result, BaseException):
+            logger.warning(f"Google Trends 获取失败: {google_trends_result}")
+            google_trends_result = {'success': False, 'error': str(google_trends_result), 'trending': []}
+        if isinstance(steam_result, BaseException):
+            logger.warning(f"Steam 商店热门获取失败: {steam_result}")
+            steam_result = {'success': False, 'error': str(steam_result), 'games': []}
 
-        success = bool(twitter_result.get('success'))
+        source_results = (twitter_result, google_trends_result, steam_result)
+        success = any(item.get('success') for item in source_results)
         response = {
             'success': success,
             'region': region,
             'news': twitter_result,
+            'google_trends': google_trends_result,
+            'steam': steam_result,
         }
         if not success:
-            response['error'] = str(twitter_result.get('error') or 'Unable to fetch trending topics')
+            errors = [
+                str(item.get('error'))
+                for item in source_results
+                if item.get('error')
+            ]
+            response['error'] = '; '.join(errors) if errors else 'Unable to fetch trending topics'
         return response
     except Exception as e:
         logger.error(f"获取热议内容失败: region={region} error={e}")
@@ -1630,6 +1668,37 @@ def _format_twitter_trending(trending_list: List[Dict], limit: int = 5) -> List[
     output_lines.append("")
     return output_lines
 
+def _format_google_trends(trending_list: List[Dict], geo: str = '', limit: int = 5) -> List[str]:
+    """Format Google Trends daily searches with their top headline"""
+    header = f"【Google Trends ({geo})】" if geo else "【Google Trends】"
+    output_lines = [header]
+    for i, item in enumerate(trending_list[:limit], 1):
+        line = f"{i}. {item.get('word', '')}"
+        traffic = item.get('traffic', '')
+        if traffic:
+            line += f" ({traffic} searches)"
+        headline = google_trend_headline(item)
+        if headline:
+            line += "\n   " + headline
+        output_lines.append(line)
+    output_lines.append("")
+    return output_lines
+
+def _format_steam_featured(games: List[Dict], limit: int = 5) -> List[str]:
+    """Format Steam store top sellers and new releases"""
+    output_lines = ["【Steam Store】"]
+    for i, game in enumerate(games[:limit], 1):
+        details = steam_game_details(game)
+        line = f"{i}. {game.get('title', '')}"
+        if details:
+            line += f" ({details})"
+        description = game.get('description', '')
+        if description:
+            line += "\n   " + description
+        output_lines.append(line)
+    output_lines.append("")
+    return output_lines
+
 def format_trending_content(trending_content: Dict[str, Any]) -> str:
     """
     Format trending content into a readable string
@@ -1722,7 +1791,7 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     Formats automatically by region:
     - Chinese region: trending Weibo topics, Tieba community discussions,
       and Xiaoheihe feed
-    - non-Chinese region: Twitter trends and Xiaoheihe feed
+    - non-Chinese region: Twitter trends, Google Trends, and Steam store
     
     Args:
         news_content: result returned by fetch_news_content
@@ -1749,6 +1818,15 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
         if news_data.get('success'):
             trending_list = news_data.get('trending', [])
             output_lines.extend(_format_twitter_trending(trending_list))
+        google_trends_data = news_content.get('google_trends', {}) or {}
+        if google_trends_data.get('success'):
+            output_lines.extend(_format_google_trends(
+                google_trends_data.get('trending', []),
+                geo=google_trends_data.get('geo', ''),
+            ))
+        steam_data = news_content.get('steam', {}) or {}
+        if steam_data.get('success'):
+            output_lines.extend(_format_steam_featured(steam_data.get('games', [])))
 
     xhh_data = news_content.get('xhh', {})
     if xhh_data.get('success'):
