@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal, get_args
 from urllib.parse import urlsplit
 
-from main_logic.recommendation_policy import (
+from services.proactive_feedback.rules import (
     POLICY_RETENTION_SECONDS, apply_policy_decision, canonical_category,
 )
 

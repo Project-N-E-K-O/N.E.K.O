@@ -14,7 +14,7 @@ import pytest
 
 import main_logic.recommendation_feedback as feedback_module
 from main_logic.recommendation_feedback import FeedbackConflict, RecommendationStore
-from main_logic.recommendation_policy import (
+from services.proactive_feedback.rules import (
     COOLDOWN_SECONDS, DECLINE_HALF_LIFE_SECONDS, MIN_PREFERENCE_FACTOR,
     POLICY_RETENTION_SECONDS, apply_policy_decision, canonical_category,
     cooldown_active, decayed_decline_count, preference_factor,

@@ -11,7 +11,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from threading import RLock
 
-from main_logic.recommendation_policy import (
+from services.proactive_feedback.rules import (
     COOLDOWN_SECONDS, canonical_category, decayed_decline_count, preference_factor,
 )
 from services.chat_sync import host

@@ -47,7 +47,7 @@ from config.prompts.prompts_proactive import (
 )
 from config.prompts.prompts_sys import _loc
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.recommendation_policy import canonical_category
+from services.proactive_feedback.rules import canonical_category
 from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
