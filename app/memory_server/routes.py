@@ -7646,6 +7646,28 @@ async def get_settings(lanlan_name: str):
     )
 
 
+@app.get("/internal/memory/{lanlan_name}/persona")
+async def get_private_persona_snapshot(lanlan_name: str):
+    """Return the native retained private persona projection."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    manager = runtime.persona_manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    try:
+        return await manager.aget_private_persona_snapshot(lanlan_name)
+    except OverflowError as exc:
+        raise HTTPException(status_code=413, detail={
+            "code": "MEMORY_RESPONSE_TOO_LARGE",
+            "message": "Persona snapshot exceeds internal limit",
+        }) from exc
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "code": "MEMORY_PROTOCOL_ERROR", "message": "Malformed persona data",
+        }) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Persona storage unavailable") from exc
+
+
 @app.get("/get_persona/{lanlan_name}")
 async def get_persona(lanlan_name: str):
     """Return the full persona JSON (for the UI / memory_browser)."""

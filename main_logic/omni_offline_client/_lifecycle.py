@@ -17,9 +17,13 @@ import asyncio
 import contextlib
 import functools
 import inspect
+import time
 import uuid
 
 from main_logic.agent_event_bus import (
+    conversation_reply_observation,
+    conversation_reply_origin,
+    schedule_conversation_fact_observed_best_effort,
     publish_conversation_turn_observed_best_effort,
 )
 from main_logic.proactive_delivery import (
@@ -231,6 +235,7 @@ class _LifecycleMixin:
         turn_type: str,
         conversation_id: str,
         message_count: int,
+        metadata: dict | None = None,
     ) -> bool:
         """Copy one message of this turn onto the plugin conversation bus.
 
@@ -267,6 +272,7 @@ class _LifecycleMixin:
                 conversation_id=conversation_id,
                 source=_BUS_CONVERSATION_SOURCE,
                 message_count=message_count,
+                **({"metadata": metadata} if metadata is not None else {}),
             ))
             return published
         except asyncio.CancelledError:
@@ -666,6 +672,22 @@ class _LifecycleMixin:
         # value**, letting plugins reconnect images seen by the model with the resulting speech in one
         # turn. Proactive turns lack external IDs, exclusive to independent ASR, so mint one now.
         _bus_turn_id = uuid.uuid4().hex
+        _observation = None
+        if reply_owner is None and completion_mode == "proactive":
+            origin = conversation_reply_origin.get()
+            _observation = {
+                "reply_id": _bus_turn_id,
+                "origin": origin,
+                "started": False,
+            }
+
+        async def _emit_observed_text(*args, **kwargs):
+            token = conversation_reply_observation.set(_observation)
+            try:
+                return await self.on_text_delta(*args, **kwargs)
+            finally:
+                conversation_reply_observation.reset(token)
+
         # Frames actually attached after budget reduction. Initialize outside if images: text-only proactive
         # turns skip that branch while publishing below unconditionally reads it.
         _bus_frames: list = []
@@ -933,7 +955,7 @@ class _LifecycleMixin:
                 assistant_message += flush_text
                 assistant_message_total += flush_text
                 if self.on_text_delta:
-                    await self.on_text_delta(flush_text, is_first_chunk)
+                    await _emit_observed_text(flush_text, is_first_chunk)
                 is_first_chunk = False
                 emitted_any = True
                 # Replies shorter than prefix-buffer thresholds entirely use this path without entering chunk handling;
@@ -942,6 +964,8 @@ class _LifecycleMixin:
 
         # Streaming state the flush reads; every attempt resets it.
         task_cancelled = False
+        observation_failed = False
+        observation_completed = False
         prefix_buffer = ""
         prefix_checked = True
         is_first_chunk = True
@@ -1075,7 +1099,7 @@ class _LifecycleMixin:
                             assistant_message += emit_content
                             assistant_message_total += emit_content
                             if self.on_text_delta:
-                                await self.on_text_delta(emit_content, is_first_chunk)
+                                await _emit_observed_text(emit_content, is_first_chunk)
                             is_first_chunk = False
                             emitted_any = True
                             # This turn actually spoke; show suspended image-reduction notices now.
@@ -1085,9 +1109,12 @@ class _LifecycleMixin:
                     if self._response_generation_is_active(response_generation):
                         await _flush_prefix_buffer()
 
+                    observation_completed = self._response_generation_is_active(response_generation)
+                    observation_failed = False
                     break  # Stream ended normally; leave retry loop.
 
                 except _llm_retry_error_types() as e:
+                    observation_failed = True
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
@@ -1142,6 +1169,7 @@ class _LifecycleMixin:
                     assistant_message_total = ""
                     break
         except Exception as e:
+            observation_failed = True
             if _is_api_key_rejected_error(e):
                 logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                 if self.on_status_message:
@@ -1310,6 +1338,17 @@ class _LifecycleMixin:
             reported_committed = (content_committed or tool_round_kept) and not (
                 completion_mode == "response" and response_cancelled
             )
+            if task_cancelled or response_cancelled:
+                observation_reason = "unknown"
+            elif observation_failed:
+                observation_reason = "failed"
+            elif observation_completed:
+                observation_reason = "completed"
+            else:
+                observation_reason = "unknown"
+            if reply_owner is not None and hasattr(reply_owner, "observation_close_reason"):
+                if reply_owner.observation_close_reason == "unknown":
+                    reply_owner.observation_close_reason = observation_reason
             if completion_mode == "response":
                 done_callback = response_done_callback or self.on_response_done
                 if not completion_taken_over and done_callback:
@@ -1344,6 +1383,27 @@ class _LifecycleMixin:
             # At the **end** of finally after finalization callbacks: courtesy copies cannot
             # introduce cancellation before user-visible TTS cleanup, turn end, or request-ID
             # cleanup.
+            if _observation is not None and _observation["started"]:
+                if interrupter_owned:
+                    close_reason = "interrupted"
+                else:
+                    close_reason = observation_reason
+                schedule_conversation_fact_observed_best_effort(
+                    self.lanlan_name,
+                    fact="reply.closed",
+                    payload={
+                        "reply_id": _bus_turn_id,
+                        "input_id": None,
+                        "turn_id": _observation.get("turn_id"),
+                        "character": self.lanlan_name,
+                        "text": committed_text or None,
+                        "origin": _observation["origin"],
+                        "audio_expected": None,
+                        "text_state": "closed",
+                        "close_reason": close_reason,
+                        "occurred_at": time.time(),
+                    },
+                )
             if content_committed and _bus_instruction_task is not None:
                 # Preserve order by **chaining**, not waiting. Instructions/replies share a turn and
                 # plugins require that sequence, but awaiting instruction tasks inside finally
@@ -1367,6 +1427,14 @@ class _LifecycleMixin:
                         # Two records total so far: instruction + this reply. Receiving
                         # plugins therefore know they hold the complete turn.
                         message_count=2,
+                        **({"metadata": {
+                            "reply_id": reply_owner.observation_id,
+                            "input_id": reply_owner.observation_input_id,
+                            "origin": reply_owner.observation_origin,
+                        }} if reply_owner is not None and hasattr(reply_owner, "observation_id") else (
+                            {"metadata": {"reply_id": _bus_turn_id, "origin": _observation["origin"]}}
+                            if _observation is not None else {}
+                        )),
                     )
                 )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 PROTOCOL_VERSION = 1
@@ -16,6 +16,8 @@ RpcOp = Literal[
     "bus.publish",
     "bus.get_recent",
     "bus.query",
+    "bus.conversations.get",
+    "bus.conversations.get_message",
 ]
 
 
@@ -97,6 +99,38 @@ class BusQueryResult(BaseModel):
     light: bool
 
 
+class ConversationGetArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    character: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    role: Optional[Literal["user", "assistant", "instruction", "unknown"]] = None
+    kind: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    input_source: Optional[Literal["text", "voice", "unknown"]] = None
+    origin_kind: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    max_count: int = Field(default=50, ge=1, le=2**63 - 1)
+    order: Literal["asc", "desc"] = "asc"
+    since_ts: Optional[float] = None
+
+    @field_validator("character", "kind", "origin_kind")
+    @classmethod
+    def nonblank_filter(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("filter must not be blank")
+        return value
+
+
+class ConversationGetMessageArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    message_id: str = Field(min_length=1, max_length=256)
+
+    @field_validator("message_id")
+    @classmethod
+    def nonblank_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message_id must not be blank")
+        return value
+
+
 class IngestDeltaItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -162,6 +196,8 @@ def export_json_schemas() -> Dict[str, Any]:
         "rpc_error": RpcError.model_json_schema(),
         "bus_get_recent_args": BusGetRecentArgs.model_json_schema(),
         "bus_get_recent_result": BusGetRecentResult.model_json_schema(),
+        "conversation_get_args": ConversationGetArgs.model_json_schema(),
+        "conversation_get_message_args": ConversationGetMessageArgs.model_json_schema(),
         "bus_query_args": BusQueryArgs.model_json_schema(),
         "bus_query_result": BusQueryResult.model_json_schema(),
         "ingest_delta_batch": IngestDeltaBatch.model_json_schema(),

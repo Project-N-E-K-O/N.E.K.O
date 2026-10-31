@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
+
 from ._shared import (
     GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     GEMINI_TURN_IMAGE_MIME,
@@ -1085,6 +1087,10 @@ class _GeminiMixin:
                             if not event_owner_is_current():
                                 return
                             self._gemini_user_transcript = ""  # Clear accumulation.
+                        self._realtime_conversation_observation = {
+                            "reply_id": uuid.uuid4().hex, "origin": None,
+                            "started": False, "closed": False, "lifecycle": "realtime",
+                        }
                         self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # Reset the first-chunk flag.
                         self._gemini_current_transcript = ""  # Clear accumulation.
@@ -1113,7 +1119,7 @@ class _GeminiMixin:
                         self._gemini_current_transcript += text
                         if not self._skip_until_next_response and not self._interrupted and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
-                            await self.on_text_delta(text, self._is_first_text_chunk)
+                            await self._observed_text_callback(self.on_text_delta, text, self._is_first_text_chunk)
                             if not event_owner_is_current():
                                 return
                             self._is_first_text_chunk = False
@@ -1198,6 +1204,8 @@ class _GeminiMixin:
                         self._note_voice_handoff_input_boundary(
                             expected_sequence=handoff_input_sequence,
                         )
+                    if not _owed_to_cancelled and event_owner_is_current() and not self._skip_until_next_response:
+                        self._close_realtime_conversation_observation("cancelled" if was_interrupted else "completed")
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")
@@ -1208,6 +1216,8 @@ class _GeminiMixin:
 
                 # Check for interruption.
                 if was_interrupted:
+                    if not _owed_to_cancelled and event_owner_is_current():
+                        self._close_realtime_conversation_observation("cancelled")
                     if (
                         not _owed_to_cancelled
                         and external_outcome_token is not None

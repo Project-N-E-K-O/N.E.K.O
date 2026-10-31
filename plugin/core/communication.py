@@ -470,7 +470,12 @@ class PluginCommunicationResourceManager:
         await self._run_on_owner_loop(self._send_plugin_response_local(msg))
 
     async def _send_plugin_response_local(self, msg: dict) -> None:
-        await self.transport.send_response(msg)
+        msg = dict(msg)
+        bounded = msg.pop("_bounded_downlink", False) is True
+        if bounded:
+            await self.transport.send_response(msg, bounded=True)
+        else:
+            await self.transport.send_response(msg)
 
     # ── status drain (sync, called from routes) ──────────────────
 

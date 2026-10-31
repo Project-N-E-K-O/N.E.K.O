@@ -21,11 +21,12 @@ working unchanged.
 import contextvars
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.logger_config import get_module_logger
@@ -328,6 +329,17 @@ class _ReplyTurn:
     turn_ended: bool = False
     taken_over: bool = False
     reply_tail: Any = None
+    observation_id: str = field(default_factory=lambda: uuid4().hex)
+    observation_input_id: str | None = None
+    observation_origin: dict | None = None
+    observation_audio_expected: bool | None = None
+    observation_turn_id: str | None = None
+    observation_started: bool = False
+    observation_closed: bool = False
+    observation_close_reason: str = "unknown"
+
+
+_reply_observation_owner = contextvars.ContextVar("reply_observation_owner", default=None)
 
 
 def _taken_over_reply_turn(kind) -> _ReplyTurn | None:

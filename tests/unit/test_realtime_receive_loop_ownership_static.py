@@ -41,7 +41,7 @@ def _find_function(tree: ast.AST, name: str) -> ast.AST:
 
 
 def _awaited_host_callback(stmt: ast.stmt) -> str | None:
-    """``await self.on_xxx(...)`` or ``await extra_event_handlers[...](...)``."""
+    """Find direct callbacks and callbacks passed through the observation wrapper."""
 
     if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Await):
         return None
@@ -56,6 +56,21 @@ def _awaited_host_callback(stmt: ast.stmt) -> str | None:
         and func.attr.startswith("on_")
     ):
         return func.attr
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "self"
+        and func.attr == "_observed_text_callback"
+        and call.args
+    ):
+        callback = call.args[0]
+        if (
+            isinstance(callback, ast.Attribute)
+            and isinstance(callback.value, ast.Name)
+            and callback.value.id == "self"
+            and callback.attr.startswith("on_")
+        ):
+            return callback.attr
     if isinstance(func, ast.Subscript):
         return "extra_event_handlers"
     return None
@@ -110,6 +125,14 @@ def _is_guarded(stmt: ast.stmt, location: dict, parent: dict) -> bool:
 def test_every_host_callback_in_the_receive_loop_rechecks_ownership() -> None:
     tree = ast.parse(_TRANSPORT.read_text(encoding="utf-8"))
     loop = _find_function(tree, "handle_messages")
+    wrapper = _find_function(tree, "_observed_text_callback")
+    assert any(
+        isinstance(node, ast.Await)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "callback"
+        for node in ast.walk(wrapper)
+    ), "the observation wrapper must await the supplied host callback"
     location, parent = _index_statements(loop)
 
     host_awaits: list[tuple[ast.stmt, str]] = []
@@ -139,3 +162,20 @@ def test_every_host_callback_in_the_receive_loop_rechecks_ownership() -> None:
         f"`if await {_GUARD}(): return` -- a replacement connection attaching "
         "during it would finalize the successor's turn: " + ", ".join(unguarded)
     )
+
+
+def test_observed_callback_is_discovered_and_requires_connection_guard() -> None:
+    tree = ast.parse("""
+async def handle_messages(self):
+    await self._observed_text_callback(self.on_text_delta, 'text', True)
+    if await retire_if_replaced():
+        return
+""")
+    loop = _find_function(tree, "handle_messages")
+    stmt = loop.body[0]
+    location, parent = _index_statements(loop)
+    assert _awaited_host_callback(stmt) == "on_text_delta"
+    assert _is_guarded(stmt, location, parent)
+    loop.body.pop()
+    location, parent = _index_statements(loop)
+    assert not _is_guarded(stmt, location, parent)

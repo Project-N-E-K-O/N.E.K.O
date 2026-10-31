@@ -6,7 +6,10 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Coroutine, Protocol, TYPE_CHECKING, runtime_checkable
+
+if TYPE_CHECKING:
+    from plugin.server.application.conversations import ConversationService
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
@@ -77,6 +80,21 @@ async def _held(lock: _CrossLoopLock) -> AsyncIterator[None]:
         lock.release()
 
 
+async def _on_subscription_loop(operation: Coroutine[Any, Any, None]) -> None:
+    """Keep the existing subscription manager on the loop that started it."""
+    task = getattr(bus_subscription_manager, "_task", None)
+    owner = task.get_loop() if isinstance(task, asyncio.Task) else None
+    if owner is not None and owner is not asyncio.get_running_loop() and owner.is_running():
+        try:
+            future = asyncio.run_coroutine_threadsafe(operation, owner)
+        except RuntimeError:
+            operation.close()
+            raise
+        await asyncio.wrap_future(future)
+    else:
+        await operation
+
+
 @runtime_checkable
 class _PluginHostContract(Protocol):
     async def start(self) -> None: ...
@@ -92,6 +110,7 @@ class _ShutdownResult:
 class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
+        self._conversation_service: ConversationService | None = None
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
         # Guards ``ensure_delivery_path_started`` so the startup lifecycle and a
@@ -123,6 +142,21 @@ class ServerLifecycleService:
         # mid-teardown would race the shutdown it is being torn down by.
         self._hot_reload_service = hot_reload_service
         self._hot_reload_started = False
+
+    def _read_conversation_message(self, message_id: str) -> dict | None:
+        reader = getattr(self._message_plane_runner, "get_conversation_message", None)
+        return reader(message_id) if callable(reader) else None
+
+    def _update_conversation_message(self, message_id: str, fields: dict) -> dict | None:
+        update = getattr(self._message_plane_runner, "update_conversation_message", None)
+        return update(message_id, fields) if callable(update) else None
+
+    def _accept_conversation_record(self, event: dict) -> None:
+        bus_subscription_manager.accept_conversation_record(event)
+
+    def conversation_service(self) -> ConversationService | None:
+        """Return only the instance owned by this delivery-path lifetime."""
+        return self._conversation_service
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -240,6 +274,13 @@ class ServerLifecycleService:
         """
         runner = self._message_plane_runner
         self._message_plane_runner = None
+        await _on_subscription_loop(
+            bus_subscription_manager.invalidate_conversations("message_plane_reset")
+        )
+        if self._conversation_service is not None:
+            bus_subscription_manager.set_conversation_observers()
+            self._conversation_service.close()
+            self._conversation_service = None
         self._plane_probe_failures = 0
 
         def _teardown() -> None:
@@ -352,8 +393,20 @@ class ServerLifecycleService:
             return True
         # Same process mints the credential and starts the plane that must
         # accept it; start_bridge() below is the only writer.
+        if self._conversation_service is None:
+            from plugin.server.application.conversations import ConversationService
+
+            self._conversation_service = ConversationService(
+                self._read_conversation_message,
+                update_message=self._update_conversation_message,
+            )
+            bus_subscription_manager.set_conversation_observers(
+                on_record=self._conversation_service.accept_message,
+                on_fact=self._conversation_service.accept_fact,
+            )
         self._message_plane_runner = build_message_plane_runner(
             auth_token=ingest_auth_token(),
+            on_record_accepted=self._accept_conversation_record,
         )
         self._plane_probe_failures = 0
         self._message_plane_runner.start()
@@ -516,8 +569,6 @@ class ServerLifecycleService:
         await self.ensure_delivery_path_started()
 
         await self._refresh_registry_and_start_autostart_plugins()
-
-        await bus_subscription_manager.start()
         logger.debug("bus subscription manager started")
 
         def _get_hosts() -> dict[str, object]:
@@ -567,6 +618,7 @@ class ServerLifecycleService:
                 # decided what there was to stop.
                 logger.debug("delivery path start skipped: shutting down")
                 return False
+            await _on_subscription_loop(bus_subscription_manager.start())
             if self._delivery_path_started:
                 # Revalidated, not trusted. Everything else in this file makes a
                 # failure visible; a latch that is never re-read would quietly
@@ -893,7 +945,7 @@ class ServerLifecycleService:
             await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
 
         async def _stop_bus():
-            await bus_subscription_manager.stop()
+            await _on_subscription_loop(bus_subscription_manager.stop())
 
         async def _stop_router():
             await hosts_stopped.wait()
@@ -922,6 +974,10 @@ class ServerLifecycleService:
                 had_errors = True
 
         # Phase 3: resource cleanup
+        if self._conversation_service is not None:
+            bus_subscription_manager.set_conversation_observers()
+            self._conversation_service.close()
+            self._conversation_service = None
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:
@@ -996,6 +1052,7 @@ async def ensure_plugin_messaging_started() -> bool:
     """
     await _ensure_plugin_router_started()
 
+
     # Idempotent, and bound to the module singleton on purpose: this entry has no
     # instance of its own. ``ServerLifecycleService.startup`` deliberately does
     # NOT come through here -- see ``_ensure_plugin_router_started``.
@@ -1019,6 +1076,11 @@ async def _ensure_plugin_router_started() -> None:
 
 
 _service = ServerLifecycleService()
+
+
+def get_conversation_service() -> ConversationService | None:
+    """Access the current delivery-path instance without constructing another."""
+    return _service.conversation_service()
 
 
 def _final_log_flush() -> None:

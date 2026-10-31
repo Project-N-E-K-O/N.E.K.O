@@ -44,6 +44,7 @@ from ._shared import (
     uuid,
     websockets,
 )
+from main_logic.agent_event_bus import conversation_reply_observation, schedule_conversation_fact_observed_best_effort
 from main_logic.provider_failure_signals import (
     CODES_REQUIRING_MSG_DETAIL,
     classify_provider_failure_text,
@@ -2415,6 +2416,41 @@ class _TransportMixin:
         self._is_first_transcript_chunk = False
         return pending
 
+    async def _observed_text_callback(self, callback, *args):
+        observation = getattr(self, "_realtime_conversation_observation", None)
+        if observation and observation.get("closed"):
+            observation = None
+        token = conversation_reply_observation.set(observation)
+        try:
+            return await callback(*args)
+        finally:
+            conversation_reply_observation.reset(token)
+
+    def _close_realtime_conversation_observation(self, status: str) -> None:
+        observation = getattr(self, "_realtime_conversation_observation", None)
+        if not observation or observation.get("closed") or not observation.get("started"):
+            return
+        observation["closed"] = True
+        if status in ("completed", "success", "succeeded"):
+            reason = "completed"
+        elif status in ("cancelled", "canceled"):
+            reason = "interrupted"
+        elif status in ("failed", "error"):
+            reason = "failed"
+        else:
+            reason = "unknown"
+        schedule_conversation_fact_observed_best_effort(
+            self.lanlan_name,
+            fact="reply.closed",
+            payload={
+                "reply_id": observation["reply_id"], "input_id": None,
+                "turn_id": observation.get("turn_id"),
+                "character": self.lanlan_name, "text": None,
+                "origin": observation["origin"], "audio_expected": None,
+                "text_state": "closed", "close_reason": reason, "occurred_at": time.time(),
+            },
+        )
+
     async def _emit_pending_output_transcript(
         self, pending: tuple[str, bool] | None
     ) -> None:
@@ -2423,7 +2459,7 @@ class _TransportMixin:
         if pending is None or not self.on_output_transcript:
             return
         text, is_first = pending
-        await self.on_output_transcript(text, is_first)
+        await self._observed_text_callback(self.on_output_transcript, text, is_first)
 
     def _clear_turn_response_state(self) -> None:
         """Drop the flags that say "a response is in progress".
@@ -2449,6 +2485,16 @@ class _TransportMixin:
         self._current_response_source = (
             arbiter.response_source_for(response_id) if arbiter is not None else None
         )
+        source = self._current_response_source
+        origin = None
+        if source == "proactive":
+            origin = {"kind": "unknown", "is_proactive": True, "plugin_id": None, "task_id": None}
+        elif source in ("external_asr", "external_asr_multimodal"):
+            origin = {"kind": "user_interaction", "is_proactive": False, "plugin_id": None, "task_id": None}
+        self._realtime_conversation_observation = ({
+            "reply_id": uuid.uuid4().hex, "origin": origin,
+            "started": False, "closed": False, "lifecycle": "realtime",
+        } if response_id else None)
         self._is_responding = True
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch
@@ -3414,6 +3460,7 @@ class _TransportMixin:
                         )
                     if await retire_if_replaced():
                         return
+                    self._close_realtime_conversation_observation(response_status)
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished(
                         connection_still_ours=receive_owner_is_current,
@@ -3555,7 +3602,7 @@ class _TransportMixin:
                             or _audio_already_spoken
                         )
                     ):
-                        await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                        await self._observed_text_callback(self.on_output_transcript, self._output_transcript_buffer, self._is_first_transcript_chunk)
                         if await retire_if_replaced():
                             return
                         self._is_first_transcript_chunk = False
@@ -3566,7 +3613,7 @@ class _TransportMixin:
                         if self.on_text_delta:
                             if "glm" not in self._model_lower:
                                 self._ai_recent_activity_time = time.time()
-                                await self.on_text_delta(event["delta"], self._is_first_text_chunk)
+                                await self._observed_text_callback(self.on_text_delta, event["delta"], self._is_first_text_chunk)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_text_chunk = False
@@ -3605,7 +3652,7 @@ class _TransportMixin:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
                             if transcript:
-                                await self.on_output_transcript(transcript, True)
+                                await self._observed_text_callback(self.on_output_transcript, transcript, True)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_transcript_chunk = False
@@ -3619,12 +3666,12 @@ class _TransportMixin:
                             else:
                                 if self._output_transcript_buffer:
                                     # logger.info(f"{self._output_transcript_buffer} is_first_chunk: True")
-                                    await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                                    await self._observed_text_callback(self.on_output_transcript, self._output_transcript_buffer, self._is_first_transcript_chunk)
                                     if await retire_if_replaced():
                                         return
                                     self._is_first_transcript_chunk = False
                                     self._output_transcript_buffer = ""
-                                await self.on_output_transcript(delta, self._is_first_transcript_chunk)
+                                await self._observed_text_callback(self.on_output_transcript, delta, self._is_first_transcript_chunk)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_transcript_chunk = False

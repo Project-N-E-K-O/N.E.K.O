@@ -510,7 +510,7 @@ async def test_partial_retry_reuses_the_running_plane_instead_of_building_a_seco
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -562,7 +562,7 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return healthy
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -621,7 +621,7 @@ async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -823,7 +823,7 @@ async def test_a_half_dead_plane_is_not_healthy_even_when_its_probe_answers(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True  # the RPC endpoint answers either way
 
-    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token: _Runner())
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token, on_record_accepted=None: _Runner())
     monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
     monkeypatch.setattr(module, "start_bridge", lambda: None)
@@ -904,7 +904,7 @@ async def test_an_unhealthy_plane_is_eventually_retired_and_rebuilt(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return healthy
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -969,7 +969,7 @@ async def test_a_latched_path_is_revalidated_not_trusted(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return plane_alive
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -1069,7 +1069,7 @@ async def test_retiring_the_plane_also_retires_both_bridges(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return False
 
-    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token: _Runner())
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token, on_record_accepted=None: _Runner())
     monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
     monkeypatch.setattr(module, "start_bridge", lambda: None)
@@ -1243,7 +1243,7 @@ async def test_a_dead_message_bridge_unlatches_the_path(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner

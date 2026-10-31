@@ -1653,6 +1653,9 @@ def _plugin_process_runner(
             # this instead of sending into a void (Codex).
             try:
                 ctx._downlink_ready.set()
+                from plugin.core.bus.rev import notify_receiver_ready
+
+                notify_receiver_ready()
             except Exception:
                 logger.exception("[Plugin Process] failed to mark downlink ready")
 

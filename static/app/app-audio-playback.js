@@ -582,7 +582,21 @@
     // buffered/playing). Rides the same ws as every other action, including
     // the Electron chat.html WSProxy/IPC bridge → Pet real ws. readyState
     // may be undefined on a proxy socket — send anyway (try/catch guards).
-    function sendVoicePlaybackSignal(action, turnId) {
+    // These IDs describe this page's observed playback attempts only. They do
+    // not replace the server turn ID or claim a reply association.
+    function newPlaybackObservationId() {
+        try {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                return window.crypto.randomUUID();
+            }
+        } catch (_) { /* Fall back when the browser denies secure randomness. */ }
+        return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+    }
+    const playbackPresenterId = newPlaybackObservationId();
+    let playbackObservation = null;
+    let playbackClosedObservation = null;
+
+    function sendVoicePlaybackSignal(action, turnId, stopReason) {
         try {
             var sock = S.socket;
             if (sock && typeof sock.send === 'function' &&
@@ -590,7 +604,11 @@
                 sock.send(JSON.stringify({
                     action: action,
                     turnId: turnId || null,
-                    source: 'audio_playback'
+                    source: 'audio_playback',
+                    presenterId: playbackPresenterId,
+                    ...(playbackObservation && playbackObservation.turnId === turnId && playbackObservation.socket === sock
+                        ? { presentationId: playbackObservation.id } : {}),
+                    ...(stopReason ? { stopReason: stopReason } : {})
                 }));
             }
         } catch (_) { /* noop — best-effort signal */ }
@@ -757,6 +775,11 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        playbackObservation = {
+            id: newPlaybackObservationId(), turnId: normalizedTurnId, socket: S.socket,
+            closeReason: playbackClosedObservation && playbackClosedObservation.turnId === normalizedTurnId &&
+                playbackClosedObservation.epoch === S.incomingAudioEpoch ? playbackClosedObservation.reason : null
+        };
         sendVoicePlaybackSignal('voice_play_start', normalizedTurnId);
     }
 
@@ -782,7 +805,10 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
-        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
+        var reason = playbackObservation && playbackObservation.turnId === normalizedTurnId
+            ? (playbackObservation.closeReason || 'unknown') : 'unknown';
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId, reason);
+        if (playbackObservation && playbackObservation.turnId === normalizedTurnId) playbackObservation = null;
     }
 
     function resolveAssistantSpeechCancelTurnId() {
@@ -857,7 +883,9 @@
         });
         // Cancel/interruption also means audio playback has stopped → open
         // the proactive gate (same as a natural end).
-        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId,
+            source === 'stuck_speaking_fallback' ? 'fallback' : 'canceled');
+        if (playbackObservation && playbackObservation.turnId === normalizedTurnId) playbackObservation = null;
     }
 
     function clearAssistantTurnCompletionFallback() {
@@ -889,6 +917,7 @@
     function resetAssistantAudioStreamClose() {
         clearAudioStreamCloseGiveUp();
         audioStreamHeaders.clear();
+        playbackClosedObservation = null;
         S.assistantAudioStreamClosedTurnId = null;
         S.assistantAudioStreamClosedEpoch = -1;
         S.assistantAudioTurnBySpeechId = {};
@@ -931,6 +960,10 @@
         // 的 response（工具调用后的续答）。作废后重新等下一条 audio_done，
         // 等不到就走 give-up。
         if (isAssistantAudioStreamClosed(normalizedTurnId)) {
+            playbackClosedObservation = null;
+            if (playbackObservation && playbackObservation.turnId === normalizedTurnId) {
+                playbackObservation.closeReason = null;
+            }
             logAudioLifecycle('rememberAssistantAudioSpeechTurn:reopen_after_close', {
                 speechId: sid,
                 turnId: normalizedTurnId
@@ -2152,6 +2185,7 @@
                     const beforeFlush = audioStreamHeaders.get(item.turnId);
                     if (item.force && (!beforeFlush ? item.receiveSequence !== null
                         : beforeFlush.sequence !== item.receiveSequence)) continue;
+                    var closeError = false;
                     try {
                         var tail = typeof flushOggOpusDecoder === 'function'
                             ? await Promise.race([
@@ -2161,7 +2195,10 @@
                             queueDecodedAssistantAudio(tail.float32Data, tail.sampleRate, item.epoch,
                                 item.speechId, item.turnId, tail.playbackGain);
                         }
-                    } catch (error) { console.error('Ogg Opus final flush failed:', error); }
+                    } catch (error) {
+                        console.error('Ogg Opus final flush failed:', error);
+                        closeError = true;
+                    }
                     // A later accepted header reopens the stream before this task can finish.
                     const latestHeader = audioStreamHeaders.get(item.turnId);
                     const stillClosed = latestHeader
@@ -2170,6 +2207,12 @@
                     if (item.epoch === S.incomingAudioEpoch && stillClosed) {
                         S.assistantAudioStreamClosedTurnId = item.turnId;
                         S.assistantAudioStreamClosedEpoch = item.epoch;
+                        // A synthetic close is a fallback, never proof of natural completion.
+                        var closeReason = closeError ? 'error' : (item.force ? 'fallback' : 'completed');
+                        playbackClosedObservation = { turnId: item.turnId, epoch: item.epoch, reason: closeReason };
+                        if (playbackObservation && playbackObservation.turnId === item.turnId) {
+                            playbackObservation.closeReason = closeReason;
+                        }
                     }
                     continue;
                 }

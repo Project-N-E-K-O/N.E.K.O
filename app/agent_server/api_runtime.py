@@ -16,6 +16,7 @@
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
 import math
+import uuid
 
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
@@ -391,11 +392,26 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
             "content": content,
             "metadata": metadata,
         }
+        for key in ("input_id", "reply_id"):
+            value = (event or {}).get(key, metadata.get(key))
+            if isinstance(value, str) and value:
+                record[key] = value
+        origin = (event or {}).get("origin", metadata.get("origin"))
+        if isinstance(origin, dict):
+            record["origin"] = dict(origin)
+        producer_time = (event or {}).get("ts")
+        if not isinstance(producer_time, bool):
+            try:
+                occurred_at = float(producer_time)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if math.isfinite(occurred_at):
+                    record["occurred_at"] = occurred_at
         # The publisher's event_id is this message's identity end to end, so a
         # puller can dedupe without unpacking, same as a frame.
         event_id = str((event or {}).get("event_id") or "")
-        if event_id:
-            record["id"] = event_id
+        record["id"] = event_id or uuid.uuid4().hex
         publish_record(
             store=CONVERSATIONS_STORE_NAME,
             record=record,
@@ -404,6 +420,27 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
         return True
     except Exception as exc:
         logger.debug("[ConversationBus] forward failed: %s", exc)
+        return False
+
+
+def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
+    """Forward an observed fact; never run plugin callbacks in this receive path."""
+    if not _user_plugins_enabled():
+        return False
+    try:
+        from plugin.server.lifecycle import get_conversation_service
+        from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
+
+        payload = event.get("payload")
+        if get_conversation_service() is None or not isinstance(payload, dict):
+            return False
+        payload = dict(payload)
+        payload["character"] = event.get("lanlan_name")
+        payload["observed_at"] = time.time()
+        bus_subscription_manager.accept_raw_conversation_fact(event.get("fact"), payload)
+        return True
+    except Exception:
+        logger.debug("[ConversationBus] fact forwarding failed", exc_info=True)
         return False
 
 
@@ -518,6 +555,9 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         return
     if event_type == "conversation_turn_observed":
         _forward_conversation_turn(event)
+        return
+    if event_type == "conversation_fact_observed":
+        _forward_conversation_fact(event)
         return
     if event_type == "analyze_request":
         messages = event.get("messages", [])

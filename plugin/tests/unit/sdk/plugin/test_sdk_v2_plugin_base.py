@@ -605,12 +605,16 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
     assert "EXTENDED_TYPES" not in mod.__all__
 
 
-def test_high_level_memory_client_surface_is_removed() -> None:
+def test_memory_client_is_explicit_without_reviving_removed_accessors() -> None:
     base = NekoPluginBase(ctx=_Ctx())
 
     assert not hasattr(base, "memory")
     assert not hasattr(plugin_root, "MemoryClient")
-    assert not hasattr(plugin_api, "MemoryClient")
+    from plugin.sdk.shared.memory.client import MemoryClient
+
+    assert plugin_api.MemoryClient is MemoryClient
+    assert isinstance(plugin_api.MemoryClient(base.ctx), MemoryClient)
+    assert not hasattr(base.ctx, "memory")
     assert not hasattr(runtime, "MemoryClient")
 
     with pytest.raises(ModuleNotFoundError):

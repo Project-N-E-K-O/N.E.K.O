@@ -137,13 +137,18 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
             break
     if (
         raw_name is None
-        and method == "POST"
+        and method in {"POST", "GET"}
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
         # Operation names may contain fixed subpaths but still match complete-string allowlists exactly.
         operation = "/".join(segments[1:])
-        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
+        if len(segments) >= 2 and (
+            (method == "POST" and operation in _CHARACTER_SCOPED_WRITE_OPS)
+            # The private snapshot uses the normal ensure path, which may
+            # initialize, migrate or synchronize and save persona data.
+            or (method == "GET" and operation == "persona")
+        ):
             raw_name = segments[0]
     if not raw_name:
         return None
