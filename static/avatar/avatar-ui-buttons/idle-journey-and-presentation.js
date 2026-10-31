@@ -1180,6 +1180,10 @@ function _finishNekoIdleCat1Walk(button) {
     state.actionSettled = true;
     _setNekoIdleCat1Classes(button, state);
     const localStretchStarted = _playNekoIdleCat1StretchAction(button, {
+        // A stretch reached as the tail of a Cat Mind small move remains
+        // owned by that autonomous run and must be cleanable with its parent
+        // action. Standalone local journey presentation stays independent.
+        source: state.catMindSource === 'cat_mind' ? 'cat_mind' : 'cat1-journey-local',
         onTerminal(result) {
             _completeNekoIdleCat1JourneyStretch(button, targetKind, result);
         }
@@ -1319,6 +1323,10 @@ function _updateNekoIdleCat1WalkSpeedRate(button, state, distance) {
 }
 
 function _stepNekoIdleCat1Walk(button, timestamp) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: false, reason: 'exploration-away' });
+        return;
+    }
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -1398,6 +1406,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 }
 
 function _startNekoIdleCat1Walk(button, target) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) return;
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
@@ -1439,6 +1448,7 @@ function _startNekoIdleCat1Walk(button, target) {
 }
 
 function _scheduleNekoIdleCat1WalkStart(button, target) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) return;
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.paused) return;
@@ -1594,6 +1604,11 @@ function _finishNekoIdleCat1PairMove(button) {
 }
 
 function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) {
+        const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+        if (state) _cancelNekoIdleCat1PairMove(state, { reason: 'exploration-away' });
+        return;
+    }
     if (_pauseNekoIdleCat1JourneyForGravity(button)) return;
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state || !state.pairMovePlan || state.paused) {
@@ -1870,6 +1885,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
 }
 
 function _scheduleNekoIdleCat1JourneySync(button) {
+    if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'journey' }).blocked) return;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
     if (_isNekoIdleCat1MovementAnchored(button)) {
         if (_isNekoIdleCat1EdgePeekActive(button)) {
@@ -2075,6 +2091,7 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
 function _applyNekoIdleReturnPresentation(button, tier) {
     if (!button) return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (_isNekoGoodbyeIdleBallButton(button)) {
         _setNekoGoodbyeIdleAppearanceForButton(button, _NEKO_GOODBYE_IDLE_APPEARANCE_BALL);
         button.setAttribute('data-neko-idle-tier', _NEKO_IDLE_TIER_NONE);
@@ -2100,6 +2117,15 @@ function _applyNekoIdleReturnPresentation(button, tier) {
         _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
         _cancelNekoIdleCat1StretchAction(button, { restoreArt: false });
         _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1PlayTeaserWandAction(button, {
+            restoreArt: false,
+            reason: 'cat-to-model'
+        });
+        _cancelNekoIdleCat1PettingAction(button, {
+            restoreArt: false,
+            reason: 'cat-to-model'
+        });
+        _applyNekoIdleCat1PettingAvailability(button);
         _cancelNekoIdleCat1Journey(button);
         const container = button.closest('[id$="-return-button-container"]');
         if (container) {
@@ -2120,6 +2146,15 @@ function _applyNekoIdleReturnPresentation(button, tier) {
             return;
         }
     }
+    // A repeated CAT1/appearance sync is not a new presentation owner.  Let
+    // the active independent action keep its current frame and terminal
+    // lifecycle; real tier, return and drag transitions cancel it explicitly.
+    if (currentTier === _NEKO_IDLE_TIER_CAT1 &&
+        normalizedTier === _NEKO_IDLE_TIER_CAT1 &&
+        _isNekoIdleCat1IndependentActionActive(button)) {
+        _applyNekoIdleCat1PettingAvailability(button);
+        return;
+    }
     if (button.__nekoIdleThoughtBubbleTier && button.__nekoIdleThoughtBubbleTier !== normalizedTier) {
         _clearNekoIdleThoughtBubble(button);
     }
@@ -2132,6 +2167,14 @@ function _applyNekoIdleReturnPresentation(button, tier) {
         _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
         _cancelNekoIdleCat1StretchAction(button, { restoreArt: false });
         _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+        _cancelNekoIdleCat1PlayTeaserWandAction(button, {
+            restoreArt: false,
+            reason: 'tier-change'
+        });
+        _cancelNekoIdleCat1PettingAction(button, {
+            restoreArt: false,
+            reason: 'tier-change'
+        });
         _cancelNekoIdleCat1Journey(button);
     }
     if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
@@ -2140,6 +2183,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
         if (wasCat1Drag) _fadeOutNekoIdleCat1DragSound();
     }
     button.setAttribute('data-neko-idle-tier', normalizedTier);
+    _applyNekoIdleCat1PettingAvailability(button);
 
     const container = button.closest('[id$="-return-button-container"]');
     if (container) {
@@ -2152,9 +2196,25 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     const art = button.querySelector('.neko-idle-return-art');
     const eatActionActive = _isNekoIdleCat1EatActionActive(button);
     const playActionActive = _isNekoIdleCat1PlayActionActive(button);
+    const teaserWandActionActive = _isNekoIdleCat1PlayTeaserWandActionActive(button);
+    const pettingActionActive = _isNekoIdleCat1PettingActionActive(button);
     if (art) {
         if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_NONE) {
             _setNekoIdleReturnDragActionArt(button, normalizedTier);
+        } else if (pettingActionActive && normalizedTier === _NEKO_IDLE_TIER_CAT1) {
+            _setNekoIdleReturnArtSource(
+                art,
+                _NEKO_IDLE_CAT1_PETTING_ASSET_URL,
+                normalizedTier,
+                { animate: false }
+            );
+        } else if (teaserWandActionActive && normalizedTier === _NEKO_IDLE_TIER_CAT1) {
+            _setNekoIdleReturnArtSource(
+                art,
+                _NEKO_IDLE_CAT1_PLAY_TEASER_WAND_ASSET_URL,
+                normalizedTier,
+                { animate: false }
+            );
         } else if (playActionActive && normalizedTier === _NEKO_IDLE_TIER_CAT1) {
             _setNekoIdleReturnArtSource(
                 art,
@@ -2176,7 +2236,8 @@ function _applyNekoIdleReturnPresentation(button, tier) {
             _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(normalizedTier), normalizedTier);
         }
     }
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && !dragActive && !eatActionActive && !playActionActive) {
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && !dragActive && !eatActionActive &&
+        !playActionActive && !teaserWandActionActive && !pettingActionActive) {
         _scheduleNekoIdleCat1JourneySync(button);
     }
 }
@@ -2197,6 +2258,24 @@ function _syncAllNekoIdleReturnButtons(tier) {
     });
 }
 
+function _isNekoPetCareExplorationAway() {
+    try {
+        return !!(window.nekoPetCareMode
+            && typeof window.nekoPetCareMode.isExplorationAway === 'function'
+            && window.nekoPetCareMode.isExplorationAway());
+    } catch (_) {
+        return false;
+    }
+}
+
+function _shouldApplyNekoIdleVisualTierDuringExploration(detail) {
+    if (!_isNekoPetCareExplorationAway()) return true;
+    const source = detail && typeof detail.source === 'string' ? detail.source : '';
+    // The explicit care wake is the bounded hand-off into the exploration
+    // departure. All later idle/tier events are subordinate to the nest.
+    return source === 'pet-care-user-action' || source === 'pet-care-exploration-away';
+}
+
 function _ensureNekoIdleReturnPresentationBridge() {
     if (window.__nekoIdleReturnPresentationBridgeBound) return;
     window.__nekoIdleReturnPresentationBridgeBound = true;
@@ -2214,6 +2293,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || detail.type !== 'visual-tier') {
             return;
         }
+        if (!_shouldApplyNekoIdleVisualTierDuringExploration(detail)) {
+            return;
+        }
         if (_getNekoGoodbyeIdleAppearance() === _NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             _stopNekoGoodbyeIdleBallCatSounds();
             _syncAllNekoIdleReturnButtons(detail.tier);
@@ -2226,6 +2308,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
 
     window.addEventListener('neko:goodbye-idle-appearance', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (_isNekoPetCareExplorationAway()) {
+            return;
+        }
         const appearance = _normalizeNekoGoodbyeIdleAppearance(detail && detail.mode);
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
             _setNekoGoodbyeIdleAppearanceForButton(button, appearance);
@@ -2250,6 +2335,18 @@ function _ensureNekoIdleReturnPresentationBridge() {
     window.addEventListener('neko:return-ball-manual-move', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || !detail.container) return;
+        const explorationBlocked = window.nekoPetCareMode &&
+            typeof window.nekoPetCareMode.shouldBlockEntityOutput === 'function' &&
+            window.nekoPetCareMode.shouldBlockEntityOutput({ source: 'return-ball-drag' }).blocked;
+        if (explorationBlocked && String(detail.reason || '').startsWith('return-ball-drag-')) {
+            // A return click is handled by the separate unified return event;
+            // drag preparation, motion and tail reactions remain closed while
+            // the cat is away.
+            if (detail.reason === 'return-ball-drag-end' || detail.reason === 'return-ball-drag-cancel') {
+                _finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });
+            }
+            return;
+        }
         const manualMoveButton = _getNekoIdleReturnButtonFromContainer(detail.container);
         if (_isNekoIdleCat1PlaygroundEntryOrDropActive(manualMoveButton)) return;
         if (detail.reason === 'return-ball-drag-end') {

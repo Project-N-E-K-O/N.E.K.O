@@ -184,6 +184,30 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
     assert "getReturnBallDragScreenRect(" in source
 
 
+def test_exploration_gate_blocks_late_visual_tier_from_reopening_idle_dock():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    assert "petCareMode.isExplorationAway()" in source
+    # _read() exposes the contract view for split chat-window parts and
+    # removes the shared I. prefix.
+    assert "idleDockTier = IDLE_DOCK_TIER_NONE;" in source
+    assert "exitIdleDock({});" in source
+
+
+def test_exploration_gate_blocks_broadcast_return_ball_from_reopening_electron_idle_dock():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    handler = _between(
+        source,
+        "handleElectronIdleReturnBallState = function handleElectronIdleReturnBallState(detail) {",
+        "var tier = detail && detail.tier;",
+    )
+    assert "petCareMode.isExplorationAway()" in handler
+    assert "detail.explorationAway === true" in handler
+    assert "hasElectronIdleDockPendingOrActive()" in handler
+    assert "exitElectronIdleDock({});" in handler
+
+
 def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
     avatar_source = _read(AVATAR_UI_BUTTONS_PATH)

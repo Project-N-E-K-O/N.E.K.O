@@ -26,6 +26,7 @@
     // current asset's stable, frame-union hull through the resource registry.
     const insets = Object.freeze({ left: 89 / 512, top: 49 / 512, right: 118 / 512, bottom: 19 / 512 });
     let current = null;
+    let explorationAway = false;
     let latest = null;
     let lastFreeDesktopSceneAt = 0;
     // Only an explicit pointer release may hand the cat to a window.
@@ -293,6 +294,7 @@
     }
 
     function canWalk(button) {
+        if (explorationAway) return false;
         return !current || (button && current.button !== button)
             || (current.grounded && current.vx === 0 && current.squash === 0 && !paused(current));
     }
@@ -518,7 +520,7 @@
     }
 
     function requestAdmission(button, body = null, options = {}) {
-        if (disposed || !playgroundActive || current || !button) return false;
+        if (disposed || explorationAway || !playgroundActive || current || !button) return false;
         // A release after a confirmed empty scene is a completed failed
         // handoff, not a promise to retry when a future window appears. A new
         // drag remains eligible and will replace this fact once it starts.
@@ -793,6 +795,7 @@
 
     function handleSensingResult(result) {
         if (disposed) return false;
+        if (explorationAway) return false;
         if (result && latest && result.sessionId === latest.sessionId
             && Number(result.revision) <= latest.revision) return false;
         const pendingRead = result && result.status === 'pending' && result.reason === 'busy';
@@ -1271,10 +1274,21 @@
     });
     const unsubscribe = sensingContext.subscribe(handleSensingResult);
     handleSensingResult(sensingContext.getCurrent());
+    function handleExplorationGate(event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+        if (!activityId) return;
+        const petCareMode = window.nekoPetCareMode;
+        if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+            && !petCareMode.shouldApplyExplorationGate(detail)) return;
+        explorationAway = detail.active === true;
+        if (explorationAway) cancelAll();
+    }
     window.addEventListener(MANUAL_MOVE_EVENT, handleManualMove);
     window.addEventListener(PLAYGROUND_EVENT, handlePlayground);
     window.addEventListener('neko:auto-goodbye:state-change', handleLifecycle);
     window.addEventListener('neko:cat-return-commit', cancelAll);
+    window.addEventListener('neko:pet-care:exploration-gate', handleExplorationGate);
     window.addEventListener('neko:goodbye-state-cleared', cancelAll);
     window.addEventListener('pagehide', dispose);
     window.addEventListener('beforeunload', dispose);
@@ -1296,6 +1310,7 @@
         window.removeEventListener(PLAYGROUND_EVENT, handlePlayground);
         window.removeEventListener('neko:auto-goodbye:state-change', handleLifecycle);
         window.removeEventListener('neko:cat-return-commit', cancelAll);
+        window.removeEventListener('neko:pet-care:exploration-gate', handleExplorationGate);
         window.removeEventListener('neko:goodbye-state-cleared', cancelAll);
         window.removeEventListener('pagehide', dispose);
         window.removeEventListener('beforeunload', dispose);

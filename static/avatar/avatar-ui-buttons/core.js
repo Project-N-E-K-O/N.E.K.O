@@ -250,6 +250,8 @@ function _removeFloatingButtonsElement(el) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1StretchAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1PlayAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1PlayTeaserWandAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1PettingAction(returnButton, { restoreArt: false });
             _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1Journey(returnButton);
         }
@@ -616,6 +618,10 @@ const _NEKO_IDLE_CAT1_EAT_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.eat'
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false });
+const _NEKO_IDLE_CAT1_PLAY_TEASER_WAND_ACTION_ID = 'play_teaser_wand';
+const _NEKO_IDLE_CAT1_PLAY_TEASER_WAND_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_teaser_wand', { random: false });
+const _NEKO_IDLE_CAT1_PETTING_ACTION_ID = 'cat1_petting';
+const _NEKO_IDLE_CAT1_PETTING_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.petting', { random: false });
 const _NEKO_IDLE_CAT1_PLAY_SOUND_VOLUME = 0.10;
 const _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_THOUGHT_BUBBLE_VISIBLE_MS = 5000;
@@ -677,6 +683,7 @@ const _nekoIdleCat1RapidDragSoundState = {
     fadeToken: 0
 };
 let _nekoIdleCatAudioEnabledMemory = true;
+let _nekoIdleCat1PettingUnlocked = false;
 
 function isNekoIdleCatAudioEnabled() {
     try {

@@ -11,6 +11,14 @@
 
     const mod = {};
     const S = window.appState;
+    let characterSwitchPreflightToken = null;
+    function isPetCareModelOwnerSurface() {
+        if (window.nekoPetCareSurface && typeof window.nekoPetCareSurface.ownsLifecycle === 'boolean') {
+            return window.nekoPetCareSurface.ownsLifecycle === true;
+        }
+        const pathname = String(window.location?.pathname || '');
+        return !/^\/chat(?:_full)?(?:\/|$)/.test(pathname);
+    }
     // const C = window.appConst;  // available if needed
 
     // ======================================================================
@@ -405,6 +413,60 @@
         // 让所有调用方（不光 BC/WS handler）自动受益。
         if (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl) {
             console.log('[猫娘切换] 已经是当前角色', newCatgirl, '，跳过重复事件（BC + WS 双通道收到同一切换）');
+            return;
+        }
+        // The exploration recall may await the service before the main switch
+        // latch is acquired. Keep that preflight single-owner as well, so two
+        // broadcasts cannot both pass the entry guards and mutate the shared
+        // chat session after their recalls settle.
+        if (characterSwitchPreflightToken) {
+            console.log('[猫娘切换] 角色切换预检中，忽略本次请求');
+            return;
+        }
+        const preflightToken = {};
+        characterSwitchPreflightToken = preflightToken;
+        try {
+            // Character switching is also a model exit path on the renderer
+            // that owns the cat. Chat follower pages still switch their shared
+            // chat identity and socket below, but never own this lifecycle.
+            if (isPetCareModelOwnerSurface()) {
+                const petEntry = window.nekoPetCareEntry;
+                const petState = petEntry && typeof petEntry.getState === 'function'
+                    ? petEntry.getState() : null;
+                const exploration = petState && petState.exploration;
+                const explorationStatus = String(exploration && exploration.status || '').toLowerCase();
+                const explorationId = exploration && (exploration.exploration_id || exploration.explorationId ||
+                    exploration.activity_id || exploration.activityId || exploration.id);
+                const explorationActive = !!(exploration && explorationId && exploration.active !== false &&
+                    !['completed', 'inactive', 'cancelled', 'recalled', 'returned'].includes(explorationStatus));
+                if (explorationActive) {
+                    if (!window.appUi || typeof window.appUi.returnFromGoodbye !== 'function') {
+                        console.warn('[猫娘切换] 探索召回入口不可用，取消角色切换');
+                        return { success: false, error: 'exploration_model_return_unavailable' };
+                    }
+                    const returned = await window.appUi.returnFromGoodbye({
+                        source: 'character-switch-exploration-recall',
+                        explorationRecall: true,
+                        activityId: String(explorationId),
+                        activityGeneration: exploration.generation || exploration.activityGeneration,
+                        retryViewportRestore: true,
+                    });
+                    if (returned === false) {
+                        console.warn('[猫娘切换] 探索召回未完成，取消角色切换');
+                        return { success: false, error: 'exploration_model_return_failed' };
+                    }
+                }
+            }
+        } catch (petCareError) {
+            console.warn('[猫娘切换] 探索召回检查失败，取消角色切换:', petCareError);
+            return { success: false, error: 'exploration_model_return_failed' };
+        } finally {
+            if (characterSwitchPreflightToken === preflightToken) {
+                characterSwitchPreflightToken = null;
+            }
+        }
+        if (S.isSwitchingCatgirl ||
+            (window.lanlan_config && window.lanlan_config.lanlan_name === newCatgirl)) {
             return;
         }
         // 确认切换到不同角色后，清空上一任的搜歌任务

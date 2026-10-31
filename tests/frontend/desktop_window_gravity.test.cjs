@@ -31,23 +31,345 @@ function installYarnActivation(r) {
   const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
   Object.assign(r.context, {
     setTimeout: r.window.setTimeout, clearTimeout: r.window.clearTimeout,
+    _nekoIdleCat1PlaygroundActivationSequence: 0,
+    _NEKO_IDLE_CAT1_PLAYGROUND_BODY_PUSH_VELOCITY_PX_PER_SEC: 220,
+    _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX: 4,
+    _NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL: '/test/cat-air.png',
     _forEachNekoIdleReturnButton: callback => callback(r.button),
     _clearNekoIdleCat1PlaygroundPointerListeners() {},
     _installNekoIdleCat1PlaygroundPointerListeners() {},
     _startNekoIdleCat1PlaygroundPhysics() {},
+    _stopNekoIdleCat1PlaygroundPhysics() {},
+    _dispatchNekoIdleCat1PlaygroundState() {},
+    _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton() {},
     _dispatchNekoIdleCat1PlaygroundYarnActivate() { throw new Error('cancellation must not activate yarn'); },
   });
   for (const name of ['_getNekoIdleCat1PlaygroundScreenPoint', '_recordNekoIdleCat1PlaygroundPointerSample',
     '_getNekoIdleCat1PlaygroundPointerVelocity', '_getNekoIdleCat1PlaygroundThrowAngularVelocity',
     '_handleNekoIdleCat1PlaygroundPointerDownForBody', '_handleNekoIdleCat1PlaygroundPointerUp',
+    '_dispatchNekoIdleCat1PlaygroundYarnActivate',
     '_dispatchNekoIdleCat1PlaygroundDragState', '_removeNekoIdleCat1PlaygroundYarnBody',
+    '_cancelNekoIdleCat1PlaygroundYarnResponse',
+    '_completeNekoIdleCat1PlaygroundYarnClickResponse',
     '_releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold',
-    '_handleNekoIdleCat1PlaygroundYarnActivationAck']) {
+    '_handleNekoIdleCat1PlaygroundYarnActivationAck',
+    '_clearNekoIdleCat1PlaygroundYarnPendingState',
+    '_handleNekoIdleCat1PlaygroundPointerMove',
+    '_releaseNekoIdleCat1PlaygroundDropLifecycle']) {
     const start = source.indexOf(`function ${name}(`);
     assert.notEqual(start, -1, name);
     vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
   }
 }
+
+test('playground yarn click reports PetCare completion only after applying a visible cat response', () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  const removed = [];
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  r.context._dispatchNekoIdleCat1PlaygroundYarnActivate = () => true;
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = {
+    id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: {
+      releasePointerCapture() {},
+      parentNode: { removeChild: element => removed.push(element) },
+    },
+  };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled',
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    lastPointerSamples: [], pointerSampleSession: null,
+  };
+
+  assert.equal(r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  }), false);
+  assert.equal(cat.vx, 220);
+  assert.equal(cat.vy, -99);
+  assert.equal(cat.grounded, false);
+  assert.equal(state.phase, 'ballistic');
+  assert.equal(state.bodies.has('yarn'), false);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_responded');
+  assert.equal(responses[0].source, 'cat-yarn-observation-adapter');
+  assert.equal(responses[0].detail.userInitiated, true);
+  assert.equal(responses[0].detail.catResponded, true);
+  assert.equal(responses[0].detail.terminalStatus, 'done');
+});
+
+test('legacy boolean playground authorization stays an ordinary non-rewardable response', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    event.detail.waitUntil(Promise.resolve(true));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled',
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    lastPointerSamples: [], pointerSampleSession: null,
+  };
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  assert.equal(responses.length, 0);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].detail.petCareAuthorized, false);
+  assert.equal(responses[0].detail.minimumDurationMs, 0);
+  assert.equal(state.bodies.has('yarn'), false);
+});
+
+test('rewardable playground yarn waits for the largest authorized presentation floor', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    event.detail.waitUntil(Promise.resolve(true));
+    event.detail.waitUntil(Promise.resolve({ authorized: true, minimumDurationMs: 400 }));
+    event.detail.waitUntil(Promise.resolve({ authorized: true, minimumDurationMs: 1000 }));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled', token: 1,
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    pendingYarnAuthorizationId: '', pendingYarnResponseId: '',
+    lastPointerSamples: [], pointerSampleSession: null,
+  };
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cat.vx, 220, 'the visible response starts as soon as authorization settles');
+  assert.equal(responses.length, 0);
+  assert.equal(state.bodies.has('yarn'), false);
+  r.runTimers(999);
+  assert.equal(responses.length, 0);
+  r.runTimers(1);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].detail.petCareAuthorized, true);
+  assert.equal(responses[0].detail.minimumDurationMs, 1000);
+});
+
+test('releasing playground cancels a delayed reward terminal', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    event.detail.waitUntil(Promise.resolve({ authorized: true, minimumDurationMs: 1000 }));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled', token: 1,
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    pendingYarnAuthorizationId: '', pendingYarnResponseId: '',
+    lastPointerSamples: [], pointerSampleSession: null, cleanups: [],
+    disabledCapabilities: new Set(), suppressClickBodyId: '', suppressClickTimer: 0,
+  };
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(state.pendingYarnResponseTimer);
+  const pendingResponseId = state.pendingYarnResponseId;
+  assert.ok(pendingResponseId);
+  assert.equal(r.context._releaseNekoIdleCat1PlaygroundDropLifecycle(r.button, 'test-cancel'), true);
+  assert.equal(state.pendingYarnResponseTimer, 0);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_cancelled');
+  assert.equal(responses[0].detail.activityId, `playground-yarn-click:${pendingResponseId}`);
+  assert.equal(responses[0].detail.terminalStatus, 'test-cancel');
+  r.runTimers(1000);
+  assert.equal(responses.filter(item => item.type === 'playground_yarn_click_responded').length, 0);
+});
+
+test('releasing playground cancels an in-flight yarn authorization', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  let activationId = '';
+  let resolveAuthorization;
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    activationId = event.detail.activationId;
+    event.detail.waitUntil(new Promise(resolve => { resolveAuthorization = resolve; }));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled', token: 1,
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    pendingYarnAuthorizationId: '', pendingYarnResponseId: '',
+    lastPointerSamples: [], pointerSampleSession: null, cleanups: [],
+    disabledCapabilities: new Set(), suppressClickBodyId: '', suppressClickTimer: 0,
+  };
+
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  assert.ok(activationId);
+  assert.equal(state.pendingYarnAuthorizationId, activationId);
+  assert.equal(r.context._releaseNekoIdleCat1PlaygroundDropLifecycle(r.button, 'page-destroy'), true);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_cancelled');
+  assert.equal(responses[0].detail.activityId, `playground-yarn-click:${activationId}`);
+  assert.equal(responses[0].detail.petCareAuthorized, false);
+  assert.equal(responses[0].detail.terminalStatus, 'page-destroy');
+
+  resolveAuthorization({ authorized: true, minimumDurationMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  r.runTimers(1000);
+  assert.equal(responses.filter(item => item.type === 'playground_yarn_click_responded').length, 0);
+});
+
+test('dragging the cat interrupts a delayed reward response instead of reporting success', () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = {
+    id: 'cat', x: 100, y: 200, width: 80, height: 80, vx: 0, vy: 0,
+    grounded: true, dragging: false, wallLeft: 0, wallRight: 500, floorY: 500,
+  };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled',
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'cat',
+    pointerId: 23, draggingBodyId: '', pointerStartX: 0, pointerStartY: 0,
+    pointerOffsetX: 0, pointerOffsetY: 0, pointerMoved: false,
+    pointerSampleSession: null, lastPointerSamples: [], pendingYarnResponseId: '',
+  };
+  assert.equal(r.context._completeNekoIdleCat1PlaygroundYarnClickResponse(r.button, {
+    activationId: 'interrupted', source: 'yarn', petCareAuthorized: true,
+    minimumDurationMs: 1000,
+  }), true);
+  assert.ok(state.pendingYarnResponseTimer);
+  cat.dragging = true;
+  r.context._resolveNekoIdleCat1PlaygroundPointerClient = () => ({ x: 40, y: 40 });
+  r.context._updateNekoIdleCat1PlaygroundBodyBounds = () => {};
+  r.context._setNekoIdleCat1PlaygroundBodyPosition = () => {};
+  r.context._setNekoIdleCat1PlaygroundCatAirArt = () => {};
+
+  assert.equal(r.context._handleNekoIdleCat1PlaygroundPointerMove(r.button, {
+    pointerId: 23, clientX: 40, clientY: 40,
+    preventDefault() {}, stopPropagation() {},
+  }), true);
+  assert.equal(state.pendingYarnResponseTimer, 0);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].type, 'playground_yarn_click_cancelled');
+  assert.equal(responses[0].detail.terminalStatus, 'cat-dragged');
+  r.runTimers(1000);
+  assert.equal(responses.filter(item => item.detail.terminalStatus === 'done').length, 0);
+});
+
+test('desktop confirmation waits for delayed authorization and the real cat response before removing yarn', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  r.window.__NEKO_DESKTOP_RUNTIME__ = true;
+  const responses = [];
+  let resolveAuthorization;
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    event.detail.waitUntil(new Promise(resolve => { resolveAuthorization = resolve; }));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled', token: 1,
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    confirmedYarnActivationId: '', pendingYarnAuthorizationId: '', pendingYarnResponseId: '',
+    lastPointerSamples: [], pointerSampleSession: null,
+  };
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  const activationId = state.pendingYarnActivationId;
+  assert.ok(activationId);
+  assert.equal(r.context._handleNekoIdleCat1PlaygroundYarnActivationAck({
+    detail: { activationId, confirmed: true },
+  }), true);
+  assert.equal(state.bodies.has('yarn'), true, 'early transport ACK must not consume response geometry');
+  assert.equal(state.confirmedYarnActivationId, activationId);
+
+  resolveAuthorization({ authorized: true, minimumDurationMs: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cat.vx, 220);
+  assert.equal(state.bodies.has('yarn'), false);
+  assert.equal(state.confirmedYarnActivationId, '');
+  assert.equal(responses.length, 0);
+  r.runTimers(1);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].detail.petCareAuthorized, true);
+});
+
+test('playground keeps the ordinary cat response when PetCare authorization is denied', async () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:idle-cat1-playground-yarn-activate', event => {
+    event.detail.waitUntil(Promise.resolve(false));
+  });
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const cat = { id: 'cat', x: 100, y: 200, width: 80, vx: 0, vy: 0, grounded: true };
+  const yarn = { id: 'yarn', x: 300, y: 200, width: 40, dragging: false,
+    element: { releasePointerCapture() {}, parentNode: { removeChild() {} } } };
+  r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, container: r.container, phase: 'settled',
+    bodies: new Map([['cat', cat], ['yarn', yarn]]), pointerBodyId: 'yarn',
+    pointerId: 17, draggingBodyId: '', pendingYarnActivationId: '',
+    lastPointerSamples: [], pointerSampleSession: null,
+  };
+  r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, {
+    pointerId: 17, type: 'pointerup',
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cat.vx, 220);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].detail.catResponded, true);
+  assert.equal(responses[0].detail.petCareAuthorized, false);
+});
+
+test('playground yarn click does not report completion while the cat is user-dragged', () => {
+  const r = runtime();
+  installYarnActivation(r);
+  const responses = [];
+  r.window.addEventListener('neko:pet-care:yarn-click-response', event => responses.push(event.detail));
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false,
+    bodies: new Map([
+      ['cat', { id: 'cat', x: 100, dragging: true, vx: 0, vy: 0, grounded: true }],
+      ['yarn', { id: 'yarn', x: 300 }],
+    ]),
+  };
+  assert.equal(r.context._completeNekoIdleCat1PlaygroundYarnClickResponse(r.button, {
+    activationId: 'blocked', source: 'yarn',
+  }), false);
+  assert.equal(state.bodies.get('cat').vx, 0);
+  assert.equal(responses.length, 0);
+});
 
 for (const bodyId of ['yarn', 'desktop-yarn']) {
   for (const dragging of [false, true]) {
@@ -188,6 +510,7 @@ function runtime(options = {}) {
   const subscribers = new Set();
   const frames = new Map();
   const timers = new Map();
+  const timerDeadlines = new Map();
   const observers = new Set();
   const attrs = new Map([['data-neko-idle-tier', 'cat1']]);
   const containerAttrs = new Map();
@@ -234,8 +557,13 @@ function runtime(options = {}) {
     dispatchEvent(event) { [...(listeners.get(event.type) || [])].forEach(fn => fn(event)); },
     requestAnimationFrame(fn) { frames.set(++sequence, fn); return sequence; },
     cancelAnimationFrame(id) { frames.delete(id); },
-    setTimeout(fn) { timers.set(++sequence, fn); return sequence; },
-    clearTimeout(id) { timers.delete(id); },
+    setTimeout(fn, delay = 0) {
+      const id = ++sequence;
+      timers.set(id, fn);
+      timerDeadlines.set(id, time + Math.max(0, Number(delay) || 0));
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); timerDeadlines.delete(id); },
     matchMedia: () => ({ matches: !!options.reduceMotion }),
   };
   const context = vm.createContext({
@@ -299,6 +627,7 @@ function runtime(options = {}) {
   });
   [...timers.values()].forEach(fn => fn());
   timers.clear();
+  timerDeadlines.clear();
   const api = {
     window, button, container, art, gate, context,
     state: () => window.NekoDesktopWindowGravity?.getState(),
@@ -310,6 +639,20 @@ function runtime(options = {}) {
     },
     settle() { for (let i = 0; i < 1000 && frames.size; i++) api.frame(); },
     advance(ms) { time += ms; },
+    runTimers(ms = 0) {
+      time += ms;
+      let ran = true;
+      while (ran) {
+        ran = false;
+        for (const [id, fn] of [...timers.entries()]) {
+          if ((timerDeadlines.get(id) ?? Infinity) > time) continue;
+          timers.delete(id);
+          timerDeadlines.delete(id);
+          fn();
+          ran = true;
+        }
+      }
+    },
     emit(type, detail = {}) { window.dispatchEvent({ type, detail }); },
     rawSample(rect = { x: 200, y: 100, width: 600, height: 650 }, extra = {}) {
       fact = rect === null ? null : {

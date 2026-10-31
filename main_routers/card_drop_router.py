@@ -447,6 +447,11 @@ def _local_request_source_allowed(request: Request) -> bool:
     )
 
 
+def local_request_source_allowed(request: Request) -> bool:
+    """Public local-session policy used by bounded business adapters."""
+    return _local_request_source_allowed(request)
+
+
 def _local_ui_request_source_allowed(request: Request) -> bool:
     """Require browser Fetch Metadata proving a request came from this local UI."""
     if getattr(request, "scope", {}).get("neko.instance_identity"):
@@ -631,6 +636,11 @@ def _normalize_local_user_id(value: object) -> str:
         return ""
 
 
+def normalize_local_user_id(value: object) -> str:
+    """Public account-id normalization contract for service adapters."""
+    return _normalize_local_user_id(value)
+
+
 def _normalize_auth_source(value: object) -> str:
     source = value.strip().lower() if isinstance(value, str) else ""
     return source if source in _SUPPORTED_AUTH_SOURCES else ""
@@ -648,6 +658,7 @@ def _desktop_session_snapshot() -> dict | None:
             ),
             "local_user_id": _normalize_local_user_id(social.get("local_user_id")),
             "auth_source": _normalize_auth_source(social.get("auth_source")),
+            "session_id": str(social.get("session_id") or "").strip(),
             "auth_public_url": str(social.get("auth_public_url") or "").strip().rstrip("/"),
             "client_id": str(social.get("client_id") or "").strip(),
         }
@@ -666,6 +677,7 @@ def _desktop_session_snapshot() -> dict | None:
         ),
         "local_user_id": _normalize_local_user_id(auth.get("local_user_id")),
         "auth_source": _normalize_auth_source(auth.get("auth_source")),
+        "session_id": str(auth.get("session_id") or "").strip(),
         "auth_public_url": str(auth.get("auth_public_url") or "").strip().rstrip("/"),
         "client_id": str(auth.get("client_id") or "").strip(),
     }
@@ -853,6 +865,10 @@ def _save_social_session_unlocked(
         "access_token": access,
         "local_user_id": normalized_user_id,
         "auth_source": normalized_source,
+        # Stable login-session identity.  OAuth token refresh keeps the
+        # existing value; a new credential publication receives a new one so
+        # PetCare can distinguish login-session replacement from refresh.
+        "session_id": str(uuid.uuid4()),
     }
     if refresh:
         data["refresh_token"] = refresh
@@ -968,12 +984,15 @@ def _persist_session_identity_metadata(
                     expected_access, expected_base, expected_refresh,
                 ):
                     return False
-                _write_private_json(path, {
+                repaired = {
                     **data,
                     "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
                     "local_user_id": normalized_user_id,
                     "auth_source": normalized_source,
-                })
+                }
+                if not str(repaired.get("session_id") or "").strip():
+                    repaired["session_id"] = str(uuid.uuid4())
+                _write_private_json(path, repaired)
                 break
             else:
                 # Only a still-current auth-only session can create its social
@@ -1848,6 +1867,16 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
+    # The one-time ticket already authorizes delivery of the Desktop OAuth
+    # bearer to this allowlisted community origin.  Return the narrower facts
+    # delegate from the exact same verified session as part of that response,
+    # so the browser can open as soon as native_sync is ready instead of
+    # keeping its reserved popup blank while a second validation finishes.
+    native_delegate = _issue_native_delegate(
+        local_user_id=local_user_id,
+        audience=_social_base_url(),
+        session_fingerprint=_desktop_session_fingerprint(snapshot),
+    )
     return JSONResponse(
         {
             "access_token": access_token,
@@ -1863,6 +1892,8 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
                 or _co._desktop_client_id()
             ),
             "bind": bind,
+            "native_delegate": native_delegate,
+            "native_delegate_expires_in": _NATIVE_DELEGATE_TTL_SEC,
         },
         headers={**cors, "Cache-Control": "no-store", "Pragma": "no-cache"},
     )

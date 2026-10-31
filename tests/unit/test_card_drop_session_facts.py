@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import httpx
@@ -1551,13 +1552,21 @@ def test_social_session_init_hands_desktop_oauth_to_community_origin(client, mon
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://community.example"
     assert response.headers["cache-control"] == "no-store"
-    assert response.json() == {
+    payload = response.json()
+    delegate = payload.pop("native_delegate")
+    assert payload.pop("native_delegate_expires_in") == C._NATIVE_DELEGATE_TTL_SEC
+    assert payload == {
         "access_token": "desktop-token-a",
         "local_user_id": USER_A_ID,
         "auth_public_url": "https://auth.example",
         "client_id": "neko-servers-desktop-dev",
         "bind": {"bound": True, "error": None},
     }
+    delegate_entry = C._native_delegate_entry(delegate)
+    assert delegate_entry is not None
+    assert delegate_entry["local_user_id"] == USER_A_ID
+    assert delegate_entry["audience"] == "https://community.example"
+    assert delegate_entry["session_fingerprint"] == C._desktop_session_fingerprint(snapshot)
     # Desktop stays the sole owner of the refresh-token family.
     assert "desktop-refresh-a" not in response.text
 
@@ -2419,7 +2428,11 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
     )
 
     electron_session = electron_root / "social_session.json"
-    assert json.loads(electron_session.read_text(encoding="utf-8")) == {
+    electron_data = json.loads(electron_session.read_text(encoding="utf-8"))
+    session_id = electron_data.pop("session_id", None)
+    assert session_id
+    UUID(session_id)
+    assert electron_data == {
         "schema_version": 2,
         "baseUrl": "https://community.example",
         "token": "token-a",
@@ -2747,6 +2760,9 @@ def test_legacy_web_sync_persists_v2_identity_metadata(client, tmp_path, monkeyp
     assert response.status_code == 200
     social_data = json.loads(social.read_text(encoding="utf-8"))
     auth_data = json.loads(auth.read_text(encoding="utf-8"))
+    session_id = social_data.pop("session_id", None)
+    assert session_id
+    UUID(session_id)
     assert social_data == {
         "schema_version": 2,
         "baseUrl": "https://community.example",

@@ -916,6 +916,17 @@
 
     I.handleElectronIdleReturnBallState = function handleElectronIdleReturnBallState(detail) {
         if (!I.isElectronChatWindow()) return;
+        // The model-owner window may still broadcast a late CAT2/CAT3
+        // return-ball snapshot while exploration owns the entity. The chat
+        // follower must not turn that stale event into an idle dock.
+        var petCareMode = window.nekoPetCareMode;
+        if ((petCareMode && typeof petCareMode.isExplorationAway === 'function' &&
+            petCareMode.isExplorationAway()) || detail && detail.explorationAway === true) {
+            if (I.hasElectronIdleDockPendingOrActive()) {
+                I.exitElectronIdleDock({});
+            }
+            return;
+        }
         var tier = detail && detail.tier;
         var activeTier = tier === I.IDLE_DOCK_TIER_CAT2 || tier === I.IDLE_DOCK_TIER_CAT3;
         if (detail && detail.visible && activeTier && detail.screenRect) {
@@ -1446,10 +1457,16 @@
         var activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
         if (I.getCurrentChatSurfaceMode() !== 'minimized' || I.isMinimizeTransitioning) return false;
         if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
-        var toggled = I.toggleMinimized();
-        if (toggled !== true) return false;
+        var previousActivationId = window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID || '';
         if (activationId) {
             window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;
+        }
+        var toggled = I.toggleMinimized();
+        if (toggled !== true) {
+            if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) {
+                window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = previousActivationId;
+            }
+            return false;
         }
         return true;
     }

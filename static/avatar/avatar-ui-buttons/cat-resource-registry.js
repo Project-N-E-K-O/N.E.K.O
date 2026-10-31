@@ -79,6 +79,8 @@
             'movement.cat1.interactive': ['/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif'],
             'action.cat1.eat': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.gif'],
             'action.cat1.play_yarn': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif'], metadata: { wideArt: true } },
+            'action.cat1.play_teaser_wand': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-2.gif'],
+            'action.cat1.petting': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-stroke.gif'],
             'playground.cat1.air': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif']
         },
         yui_neko: {
@@ -97,6 +99,8 @@
             'movement.cat1.interactive': ['/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif'],
             'action.cat1.eat': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.gif'],
             'action.cat1.play_yarn': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif'], metadata: { wideArt: true } },
+            'action.cat1.play_teaser_wand': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-2.gif'],
+            'action.cat1.petting': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-stroke.gif'],
             'playground.cat1.air': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif']
         }
     };
@@ -129,6 +133,8 @@
         cat1_eat_snack: { appearance: ['action.cat1.eat'], voice: ['cat1.eat'] },
         cat1_small_move: { appearance: ['movement.cat1.walking'], voice: [] },
         cat1_play_yarn: { appearance: ['action.cat1.play_yarn'], voice: ['cat1.play_yarn'] },
+        play_teaser_wand: { appearance: ['action.cat1.play_teaser_wand'], voice: [] },
+        cat1_petting: { appearance: ['action.cat1.petting'], voice: [] },
         cat2_nap_feedback: { appearance: ['idle.cat2'], voice: ['cat2.sleep'] },
         cat3_sleep_feedback: { appearance: ['idle.cat3'], voice: ['cat3.sleep'] },
         cat1_hiss_stretch: { appearance: ['movement.cat1.stretch'], voice: ['cat1.hiss'] }

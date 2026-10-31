@@ -80,6 +80,10 @@
         return new Promise((resolve) => {
             let settled = false;
             let timeoutId = null;
+            const explorationRecallTransitionToken = options.explorationRecall &&
+                (options.activityId || options.explorationId)
+                ? `${String(options.activityId || options.explorationId)}:${Date.now()}:${Math.random()}`
+                : '';
             const waitForTransitionToSettle = async (direction) => {
                 while (!settled && isModelCatTransitionActive(direction)) {
                     const transition = I.nekoModelCatTransitionActive;
@@ -103,6 +107,10 @@
                 if (timeoutId !== null) window.clearTimeout(timeoutId);
                 window.removeEventListener('neko:cat-return-complete', handleComplete);
                 window.removeEventListener('neko:cat-return-abort', handleAbort);
+                if (explorationRecallTransitionToken &&
+                    window.__nekoExplorationRecallTransitionActive === explorationRecallTransitionToken) {
+                    window.__nekoExplorationRecallTransitionActive = null;
+                }
                 resolve(restored === true);
             };
             const handleComplete = () => {
@@ -167,6 +175,12 @@
                 }
 
                 const activeType = resolveGoodbyeReturnModelType(visibleReturnContainer);
+                // Mark the narrow exploration-only transition window before
+                // dispatching the return click. The existing return handler
+                // and transition asset then share the <=1s recall bound.
+                if (explorationRecallTransitionToken) {
+                    window.__nekoExplorationRecallTransitionActive = explorationRecallTransitionToken;
+                }
                 let returnButtonRect = null;
                 if (visibleReturnContainer && typeof visibleReturnContainer.getBoundingClientRect === 'function') {
                     const clientRect = visibleReturnContainer.getBoundingClientRect();
@@ -184,6 +198,15 @@
                     detail: {
                         source: options.source || 'programmatic-return',
                         retryViewportRestore: options.retryViewportRestore === true,
+                        ...(options.explorationRecall === true || options.activityId || options.explorationId
+                            ? {
+                                explorationRecall: true,
+                                activityId: options.activityId || options.explorationId || '',
+                                ...(Number.isFinite(Number(options.activityGeneration || options.generation))
+                                    ? { activityGeneration: Number(options.activityGeneration || options.generation) }
+                                    : {})
+                            }
+                            : {}),
                         returnButtonRect
                     }
                 }));
@@ -198,6 +221,56 @@
 
     I.returnFromGoodbye = function returnFromGoodbye(options = {}) {
         options = options && typeof options === 'object' ? options : {};
+        if (window.nekoPetCareSurface && window.nekoPetCareSurface.ownsLifecycle === false) {
+            return Promise.resolve(true);
+        }
+        // All model-return callers share this coordinator.  It settles an
+        // active exploration exactly once before this function changes the
+        // visible presentation; chat follower windows do not own it.
+        if (!options.__petCarePreflightDone &&
+            (!window.nekoPetCareSurface || window.nekoPetCareSurface.ownsLifecycle !== false)) {
+            const petEntry = window.nekoPetCareEntry;
+            if (petEntry && typeof petEntry.ensureExplorationEndedBeforeModelExit === 'function') {
+                return Promise.resolve(petEntry.ensureExplorationEndedBeforeModelExit({
+                    source: options.source || 'model-return',
+                })).then((confirmed) => {
+                    if (confirmed === false) return false;
+                    return I.returnFromGoodbye(Object.assign({}, options, {
+                        __petCarePreflightDone: true,
+                    }));
+                }).catch((error) => {
+                    console.warn('[App] 模型返回前养宠探索召回失败:', error);
+                    return false;
+                });
+            }
+        }
+        // Treat an active service exploration as part of the same return
+        // contract. A normal model switch must not leave the away activity
+        // running without a server settlement.
+        if (!options.explorationRecall) {
+            try {
+                const petState = window.nekoPetCareEntry
+                    && typeof window.nekoPetCareEntry.getState === 'function'
+                    ? window.nekoPetCareEntry.getState() : null;
+                const exploration = petState && petState.exploration;
+                const status = String(exploration && exploration.status || '').toLowerCase();
+                if (exploration && exploration.active !== false &&
+                    !['completed', 'inactive', 'cancelled', 'recalled', 'returned'].includes(status)) {
+                    const activityId = exploration.exploration_id || exploration.explorationId ||
+                        exploration.activity_id || exploration.activityId || exploration.id;
+                    const generation = exploration.generation || exploration.activity_generation ||
+                        exploration.activityGeneration;
+                    if (activityId) {
+                        options = Object.assign({}, options, {
+                            explorationRecall: true,
+                            activityId: String(activityId),
+                            ...(generation != null && String(generation)
+                                ? { activityGeneration: String(generation) } : {})
+                        });
+                    }
+                }
+            } catch (_) {}
+        }
         if (programmaticGoodbyeReturnPromise) return programmaticGoodbyeReturnPromise;
 
         const hasReturnState = isGoodbyeRuntimeActive()
@@ -206,7 +279,29 @@
             || isModelCatTransitionActive('model-to-cat')
             || isModelCatTransitionActive('cat-to-model')
             || isReturnBallViewportActive();
-        if (!hasReturnState) return Promise.resolve(true);
+        if (!hasReturnState) {
+            // The nest is usable even when no goodbye return-ball exists.
+            // Publish the canonical lifecycle so the pet-care adapter can
+            // settle the server activity and release its scoped gate.
+            if (options.explorationRecall && options.activityId) {
+                const detail = {
+                    source: options.source || 'pet-care-exploration-recall',
+                    explorationRecall: true,
+                    exploration_id: String(options.activityId),
+                    explorationId: String(options.activityId),
+                    activityId: String(options.activityId),
+                    ...(options.activityGeneration != null && String(options.activityGeneration)
+                        ? {
+                            generation: String(options.activityGeneration),
+                            activityGeneration: String(options.activityGeneration)
+                        } : {}),
+                    timestamp: Date.now()
+                };
+                window.dispatchEvent(new CustomEvent('neko:cat-return-commit', { detail }));
+                window.dispatchEvent(new CustomEvent('neko:cat-return-complete', { detail }));
+            }
+            return Promise.resolve(true);
+        }
 
         const returnPromise = waitForGoodbyeReturnTerminal(options);
         programmaticGoodbyeReturnPromise = returnPromise;
@@ -761,6 +856,51 @@
                 try {
                     postSocialTheme(target, isResolvedDarkTheme());
                 } catch (_) { /* requesting community window may have closed */ }
+            });
+        }
+
+        // Verse runs in the managed community window and cannot share the
+        // desktop page's localStorage. Accept only messages from a social
+        // window that this page opened and whose origin was recorded when it
+        // was navigated. A verified logout is reconciled through the local
+        // N.E.K.O account endpoint; the browser page never sends a bearer
+        // token through this bridge.
+        if (!window.__nekoSocialAuthBridgeInstalled) {
+            window.__nekoSocialAuthBridgeInstalled = true;
+            let authReconcileInFlight = false;
+            window.addEventListener('message', (event) => {
+                const bridgeState = getSocialThemeBridgeState();
+                const target = bridgeState.targets.find((candidate) => (
+                    event.source === candidate.targetWindow && event.origin === candidate.targetOrigin
+                ));
+                if (!target) return;
+                const data = event.data;
+                if (!data || data.source !== 'neko-auth-platform'
+                    || data.type !== 'auth-session-changed'
+                    || typeof data.logged_in !== 'boolean') return;
+                const publish = () => {
+                    try {
+                        window.dispatchEvent(new CustomEvent('neko:auth-session-change', {
+                            detail: { logged_in: data.logged_in, source: 'neko-auth-platform' },
+                        }));
+                    } catch (_) { /* the pet surface may not be mounted yet */ }
+                };
+                if (data.logged_in) {
+                    publish();
+                    return;
+                }
+                if (authReconcileInFlight) return;
+                authReconcileInFlight = true;
+                fetch('/api/card-drop/oauth/logout', {
+                    method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                    headers: { Accept: 'application/json' },
+                }).then((response) => {
+                    if (response.ok) publish();
+                }).catch(() => {
+                    // A failed local reconciliation must not be presented as
+                    // a successful logout; the next explicit status refresh
+                    // remains the recovery path.
+                }).finally(() => { authReconcileInFlight = false; });
             });
         }
 
@@ -1460,6 +1600,24 @@
                             4000
                         );
                     }
+                    // In a browser the reserved popup is still about:blank here.
+                    // A native_sync ticket is already sufficient for Verse to
+                    // bootstrap the same verified OAuth account; native_delegate
+                    // only adds the narrower local facts capability.  Do not keep
+                    // the account handoff hidden behind that optional proof's
+                    // longer validation deadline.  social-session-init returns a
+                    // delegate from the same verified snapshot when redemption
+                    // succeeds, so this navigation does not lose that capability.
+                    if (!isElectron && initialSyncTicket) {
+                        const browserTargetUrl = attachNativeDelegate(
+                            new URL(url, window.location.href),
+                            initialNativeHandoff.nativeDelegate
+                        );
+                        if (!navigateBrowserPopup(browserTargetUrl.toString())) {
+                            throw new Error('community navigation failed');
+                        }
+                        return;
+                    }
                     await completeInitialCommunityHandoff(
                         url,
                         initialNativeHandoff.nativeDelegate,
@@ -2099,6 +2257,13 @@
         // 请她回来按钮（统一处理函数）
         const handleReturnClick = async (event) => {
             console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
+            const returnDetail = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            const explorationRecall = returnDetail.explorationRecall === true ||
+                !!(returnDetail.activityId || returnDetail.explorationId);
+            const explorationActivityId = returnDetail.activityId || returnDetail.explorationId || '';
+            const explorationActivityGeneration = Number(returnDetail.activityGeneration || returnDetail.generation);
             if (I.isNekoModelCatTransitionActive('model-to-cat')) {
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
@@ -2113,6 +2278,12 @@
                     detail: {
                         source: event && event.type ? event.type : 'return-click',
                         reason: 'return-incomplete',
+                        ...(explorationRecall ? {
+                            explorationRecall: true,
+                            activityId: explorationActivityId,
+                            ...(Number.isFinite(explorationActivityGeneration)
+                                ? { activityGeneration: explorationActivityGeneration } : {})
+                        } : {}),
                         timestamp: Date.now()
                     }
                 }));
@@ -2123,9 +2294,6 @@
             };
             let live2DPeekRestoreAnchor = null;
             try {
-            const returnDetail = event && event.detail && typeof event.detail === 'object'
-                ? event.detail
-                : {};
             const hadPendingGoodbyeReset = !!window._goodbyeResetClickTimerId;
             if (hadPendingGoodbyeReset) {
                 clearTimeout(window._goodbyeResetClickTimerId);
@@ -2178,12 +2346,24 @@
                 source: event && event.type ? event.type : 'return-click',
                 reason: 'return-commit',
                 returnCommitted: true,
-                returnSource: event && event.type ? event.type : 'return-click'
+                returnSource: event && event.type ? event.type : 'return-click',
+                ...(explorationRecall ? {
+                    explorationRecall: true,
+                    activityId: explorationActivityId,
+                    ...(Number.isFinite(explorationActivityGeneration)
+                        ? { activityGeneration: explorationActivityGeneration } : {})
+                } : {})
             });
             window.dispatchEvent(new CustomEvent('neko:cat-return-commit', {
                 detail: {
                     source: event && event.type ? event.type : 'return-click',
                     hadCatCycle: hadCatCycle,
+                    ...(explorationRecall ? {
+                        explorationRecall: true,
+                        activityId: explorationActivityId,
+                        ...(Number.isFinite(explorationActivityGeneration)
+                            ? { activityGeneration: explorationActivityGeneration } : {})
+                    } : {}),
                     timestamp: Date.now()
                 }
             }));
@@ -2675,6 +2855,12 @@
             window.dispatchEvent(new CustomEvent('neko:cat-return-complete', {
                 detail: {
                     source: event && event.type ? event.type : 'return-click',
+                    ...(explorationRecall ? {
+                        explorationRecall: true,
+                        activityId: explorationActivityId,
+                        ...(Number.isFinite(explorationActivityGeneration)
+                            ? { activityGeneration: explorationActivityGeneration } : {})
+                    } : {}),
                     timestamp: Date.now()
                 }
             }));
@@ -2688,6 +2874,12 @@
                         detail: {
                             source: event && event.type ? event.type : 'return-click',
                             reason: 'return-incomplete',
+                            ...(explorationRecall ? {
+                                explorationRecall: true,
+                                activityId: explorationActivityId,
+                                ...(Number.isFinite(explorationActivityGeneration)
+                                    ? { activityGeneration: explorationActivityGeneration } : {})
+                            } : {}),
                             timestamp: Date.now()
                         }
                     }));
@@ -2700,6 +2892,29 @@
         window.addEventListener('vrm-return-click', handleReturnClick);
         window.addEventListener('mmd-return-click', handleReturnClick);
         window.addEventListener('pngtuber-return-click', handleReturnClick);
+        // Only a model/character switch uses the existing model-return
+        // transition.  The nest's “召回猫咪” action settles the exploration
+        // in place and restores the cat form; routing it through this listener
+        // would incorrectly show the model and mix two exits.
+        if (!I.__nekoExplorationRecallListenerBound) {
+            I.__nekoExplorationRecallListenerBound = true;
+            window.addEventListener('neko:pet-care:exploration-recall-request', (event) => {
+                if (window.nekoPetCareSurface && window.nekoPetCareSurface.ownsLifecycle === false) return;
+                const detail = event && event.detail && typeof event.detail === 'object'
+                    ? event.detail : {};
+                if (detail.presentation !== 'model-return') return;
+                const activityId = detail.activityId || detail.activity_id ||
+                    detail.explorationId || detail.exploration_id || '';
+                if (!activityId || typeof I.returnFromGoodbye !== 'function') return;
+                Promise.resolve(I.returnFromGoodbye({
+                    source: 'pet-care-exploration-recall',
+                    explorationRecall: true,
+                    activityId,
+                    activityGeneration: detail.activityGeneration || detail.generation,
+                    retryViewportRestore: true,
+                })).catch(() => {});
+            });
+        }
     }
 
     I.mod.initFloatingButtonListeners = initFloatingButtonListeners;

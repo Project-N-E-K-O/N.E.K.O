@@ -2196,7 +2196,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.ok(cooledCandidate.cooldownSortRank > 0 && cooledCandidate.cooldownSortRank <= 1);
         const cooledBaseEligibility =
           cooledCandidate.needContribution + cooledCandidate.cadenceAdjustment +
-            cooledCandidate.intentContribution;
+            cooledCandidate.intentContribution + cooledCandidate.petCareBias;
         assert.ok(Math.abs(cooledCandidate.eligibilityScore - cooledBaseEligibility) < 0.02);
         assert.ok(Math.abs(cooledCandidate.score - (
           cooledCandidate.threshold + cooledCandidate.eligibilityScore
@@ -3263,7 +3263,7 @@ def test_cat_mind_all_registered_actions_use_the_same_independent_cooldown_sort_
           const expectedCurve = (elapsedProgress) => 1 - Math.pow(elapsedProgress, 1.9);
           const verifySortRoles = (item, expectedRank) => {{
             const baseEligibility = item.needContribution + item.cadenceAdjustment +
-              item.intentContribution;
+              item.intentContribution + item.petCareBias;
             close(item.eligibilityScore, baseEligibility);
             close(item.score, item.threshold + baseEligibility);
             close(item.cooldownSortRank, expectedRank);
@@ -3320,7 +3320,10 @@ def test_cat_mind_scores_use_five_dimensions_shared_cadence_and_ranking_cooldown
     assert "cadenceRecoveryMs: 4.85 * 60 * 1000" in source
     assert "cooldownRecoveryExponent: 1.9" in source
     assert "var cooldownSortRank = cooldown.curveFactor * (1 - intentCooldownRelief);" in source
-    assert "var baseEligibilityScore = needContribution + cadence.adjustment + intent.contribution;" in source
+    assert (
+        "var baseEligibilityScore = needContribution + cadence.adjustment + "
+        "intent.contribution + petCareBias;"
+    ) in source
     assert "var eligibilityScore = baseEligibilityScore;" in source
     assert "utilityScore" not in source
     assert "cooldownPenalty" not in source

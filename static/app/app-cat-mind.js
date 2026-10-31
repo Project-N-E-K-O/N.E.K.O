@@ -159,6 +159,11 @@
     var HOVER_DEDUPE_WINDOW_MS = 1500;
     var ACTION_START_BURST_GUARD_MS = 60 * 1000;
     var ACTION_REQUEST_LEASE_MS = 5 * 1000;
+    // A user-initiated PetCare yarn response may need one service round trip
+    // before the visual runner is allowed to start.  Keep that distinct from
+    // both an unacknowledged request and a runner that was already accepted.
+    // This is a transport deadline, not a gameplay cooldown.
+    var ACTION_DEFERRED_REQUEST_LEASE_MS = 17 * 1000;
     var ACTION_ACCEPTED_START_LEASE_MS = 12 * 1000;
     var TIME_RATE_PER_MINUTE = Object.freeze({
         cat1: Object.freeze({ appetite: 0.0055, sleepiness: 0.0045, energy: -0.0045, social_need: 0.024, stimulation_need: 0.032 }),
@@ -233,6 +238,13 @@
         cat2_nap_feedback: Object.freeze({ threshold: 54, cooldownMs: 10 * 60 * 1000 }),
         cat3_sleep_feedback: Object.freeze({ threshold: 50, cooldownMs: 12 * 60 * 1000 }),
     });
+    // PetCare may steer relative autonomous behavior with a short-lived,
+    // server-confirmed projection.  It never replaces or mutates the five
+    // Cat Mind fields, and the bounded bias cannot create a second settlement
+    // formula in the browser.
+    var PET_CARE_SCORE_BIAS_LIMIT = 100;
+    var PET_CARE_PROJECTION_MAX_WINDOW_MS = 5 * 60 * 1000;
+    var petCareProjection = null;
     var ACTION_TIE_BREAK = Object.freeze([
         ACTION_IDS.CAT1_SOCIAL_PING,
         ACTION_IDS.CAT2_NAP_FEEDBACK,
@@ -311,6 +323,115 @@
 
     function nowMs() {
         return Date.now();
+    }
+
+    function monotonicNow() {
+        try {
+            var value = window.performance && typeof window.performance.now === 'function'
+                ? Number(window.performance.now()) : NaN;
+            if (Number.isFinite(value)) return value;
+        } catch (_) {}
+        return nowMs();
+    }
+
+    function parseServiceTime(value) {
+        if (Number.isFinite(Number(value)) && String(value).trim() !== '') return Number(value);
+        if (typeof value !== 'string' || !value.trim() ||
+            !Date || typeof Date.parse !== 'function') return NaN;
+        return Date.parse(value);
+    }
+
+    function normalizePetCareProjection(value) {
+        var schemaVersion = Number(value && value.schema_version);
+        if (!value || typeof value !== 'object' || [2, 3].indexOf(schemaVersion) < 0) return null;
+        var configRevision = typeof value.config_revision === 'string'
+            ? value.config_revision.trim() : '';
+        var effectiveAt = parseServiceTime(value.effective_at);
+        var serverTime = parseServiceTime(value.server_time);
+        var catMindValidUntil = parseServiceTime(schemaVersion === 3
+            ? value.cat_mind_valid_until : value.valid_until);
+        if (!configRevision || !Number.isFinite(effectiveAt) || !Number.isFinite(serverTime) ||
+            !Number.isFinite(catMindValidUntil) || effectiveAt > serverTime ||
+            catMindValidUntil <= serverTime || (schemaVersion === 3 &&
+                catMindValidUntil - serverTime > PET_CARE_PROJECTION_MAX_WINDOW_MS)) return null;
+        var statusSeed = value.status_seed;
+        if (!statusSeed || typeof statusSeed !== 'object' || Array.isArray(statusSeed) ||
+            typeof statusSeed.interaction !== 'number' ||
+            !Number.isFinite(statusSeed.interaction)) return null;
+        var source = value.cat_mind;
+        if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+        var actionBiases = {};
+        Object.keys(source).forEach(function (actionId) {
+            if (!getActionScoreConfig(actionId)) return;
+            var item = source[actionId];
+            var scoreBias = item && typeof item === 'object' &&
+                typeof item.score_bias === 'number' ? item.score_bias : NaN;
+            if (!Number.isFinite(scoreBias) || Math.abs(scoreBias) > PET_CARE_SCORE_BIAS_LIMIT) return;
+            actionBiases[actionId] = scoreBias;
+        });
+        return {
+            schema_version: schemaVersion,
+            config_revision: configRevision,
+            effective_at: effectiveAt,
+            server_time: serverTime,
+            cat_mind_valid_until: catMindValidUntil,
+            received_at: nowMs(),
+            received_monotonic: monotonicNow(),
+            action_biases: actionBiases,
+        };
+    }
+
+    function currentPetCareProjection(timestamp) {
+        if (!petCareProjection) return null;
+        var now = Number.isFinite(Number(timestamp)) ? Number(timestamp) : nowMs();
+        var estimatedServerTime = petCareProjection.server_time +
+            Math.max(
+                0,
+                now - petCareProjection.received_at,
+                monotonicNow() - petCareProjection.received_monotonic
+            );
+        if (estimatedServerTime < petCareProjection.effective_at ||
+            estimatedServerTime >= petCareProjection.cat_mind_valid_until) {
+            petCareProjection = null;
+            return null;
+        }
+        return petCareProjection;
+    }
+
+    function petCareScoreBias(actionId, timestamp) {
+        var projection = currentPetCareProjection(timestamp);
+        if (!projection || !hasOwn(projection.action_biases, actionId)) return 0;
+        return projection.action_biases[actionId];
+    }
+
+    function setPetCareProjection(value) {
+        var normalized = normalizePetCareProjection(value);
+        if (!normalized) {
+            petCareProjection = null;
+            return false;
+        }
+        petCareProjection = normalized;
+        return true;
+    }
+
+    function clearPetCareProjection() {
+        petCareProjection = null;
+        return true;
+    }
+
+    function getPetCareProjection(timestamp) {
+        var projection = currentPetCareProjection(timestamp);
+        if (!projection) return null;
+        var result = {
+            schema_version: projection.schema_version,
+            config_revision: projection.config_revision,
+            effective_at: projection.effective_at,
+            server_time: projection.server_time,
+            action_biases: projection.action_biases,
+        };
+        result[projection.schema_version === 3
+            ? 'cat_mind_valid_until' : 'valid_until'] = projection.cat_mind_valid_until;
+        return clonePlain(result);
     }
 
     function clamp01(value) {
@@ -683,6 +804,7 @@
                     needSurplus: normalizeDebugTimelineNumber(item.needSurplus),
                     needContribution: normalizeDebugTimelineNumber(item.needContribution),
                     cadenceAdjustment: normalizeDebugTimelineNumber(item.cadenceAdjustment),
+                    petCareBias: normalizeDebugTimelineNumber(item.petCareBias),
                     eligibilityScore: normalizeDebugTimelineNumber(item.eligibilityScore),
                     cooldownSortRank: normalizeDebugTimelineNumber(item.cooldownSortRank),
                     allowed: item.allowed === true,
@@ -761,12 +883,19 @@
     }
 
     function emitStateChange(reason, detail) {
-        // State-change carries a complete debug snapshot and is only consumed by
-        // the opt-in inspector. Keep Cat Mind's runtime independent from it.
-        if (!isDebugEnabled()) return false;
+        // Action-started is part of the play identity contract. Other state
+        // changes still carry the complete opt-in inspector snapshot only.
         var normalizedReason = typeof reason === 'string' ? reason : 'state-update';
         var timestamp = nowMs();
         var eventDetail = clonePlain(detail) || {};
+        if (!isDebugEnabled()) {
+            if (normalizedReason !== 'action-started') return false;
+            return dispatchRuntimeEvent(EVENT_NAMES.STATE_CHANGE, {
+                reason: normalizedReason,
+                timestamp: timestamp,
+                detail: eventDetail,
+            });
+        }
         var snapshot = getDebugSnapshot();
         appendDebugTimeline(normalizedReason, timestamp, eventDetail, snapshot);
         return dispatchRuntimeEvent(EVENT_NAMES.STATE_CHANGE, {
@@ -810,6 +939,9 @@
                 var intentContribution = item.intentContribution === null || item.intentContribution === undefined
                     ? null
                     : Number(item.intentContribution);
+                var petCareBias = item.petCareBias === null || item.petCareBias === undefined
+                    ? null
+                    : Number(item.petCareBias);
                 var intentCurveFactor = item.intentCurveFactor === null || item.intentCurveFactor === undefined
                     ? null
                     : Number(item.intentCurveFactor);
@@ -846,6 +978,7 @@
                     cadenceCurveFactor: Number.isFinite(cadenceCurveFactor) ? cadenceCurveFactor : null,
                     intentLevel: Number.isFinite(intentLevel) ? intentLevel : null,
                     intentContribution: Number.isFinite(intentContribution) ? intentContribution : null,
+                    petCareBias: Number.isFinite(petCareBias) ? petCareBias : null,
                     intentCurveFactor: Number.isFinite(intentCurveFactor) ? intentCurveFactor : null,
                     intentReason: typeof item.intentReason === 'string' ? item.intentReason : '',
                     eligibilityScore: Number.isFinite(eligibilityScore) ? eligibilityScore : null,
@@ -906,6 +1039,9 @@
             runtimeState.sequence + 1,
             timestamp,
         ].join(':');
+        var evidence = runtimeState.actionIntentEvidence && runtimeState.actionIntentEvidence[actionId];
+        var activityId = actionId === ACTION_IDS.CAT1_PLAY_YARN && evidence
+            ? normalizeActionActivityId(evidence.activityId) : '';
         return Object.freeze({
             requestId: requestId,
             actionId: actionId,
@@ -915,6 +1051,7 @@
             detail: Object.freeze({
                 triggerTypes: Array.isArray(triggerTypes) ? triggerTypes.slice(0, 12) : [],
                 score: candidate && Number.isFinite(Number(candidate.score)) ? Number(candidate.score) : null,
+                activityId: activityId,
             }),
         });
     }
@@ -931,11 +1068,14 @@
     function getActionRequestLeaseDeadline(pending) {
         if (!pending || typeof pending !== 'object') return null;
         var acceptedAt = Number(pending.acceptedAt);
+        var deferredAt = Number(pending.deferredAt);
         var requestedAt = Number(pending.timestamp);
         var accepted = Number.isFinite(acceptedAt) && acceptedAt > 0;
-        var anchor = accepted ? acceptedAt : requestedAt;
+        var deferred = !accepted && Number.isFinite(deferredAt) && deferredAt > 0;
+        var anchor = accepted ? acceptedAt : (deferred ? deferredAt : requestedAt);
         if (!Number.isFinite(anchor)) return null;
-        return anchor + (accepted ? ACTION_ACCEPTED_START_LEASE_MS : ACTION_REQUEST_LEASE_MS);
+        return anchor + (accepted ? ACTION_ACCEPTED_START_LEASE_MS :
+            (deferred ? ACTION_DEFERRED_REQUEST_LEASE_MS : ACTION_REQUEST_LEASE_MS));
     }
 
     function armActionRequestLeaseTimer(pending) {
@@ -985,6 +1125,28 @@
             ? response.reason
             : status;
         var runId = typeof response.runId === 'string' ? response.runId : '';
+        if (status === 'deferred') {
+            if (pending.runId) return false;
+            if (Number.isFinite(Number(pending.deferredAt)) && Number(pending.deferredAt) > 0) {
+                return true;
+            }
+            runtimeState.scheduler.pendingActionRequest = Object.assign({}, pending, {
+                deferredAt: timestamp,
+            });
+            armActionRequestLeaseTimer(runtimeState.scheduler.pendingActionRequest);
+            updateDecisionExecution({
+                state: 'deferred',
+                reason: reason || 'adapter_authorization_pending',
+                requestId: pending.requestId,
+                actionId: pending.actionId,
+                timestamp: timestamp,
+            });
+            emitStateChange('action-request-deferred', {
+                actionId: pending.actionId,
+                requestId: pending.requestId,
+            });
+            return true;
+        }
         if (status === 'accepted') {
             if (!runId || (pending.runId && pending.runId !== runId)) return false;
             if (pending.runId === runId) return true;
@@ -1016,6 +1178,7 @@
                 tier: pending.tier,
                 startedAt: timestamp,
                 runId: runId,
+                activityId: normalizeActionActivityId(pending.detail && pending.detail.activityId),
             };
             runtimeState.scheduler.actionCooldowns[pending.actionId] = {
                 startedAt: timestamp,
@@ -1039,7 +1202,13 @@
                 runId: runId,
                 timestamp: timestamp,
             });
-            emitStateChange('action-started', { actionId: pending.actionId, requestId: pending.requestId });
+            emitStateChange('action-started', {
+                source: pending.source,
+                actionId: pending.actionId,
+                requestId: pending.requestId,
+                runId: runId,
+                activityId: normalizeActionActivityId(pending.detail && pending.detail.activityId),
+            });
             return true;
         }
         if (status === 'rejected') {
@@ -1158,7 +1327,13 @@
         return level * Math.pow(0.5, decayMs / ACTION_INTENT_POLICY.halfLifeMs);
     }
 
-    function addActionIntentEvidence(actionId, strength, timestamp, reason) {
+    function normalizeActionActivityId(value) {
+        if (typeof value !== 'string') return '';
+        var normalized = value.trim();
+        return normalized ? normalized.slice(0, 128) : '';
+    }
+
+    function addActionIntentEvidence(actionId, strength, timestamp, reason, activityId) {
         if (!getActionScoreConfig(actionId)) return 0;
         var evidenceAt = Number.isFinite(Number(timestamp)) ? Number(timestamp) : nowMs();
         var current = getDecayedActionIntentLevel(runtimeState.actionIntentEvidence[actionId], evidenceAt);
@@ -1169,6 +1344,7 @@
             level: next,
             updatedAt: evidenceAt,
             reason: typeof reason === 'string' ? reason : '',
+            activityId: normalizeActionActivityId(activityId),
         };
         return next;
     }
@@ -1257,13 +1433,18 @@
         if (observation.type !== OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED) return;
         var strength = getYarnOfferIntentStrength(observation);
         if (strength) {
+            var activityId = normalizeActionActivityId(observation.detail && (
+                observation.detail.activityId || observation.detail.activity_id ||
+                observation.detail.sessionId || observation.detail.session_id
+            ));
             addActionIntentEvidence(
                 ACTION_IDS.CAT1_PLAY_YARN,
                 strength,
                 observation.timestamp,
                 strength === ACTION_INTENT_POLICY.yarnOfferStrongStrength
                     ? 'yarn_offer_far_to_near'
-                    : 'yarn_offer_near'
+                    : 'yarn_offer_near',
+                activityId
             );
             return;
         }
@@ -1417,10 +1598,12 @@
         var cadence = getCadenceScore(timestamp);
         var cooldown = getActionCooldown(actionId, timestamp, cooldownOptions);
         var intent = getActionIntentContribution(actionId, timestamp);
+        var petCareBias = petCareScoreBias(actionId, timestamp);
         var intentCooldownRelief = ACTION_INTENT_POLICY.cooldownRankRelief * intent.curveFactor;
         var cooldownSortRank = cooldown.curveFactor * (1 - intentCooldownRelief);
-        var baseEligibilityScore = needContribution + cadence.adjustment + intent.contribution;
-        // Need, cadence and intent decide whether the action is warranted.
+        var baseEligibilityScore = needContribution + cadence.adjustment + intent.contribution + petCareBias;
+        // Need, cadence, intent and the bounded PetCare projection decide
+        // whether the action is warranted.
         // Cooldown stays out of this gate and remains a relative selection
         // signal, so using an action once cannot erase it for several minutes.
         var eligibilityScore = baseEligibilityScore;
@@ -1438,6 +1621,7 @@
             intentContribution: intent.contribution,
             intentCurveFactor: intent.curveFactor,
             intentReason: intent.reason,
+            petCareBias: petCareBias,
             eligibilityScore: eligibilityScore,
             cooldownApplied: cooldown.active,
             cooldownSortRank: cooldownSortRank,
@@ -1474,6 +1658,7 @@
                 intentContribution: Math.round(scoring.intentContribution * 100) / 100,
                 intentCurveFactor: Math.round(scoring.intentCurveFactor * 10000) / 10000,
                 intentReason: scoring.intentReason,
+                petCareBias: Math.round(scoring.petCareBias * 100) / 100,
                 eligibilityScore: Math.round(scoring.eligibilityScore * 100) / 100,
                 cooldownApplied: scoring.cooldownApplied,
                 cooldownSortRank: Math.round(scoring.cooldownSortRank * 10000) / 10000,
@@ -1530,19 +1715,20 @@
         var pending = scheduler.pendingActionRequest;
         if (!pending) return false;
         var acceptedAt = Number(pending.acceptedAt);
+        var deferredAt = Number(pending.deferredAt);
         var requestedAt = Number(pending.timestamp);
-        var anchor = Number.isFinite(acceptedAt) && acceptedAt > 0 ? acceptedAt : requestedAt;
+        var accepted = Number.isFinite(acceptedAt) && acceptedAt > 0;
+        var deferred = !accepted && Number.isFinite(deferredAt) && deferredAt > 0;
+        var anchor = accepted ? acceptedAt : (deferred ? deferredAt : requestedAt);
         if (!Number.isFinite(anchor)) anchor = timestamp;
-        var leaseMs = Number.isFinite(acceptedAt) && acceptedAt > 0
-            ? ACTION_ACCEPTED_START_LEASE_MS
-            : ACTION_REQUEST_LEASE_MS;
+        var leaseMs = accepted ? ACTION_ACCEPTED_START_LEASE_MS :
+            (deferred ? ACTION_DEFERRED_REQUEST_LEASE_MS : ACTION_REQUEST_LEASE_MS);
         if (timestamp - anchor < leaseMs) return false;
         clearActionRequestLeaseTimer();
         scheduler.pendingActionRequest = null;
         scheduler.lastProtocolFailure = {
-            type: Number.isFinite(acceptedAt) && acceptedAt > 0
-                ? 'accepted_not_started_timeout'
-                : 'request_unacknowledged_timeout',
+            type: accepted ? 'accepted_not_started_timeout' :
+                (deferred ? 'deferred_authorization_timeout' : 'request_unacknowledged_timeout'),
             requestId: pending.requestId,
             actionId: pending.actionId,
             runId: pending.runId || '',
@@ -1685,6 +1871,7 @@
                 cadenceCurveFactor: null,
                 intentLevel: null,
                 intentContribution: null,
+                petCareBias: null,
                 intentCurveFactor: null,
                 intentReason: '',
                 eligibilityScore: null,
@@ -1722,6 +1909,7 @@
                     candidate.cadenceCurveFactor = Math.round(scoring.cadenceCurveFactor * 10000) / 10000;
                     candidate.intentLevel = Math.round(scoring.intentLevel * 10000) / 10000;
                     candidate.intentContribution = Math.round(scoring.intentContribution * 100) / 100;
+                    candidate.petCareBias = Math.round(scoring.petCareBias * 100) / 100;
                     candidate.intentCurveFactor = Math.round(scoring.intentCurveFactor * 10000) / 10000;
                     candidate.intentReason = scoring.intentReason;
                     candidate.eligibilityScore = Math.round(scoring.eligibilityScore * 100) / 100;
@@ -3058,6 +3246,7 @@
             },
             lastResetReason: runtimeState.lastResetReason,
             returnSummaryDraft: clonePlain(runtimeState.returnSummaryDraft),
+            petCareProjection: getPetCareProjection(timestamp),
         };
     }
 
@@ -3097,6 +3286,9 @@
         clearDebugTimeline: clearDebugTimeline,
         recordDecision: recordDecision,
         acknowledgeActionRequest: acknowledgeActionRequest,
+        setPetCareProjection: setPetCareProjection,
+        clearPetCareProjection: clearPetCareProjection,
+        getPetCareProjection: getPetCareProjection,
         observe: observe,
         reset: resetRuntime,
     });

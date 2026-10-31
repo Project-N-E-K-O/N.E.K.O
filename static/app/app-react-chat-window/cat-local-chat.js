@@ -68,6 +68,17 @@
         }
     }
 
+    function shouldBlockPetCareEntityOutput(source) {
+        var mode = window.nekoPetCareMode;
+        if (!mode || typeof mode.shouldBlockEntityOutput !== 'function') return false;
+        try {
+            var result = mode.shouldBlockEntityOutput({ source: source || 'cat-local-chat' });
+            return !!(result && result.blocked);
+        } catch (_) {
+            return false;
+        }
+    }
+
     function cloneItem(item) {
         if (!item || typeof item !== 'object') return null;
         var role = item.role === 'user' ? 'user' : (item.role === 'assistant' ? 'assistant' : '');
@@ -397,6 +408,11 @@
         var delay = REPLY_DELAY_MIN_MS + Math.floor(Math.random() * REPLY_DELAY_SPAN_MS);
         replyTimer = window.setTimeout(function () {
             replyTimer = 0;
+            if (shouldBlockPetCareEntityOutput('cat-local-chat')) {
+                clearReplyWork();
+                publishSnapshot('cat-local-chat-reply-blocked-exploration');
+                return;
+            }
             var pending = replyQueue.shift();
             var current = readCatMindState();
             if (!pending || !current || current.active !== true
@@ -429,7 +445,7 @@
         var text = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
         var requestId = payload && typeof payload.requestId === 'string' ? payload.requestId.trim() : '';
         var requestedEnteredAt = Number(payload && payload.enteredAt);
-        if (!text || !requestId || !state.active) return false;
+        if (!text || !requestId || !state.active || shouldBlockPetCareEntityOutput('cat-local-chat')) return false;
         if (Number.isFinite(requestedEnteredAt) && requestedEnteredAt > 0
             && requestedEnteredAt !== state.enteredAt) return false;
         if (!rememberRequestId(requestId)) return true;
@@ -475,7 +491,7 @@
 
     I.submitCatLocalChatText = function submitCatLocalChatText(payload) {
         var text = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
-        if (!I.isCatLocalChatActive() || !text) return false;
+        if (!I.isCatLocalChatActive() || !text || shouldBlockPetCareEntityOutput('cat-local-chat')) return false;
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
             ? payload.requestId
             : ('cat-local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -504,6 +520,20 @@
     });
     window.addEventListener('neko:cat-local-active-change', function () {
         publishSnapshot('cat-local-active-change');
+    });
+    window.addEventListener('neko:pet-care:exploration-gate', function (event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        var activityId = String(
+            detail.activityId || detail.explorationId || detail.exploration_id || ''
+        ).trim();
+        var mode = window.nekoPetCareMode;
+        if (!activityId) return;
+        if (mode && typeof mode.shouldApplyExplorationGate === 'function'
+            && !mode.shouldApplyExplorationGate(detail)) return;
+        if (detail.active === true) {
+            clearReplyWork();
+            publishSnapshot('cat-local-chat-exploration-gate');
+        }
     });
     window.addEventListener('neko:goodbye-state-cleared', function () {
         publishSnapshot('goodbye-state-cleared');

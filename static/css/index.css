@@ -884,6 +884,42 @@ body.neko-game-active [id$="-lock-icon"] {
     transform-origin: center center;
 }
 
+/* A server-confirmed sick state changes only the cat presentation.  It does
+   not replace the avatar tier or become a second source of PetCare state. */
+.neko-idle-return-btn[data-neko-pet-care-sick="true"] > .neko-idle-return-art {
+    filter: saturate(.48) brightness(.84);
+    opacity: .9;
+}
+
+/* Exploration is a temporary desktop-away presentation. Keep its real paper
+   note independent from the pet-care panel; the same return hit region
+   remains the only recall entry. */
+.neko-pet-care-exploration-note-overlay {
+    position: absolute;
+    right: -18px;
+    bottom: -10px;
+    z-index: 4;
+    display: grid;
+    gap: 2px;
+    min-width: 92px;
+    max-width: 142px;
+    padding: 5px 7px;
+    border: 1px solid rgba(120, 92, 45, .32);
+    border-radius: 5px 5px 7px 7px;
+    background: #fff8df;
+    box-shadow: 0 4px 12px rgba(20, 25, 35, .2);
+    color: #5b4630;
+    font-size: 10px;
+    line-height: 1.25;
+    transform: rotate(-4deg);
+    pointer-events: none;
+}
+.neko-pet-care-exploration-note-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.neko-pet-care-exploration-countdown { color: #846b49; font-size: 9px; }
 .neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn {
     --neko-idle-return-size: clamp(56px, 8vw, 72px);
     border-radius: 999px;
@@ -948,6 +984,13 @@ body.neko-game-active [id$="-lock-icon"] {
     min-width: 175%;
     max-width: none;
     height: 100% !important;
+}
+
+.neko-idle-return-btn.is-cat1-playing-teaser-wand > .neko-idle-return-art {
+    position: absolute;
+    width: 100% !important;
+    height: auto !important;
+    inset: auto 0 0;
 }
 
 #react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"] {
@@ -1154,6 +1197,8 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-playing-teaser-wand .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-petting .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
     display: none;
