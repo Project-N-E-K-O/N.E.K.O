@@ -257,6 +257,7 @@ tests/testbench/docs/dev_note.txt
 # 内置 Live2D 模型源码打包在 assets/<name>.tar.gz；build_frontend 解压到此
 /static/yui-origin/
 /static/yui-lolita/
+/static/yui-sister/
 # 内置 PNGTuber 模型源码位于 frontend/pngtuber-packs；build_frontend 解压到此
 /static/pngtuber/
 
