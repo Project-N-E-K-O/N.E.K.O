@@ -289,18 +289,12 @@ export interface PluginMessage {
 
 // 日志条目
 export interface LogEntry {
+  id?: string
   timestamp: string
   level: string
   file: string
   line: number
   message: string
-}
-
-// 日志文件信息
-export interface LogFile {
-  filename: string
-  size: number
-  modified: number
 }
 
 // 插件配置

@@ -438,6 +438,9 @@ def _worker_main(protocol_fd: int | None = None) -> None:
         request_obj = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
         if not isinstance(request_obj, dict):
             raise TypeError("metadata scan request must be an object")
+        from plugin.logging_config import setup_plugin_logging
+
+        setup_plugin_logging("PluginServer", own_root=True)
         result = _scan_in_worker(request_obj)
     except BaseException as exc:
         result = {
