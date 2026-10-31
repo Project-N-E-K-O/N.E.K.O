@@ -11,7 +11,7 @@ const settle = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(
 
 function surface(t, hub = new Set(), server = new Map()) {
     const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost:48911/chat', runScripts: 'outside-only', pretendToBeVisual: true });
-    const w = dom.window, messages = new Map(), timers = new Map(), calls = [], plays = [];
+    const w = dom.window, messages = new Map(), timers = new Map(), calls = [], plays = [], cardChoices = [];
     let now = 100000, next = 0, hidden = false, failing = false;
     const RealDate = w.Date;
     w.Date = class extends RealDate { static now() { return now; } };
@@ -29,7 +29,11 @@ function surface(t, hub = new Set(), server = new Map()) {
             detail: { type: 'update', messageId, patch: JSON.parse(JSON.stringify(patch)) }
         })));
     };
-    w.fetch = async (_url, init) => {
+    w.fetch = async (url, init) => {
+        if (String(url).endsWith('/api/proactive/music_card_decision')) {
+            cardChoices.push(JSON.parse(init.body));
+            return { ok: true, status: 200, json: async () => ({ success: true }) };
+        }
         const event = JSON.parse(init.body); calls.push(event);
         if (failing) throw Error('offline');
         let grant = false;
@@ -46,7 +50,7 @@ function surface(t, hub = new Set(), server = new Map()) {
         detail: { message: message(), action: { action: name, payload: { recommendationId: id, kind } } }
     }));
     t.after(() => { w.dispatchEvent(new w.Event('pagehide')); hub.delete(w); timers.clear(); w.close(); });
-    return { w, calls, plays, timers, message,
+    return { w, calls, plays, timers, message, cardChoices,
         show: () => action('music_recommendation_shown'),
         choose: kind => action('music_recommendation_decision', kind),
         fail: value => { failing = value; },
@@ -205,3 +209,20 @@ for (const state of ['skipped', 'accepted', 'playing', 'paused', 'ended', 'stopp
         assert.equal(s.plays.length, 0, 'stale choices cannot restart a countdown or replay audio');
     });
 }
+
+for (const kind of ['accepted', 'skipped']) test(`manual ${kind} feeds the backend music cooldown once`, async t => {
+    const s = surface(t); s.show(); s.choose(kind); s.choose(kind); await s.advance(20000);
+    assert.deepEqual(s.cardChoices, [{ lanlan_name: 'Neko', decision: kind }]);
+});
+test('countdown acceptance is not reported as a user choice', async t => {
+    const s = surface(t); s.show(); await s.advance(20000);
+    assert.equal(s.plays.length, 1);
+    assert.deepEqual(s.cardChoices, []);
+});
+test('an offline skip still counts toward the cooldown, and its retry does not count twice', async t => {
+    const s = surface(t); s.show(); s.fail(true); s.choose('skipped'); await settle();
+    assert.equal(s.message().blocks[0].state, 'pending');
+    s.fail(false); s.choose('skipped'); await settle();
+    assert.equal(s.message().blocks[0].state, 'skipped');
+    assert.deepEqual(s.cardChoices, [{ lanlan_name: 'Neko', decision: 'skipped' }]);
+});

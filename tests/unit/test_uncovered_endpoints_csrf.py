@@ -46,6 +46,7 @@ UNCOVERED_ENDPOINTS: list[tuple[str, dict]] = [
     ("/api/steam/update-playtime", {"json": {"seconds": 10}}),
     ("/api/proactive_chat", {"json": {"lanlan_name": "Yui"}}),
     ("/api/proactive/music_played_through", {"json": {"lanlan_name": "Yui"}}),
+    ("/api/proactive/music_card_decision", {"json": {"lanlan_name": "Yui", "decision": "skipped"}}),
     ("/api/translate", {"json": {"text": "hello", "target_lang": "zh"}}),
 ]
 

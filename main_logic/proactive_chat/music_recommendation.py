@@ -38,6 +38,7 @@ from utils.logger_config import get_module_logger
 from utils.music_crawlers import fetch_music_content
 from utils.music_audio import filter_playable_candidates
 
+from .music_refusal import reset_music_card_skips
 from .state import _clear_channel_from_proactive_history
 
 logger = get_module_logger(__name__, "Main")
@@ -307,6 +308,9 @@ async def _fetch_music_with_fallback(
 
 def _record_music_played_through(lanlan_name: str) -> int:
     """Apply completed-playback feedback to music-channel decay history."""
+    # Same as the frontend resetSkipCounter() on 'ended': a finished song
+    # breaks the consecutive card-skip streak.
+    reset_music_card_skips(lanlan_name)
     cleared = _clear_channel_from_proactive_history(lanlan_name, "music")
     if cleared:
         logger.info(

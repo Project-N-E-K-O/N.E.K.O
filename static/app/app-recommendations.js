@@ -536,11 +536,35 @@
         else host.appendMessage(message);
         return true;
     }
+    // The player-side skip cooldown in music_ui.js never sees a card refused
+    // before playback. The backend counts the user's own card choices instead,
+    // independent of whether the evidence store accepts the event, so every
+    // window shares one streak. Countdown auto-accepts are not a choice.
+    const reportedMusicChoices = new Set();
+    function reportMusicCardChoice(id, kind) {
+        if (reportedMusicChoices.has(id)) return;
+        reportedMusicChoices.add(id);
+        if (reportedMusicChoices.size > 256) reportedMusicChoices.delete(reportedMusicChoices.values().next().value);
+        void (async () => {
+            const headers = { 'Content-Type': 'application/json' };
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                try { Object.assign(headers, await security.getMutationHeaders()); } catch (_) {}
+            }
+            try {
+                await fetch('/api/proactive/music_card_decision', {
+                    method: 'POST', headers, keepalive: true, signal: AbortSignal.timeout(5000),
+                    body: JSON.stringify({ lanlan_name: hasCharacter() ? currentCharacter() : '', decision: kind })
+                });
+            } catch (_) { /* cooldown is best effort; the card decision itself is unaffected */ }
+        })();
+    }
     async function decide(message, id, kind, automatic = false) {
         if (inFlight.has(id) || disposed) return;
         const previous = messages.get(id);
         if (!belongsHere(previous) || retiredIds.has(id) || !['pending', 'saving'].includes(previous.blocks[0].state)) return;
         if (previous.blocks[0].type === 'proactive_recommendation' && previous.blocks[0].directDelivery) return;
+        if (!automatic && previous.blocks[0].type === 'music_recommendation') reportMusicCardChoice(id, kind);
         remember(message);
         const epoch = lifecycleEpoch;
         const visibilityEpoch = autoplayVisibilityEpoch;
