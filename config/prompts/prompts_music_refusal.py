@@ -62,8 +62,7 @@ MUSIC_REFUSAL_PATTERNS_I18N: dict[str, tuple[str, ...]] = {
     ),
     "en": (
         # stop playing music / don't recommend me any more songs.
-        # "don't stop playing music" asks for more, not less.
-        r"(?<!don't )(?<!dont )(?<!do not )(?<!never )"
+        # "don't (ever) stop playing music" is blanked out first, see _NEGATED_STOP.
         r"\b(?:stop|quit|don'?t|do not|no more)\s+(?!stop\b|quit\b)(?:\w+\s+){0,2}?"
         r"(?:play(?:ing)?|recommend(?:ing)?|suggest(?:ing)?|send(?:ing)?|put(?:ting)? on)\s+"
         r"(?:\w+\s+){0,3}?(?:songs?|music|tracks?)\b",
@@ -102,6 +101,15 @@ MUSIC_REFUSAL_PATTERNS_I18N: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# "Don't (ever) stop playing music" asks for more, not less. The negated
+# stop is blanked before matching so "playing music" alone cannot hit.
+_NEGATED_STOP = re.compile(
+    r"\b(?:don'?t|do not|never|won'?t|can'?t|cannot|shouldn'?t)\s+(?:\w+\s+){0,2}?(?:stop|quit)\b",
+    re.IGNORECASE,
+)
+# Curly and modifier apostrophes from mobile keyboards and IMEs.
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'"})
+
 _COMPILED: tuple[Pattern[str], ...] = tuple(
     re.compile(pattern, re.IGNORECASE)
     for patterns in MUSIC_REFUSAL_PATTERNS_I18N.values()
@@ -113,5 +121,5 @@ def detect_music_refusal(text: str) -> bool:
     """Return whether ``text`` turns down music recommendations in any locale."""
     if not isinstance(text, str) or not text.strip():
         return False
-    sample = text[:MUSIC_REFUSAL_SCAN_MAX_CHARS]
+    sample = _NEGATED_STOP.sub(" ", text[:MUSIC_REFUSAL_SCAN_MAX_CHARS].translate(_APOSTROPHES))
     return any(pattern.search(sample) for pattern in _COMPILED)

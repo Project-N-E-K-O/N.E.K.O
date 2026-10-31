@@ -38,10 +38,7 @@ from main_logic.proactive_chat.mini_game_invite import (
 from main_logic.proactive_chat.music_recommendation import (
     _record_music_played_through,
 )
-from main_logic.proactive_chat.music_refusal import (
-    record_music_card_skipped,
-    reset_music_card_skips,
-)
+from main_logic.proactive_chat.music_refusal import record_music_card_choice
 from utils.theater_activity import is_theater_active
 from main_routers.recommendation_router import capture_owner, attach_music_recommendation, attach_proactive_recommendations
 
@@ -298,7 +295,8 @@ async def proactive_music_card_decision(request: Request):
     """Count the user's own choice on a music recommendation card.
 
     Two consecutive skips pause music recommendations; a manual accept breaks
-    the streak. Countdown auto-accepts are not reported by the client.
+    the streak. Choices are keyed by card id, so a retry from another window
+    is not a second card. Countdown auto-accepts are not reported by the client.
     """
     validation_error = _validate_local_mutation_request(request)
     if validation_error is not None:
@@ -308,16 +306,18 @@ async def proactive_music_card_decision(request: Request):
     if not lanlan_name:
         return _missing_lanlan_name()
     decision = data.get("decision")
-    if decision == "skipped":
-        cooldown = record_music_card_skipped(lanlan_name)
-    elif decision == "accepted":
-        reset_music_card_skips(lanlan_name)
-        cooldown = False
-    else:
+    card_id = data.get("recommendation_id")
+    if decision not in ("skipped", "accepted"):
         return JSONResponse(
             {"success": False, "error": "invalid decision"},
             status_code=400,
         )
+    if not isinstance(card_id, str) or not card_id or len(card_id) > 100:
+        return JSONResponse(
+            {"success": False, "error": "recommendation_id missing"},
+            status_code=400,
+        )
+    cooldown = record_music_card_choice(lanlan_name, card_id, decision)
     return JSONResponse(
         {"success": True, "cooldown": cooldown, "lanlan_name": lanlan_name}
     )

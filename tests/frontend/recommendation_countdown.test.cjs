@@ -212,7 +212,7 @@ for (const state of ['skipped', 'accepted', 'playing', 'paused', 'ended', 'stopp
 
 for (const kind of ['accepted', 'skipped']) test(`manual ${kind} feeds the backend music cooldown once`, async t => {
     const s = surface(t); s.show(); s.choose(kind); s.choose(kind); await s.advance(20000);
-    assert.deepEqual(s.cardChoices, [{ lanlan_name: 'Neko', decision: kind }]);
+    assert.deepEqual(s.cardChoices, [{ lanlan_name: 'Neko', recommendation_id: id, decision: kind }]);
 });
 test('countdown acceptance is not reported as a user choice', async t => {
     const s = surface(t); s.show(); await s.advance(20000);
@@ -224,5 +224,21 @@ test('an offline skip still counts toward the cooldown, and its retry does not c
     assert.equal(s.message().blocks[0].state, 'pending');
     s.fail(false); s.choose('skipped'); await settle();
     assert.equal(s.message().blocks[0].state, 'skipped');
-    assert.deepEqual(s.cardChoices, [{ lanlan_name: 'Neko', decision: 'skipped' }]);
+    assert.deepEqual(s.cardChoices, [{ lanlan_name: 'Neko', recommendation_id: id, decision: 'skipped' }]);
+});
+test('a changed choice after a failed save is reported for the same card', async t => {
+    const s = surface(t); s.show(); s.fail(true); s.choose('skipped'); await settle();
+    s.fail(false); s.choose('accepted'); await settle();
+    assert.deepEqual(s.cardChoices.map(choice => [choice.recommendation_id, choice.decision]),
+        [[id, 'skipped'], [id, 'accepted']]);
+});
+test('the card owner is captured before waiting for request headers', async t => {
+    const s = surface(t); s.show();
+    const waiting = [];
+    s.w.nekoLocalMutationSecurity.getMutationHeaders = () => new Promise(resolve => waiting.push(() => resolve({})));
+    s.choose('skipped'); await settle();
+    s.w.lanlan_config.lanlan_name = 'Other';
+    for (const release of waiting) release();
+    await settle();
+    assert.equal(s.cardChoices[0].lanlan_name, 'Neko');
 });

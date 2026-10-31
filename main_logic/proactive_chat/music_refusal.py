@@ -36,8 +36,16 @@ logger = get_module_logger(__name__, "Main")
 # Mirrors SKIP_CONFIG in static/jukebox/music_ui.js.
 MUSIC_CARD_SKIPS_TO_TRIGGER = 2
 MUSIC_REFUSAL_COOLDOWN_SECONDS = 20 * 60
+# Enough to dedupe retries of recent cards; older cards cannot extend a streak.
+_MAX_TRACKED_CARDS = 32
 
-_music_card_skip_counts: dict[str, int] = {}
+# lanlan_name -> card id -> (latest decision, streak epoch at first decision).
+# Keyed by card so a retry from another window is not a second card, and a
+# changed choice replaces the earlier one in place.
+_music_card_choices: dict[str, dict[str, tuple[str, int]]] = {}
+# Bumped whenever the streak restarts (cooldown entered, song finished), so
+# cards decided before that no longer count even if their choice changes later.
+_music_card_epoch: dict[str, int] = {}
 _music_refusal_cooldown_until: dict[str, float] = {}
 
 
@@ -45,11 +53,16 @@ def _now(now: float | None) -> float:
     return time.time() if now is None else float(now)
 
 
+def reset_music_card_skips(lanlan_name: str) -> None:
+    """Restart the consecutive-skip streak after the user took a song."""
+    _music_card_epoch[lanlan_name] = _music_card_epoch.get(lanlan_name, 0) + 1
+
+
 def enter_music_refusal_cooldown(lanlan_name: str, reason: str, *, now: float | None = None) -> float:
     """Pause music recommendations for ``lanlan_name``; returns the deadline."""
     until = _now(now) + MUSIC_REFUSAL_COOLDOWN_SECONDS
     _music_refusal_cooldown_until[lanlan_name] = until
-    _music_card_skip_counts.pop(lanlan_name, None)
+    reset_music_card_skips(lanlan_name)
     logger.info(
         "[%s] 用户拒绝音乐推荐（%s），音乐推荐暂停 %d 分钟",
         lanlan_name,
@@ -70,20 +83,44 @@ def is_music_refusal_cooldown_active(lanlan_name: str, *, now: float | None = No
     return True
 
 
-def record_music_card_skipped(lanlan_name: str, *, now: float | None = None) -> bool:
-    """Count a skipped recommendation card; returns True when it starts a cooldown."""
-    count = _music_card_skip_counts.get(lanlan_name, 0) + 1
-    if count >= MUSIC_CARD_SKIPS_TO_TRIGGER:
-        enter_music_refusal_cooldown(lanlan_name, f"连续跳过 {count} 张音乐推荐卡片", now=now)
+def _current_skip_streak(lanlan_name: str) -> int:
+    epoch = _music_card_epoch.get(lanlan_name, 0)
+    streak = 0
+    for decision, card_epoch in reversed(_music_card_choices.get(lanlan_name, {}).values()):
+        if decision != "skipped" or card_epoch != epoch:
+            break
+        streak += 1
+    return streak
+
+
+def record_music_card_choice(
+    lanlan_name: str,
+    card_id: str,
+    decision: str,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Record the user's own choice on a card; returns True when it starts a cooldown.
+
+    Consecutive skips are counted in the order cards were first decided. A
+    repeated report of the same choice changes nothing; a changed choice
+    (accept after a failed skip, or the reverse) replaces the earlier one.
+    """
+    choices = _music_card_choices.setdefault(lanlan_name, {})
+    previous = choices.get(card_id)
+    if previous is not None and previous[0] == decision:
+        return False
+    epoch = previous[1] if previous is not None else _music_card_epoch.get(lanlan_name, 0)
+    choices[card_id] = (decision, epoch)
+    while len(choices) > _MAX_TRACKED_CARDS:
+        choices.pop(next(iter(choices)))
+    streak = _current_skip_streak(lanlan_name)
+    if streak >= MUSIC_CARD_SKIPS_TO_TRIGGER:
+        enter_music_refusal_cooldown(lanlan_name, f"连续跳过 {streak} 张音乐推荐卡片", now=now)
         return True
-    _music_card_skip_counts[lanlan_name] = count
-    logger.info("[%s] 音乐推荐卡片被跳过 #%d", lanlan_name, count)
+    if decision == "skipped":
+        logger.info("[%s] 音乐推荐卡片被跳过（连续 %d 张）", lanlan_name, streak)
     return False
-
-
-def reset_music_card_skips(lanlan_name: str) -> None:
-    """Break the consecutive-skip streak after the user took a song."""
-    _music_card_skip_counts.pop(lanlan_name, None)
 
 
 def on_user_utterance(bucket: str, event: Dict[str, Any]) -> None:
