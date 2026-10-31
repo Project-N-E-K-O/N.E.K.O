@@ -62,38 +62,38 @@ from ._shared import (
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
 
 
-def _callback_reply_origin(callbacks: list) -> dict[str, object]:
-    """Project only provenance established on every callback in this batch."""
-    def is_plugin_callback(callback: object) -> bool:
-        if not isinstance(callback, dict) or callback.get("source_kind") != "plugin":
-            return False
-        channel = callback.get("channel")
-        return isinstance(channel, str) and (channel == "plugin" or channel.startswith("plugin:"))
-
-    def shared_nonempty(field: str) -> str | None:
-        values = [callback.get(field) for callback in callbacks]
-        if any(not isinstance(value, str) or not value.strip() for value in values):
-            return None
-        normalized = {value.strip() for value in values}
-        return next(iter(normalized)) if len(normalized) == 1 else None
-
-    all_plugin = bool(callbacks) and all(is_plugin_callback(callback) for callback in callbacks)
-    all_tasks = bool(callbacks) and all(
-        isinstance(callback, dict)
-        and callback.get("origin") == "task_result"
-        and not is_plugin_callback(callback)
-        for callback in callbacks
-    )
-    return {
-        "kind": "plugin" if all_plugin else "agent",
-        "is_proactive": True,
-        "plugin_id": shared_nonempty("source_name") if all_plugin else None,
-        "task_id": shared_nonempty("task_id") if all_tasks else None,
-    }
-
-
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
+
+    @staticmethod
+    def _callback_reply_origin(callbacks: list) -> dict[str, object]:
+        """Project only provenance established on every callback in this batch."""
+        def is_plugin_callback(callback: object) -> bool:
+            if not isinstance(callback, dict) or callback.get("source_kind") != "plugin":
+                return False
+            channel = callback.get("channel")
+            return isinstance(channel, str) and (channel == "plugin" or channel.startswith("plugin:"))
+
+        def shared_nonempty(field: str) -> str | None:
+            values = [callback.get(field) for callback in callbacks]
+            if any(not isinstance(value, str) or not value.strip() for value in values):
+                return None
+            normalized = {value.strip() for value in values}
+            return next(iter(normalized)) if len(normalized) == 1 else None
+
+        all_plugin = bool(callbacks) and all(is_plugin_callback(callback) for callback in callbacks)
+        all_tasks = bool(callbacks) and all(
+            isinstance(callback, dict)
+            and callback.get("origin") == "task_result"
+            and not is_plugin_callback(callback)
+            for callback in callbacks
+        )
+        return {
+            "kind": "plugin" if all_plugin else "agent",
+            "is_proactive": True,
+            "plugin_id": shared_nonempty("source_name") if all_plugin else None,
+            "task_id": shared_nonempty("task_id") if all_tasks else None,
+        }
 
     def update_proactive_vision_consent(self, enabled: bool) -> None:
         """Apply live browser consent without granting persisted permission."""
@@ -2043,7 +2043,7 @@ class ProactiveMixin:
                     callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
-            _origin_token = conversation_reply_origin.set(_callback_reply_origin(active_callbacks))
+            _origin_token = conversation_reply_origin.set(ProactiveMixin._callback_reply_origin(active_callbacks))
             # Freeze origin before asynchronous callback delivery can interleave.
             mark_turn_origin(self, proactive_sid, 'agent')
             # Text-mode playback boundary for the pacing manager: no frontend
