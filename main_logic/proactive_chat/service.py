@@ -47,6 +47,7 @@ from config.prompts.prompts_proactive import (
 )
 from config.prompts.prompts_sys import _loc
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.recommendation_policy import canonical_category
 from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
@@ -58,8 +59,10 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_PRIVACY,
+    PROACTIVE_REASON_PASS_USER_COOLDOWN,
     ProactiveChatCommand,
     ProactiveChatResult,
+    RecommendationPolicyView,
     _proactive_chat_body,
     _proactive_error_body,
     _proactive_pass_body,
@@ -576,6 +579,7 @@ async def handle_proactive_chat(
     push_mini_game_invite_options: Any,
     push_mini_game_invite_resolved: Any,
     meme_proxy_candidate_fetchable: Any | None = None,
+    recommendation_policy: RecommendationPolicyView | None = None,
 ) -> ProactiveChatResult:
     """
     Proactive chat: two-phase architecture — Phase 1 merged LLM (web screening + music/meme keywords, 1 call), Phase 2 persona-aware chat generation.
@@ -1414,6 +1418,14 @@ async def handle_proactive_chat(
         # thread lets Phase2 use text-only follow-up, matching fallback with
         # sources={} and an existing thread. Codex P1: compatibility fallback already distinguishes
         # missing field from explicit[], so exit clearly for explicit empty.
+        if recommendation_policy is not None and enabled_modes:
+            enabled_modes, policy_reason = recommendation_policy.filter_modes(enabled_modes)
+            if not enabled_modes and policy_reason is not None:
+                return await _end_proactive(ProactiveChatResult(body=_proactive_pass_body(
+                    policy_reason, attempt_consumed=False,
+                    message="recommendation sources suppressed by user preference",
+                )))
+
         source_result = _decide_empty_source_gate(
             enabled_modes,
             has_unfinished_thread=_has_unfinished_thread,
@@ -1797,6 +1809,25 @@ async def handle_proactive_chat(
 
 
         # Build once after source suppression so candidates are decayed only once.
+        # Preserve all categories entering the model, even if its final label is
+        # CHAT: generated prose may still use any of these supplied materials.
+        material_allowed = (
+            recommendation_policy.guard({
+                category for mode in sources
+                if (category := canonical_category(mode)) is not None
+            })
+            if recommendation_policy is not None else None
+        )
+
+        def policy_pass() -> ProactiveChatResult:
+            return ProactiveChatResult(body=_proactive_pass_body(
+                PROACTIVE_REASON_PASS_USER_COOLDOWN, attempt_consumed=False,
+                message="recommendation policy changed before delivery",
+            ))
+
+        if material_allowed is not None and not material_allowed():
+            return await _end_proactive(policy_pass())
+
         web_modes = [mode for mode in web_modes if mode in sources]
         if web_modes:
             from utils.tokenize import truncate_to_tokens as _ttt
@@ -1911,6 +1942,8 @@ async def handle_proactive_chat(
             # Only window content enters the combined Phase 1 text; screenshots go only to Phase 2.
             vision_consent_required="window" in sources,
         )
+        if material_allowed is not None and not material_allowed():
+            return await _end_proactive(policy_pass())
 
         # ============================================================
         # Parse web output → match links → deduplicate.
@@ -2483,6 +2516,8 @@ async def handle_proactive_chat(
             )
 
         # --- Preflight: user idle, WebSocket online, session available ---
+        if material_allowed is not None and not material_allowed():
+            return await _end_proactive(policy_pass())
         if not await mgr.prepare_proactive_delivery(
             min_idle_secs=10.0, round_id=lifecycle.screenshot_request_id,
         ):
@@ -2516,6 +2551,9 @@ async def handle_proactive_chat(
                     )
                 )
             )
+
+        if material_allowed is not None and not material_allowed():
+            return await _end_proactive(policy_pass())
 
         # Path B (idle) focus mode: this round is now committed to speaking
         # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?
@@ -2559,6 +2597,8 @@ async def handle_proactive_chat(
             return await _end_proactive(ProactiveChatResult(
                 body=_proactive_preempted_json("phase2_post_generation"),
             ))
+        if material_allowed is not None and not material_allowed():
+            return await _end_proactive(policy_pass())
         # Consent was revoked during generation: the response uses screen/window content, and the screenshot would persist into the next round; do not commit it.
         if round_uses_vision_material and await _vision_consent_declined(vision_consent_check):
             logger.info("[%s] 视觉授权在生成期间撤回，放弃本轮投递", lanlan_name)
@@ -2601,6 +2641,7 @@ async def handle_proactive_chat(
             master_name=master_name_current,
             log=logger,
             round_id=lifecycle.screenshot_request_id,
+            delivery_allowed=material_allowed,
         )
         if delivery_commit.result is not None:
             return await _end_proactive(

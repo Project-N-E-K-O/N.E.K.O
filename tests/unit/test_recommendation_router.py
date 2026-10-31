@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from main_routers import recommendation_router as routes
 from main_routers.system_router import _shared
+from utils.config_manager.reserved_schema import set_reserved
 
 
 @pytest.fixture
@@ -21,7 +22,12 @@ def client(tmp_path, monkeypatch):
             yield
     monkeypatch.setattr(routes.host, "saved_session_snapshot", lambda: dict(snapshot))
     monkeypatch.setattr(routes.host, "saved_session_writer_fence", fence)
-    monkeypatch.setattr(routes, "get_config_manager", lambda: SimpleNamespace(get_runtime_config_path=lambda name: tmp_path / name))
+    profile = {}
+    set_reserved(profile, "character_uid", "a" * 32)
+    monkeypatch.setattr(routes, "get_config_manager", lambda: SimpleNamespace(
+        get_runtime_config_path=lambda name: tmp_path / name,
+        load_characters=lambda: {"猫娘": {"Neko": profile}},
+    ))
     monkeypatch.setattr(routes, "load_global_conversation_settings", lambda: {"proactiveMusicEnabled": True})
     monkeypatch.setattr(_shared, "AUTOSTART_CSRF_TOKEN", "test-token")
     app = FastAPI()

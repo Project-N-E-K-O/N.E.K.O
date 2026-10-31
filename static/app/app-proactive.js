@@ -1302,6 +1302,10 @@
                 }
                 requestSent = true;
                 var result = await resp.json();
+                if (result.attempt_consumed === false) {
+                    S._voiceProactiveLastResult = result.action || 'pass';
+                    return false;
+                }
                 if (result.success && result.action === 'chat' && canOfferRecommendations() && window.nekoRecommendations) {
                     (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
                         window.nekoRecommendations.offer(item, result.turn_id);
@@ -1656,6 +1660,9 @@
             if (typeof result.next_schedule_fixed_mode === 'boolean') {
                 S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
             }
+            // A policy pass did not attempt a conversation. Ordinary model PASS
+            // continues to consume an attempt and advance the existing backoff.
+            if (result.attempt_consumed === false) return false;
 
             if (result.success) {
                 if (result.action === 'chat') {

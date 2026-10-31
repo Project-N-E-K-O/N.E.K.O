@@ -42,6 +42,7 @@ class CapabilityNotInstalled(RuntimeError):
 
 _saved_session_snapshot: Callable[[], dict | None] | None = None
 _saved_session_writer_fence: Callable[[], AbstractContextManager] | None = None
+_saved_session_generation = object()
 _resolve_saved_oauth_status: Callable[[], Awaitable[dict]] | None = None
 _get_session_manager: Callable[[], Any] | None = None
 _get_init_one_catgirl: Callable[[], Callable[..., Awaitable[Any]]] | None = None
@@ -107,6 +108,17 @@ def saved_session_snapshot() -> dict | None:
 def saved_session_writer_fence() -> AbstractContextManager:
     """Return the cross-process lock that every credential writer also holds."""
     return _installed(_saved_session_writer_fence, "saved_session_writer_fence")()
+
+
+def saved_session_generation() -> object:
+    """Memory-only identity fence for supported in-process credential writes."""
+    return _saved_session_generation
+
+
+def invalidate_saved_session() -> None:
+    """Retire earlier identity observations without touching stored credentials."""
+    global _saved_session_generation
+    _saved_session_generation = object()
 
 
 def resolve_saved_oauth_status() -> Awaitable[dict]:

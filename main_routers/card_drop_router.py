@@ -741,6 +741,7 @@ def _social_session_lock(path: Path):
 def _write_social_session_record(path: Path, data: dict) -> None:
     with _social_session_lock(path):
         _write_private_json(path, data)
+        _chat_sync_host.invalidate_saved_session()
 
 
 @contextmanager
@@ -771,6 +772,7 @@ def _save_auth_unlocked(data: dict) -> bool:
     except OSError as exc:
         logger.warning("card_drop: save auth failed: %s", exc)
         return False
+    _chat_sync_host.invalidate_saved_session()
     return True
 
 
@@ -867,6 +869,7 @@ def _save_social_session_unlocked(
     except OSError as exc:
         logger.warning("card_drop: save social session failed: %s", exc)
         return False
+    _chat_sync_host.invalidate_saved_session()
     return True
 
 
@@ -1033,6 +1036,9 @@ def _clear_auth() -> bool:
     # logout would clear only the social file while the mirror returns, and clear would incorrectly report failure.
     try:
         with _social_session_locks(_social_session_paths()):
+            # A partial clear can already change the effective account. Retire
+            # old observations before the first unlink, including failure paths.
+            _chat_sync_host.invalidate_saved_session()
             success = _unlink_credentials(paths) and success
             for path in paths:
                 try:

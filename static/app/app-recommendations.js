@@ -3,7 +3,10 @@
     'use strict';
     const KEY = 'neko.music-recommendation-event.v1.';
     const CAPTURE_KEY = 'neko.recommendation-capture.v2.';
+    const DECISION_KEY = 'neko.recommendation-decision.v1.';
+    const DISPATCH_RETRY_KEY = 'neko.recommendation-dispatch-retry.v1.';
     const MAX_QUEUE = 256;
+    const MAX_DISPATCH_RETRY_AGE_MS = 30 * 60 * 1000;
     const messages = new Map();
     const inFlight = new Map();
     const dispatched = new Set();
@@ -85,21 +88,76 @@
         return !!receipt && receipt.event_id === event.event_id && receipt.payload_hash === eventHash(event)
             && ['durable', 'discarded'].includes(receipt.status);
     }
-    function eventStorageKey(event) { return (event.context ? CAPTURE_KEY : KEY) + event.event_id; }
+    function eventStorageKey(event, decision) { return (event.context ? CAPTURE_KEY : decision ? DECISION_KEY : KEY) + event.event_id; }
     function removeQueued(item) {
         const index = queue.indexOf(item);
         if (index !== -1) queue.splice(index, 1);
-        try { localStorage.removeItem(eventStorageKey(item.event)); } catch (_) {}
+        try { localStorage.removeItem(eventStorageKey(item.event, item.decision)); } catch (_) {}
     }
-    function queueEvent(id, event) {
+    function expiredDecision(item) {
+        return item.decision && ['accepted', 'skipped'].includes(item.event.kind)
+            && Number.isFinite(item.expiresAt) && item.expiresAt > 0 && item.expiresAt <= Date.now();
+    }
+    function pruneExpiredDecisions() {
+        // The backend owns facts already committed to SQLite. An expired offer
+        // can no longer admit a new choice, even after its original owner returns.
+        // Playback evidence has a different lifetime and must remain queued.
+        for (const item of queue.slice(0, MAX_QUEUE)) {
+            if (!inFlight.has(item.id) && expiredDecision(item)) removeQueued(item);
+        }
+    }
+    function queueEvent(id, event, decision = false) {
+        pruneExpiredDecisions();
         const existing = queue.find(item => item.event.event_id === event.event_id);
         if (existing) return existing;
         if (queue.length >= MAX_QUEUE) return null;
-        const item = { id, event };
+        const item = { id, event, ...(decision ? { decision: true, character: currentCharacter(),
+            expiresAt: messages.get(id)?.blocks[0].expiresAt } : {}) };
         queue.push(item);
-        try { localStorage.setItem(eventStorageKey(event), JSON.stringify(item)); }
+        try { localStorage.setItem(eventStorageKey(event, decision), JSON.stringify(item)); }
         catch (_) { console.warn('[Music recommendation] Could not persist pending evidence'); }
         return item;
+    }
+    function dispatchRetryEntries() {
+        const entries = [];
+        try {
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith(DISPATCH_RETRY_KEY)) continue;
+                let value;
+                try { value = JSON.parse(localStorage.getItem(key)); } catch (_) {}
+                if (!value || typeof value.id !== 'string' || value.event?.kind !== 'accepted'
+                    || key !== DISPATCH_RETRY_KEY + value.event.event_id
+                    || !Number.isFinite(value.expiresAt) || value.expiresAt <= Date.now()
+                    || value.expiresAt > Date.now() + MAX_DISPATCH_RETRY_AGE_MS) {
+                    localStorage.removeItem(key);
+                } else entries.push({ key, value });
+            }
+            entries.sort((a, b) => a.value.expiresAt - b.value.expiresAt);
+            while (entries.length > MAX_QUEUE) localStorage.removeItem(entries.shift().key);
+        } catch (_) { /* Retry hints are disposable; committed facts stay on the server. */ }
+        return entries;
+    }
+    function rememberDispatchRetry(item) {
+        if (!item.decision || item.event.kind !== 'accepted' || dispatched.has(item.id)
+            || !Number.isFinite(item.expiresAt)) return;
+        const expiresAt = Math.min(item.expiresAt, Date.now() + MAX_DISPATCH_RETRY_AGE_MS);
+        // Background acknowledgement has the same consent deadline on the
+        // original page and after reload. It never authorizes an automatic action.
+        decisionIds.set(item.id + ':accepted', { eventId: item.event.event_id,
+            occurredAt: item.event.occurred_at, reason: item.event.reason || '',
+            event: item.event, recovered: true, expiresAt });
+        if (expiresAt <= Date.now()) return;
+        const key = DISPATCH_RETRY_KEY + item.event.event_id;
+        try {
+            const entries = dispatchRetryEntries().filter(entry => entry.key !== key);
+            while (entries.length >= MAX_QUEUE) localStorage.removeItem(entries.shift().key);
+            localStorage.setItem(key, JSON.stringify({ id: item.id, event: item.event, character: item.character,
+                expiresAt }));
+        } catch (_) { /* The current page still retains the original explicit retry. */ }
+    }
+    function forgetDispatchRetry(event) {
+        try { localStorage.removeItem(DISPATCH_RETRY_KEY + event.event_id); } catch (_) {}
     }
     function invalidateCapture(authorityLost = false) {
         if (authorityLost) {
@@ -172,7 +230,7 @@
         offerContexts.set(id, copy(value));
         if (!captureSupported) {
             captureSupported = true;
-            for (const item of queue.slice()) if (!item.event.context) removeQueued(item);
+            for (const item of queue.slice()) if (!item.event.context && !item.decision) removeQueued(item);
             // The loaded queue is capped. Retire dormant legacy entries too;
             // a later reload must not resurrect pre-upgrade evidence.
             try {
@@ -287,13 +345,32 @@
         if (block && (data.message || previous)) remember(Object.assign({}, previous, message,
             { id: data.messageId || message.id, blocks: [block] }));
     });
+    // Confirmed acceptances are retry hints, never evidence to upload again.
+    // They expire with the original offer and require a fresh explicit click.
+    for (const { value } of dispatchRetryEntries()) {
+        decisionIds.set(value.id + ':accepted', { eventId: value.event.event_id,
+            occurredAt: value.event.occurred_at, reason: value.event.reason || '',
+            event: value.event, recovered: true, expiresAt: value.expiresAt });
+    }
     try {
         for (let i = 0; i < localStorage.length && queue.length < MAX_QUEUE; i++) {
             const key = localStorage.key(i);
-            if (!key || (!key.startsWith(KEY) && !key.startsWith(CAPTURE_KEY))) continue;
+            if (!key || (!key.startsWith(KEY) && !key.startsWith(CAPTURE_KEY) && !key.startsWith(DECISION_KEY))) continue;
             try {
                 const item = JSON.parse(localStorage.getItem(key));
-                if (item && typeof item.id === 'string' && item.event) queue.push(item);
+                if (item && typeof item.id === 'string' && item.event) {
+                    if (expiredDecision(item)) {
+                        localStorage.removeItem(key);
+                        i--;
+                        continue;
+                    }
+                    queue.push(item);
+                    if (item.decision && ['accepted', 'skipped'].includes(item.event.kind)) {
+                        decisionIds.set(item.id + ':' + item.event.kind, { eventId: item.event.event_id,
+                            occurredAt: item.event.occurred_at, reason: item.event.reason || '',
+                            event: item.event, recovered: true, expiresAt: item.expiresAt });
+                    }
+                }
             } catch (_) { /* Preserve a damaged item for diagnosis. */ }
         }
         queue.sort((a, b) => (a.event.occurred_at || 0) - (b.event.occurred_at || 0));
@@ -345,6 +422,11 @@
         if (previous) message = Object.assign({}, message, { author: previous.author });
         const previousState = previous?.blocks[0].state;
         const incomingState = message.blocks[0].state;
+        // A restored consent can be recorded in the background, but replaying
+        // its playback/open action still requires a fresh explicit click.
+        if (!previous && incomingState === 'pending' && decisionIds.get(id + ':accepted')?.recovered) {
+            message.blocks = [Object.assign({}, message.blocks[0], { error: true })];
+        }
         // unavailable is a local refusal, not a saved decision. An accepted
         // mirror can follow it when another window committed before a toggle.
         const savedDecision = previous && !['pending', 'saving', 'unavailable'].includes(previousState);
@@ -427,6 +509,7 @@
     }
     async function flush() {
         if (flushing || disposed) return flushing;
+        pruneExpiredDecisions();
         const epoch = evidenceEpoch;
         const operation = (async () => {
             const deferred = new Set();
@@ -435,15 +518,30 @@
             for (const item of queue.slice(0, MAX_QUEUE)) {
                 if (disposed || epoch !== evidenceEpoch) break;
                 if (deferred.has(item.id)) continue;
+                // The click path owns its response and any authorized dispatch.
+                // Background recovery only submits the original event.
+                if (item.decision && inFlight.has(item.id)) { deferred.add(item.id); continue; }
+                if (expiredDecision(item)) { removeQueued(item); continue; }
                 try {
                     const result = await request(item.id, item.event);
                     if (!handoffComplete(item.event, result)) {
                         deferred.add(item.id);
                         continue;
                     }
+                    if (result.state === 'accepted') rememberDispatchRetry(item);
+                    if (item.decision && item.event.kind === 'skipped' && result.state === 'skipped'
+                        && !disposed && epoch === evidenceEpoch && item.character === currentCharacter()
+                        && belongsHere(messages.get(item.id)) && !retiredIds.has(item.id)
+                        && ['pending', 'saving'].includes(messages.get(item.id).blocks[0].state)) {
+                        update(item.id, 'skipped');
+                    }
                 }
                 catch (error) {
                     if (item.event.context && handoffComplete(item.event, error)) {
+                        removeQueued(item);
+                        continue;
+                    }
+                    if (expiredDecision(item)) {
                         removeQueued(item);
                         continue;
                     }
@@ -604,6 +702,16 @@
         }
         const closePlaceholder = () => { placeholders.delete(placeholder); try { if (placeholder && !placeholder.closed) placeholder.close(); } catch (_) {} };
         const key = id + ':' + kind;
+        const restoredDecision = decisionIds.get(key);
+        if (restoredDecision?.recovered && Number.isFinite(restoredDecision.expiresAt)
+            && Date.now() >= restoredDecision.expiresAt) {
+            forgetDispatchRetry(restoredDecision.event);
+            decisionIds.delete(key);
+            closePlaceholder();
+            update(id, 'unavailable');
+            inFlight.delete(id);
+            return;
+        }
         if (!decisionIds.has(key)) decisionIds.set(key, { eventId: uid(), occurredAt: Date.now() / 1000, reason: automatic ? 'countdown_elapsed' : '' });
         const decision = decisionIds.get(key);
         if (!decision.event) {
@@ -615,7 +723,15 @@
             }
         }
         const event = decision.event;
-        const pendingEvidence = event.context ? queueEvent(id, event) : null;
+        // v1 decisions also survive reload without optional capture. Preserve
+        // their time and automatic-trigger reason; background retry never plays.
+        const pendingEvidence = queueEvent(id, event, true);
+        if (!pendingEvidence) {
+            closePlaceholder();
+            update(id, 'pending', true);
+            inFlight.delete(id);
+            return;
+        }
         try {
             const result = await request(id, event);
             if (pendingEvidence && handoffComplete(event, result)) removeQueued(pendingEvidence);
@@ -640,6 +756,7 @@
             if (block.type === 'proactive_recommendation') {
                 if (kind !== 'accepted' || !result.action_grant || dispatched.has(id)) { closePlaceholder(); return; }
                 dispatched.add(id);
+                forgetDispatchRetry(event);
                 if (href) {
                     if (shell && typeof shell.openExternal === 'function') await shell.openExternal(href);
                     else if (placeholder && !placeholder.closed) { placeholder.location.href = href; placeholders.delete(placeholder); }
@@ -657,6 +774,7 @@
                 return;
             }
             dispatched.add(id);
+            forgetDispatchRetry(event);
             // Consent is for this track only; never substitute another song.
             const playback = typeof window.dispatchMusicPlayDetailed === 'function'
                 ? await window.dispatchMusicPlayDetailed(block.track, {
@@ -671,7 +789,7 @@
             }
         } catch (error) {
             closePlaceholder();
-            if (pendingEvidence && handoffComplete(event, error)) removeQueued(pendingEvidence);
+            if (pendingEvidence && event.context && handoffComplete(event, error)) removeQueued(pendingEvidence);
             if (!isCurrent()) return;
             if (block.type === 'proactive_recommendation' && dispatched.has(id)) {
                 // A dispatch error does not undo an already committed preference.

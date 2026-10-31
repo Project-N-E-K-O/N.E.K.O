@@ -18,6 +18,7 @@ from main_routers import recommendation_router
 from main_routers.system_router import _shared, proactive_chat_flow
 from tests.unit.test_proactive_action_note import _make_mgr
 from utils import file_utils
+from utils.config_manager.reserved_schema import set_reserved
 
 
 @pytest.fixture
@@ -71,7 +72,12 @@ def delivery_http(tmp_path, monkeypatch):
 
     monkeypatch.setattr(recommendation_router.host, "saved_session_snapshot", lambda: dict(snapshot))
     monkeypatch.setattr(recommendation_router.host, "saved_session_writer_fence", credential_fence)
-    monkeypatch.setattr(recommendation_router, "get_config_manager", lambda: SimpleNamespace(get_runtime_config_path=lambda _: database))
+    profile = {}
+    set_reserved(profile, "character_uid", "b" * 32)
+    monkeypatch.setattr(recommendation_router, "get_config_manager", lambda: SimpleNamespace(
+        get_runtime_config_path=lambda _: database,
+        load_characters=lambda: {"猫娘": {"Test": profile}},
+    ))
     monkeypatch.setattr(recommendation_router, "load_global_conversation_settings", lambda: {"proactiveMusicEnabled": True})
     monkeypatch.setattr(_shared, "AUTOSTART_CSRF_TOKEN", "fixture-csrf")
     monkeypatch.setattr(proactive_chat_flow, "get_config_manager", lambda: SimpleNamespace(
@@ -124,6 +130,14 @@ async def start_round(mgr):
 def http_client(fixture):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=fixture.app), base_url="http://127.0.0.1:48911",
                              headers={"Origin": "http://127.0.0.1:48911", "X-CSRF-Token": "fixture-csrf"})
+
+
+def assert_no_recommendation_records(database):
+    # Admission can initialize the policy database without publishing a card.
+    # Verify actual facts, rather than equating file existence with delivery.
+    with closing(sqlite3.connect(database)) as connection:
+        for table in ("recommendations", "recommendation_events", "recommendation_policy"):
+            assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
@@ -183,7 +197,7 @@ async def test_cancelled_post_delivery_write_cannot_register_a_later_recommendat
             f.release.set()
             assert await asyncio.to_thread(f.finished.wait, 5)
             assert json.loads(f.totals_path.read_text(encoding="utf-8"))["totals"] == {"Test": 1}
-            assert not f.database.exists()
+            assert_no_recommendation_records(f.database)
             assert f.mgr.state.phase is ProactivePhase.IDLE
             assert f.mgr.state.owner is TurnOwner.USER
         finally:
@@ -204,7 +218,7 @@ async def test_user_takeover_before_commit_has_no_recommendation_or_accounting(d
     assert response.json()["action"] == "pass"
     assert "music_recommendation" not in response.json()
     assert not f.entered.is_set()
-    assert not f.database.exists()
+    assert_no_recommendation_records(f.database)
     assert not f.totals_path.exists()
     f.mgr.send_lanlan_response.assert_not_awaited()
     assert f.mgr.state.phase is ProactivePhase.IDLE

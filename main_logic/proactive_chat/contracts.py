@@ -20,9 +20,17 @@ request command plus the ``action`` / ``reason_code`` / ``stage`` vocabulary
 and helpers that construct domain result bodies.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
+
+
+class RecommendationPolicyView(Protocol):
+    """Request-scoped recommendation policy supplied by application assembly."""
+
+    def filter_modes(self, modes: Iterable[str]) -> tuple[list[str], str | None]: ...
+
+    def guard(self, categories: Iterable[str]) -> Callable[[], bool]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +126,8 @@ PROACTIVE_REASON_PASS_MODEL_PASS = "PASS_MODEL_PASS"
 PROACTIVE_REASON_PASS_GENERATION_EMPTY = "PASS_GENERATION_EMPTY"
 PROACTIVE_REASON_PASS_DUPLICATE = "PASS_DUPLICATE"
 PROACTIVE_REASON_PASS_USER_DIRECTIVE = "PASS_USER_DIRECTIVE"
+PROACTIVE_REASON_PASS_USER_COOLDOWN = "PASS_USER_COOLDOWN"
+PROACTIVE_REASON_PASS_USER_PREFERENCE = "PASS_USER_PREFERENCE"
 PROACTIVE_REASON_DELIVERY_PREEMPTED = "DELIVERY_PREEMPTED"
 PROACTIVE_REASON_DELIVERY_FAILED = "DELIVERY_FAILED"
 PROACTIVE_REASON_ERROR_TIMEOUT = "ERROR_TIMEOUT"
@@ -155,6 +165,8 @@ _PROACTIVE_REASON_STAGE: dict[str, str] = {
     # not the criterion that stopped it. A new stage would add a bucket containing just one reason
     # to every monitoring view aggregated by stage.
     PROACTIVE_REASON_PASS_USER_DIRECTIVE: PROACTIVE_STAGE_DEDUP,
+    PROACTIVE_REASON_PASS_USER_COOLDOWN: PROACTIVE_STAGE_SOURCE_SELECTION,
+    PROACTIVE_REASON_PASS_USER_PREFERENCE: PROACTIVE_STAGE_SOURCE_SELECTION,
     PROACTIVE_REASON_DELIVERY_PREEMPTED: PROACTIVE_STAGE_DELIVERY,
     PROACTIVE_REASON_DELIVERY_FAILED: PROACTIVE_STAGE_DELIVERY,
     PROACTIVE_REASON_ERROR_TIMEOUT: PROACTIVE_STAGE_RUNTIME_ERROR,

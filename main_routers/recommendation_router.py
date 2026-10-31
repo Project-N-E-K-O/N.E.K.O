@@ -14,7 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from main_logic.recommendation_feedback import FeedbackConflict, FeedbackDecisionConflict, RecommendationStore, RecommendationEventKind
 from services.chat_sync import host
+from services.proactive_feedback.policy import registry as policy_registry
 from utils.config_manager import get_config_manager
+from utils.config_manager.reserved_schema import get_character_uid
 from utils.preferences import load_global_conversation_settings
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
@@ -66,7 +68,44 @@ async def capture_owner():
     return await asyncio.to_thread(_operate, lambda store, owner: owner)
 
 
-async def attach_music_recommendation(body: dict, expected_owner: dict, character: str):
+def _character_uid(character):
+    characters = get_config_manager().load_characters()
+    return get_character_uid(characters.get("猫娘", {}).get(character, {}))
+
+
+def _policy_operation(operation):
+    """Freeze identity under the same credential fence as the SQLite operation."""
+    def perform(store, owner):
+        control = _control(owner)
+        identity = policy_registry.observe(store.path, owner, incarnation=(control or {}).get("account_incarnation"))
+        value = operation(store, owner)
+        if isinstance(value, dict) and value.get("policy_account_incarnation") is not None:
+            # Startup may not yet have a live capture control. The operational
+            # snapshot still knows which persisted account instance owns it.
+            identity = policy_registry.observe(store.path, owner, incarnation=value["policy_account_incarnation"])
+        if isinstance(value, dict) and value.get("policy_character_uid") is not None:
+            # The SQL call has committed. Publish even if its HTTP waiter is
+            # cancelled before asyncio.to_thread resumes on the event loop.
+            policy_registry.publish(store.path, owner, value["policy_character_uid"], value["policy"], identity=identity)
+        return value, (store.path, owner, identity)
+    return _operate(perform)
+
+
+async def capture_policy(character: str, expected_owner: dict):
+    def read(store, owner):
+        if owner != expected_owner:
+            raise FeedbackConflict("recommendation_owner_changed")
+        uid = _character_uid(character)
+        context = store.get_policy_context(owner, uid, control=_control(owner))
+        return {"policy_character_uid": uid, "policy": context["policy"],
+                "policy_account_incarnation": context["account_incarnation"]}
+    snapshot, (path, owner, identity) = await asyncio.to_thread(_policy_operation, read)
+    uid = snapshot["policy_character_uid"]
+    view = policy_registry.publish(path, owner, uid, snapshot["policy"], identity=identity)
+    return view, uid
+
+
+async def attach_music_recommendation(body: dict, expected_owner: dict, character: str, *, character_uid=None):
     if not body.get("success") or body.get("action") != "chat" or body.get("source_mode") not in {"music", "both"}:
         return
     links = [link for link in body.get("source_links", []) if isinstance(link, dict) and link.get("url")]
@@ -82,12 +121,13 @@ async def attach_music_recommendation(body: dict, expected_owner: dict, characte
             return None
         settings = {key: value for key, value in load_global_conversation_settings().items()
                     if key.startswith("proactive") and isinstance(value, (bool, int))}
-        return store.create(owner, character, str(body.get("turn_id") or ""), track, settings, control=_control(owner))
+        return store.create(owner, character, str(body.get("turn_id") or ""), track, settings,
+                            control=_control(owner), character_uid=character_uid)
 
     body["music_recommendation"] = await asyncio.to_thread(_operate, create)
 
 
-async def attach_proactive_recommendations(body: dict, expected_owner: dict, character: str):
+async def attach_proactive_recommendations(body: dict, expected_owner: dict, character: str, *, character_uid=None):
     """Register committed content; screen text is UI-only, never evidence."""
     if not body.get("success") or body.get("action") != "chat":
         return
@@ -135,7 +175,8 @@ async def attach_proactive_recommendations(body: dict, expected_owner: dict, cha
         result = []
         for category, content in candidates:
             metadata = {"name": "", "artist": "", "url": ""} if category == "vision" and not content["url"] else content
-            record = store.create(owner, character, str(body.get("turn_id") or ""), metadata, settings, category=category, control=_control(owner))
+            record = store.create(owner, character, str(body.get("turn_id") or ""), metadata, settings,
+                                  category=category, control=_control(owner), character_uid=character_uid)
             result.append({"id": record["id"], "category": category, "state": record["state"],
                            "expires_at": record["expires_at"], "content": {
                                "title": content["name"], "source": content["artist"], "url": content["url"],
@@ -181,7 +222,12 @@ async def recommendation_event(request: Request, recommendation_id: str, event: 
             value = raw_event if store.protocol_version == 2 else event.model_dump(exclude={"context", "offer_context", "measurement"})
             return store.record(owner, recommendation_id, value, disabled_categories=disabled, control=_control(owner),
                                 canonical_header=request.headers.get("X-NEKO-Feedback-Canonical"))
-        result = await asyncio.to_thread(_operate, record)
+        result, (path, owner, identity) = await asyncio.to_thread(_policy_operation, record)
+        uid = result.get("policy_character_uid")
+        if uid is not None:
+            # Confirm the business decision only after synchronous delivery
+            # guards can observe its committed revision on the event loop.
+            policy_registry.publish(path, owner, uid, result["policy"], identity=identity)
         return {"success": True, **result}
     except FeedbackDecisionConflict as exc:
         return JSONResponse({"success": False, "error_code": str(exc), "telemetry": exc.telemetry}, status_code=409)

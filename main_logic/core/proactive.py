@@ -21,7 +21,7 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
     OmniRealtimeClient,
@@ -501,6 +501,7 @@ class ProactiveMixin:
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
         expected_round_id: str | None = None,
+        delivery_allowed: Callable[[], bool] | None = None,
     ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
@@ -517,7 +518,12 @@ class ProactiveMixin:
 
         expected_round_id: when supplied, drop if the proactive round was retired
         (e.g. by a session restart) while this call waited for the TTS lock.
+
+        delivery_allowed: optional synchronous, memory-only policy check,
+        revalidated inside the lock before enqueueing.
         """
+        if delivery_allowed is not None and not delivery_allowed():
+            return False
         if getattr(self, "_takeover_active", False):
             return False
         if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
@@ -525,6 +531,8 @@ class ProactiveMixin:
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
+            if delivery_allowed is not None and not delivery_allowed():
+                return False
             if getattr(self, "_takeover_active", False):
                 return False
             if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
@@ -563,6 +571,37 @@ class ProactiveMixin:
                     self._respawn_tts_worker()
             return True
 
+    async def discard_proactive_delivery(
+        self, *, expected_speech_id: str, expected_round_id: str | None = None,
+    ) -> None:
+        """Stop only this rejected proactive output without rotating a user turn."""
+        def still_owned() -> bool:
+            return (
+                self.current_speech_id == expected_speech_id
+                and ProactiveMixin._proactive_round_owned(self, expected_round_id)
+            )
+
+        if not still_owned():
+            return
+        # Interrupt synchronously before the first await, then guard both
+        # delayed cleanup phases against a new user taking over the runtime.
+        interrupt = self._interrupt_tts_now()
+        if interrupt is not None:
+            # Retire rejected input before either cancellable wait: a later
+            # ready/fallback event must not replay it if this request goes away.
+            # This synchronous section still owns the turn; preserve any cache
+            # entries and replay ledger belonging to another speech owner.
+            self.tts_pending_chunks[:] = [
+                item for item in self.tts_pending_chunks
+                if item[0] != expected_speech_id
+            ]
+            if not self.tts_pending_chunks:
+                self._tts_done_pending_until_ready = False
+            if getattr(self, "_tts_replay_speech_id", None) == expected_speech_id:
+                self._reset_tts_replay_state()
+        await self._let_tts_interrupt_land(interrupt, still_owned=still_owned)
+        await self._finish_tts_clear(interrupt, still_owned=still_owned)
+
     async def finish_proactive_delivery(
         self,
         full_text: str,
@@ -572,6 +611,7 @@ class ProactiveMixin:
         vision_screenshot_b64: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
         expected_round_id: str | None = None,
+        delivery_allowed: Callable[[], bool] | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -620,8 +660,13 @@ class ProactiveMixin:
         change. The caller uses this to short-circuit downstream side effects
         (_record_proactive_chat / topic usage / surfaced reflection etc.), so
         undelivered content is never recorded as "delivered".
+
+        delivery_allowed is composed with round ownership at the final text
+        publish boundary. It must be synchronous and must not perform IO.
         """
         async with self._proactive_write_lock:
+            if delivery_allowed is not None and not delivery_allowed():
+                return False
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.info(
                     "[%s] finish_proactive_delivery skip: sid changed (expected=%s current=%s)，用户已接管本轮",
@@ -674,8 +719,11 @@ class ProactiveMixin:
                 expected_user_engagement_time=expected_user_engagement_time,
                 on_published=publication_times.append,
                 publish_if=(
-                    None if expected_round_id is None
-                    else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
+                    None if expected_round_id is None and delivery_allowed is None
+                    else lambda: (
+                        ProactiveMixin._proactive_round_owned(self, expected_round_id)
+                        and (delivery_allowed is None or delivery_allowed())
+                    )
                 ),
             )
             if published is None:

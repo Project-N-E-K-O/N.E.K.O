@@ -295,10 +295,11 @@ test('an old finally cannot unlock a newer same-recommendation consent after BFC
     const s=lifecycleSurface(t,{respond:event=>new Promise(resolve=>releases.push(()=>resolve({success:true,state:event.kind,playback_grant:true})))});
     s.music();s.choose(rec.id);await flush();
     s.w.dispatchEvent(new s.w.Event('pagehide'));s.w.dispatchEvent(new s.w.Event('pageshow'));
-    s.choose(rec.id);await flush();assert.equal(s.calls.length,2);
+    s.choose(rec.id);await flush();assert.equal(s.calls.length,3, 'pageshow also recovers the durable decision without dispatch');
     releases[0]();await flush();assert.equal(s.plays.length,0);
-    s.choose(rec.id);await flush();assert.equal(s.calls.length,2,'old finally did not release the new operation');
-    releases[1]();await flush();assert.equal(s.plays.length,1);
+    s.choose(rec.id);await flush();assert.equal(s.calls.length,3,'old finally did not release the new operation');
+    releases[1]();await flush();assert.equal(s.plays.length,0, 'background recovery cannot play');
+    releases[2]();await flush();assert.equal(s.plays.length,1);
 });
 
 test('display-name normalization does not change the offer owner',async t=>{

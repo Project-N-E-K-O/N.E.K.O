@@ -21,12 +21,22 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 OUTPUT = Path(tempfile.mkdtemp(prefix="neko-music-smoke-"))
 os.environ["NEKO_STORAGE_SELECTED_ROOT"] = str(OUTPUT / "isolated-storage")
+# Selecting a fresh destination does not stop legacy migration scans. Install
+# the same root and log fences as pytest before importing application modules.
+from utils import logger_config as _logger_config
+_logger_config.RobustLoggerConfig._get_documents_directory = lambda self: OUTPUT / "logs"
+from utils.config_manager import ConfigManager as _ConfigManager
+from tests import real_root_isolation as _real_root_isolation
+_real_root_isolation.install(_ConfigManager)
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 from main_routers import recommendation_router as routes
 from main_routers.system_router import _shared
+
+CHARACTER_UID = "a" * 32
 
 
 def main():
@@ -60,7 +70,7 @@ def main():
         for title in ("午后的小憩", "一起听听这首歌", "两个窗口只播放一次"):
             body = {"success": True, "action": "chat", "source_mode": "music", "turn_id": title,
                     "source_links": [{"title": title, "artist": "Neko · 本地测试音轨", "url": "/api/music/smoke.wav"}]}
-            await routes.attach_music_recommendation(body, owner, "Neko")
+            await routes.attach_music_recommendation(body, owner, "Neko", character_uid=CHARACTER_UID)
             result.append(body["music_recommendation"])
         return result
     seeds = asyncio.run(recommendations())
@@ -73,15 +83,20 @@ def main():
                                      if category in {'news', 'community', 'video', 'personal', 'meme', 'web'} else [])}
             if category == 'vision':
                 body['screen_observation'] = {'text': '哥哥～原来你在偷偷种菜呀！等级都一百二十六级了，地里那些金灿灿的是什么宝贝喵？'}
-            await routes.attach_proactive_recommendations(body, owner, 'Neko')
+            await routes.attach_proactive_recommendations(body, owner, 'Neko', character_uid=CHARACTER_UID)
             result.extend(body['proactive_recommendations'])
             if category == 'vision':
                 skipped_screen = {'success': True, 'action': 'chat', 'source_mode': 'chat', 'turn_id': 'screen-skip',
                                   'screen_observation': {'text': '这轮屏幕话题先略过。'}}
-                await routes.attach_proactive_recommendations(skipped_screen, owner, 'Neko')
+                await routes.attach_proactive_recommendations(skipped_screen, owner, 'Neko', character_uid=CHARACTER_UID)
                 result.extend(skipped_screen['proactive_recommendations'])
         return result
     content_seeds = asyncio.run(content_recommendations())
+
+    @fixture_app.get("/api/smoke/policy")
+    async def policy():
+        return await asyncio.to_thread(routes._operate, lambda store, owner: store.get_policy(owner, CHARACTER_UID))
+
     meme_requests = []
 
     @fixture_app.get('/api/meme/proxy-image')
