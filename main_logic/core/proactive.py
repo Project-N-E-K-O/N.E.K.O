@@ -719,6 +719,16 @@ class ProactiveMixin:
                         else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
                     ),
                 )
+            except (asyncio.CancelledError, Exception) as exc:
+                if observation["started"]:
+                    try:
+                        self._close_external_reply_observation(
+                            observation,
+                            "interrupted" if isinstance(exc, asyncio.CancelledError) else "failed",
+                        )
+                    except Exception:
+                        logger.warning("Failed to close proactive reply observation", exc_info=True)
+                raise
             finally:
                 conversation_reply_observation.reset(token)
             if published is None:

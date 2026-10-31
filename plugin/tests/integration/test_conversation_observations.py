@@ -189,7 +189,7 @@ async def test_real_plugin_watch_and_reply_detail(observation_runtime):
             "observed_at": 2.0,
         },
     )
-    events = await wait_events(
+    await wait_events(
         host,
         lambda items: (
             any(x["kind"] == "reply.started" for x in items)
@@ -229,7 +229,7 @@ async def test_real_plugin_watch_and_reply_detail(observation_runtime):
     manager.accept_raw_conversation_fact(
         "reply.updated", {"reply_id": "r", "text": "corrected"}
     )
-    events = await wait_events(
+    await wait_events(
         host,
         lambda items: (
             any(

@@ -346,8 +346,9 @@ class TopicStore:
         result = []
         with self._lock:
             for event in reversed(self.items.get("all", ())):
-                message = message_from_event(event)
-                if not message["id"]:
+                try:
+                    message = message_from_event(event)
+                except (TypeError, ValueError):
                     continue
                 if any(message[key] != filters[key] for key in ("character", "role", "kind", "input_source") if filters.get(key) is not None):
                     continue
@@ -372,7 +373,10 @@ class TopicStore:
         with self._lock:
             for event in reversed(self.items.get("all", ())):
                 if event.get("index", {}).get("id") == message_id:
-                    return message_from_event(event)
+                    try:
+                        return message_from_event(event)
+                    except (TypeError, ValueError):
+                        return None
         return None
 
     def replace_topic(self, topic: str, records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:

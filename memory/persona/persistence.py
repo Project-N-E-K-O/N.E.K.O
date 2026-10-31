@@ -736,10 +736,12 @@ class PersistenceMixin:
                         suppressed = entry.get('suppress', False)
                         if (ident is not None and not isinstance(ident, str)) or not isinstance(text, str) or not isinstance(source, str) or not isinstance(protected, bool) or not isinstance(suppressed, bool):
                             raise ValueError("invalid persona entry fields")
-                        item = {'id': ident or None, 'text': text, 'source': source,
+                        item = {'id': (ident or '').strip() or None, 'text': text, 'source': source,
                                 'protected': protected, 'suppressed': suppressed}
                     else:
                         raise ValueError("invalid persona entry")
+                    if not item['text'].strip():
+                        continue
                     if any(len(value) > max_bytes for value in (item['id'] or '', item['text'], item['source'])):
                         raise OverflowError("persona snapshot exceeds internal limit")
                     count += 1

@@ -80,6 +80,25 @@ async def test_missing_source_metadata_does_not_discard_retained_knowledge():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_omits_empty_knowledge_and_normalizes_blank_ids_for_sdk():
+    from plugin.sdk.shared.contracts.memory import MemoryTarget, decode_persona
+
+    original = {'master': {'facts': [
+        '', '  ', {'text': ''}, {'text': '\t', 'id': 'empty'},
+        {'text': 'retained', 'id': '  ', 'protected': True, 'suppress': True},
+    ]}}
+    before = copy.deepcopy(original)
+    result = await SnapshotManager(original).aget_private_persona_snapshot('cat')
+    decoded = decode_persona({**result, 'target': MemoryTarget.private('cat').to_wire()})
+    assert len(decoded.sections) == 1
+    assert len(decoded.sections[0].entries) == 1
+    entry = decoded.sections[0].entries[0]
+    assert entry.id is None and entry.text == 'retained'
+    assert entry.protected and entry.suppressed
+    assert original == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('persona', [
     {'master': {'facts': [{'text': 7}]}}, {'master': {'facts': [{'protected': 1}]}},
     {'master': {'facts': [None]}}, {'master': {'facts': {}}}, {'master': []},

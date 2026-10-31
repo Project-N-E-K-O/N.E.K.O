@@ -2480,6 +2480,8 @@ class _TransportMixin:
     def _begin_response_lifecycle(self, response_id: Any) -> None:
         """Apply the host-side state shared by all accepted start evidence."""
 
+        # Supersession ends the observation, but does not prove cancellation.
+        self._close_realtime_conversation_observation("unknown")
         self._current_response_id = response_id
         arbiter = getattr(self, "_response_arbiter", None)
         self._current_response_source = (
@@ -2816,6 +2818,7 @@ class _TransportMixin:
             return
         if not self._is_responding and self._current_response_id is None:
             return
+        self._close_realtime_conversation_observation("unknown")
         # The epoch this response began in, not the one the callback happens to
         # find. Between them a barge-in can have advanced _turn_epoch at
         # speech_stopped — which does not clear _current_response_id, so the id

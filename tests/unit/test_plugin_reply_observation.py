@@ -336,3 +336,90 @@ async def test_reply_turn_aliases_only_actual_published_speech_ids(monkeypatch):
     assert facts[0][1]["turn_id"] == "first"
     assert facts[1][1]["turn_id"] == "second"
     assert facts[0][1]["reply_id"] == facts[1][1]["reply_id"]
+
+
+@pytest.mark.parametrize("started", [False, True])
+async def test_realtime_successor_closes_only_started_previous_observation(monkeypatch, started):
+    from main_logic.omni_realtime_client import _transport
+    from tests.unit.test_realtime_arbiter_native_path import _native_client
+
+    facts = []
+    monkeypatch.setattr(_transport, "schedule_conversation_fact_observed_best_effort",
+                        lambda name, *, fact, payload: facts.append((fact, payload)))
+    client = _native_client()
+    client.lanlan_name = "Lan"
+    try:
+        client._begin_response_lifecycle("previous")
+        previous = client._realtime_conversation_observation
+        previous["started"] = started
+        client._begin_response_lifecycle("successor")
+        assert client._current_response_id == "successor"
+        assert client._realtime_conversation_observation is not previous
+        assert not client._realtime_conversation_observation["closed"]
+        assert len(facts) == int(started)
+        if started:
+            assert facts[0][1]["reply_id"] == previous["reply_id"]
+            assert facts[0][1]["close_reason"] == "unknown"
+    finally:
+        await client.close()
+
+
+async def test_realtime_release_closes_matching_observation_without_touching_successor(monkeypatch):
+    from unittest.mock import AsyncMock
+    from main_logic.omni_realtime_client import _transport
+    from tests.unit.test_realtime_arbiter_native_path import _native_client
+
+    facts = []
+    monkeypatch.setattr(_transport, "schedule_conversation_fact_observed_best_effort",
+                        lambda name, *, fact, payload: facts.append((fact, payload)))
+    client = _native_client()
+    client.lanlan_name = "Lan"
+    client._notify_turn_finished = AsyncMock()
+    try:
+        client._begin_response_lifecycle("live")
+        observation = client._realtime_conversation_observation
+        observation["started"] = True
+        await client._on_arbiter_stuck_release("timeout", "other")
+        assert not observation["closed"] and not facts
+        assert client._current_response_id == "live"
+        await client._on_arbiter_stuck_release("timeout", "live")
+        assert observation["closed"]
+        assert len(facts) == 1
+        assert facts[0][1]["reply_id"] == observation["reply_id"]
+        assert facts[0][1]["close_reason"] == "unknown"
+        client._close_realtime_conversation_observation("completed")
+        assert len(facts) == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_direct_proactive_send_failure_closes_observation_and_preserves_exception(monkeypatch, cancelled):
+    import asyncio
+    from main_logic.agent_event_bus import conversation_reply_observation
+    from main_logic.session_state import SessionStateMachine
+
+    facts = []
+    monkeypatch.setattr(turn_module, "schedule_conversation_fact_observed_best_effort",
+                        lambda name, *, fact, payload: facts.append((fact, payload)))
+    manager = _core_manager()
+    del manager.send_lanlan_response
+    manager._proactive_write_lock = asyncio.Lock()
+    manager.state = SessionStateMachine(lanlan_name="Lan")
+    manager.session = None
+    original_send = manager.send_lanlan_response
+    error = asyncio.CancelledError() if cancelled else RuntimeError("send failed")
+
+    async def failed_send(*args, **kwargs):
+        await original_send(*args, **kwargs)
+        raise error
+
+    manager.send_lanlan_response = failed_send
+    before = conversation_reply_observation.get()
+    with pytest.raises(type(error)) as caught:
+        await manager.finish_proactive_delivery("visible", expected_speech_id=manager.current_speech_id)
+    assert caught.value is error
+    assert conversation_reply_observation.get() is before
+    assert [kind for kind, _ in facts] == ["reply.started", "reply.closed"]
+    assert facts[0][1]["reply_id"] == facts[1][1]["reply_id"]
+    assert facts[1][1]["close_reason"] == ("interrupted" if cancelled else "failed")

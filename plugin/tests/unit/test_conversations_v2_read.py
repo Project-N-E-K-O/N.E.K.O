@@ -83,8 +83,23 @@ def test_new_capability_is_not_resolved_when_old_bus_is_wrapped():
     raw = Bus()
     wrapped = SdkBusContext(raw, host_ctx=object())
     assert raw.resolutions == 0
-    assert wrapped.conversations_v2 is wrapped.conversations_v2
+    first = wrapped.conversations_v2
+    second = wrapped.conversations_v2
+    assert first is second
     assert raw.resolutions == 1
+
+
+@pytest.mark.parametrize("invalid", [{"metadata": {"is_voice": "yes"}}, {"origin": {"kind": ""}}])
+def test_bad_legacy_record_does_not_poison_structured_reads(invalid):
+    stores = build_default_store_registry(maxlen=100, frames_maxlen=2)
+    store = stores.get("conversations")
+    for ident, fields in [("valid", {}), ("invalid", invalid)]:
+        store.publish("all", {"id": ident, "timestamp": 1.0, "content": ident,
+                              **fields, "metadata": {"lanlan_name": "YUI", "turn_type": "user_message", **fields.get("metadata", {})}})
+    items, _ = store.conversation_messages(filters={}, limit=50, order="asc")
+    assert [item["id"] for item in items] == ["valid"]
+    assert store.conversation_message("valid")["text"] == "valid"
+    assert store.conversation_message("invalid") is None
 
 
 def test_new_read_size_limit_is_explicit_without_restricting_legacy_reads(monkeypatch):

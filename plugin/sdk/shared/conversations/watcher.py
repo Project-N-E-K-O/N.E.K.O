@@ -620,10 +620,12 @@ class ConversationWatcher:
     def _dispatch(self, on, value):
         if self._loop is None or not self._active:
             return
+        size = None
         for index, (event, _) in enumerate(self._callbacks):
             if event != on:
                 continue
-            size = len(repr(value).encode("utf-8", errors="replace"))
+            if size is None:
+                size = len(repr(value).encode("utf-8", errors="replace"))
             if on == "change":
                 # Keep the initial event, but coalesce pending updates to the latest view.
                 for pending in tuple(self._pending):
