@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from copy import deepcopy
 import json
 import sys
@@ -16,7 +16,7 @@ import pytest
 from memory.long_term_sync import DesktopLongTermAdapter, FILES, export_document, import_document, read_views
 from memory.event_log import EventLog, Reconciler
 from services.chat_sync.long_term import LongTermMemorySync
-from services.chat_sync.long_term_protocol import document, mutation
+from utils.long_term_memory_protocol import document, mutation
 from services.chat_sync.writer import store_connection
 from utils.file_utils import atomic_write_json
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
@@ -309,6 +309,117 @@ async def test_obsolete_inbox_is_removed_without_appending_replacement_events(ow
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['logout', 'switch-account', 'paused-binding', 'changed-epoch'])
+async def test_waiting_inbox_is_retained_without_growing_the_journal(owner, change):
+    await stage(owner)
+    if change == 'logout':
+        owner.session['logged_in'] = False
+    elif change == 'switch-account':
+        owner.session['snapshot']['access_token'] = 'synthetic-other-account'
+    elif change == 'paused-binding':
+        owner.runtime.state.pause(UID)
+    else:
+        payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+        payload['epoch'] = ['0' * 32, '0' * 32]
+        atomic_write_json(owner.adapter.incoming_path(UID), payload)
+    for _ in range(3):
+        assert not await owner.native.consume(UID)
+    assert not (owner.directory / 'events.ndjson').exists()
+    assert owner.adapter.incoming_path(UID).exists()
+
+
+@pytest.mark.asyncio
+async def test_journal_references_the_inbox_instead_of_copying_the_snapshot(owner):
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    lines = (owner.directory / 'events.ndjson').read_text(encoding='utf-8').splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert set(record['payload']) == {'characterSyncId', 'inboxSha256'}
+    assert 'learned preference' not in lines[0] and 'sessionFingerprint' not in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_replay_skips_a_reference_whose_inbox_was_replaced(owner, monkeypatch):
+    await stage(owner)
+    original = owner.native.atomic_write_json
+    def fail_facts(path, *args, **kwargs):
+        if path.name == 'facts.json':
+            raise OSError('synthetic disk failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', fail_facts)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', original)
+    before = {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+    await stage(owner, completed=3000, revision=2)
+    await owner.replay.areconcile('Neko')
+    assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+    assert await owner.native.consume(UID)
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:2'
+
+
+@pytest.mark.asyncio
+async def test_unreadable_inbox_is_skipped_without_stalling_replay_and_applies_later(owner, monkeypatch):
+    await stage(owner)
+    original = owner.native.atomic_write_json
+    def fail_facts(path, *args, **kwargs):
+        if path.name == 'facts.json':
+            raise OSError('synthetic disk failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', fail_facts)
+    with pytest.raises(ValueError, match='long_term_memory_save_failed'):
+        await owner.native.consume(UID)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', original)
+    inbox = owner.adapter.incoming_path(UID)
+    read_text = type(inbox).read_text
+    blocked = [True]
+    def locked_inbox(path, *args, **kwargs):
+        if blocked[0] and path == inbox:
+            raise PermissionError('inbox is being replaced')
+        return read_text(path, *args, **kwargs)
+    monkeypatch.setattr(type(inbox), 'read_text', locked_inbox)
+    await owner.replay.areconcile('Neko')
+    # The handler returned instead of failing, so later events are not held back.
+    event_id = json.loads((owner.directory / 'events.ndjson').read_text().splitlines()[-1])['event_id']
+    assert owner.native.runtime.event_log.read_sentinel('Neko') == event_id
+    blocked[0] = False
+    assert await owner.native.consume(UID)
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+
+
+@pytest.mark.asyncio
+async def test_replay_still_applies_an_event_that_carries_the_whole_snapshot(owner):
+    await stage(owner)
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text())
+    def fail_save(name, frozen):
+        raise OSError('synthetic interrupted apply')
+    with pytest.raises(OSError):
+        owner.native.runtime.event_log.record_and_save('Neko', owner.native._EVENT, payload,
+            sync_load_view=lambda _: deepcopy(payload), sync_mutate_view=lambda _: None, sync_save_view=fail_save)
+    # Events journaled before inbox references must not depend on the inbox.
+    owner.adapter.incoming_path(UID).unlink()
+    assert await owner.replay.areconcile('Neko') == 1
+    assert read_views(owner.directory)['persona']['master']['facts'][0]['text'] == 'learned preference'
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+
+
+@pytest.mark.asyncio
+async def test_unsynced_character_capture_never_waits_for_owner_locks(owner, monkeypatch):
+    owner.runtime.state.pause(UID)
+    entered = []
+    @asynccontextmanager
+    async def locked(name):
+        entered.append(name)
+        yield
+    monkeypatch.setattr(owner.native, '_views_locked', locked)
+    owner.native.queue_capture('Neko', force=True)
+    await asyncio.wait_for(owner.native._capture_tasks['Neko'], 2)
+    assert entered == []
+    assert UID not in owner.native._capture_intents
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('published', [False, True])
 async def test_remote_replacement_preserves_unpublished_native_entries_until_capture(owner, published):
     if published:
@@ -443,9 +554,15 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
     async def flush(uid):
         return await owner.native.consume(uid)
     monkeypatch.setattr(owner.adapter, 'flush', flush)
-    await owner.runtime._channel_pass(UID, 'long_term', manual=True)
+    presence = await owner.runtime.session_presence_provider()
+    await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET']
-    await owner.runtime._channel_pass(UID, 'long_term', manual=True)
+    # Nothing is left to upload, so the next check waits for the periodic poll.
+    assert await owner.runtime._channel_pass(UID, 'long_term', presence=presence) is None
+    assert [request.method for request in requests] == ['PUT', 'GET']
+    from services.chat_sync.scheduler import PULL_INTERVAL_MS
+    owner.runtime.test_clock[0] += PULL_INTERVAL_MS
+    await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
     assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == local['operationId']
 

@@ -77,6 +77,7 @@ _INITIAL_DELAY_SIGNAL = 60           # First Signal extraction, formerly 40 s.
 _INITIAL_DELAY_REBUTTAL = 100        # First Rebuttal, formerly 300 s.
 _INITIAL_DELAY_AUTO_PROMOTE = 150    # First Auto-promote, formerly 300 s, staggered 50 s from rebuttal.
 _INITIAL_DELAY_ARCHIVE = 250         # First archive sweep, advanced greatly from 3600 s for short-session users.
+_INITIAL_DELAY_EVENT_LOG_COMPACT = 300  # First events.ndjson compaction: after the ARCHIVE 250 sweep, before PERSONA_REFINE 400; never on the startup path.
 _INITIAL_DELAY_PERSONA_REFINE = 400  # First PERSONA_REFINE, staggered 100 s from reflection refinement.
 _INITIAL_DELAY_REFLECTION_REFINE = 500  # First REFLECTION_REFINE.
 _INITIAL_DELAY_SCOPED_REFINE = 600   # First SCOPED_REFINE, lightweight group-memory refinement extending the staggered schedule.

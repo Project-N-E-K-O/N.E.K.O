@@ -427,7 +427,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                     await loadCharacterCards();
                     showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');
                     // A local rename changes portable identity display, not its UID.
-                    if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(normalizedNewName, false);
+                    if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(normalizedNewName);
                 } else {
                     const errMsg = result.error || (window.t ? window.t('character.renameFailed') : '重命名失败');
                     if (typeof showAlert === 'function') {
@@ -863,7 +863,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             }
             showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
             // Clearing a preset is a separate persisted persona change.
-            if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name, false);
+            if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name);
         } catch (e) {
             console.error('清除人格设定失败:', e);
             if (typeof showAlert === 'function') {
@@ -2265,7 +2265,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // Persist this click's consent before rebuilding the form: its switch
         // immediately reads the saved choice and must not reload the old value.
         if (window.nekoCharacterProfileSync) {
-            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName, syncEnabledAtSaveStart, isNew);
+            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName, syncEnabledAtSaveStart);
         }
         if (isNew) {
             const catgirlName = savedCatgirlName;

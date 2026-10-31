@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from typing import Callable
 
 from memory.event_log import (
     EVT_PERSONA_ENTRY_UPDATED,
@@ -481,6 +482,112 @@ def make_persona_archive_handler(persona_manager):
         return view_changed or shard_changed
 
     return _apply
+
+
+def _is_reflection_archive_payload(payload: dict) -> bool:
+    """Same test as make_reflection_archive_handler: an archive transition."""
+    return payload.get('to') == 'archived'
+
+
+def _is_persona_archive_payload(payload: dict) -> bool:
+    """Same test as make_persona_archive_handler: carries a shard basename."""
+    return bool(payload.get('archive_shard_path'))
+
+
+def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
+    """Build the ``needs_journal_copy`` predicate for journal compaction.
+
+    Returns a callable ``(record) -> bool``; True means "keep this journal
+    line, it may be the only copy of an archived entry". Archival appends
+    the shard AFTER the event has advanced the sentinel (and callers only
+    log a failed append), so the replay self-heal in the two archive
+    handlers above never runs for it: if the shard write was lost, the
+    event's ``entry_snapshot`` is all that is left.
+
+    Reflection and persona are handled by one table, symmetric by
+    construction: an archive event (reflection.state_changed to
+    'archived' / persona.fact_added with archive_shard_path) whose
+    ``entry_snapshot`` is a dict and whose entry id is a non-empty string
+    is droppable only if some shard of that side holds a record with the
+    same id AND the same archive fingerprint (``archived_at``, else the
+    whole entry). Same id alone is not enough: a restored entry archived a
+    second time has the same id with a newer ``archived_at``, and only its
+    newest copy may be missing from the shards. An unreadable shard keeps
+    every archive event of that side. Anything that is not such an archive
+    event returns False and follows the normal retention rules.
+
+    Paths are built from ``character_dir`` without calling the managers'
+    getters, which would create directories. Each side's shards are read
+    at most once per predicate, lazily, and never written.
+    """
+    from memory.archive_shards import (
+        PERSONA_ARCHIVE_DIRNAME,
+        REFLECTION_ARCHIVE_DIRNAME,
+        _list_shard_files,
+        archive_copy_fingerprint,
+        shard_entry_index_sync,
+    )
+
+    sides: dict[str, tuple[str, str, Callable[[dict], bool]]] = {
+        EVT_REFLECTION_STATE_CHANGED: (
+            os.path.join(character_dir, REFLECTION_ARCHIVE_DIRNAME),
+            'reflection_id',
+            _is_reflection_archive_payload,
+        ),
+        EVT_PERSONA_FACT_ADDED: (
+            os.path.join(character_dir, PERSONA_ARCHIVE_DIRNAME),
+            'entry_id',
+            _is_persona_archive_payload,
+        ),
+    }
+    indexes: dict[str, dict[str, frozenset[str]] | None] = {}
+    # Identity of each side's shard files as they were when its index was read.
+    signatures: dict[str, tuple | None] = {}
+
+    def _shard_signature(archive_dir: str) -> tuple | None:
+        try:
+            files = []
+            for fn, _, _ in _list_shard_files(archive_dir):
+                st = os.stat(os.path.join(archive_dir, fn))
+                files.append((fn, st.st_ino, st.st_size, st.st_mtime_ns))
+            return tuple(files)
+        except OSError:
+            return None
+
+    def _sources_unchanged() -> bool:
+        """True when every shard read so far is still the file that was indexed.
+
+        Compaction calls this under the write fence before trusting an index
+        built outside it: a restore that swapped the shards in between could
+        otherwise make a missing archive copy look present. Stat only.
+        """
+        return all(sig is not None and _shard_signature(archive_dir) == sig
+                   for archive_dir, sig in signatures.items())
+
+    def _needs_journal_copy(record: dict) -> bool:
+        side = sides.get(record.get('type'))
+        if side is None:
+            return False
+        archive_dir, id_key, is_archive_payload = side
+        payload = record.get('payload')
+        if not isinstance(payload, dict) or not is_archive_payload(payload):
+            return False
+        snapshot = payload.get('entry_snapshot')
+        if not isinstance(snapshot, dict):
+            return False
+        entry_id = payload.get(id_key)
+        if not isinstance(entry_id, str) or not entry_id:
+            return False
+        if archive_dir not in indexes:
+            signatures[archive_dir] = _shard_signature(archive_dir)
+            indexes[archive_dir] = shard_entry_index_sync(archive_dir)
+        index = indexes[archive_dir]
+        if index is None:
+            return True
+        return archive_copy_fingerprint(snapshot) not in index.get(entry_id, frozenset())
+
+    _needs_journal_copy.sources_unchanged = _sources_unchanged
+    return _needs_journal_copy
 
 
 def make_reflection_state_changed_composite(reflection_engine):

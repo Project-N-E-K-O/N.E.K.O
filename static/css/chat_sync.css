@@ -48,7 +48,7 @@
 }
 #chat-sync-dialog .chat-sync-recover:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
 #chat-sync-dialog .chat-sync-recover:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
-#chat-sync-dialog .chat-sync-status { margin: 16px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+#chat-sync-dialog .chat-sync-status { margin: 16px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-line; }
 #chat-sync-dialog .chat-sync-help { position: relative; display: inline-flex; flex: 0 0 auto; }
 #chat-sync-dialog .chat-sync-help-button {
     width: 25px;

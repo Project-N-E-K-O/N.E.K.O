@@ -23,9 +23,11 @@ are picked up; cross-loop gating and scheduling constants live in ``gates``.
 """
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 
 from config import (
+    EVENT_LOG_COMPACT_INTERVAL_SECONDS,
     EVIDENCE_ARCHIVE_DAYS,
     EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS,
     MEMORY_RECHECK_ENABLED,
@@ -41,11 +43,12 @@ from .locale_state import (
     aget_subject_prompt_locale,
     run_with_character_prompt_locale,
 )
-from ._shared import logger
+from ._shared import logger, validate_lanlan_name
 from .gates import (
     IDLE_CHECK_INTERVAL,
     _INITIAL_DELAY_ARCHIVE,
     _INITIAL_DELAY_AUTO_PROMOTE,
+    _INITIAL_DELAY_EVENT_LOG_COMPACT,
     _INITIAL_DELAY_IDLE_MAINT,
     _INITIAL_DELAY_REBUTTAL,
 )
@@ -1053,3 +1056,156 @@ async def _periodic_archive_sweep_loop():
             )
 
         await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
+
+
+# ── events.ndjson compaction ─────────────────────────────────────────────
+
+# Skip reasons that repeat every round until someone (or a restart) clears
+# them: one warning per process per character, not one every six hours.
+# write_failed / journal_unreadable are here too: a journal that can never be
+# rewritten would otherwise stop shrinking without any visible trace.
+_EVENT_LOG_COMPACT_WARN_ONCE = frozenset({
+    'replay_paused',
+    'sentinel_not_found',
+    'sentinel_unreadable',
+    'sentinel_malformed',
+    'self_check_failed',
+    'write_failed',
+    'journal_unreadable',
+})
+# {character: {warning kind}} -- per-process dedupe, never persisted.
+_event_log_compact_warned: dict[str, set[str]] = {}
+
+
+def _event_log_compact_warn_once(name: str, kind: str, message: str) -> None:
+    seen = _event_log_compact_warned.setdefault(name, set())
+    if kind in seen:
+        return
+    seen.add(kind)
+    logger.warning(message)
+
+
+def _log_event_log_compaction(name: str, result) -> None:
+    """Report one compaction result: counts and event ids, never payload text."""
+    outcome = result.outcome
+    if outcome == 'compacted':
+        logger.info(
+            f"[EventLogCompact] {name}: 删除已应用历史 {result.dropped_lines} 行 / "
+            f"{result.dropped_bytes} 字节；锚点前保留 {result.kept_before_anchor} 行"
+            f"（其中钉住 {result.pinned} 行），锚点后 {result.pending_tail} 条"
+        )
+    elif outcome == 'replay_paused':
+        _event_log_compact_warn_once(
+            name, outcome,
+            f"[EventLogCompact] {name}: 本进程内该角色的重放曾暂停，日志里可能有"
+            f"被孤立的未应用事件；本次运行期间不压缩它，下次启动后按正常规则处理",
+        )
+    elif outcome in _EVENT_LOG_COMPACT_WARN_ONCE:
+        _event_log_compact_warn_once(
+            name, outcome,
+            f"[EventLogCompact] {name}: 跳过压缩（{outcome}），日志保持原样；"
+            f"本进程内对该角色不再重复提示",
+        )
+    else:
+        logger.debug(f"[EventLogCompact] {name}: {outcome}")
+    if result.pinned:
+        shown = ', '.join(result.pinned_event_ids[:5])
+        more = ' …' if result.pinned > 5 else ''
+        _event_log_compact_warn_once(
+            name, 'pinned',
+            f"[EventLogCompact] {name}: {result.pinned} 条归档事件在分片里找不到"
+            f"同一份副本，作为唯一副本留在日志里（event_id: {shown}{more}）",
+        )
+    if result.pending_tail:
+        _event_log_compact_warn_once(
+            name, 'pending_tail',
+            f"[EventLogCompact] {name}: 哨兵之后还有 {result.pending_tail} 条未应用"
+            f"事件，这些行原样保留",
+        )
+
+
+async def _acompact_event_log_one(raw_name: str) -> None:
+    """Compact one character's journal under its lifecycle lease.
+
+    The lease only excludes rename / delete callers that take a publication
+    hold; cloud downloads and workshop unsubscribe do not, which is why
+    compact_applied_history itself never creates a directory and runs its
+    final write inside the cloud save write transaction.
+    """
+    try:
+        name = validate_lanlan_name(raw_name)
+    except Exception:
+        return
+    if name != raw_name:
+        # The journal lock is keyed by the normalized name while other loops
+        # use the raw characters.json key; the two would be different locks
+        # on the same directory, and a rewrite cannot tolerate that.
+        logger.debug(f"[EventLogCompact] 角色名与规范化结果不一致，跳过: {raw_name!r}")
+        return
+    lease = runtime._begin_character_request(name)
+    if lease is None:
+        return
+    try:
+        event_log = runtime.event_log
+        if event_log is None:
+            return
+        char_dir = os.path.join(str(runtime._config_manager.memory_dir), name)
+        if not await asyncio.to_thread(os.path.isdir, char_dir):
+            return
+        from memory.evidence_handlers import make_archive_copy_check
+        check = make_archive_copy_check(char_dir)
+        result = await event_log.acompact_applied_history(
+            name, needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
+        )
+        _log_event_log_compaction(name, result)
+    except Exception as e:
+        logger.warning(f"[EventLogCompact] {name}: 压缩失败，跳过: {type(e).__name__}: {e}")
+    finally:
+        runtime._end_character_request(name, lease)
+
+
+async def _acompact_event_logs_once() -> None:
+    """One round: every configured character, sequentially."""
+    if runtime._memory_storage_blocked_after_init:
+        return
+    from utils import cloudsave_runtime
+    try:
+        fenced = await asyncio.to_thread(
+            cloudsave_runtime.is_write_fence_active, runtime._config_manager,
+        )
+    except Exception as e:
+        # Unknown fence state counts as "fence up": skip the round.
+        logger.debug(f"[EventLogCompact] 读取写入围栏失败，本轮跳过: {e}")
+        return
+    if fenced:
+        return
+    try:
+        character_data = await runtime._config_manager.aload_characters()
+        raw_names = list(character_data.get('猫娘', {}).keys())
+    except Exception as e:
+        logger.debug(f"[EventLogCompact] 加载角色列表失败: {e}")
+        return
+    for raw_name in raw_names:
+        await _acompact_event_log_one(raw_name)
+
+
+async def _periodic_event_log_compact_loop():
+    """Prune applied history from every character's events.ndjson.
+
+    Fire-and-forget background task: the first round runs
+    _INITIAL_DELAY_EVENT_LOG_COMPACT seconds after startup, then every
+    EVENT_LOG_COMPACT_INTERVAL_SECONDS. Nothing on the startup path waits
+    for it. Characters are processed one after another (a round is cheap
+    unless a journal is due, see EventLog.compact_applied_history).
+
+    The whole round body is guarded: any exception is logged and the loop
+    sleeps to the next round, so one transient error cannot stop compaction
+    for the rest of the process.
+    """
+    await asyncio.sleep(_INITIAL_DELAY_EVENT_LOG_COMPACT)
+    while True:
+        try:
+            await _acompact_event_logs_once()
+        except Exception as e:
+            logger.warning(f"[EventLogCompact] 本轮失败，下一轮再试: {type(e).__name__}: {e}")
+        await asyncio.sleep(EVENT_LOG_COMPACT_INTERVAL_SECONDS)

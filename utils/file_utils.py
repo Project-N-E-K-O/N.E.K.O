@@ -827,10 +827,23 @@ def move_aside(path: str | os.PathLike[str], suffix: str) -> Path | None:
     return target
 
 
-def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
-    """Atomically replace a text file in the same directory."""
+def atomic_write_text(
+    path: str | os.PathLike[str],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    create_parents: bool = True,
+) -> None:
+    """Atomically replace a text file in the same directory.
+
+    ``create_parents=False`` refuses to recreate a missing parent directory:
+    the temp-file creation then raises FileNotFoundError and nothing is
+    written. For writers that must not resurrect a directory deleted under
+    them (a removed character, for instance).
+    """
     target_path = Path(path)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
     _sweep_stale_tmp_if_due(target_path)
 
     # Custom exclusive creation without tempfile.mkstemp raises immediately rather than retrying forever.

@@ -68,8 +68,10 @@ _MISSING_EVIDENCE: dict[str, list[str]] = {
     "EVT-DUP": ["事件 append/reconcile 路径是否重复写入同一 event_id"],
 }
 
-#: events.ndjson scan ceiling. Main program compacts around 10k lines; scanning
-#: beyond this ⇒ ``evt_status="truncated"`` (LESSONS §7.24 resource-limit UX).
+#: events.ndjson scan ceiling. The main program's background compaction normally
+#: keeps a journal around 512 KiB or less (applied history beyond a 7-day /
+#: 256 KiB window is pruned); scanning beyond this ⇒ ``evt_status="truncated"``
+#: (LESSONS §7.24 resource-limit UX).
 _EVT_SCAN_MAX_LINES = 20000
 
 
