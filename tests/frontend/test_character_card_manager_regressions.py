@@ -2606,6 +2606,10 @@ def test_character_card_manager_builtin_name_follows_saved_model_binding(
                 builtinWithUserCopy: check([staticEntry, userEntry], card('builtin', relative)),
                 legacyUserPrefix: check([staticEntry, userEntry], card('', '/user_live2d/yui-sister/yui-sister.model3.json')),
                 legacyRelative: check([staticEntry, userEntry], card('', relative)),
+                uploadLookupLocal: (findCardLive2DModelInfo([userEntry], 'yui-sister', card('local_imported', relative)) || {}).name,
+                uploadLookupBuiltin: findCardLive2DModelInfo([userEntry], 'yui-sister', card('builtin', relative)) || null,
+                previewLookupLocal: findCardLive2DModelInfo([staticEntry, userEntry], 'yui-sister', card('local_imported', relative)).path,
+                previewLookupBuiltin: findCardLive2DModelInfo([staticEntry, userEntry], 'yui-sister', card('builtin', relative)).path,
             };
         }
         """
@@ -2617,4 +2621,8 @@ def test_character_card_manager_builtin_name_follows_saved_model_binding(
         "builtinWithUserCopy": True,
         "legacyUserPrefix": False,
         "legacyRelative": True,
+        "uploadLookupLocal": "yui-sister_documents",
+        "uploadLookupBuiltin": None,
+        "previewLookupLocal": "/user_live2d/yui-sister/yui-sister.model3.json",
+        "previewLookupBuiltin": "/static/yui-sister/yui-sister.model3.json",
     }

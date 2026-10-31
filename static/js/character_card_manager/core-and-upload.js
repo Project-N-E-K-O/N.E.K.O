@@ -593,12 +593,26 @@ function isLegacyDefaultLive2DModel(modelName) {
 // 角色卡导出/创意工坊上传都不该把它们当成用户自己导入的模型去打包。
 const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin', 'yui-sister'];
 
+function isUserLive2DModelEntryFor(model, modelName) {
+    const path = String((model && model.path) || '').replace(/\\/g, '/');
+    return path.startsWith(`/user_live2d/${modelName}/`) || path.startsWith(`/user_live2d_local/${modelName}/`);
+}
+
 function hasUserImportedLive2DModelFolder(modelName) {
     const allModels = Array.isArray(window.allModels) ? window.allModels : [];
-    return allModels.some(model => {
-        const path = String((model && model.path) || '').replace(/\\/g, '/');
-        return path.startsWith(`/user_live2d/${modelName}/`) || path.startsWith(`/user_live2d_local/${modelName}/`);
-    });
+    return allModels.some(model => isUserLive2DModelEntryFor(model, modelName));
+}
+
+// 按角色保存的绑定在模型列表里找角色实际用的那份：与内置模型同名的用户副本在列表里带后缀，按名字找不到。
+function findCardLive2DModelInfo(models, modelName, rawData) {
+    const list = Array.isArray(models) ? models : [];
+    if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) >= 0 && isBoundToUserImportedLive2DModel(modelName, rawData)) {
+        const userCopy = list.find(model => isUserLive2DModelEntryFor(model, modelName));
+        if (userCopy) {
+            return userCopy;
+        }
+    }
+    return list.find(model => model && model.name === modelName);
 }
 
 // 用户导入的模型可以和内置模型同名（扫描时内置模型排在前面、保留原名，用户那份被加后缀），

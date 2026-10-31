@@ -121,3 +121,62 @@ def test_legacy_user_live2d_prefix_counts_as_user_binding():
     )
     assert cards._is_bound_to_builtin_live2d(data, "yui-sister", _RELATIVE_PATH)
     assert not cards._is_bound_to_builtin_live2d(data, "someone-else", _RELATIVE_PATH)
+
+
+@pytest.mark.asyncio
+async def test_legacy_user_prefix_path_is_packed_by_both_exports(tmp_path):
+    from main_routers.characters_router import cards
+
+    model_dir = _model_dir(tmp_path)
+    config = _config(tmp_path, "", "/user_live2d/yui-sister/yui-sister.model3.json")
+    with patch.object(cards, "get_config_manager", return_value=config), \
+            patch.object(cards, "find_model_directory", return_value=(str(model_dir), "/user_live2d")) as finder, \
+            patch.object(cards, "is_user_imported_model", return_value=True):
+        plain_names, portrait_names = await _export_both(cards, tmp_path)
+
+    assert {call.args[0] for call in finder.call_args_list} == {"yui-sister"}
+    assert "model/yui-sister/yui-sister.model3.json" in plain_names
+    assert "model/yui-sister/yui-sister.model3.json" in portrait_names
+
+
+@pytest.mark.asyncio
+async def test_imported_card_binds_its_live2d_model_to_the_user_directory(tmp_path):
+    from main_routers.characters_router import cards
+
+    model_dir = _model_dir(tmp_path)
+    export_config = _config(tmp_path, "local_imported", _RELATIVE_PATH)
+    export_config.aload_characters.return_value["猫娘"]["Exported"]["_reserved"]["avatar"]["asset_source_id"] = "123"
+    with patch.object(cards, "get_config_manager", return_value=export_config), \
+            patch.object(cards, "find_model_directory", return_value=(str(model_dir), "/user_live2d")), \
+            patch.object(cards, "is_user_imported_model", return_value=True):
+        exported = await cards.export_catgirl_card("Exported")
+
+    import_live2d_dir = tmp_path / "import_live2d"
+    import_live2d_dir.mkdir()
+    import_config = MagicMock()
+    import_config.aload_characters = AsyncMock(return_value={"猫娘": {}})
+    import_config.asave_characters = AsyncMock()
+    import_config.ensure_card_faces_directory = MagicMock()
+    import_config.card_face_meta_path = MagicMock(return_value=tmp_path / "import_meta.json")
+    import_config.live2d_dir = import_live2d_dir
+    import_config.card_faces_dir = tmp_path / "import_faces"
+    with patch.object(cards, "get_config_manager", return_value=import_config), \
+            patch.object(cards, "get_initialize_character_data", return_value=None), \
+            patch.object(
+                cards,
+                "_mark_new_character_greeting_pending_safe",
+                new=AsyncMock(return_value=(True, None)),
+            ), \
+            patch.object(cards, "_write_card_meta", new=MagicMock()):
+        response = await cards.import_character_card(
+            zip_file=_FakeUpload("card.png", bytes(exported.body)),
+            card_image=None,
+        )
+
+    assert response.status_code == 200, response.body
+    saved = import_config.asave_characters.await_args.args[0]["猫娘"]
+    avatar = next(iter(saved.values()))["_reserved"]["avatar"]
+    assert (import_live2d_dir / "yui-sister" / "yui-sister.model3.json").is_file()
+    assert avatar["live2d"]["model_path"] == _RELATIVE_PATH
+    assert avatar["asset_source"] == "local_imported"
+    assert avatar["asset_source_id"] == ""
