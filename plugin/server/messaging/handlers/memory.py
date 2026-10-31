@@ -12,3 +12,12 @@ async def handle_memory_query(ctx: RpcContext, request: dict[str, object]) -> ob
         query=request.get("query"),
         timeout=ctx.remaining(),
     )
+
+async def handle_memory_search(ctx: RpcContext, request: dict[str, object]) -> object:
+    from plugin.server.application.memory import search
+    return await search(ctx, request)
+
+
+async def handle_memory_persona_get(ctx: RpcContext, request: dict[str, object]) -> object:
+    from plugin.server.application.memory import get_persona
+    return await get_persona(ctx, request)

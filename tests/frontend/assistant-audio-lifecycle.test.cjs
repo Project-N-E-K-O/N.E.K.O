@@ -12,7 +12,7 @@ const page = (value, bos = false) => { const b = new Uint8Array(29); b.set([79, 
 const join = (...parts) => Uint8Array.from(parts.flatMap(p => Array.from(p)));
 const pcm = r => r ? Array.from(r.float32Data) : [];
 
-function harness(withPlayback = false) {
+function harness(withPlayback = false, crypto = undefined) {
     const timers = new Map(), listeners = new Map(), instances = [], buffers = [], logs = [];
     let nextTimer = 1;
     const control = { ready: null, decode: null, flush: null, rejectDecode: false, rejectFlush: false, decoderErrors: false };
@@ -52,6 +52,7 @@ function harness(withPlayback = false) {
         dispatchEvent(ev) { for (const handler of listeners.get(ev.type) || []) handler(ev); return true; },
         requestAnimationFrame() { return 0; }, cancelAnimationFrame() {},
     };
+    if (crypto !== undefined) win.crypto = crypto;
     const box = { window: win, console: { log() {}, warn(...args) { logs.push(args); }, error(...args) { logs.push(args); } },
         document: { getElementById() { return null; }, addEventListener() {}, removeEventListener() {} },
         localStorage: { getItem() { return null; }, setItem() {} }, navigator: { userAgent: 'node-test' },
@@ -84,6 +85,10 @@ function harness(withPlayback = false) {
 const reports = [];
 async function check(name, fn) { await fn(); reports.push(name); }
 (async () => {
+    await check('playback-id-randomness-failure-does-not-break-player', async () => {
+        const h = harness(true, { randomUUID() { throw new Error('denied'); } });
+        assert.ok(h.A);
+    });
     await check('stream-boundaries-and-fragmentation', async () => {
         const h = harness(), bytes = join(page(1, true), page(2), page(3, true), page(4)), chunks = [bytes.slice(0, 3), bytes.slice(3, 39), bytes.slice(39)];
         let out = [];
@@ -206,6 +211,40 @@ async function check(name, fn) { await fn(); reports.push(name); }
                 h.endSources(); assert.equal(h.S.assistantTurnSettledId, 'short'); assert.equal(h.S.isPlaying, false);
             }
         }
+    });
+    await check('playback-report-identity-and-real-stop-reasons', async () => {
+        const presenters = [];
+        for (const missingDone of [false, true]) {
+            const h = harness(true), signals = [];
+            h.S.socket = { readyState: 1, send: value => signals.push(JSON.parse(value)) };
+            h.start('turn', 'speech'); h.enqueue('speech', 'turn', join(page(1, true), page(2)));
+            h.emit('neko-assistant-turn-end', 'turn'); await ticks(); h.endSources();
+            if (missingDone) h.fire(700); else h.A.noteAssistantAudioStreamClosed('speech');
+            await ticks(); h.endSources();
+            assert.equal(signals.length, 2);
+            assert.equal(signals[0].action, 'voice_play_start');
+            assert.equal(signals[1].action, 'voice_play_end');
+            assert.equal(signals[0].turnId, 'turn');
+            assert.ok(signals[0].presentationId && signals[0].presenterId);
+            assert.equal(signals[0].presentationId, signals[1].presentationId);
+            assert.equal(signals[0].presenterId, signals[1].presenterId);
+            assert.equal(signals[1].stopReason, missingDone ? 'fallback' : 'completed');
+            presenters.push(signals[0].presenterId);
+        }
+        assert.notEqual(presenters[0], presenters[1]);
+        const h = harness(true), signals = [];
+        h.S.socket = { readyState: 1, send: value => signals.push(JSON.parse(value)) };
+        h.start('turn'); h.enqueue('turn', 'turn', join(page(1, true), page(2))); await ticks();
+        h.A.clearAudioQueueWithoutDecoderReset();
+        assert.equal(signals.at(-1).stopReason, 'canceled');
+        assert.equal(signals[0].presentationId, signals.at(-1).presentationId);
+        h.start('turn'); h.enqueue('turn', 'turn', join(page(3, true), page(4))); await ticks();
+        assert.notEqual(signals[0].presentationId, signals.at(-1).presentationId);
+        const replacementSignals = [];
+        h.S.socket = { readyState: 1, send: value => replacementSignals.push(JSON.parse(value)) };
+        h.A.clearAudioQueueWithoutDecoderReset();
+        assert.equal(replacementSignals.at(-1).action, 'voice_play_end');
+        assert.equal(replacementSignals.at(-1).presentationId, undefined);
     });
     await check('header-only-close-and-cancel-do-not-leave-stale-turn-headers', async () => {
         const h = harness(true); h.start('header'); h.A.rememberAssistantAudioSpeechTurn('header', 'header');

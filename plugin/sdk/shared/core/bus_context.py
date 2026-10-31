@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, Callable, Generic, Iterable, Mapping, Protocol, TypeVar, cast
 
 from plugin._types.bus_sort import bus_sort_key
@@ -901,6 +902,14 @@ class SdkBusContext:
         self.conversations = SdkConversationsBus(getattr(raw_bus, "conversations", object()), host_ctx=host_ctx)
         self.frames = SdkFramesBus(getattr(raw_bus, "frames", object()), host_ctx=host_ctx)
         self.memory = SdkMemoryBus(getattr(raw_bus, "memory", object()), host_ctx=host_ctx)
+
+    @cached_property
+    def conversations_v2(self):
+        from plugin.sdk.shared.conversations.client import SdkConversationsV2Bus
+
+        return SdkConversationsV2Bus(
+            getattr(self._raw_bus, "conversations_v2", object()), host_ctx=self._host_ctx,
+        )
 
 
 def ensure_sdk_bus_context(raw_bus: object | None, *, host_ctx: object) -> SdkBusContext:

@@ -14,6 +14,9 @@ async def handle_bus_subscribe(ctx: RpcContext, request: dict[str, object]) -> o
         rules=request.get("rules"),
         debounce_ms=request.get("debounce_ms"),
         timeout=ctx.remaining(),
+        contract=request.get("contract"),
+        filters=request.get("filters"),
+        view=request.get("view", False),
     )
 
 

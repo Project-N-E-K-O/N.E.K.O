@@ -14,10 +14,12 @@
 # limitations under the License.
 
 import asyncio
+from uuid import uuid4
 from typing import Sequence
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
 from main_logic.agent_event_bus import (
+    conversation_reply_observation,
     publish_provider_frame_observed_best_effort,
     spawn_bounded_frame_copy,
 )
@@ -83,20 +85,31 @@ class _MediaMixin:
     ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
 
-        task = asyncio.create_task(
-            self.stream_text(
-                text,
-                turn_images=turn_images,
-                turn_source=turn_source,
-                turn_source_count=turn_source_count,
-                turn_id=turn_id,
-                on_turn_committed=on_turn_committed,
-                turn_context=turn_context,
-                input_transcript_callback=(
-                    self._ignore_already_recorded_external_transcript
-                ),
+        observation = {
+            "reply_id": uuid4().hex,
+            "origin": {"kind": "user_interaction", "is_proactive": False, "plugin_id": None, "task_id": None},
+            "started": False,
+            "closed": False,
+            "lifecycle": "external_voice",
+        }
+        token = conversation_reply_observation.set(observation)
+        try:
+            task = asyncio.create_task(
+                self.stream_text(
+                    text,
+                    turn_images=turn_images,
+                    turn_source=turn_source,
+                    turn_source_count=turn_source_count,
+                    turn_id=turn_id,
+                    on_turn_committed=on_turn_committed,
+                    turn_context=turn_context,
+                    input_transcript_callback=(
+                        self._ignore_already_recorded_external_transcript
+                    ),
+                )
             )
-        )
+        finally:
+            conversation_reply_observation.reset(token)
         self._external_voice_submit_task = task
         try:
             try:

@@ -386,6 +386,97 @@ These stores are shared, and reading them is not gated per plugin: any enabled p
 
 `bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
 
+### Conversation observations and persistent memory
+
+`self.bus.conversations_v2` reads structured messages independently of the legacy
+`self.bus.conversations` snapshot. For example:
+
+```python
+messages = await self.bus.conversations_v2.get(character="YUI", max_count=20)
+for message in messages:
+    print(message.id, message.role, message.text, message.input_id, message.reply_id)
+```
+
+Use `get_message(message_id)` for an exact ID, and `get_reply(reply_id)` or
+`get_interaction(input_id)` for currently observed detail. A detail can be
+absent or incomplete: reply text and playback are separate facts, and IDs,
+origin, timing, audio expectation, and stop reason may be unknown. Coverage
+varies by input and reply path; the API does not reconstruct a complete session
+or imply that a playback report proves the user heard audio.
+
+A watcher is best effort and must be started and stopped by the plugin:
+
+```python
+watcher = self.bus.conversations_v2.watch(character="YUI", view_limit=20)
+
+@watcher.subscribe(on="record")
+async def on_record(message):
+    self.logger.info("Observed message {}", message.id)
+
+@watcher.subscribe(on="change")
+async def on_change(change):
+    self.logger.info("Recent window contains {} items", len(change.current))
+
+await watcher.start()
+# Later, during shutdown:
+await watcher.stop()
+```
+
+Other supported subscription names are `message.updated`, `input.submitted`,
+`reply.started`, `reply.closed`, `reply.updated`, `playback.started`, and
+`playback.stopped`. `input.submitted` currently covers selected ordinary text
+inputs before session preparation; it is not a second message record or a
+promise that generation succeeded. `change` reports window membership, not
+persistent deletion. Events can be dropped or delayed; they are not an audit
+log. Filter compatibility is checked at subscription time. The full sample is
+`docs/examples/conversation_memory_example.py` in the repository.
+
+The SDK version remains **0.1.0** by project convention. Existing manifest
+compatibility checks remain unchanged; for example:
+
+```toml
+[plugin.sdk]
+supported = ">=0.1.0,<0.2.0"
+recommended = ">=0.1.0,<0.2.0"
+```
+
+The version number does not distinguish builds that include these new APIs.
+Use an updated host/SDK build; older builds may lack the exports or operations.
+
+For persistent memory, explicitly construct `MemoryClient(self.ctx)` and name
+the character and scope for each request:
+
+```python
+from plugin.sdk.plugin import MemoryClient, MemoryTarget, MemorySubject, Ok
+
+memory = MemoryClient(self.ctx)
+target = MemoryTarget.private("YUI")
+result = await memory.search(target=target, query="tea")
+if isinstance(result, Ok):
+    for hit in result.value.items:
+        print(hit.kind, hit.text, hit.retrieval_score)
+else:
+    self.logger.warning("Memory search failed: {}", result.error.code)
+
+persona = await memory.get_persona(target=target)
+if isinstance(persona, Ok):
+    for section in persona.value.sections:
+        for entry in section.entries:
+            print(section.entity, entry.text, entry.source, entry.protected, entry.suppressed)
+
+# Scoped search uses explicit subjects; an empty subject list is invalid.
+group = MemoryTarget.scoped("YUI", [MemorySubject.group_chat("qq", "group-123")])
+scoped_result = await memory.search(target=group, query="tea")
+```
+
+`search` requires a nonempty `query` or `time`, and returns relevant hits,
+not an exhaustive inventory. `get_persona` currently accepts only private
+targets and includes retained protected and suppressed entries; it is not the
+complete memory, rendered model context, or proof that a reply used an entry.
+Both methods return `Ok` or `Err`; empty results are successful and failures
+carry an error code. The default timeout is five seconds for the entire call.
+The new client does not replace the legacy `bus.memory` bucket API.
+
 ### Frames
 
 `bus.frames` holds the last few frames the host already pushed to the model provider — exactly the bytes the provider received.

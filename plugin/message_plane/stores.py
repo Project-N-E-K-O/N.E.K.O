@@ -19,6 +19,8 @@ class TopicStore:
         self.items: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=self.maxlen))
         self.meta: Dict[str, Dict[str, Any]] = {}
         self._seq: int = 0
+        self._conversation_revision = 0
+        self._conversation_revisions: Dict[int, int] = {}
         self._lock = threading.RLock()
 
     def _next_seq(self) -> int:
@@ -49,6 +51,12 @@ class TopicStore:
                 "payload": payload,
                 "index": idx,
             }
+            if self.name == CONVERSATIONS_STORE_NAME and t == CONVERSATIONS_TOPIC:
+                records = self.items[t]
+                if records.maxlen and len(records) == records.maxlen:
+                    self._conversation_revisions.pop(records[0]["seq"], None)
+                self._conversation_revision += 1
+                self._conversation_revisions[seq] = self._conversation_revision
             self.items[t].append(event)
             m = self.meta.get(t)
             if m is None:
@@ -57,6 +65,19 @@ class TopicStore:
                 m["last_ts"] = now
                 m["count_total"] = int(m.get("count_total") or 0) + 1
             return event
+
+    def publish_with_revision(self, topic: str, payload: Dict[str, Any]) -> tuple[Dict[str, Any], int]:
+        with self._lock:
+            event = self.publish(topic, payload)
+            return event, self._conversation_revisions.get(event["seq"], 0)
+
+    def replace_topic_with_revisions(
+        self, topic: str, records: list[Dict[str, Any]]
+    ) -> list[tuple[Dict[str, Any], int]]:
+        with self._lock:
+            previous_revision = self._conversation_revision
+            events = self.replace_topic(topic, records)
+            return [(event, previous_revision + offset) for offset, event in enumerate(events, 1)]
 
     def _extract_index(self, payload: Dict[str, Any], default_ts: float) -> Dict[str, Any]:
         plugin_id = payload.get("plugin_id")
@@ -268,6 +289,96 @@ class TopicStore:
             return out
         return out[:nn]
 
+    def patch_conversation(self, message_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(fields, dict) or not fields or set(fields) - {"text", "origin"}:
+            raise ValueError("invalid conversation patch")
+        if "text" in fields and not isinstance(fields["text"], str):
+            raise ValueError("text must be a string")
+        if "origin" in fields and fields["origin"] is not None and not isinstance(fields["origin"], dict):
+            raise ValueError("origin must be an object or None")
+        with self._lock:
+            for event in reversed(self.items.get(CONVERSATIONS_TOPIC, ())):
+                if event.get("index", {}).get("id") == message_id:
+                    payload = dict(event["payload"])
+                    if "text" in fields:
+                        payload["content"] = fields["text"]
+                    if "origin" in fields:
+                        payload["origin"] = fields["origin"]
+                    from plugin.sdk.shared.contracts.conversations import message_from_event
+
+                    message_from_event({**event, "payload": payload})
+                    return self.update_conversation(message_id, payload)
+        return None
+
+    def update_conversation(self, message_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Replace a retained message in place without changing its creation position."""
+        if self.name != CONVERSATIONS_STORE_NAME or not message_id:
+            return None
+        with self._lock:
+            records = self.items.get(CONVERSATIONS_TOPIC)
+            if not records:
+                return None
+            for position in range(len(records) - 1, -1, -1):
+                previous = records[position]
+                if previous.get("index", {}).get("id") != message_id:
+                    continue
+                replacement = dict(payload)
+                old_payload = previous.get("payload", {})
+                replacement["timestamp"] = previous["index"]["timestamp"]
+                replacement["id"] = message_id
+                for key in ("message_id", "event_id", "lifecycle_id"):
+                    if key in old_payload:
+                        replacement[key] = old_payload[key]
+                    else:
+                        replacement.pop(key, None)
+                event = dict(previous)
+                event["payload"] = replacement
+                event["index"] = self._extract_index(replacement, previous["ts"])
+                records[position] = event
+                self._conversation_revision += 1
+                self._conversation_revisions[event["seq"]] = self._conversation_revision
+                return {**event, "conversation_op": "message.updated", "_revision": self._conversation_revision}
+        return None
+
+    def conversation_messages(self, *, filters: Dict[str, Any], limit: int, order: str) -> tuple[list[Dict[str, Any]], int]:
+        from plugin.sdk.shared.contracts.conversations import message_from_event
+
+        result = []
+        with self._lock:
+            for event in reversed(self.items.get("all", ())):
+                try:
+                    message = message_from_event(event)
+                except (TypeError, ValueError):
+                    continue
+                if any(message[key] != filters[key] for key in ("character", "role", "kind", "input_source") if filters.get(key) is not None):
+                    continue
+                origin_kind = filters.get("origin_kind")
+                if origin_kind is not None and (message["origin"] or {}).get("kind") != origin_kind:
+                    continue
+                since_ts = filters.get("since_ts")
+                if since_ts is not None and message["observed_at"] < since_ts:
+                    continue
+                message["_revision"] = self._conversation_revisions[event["seq"]]
+                result.append(message)
+                if len(result) >= limit:
+                    break
+            snapshot_seq = self._conversation_revision
+        if order == "asc":
+            result.reverse()
+        return result, snapshot_seq
+
+    def conversation_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        from plugin.sdk.shared.contracts.conversations import message_from_event
+
+        with self._lock:
+            for event in reversed(self.items.get("all", ())):
+                if event.get("index", {}).get("id") == message_id:
+                    try:
+                        return message_from_event(event)
+                    except (TypeError, ValueError):
+                        return None
+        return None
+
     def replace_topic(self, topic: str, records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
         t = str(topic)
         now = time.time()
@@ -277,6 +388,8 @@ class TopicStore:
         dq = deque(maxlen=ml)
         with self._lock:
             self.items[t] = dq
+            if self.name == CONVERSATIONS_STORE_NAME and t == CONVERSATIONS_TOPIC:
+                self._conversation_revisions.clear()
             self.meta[t] = {"created_at": now, "last_ts": now, "count_total": 0}
 
             out: list[Dict[str, Any]] = []

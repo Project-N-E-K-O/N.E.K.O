@@ -14,7 +14,10 @@ from plugin.core.rpc import (
     rpc_reply,
 )
 from plugin.core.state import state
-from plugin.core.zmq_transport import pack_rpc_payload, unpack_rpc_payload
+from plugin.core.zmq_transport import (
+    DownlinkCapacityError, pack_rpc_payload, unpack_rpc_payload,
+    validate_bounded_downlink,
+)
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers.registry import build_request_handlers
@@ -24,6 +27,9 @@ logger = get_logger("server.messaging.request_router")
 # Reply delivery has its own bounded task budget.
 _MAX_PENDING_BUSY_REPLIES = 256
 _RECEIVE_BATCH_SIZE = 32
+_BOUNDED_REPLY_OPERATIONS = frozenset({
+    "MEMORY_SEARCH", "MEMORY_PERSONA_GET", "CONVERSATION_REPLY_GET", "CONVERSATION_INTERACTION_GET",
+})
 
 
 def _domain_error(exc: Exception) -> object | None:
@@ -101,7 +107,9 @@ class PluginRouter:
             if not isinstance(request, Mapping):
                 logger.warning("Discarding malformed plugin control request")
                 continue
-            if not self._dispatcher.submit(dict(request), self._send_response):
+            async def send_response(response, *, operation=request.get("type")):
+                await self._send_response(response, bounded=operation in _BOUNDED_REPLY_OPERATIONS)
+            if not self._dispatcher.submit(dict(request), send_response):
                 self._reply_busy(request)
 
     def _reply_busy(self, request: Mapping[str, object]) -> None:
@@ -142,16 +150,40 @@ class PluginRouter:
                 exc,
             )
 
-    async def _send_response(self, response: dict[str, object]) -> None:
+    async def _send_response(self, response: dict[str, object], *, bounded: bool = False) -> None:
         plugin_id = str(response["to_plugin"])
         sender = state.get_downlink_sender(plugin_id)
         if not callable(sender):
             raise RpcClosedError(f"Plugin {plugin_id} downlink is unavailable")
+        if bounded and response.get("error") is None:
+            try:
+                validate_bounded_downlink(response)
+            except (DownlinkCapacityError, UnicodeError):
+                response = dict(response, result=None, error={
+                    "code": "RESPONSE_TOO_LARGE", "message": "Response exceeds downlink limit",
+                })
+                bounded = False
+        else:
+            bounded = False
         _, encoded = encode_rpc_reply(response, pack_rpc_payload)
         response = unpack_rpc_payload(encoded)
-        result = sender(response)
-        if inspect.isawaitable(result):
-            await result
+        if bounded:
+            # Consumed by the host communication manager, never sent over ZMQ.
+            response["_bounded_downlink"] = True
+        try:
+            result = sender(response)
+            if inspect.isawaitable(result):
+                await result
+        except DownlinkCapacityError:
+            if not bounded:
+                raise
+            response.pop("_bounded_downlink", None)
+            response.update(result=None, error={
+                "code": "BUSY", "message": "Plugin downlink capacity exhausted",
+            })
+            result = sender(response)
+            if inspect.isawaitable(result):
+                await result
 
 
 plugin_router = PluginRouter()

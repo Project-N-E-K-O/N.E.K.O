@@ -33,6 +33,7 @@ from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
+    _reply_observation_owner,
     _TEXT_SESSION_INPUT_TYPES,
     _IMAGE_INPUT_TYPES,
     _LIVE_VISION_STREAM_INPUT_TYPES,
@@ -753,6 +754,8 @@ class StreamingMixin:
                     self._publish_user_utterance_to_plugin_bus(
                         record_data,
                         is_voice_source=False,
+                        **({"input_id": message["_conversation_input_id"]}
+                           if message.get("_conversation_input_id") else {}),
                     )
 
                     # Dispatch above synchronously extracts and persists ban-topic instructions. If it found
@@ -888,6 +891,14 @@ class StreamingMixin:
                             speech_id=new_user_sid,
                             request_id=text_request_id,
                         )
+                        reply_turn.observation_input_id = message.get("_conversation_input_id")
+                        reply_turn.observation_audio_expected = bool(self.use_tts)
+                        reply_turn.observation_origin = {
+                            "kind": "user_interaction" if is_chat_input_source(message_source) else "system",
+                            "is_proactive": False,
+                            "plugin_id": None,
+                            "task_id": None,
+                        }
                         # Record consumed tool context as provenance, even when
                         # this reply also contains ordinary conversation. Current
                         # sync policy stores the whole mixed reply locally; later
@@ -1017,7 +1028,11 @@ class StreamingMixin:
                                 stream_text_kwargs.pop("turn_context")
                             # No await before the following call: this captures the actual client receiving this turn.
                             reply_turn.session = self.session
-                            await self.session.stream_text(data, **stream_text_kwargs)
+                            observation_token = _reply_observation_owner.set(reply_turn)
+                            try:
+                                await self.session.stream_text(data, **stream_text_kwargs)
+                            finally:
+                                _reply_observation_owner.reset(observation_token)
                         finally:
                             # stream_text claims the staged attachments (or puts them
                             # back on failure); release ledger entries for claimed ones.

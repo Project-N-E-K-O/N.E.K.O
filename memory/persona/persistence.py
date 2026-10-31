@@ -194,18 +194,49 @@ class PersistenceMixin:
         async with self._get_alock(name):
             return await self._aensure_persona_locked(name)
 
-    async def _aensure_persona_locked(self, name: str) -> dict:
+    @staticmethod
+    def _validate_private_persona_sections(persona: dict) -> None:
+        """Refuse malformed private containers before ensure can rewrite them."""
+        from memory.scopes import SCOPED_PERSONA_PREFIX
+        if not isinstance(persona, dict):
+            raise ValueError("persona root is not an object")
+        for entity, section in persona.items():
+            if not isinstance(entity, str):
+                raise ValueError("persona entity is not a string")
+            if entity.startswith(SCOPED_PERSONA_PREFIX):
+                continue
+            if not isinstance(section, dict):
+                raise ValueError("persona section is not an object")
+            for key in ('facts', 'dynamics'):
+                if key in section and not isinstance(section[key], list):
+                    raise ValueError("persona facts is not a list")
+
+    async def _aensure_persona_locked(self, name: str, *, strict_read: bool = False) -> dict:
         """Inner body. Caller MUST hold self._get_alock(name)."""
         if name in self._personas:
+            if strict_read:
+                self._validate_private_persona_sections(self._personas[name])
             if await self._async_sync_character_card(name, self._personas[name]):
                 await self.asave_persona(name, self._personas[name])
             return self._personas[name]
 
         path = self._persona_path(name)
-        if await asyncio.to_thread(os.path.exists, path):
+        if strict_read:
+            # exists() hides permission and other stat failures as False. A
+            # strict snapshot must not initialize over inaccessible storage.
+            try:
+                await asyncio.to_thread(os.stat, path)
+                exists = True
+            except FileNotFoundError:
+                exists = False
+        else:
+            exists = await asyncio.to_thread(os.path.exists, path)
+        if exists:
             try:
                 data = await read_json_async(path)
                 if isinstance(data, dict):
+                    if strict_read:
+                        self._validate_private_persona_sections(data)
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         await self._async_migrate_from_settings(name, data)
@@ -216,8 +247,12 @@ class PersistenceMixin:
                         await self.asave_persona(name, data)
                     self._personas[name] = data
                     return data
+                if strict_read:
+                    raise ValueError("persona root is not an object")
                 logger.warning(f"[Persona] {name}: persona 文件不是 dict，忽略")
             except (json.JSONDecodeError, OSError) as e:
+                if strict_read:
+                    raise
                 logger.warning(f"[Persona] 加载失败: {e}")
 
         persona = self._empty_persona()
@@ -647,6 +682,80 @@ class PersistenceMixin:
         except Exception:
             self._personas.pop(name, None)
             raise
+
+    async def aget_private_persona_snapshot(self, name: str) -> dict:
+        """Detach the retained private fields while holding the character lock.
+
+        This is a knowledge snapshot, not a render: it does not update mentions,
+        suppression or evidence. Limits apply during construction, not afterwards.
+        """
+        from memory.scopes import SCOPED_PERSONA_PREFIX, is_legacy_private_entry
+
+        max_bytes = 1024 * 1024
+        max_entries = 10_000
+        # Compact UTF-8 JSON uses the same encoding as the HTTP response. Count
+        # each item as it is detached so no oversized snapshot is accumulated.
+        size = len(b'{"sections":[]}')
+        count = 0
+        sections = []
+
+        def encoded_size(value):
+            return len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name, strict_read=True)
+            if not isinstance(persona, dict):
+                raise ValueError("persona root is not an object")
+            for entity, section in persona.items():
+                if not isinstance(entity, str):
+                    raise ValueError("persona entity is not a string")
+                if entity.startswith(SCOPED_PERSONA_PREFIX):
+                    continue
+                if not isinstance(section, dict):
+                    raise ValueError("persona section is not an object")
+                facts = section.get('facts', [])
+                if not isinstance(facts, list):
+                    raise ValueError("persona facts is not a list")
+                entries = []
+                if len(entity) > max_bytes:
+                    raise OverflowError("persona snapshot exceeds internal limit")
+                section_size = encoded_size({'entity': entity, 'entries': []})
+                for entry in facts:
+                    if isinstance(entry, str):
+                        item = {'id': None, 'text': entry, 'source': 'unknown',
+                                'protected': False, 'suppressed': False}
+                    elif isinstance(entry, dict):
+                        if not is_legacy_private_entry(entry):
+                            continue
+                        ident = entry.get('id')
+                        text = entry.get('text', '')
+                        source = entry.get('source', 'unknown')
+                        if source is None or isinstance(source, str) and not source.strip():
+                            source = 'unknown'
+                        protected = entry.get('protected', False)
+                        suppressed = entry.get('suppress', False)
+                        if (ident is not None and not isinstance(ident, str)) or not isinstance(text, str) or not isinstance(source, str) or not isinstance(protected, bool) or not isinstance(suppressed, bool):
+                            raise ValueError("invalid persona entry fields")
+                        item = {'id': (ident or '').strip() or None, 'text': text, 'source': source,
+                                'protected': protected, 'suppressed': suppressed}
+                    else:
+                        raise ValueError("invalid persona entry")
+                    if not item['text'].strip():
+                        continue
+                    if any(len(value) > max_bytes for value in (item['id'] or '', item['text'], item['source'])):
+                        raise OverflowError("persona snapshot exceeds internal limit")
+                    count += 1
+                    section_size += encoded_size(item) + (1 if entries else 0)
+                    if count > max_entries or size + section_size + (1 if sections else 0) > max_bytes:
+                        raise OverflowError("persona snapshot exceeds internal limit")
+                    entries.append(item)
+                # Empty sections carry no knowledge and are omitted.
+                if entries:
+                    size += section_size + (1 if sections else 0)
+                    if size > max_bytes:
+                        raise OverflowError("persona snapshot exceeds internal limit")
+                    sections.append({'entity': entity, 'entries': entries})
+        return {'sections': sections}
 
     def get_persona(self, name: str) -> dict:
         return self.ensure_persona(name)
