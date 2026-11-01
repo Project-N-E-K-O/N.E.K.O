@@ -59,6 +59,35 @@ def _entry_id_for_tool(tool_name: str) -> str:
     return f"__llm_tool__{tool_name}"
 
 
+@router.post("/reply-completed/{plugin_id}/{entry_id}")
+async def reply_completed_callback(
+    plugin_id: str, entry_id: str, body: Dict[str, Any] = Body(...),
+) -> Dict[str, Any]:
+    """Notify an explicitly subscribed entry without a model tool call."""
+    context = body.get("host_reply")
+    if (
+        not isinstance(context, dict) or context.get("source") != "plugin:" + plugin_id
+        or context.get("call_id") != "reply_completed:" + entry_id
+        or not isinstance(body.get("text"), str) or not isinstance(body.get("user_text"), str)
+    ):
+        raise HTTPException(status_code=400, detail="invalid reply completion context")
+    timeout = body.get("timeout_seconds", 15.0)
+    if type(timeout) not in (int, float) or not 0 < timeout <= 15.0:
+        raise HTTPException(status_code=400, detail="invalid reply completion timeout")
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+    if host is None:
+        raise HTTPException(status_code=404, detail="plugin is not running")
+    # Callback return values are deliberately not fed into the conversation.
+    # Images go through reply_tail.register with the host-issued context.
+    await host.trigger(entry_id, {
+        "text": body["text"], "user_text": body["user_text"],
+        "has_attachments": body.get("has_attachments") is True,
+        "_ctx": {"host_reply": dict(context), "lanlan_name": context.get("role")},
+    }, float(timeout))
+    return {"ok": True}
+
+
 @router.post("/callback/{plugin_id}/{tool_name}")
 async def llm_tool_callback(
     plugin_id: str,

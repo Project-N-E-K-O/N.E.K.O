@@ -68,6 +68,79 @@ part encoding and validator, preserving GIF animation. Host-minted image
 references are also supported. Arbitrary remote images and `ToolResult.images`
 are not part of this API; the latter feeds model vision.
 
+## Plugin Decisions After A Reply
+
+A plugin can subscribe to successful ordinary text replies without exposing an
+LLM tool. The host invokes a regular plugin entry once the reply has completed;
+the plugin decides whether to attach an image using its own rules, retrieval or
+auxiliary model. The main conversation model does not have to request an image.
+
+```python
+from plugin.sdk.plugin import lifecycle, plugin_entry
+
+@lifecycle(id="startup")
+async def startup(self):
+    result = await self.ctx.reply_tail.subscribe("after_reply", handler_timeout=15.0)
+    if not result["ok"]:
+        raise RuntimeError("reply completion subscription failed")
+
+@plugin_entry(id="after_reply", kind="hook")
+async def after_reply(self, text: str, user_text: str,
+                      has_attachments: bool, _ctx=None):
+    if has_attachments:
+        return
+    # Plugin-owned selection; returning None deliberately means no image.
+    image = await self.select_image(user_text, text)
+    if image is None:
+        return
+    await self.ctx.reply_tail.register(
+        _ctx["host_reply"], registration_id="selected",
+        parts=[{"type": "image", "data": image, "mime": "image/gif"}],
+    )
+```
+
+`text` is the retained reply text, including pre-tool text; `user_text` is the
+original visible input captured for that request. Neither is a system prompt.
+`has_attachments` reports this plugin's already registered, submitted or uncertain
+attachments for the reply, allowing the plugin to avoid adding a second image
+after its own tool has already chosen one. It does not suppress other plugins.
+`_ctx.host_reply` is a new, private invocation scope bound to this callback and
+the original request. Register before returning: that scope accepts images only
+while its callback is running. A late background registration is rejected.
+Handler return values are ignored and never cause a model continuation.
+
+Pass `role="Character"` to subscribe only to that character. Calling `subscribe`
+again for the same plugin and entry replaces its subscription and cancels the old
+callback work. Call `await self.ctx.reply_tail.unsubscribe("after_reply")` to stop
+it. Plugin stop uses the existing source cleanup to remove subscriptions and
+cancel pending callback work, including plugins that register no LLM tools.
+Re-subscribe on reload or after the main server restarts. Older hosts without
+this endpoint return HTTP 404; plugins should detect that before choosing their
+documented compatibility behavior.
+
+Subscribers are captured when generation starts. Failed, discarded, interrupted,
+empty and synthetic-input replies do not notify; a retry that succeeds notifies
+once with the retained attempt. Long-reply truncation that keeps a valid reply
+does notify. Realtime voice, ASR, proactive chat and Agent-only replies are outside
+this hook. Frontend v1 capability is required, just as for tool attachments.
+
+Callbacks run in bounded background tasks after the normal turn end, so selecting
+an image does not delay normal reply cleanup or the next input. There are at most
+eight subscriptions and eight simultaneous callbacks. Each callback has a total
+deadline of at most 15 seconds, followed by the existing bounded image submission
+phase. Input and reply text are each limited to 65,536 characters; oversized
+content is skipped as a whole, rather than truncating a possible output restriction.
+Capacity skips and failures log metadata only. There is no retry or replay.
+
+One failing or timed-out plugin loses only its own unsent callback attachments.
+A completed reply remains the original anchor if a later input arrives; a
+reconnect rejects attachments for the previous connection. As with tool
+attachments, this is a bounded best-effort delivery contract, not an exactly-once
+display guarantee. The hook makes the decision independent of main-model tool
+use; it does not force the plugin to select an image on every reply.
+
+## State Limits
+
 State is in memory: 128 invocation scopes, 64 registrations still holding
 images, two images per registration, 2 MiB serialized payload per registration,
 16 MiB retained or validating payload, four concurrent validations, and

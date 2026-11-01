@@ -63,6 +63,19 @@ self.logger.info("Processing request: {}", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
+### 回复完成后由插件决定配图
+
+`await self.ctx.reply_tail.subscribe("after_reply")` 可以订阅普通文字回复的完成通知。
+`after_reply` 是插件自行声明的 `@plugin_entry(id="after_reply", kind="hook")` 入口，
+收到 `text`、`user_text`、`has_attachments` 和 `_ctx.host_reply`。
+插件可以按规则、检索或辅助模型自行决定是否配图，无需主聊天模型调用发图工具。
+选好图片后，在入口返回前调用 `self.ctx.reply_tail.register(...)`，由宿主排在原回复末尾。
+
+这是显式订阅的后台通知，插件异常或超时不会阻塞正常聊天；被丢弃或打断的回复不触发。
+仅覆盖支持 v1 尾图协议的普通文字聊天。取消订阅使用
+`await self.ctx.reply_tail.unsubscribe("after_reply")`；插件停止时也会清理。
+完整示例、生命周期、容量、超时和投递边界见[原回复尾图接口](../../plugin-reply-tail.md)。
+
 日志会显示在插件管理器中，并写入宿主管理的日志目录；日志文件位置和轮换策略由宿主负责。运行时配置通过 `await self.ctx.update_own_config(...)` 或 `await self.config.update(...)` 更新。调用后，应在同一进程中主动刷新依赖配置的派生状态。
 
 根据数据形式选择存储方式：

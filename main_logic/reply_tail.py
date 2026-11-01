@@ -6,7 +6,9 @@ import json
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
+
+from utils.logger_config import get_module_logger
 
 MAX_SCOPES = 128
 MAX_REGISTRATIONS = 64
@@ -19,6 +21,12 @@ MAX_RETAINED_BYTES = 16 * 1024 * 1024
 MAX_VALIDATIONS = 4
 RETENTION_SECONDS = 120.0
 SUBMISSION_TIMEOUT_SECONDS = 5.0
+MAX_REPLY_HOOKS = 8
+MAX_REPLY_HOOK_TASKS = 8
+MAX_REPLY_HOOK_TEXT_CHARS = 65536
+REPLY_HOOK_TIMEOUT_SECONDS = 15.0
+
+logger = get_module_logger(__name__, "Main")
 
 
 # The display validator lives in the main server, above main_logic in the
@@ -51,6 +59,15 @@ def receipt(status: str, reason: str = "", **extra: Any) -> dict:
 
 
 @dataclass(eq=False)
+class _ReplyHook:
+    plugin_id: str
+    entry_id: str
+    dispatch: Callable[[dict], Awaitable[None]]
+    role: str | None
+    timeout: float
+
+
+@dataclass(eq=False)
 class ReplyTailReply:
     registry: Any
     manager: Any
@@ -60,11 +77,15 @@ class ReplyTailReply:
     attempt: int = 0
     completed: bool = False
     closed: bool = False
+    text: str = field(default="", repr=False)
+    user_text: str = field(default="", repr=False)
+    hooks: tuple[_ReplyHook, ...] = ()
 
     def discard_attempt(self) -> None:
         self.registry.cancel_reply(self, "reply_discarded")
         self.attempt += 1
         self.completed = False
+        self.text = ""
 
 
 @dataclass
@@ -72,6 +93,8 @@ class _Scope:
     reply: ReplyTailReply
     context: dict
     expires: float
+    hook: _ReplyHook | None = None
+    accepting: bool = False
 
 
 @dataclass
@@ -99,12 +122,79 @@ def _reply_open(reply: ReplyTailReply, attempt: int) -> bool:
     )
 
 
+def _scope_open(scope: _Scope) -> bool:
+    if scope.hook is None:
+        return _reply_open(scope.reply, scope.context["attempt"])
+    return (
+        scope.accepting and scope.reply.completed and scope.reply.owner.turn_ended
+        and scope.reply.attempt == scope.context["attempt"]
+        and scope.reply.manager.websocket is scope.reply.websocket
+    )
+
+
 class ReplyTailRegistry:
     def __init__(self) -> None:
         self._scopes: dict[str, _Scope] = {}
         self._registrations: dict[tuple[str, str], _Registration] = {}
         self._retained_bytes = 0
         self._validations = 0
+        self._hooks: dict[tuple[str, str], _ReplyHook] = {}
+        self._hook_tasks: dict[asyncio.Task, _Scope] = {}
+
+    def subscribe(
+        self, plugin_id: str, entry_id: str, dispatch: Callable[[dict], Awaitable[None]],
+        *, role: str | None = None, timeout: float = REPLY_HOOK_TIMEOUT_SECONDS,
+    ) -> dict:
+        key = (plugin_id, entry_id)
+        if key not in self._hooks and len(self._hooks) >= MAX_REPLY_HOOKS:
+            return {"ok": False, "reason": "capacity"}
+        self.unsubscribe(plugin_id, entry_id)
+        self._hooks[key] = _ReplyHook(plugin_id, entry_id, dispatch, role, timeout)
+        return {"ok": True}
+
+    def unsubscribe(self, plugin_id: str, entry_id: str | None = None, *, role: str | None = None) -> int:
+        removed = [
+            key for key, hook in self._hooks.items()
+            if hook.plugin_id == plugin_id and (entry_id is None or hook.entry_id == entry_id)
+            and (role is None or hook.role == role)
+        ]
+        for key in removed:
+            hook = self._hooks.pop(key)
+            for task, scope in list(self._hook_tasks.items()):
+                if scope.hook is hook:
+                    scope.accepting = False
+                    self._cancel_scope(scope, "hook_unsubscribed")
+                    task.cancel()
+        return len(removed)
+
+    def prepare_reply(self, manager: Any, owner: Any, *, user_text: str) -> None:
+        """Snapshot explicit subscribers before an ordinary text reply starts."""
+        hooks = tuple(hook for hook in self._hooks.values() if hook.role in (None, manager.lanlan_name))
+        if not hooks:
+            return
+        if len(user_text) > MAX_REPLY_HOOK_TEXT_CHARS:
+            logger.warning("Reply completion hooks skipped: reason=input_too_large")
+            return
+        reply = self._reply_for_owner(manager, owner)
+        if reply is not None:
+            reply.hooks = hooks
+            reply.user_text = user_text
+
+    def _reply_for_owner(self, manager: Any, owner: Any) -> ReplyTailReply | None:
+        websocket = getattr(manager, "websocket", None)
+        client_version = getattr(getattr(websocket, "state", None), "reply_tail_version", None)
+        if (
+            not owner or not getattr(owner, "request_id", None)
+            or getattr(owner, "session", None) is None
+            or getattr(owner, "turn_ended", False) or getattr(owner, "taken_over", False)
+            or client_version != 1
+        ):
+            return None
+        reply = getattr(owner, "reply_tail", None)
+        if reply is None:
+            reply = ReplyTailReply(self, manager, owner, websocket)
+            owner.reply_tail = reply
+        return reply if not reply.closed and reply.websocket is websocket else None
 
     def _settle(self, item: _Registration, status: str, reason: str = "") -> None:
         self._retained_bytes -= item.size
@@ -138,7 +228,7 @@ class ReplyTailRegistry:
         if len(self._scopes) < MAX_SCOPES:
             return True
         for token, scope in list(self._scopes.items()):
-            if not scope.reply.closed or any(
+            if scope.accepting or not scope.reply.closed or any(
                 key[0] == token and item.active for key, item in self._registrations.items()
             ):
                 continue
@@ -159,7 +249,8 @@ class ReplyTailRegistry:
         if len(settled) < MAX_SETTLED_RECORDS:
             return True
         for key in settled:
-            if self._registrations[key].scope.reply.closed:
+            scope = self._registrations[key].scope
+            if scope.reply.closed and not scope.accepting:
                 del self._registrations[key]
                 return True
         return False
@@ -169,22 +260,16 @@ class ReplyTailRegistry:
 
     def tool_context(self, manager: Any, owner: Any, call_id: str, source: str) -> dict | None:
         self._prune()
-        websocket = getattr(manager, "websocket", None)
-        client_version = getattr(getattr(websocket, "state", None), "reply_tail_version", None)
-        if (
-            not owner or not getattr(owner, "request_id", None)
-            or getattr(owner, "session", None) is None
-            or getattr(owner, "turn_ended", False) or getattr(owner, "taken_over", False)
-            or not source.startswith("plugin:") or not source[7:] or not call_id
-            or client_version != 1
-        ):
+        if not source.startswith("plugin:") or not source[7:] or not call_id:
             return None
-        reply = getattr(owner, "reply_tail", None)
+        reply = self._reply_for_owner(manager, owner)
         if reply is None:
-            reply = ReplyTailReply(self, manager, owner, websocket)
-            owner.reply_tail = reply
-        if reply.closed or reply.websocket is not websocket:
             return None
+        return self._new_scope(reply, call_id, source)
+
+    def _new_scope(self, reply: ReplyTailReply, call_id: str, source: str,
+                   *, hook: _ReplyHook | None = None) -> dict | None:
+        self._prune()
         # One scope per invocation: provider call IDs are not unique within a
         # reply (ID-less providers number each tool round from ``call_0``).
         if not self._room_for_scope():
@@ -192,11 +277,13 @@ class ReplyTailRegistry:
         token = secrets.token_urlsafe(32)
         context = {
             "version": 1, "reply_id": reply.reply_id,
-            "request_id": str(owner.request_id), "role": str(manager.lanlan_name),
+            "request_id": str(reply.owner.request_id), "role": str(reply.manager.lanlan_name),
             "call_id": call_id, "invocation_id": secrets.token_urlsafe(12),
             "source": source, "attempt": reply.attempt, "token": token,
         }
-        self._scopes[token] = _Scope(reply, context, time.monotonic() + RETENTION_SECONDS)
+        self._scopes[token] = _Scope(
+            reply, context, time.monotonic() + RETENTION_SECONDS, hook, hook is not None,
+        )
         return dict(context)
 
     def _scope(self, context: dict, plugin_id: str) -> _Scope | None:
@@ -229,8 +316,7 @@ class ReplyTailRegistry:
         key = (scope.context["token"], registration_id)
         if key in self._registrations:
             return {**self._result(self._registrations[key]), "duplicate": True}
-        reply = scope.reply
-        if not _reply_open(reply, context["attempt"]):
+        if not _scope_open(scope):
             return receipt("cancelled", "reply_closed")
         if (
             ai_behavior != "blind" or not isinstance(parts, list)
@@ -278,7 +364,7 @@ class ReplyTailRegistry:
             return receipt("cancelled", "expired")
         if key in self._registrations:
             return {**self._result(self._registrations[key]), "duplicate": True}
-        if not _reply_open(reply, context["attempt"]):
+        if not _scope_open(scope):
             return receipt("cancelled", "reply_closed")
         if len(blocks) != len(parts):
             return receipt("failed", "invalid_image")
@@ -323,6 +409,11 @@ class ReplyTailRegistry:
             if item.scope.reply is reply and item.status == "registered":
                 self._settle(item, "cancelled", reason)
 
+    def _cancel_scope(self, scope: _Scope, reason: str) -> None:
+        for item in self._registrations.values():
+            if item.scope is scope and item.status == "registered":
+                self._settle(item, "cancelled", reason)
+
     async def finish(self, reply: ReplyTailReply) -> None:
         if reply.closed:
             return
@@ -331,9 +422,65 @@ class ReplyTailRegistry:
         if not reply.completed or not reply.owner.turn_ended:
             self.cancel_reply(reply, "reply_incomplete")
             return
+        await self._submit(reply)
+        # Optional plugin work runs after normal turn completion and never
+        # holds the input task open while a plugin selects its attachment.
+        if not reply.text or len(reply.text) > MAX_REPLY_HOOK_TEXT_CHARS:
+            if reply.hooks and reply.text:
+                logger.warning("Reply completion hooks skipped: reason=text_too_large")
+            return
+        for hook in reply.hooks:
+            if (
+                self._hooks.get((hook.plugin_id, hook.entry_id)) is not hook
+                or reply.manager.websocket is not reply.websocket
+            ):
+                continue
+            if len(self._hook_tasks) >= MAX_REPLY_HOOK_TASKS:
+                logger.warning("Reply completion hook skipped: plugin=%s entry=%s reason=capacity",
+                               hook.plugin_id, hook.entry_id)
+                continue
+            context = self._new_scope(reply, "reply_completed:" + hook.entry_id, "plugin:" + hook.plugin_id, hook=hook)
+            if context is None:
+                logger.warning("Reply completion hook skipped: plugin=%s entry=%s reason=scope_capacity",
+                               hook.plugin_id, hook.entry_id)
+                continue
+            scope = self._scopes[context["token"]]
+            task = asyncio.create_task(self._run_hook(scope))
+            self._hook_tasks[task] = scope
+            task.add_done_callback(self._hook_tasks.pop)
+
+    async def _run_hook(self, scope: _Scope) -> None:
+        hook, reply = scope.hook, scope.reply
+        try:
+            has_attachments = any(
+                item.scope.reply is reply and item.scope.context["source"] == "plugin:" + hook.plugin_id
+                and item.status in {"registered", "submitting", "submitted", "uncertain"}
+                for item in self._registrations.values()
+            )
+            async with asyncio.timeout(hook.timeout):
+                await hook.dispatch({
+                    "text": reply.text, "user_text": reply.user_text,
+                    "has_attachments": has_attachments, "host_reply": dict(scope.context),
+                })
+            scope.accepting = False
+            await self._submit(reply, scope=scope)
+        except asyncio.CancelledError:
+            self._cancel_scope(scope, "hook_cancelled")
+            raise
+        except Exception as exc:
+            self._cancel_scope(scope, "hook_failed")
+            # Plugin failures can contain conversation text or credentials.
+            logger.warning("Reply completion hook failed: plugin=%s entry=%s type=%s",
+                           hook.plugin_id, hook.entry_id, type(exc).__name__)
+        finally:
+            scope.accepting = False
+
+    async def _submit(self, reply: ReplyTailReply, *, scope: _Scope | None = None) -> None:
         deadline = time.monotonic() + SUBMISSION_TIMEOUT_SECONDS
         for item in list(self._registrations.values()):
             if item.scope.reply is not reply or item.status != "registered":
+                continue
+            if scope is not None and item.scope is not scope:
                 continue
             if reply.manager.websocket is not reply.websocket:
                 self._settle(item, "failed", "connection_changed")
@@ -355,16 +502,25 @@ class ReplyTailRegistry:
             except TimeoutError:
                 # A write may have reached the peer before cancellation.
                 self._settle(item, "uncertain", "submission_timeout")
-                self.cancel_reply(reply, "submission_timeout")
+                if scope is None:
+                    self.cancel_reply(reply, "submission_timeout")
+                else:
+                    self._cancel_scope(scope, "submission_timeout")
                 return
             except asyncio.CancelledError:
                 self._settle(item, "uncertain", "submission_interrupted")
-                self.cancel_reply(reply, "transport_interrupted")
+                if scope is None:
+                    self.cancel_reply(reply, "transport_interrupted")
+                else:
+                    self._cancel_scope(scope, "transport_interrupted")
                 raise
             except BaseException:
                 # Like a cancellation: the write may have reached the peer.
                 self._settle(item, "uncertain", "submission_interrupted")
-                self.cancel_reply(reply, "transport_interrupted")
+                if scope is None:
+                    self.cancel_reply(reply, "transport_interrupted")
+                else:
+                    self._cancel_scope(scope, "transport_interrupted")
                 raise
             self._settle(item, "submitted" if sent else "failed", "" if sent else "transport_failed")
 
