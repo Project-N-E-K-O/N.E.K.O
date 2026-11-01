@@ -286,7 +286,9 @@ for (const category of ['music', 'news']) test(`recovered ${category} acceptance
 
 for (const stage of ['factory', 'delayed play', 'media wait', 'already playing']) test(`restored consent expiry respects the real player's ${stage} boundary`, async t => {
     const harness = fs.readFileSync(path.join(__dirname, 'music_player_close.test.cjs'), 'utf8');
-    const { createSurface } = new Function('require', '__dirname', harness.slice(0, harness.indexOf('\nfunction pair(')) + '\nreturn { createSurface };')(require, __dirname);
+    const end = harness.indexOf('\nfunction pair(');
+    assert.notEqual(end, -1, 'music_player_close.test.cjs must retain the function pair( fixture boundary');
+    const { createSurface } = new Function('require', '__dirname', harness.slice(0, end) + '\nreturn { createSurface };')(require, __dirname);
     const s = createSurface(t, { deferInit: stage === 'factory', honorCancellation: true, mediaPending: ['media wait', 'already playing'].includes(stage) });
     const w = s.w, messages = new Map();
     const event = { event_id: 'slow-player-recovered', kind: 'accepted', occurred_at: 99 };
