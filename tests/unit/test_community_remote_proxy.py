@@ -30,7 +30,9 @@ def test_anonymous_never_opens_upstream(proxy, monkeypatch):
     assert proxy.post("/api/forge/credits/grant", content="invalid").status_code == 401
 
 
-@pytest.mark.parametrize("endpoint", ["/api/community/visit-hub", "/api/community/friend-presence"])
+@pytest.mark.parametrize("endpoint", [
+    "/api/community/visit-hub", "/api/community/friend-presence", "/api/community/visit-invitations",
+])
 def test_saved_but_temporarily_unverified_session_does_not_report_logout(proxy, monkeypatch, endpoint):
     async def status():
         return {
@@ -46,19 +48,20 @@ def test_saved_but_temporarily_unverified_session_does_not_report_logout(proxy, 
     assert "saved-secret" not in response.text
 
 
+@pytest.mark.parametrize("endpoint", ["/api/community/visit-hub", "/api/community/visit-invitations"])
 @pytest.mark.parametrize("saved_status", [
     {"logged_in": False, "snapshot": None},
     {"logged_in": False, "snapshot": {"local_user_id": "owner"}},
     {"logged_in": False, "snapshot": {"access_token": ""}},
     {"logged_in": False, "snapshot": {"access_token": "rejected-secret"}, "rejected": True},
 ])
-def test_definite_logout_still_requires_login(proxy, monkeypatch, saved_status):
+def test_definite_logout_still_requires_login(proxy, monkeypatch, saved_status, endpoint):
     async def status():
         return saved_status
 
     monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
     monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: pytest.fail("Logged-out request must not reach cloud"))
-    response = proxy.get("/api/community/visit-hub")
+    response = proxy.get(endpoint)
     assert response.status_code == 401
     assert response.json() == {"detail": "community_login_required"}
 
@@ -576,7 +579,10 @@ async def test_following_rejects_a_non_object_success_body():
 
 
 @pytest.mark.parametrize("path", ["visit-hub", "visit-invitations"])
-def test_invitation_reads_do_not_claim_notifications_are_authoritative_on_failure(proxy, monkeypatch, path):
+@pytest.mark.parametrize("notification_status", [401, 503])
+def test_invitation_reads_do_not_claim_notifications_are_authoritative_on_failure(
+    proxy, monkeypatch, path, notification_status,
+):
     owner_id = "11111111-1111-4111-8111-111111111111"
 
     async def status():
@@ -590,7 +596,7 @@ def test_invitation_reads_do_not_claim_notifications_are_authoritative_on_failur
         if request.url.path == "/api/users/me/presence":
             return httpx.Response(200, json={"status": "online"})
         if request.url.path == "/api/notifications":
-            return httpx.Response(503, json={"detail": "unavailable"})
+            return httpx.Response(notification_status, json={"detail": "unavailable"})
         return httpx.Response(404, json={"detail": "not_found"})
 
     real_client = httpx.AsyncClient
@@ -602,7 +608,9 @@ def test_invitation_reads_do_not_claim_notifications_are_authoritative_on_failur
         lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
     )
 
-    body = proxy.get(f"/api/community/{path}").json()
+    response = proxy.get(f"/api/community/{path}")
+    assert response.status_code == 200
+    body = response.json()
     assert body["notifications_ok"] is False
     assert body["incoming_invite_ids"] == []
     assert body["incoming_invite"] is None
