@@ -887,7 +887,19 @@ def atomic_write_json(
     indent: int | None = 2,
     **json_kwargs: Any,
 ) -> None:
-    """Serialize JSON and atomically replace the destination file."""
+    """Serialize JSON and atomically replace the destination file.
+
+    ``NaN`` / ``Infinity`` are rejected by default (M-001 / P0-1b). They are not
+    valid JSON, ``json.load`` accepts them again, and the failure then surfaces
+    far away -- as a 500 when the value is eventually rendered with
+    ``allow_nan=False``. Rejecting them here means the bad value fails loudly at
+    the write that produced it instead of corrupting the file silently.
+
+    A caller that genuinely needs a non-finite value can pass ``allow_nan=True``
+    explicitly, which keeps the exception reviewable. ``ValueError`` is raised
+    before the file is touched, so the previous content survives.
+    """
+    json_kwargs.setdefault("allow_nan", False)
     content = json.dumps(
         data,
         ensure_ascii=ensure_ascii,
