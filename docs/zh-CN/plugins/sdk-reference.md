@@ -74,7 +74,7 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 这是显式订阅的后台通知，插件异常或超时不会阻塞正常聊天；被丢弃或打断的回复不触发。
 仅覆盖支持 v1 尾图协议的普通文字聊天。取消订阅使用
 `await self.ctx.reply_tail.unsubscribe("after_reply")`；插件停止时也会清理。
-完整示例、生命周期、容量、超时和投递边界见[原回复尾图接口](../../plugin-reply-tail.md)。
+完整示例、生命周期、容量、超时和投递边界见[原回复尾图接口](/plugin-reply-tail)。
 
 日志会显示在插件管理器中，并写入宿主管理的日志目录；日志文件位置和轮换策略由宿主负责。运行时配置通过 `await self.ctx.update_own_config(...)` 或 `await self.config.update(...)` 更新。调用后，应在同一进程中主动刷新依赖配置的派生状态。
 
