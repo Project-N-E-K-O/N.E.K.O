@@ -22,6 +22,7 @@ MAX_VALIDATIONS = 4
 RETENTION_SECONDS = 120.0
 SUBMISSION_TIMEOUT_SECONDS = 5.0
 MAX_REPLY_HOOKS = 8
+MAX_REPLY_HOOKS_PER_PLUGIN = 2
 MAX_REPLY_HOOK_TASKS = 8
 MAX_REPLY_HOOK_TEXT_CHARS = 65536
 REPLY_HOOK_TIMEOUT_SECONDS = 15.0
@@ -56,6 +57,10 @@ def receipt(status: str, reason: str = "", **extra: Any) -> dict:
         **({"reason": reason} if reason else {}),
         **extra,
     }
+
+
+class ReplyHookUnavailableError(Exception):
+    """The callback service confirmed that this plugin process is not running."""
 
 
 @dataclass(eq=False)
@@ -148,9 +153,27 @@ class ReplyTailRegistry:
         key = (plugin_id, entry_id)
         if key not in self._hooks and len(self._hooks) >= MAX_REPLY_HOOKS:
             return {"ok": False, "reason": "capacity"}
+        if key not in self._hooks and sum(
+            hook.plugin_id == plugin_id for hook in self._hooks.values()
+        ) >= MAX_REPLY_HOOKS_PER_PLUGIN:
+            return {"ok": False, "reason": "plugin_capacity"}
         self.unsubscribe(plugin_id, entry_id)
         self._hooks[key] = _ReplyHook(plugin_id, entry_id, dispatch, role, timeout)
         return {"ok": True}
+
+    def _remove_hook(self, hook: _ReplyHook, reason: str) -> bool:
+        key = (hook.plugin_id, hook.entry_id)
+        # A failure from an old invocation must not remove a new subscription.
+        if self._hooks.get(key) is not hook:
+            return False
+        del self._hooks[key]
+        for task, scope in list(self._hook_tasks.items()):
+            if scope.hook is hook:
+                scope.accepting = False
+                self._cancel_scope(scope, reason)
+                if task is not asyncio.current_task():
+                    task.cancel()
+        return True
 
     def unsubscribe(self, plugin_id: str, entry_id: str | None = None, *, role: str | None = None) -> int:
         removed = [
@@ -159,12 +182,7 @@ class ReplyTailRegistry:
             and (role is None or hook.role == role)
         ]
         for key in removed:
-            hook = self._hooks.pop(key)
-            for task, scope in list(self._hook_tasks.items()):
-                if scope.hook is hook:
-                    scope.accepting = False
-                    self._cancel_scope(scope, "hook_unsubscribed")
-                    task.cancel()
+            self._remove_hook(self._hooks[key], "hook_unsubscribed")
         return len(removed)
 
     def prepare_reply(self, manager: Any, owner: Any, *, user_text: str) -> None:
@@ -467,6 +485,11 @@ class ReplyTailRegistry:
         except asyncio.CancelledError:
             self._cancel_scope(scope, "hook_cancelled")
             raise
+        except ReplyHookUnavailableError:
+            self._cancel_scope(scope, "hook_unavailable")
+            if self._remove_hook(hook, "hook_unavailable"):
+                logger.warning("Reply completion hook removed: plugin=%s entry=%s reason=plugin_not_running",
+                               hook.plugin_id, hook.entry_id)
         except Exception as exc:
             self._cancel_scope(scope, "hook_failed")
             # Plugin failures can contain conversation text or credentials.

@@ -1,15 +1,17 @@
 """Plugin-owned post-reply decisions, independent of model tool invocation."""
+import ast
 import asyncio
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 import main_logic.reply_tail as module
-from main_logic.reply_tail import ReplyTailRegistry
+from main_logic.reply_tail import ReplyHookUnavailableError, ReplyTailRegistry
 from main_routers import tool_router
 from main_routers.cookies_login_router import verify_local_access
 from plugin.sdk.shared.core.context import SdkContext
@@ -134,6 +136,7 @@ async def test_failed_or_removed_hook_revokes_context_and_reclaims_images(chain,
     chain.manager.websocket.send_json.assert_not_awaited()
     assert chain.registry._retained_bytes == 0
     assert chain.registry.status(contexts[0], "image", plugin_id="stickers")["status"] == "cancelled"
+    assert (("stickers", "choose_image") in chain.registry._hooks) == (kind != "unsubscribe")
     assert (await chain.registry.register(
         contexts[0], "late", [image_part()], plugin_id="stickers",
     ))["status"] == "cancelled"
@@ -253,6 +256,144 @@ async def test_hook_capacity_and_live_context_cannot_be_evicted(chain, monkeypat
     await drain_hooks(chain.registry)
 
 
+async def test_per_plugin_capacity_preserves_room_for_other_plugins_and_allows_replacement(chain):
+    callback = AsyncMock()
+    for index in range(module.MAX_REPLY_HOOKS_PER_PLUGIN):
+        assert chain.registry.subscribe("stickers", f"entry-{index}", callback)["ok"]
+    assert chain.registry.subscribe("stickers", "overflow", callback) == {
+        "ok": False, "reason": "plugin_capacity",
+    }
+    assert chain.registry.subscribe("stickers", "entry-0", callback)["ok"]
+    for index in range(module.MAX_REPLY_HOOKS - module.MAX_REPLY_HOOKS_PER_PLUGIN):
+        assert chain.registry.subscribe(f"other-{index}", "choose", callback)["ok"]
+    assert chain.registry.subscribe("global-overflow", "choose", callback) == {
+        "ok": False, "reason": "capacity",
+    }
+    assert chain.registry.subscribe("stickers", "entry-0", callback)["ok"]
+    assert chain.registry.unsubscribe("stickers", "entry-0") == 1
+    assert chain.registry.subscribe("stickers", "new-entry", callback)["ok"]
+
+
+async def test_confirmed_missing_plugin_revokes_other_pending_callbacks_and_images(chain):
+    started, release = asyncio.Event(), asyncio.Event()
+    contexts = []
+
+    async def choose(payload):
+        if payload["host_reply"]["request_id"] != "request-A":
+            raise ReplyHookUnavailableError
+        contexts.append(payload["host_reply"])
+        assert (await chain.registry.register(
+            payload["host_reply"], "pending", [image_part()], plugin_id="stickers",
+        ))["status"] == "registered"
+        started.set()
+        await release.wait()
+
+    other = AsyncMock()
+    prepare(chain, choose)
+    assert chain.registry.subscribe("other", "choose", other)["ok"]
+    chain.registry.prepare_reply(chain.manager, chain.owner, user_text="hello")
+    await finish(chain)
+    await asyncio.wait_for(started.wait(), 1)
+    next_owner = SimpleNamespace(
+        request_id="request-B", session=chain.manager.session, turn_ended=False, taken_over=False,
+    )
+    chain.registry.prepare_reply(chain.manager, next_owner, user_text="next input")
+    next_owner.reply_tail.text = "next reply"
+    next_owner.reply_tail.completed = True
+    next_owner.turn_ended = True
+    await chain.registry.finish(next_owner.reply_tail)
+    await drain_hooks(chain.registry)
+    assert ("stickers", "choose_image") not in chain.registry._hooks
+    assert ("other", "choose") in chain.registry._hooks
+    assert chain.registry.status(contexts[0], "pending", plugin_id="stickers")["status"] == "cancelled"
+    assert (await chain.registry.register(
+        contexts[0], "late", [image_part()], plugin_id="stickers",
+    ))["status"] == "cancelled"
+    assert chain.registry._retained_bytes == 0
+    chain.manager.websocket.send_json.assert_not_awaited()
+
+
+async def test_missing_plugin_result_from_old_callback_preserves_replacement(chain):
+    started = asyncio.Event()
+
+    async def choose(payload):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise ReplyHookUnavailableError from None
+
+    prepare(chain, choose)
+    await finish(chain)
+    await asyncio.wait_for(started.wait(), 1)
+    replacement = AsyncMock()
+    assert chain.registry.subscribe("stickers", "choose_image", replacement)["ok"]
+    await drain_hooks(chain.registry)
+    assert chain.registry._hooks[("stickers", "choose_image")].dispatch is replacement
+
+
+async def test_multiple_plugin_images_follow_completion_not_subscription_order(chain):
+    started, release, fast_sent = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def slow(payload):
+        started.set()
+        await release.wait()
+        assert (await chain.registry.register(
+            payload["host_reply"], "slow", [image_part()], plugin_id="stickers",
+        ))["status"] == "registered"
+
+    async def fast(payload):
+        await started.wait()
+        assert (await chain.registry.register(
+            payload["host_reply"], "fast", [image_part()], plugin_id="other",
+        ))["status"] == "registered"
+
+    async def sent(frame):
+        if frame["metadata"]["source_name"] == "other":
+            fast_sent.set()
+
+    chain.manager.websocket.send_json.side_effect = sent
+    prepare(chain, slow)
+    assert chain.registry.subscribe("other", "choose", fast)["ok"]
+    chain.registry.prepare_reply(chain.manager, chain.owner, user_text="hello")
+    await finish(chain)
+    try:
+        await asyncio.wait_for(fast_sent.wait(), 1)
+    finally:
+        release.set()
+        await drain_hooks(chain.registry)
+    frames = [call.args[0] for call in chain.manager.websocket.send_json.await_args_list]
+    assert [frame["metadata"]["source_name"] for frame in frames] == ["other", "stickers"]
+    assert all(frame["request_id"] == "request-A" for frame in frames)
+
+
+@pytest.mark.parametrize("context", [None, {}, {"host_reply": None}, {"host_reply": {"token": "example"}}])
+async def test_documented_callback_handles_missing_context_before_selecting(context):
+    source = (Path(__file__).resolve().parents[2] / "docs/plugin-reply-tail.md").read_text(encoding="utf-8")
+    example = next(
+        block.split("```", 1)[0] for block in source.split("```python")[1:]
+        if "async def after_reply(" in block
+    )
+    function = next(
+        node for node in ast.parse(example).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "after_reply"
+    )
+    function.decorator_list = []
+    namespace = {}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<documented-hook>", "exec"), namespace)
+    selector, register_image = AsyncMock(return_value=b"image"), AsyncMock()
+    plugin = SimpleNamespace(
+        select_image=selector, ctx=SimpleNamespace(reply_tail=SimpleNamespace(register=register_image)),
+    )
+    await namespace["after_reply"](plugin, "reply", "input", False, _ctx=context)
+    if context and context.get("host_reply") is not None:
+        selector.assert_awaited_once_with("input", "reply")
+        assert register_image.await_args.args[0] is context["host_reply"]
+    else:
+        selector.assert_not_awaited()
+        register_image.assert_not_awaited()
+
+
 @pytest.mark.parametrize("version", [0, 1])
 async def test_real_plain_text_turn_notifies_without_a_model_tool_call(monkeypatch, version):
     from tests.unit.test_offline_late_completion_turn_ownership import (
@@ -304,7 +445,7 @@ async def test_sdk_subscription_callback_and_tail_registration_use_real_http_rou
 
     monkeypatch.setattr(callback_module, "state", SimpleNamespace(
         acquire_plugin_hosts_read_lock=nullcontext,
-        plugin_hosts={"stickers": SimpleNamespace(trigger=trigger)},
+        plugin_hosts={"stickers": SimpleNamespace(trigger=trigger, is_alive=lambda: True)},
     ))
     async with client_type(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as host_http:
         monkeypatch.setattr(tool_router, "_get_http_client", lambda: host_http)
@@ -317,6 +458,76 @@ async def test_sdk_subscription_callback_and_tail_registration_use_real_http_rou
         assert calls[0][1]["_ctx"]["lanlan_name"] == "Cat"
         chain.manager.websocket.send_json.assert_awaited_once()
         assert (await sdk.unsubscribe("choose"))["removed"] == 1
+
+
+@pytest.mark.parametrize("condition", ["absent", "dead", "dies_during_dispatch", "live_timeout", "live_error"])
+async def test_callback_liveness_controls_automatic_unsubscription(chain, monkeypatch, condition):
+    from plugin.server.routes import llm_tools as callback_module
+
+    app = FastAPI()
+    app.include_router(callback_module.router)
+    trigger = AsyncMock(side_effect=TimeoutError() if condition != "live_error" else RuntimeError())
+    alive = Mock(side_effect=[True, False]) if condition == "dies_during_dispatch" else Mock(
+        return_value=condition != "dead",
+    )
+    monkeypatch.setattr(callback_module, "state", SimpleNamespace(
+        acquire_plugin_hosts_read_lock=nullcontext,
+        plugin_hosts={} if condition == "absent" else {
+            "stickers": SimpleNamespace(trigger=trigger, is_alive=alive),
+        },
+    ))
+    monkeypatch.setattr(tool_router, "reply_tail_registry", chain.registry)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://127.0.0.1",
+    ) as client:
+        monkeypatch.setattr(tool_router, "_get_http_client", lambda: client)
+        assert (await tool_router.subscribe_reply_completed(tool_router.ReplyHookSubscription(
+            plugin_id="stickers", entry_id="choose",
+            callback_url="http://127.0.0.1/api/llm-tools/reply-completed/stickers/choose",
+        )))["ok"]
+        chain.registry.prepare_reply(chain.manager, chain.owner, user_text="hello")
+        chain.owner.reply_tail.text = "reply"
+        await finish(chain)
+        await drain_hooks(chain.registry)
+    removed = condition in {"absent", "dead", "dies_during_dispatch"}
+    assert (("stickers", "choose") not in chain.registry._hooks) == removed
+    assert trigger.await_count == (0 if condition in {"absent", "dead"} else 1)
+    if removed:
+        callback = AsyncMock()
+        assert chain.registry.subscribe("stickers", "choose", callback)["ok"]
+        next_owner = SimpleNamespace(
+            request_id="request-B", session=chain.manager.session, turn_ended=False, taken_over=False,
+        )
+        chain.registry.prepare_reply(chain.manager, next_owner, user_text="after restart")
+        next_owner.reply_tail.text = "reply after restart"
+        next_owner.reply_tail.completed = True
+        next_owner.turn_ended = True
+        await chain.registry.finish(next_owner.reply_tail)
+        await drain_hooks(chain.registry)
+        callback.assert_awaited_once()
+    chain.manager.websocket.send_json.assert_not_awaited()
+
+
+@pytest.mark.parametrize("body", [
+    {"detail": "Not Found"}, {"detail": {"code": "OTHER_ERROR"}}, [], "not json",
+])
+async def test_unrelated_404_does_not_unsubscribe(chain, monkeypatch, body):
+    def respond(request):
+        if isinstance(body, str):
+            return httpx.Response(404, text=body)
+        return httpx.Response(404, json=body)
+
+    monkeypatch.setattr(tool_router, "reply_tail_registry", chain.registry)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(tool_router, "_get_http_client", lambda: client)
+        await tool_router.subscribe_reply_completed(tool_router.ReplyHookSubscription(
+            plugin_id="stickers", entry_id="choose", callback_url="http://127.0.0.1/callback",
+        ))
+        chain.registry.prepare_reply(chain.manager, chain.owner, user_text="hello")
+        chain.owner.reply_tail.text = "reply"
+        await finish(chain)
+        await drain_hooks(chain.registry)
+    assert ("stickers", "choose") in chain.registry._hooks
 
 
 @pytest.mark.parametrize("callback_url", ["https://example.com/callback", "http://192.168.1.2/callback"])

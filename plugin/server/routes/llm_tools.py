@@ -76,15 +76,20 @@ async def reply_completed_callback(
         raise HTTPException(status_code=400, detail="invalid reply completion timeout")
     with state.acquire_plugin_hosts_read_lock():
         host = state.plugin_hosts.get(plugin_id)
-    if host is None:
-        raise HTTPException(status_code=404, detail="plugin is not running")
+    if host is None or not host.is_alive():
+        raise HTTPException(status_code=404, detail={"code": "PLUGIN_NOT_RUNNING"})
     # Callback return values are deliberately not fed into the conversation.
     # Images go through reply_tail.register with the host-issued context.
-    await host.trigger(entry_id, {
-        "text": body["text"], "user_text": body["user_text"],
-        "has_attachments": body.get("has_attachments") is True,
-        "_ctx": {"host_reply": dict(context), "lanlan_name": context.get("role")},
-    }, float(timeout))
+    try:
+        await host.trigger(entry_id, {
+            "text": body["text"], "user_text": body["user_text"],
+            "has_attachments": body.get("has_attachments") is True,
+            "_ctx": {"host_reply": dict(context), "lanlan_name": context.get("role")},
+        }, float(timeout))
+    except Exception:
+        if not host.is_alive():
+            raise HTTPException(status_code=404, detail={"code": "PLUGIN_NOT_RUNNING"}) from None
+        raise
     return {"ok": True}
 
 

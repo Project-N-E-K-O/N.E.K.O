@@ -87,14 +87,15 @@ async def startup(self):
 @plugin_entry(id="after_reply", kind="hook")
 async def after_reply(self, text: str, user_text: str,
                       has_attachments: bool, _ctx=None):
-    if has_attachments:
+    original = (_ctx or {}).get("host_reply")
+    if original is None or has_attachments:
         return
     # Plugin-owned selection; returning None deliberately means no image.
     image = await self.select_image(user_text, text)
     if image is None:
         return
     await self.ctx.reply_tail.register(
-        _ctx["host_reply"], registration_id="selected",
+        original, registration_id="selected",
         parts=[{"type": "image", "data": image, "mime": "image/gif"}],
     )
 ```
@@ -114,9 +115,20 @@ again for the same plugin and entry replaces its subscription and cancels the ol
 callback work. Call `await self.ctx.reply_tail.unsubscribe("after_reply")` to stop
 it. Plugin stop uses the existing source cleanup to remove subscriptions and
 cancel pending callback work, including plugins that register no LLM tools.
-Re-subscribe on reload or after the main server restarts. Older hosts without
-this endpoint return HTTP 404; plugins should detect that before choosing their
-documented compatibility behavior.
+If a callback finds the plugin absent or its process no longer alive, the plugin
+service returns HTTP 404 with `detail.code="PLUGIN_NOT_RUNNING"`. The host removes
+that subscription and cancels its pending callbacks and unsent images. This check
+happens on callback dispatch, not immediately when a process exits. An old callback
+cannot remove a replacement subscription. Other 404 responses, timeouts and
+handler errors do not automatically unsubscribe a plugin.
+
+Subscriptions live only in main-server memory. There is no main-server restart
+notification or automatic subscription replay in this API. If only the main server
+restarts while plugins remain running, their subscriptions are lost: reload or
+restart the affected plugins so their startup code subscribes again. This has the
+same recovery limitation as the existing plugin tool registration mechanism.
+Older hosts without this endpoint return HTTP 404; plugins should detect that
+before choosing their documented compatibility behavior.
 
 Subscribers are captured when generation starts. Failed, discarded, interrupted,
 empty and synthetic-input replies do not notify; a retry that succeeds notifies
@@ -126,11 +138,23 @@ this hook. Frontend v1 capability is required, just as for tool attachments.
 
 Callbacks run in bounded background tasks after the normal turn end, so selecting
 an image does not delay normal reply cleanup or the next input. There are at most
-eight subscriptions and eight simultaneous callbacks. Each callback has a total
+eight subscriptions globally, at most two per plugin, and eight simultaneous
+callbacks globally. A new subscription exceeding these limits returns
+`{"ok": false, "reason": "capacity"}` or `"reason": "plugin_capacity"`;
+replacing an existing subscription does not consume another slot. These limits
+bound resources; they do not guarantee fair callback scheduling across plugins.
+Each callback has a total
 deadline of at most 15 seconds, followed by the existing bounded image submission
 phase. Input and reply text are each limited to 65,536 characters; oversized
 content is skipped as a whole, rather than truncating a possible output restriction.
 Capacity skips and failures log metadata only. There is no retry or replay.
+
+Multiple plugins select images concurrently. Each callback submits its images
+after it returns successfully, without waiting for other callbacks. Cross-plugin
+image order follows arrival at the frontend, not subscription order or plugin
+name; concurrent completion and transport timing can affect it. Images retain
+their original reply anchor. Tool attachments already submitted before callbacks
+run use the existing ordering path.
 
 One failing or timed-out plugin loses only its own unsent callback attachments.
 A completed reply remains the original anchor if a later input arrives; a

@@ -89,7 +89,7 @@ from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
-from main_logic.reply_tail import reply_tail_registry
+from main_logic.reply_tail import ReplyHookUnavailableError, reply_tail_registry
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -466,6 +466,13 @@ async def subscribe_reply_completed(body: ReplyHookSubscription) -> dict:
             body.callback_url, json={**payload, "timeout_seconds": body.timeout_seconds},
             timeout=body.timeout_seconds,
         )
+        if response.status_code == 404:
+            try:
+                result = response.json()
+            except ValueError:
+                result = None
+            if isinstance(result, dict) and result.get("detail") == {"code": "PLUGIN_NOT_RUNNING"}:
+                raise ReplyHookUnavailableError
         response.raise_for_status()
 
     return reply_tail_registry.subscribe(
