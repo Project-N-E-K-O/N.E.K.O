@@ -2,7 +2,7 @@ import { expect, type Page } from '@playwright/test'
 import { PREVIEW_ORIGIN, appearanceTest, installCardLayoutFixture } from './plugin-manager-test-helpers'
 
 type Rect = { x: number; y: number; w: number; h: number }
-type Frame = { t: number; compact: boolean; running: boolean; rects: (Rect | null)[] }
+type Frame = { t: number; compact: boolean; running: boolean; marketArrowOffset: number; rects: (Rect | null)[] }
 type Recording = {
   labels: string[]
   frames: Frame[]
@@ -198,6 +198,8 @@ async function recordDrawerMotion(
     const recorder = await page.evaluateHandle(({ toggle, panel, secondClickAt, denseFilter }) => {
       const workbench = document.querySelector<HTMLElement>('.plugin-workbench')!
       const header = document.querySelector<HTMLElement>('.workbench-header')!
+      const marketButton = header.querySelector<HTMLElement>('.market-trigger')!
+      const marketArrow = marketButton.querySelector<HTMLElement>('.market-trigger__arrow')!
       const tracked: Element[] = []
       const track = (element: Element | null) => {
         if (element && !tracked.includes(element)) tracked.push(element)
@@ -284,6 +286,7 @@ async function recordDrawerMotion(
             t,
             compact: header.classList.contains('workbench-header--compact'),
             running: workbench.hasAttribute('data-motion-running'),
+            marketArrowOffset: marketArrow.getBoundingClientRect().left - marketButton.getBoundingClientRect().left,
             rects: tracked.map(rectOf),
           })
           if (recording.clickFrame < 0) {
@@ -334,26 +337,35 @@ async function recordDrawerMotion(
   }
 }
 
-async function openPluginWorkbench(page: Page, width = 1600) {
+async function openPluginWorkbench(page: Page, width = 1600, updateCheckReady?: Promise<void>) {
   await installCardLayoutFixture(page)
   // The fixture reports a newer version; keep the boot update popup off the header.
-  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
-    route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
-  )
+  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', async route => {
+    await updateCheckReady
+    await route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
+  })
   await installMarketCatalog(page)
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   // At this width opening a drawer flips the header to its compact layout.
   await page.setViewportSize({ width, height: 1000 })
-  // The boot update check starts a while after mount; wait for its request so
-  // its label swap cannot land inside a recording.
+  // Most recordings start after boot; a held response exercises a label swap
+  // inside the transition instead.
   const bootCheck = page.waitForRequest('**/market/catalog/api/v1/plugins/latest-versions?*')
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
   await expect(page.locator('.plugin-card')).toHaveCount(8)
   await expect(page.locator('.plugin-workbench')).toBeVisible()
   await bootCheck
-  await expect(page.locator('[data-yui-guide-id="plugin-list-update-check"]')).not.toHaveClass(/is-loading/)
-  // Cards enter with their own animation on load; record only from a settled layout.
-  await page.waitForFunction(() => document.getAnimations().length === 0)
+  const checking = page.locator('[data-yui-guide-id="plugin-list-update-check"]')
+  if (updateCheckReady) {
+    await expect(checking).toHaveClass(/is-loading/)
+    // The loading spinner is infinite; the cards' entrances must still settle.
+    await page.waitForFunction(() => document.getAnimations().every(animation =>
+      animation.effect!.getComputedTiming().iterations === Infinity,
+    ))
+  } else {
+    await expect(checking).not.toHaveClass(/is-loading/)
+    await page.waitForFunction(() => document.getAnimations().length === 0)
+  }
 }
 
 // Let a fully opened drawer finish its open animation before recording the close.
@@ -564,6 +576,44 @@ appearanceTest(
 
 appearanceTest.describe('filter bar layout and interaction', () => {
   appearanceTest.use({ appLocale: 'zh-CN' })
+
+  for (const width of [1448, 1920]) {
+    appearanceTest(`update response during drawer motion keeps header labels stable at ${width}px`, async ({ page }) => {
+      let releaseUpdate!: () => void
+      const updateCheckReady = new Promise<void>(resolve => { releaseUpdate = resolve })
+      try {
+        await openPluginWorkbench(page, width, updateCheckReady)
+        const workbench = page.locator('.plugin-workbench')
+        const header = page.locator('.workbench-header')
+        const checking = page.locator('[data-yui-guide-id="plugin-list-update-check"]')
+        const recording = await recordDrawerMotion(page, {
+          toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS, secondClickAt: null,
+        }, async time => {
+          if (time === 208) {
+            await expect(workbench).toHaveAttribute('data-motion-running')
+            await expect(checking).toHaveClass(/is-loading/)
+            releaseUpdate()
+            await expect(checking).not.toHaveClass(/is-loading/)
+          }
+          if (width === 1448 && [256, 400].includes(time)) {
+            await expect(workbench).toHaveAttribute('data-motion-running')
+            await expect(header).toHaveClass(/workbench-header--compact/)
+          }
+        })
+        expect(compactIssues(recording), 'content completion does not reverse the header layout').toEqual([])
+        const arrowSteps = recording.frames.slice(1).map((frame, i) =>
+          frame.marketArrowOffset - recording.frames[i]!.marketArrowOffset,
+        )
+        expect(
+          arrowSteps.every(step => step >= -TOLERANCE) || arrowSteps.every(step => step <= TOLERANCE),
+          'the market arrow moves in one direction relative to its button',
+        ).toBe(true)
+        await expectMotionCleanedUp(page)
+      } finally {
+        releaseUpdate()
+      }
+    })
+  }
 
   for (const width of [1472, 1280]) {
     appearanceTest(`filter rows stay stable at ${width}px during market open and close`, async ({ page }) => {
