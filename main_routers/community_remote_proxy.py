@@ -170,6 +170,62 @@ def _friend_presence_items(following) -> list[dict]:
     return friends
 
 
+def _visit_invitation_snapshot(base_url: str, notification_status: int, notifications) -> dict:
+    """Project the same authoritative invitation state for chat and the hub."""
+    incoming = None
+    incoming_invite_ids = []
+    invite_responses = []
+    now = time.time()
+    notifications_ok = (
+        notification_status == 200
+        and isinstance(notifications, dict)
+        and isinstance(notifications.get("items"), list)
+    )
+    if notifications_ok:
+        for item in notifications["items"]:
+            payload = item.get("payload") if isinstance(item, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type") == "visit_invite_response":
+                invite_responses.append({
+                    "id": str(item.get("id") or ""),
+                    "actor_id": str(payload.get("actor_id") or ""),
+                    "actor_display_name": payload.get("actor_display_name") or "喵友",
+                    "visit_id": str(payload.get("visit_id") or ""),
+                    "accepted": payload.get("accepted") is True,
+                })
+                continue
+            if payload.get("type") != "visit_invite":
+                continue
+            try:
+                expires_at = float(payload.get("expires_at") or 0)
+            except (TypeError, ValueError):
+                expires_at = 0
+            if expires_at and expires_at <= now:
+                continue
+            notification_id = str(item.get("id") or "")
+            if notification_id:
+                incoming_invite_ids.append(notification_id)
+            if incoming is not None:
+                continue
+            incoming = {
+                "id": notification_id,
+                "actor_id": str(payload.get("actor_id") or ""),
+                "actor_display_name": payload.get("actor_display_name") or "喵友",
+                "actor_avatar_url": _absolute_community_url(base_url, payload.get("actor_avatar_url")),
+                "visit_id": str(payload.get("visit_id") or ""),
+                # Upgrade compatibility only; new directed invitations never carry a code.
+                "invite_code": str(payload.get("invite_code") or ""),
+                "expires_at": expires_at or None,
+            }
+    return {
+        "notifications_ok": notifications_ok,
+        "incoming_invite_ids": incoming_invite_ids,
+        "incoming_invite": incoming,
+        "invite_responses": invite_responses,
+    }
+
+
 @router.get("/api/community/friend-presence")
 async def friend_presence(request: Request):
     """Return a small live-presence snapshot without rotating hub content."""
@@ -184,6 +240,25 @@ async def friend_presence(request: Request):
     if presence_status != 200:
         return JSONResponse(presence_body, status_code=presence_status)
     return {"friends": _friend_presence_items(presence_body)}
+
+
+@router.get("/api/community/visit-invitations")
+async def visit_invitations(request: Request):
+    """Check invitations without rebuilding the account and friend hub."""
+    session, error = await _community_access(request)
+    if error is not None:
+        return error
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12)) as client:
+            (notification_status, notifications), _presence = await asyncio.gather(
+                _community_notifications(client, session),
+                # The old hub renewed presence on every poll. Keep that lease
+                # for chat-only windows without loading friends or ranking users.
+                _community_json(client, session, "GET", "/api/users/me/presence"),
+            )
+    except httpx.HTTPError:
+        return JSONResponse({"detail": "community_unavailable"}, status_code=502)
+    return _visit_invitation_snapshot(session["base_url"], notification_status, notifications)
 
 
 @router.get("/api/community/visit-hub")
@@ -255,52 +330,9 @@ async def visit_hub(request: Request):
                 "follows_viewer": item.get("follows_viewer") is True,
             })
 
-    incoming = None
-    incoming_invite_ids = []
-    invite_responses = []
-    now = time.time()
-    notifications_ok = (
-        notification_status == 200
-        and isinstance(notifications, dict)
-        and isinstance(notifications.get("items"), list)
+    invitation_snapshot = _visit_invitation_snapshot(
+        session["base_url"], notification_status, notifications,
     )
-    if notifications_ok:
-        for item in notifications.get("items", []):
-            payload = item.get("payload") if isinstance(item, dict) else None
-            if not isinstance(payload, dict):
-                continue
-            if payload.get("type") == "visit_invite_response":
-                invite_responses.append({
-                    "id": str(item.get("id") or ""),
-                    "actor_id": str(payload.get("actor_id") or ""),
-                    "actor_display_name": payload.get("actor_display_name") or "喵友",
-                    "visit_id": str(payload.get("visit_id") or ""),
-                    "accepted": payload.get("accepted") is True,
-                })
-                continue
-            if payload.get("type") != "visit_invite":
-                continue
-            try:
-                expires_at = float(payload.get("expires_at") or 0)
-            except (TypeError, ValueError):
-                expires_at = 0
-            if expires_at and expires_at <= now:
-                continue
-            notification_id = str(item.get("id") or "")
-            if notification_id:
-                incoming_invite_ids.append(notification_id)
-            if incoming is not None:
-                continue
-            incoming = {
-                "id": notification_id,
-                "actor_id": str(payload.get("actor_id") or ""),
-                "actor_display_name": payload.get("actor_display_name") or "喵友",
-                "actor_avatar_url": _absolute_community_url(session["base_url"], payload.get("actor_avatar_url")),
-                "visit_id": str(payload.get("visit_id") or ""),
-                # Upgrade compatibility only; new directed invitations never carry a code.
-                "invite_code": str(payload.get("invite_code") or ""),
-                "expires_at": expires_at or None,
-            }
 
     return {
         "logged_in": True,
@@ -319,10 +351,7 @@ async def visit_hub(request: Request):
         },
         "friends": friends,
         "recommendations": recommendations,
-        "notifications_ok": notifications_ok,
-        "incoming_invite_ids": incoming_invite_ids,
-        "incoming_invite": incoming,
-        "invite_responses": invite_responses,
+        **invitation_snapshot,
     }
 
 

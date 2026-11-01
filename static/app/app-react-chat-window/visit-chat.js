@@ -2335,7 +2335,13 @@
         if (!isUiWindow() || !releaseEnabled || !userSwitchOn() || directInvitationPollInFlight) return false;
         directInvitationPollInFlight = true;
         try {
-            var result = await api('GET', '/api/community/visit-hub');
+            var result = await api('GET', '/api/community/visit-invitations');
+            // A cached chat page can meet an older local host during an upgrade.
+            // Older hosts have POST on this path, so GET can return 405 as well
+            // as 404. Other failures must not look like invitation withdrawal.
+            if (result.status === 404 || result.status === 405) {
+                result = await api('GET', '/api/community/visit-hub');
+            }
             var incoming = result.status === 200 && result.body && result.body.incoming_invite;
             var notificationIds = result.status === 200 && result.body
                 && Array.isArray(result.body.incoming_invite_ids)

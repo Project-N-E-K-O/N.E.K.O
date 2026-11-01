@@ -137,7 +137,8 @@ function createHarness(opts) {
     reactChatWindowHost: host,
     lanlan_config: { lanlan_name: '咪咪', master_display_name: '阿明' },
     appState: { socket: socket, audioPlayerContext: { currentTime: 0 } },
-    location: { pathname: '/' },
+    location: { pathname: opts.pathname || '/' },
+    __NEKO_MULTI_WINDOW__: opts.multiWindow === true,
     showStatusToast(text) { toasts.push(text); },
     nekoRelayVisitStateToDisplay(frame) { relayFrames.push(JSON.parse(JSON.stringify(frame))); },
     visitEnabled: true,
@@ -1681,7 +1682,7 @@ const report = {};
           ? { status: 503, body: { error: 'temporary_failure' } }
           : { status: 200, body: { delivered: true } };
       },
-      '/api/community/visit-hub': async () => ({ status: 200, body: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {
         incoming_invite: { id: 'notif-retry', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
         incoming_invite_ids: ['notif-retry'], notifications_ok: true,
       } }),
@@ -1715,7 +1716,7 @@ const report = {};
         return { status: 200, body: { question: '要去串门吗？' } };
       },
       ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
-      '/api/community/visit-hub': async () => ({ status: 200, body: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {
         incoming_invite: { id: 'notif-character', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
         incoming_invite_ids: ['notif-character'], notifications_ok: true,
       } }),
@@ -1728,6 +1729,116 @@ const report = {};
     h.win.lanlan_config.lanlan_name = '小橘';
     await h.chat._test.pollDirectInvitations();
     report.direct_invite_character_questions = questionUrls;
+  }
+  // No SSE is required: startup and five-second fallback use the compact route
+  // in web/chat windows while the Electron pet window does not poll.
+  report.invitation_poll_windows = [];
+  for (const mode of [
+    { name: 'web', pathname: '/' },
+    { name: 'chat', multiWindow: true, pathname: '/chat' },
+    { name: 'chat_full', multiWindow: true, pathname: '/chat_full' },
+    { name: 'pet', multiWindow: true, pathname: '/' },
+  ]) {
+    const h = createHarness(Object.assign({}, mode, { routes: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {
+        incoming_invite: null, incoming_invite_ids: [], notifications_ok: true,
+      } }),
+    } }));
+    h.chat.applyState({ enabled: true, active: false });
+    h.advance(500);
+    await h.settle();
+    h.advance(4500);
+    await h.settle();
+    report.invitation_poll_windows.push({ mode: mode.name,
+      paths: h.fetches.map((entry) => entry.url).filter((url) => url.startsWith('/api/community/')) });
+  }
+  // Disabled features never start cloud invitation reads.
+  report.invitation_poll_disabled = [];
+  for (const disabled of ['release', 'user']) {
+    const h = createHarness();
+    h.chat.applyState({ enabled: disabled !== 'release', active: false });
+    if (disabled === 'user') h.win.visitEnabled = false;
+    h.advance(5500);
+    await h.settle();
+    report.invitation_poll_disabled.push(h.fetches.length);
+  }
+  // During an upgrade only unsupported routes use the legacy hub. Auth,
+  // throttling and transient failures must not retry through a heavier API.
+  report.invitation_poll_compatibility = [];
+  for (const status of [200, 404, 405, 401, 403, 429, 500, 502, 503]) {
+    let deliveries = 0;
+    const snapshot = {
+      incoming_invite: { id: 'notif-compatible', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
+      incoming_invite_ids: ['notif-compatible'], notifications_ok: true,
+    };
+    const h = createHarness({ routes: {
+      '/api/community/visit-invitations': async () => ({ status, body: snapshot }),
+      '/api/community/visit-hub': async () => ({ status: 200, body: snapshot }),
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID, expires_at: 9e9 } }),
+      ['/api/visit/direct/' + VID + '/question?catgirl=%E5%92%AA%E5%92%AA']: async () => ({ status: 200, body: { question: '要去串门吗？' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => { deliveries++; return { status: 200, body: { delivered: true } }; },
+    } });
+    h.chat.applyState({ enabled: true, active: false });
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_compatibility.push({ status, deliveries,
+      paths: h.fetches.map((entry) => entry.url).filter((url) => url.startsWith('/api/community/')) });
+  }
+  // An unavailable/partial notification read must retain a pending invitation;
+  // a later authoritative absence resolves it and rejects late replays.
+  report.invitation_poll_reconciliation = [];
+  for (const failure of ['transport', 'unavailable', 'partial']) {
+    let phase = 'failed';
+    let deliveries = 0;
+    let resolutions = 0;
+    const incoming = { id: 'notif-preserved', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 };
+    const h = createHarness({ routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID, expires_at: 9e9 } }),
+      ['/api/visit/direct/' + VID + '/question?catgirl=%E5%92%AA%E5%92%AA']: async () => ({ status: 200, body: { question: '要去串门吗？' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => { deliveries++; return { status: 200, body: { delivered: true } }; },
+      '/api/community/visit-invitations': async () => {
+        if (phase === 'failed') {
+          if (failure === 'transport') throw new Error('offline');
+          return { status: failure === 'unavailable' ? 503 : 200,
+            body: { incoming_invite_ids: [], notifications_ok: false } };
+        }
+        return { status: 200, body: { incoming_invite: phase === 'present' ? incoming : null,
+          incoming_invite_ids: phase === 'present' ? [incoming.id] : [], notifications_ok: true } };
+      },
+    } });
+    h.win.addEventListener('neko-social-incoming-resolved', () => { resolutions++; });
+    h.chat.applyState({ enabled: true, active: false });
+    await h.chat._test.presentDirectInvitation(incoming);
+    await h.chat._test.pollDirectInvitations();
+    phase = 'present';
+    await h.chat._test.pollDirectInvitations();
+    const afterRecovery = deliveries;
+    const resolvedAfterRecovery = resolutions;
+    phase = 'absent';
+    await h.chat._test.pollDirectInvitations();
+    phase = 'present';
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_reconciliation.push({ failure, afterRecovery, resolvedAfterRecovery,
+      resolvedAfterWithdrawal: resolutions, afterWithdrawal: deliveries,
+      legacyCalls: h.fetches.filter((entry) => entry.url === '/api/community/visit-hub').length });
+  }
+  // A slow compact request still owns the existing single-flight guard.
+  {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const h = createHarness({ routes: {
+      '/api/community/visit-invitations': async () => { await gate; return { status: 200, body: {
+        incoming_invite: null, incoming_invite_ids: [], notifications_ok: true,
+      } }; },
+    } });
+    h.chat.applyState({ enabled: true, active: false });
+    const first = h.chat._test.pollDirectInvitations();
+    await h.settle();
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_concurrent_calls = h.fetches.length;
+    release();
+    await first;
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_retry_calls = h.fetches.length;
   }
   // Startup failures must reach the caller without depending on global toasts.
   report.invite_quota_orders = [];
@@ -1858,6 +1969,36 @@ def report() -> dict:
     return _run(HARNESS.replace("__CHAT_PATH__", json.dumps(str(CHAT_PATH)))
                 .replace("__PACER_PATH__", json.dumps(str(PACER_PATH)))
                 .replace("__RELAY_SAMPLES__", json.dumps(RELAY_SAMPLES)))
+
+
+def test_invitation_fallback_poll_uses_compact_reads_in_web_and_electron_chat_windows(report):
+    compact = "/api/community/visit-invitations"
+    for case in report["invitation_poll_windows"]:
+        assert case["paths"] == ([] if case["mode"] == "pet" else [compact, compact]), case
+    assert report["invitation_poll_disabled"] == [0, 0]
+
+
+def test_invitation_poll_falls_back_only_when_the_local_host_lacks_the_get_route(report):
+    for case in report["invitation_poll_compatibility"]:
+        expected = ["/api/community/visit-invitations"]
+        if case["status"] in (404, 405):
+            expected.append("/api/community/visit-hub")
+        assert case["paths"] == expected, case
+        assert case["deliveries"] == (1 if case["status"] in (200, 404, 405) else 0), case
+
+
+def test_invitation_poll_preserves_pending_state_on_failure_and_clears_on_authoritative_withdrawal(report):
+    for case in report["invitation_poll_reconciliation"]:
+        assert case["afterRecovery"] == 1, case
+        assert case["resolvedAfterRecovery"] == 0, case
+        assert case["resolvedAfterWithdrawal"] == 1, case
+        assert case["afterWithdrawal"] == 1, case
+        assert case["legacyCalls"] == 0, case
+
+
+def test_invitation_poll_keeps_single_flight_and_allows_the_next_read(report):
+    assert report["invitation_poll_concurrent_calls"] == 1
+    assert report["invitation_poll_retry_calls"] == 2
 
 
 def test_quota_reaches_invite_caller_in_web_and_electron_for_both_event_orders(report):
