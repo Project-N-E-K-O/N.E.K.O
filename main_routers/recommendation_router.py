@@ -16,7 +16,7 @@ from main_logic.recommendation_feedback import FeedbackConflict, FeedbackDecisio
 from services.chat_sync import host
 from services.proactive_feedback.policy import registry as policy_registry
 from utils.config_manager import get_config_manager
-from utils.config_manager.reserved_schema import get_character_uid
+from utils.config_manager.reserved_schema import get_character_uid, is_valid_character_uid
 from utils.preferences import load_global_conversation_settings
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
@@ -76,8 +76,10 @@ def _character_uid(character):
 def _policy_operation(operation):
     """Freeze identity under the same credential fence as the SQLite operation."""
     def perform(store, owner):
-        control = _control(owner)
-        identity = policy_registry.observe(store.path, owner, incarnation=(control or {}).get("account_incarnation"))
+        # A cancelled background refresh can leave the live control provider
+        # behind committed SQL. Refine the account instance only from the
+        # operation's version-checked result, never that unverified snapshot.
+        identity = policy_registry.observe(store.path, owner)
         value = operation(store, owner)
         if isinstance(value, dict) and value.get("policy_account_incarnation") is not None:
             # Startup may not yet have a live capture control. The operational
@@ -106,6 +108,8 @@ async def capture_policy(character: str, expected_owner: dict):
 
 
 async def attach_music_recommendation(body: dict, expected_owner: dict, character: str, *, character_uid=None):
+    if not is_valid_character_uid(character_uid):
+        return
     if not body.get("success") or body.get("action") != "chat" or body.get("source_mode") not in {"music", "both"}:
         return
     links = [link for link in body.get("source_links", []) if isinstance(link, dict) and link.get("url")]
@@ -129,6 +133,8 @@ async def attach_music_recommendation(body: dict, expected_owner: dict, characte
 
 async def attach_proactive_recommendations(body: dict, expected_owner: dict, character: str, *, character_uid=None):
     """Register committed content; screen text is UI-only, never evidence."""
+    if not is_valid_character_uid(character_uid):
+        return
     if not body.get("success") or body.get("action") != "chat":
         return
     channel = body.get("channel")

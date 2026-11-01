@@ -164,6 +164,15 @@ class RecommendationStore:
         projection without turning this query into an implicit delete command.
         """
         with self._transaction() as db:
+            if self.protocol_version == 2 and control is not None:
+                saved = db.execute("SELECT snapshot FROM feedback_v2_controls WHERE owner=?",
+                                   (owner["key"],)).fetchone()
+                previous = json.loads(saved[0]) if saved else None
+                revision = control.get("binding_revision")
+                if previous and type(revision) is int and revision < previous.get("binding_revision", 0):
+                    # A cancelled refresh may have committed SQL before its
+                    # live capture provider received the replacement binding.
+                    control = previous
             old = db.execute("SELECT account_incarnation FROM recommendation_policy_owners WHERE owner=?",
                              (owner["key"],)).fetchone()
             persisted = old[0] if old else None

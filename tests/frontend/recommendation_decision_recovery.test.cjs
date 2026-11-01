@@ -10,8 +10,8 @@ const decisionPrefix = 'neko.recommendation-decision.v1.';
 const dispatchRetryPrefix = 'neko.recommendation-dispatch-retry.v1.';
 const settle = async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); };
 
-function surface(t, { storage = [], respond, reportChoice, character = 'Neko' } = {}) {
-    const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost:48911/chat', runScripts: 'outside-only' });
+function surface(t, { storage = [], respond, reportChoice, dispatchClaim, character = 'Neko' } = {}) {
+    const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost:48911/chat', runScripts: 'outside-only', pretendToBeVisual: true });
     const w = dom.window, messages = new Map(), events = [], musicChoices = [], plays = [], opens = [], timers = new Map();
     let now = 100000, timerId = 0;
     const RealDate = w.Date;
@@ -24,6 +24,7 @@ function surface(t, { storage = [], respond, reportChoice, character = 'Neko' } 
     w.reactChatWindowHost = { appendMessage: m => messages.set(m.id, m), updateMessage: (id, patch) => Object.assign(messages.get(id), patch) };
     w.fetch = async (url, init) => {
         if (url.endsWith('/capture-context')) return { ok: false, status: 503, json: async () => ({ success: false }) };
+        if (url.endsWith('/dispatch')) return dispatchClaim ? await dispatchClaim() : { ok: true, json: async () => ({ success: true, dispatch_grant: true }) };
         if (url === '/api/proactive/music_card_decision') {
             const choice = JSON.parse(init.body); musicChoices.push(choice);
             return reportChoice ? await reportChoice(choice) : { ok: true, status: 200, json: async () => ({ success: true }) };
@@ -44,8 +45,8 @@ function surface(t, { storage = [], respond, reportChoice, character = 'Neko' } 
         action: { action: messages.has('music-recommendation-' + id) ? 'music_recommendation_decision' : 'proactive_recommendation_decision', payload: { recommendationId: id, kind } }
     } }));
     return { w, events, musicChoices, plays, opens, messages, timers, offer, choose,
-        offerContent: (id = 'original') => w.nekoRecommendations.offer({ id, state: 'pending', category: 'news', expires_at: 1900,
-            content: { title: id, source: 'Example', url: 'https://example.com/' + id } }),
+        offerContent: (id = 'original', extras = {}) => w.nekoRecommendations.offer({ id, state: 'pending', category: 'news', expires_at: 1900,
+            content: { title: id, source: 'Example', url: 'https://example.com/' + id }, ...extras }),
         message: (id = 'original') => messages.get('music-recommendation-' + id),
         storage: () => Array.from({ length: w.localStorage.length }, (_, i) => { const key = w.localStorage.key(i); return [key, w.localStorage.getItem(key)]; }),
         advance: async ms => { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); } await settle(); }
@@ -210,4 +211,112 @@ test('a v2 offer does not purge pending v1 business decisions', async t => {
         respond: async () => { throw Error('offline'); } });
     s.offer('v2', { offer_context: { owner_key: 'a'.repeat(64), offer_id: 'v2' } }); await settle();
     assert.equal(s.storage().length, 1); assert.deepEqual(JSON.parse(s.storage()[0][1]).event, old);
+});
+
+for (const category of ['music', 'news']) test(`restored ${category} rejection cannot become automatic acceptance while its retry fails`, async t => {
+    const event = { event_id: 'rejected-before-reload', kind: 'skipped', occurred_at: 99 };
+    let failing = true;
+    const s = surface(t, { storage: [[decisionPrefix + event.event_id, JSON.stringify({ id: 'original', event,
+        decision: true, character: 'Neko', expiresAt: 1900000 })]], respond: async next => {
+        if (next.kind === 'skipped' && failing) throw Error('rejection offline');
+        return { success: true, state: next.kind, playback_grant: true, action_grant: true };
+    } });
+    if (category === 'music') s.offer(); else s.offerContent();
+    await settle();
+    const message = s.messages.get((category === 'music' ? 'music' : 'proactive') + '-recommendation-original');
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:chat-mirror', { detail: { type: 'update', messageId: message.id,
+        patch: { blocks: [{ ...message.blocks[0], error: false, autoPlayAt: 110000 }] } } }));
+    s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', { detail: { message,
+        action: { action: category === 'music' ? 'music_recommendation_shown' : 'proactive_recommendation_shown', payload: { recommendationId: 'original' } } } }));
+    await s.advance(10000);
+    assert.equal(s.events.some(item => item.event.kind === 'accepted'), false);
+    assert.equal(s.plays.length + s.opens.length, 0);
+    failing = false; s.choose('skipped'); await settle();
+    assert.deepEqual(s.events.filter(item => item.event.kind === 'skipped').at(-1).event, event, 'explicit refusal retries its exact original event');
+    assert.equal(message.blocks[0].state, 'skipped');
+});
+
+for (const category of ['music', 'news']) test(`a restored ${category} refusal still permits a fresh explicit change of mind`, async t => {
+    const event = { event_id: 'old-refusal', kind: 'skipped', occurred_at: 99 };
+    const s = surface(t, { storage: [[decisionPrefix + event.event_id, JSON.stringify({ id: 'original', event,
+        decision: true, character: 'Neko', expiresAt: 1900000 })]], respond: async next => {
+        if (next.kind === 'skipped') throw Error('refusal retry offline');
+        return { success: true, state: next.kind, playback_grant: true, action_grant: true };
+    } });
+    if (category === 'music') s.offer(); else s.offerContent();
+    await settle(); s.choose('accepted'); await settle();
+    const accepted = s.events.find(item => item.event.kind === 'accepted').event;
+    assert.notEqual(accepted.event_id, event.event_id); assert.equal(accepted.reason, undefined);
+    assert.equal(s.plays.length + s.opens.length, 1);
+});
+
+for (const target of ['music', 'content', 'browser']) test(`recovered acceptance expiring during ${target} request cannot start its action`, async t => {
+    const event = { event_id: 'slow-restored-' + target, kind: 'accepted', occurred_at: 99 };
+    let release;
+    const s = surface(t, { storage: [[dispatchRetryPrefix + event.event_id, JSON.stringify({ id: 'original', event,
+        character: 'Neko', expiresAt: 101000 })]], respond: () => new Promise(resolve => { release = resolve; }) });
+    let popup;
+    if (target === 'browser') {
+        delete s.w.electronShell;
+        s.w.open = () => (popup = { closed: false, location: { href: '' }, close() { this.closed = true; } });
+    }
+    if (target === 'music') s.offer(); else s.offerContent();
+    s.choose('accepted'); await settle(); assert.ok(release);
+    await s.advance(1000);
+    release({ success: true, state: 'accepted', playback_grant: true, action_grant: true }); await settle();
+    assert.equal(s.plays.length + s.opens.length, 0);
+    assert.equal(s.messages.values().next().value.blocks[0].state, 'unavailable');
+    assert.equal(s.w.localStorage.getItem(dispatchRetryPrefix + event.event_id), null);
+    if (popup) { assert.equal(popup.closed, true); assert.equal(popup.location.href, ''); }
+});
+
+for (const category of ['music', 'news']) test(`recovered ${category} acceptance expiring during v2 dispatch claim cannot act`, async t => {
+    const event = { event_id: 'slow-claim-' + category, kind: 'accepted', occurred_at: 99, context: { owner_key: 'a'.repeat(64) } };
+    let release;
+    const s = surface(t, { storage: [[dispatchRetryPrefix + event.event_id, JSON.stringify({ id: 'original', event,
+        character: 'Neko', expiresAt: 101000 })]], respond: async next => ({ success: true, state: next.kind, playback_grant: true, action_grant: true }),
+        dispatchClaim: () => new Promise(resolve => { release = resolve; }) });
+    if (category === 'music') s.offer(); else s.offerContent();
+    s.choose('accepted'); await settle(); assert.ok(release, 'the accepted request reached its dispatch claim');
+    await s.advance(1000);
+    release({ ok: true, json: async () => ({ success: true, dispatch_grant: true }) }); await settle();
+    assert.equal(s.plays.length + s.opens.length, 0);
+    assert.equal(s.messages.values().next().value.blocks[0].state, 'unavailable');
+});
+
+for (const stage of ['factory', 'delayed play', 'media wait', 'already playing']) test(`restored consent expiry respects the real player's ${stage} boundary`, async t => {
+    const harness = fs.readFileSync(path.join(__dirname, 'music_player_close.test.cjs'), 'utf8');
+    const { createSurface } = new Function('require', '__dirname', harness.slice(0, harness.indexOf('\nfunction pair(')) + '\nreturn { createSurface };')(require, __dirname);
+    const s = createSurface(t, { deferInit: stage === 'factory', honorCancellation: true, mediaPending: ['media wait', 'already playing'].includes(stage) });
+    const w = s.w, messages = new Map();
+    const event = { event_id: 'slow-player-recovered', kind: 'accepted', occurred_at: 99 };
+    const expiresAt = stage === 'factory' ? 101000 : stage === 'already playing' ? 100500 : 100050;
+    w.localStorage.setItem(dispatchRetryPrefix + event.event_id, JSON.stringify({ id: 'original', event, character: 'Neko', expiresAt }));
+    w.lanlan_config = { lanlan_name: 'Neko' };
+    w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({}) };
+    w.AbortSignal.timeout = () => undefined;
+    w.reactChatWindowHost = { appendMessage: m => messages.set(m.id, m), updateMessage: (id, patch) => Object.assign(messages.get(id), patch) };
+    w.fetch = async (url, init) => ({ ok: true, status: 200, json: async () => url.endsWith('/events')
+        ? { success: true, state: JSON.parse(init.body).kind, playback_grant: true } : { success: true, domains: [] } });
+    w.dispatchMusicPlayDetailed = (track, options) => w.sendMusicMessageDetailed(track, true, options);
+    w.eval(source);
+    w.nekoMusicRecommendations.offer({ id: 'original', state: 'pending', expires_at: 1900,
+        track: { name: 'Original song', artist: 'Neko', url: 'https://music.163.com/test.mp3' } });
+    w.dispatchEvent(new w.CustomEvent('react-chat-window:action', { detail: { message: messages.values().next().value,
+        action: { action: 'music_recommendation_decision', payload: { recommendationId: 'original', kind: 'accepted' } } } }));
+    await settle(); assert.ok(s.bar(), 'real player initialization was reached before expiry');
+    if (stage === 'already playing') {
+        await s.advance(101); assert.equal(s.players[0].audio.paused, false);
+        await s.advance(1000); s.players[0].audio.dispatchEvent(new w.Event('loadedmetadata')); await settle();
+        assert.equal(s.players[0].audio.paused, false, 'expiry does not revoke audio already started within consent');
+        assert.equal(s.players[0].destroyed, false);
+        return;
+    }
+    await s.advance(stage === 'factory' ? 1000 : 101);
+    if (stage === 'factory') s.completeInit();
+    await settle();
+    assert.equal(s.players.some(player => !player.audio.paused), false, 'expired restored consent never starts audio');
+    if (stage === 'factory') assert.equal(s.players.length, 0, 'the factory predicate rejects expired consent before construction');
+    else assert.ok(s.players.every(player => player.destroyed), 'expired initialization releases its owned player');
+    assert.equal(w.isMusicPending(), false, 'expired initialization releases pending ownership');
 });
