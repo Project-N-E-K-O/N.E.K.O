@@ -647,39 +647,110 @@ def get_preferred_model_path() -> Optional[str]:
             return pref.get('model_path')
     return None
 
+_MAX_MODEL_PATH_LENGTH = 4096
+
+
+def _numeric_mapping_is_valid(
+    value: Any,
+    *,
+    required_keys: tuple = (),
+    positive_keys: tuple = (),
+) -> bool:
+    """Validate a JSON mapping of numbers (``position``, ``scale``, ...).
+
+    Only keys listed in :data:`_NUMERIC_KEYS` are treated as numbers; anything
+    else is ignored so that a future extra field cannot turn this into a false
+    rejection. Every numeric key present must be a finite JSON number, and the
+    ``positive_keys`` subset must also be strictly positive.
+    """
+    if not isinstance(value, dict):
+        return False
+    for key in required_keys:
+        if key not in value:
+            return False
+    for key, item in value.items():
+        if key not in _NUMERIC_KEYS:
+            continue
+        if not is_finite_json_number(item):
+            return False
+        if key in positive_keys and item <= 0:
+            return False
+    return True
+
+
 def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     """
     Validate that model preferences contain the required fields
-    
+
+    The numeric contract lives here, in the service, and not only in the three
+    browser clients: they all guard ``position``/``scale`` with
+    ``Number.isFinite`` while ``parameters`` values reach the file unguarded, and
+    a non-finite number is what poisoned ``user_preferences.json`` in the first
+    place (M-001).
+
     Args:
         preferences (Dict[str, Any]): model preferences to validate
-        
+
     Returns:
         bool: True when valid, False otherwise
     """
-    required_fields = ['model_path', 'position', 'scale']
-    
-    # Check required fields
-    for field in required_fields:
-        if field not in preferences:
+    if not isinstance(preferences, dict):
+        return False
+
+    model_path = preferences.get('model_path')
+    if (
+        not isinstance(model_path, str)
+        or not model_path
+        or len(model_path) > _MAX_MODEL_PATH_LENGTH
+        or '\x00' in model_path
+    ):
+        return False
+
+    # position / scale are mandatory and carry the placement of the model.
+    if not _numeric_mapping_is_valid(preferences.get('position'), required_keys=('x', 'y')):
+        return False
+    # A scale of zero or less makes the model disappear; no client produces one.
+    if not _numeric_mapping_is_valid(
+        preferences.get('scale'), required_keys=('x', 'y'), positive_keys=('x', 'y')
+    ):
+        return False
+
+    # Optional mappings: validate whatever numeric keys they carry. An explicit
+    # JSON null is treated as "absent", which is how these were always accepted.
+    for field in ('rotation', 'camera_position', 'display'):
+        if field in preferences and preferences[field] is not None and not _numeric_mapping_is_valid(preferences[field]):
             return False
-    
-    # Check that position and scale contain required subfields
-    if not isinstance(preferences.get('position'), dict) or 'x' not in preferences['position'] or 'y' not in preferences['position']:
+
+    # viewport is meaningless without both dimensions, so require them when present.
+    if (
+        'viewport' in preferences
+        and preferences['viewport'] is not None
+        and not _numeric_mapping_is_valid(
+            preferences['viewport'],
+            required_keys=('width', 'height'),
+            positive_keys=('width', 'height'),
+        )
+    ):
         return False
-    
-    if not isinstance(preferences.get('scale'), dict) or 'x' not in preferences['scale'] or 'y' not in preferences['scale']:
-        return False
-    
-    # parameters is optional, but must be a dictionary when present
-    if 'parameters' in preferences and not isinstance(preferences['parameters'], dict):
-        return False
+
+    # parameters is optional, but must be a dictionary of finite numbers when present
+    if 'parameters' in preferences:
+        parameters = preferences['parameters']
+        if not isinstance(parameters, dict):
+            return False
+        for key, value in parameters.items():
+            if (
+                not isinstance(key, str)
+                or len(key) > _PARAMETERS_MAX_KEY_LENGTH
+                or not is_finite_json_number(value)
+            ):
+                return False
 
     if 'parameters_mode' in preferences and (
         preferences['parameters_mode'] != 'replace' or 'parameters' not in preferences
     ):
         return False
-    
+
     return True
 
 def move_model_to_top(model_path: str) -> bool:

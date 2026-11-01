@@ -292,19 +292,37 @@ async def get_preferences():
 
 
 @router.post("/preferences")
-async def save_preferences(request: Request):
-    """Save user preferences."""
+async def save_preferences(request: Request, response: Response = None):
+    """Save user preferences.
+
+    Invalid input is a client error and answers 400 (M-001 / P0-2). The status is
+    set on the injected response instead of returning a ``JSONResponse`` so the
+    body keeps the historical ``{"success": false, "error": ...}`` shape and the
+    Python-level return value stays a plain dict -- in-process callers index into
+    it and should not have to learn a new type. ``response`` is optional so those
+    callers can keep invoking the handler directly.
+
+    Unexpected failures answer 500 with a fixed message: the exception is logged,
+    never echoed, because its text can carry internal paths.
+    """
+    def _set_status(code: int) -> None:
+        if response is not None:
+            response.status_code = code
+
     try:
         data = await request.json()
         if not data:
+            _set_status(400)
             return {"success": False, "error": "无效的数据"}
         
         # Validate preference data.
         if not validate_model_preferences(data):
+            _set_status(400)
             return {"success": False, "error": "偏好数据格式无效"}
         
         # Prevent reserved global conversation-setting keys from being used as model paths.
         if data.get('model_path') == GLOBAL_CONVERSATION_KEY:
+            _set_status(400)
             return {"success": False, "error": "model_path 不能使用保留键"}
         
         # Get optional parameters.
@@ -319,7 +337,8 @@ async def save_preferences(request: Request):
         # Get optional camera position for restoring VRM scroll-wheel zoom.
         camera_position = data.get('camera_position')
 
-        # Validate and clean viewport data.
+        # Re-check viewport data defensively; validate_model_preferences already
+        # rejects a malformed one with 400.
         if viewport is not None:
             if not isinstance(viewport, dict):
                 viewport = None
@@ -339,13 +358,15 @@ async def save_preferences(request: Request):
         )
         if ok:
             return {"success": True, "message": "偏好设置已保存"}
-        else:
-            return {"success": False, "error": "保存失败"}
+        _set_status(500)
+        return {"success": False, "error": "保存失败"}
             
     except MaintenanceModeError:
         raise
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception:
+        logger.exception("save_preferences: unexpected failure")
+        _set_status(500)
+        return {"success": False, "error": "保存失败，服务器内部错误"}
 
 
 @router.post("/preferences/set-preferred")
