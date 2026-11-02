@@ -51,7 +51,7 @@ Project N.E.K.O. 的文档属于产品契约的一部分。文档应靠近所描
 
 运行时 UI 的八语言同步规则是另一项独立要求，用户可见 locale key 仍必须全部同步。
 
-`docs/README_en.md`、`docs/README_ja.md` 和 `docs/README_ru.md` 是由仓库根 README 链接的翻译版，刻意不参与 VitePress 构建，不应作为文档站导航页面使用。
+仓库根 `README.MD` 是英文版 README；`docs/README_zh-CN.md`、`docs/README_ja.md` 和 `docs/README_ru.md` 是它的翻译版，`docs/README_en.md` 只负责把旧链接引回根 README。修改根 README 时须在同一改动里同步全部翻译。这些文件刻意不参与 VitePress 构建，不应作为文档站导航页面使用。
 
 `docs/zh-CN/guide/openclaw_guide*.md` 及相邻资源是由应用直接提供的多语言运行时教程。必须保持路径稳定，并继续排除在 VitePress 之外；公开的接入契约由 Agent 与插件文档维护。
 

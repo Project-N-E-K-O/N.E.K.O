@@ -6,7 +6,7 @@ cd N.E.K.O
 uv sync
 ```
 
-`uv` は Python 3.11 を選択します。Python modules/scripts/pytest/temporary commands は `uv run` 経由です。
+`uv` は Python 3.11 を選択します。Python modules/scripts/pytest/temporary commands は `uv run` 経由です。Frontend の再 build には Node.js `^22.12.0 || >=24.0.0` が必要です（両 frontend の `engines` の共通範囲。CI は Node 22）。
 
 ```powershell
 .\build_frontend.bat
@@ -16,7 +16,7 @@ uv sync
 ./build_frontend.sh
 ```
 
-Scripts は内蔵 Live2D asset（Yui Lolita / Yui Origin）を確認し、`npm ci` で Vue plugin manager を `frontend/plugin-manager/dist/`、React chat を `static/react/neko-chat/` に build します。
+Scripts は内蔵 PNGTuber pack を展開し、内蔵 Live2D asset（Yui Lolita / Yui Origin）を確認し、`npm ci` で Vue plugin manager を `frontend/plugin-manager/dist/`、React chat を `static/react/neko-chat/` に build します。
 
 Iterative work は owning frontend directory で `npm ci && npm run dev`。Plugin manager は 5173 で `VITE_BACKEND_URL` または 48916 へ proxy、React は 5174。Production React bundle は `index.html` と `chat.html` が共有します。
 

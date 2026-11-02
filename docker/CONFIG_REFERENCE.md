@@ -312,7 +312,7 @@ Agent API Key 的取法：
 
 容器内的服务以 `neko` 用户运行，运行时配置保存在数据根的 `config/` 目录。使用仓库自带的 `docker/docker-compose.yml` 时，数据根是 `/home/neko/.local/share/N.E.K.O`（由 `NEKO_STORAGE_SELECTED_ROOT` 指定）。它随 `./neko-home:/home/neko` 挂载持久化，在宿主机上对应 `./neko-home/.local/share/N.E.K.O/`。
 
-从旧版 `./N.E.K.O` + `./ssl` 双挂载升级的，先按 `README.MD`「从旧版本升级（挂载目录已变更）」迁移数据；否则容器会对着空的数据根启动，`core_config.json` 也会按环境变量重新生成。`docker/entrypoint.sh` 的 `detect_legacy_layout` / `warn_legacy_layout` 发现旧布局痕迹时会在启动日志里提示。
+从旧版 `./N.E.K.O` + `./ssl` 双挂载升级的，先按 [Docker 部署文档](https://project-neko.online/deployment/docker)「Persistent mounts」一节的迁移步骤迁移数据；否则容器会对着空的数据根启动，`core_config.json` 也会按环境变量重新生成。`docker/entrypoint.sh` 的 `detect_legacy_layout` / `warn_legacy_layout` 发现旧布局痕迹时会在启动日志里提示。
 
 ### 方式 1：环境变量（只用于生成初始的 core_config.json）
 

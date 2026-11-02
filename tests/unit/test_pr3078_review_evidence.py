@@ -1,9 +1,13 @@
 """Differential audit against PR #3078's actual base, without provider network I/O."""
 import ast
 import asyncio
+import functools
+import inspect
 import json
+import re
 import subprocess
-from types import ModuleType
+from pathlib import Path
+from types import MethodType, ModuleType
 from unittest.mock import AsyncMock
 
 import pytest
@@ -32,19 +36,81 @@ BASE = "16a48f711f6842e3fbd181c41675459bb3c025bc"
 HEAD = "52556bde9a824ad25354ad15ab3ffbff4b1ed9c4"
 
 
-def revision_method(revision, path, class_name, method_name, namespace):
-    try:
-        source = subprocess.check_output(
-            ["git", "show", f"{revision}:{path}"], encoding="utf-8"
-        )
-    except subprocess.CalledProcessError:
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def revision_source(revision, path):
+    # Only a missing commit (shallow checkout) is a legitimate skip.  A path
+    # missing from a present pinned commit is a broken audit and must fail.
+    present = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+        capture_output=True,
+    )
+    if present.returncode != 0:
         pytest.skip(f"historical revision {revision} is unavailable in this checkout")
-    tree = ast.parse(source)
+    return subprocess.check_output(
+        ["git", "show", f"{revision}:{path}"], encoding="utf-8"
+    )
+
+
+def _self_helper_refs(node, helper_names):
+    return {
+        n.attr for n in ast.walk(node)
+        if isinstance(n, ast.Attribute)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "self"
+        and n.attr in helper_names
+    }
+
+
+def revision_method(revision, path, class_name, method_name, namespace):
+    tree = ast.parse(revision_source(revision, path))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
-    method = next(n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == method_name)
+    methods = {
+        n.name: n for n in cls.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     scope = dict(namespace)
-    exec(compile(ast.Module(body=[method], type_ignores=[]), f"{revision}:{path}", "exec"), scope)
-    return scope[method_name]
+    exec(compile(ast.Module(body=[methods[method_name]], type_ignores=[]), f"{revision}:{path}", "exec"), scope)
+    target = scope[method_name]
+
+    # Same-revision helpers the historical method reaches through ``self``
+    # (transitively).  Later refactors may rename or remove them on the
+    # current class, e.g. #3204 renamed ``_remove_swap_delivered_passive_cbs``.
+    helper_names = set()
+    frontier = _self_helper_refs(methods[method_name], methods) - {method_name}
+    while frontier:
+        name = frontier.pop()
+        helper_names.add(name)
+        frontier |= _self_helper_refs(methods[name], methods) - helper_names - {method_name}
+    if not helper_names:
+        return target
+
+    def bind_missing_helpers(self):
+        for name in sorted(helper_names):
+            if hasattr(self, name):
+                continue
+            helper_scope = dict(namespace)
+            exec(compile(ast.Module(body=[methods[name]], type_ignores=[]), f"{revision}:{path}", "exec"), helper_scope)
+            helper = helper_scope[name]
+            if isinstance(helper, staticmethod):
+                setattr(self, name, helper.__func__)
+            elif isinstance(helper, classmethod):
+                setattr(self, name, MethodType(helper.__func__, type(self)))
+            else:
+                setattr(self, name, MethodType(helper, self))
+
+    if inspect.iscoroutinefunction(target):
+        @functools.wraps(target)
+        async def historical(self, *args, **kwargs):
+            bind_missing_helpers(self)
+            return await target(self, *args, **kwargs)
+    else:
+        @functools.wraps(target)
+        def historical(self, *args, **kwargs):
+            bind_missing_helpers(self)
+            return target(self, *args, **kwargs)
+    return historical
 
 
 def swap_method(revision):
@@ -160,13 +226,7 @@ async def test_original_head_pipeline_with_nr_off_already_uses_energy(sample):
 
 
 def write_legacy_profile(path):
-    try:
-        source = subprocess.check_output(
-            ["git", "show", f"{BASE}:main_logic/voice_identity_service/profile_store.py"],
-            encoding="utf-8",
-        )
-    except subprocess.CalledProcessError:
-        pytest.skip(f"historical revision {BASE} is unavailable in this checkout")
+    source = revision_source(BASE, "main_logic/voice_identity_service/profile_store.py")
     module = ModuleType("audit_base_profile_store")
     exec(compile(source, "base_profile_store.py", "exec"), vars(module))
     store = module.VoiceIdentityProfileStore(path, key_protector=_TestKeyProtector())
@@ -331,5 +391,23 @@ async def test_current_head_c9_close_failure_still_resets_swap():
     assert mgr._cleanup_pending_session_resources.await_count == 1
     assert mgr._reset_preparation_state.await_count == 1
     assert mgr.is_hot_swap_imminent is False
+
+
+def test_ci_audit_job_fetches_every_pinned_revision():
+    # Shallow shards legitimately skip the differentials above, so the
+    # dedicated CI job must fetch every pinned revision or the audit is
+    # silently skipped there too (HEAD was once re-pinned without this).
+    workflow = (REPO_ROOT / ".github" / "workflows" / "unit-test-shards.yml").read_text(encoding="utf-8")
+    marker = "  historical-review-audit:"
+    assert marker in workflow, "historical-review-audit job not found in unit-test-shards.yml"
+    job = workflow.split(marker, 1)[1].split("\n  frontend-node:", 1)[0]
+    # Strip YAML/PowerShell comments first: a ``)`` inside one would end the
+    # array match early, and a SHA inside one must not count as fetched.
+    job = "\n".join(line.split("#", 1)[0] for line in job.splitlines())
+    block = re.search(r"\$revisions\s*=\s*@\((.*?)\)", job, re.S)
+    assert block, "historical-review-audit has no $revisions list"
+    pinned = re.findall(r"'([0-9a-f]{40})'", block.group(1))
+    for revision in (BASE, HEAD):
+        assert revision in pinned, f"historical-review-audit does not fetch {revision}"
 
 pytestmark = pytest.mark.unit_fast
