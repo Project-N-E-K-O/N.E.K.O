@@ -30,7 +30,7 @@ This README is for developers. If you just want to use N.E.K.O., get it free on 
 
 ## What it is
 
-Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and gets better the longer they keep it. N.E.K.O. takes that idea into companionship. Your companion talks with you in realtime voice, sees your screen, remembers your days together, and plays games with you: she calls out the fight beside you in War Thunder or Slay the Spire 2, or takes the controls herself in Plants vs. Zombies. Under the hood is one local runtime, licensed under Apache 2.0, with realtime voice and vision, a biomimetic long-term memory, embodied avatars, proactive behavior, agent tools and a plugin SDK. Around it, a community builds plugins, forges story cards and sends companions to visit each other.
+Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and grows closer the longer they spend together. N.E.K.O. brings that idea into companionship in the broadest sense. Your companion talks with you in realtime voice, sees your screen, remembers the days you have shared, plays games with you and takes part in your social life. Under the hood is a local runtime, open-sourced under Apache 2.0, that integrates realtime voice and vision, a biomimetic long-term memory, embodied avatars, proactive behavior, agent tools and a plugin SDK. Around it, a warm community is taking shape: users write plugins, forge and share story cards, and send their companions to visit one another.
 
 ## Highlights
 
@@ -75,7 +75,7 @@ Any developer can publish with the plugin SDK and the `neko-plugin` CLI.
 
 ### Runs on
 
-| | |
+| Area | Support |
 |---|---|
 | **Models** | Mainstream Realtime APIs and ChatCompletion-compatible APIs, a free hosted route that needs no key, and local or self-hosted deployment |
 | **Voice** | Mainstream cloud TTS / ASR plus local engines (CosyVoice, GPT-SoVITS, faster-whisper), with voice cloning |
