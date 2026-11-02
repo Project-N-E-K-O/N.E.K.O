@@ -17,7 +17,7 @@
 ![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1092413003-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
-[![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
+[![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online/zh-CN/)
 [![Website](https://img.shields.io/badge/🐾_官网-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
 [![插件市场](https://img.shields.io/badge/🔌_插件市场-market.project--neko.cn-7C5CFF?style=for-the-badge)](https://market.project-neko.cn)
 [![喵宇宙社区](https://img.shields.io/badge/🃏_喵宇宙社区-community.project--neko.cn-FF8A3D?style=for-the-badge)](https://community.project-neko.cn)
