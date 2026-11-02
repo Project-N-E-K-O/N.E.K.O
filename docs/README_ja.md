@@ -182,7 +182,7 @@ uv run python launcher.py
 
 ランチャーが表示する URL（通常は `http://127.0.0.1:48911`）を開き、`/api_key` でプロバイダーを設定します。サービスを手動で個別に起動するのは診断のときだけです。詳しくは [開発環境のセットアップ](https://project-neko.online/ja/guide/dev-setup) と [ソースからの手動セットアップ](https://project-neko.online/ja/deployment/manual) を参照してください。
 
-**Docker（Linux）**：`docker/` で `env.template` を `.env` にコピーしてから `docker compose up -d` を実行します。HTTP は 48911、HTTPS は 48912 で待ち受けます。ボリューム、TLS、イメージタグ、旧マウント構成からの移行、トラブルシューティングは [Docker ガイド](https://project-neko.online/ja/deployment/docker) と [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md) を参照してください。
+**Docker（Linux）**：`docker/` で `env.template` を `.env` にコピーしてから `docker compose up -d` を実行します。既定では HTTP は 48911、HTTPS は 48912 で待ち受けます。`NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT` で変更できます。ボリューム、TLS、イメージタグ、旧マウント構成からの移行、トラブルシューティングは [Docker ガイド](https://project-neko.online/ja/deployment/docker) と [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md) を参照してください。
 
 ## ドキュメント
 
@@ -206,9 +206,9 @@ uv run python launcher.py
 
 ## テレメトリー
 
-N.E.K.O. は**匿名のトークン使用量テレメトリーをデフォルトで有効**にしています。バージョン互換性、モデル使用量の分布、エラー率の把握に使います。
+N.E.K.O. は**トークン使用量テレメトリーをデフォルトで有効**にしています。会話内容は送らず、デバイスは仮名化された ID でのみ区別します（下記参照）。バージョン互換性、モデル使用量の分布、エラー率の把握に使います。
 
-**無効にする方法**：環境変数 `DO_NOT_TRACK=1`（または `NEKO_DO_NOT_TRACK=1`）を設定すると完全に無効になります。すぐに反映され、再ビルドは不要です。
+**無効にする方法**：環境変数 `DO_NOT_TRACK=1`（または `NEKO_DO_NOT_TRACK=1`）を設定すると完全に無効になります。変数はプロセス起動時に読み込まれるため、設定後に N.E.K.O. を再起動してください。再ビルドは不要です。Docker では `docker/.env` に書き、`docker compose up -d` でコンテナを作り直します。
 
 | ✅ 収集する | ❌ 収集しない |
 | --- | --- |
@@ -217,9 +217,9 @@ N.E.K.O. は**匿名のトークン使用量テレメトリーをデフォルト
 | 呼び出し回数、エラー回数 | IP アドレス、位置情報、MAC、ハードウェアのシリアル番号 |
 | アプリのバージョン、A/B 分岐、ロケール、タイムゾーン、配布チャネル（source / release / steam） | ファイルパス、Cookie、ブラウザーフィンガープリント |
 | 仮名化されたデバイス ID（下記参照） | 個人を特定できるあらゆる情報 |
-| **Steamworks SDK が実行時に初期化でき、Steam クライアントにログインしている場合のみ**：Steam64 ユーザー ID | 上記以外のアカウント ID（GitHub / Google / OpenAI など） |
+| **リリースビルドで、Steamworks SDK が初期化でき、Steam クライアントにログインしている場合のみ**：Steam64 ユーザー ID | 上記以外のアカウント ID（GitHub / Google / OpenAI など） |
 
-> **仮名化されたデバイス ID**：ユーザー情報を含まない一方向の SHA-256 ハッシュです。
+> **仮名化されたデバイス ID**：一方向の SHA-256 ハッシュです。元の入力（マシン ID、MAC、インストールパス）は送信しません。
 > - 主経路：`SHA256(OS_machine_id ‖ namespace)`。
 > - 代替経路：`SHA256(uuid.getnode() ‖ インストールパス ‖ namespace)`。
 > - 移行期間中は新旧両方の ID を送り、サーバー側で同じデバイスとしてまとめられるようにしています。
@@ -230,13 +230,12 @@ N.E.K.O. は**匿名のトークン使用量テレメトリーをデフォルト
 >
 > **送信されるかどうかはコードで決まります**：
 > - [`app/main_server/__init__.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/main_server/__init__.py) が起動時に `initialize_steamworks()` を呼びます。
-> - [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) の `_get_telemetry_metadata()` が、SDK が使えて `Users.GetSteamID()` が 0 以外を返すときに ID を読み取ります。
-> - 配布チャネルのラベルだけでは決まりません。ソース版でも `steamworks` パッケージと `steam_appid.txt` があり、Steam クライアントにログインしていれば Steam64 が送られることがあります。
+> - [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) の `_get_telemetry_metadata()` は、リリースビルドで SDK が使えて `Users.GetSteamID()` が 0 以外を返すときだけ ID を読み取ります。
+> - ソース版からは送られません。リリースビルド以外ではこの関数が `("source", "")` を返します。Steam クライアントが起動していても同じです。
 >
 > **送りたくない場合**は、次のいずれかを行ってください。
 > 1. `DO_NOT_TRACK=1`（テレメトリー全体を無効化）；
-> 2. Steam クライアントを終了する；
-> 3. ソース版なら `steamworks` をアンインストールするか、`steam_appid.txt` を削除する。
+> 2. Steam クライアントを終了する。
 
 実装の場所：
 

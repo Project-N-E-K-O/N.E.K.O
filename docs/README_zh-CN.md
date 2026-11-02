@@ -183,7 +183,7 @@ uv run python launcher.py
 
 打开启动器输出的地址（通常是 `http://127.0.0.1:48911`），在 `/api_key` 配置服务商。手动分开启动各服务只用于排查问题。详见 [开发环境搭建](https://project-neko.online/zh-CN/guide/dev-setup) 与 [源码手动部署](https://project-neko.online/zh-CN/deployment/manual)。
 
-**Docker（Linux）**：在 `docker/` 目录下把 `env.template` 复制为 `.env`，再执行 `docker compose up -d`。服务监听 HTTP 48911 和 HTTPS 48912。数据卷、TLS、镜像标签、从旧挂载布局升级、故障排查等，见 [Docker 部署文档](https://project-neko.online/zh-CN/deployment/docker) 与 [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md)。
+**Docker（Linux）**：在 `docker/` 目录下把 `env.template` 复制为 `.env`，再执行 `docker compose up -d`。默认监听 HTTP 48911 和 HTTPS 48912，可用 `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT` 修改。数据卷、TLS、镜像标签、从旧挂载布局升级、故障排查等，见 [Docker 部署文档](https://project-neko.online/zh-CN/deployment/docker) 与 [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md)。
 
 ## 文档
 
@@ -207,9 +207,9 @@ uv run python launcher.py
 
 ## 遥测说明
 
-N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性、模型用量分布和错误率。
+N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只以假名化标识区分（见下方说明）。遥测用于跟踪版本兼容性、模型用量分布和错误率。
 
-**关闭方法**：设置环境变量 `DO_NOT_TRACK=1`（或 `NEKO_DO_NOT_TRACK=1`）即可完全禁用遥测，立即生效，无需重新构建。
+**关闭方法**：设置环境变量 `DO_NOT_TRACK=1`（或 `NEKO_DO_NOT_TRACK=1`）即可完全禁用遥测。该变量在进程启动时读取，设置后重启 N.E.K.O. 即可，无需重新构建。Docker 部署请写进 `docker/.env`，再用 `docker compose up -d` 重建容器。
 
 | ✅ 收集 | ❌ 不收集 |
 | --- | --- |
@@ -218,9 +218,9 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 | 调用次数、错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
 | 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
 | 假名化设备标识（见下方说明） | 任何能识别到个人的信息 |
-| **仅当 Steamworks SDK 在运行时初始化成功、且你已登录 Steam 客户端时**：Steam64 用户 ID | 其他任何账号体系的 ID（GitHub / Google / OpenAI 等） |
+| **仅限发行版构建，且 Steamworks SDK 初始化成功、你已登录 Steam 客户端时**：Steam64 用户 ID | 其他任何账号体系的 ID（GitHub / Google / OpenAI 等） |
 
-> **假名化设备标识**：单向 SHA-256 哈希，不含任何用户信息。
+> **假名化设备标识**：单向 SHA-256 哈希，原始输入（机器 ID、MAC、安装路径）不会上报。
 > - 主路径：`SHA256(OS_machine_id ‖ namespace)`。
 > - 回退路径：`SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`。
 > - 迁移期间新旧两个标识会同时上报，方便服务端把同一台设备的两个标识归并为一个用户。
@@ -231,13 +231,12 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 >
 > **何时上报以代码为准**：
 > - [`app/main_server/__init__.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/app/main_server/__init__.py) 启动时调用 `initialize_steamworks()`。
-> - [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) 的 `_get_telemetry_metadata()` 在 SDK 可用、且 `Users.GetSteamID()` 返回非零值时读取该 ID。
-> - 发行渠道标签本身不决定是否上报。源码安装如果装了 `steamworks` 包、保留了 `steam_appid.txt`，并且 Steam 客户端处于登录状态，同样可能上报 Steam64。
+> - [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) 的 `_get_telemetry_metadata()` 只在发行版构建中、SDK 可用且 `Users.GetSteamID()` 返回非零值时读取该 ID。
+> - 源码运行永远不会上报：非发行版构建下该函数直接返回 `("source", "")`，即使 Steam 客户端开着也一样。
 >
 > **不想上报的话**，任选一种：
 > 1. 设置 `DO_NOT_TRACK=1`（关闭全部遥测）；
-> 2. 退出 Steam 客户端；
-> 3. 源码安装可以卸载 `steamworks` 包，或删除 `steam_appid.txt`。
+> 2. 退出 Steam 客户端。
 
 实现位置：
 

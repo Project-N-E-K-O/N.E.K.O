@@ -183,7 +183,7 @@ uv run python launcher.py
 
 Open the URL the launcher prints (normally `http://127.0.0.1:48911`) and configure providers at `/api_key`. Splitting services by hand is only for diagnostics. See [Development Setup](https://project-neko.online/guide/dev-setup) and [Manual Source Setup](https://project-neko.online/deployment/manual).
 
-**Docker (Linux)**: in `docker/`, copy `env.template` to `.env`, then run `docker compose up -d`. The service listens on HTTP 48911 and HTTPS 48912. For volumes, TLS, image tags, upgrading from the old mount layout and troubleshooting, see the [Docker guide](https://project-neko.online/deployment/docker) and [`docker/README_Docker.md`](docker/README_Docker.md).
+**Docker (Linux)**: in `docker/`, copy `env.template` to `.env`, then run `docker compose up -d`. By default it listens on HTTP 48911 and HTTPS 48912; override them with `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT`. For volumes, TLS, image tags, upgrading from the old mount layout and troubleshooting, see the [Docker guide](https://project-neko.online/deployment/docker) and [`docker/README_Docker.md`](docker/README_Docker.md).
 
 ## Documentation
 
@@ -207,9 +207,9 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Repository rules for AI-assisted 
 
 ## Telemetry
 
-N.E.K.O. **enables anonymous token-usage telemetry by default**. It is used to track version compatibility, model-usage distribution and error rates.
+N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation content and identifies a device only by a pseudonymous ID (see below). It is used to track version compatibility, model-usage distribution and error rates.
 
-**Opt out**: set `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is then fully disabled, takes effect immediately, and needs no rebuild.
+**Opt out**: set `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is then fully disabled. The variable is read when a process starts, so restart N.E.K.O. after setting it; no rebuild is needed. With Docker, add it to `docker/.env` and recreate the container with `docker compose up -d`.
 
 | ✅ Collected | ❌ Not collected |
 | --- | --- |
@@ -218,9 +218,9 @@ N.E.K.O. **enables anonymous token-usage telemetry by default**. It is used to t
 | Call and error counts | IP address, location, MAC, hardware serials |
 | App version, A/B branch, locale, time zone, distribution channel (source / release / steam) | File paths, cookies, browser fingerprints |
 | Pseudonymous device ID (see note below) | Any PII that can identify a person |
-| **Only when the Steamworks SDK initializes at runtime and you are logged in to the Steam client**: your Steam64 user ID | Any other account ID (GitHub / Google / OpenAI, etc.) |
+| **Only in release builds, when the Steamworks SDK initializes and you are logged in to the Steam client**: your Steam64 user ID | Any other account ID (GitHub / Google / OpenAI, etc.) |
 
-> **Pseudonymous device ID**: a one-way SHA-256 hash that contains no user information.
+> **Pseudonymous device ID**: a one-way SHA-256 hash. The raw inputs (machine ID, MAC, install path) are never sent.
 > - Primary path: `SHA256(OS_machine_id ‖ namespace)`.
 > - Fallback path: `SHA256(uuid.getnode() ‖ install path ‖ namespace)`.
 > - During migration both the new and the old ID are sent, so the server can merge them into one user cohort.
@@ -231,13 +231,12 @@ N.E.K.O. **enables anonymous token-usage telemetry by default**. It is used to t
 >
 > **The code decides when it is sent**:
 > - [`app/main_server/__init__.py`](app/main_server/__init__.py) calls `initialize_steamworks()` at startup.
-> - `_get_telemetry_metadata()` in [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) reads the ID when the SDK is available and `Users.GetSteamID()` returns a non-zero value.
-> - The distribution label alone does not decide it. A source install can send Steam64 too if the `steamworks` package and `steam_appid.txt` are present and the Steam client is logged in.
+> - `_get_telemetry_metadata()` in [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) reads the ID only in a release build, when the SDK is available and `Users.GetSteamID()` returns a non-zero value.
+> - Source runs never send it: for any non-release build the function returns `("source", "")`, even with the Steam client open.
 >
 > **To prevent it**, use any of:
 > 1. `DO_NOT_TRACK=1` (disables all telemetry);
-> 2. quit the Steam client;
-> 3. on source installs, uninstall `steamworks` or remove `steam_appid.txt`.
+> 2. quit the Steam client.
 
 Implementation:
 
