@@ -54,7 +54,7 @@ OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己�
 <details open>
 <summary><b>实时对话</b></summary>
 
-- **实时语音**：走 Realtime API（OpenAI 协议与 Gemini 两套）；不可用时回退到基于标准 ChatCompletion 的文本模式。
+- **实时语音**：走 Realtime API（OpenAI 协议与 Gemini 两套）。文字聊天是另一种独立模式，基于标准 ChatCompletion；语音会话启动失败时会报错，不会自动切换到文字模式。
 - **屏幕与窗口理解**：由专用视觉模型完成。
 - **语音栈**：
   - 15 个 TTS 后端、8 个 ASR 后端；

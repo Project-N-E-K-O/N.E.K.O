@@ -53,7 +53,7 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
 <details open>
 <summary><b>リアルタイム会話</b></summary>
 
-- **リアルタイム音声**：Realtime API（OpenAI プロトコルと Gemini の 2 系統）で動作し、使えない場合は標準 ChatCompletion を使うテキストモードに切り替わります。
+- **リアルタイム音声**：Realtime API（OpenAI プロトコルと Gemini の 2 系統）で動作します。テキストチャットは標準 ChatCompletion を使う別のモードで、音声セッションの開始に失敗した場合はエラーを報告し、自動ではテキストモードに切り替わりません。
 - **画面とウィンドウの理解**：専用の視覚モデルが担当します。
 - **音声スタック**：
   - TTS バックエンド 15 種、ASR バックエンド 8 種；

@@ -54,7 +54,7 @@ The core runs locally and is licensed under Apache 2.0.
 <details open>
 <summary><b>Realtime conversation</b></summary>
 
-- **Realtime voice** over Realtime APIs (OpenAI-protocol and Gemini profiles). It falls back to a text mode built on standard ChatCompletion.
+- **Realtime voice** over Realtime APIs (OpenAI-protocol and Gemini profiles). Text chat is a separate mode built on standard ChatCompletion; a failed voice session reports an error rather than switching modes on its own.
 - **Screen and window understanding** through a dedicated vision model.
 - **Voice stack**:
   - 15 TTS backends and 8 ASR backends;
