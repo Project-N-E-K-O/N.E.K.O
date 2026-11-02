@@ -90,8 +90,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          # No filter: blob:none here. A partial clone lazily fetches any
+          # missing commit too, so the audit would also reach revisions the
+          # step below never fetched — tests that skip today would start running.
           fetch-depth: 0
-          filter: blob:none
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
