@@ -56,7 +56,7 @@ Personal agents such as OpenClaw showed that people want an AI of their own: one
 
 | Plugin | What it adds |
 |---|---|
-| **War Thunder Catgirl Copilot** | Reads the game's local telemetry and turns it into battle callouts and company |
+| **War Thunder Catgirl Copilot** | Reads the game's local telemetry and turns it into battle callouts and commentary |
 | **Slay the Spire 2 Companion** | Overlays her live commentary on the game as scrolling comments, rates each turn's risk and suggests plays; auto-play is optional |
 | **PVZ Agent** | She plays Plants vs. Zombies herself: watches the board, says her plan out loud and makes the moves, and you can steer her |
 | **Strinova Companion** | Plays Strinova alongside you with voice callouts, starting and stopping with the game |
