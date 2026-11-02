@@ -307,13 +307,32 @@ const report = {};
       reads: h.fetches.filter((x) => x.url.startsWith('/api/community/')).length,
       pollTimers: h.timers.filter((t) => t.every === 5000).length });
   }
-  {
-    const h = createHarness({ social: null, routes: {
-      '/api/community/visit-invitations': async () => ({ status: 200, body: {} }),
-    } });
-    h.chat.applyState({ enabled: true, active: false }); h.advance(20000); await h.settle();
-    await h.chat.presentDirectInvitation({ id: 'browser', visit_id: VID });
-    report.browser_invitation_reads = h.fetches.filter((x) => x.url.includes('visit-invitations') || x.url.includes('/direct/')).length;
+  report.invitation_without_preload = [];
+  for (const mode of [{ name: 'web', pathname: '/' },
+      { name: 'chat', pathname: '/chat', multiWindow: true },
+      { name: 'chat_full', pathname: '/chat_full', multiWindow: true },
+      { name: 'pet', pathname: '/', multiWindow: true }]) {
+    for (const decision of ['accept', 'decline']) {
+      const incoming = { id: 'browser', visit_id: VID, expires_at: 9e9 };
+      const h = createHarness(Object.assign({}, mode, { social: null, routes: {
+        '/api/community/visit-invitations': async () => ({ status: 200, body: {
+          incoming_invite: incoming, incoming_invite_ids: ['browser'], notifications_ok: true,
+        } }),
+        ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID } }),
+        ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Question' } }),
+        ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
+        ['/api/visit/rooms/' + VID + '/join-direct']: async () => ({ status: 202, body: {} }),
+        '/api/community/visit-invitations/browser/respond': async () => ({ status: 200, body: {} }),
+      } }));
+      h.chat.applyState({ enabled: true, active: false });
+      h.advance(500); await h.settle(); h.advance(4500); await h.settle();
+      h.I.handleVisitBarAction('direct_' + decision); await h.settle();
+      report.invitation_without_preload.push({ mode: mode.name, decision,
+        reads: h.fetches.filter((x) => x.url === '/api/community/visit-invitations').length,
+        deliveries: h.fetches.filter((x) => x.url.endsWith('/deliver-question')).length,
+        joins: h.fetches.filter((x) => x.url.endsWith('/join-direct')).length,
+        responses: h.fetches.filter((x) => x.url.endsWith('/respond')).map((x) => ({ method: x.method, body: x.body })) });
+    }
   }
   // The chat window is the only compact read owner for invitation pushes.
   report.invitation_push_windows = [];
@@ -2103,7 +2122,18 @@ def test_realtime_pages_use_owner_once_and_have_no_invitation_poll_over_ten_minu
         {"pathname": "/chat", "claims": 1, "begun": 1, "completed": 1, "reads": 0, "pollTimers": 0},
         {"pathname": "/chat_full", "claims": 1, "begun": 1, "completed": 1, "reads": 0, "pollTimers": 0},
     ]
-    assert report["browser_invitation_reads"] == 0
+
+
+def test_invitation_without_preload_keeps_http_poll_presentation_and_decisions(report):
+    assert len(report["invitation_without_preload"]) == 8
+    for case in report["invitation_without_preload"]:
+        ui = case["mode"] != "pet"
+        assert case["reads"] == (2 if ui else 0), case
+        assert case["deliveries"] == (1 if ui else 0), case
+        assert case["joins"] == int(ui and case["decision"] == "accept"), case
+        assert case["responses"] == ([{"method": "POST", "body": {
+            "accepted": case["decision"] == "accept",
+        }}] if ui else []), case
 
 
 def test_realtime_question_failures_and_connect_invalid_keep_delivery_and_cloud_decisions_separate(report):

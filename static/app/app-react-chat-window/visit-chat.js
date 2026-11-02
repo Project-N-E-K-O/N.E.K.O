@@ -2275,7 +2275,7 @@
         incoming = incoming && typeof incoming === 'object' ? incoming : {};
         var visitId = String(incoming.visit_id || incoming.visitId || '');
         var notificationId = String(incoming.notification_id || incoming.id || '');
-        if (!window.nekoSocial || !isUiWindow() || !releaseEnabled || !userSwitchOn()
+        if (!isUiWindow() || !releaseEnabled || !userSwitchOn()
                 || !VISIT_ID_RE.test(visitId) || !notificationId) return false;
         if (resolvedDirectInvitationIds.has(notificationId)) {
             await markDirectInviteRead(notificationId);
@@ -2360,7 +2360,7 @@
     async function pollDirectInvitations() {
         if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) return reconcileRealtimeInvitations();
         if (!invitationBridgeReady) return false;
-        if (!window.nekoSocial || !isUiWindow() || !releaseEnabled || !userSwitchOn() || directInvitationPollInFlight) return false;
+        if (!isUiWindow() || !releaseEnabled || !userSwitchOn() || directInvitationPollInFlight) return false;
         directInvitationPollInFlight = true;
         try {
             var result = await api('GET', '/api/community/visit-invitations');
