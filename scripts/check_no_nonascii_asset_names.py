@@ -700,15 +700,31 @@ def _baseline_growth(repo_root: Path, base_ref: str) -> list[str]:
     reference = merge_base.stdout.decode().strip()
 
     rel = BASELINE_PATH.relative_to(repo_root).as_posix()
+    # Resolving the path only needs trees, so it answers "does the merge base
+    # carry a baseline" even in a blobless (--filter=blob:none) CI clone.
+    if subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{reference}:{rel}"],
+        cwd=repo_root,
+        capture_output=True,
+    ).returncode != 0:
+        # The ref is good but carries no baseline: first landing of this check.
+        # Nothing to compare; the in-tree check still runs.
+        return []
     completed = subprocess.run(
         ["git", "show", f"{reference}:{rel}"],
         cwd=repo_root,
         capture_output=True,
     )
     if completed.returncode != 0:
-        # The ref is good but carries no baseline: first landing of this check.
-        # Nothing to compare; the in-tree check still runs.
-        return []
+        # The baseline exists but its content could not be read — in a blobless
+        # clone, a failed lazy fetch. Treating that as "no baseline" would let
+        # growth through unchecked.
+        print(
+            f"error: could not read {rel} at the merge base {reference}:\n"
+            + completed.stderr.decode("utf-8", errors="replace"),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
     before = {
         line.strip()
