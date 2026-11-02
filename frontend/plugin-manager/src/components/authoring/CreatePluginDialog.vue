@@ -171,7 +171,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { FolderOpened } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import { authoringEntry } from '@/fixtures/authoring'
+import { authoringEntry } from '@/utils/authoringEntry'
 import {
   createPluginProject,
   previewPluginProject,

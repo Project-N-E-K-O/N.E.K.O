@@ -164,7 +164,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { useResizeObserver } from '@vueuse/core'
 import { ElMessage, type TabsInstance } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
@@ -173,11 +173,7 @@ import { ArrowLeft, Box, EditPen, Plus, Reading } from '@element-plus/icons-vue'
 import MotionTransition from '@/motion/MotionTransition.vue'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vue'
-import AuthoringOverview from '@/components/authoring/AuthoringOverview.vue'
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
-import AuthoringRuntime from '@/components/authoring/AuthoringRuntime.vue'
-import AuthoringChecks from '@/components/authoring/AuthoringChecks.vue'
-import AuthoringDelivery from '@/components/authoring/AuthoringDelivery.vue'
 import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
 import CreatePluginDialog from '@/components/authoring/CreatePluginDialog.vue'
 import { usePluginAuthoring } from '@/composables/usePluginAuthoring'
@@ -192,6 +188,19 @@ import type {
 } from '@/types/authoring'
 
 const { t, locale } = useI18n()
+// Simulated project tabs are only reachable for development-only sample projects.
+const AuthoringOverview = defineAsyncComponent(
+  () => import('@/components/authoring/AuthoringOverview.vue')
+)
+const AuthoringRuntime = defineAsyncComponent(
+  () => import('@/components/authoring/AuthoringRuntime.vue')
+)
+const AuthoringChecks = defineAsyncComponent(
+  () => import('@/components/authoring/AuthoringChecks.vue')
+)
+const AuthoringDelivery = defineAsyncComponent(
+  () => import('@/components/authoring/AuthoringDelivery.vue')
+)
 const router = useRouter()
 const route = useRoute()
 const {

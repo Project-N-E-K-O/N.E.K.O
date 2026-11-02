@@ -7,9 +7,12 @@ import type {
   AuthoringProjectDraft,
 } from '@/types/authoring'
 
-/** Local interaction model for the authoring preview. No API or runtime store dependencies. */
+/**
+ * Local interaction model for the authoring preview. No API or runtime store dependencies.
+ * Its sample projects and simulated operations are development-only; production builds start empty.
+ */
 export function usePluginAuthoring() {
-  const projects = ref(createAuthoringFixtures())
+  const projects = ref(import.meta.env.DEV ? createAuthoringFixtures() : [])
   const pending = ref<{ projectId: string; operation: AuthoringOperation } | null>(null)
   let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -118,6 +121,7 @@ export function usePluginAuthoring() {
 
   function addProject(draft: AuthoringProjectDraft) {
     if (
+      !import.meta.env.DEV ||
       pending.value ||
       !/^[a-z][a-z0-9_]*$/.test(draft.id) ||
       projects.value.some((project) => project.id === draft.id)

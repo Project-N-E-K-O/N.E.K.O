@@ -79,7 +79,7 @@ class DirectoryRequest(BaseModel):
 
 @router.post("/open-directory")
 async def open_project_directory(body: DirectoryRequest):
-    from utils.directory_picker import DirectoryOpenError, open_directory
+    from utils.directory_opener import DirectoryOpenError, open_directory
 
     path = Path(body.path).expanduser()
     if not path.is_absolute():
