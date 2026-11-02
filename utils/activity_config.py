@@ -132,7 +132,7 @@ _VALID_GENRES = frozenset({
 #     state_machine's private-locked semantics only apply to static-DB
 #     hits, so the override would never actually trigger the privacy
 #     bypass. Reject at load time so the asymmetry doesn't surprise.
-#   * ``own_app`` — same reasoning. The catgirl-app exclusion is a
+#   * ``own_app`` — same reasoning. The neko-app exclusion is a
 #     codebase invariant, not a user setting.
 _VALID_CATEGORIES = frozenset({
     'gaming', 'work', 'entertainment', 'communication',

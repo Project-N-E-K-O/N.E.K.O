@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit HTTP / WebSocket routers (docs/design/visit-infrastructure.md §4.6, §5 PR-07 / PR-08 / PR-09a).
+"""Neko visit HTTP / WebSocket routers (docs/design/visit-infrastructure.md §4.6, §5 PR-07 / PR-08 / PR-09a).
 
 Sub-modules declare ``APIRouter()`` without a prefix and decorate RELATIVE
 paths; :data:`router` (``prefix='/api/visit'``) includes them. Two groups:

@@ -2054,7 +2054,7 @@ class DirectTaskExecutor:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
-        # Format conversation. On proactive turns, set LATEST_USER_REQUEST to the catgirl's latest proactive
+        # Format conversation. On proactive turns, set LATEST_USER_REQUEST to the neko's latest proactive
         # line, not the previous user request, so unified and plugin assessment both evaluate proactive intent;
         # both read intent from conversation's LATEST_USER_REQUEST.
         conversation = self._format_messages(messages, proactive=proactive)
@@ -2117,7 +2117,7 @@ class DirectTaskExecutor:
 
         # -- Early magic-command interception, openclaw/qwenpaw only. --
         if proactive:
-            # Proactive turns derive intent from the catgirl's latest proactive line already stored in latest_user_request /
+            # Proactive turns derive intent from the neko's latest proactive line already stored in latest_user_request /
             # conversation LATEST_USER_REQUEST, without user attachments. Never classify the stale user message
             # still in the window, or old magic commands replay and OpenClaw dispatches old user text
             # rather than proactive intent.

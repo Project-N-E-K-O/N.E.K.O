@@ -278,7 +278,7 @@ def test_approve_whitelist_content_is_pinned():
 @pytest.mark.parametrize(
     "text",
     [
-        # Bare acknowledgments match only the exact full clause: even trimming either end is forbidden, or the catgirl's own stock phrase
+        # Bare acknowledgments match only the exact full clause: even trimming either end is forbidden, or the neko's own stock phrase
         # 「没问题喵~」during proactive conversation would approve itself. These all yielded None before the refactor and must remain so.
         "没问题喵~", "没问题喵！", "沒問題喔", "同意~", "我同意喵", "没问题啦",
         "沒問題囉", "同意啦", "不如同意", "那就同意", "马上同意", "同意了",

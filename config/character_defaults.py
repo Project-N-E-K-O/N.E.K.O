@@ -304,7 +304,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
         localized_master[key] = translate_value(value)
     result['主人'] = localized_master
 
-    # Localize the catgirl template
+    # Localize the neko template
     catgirl_data = deepcopy(DEFAULT_LANLAN_TEMPLATE)
     localized_catgirl = {}
     for char_name, char_config in catgirl_data.items():

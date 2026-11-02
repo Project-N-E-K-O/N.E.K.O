@@ -1694,7 +1694,7 @@ async def game_chat(game_type: str, request: Request):
         event: dict      — game event (format defined by the frontend, passed through to the LLM)
 
     Response:
-        line: str        — catgirl line
+        line: str        — neko line
         control: dict    — optional game control instructions (mood, difficulty)
     """
     try:

@@ -55,7 +55,7 @@ def _load_character_profile(
     config_manager: Any | None,
     lanlan_name: str,
 ) -> str:
-    """Read only the current server-side catgirl's short persona summary."""  # noqa: DOCSTRING_CJK
+    """Read only the current server-side neko's short persona summary."""  # noqa: DOCSTRING_CJK
     root = getattr(config_manager, "app_docs_dir", None) if config_manager is not None else None
     if not root or not lanlan_name:
         return ""
@@ -66,7 +66,7 @@ def _load_character_profile(
         return ""
     catgirls = characters.get("猫娘") if isinstance(characters, dict) else None
     current_name = str(characters.get("当前猫娘") or "").strip() if isinstance(characters, dict) else ""
-    # Request parameters must not read other catgirls' personas; Numeric v2 remains bound to the current user's character.
+    # Request parameters must not read other nekos' personas; Numeric v2 remains bound to the current user's character.
     if not isinstance(catgirls, dict) or name != current_name or name not in catgirls:
         return ""
     if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
@@ -101,7 +101,7 @@ def _load_player_address(
     *,
     characters: Any | None = None,
 ) -> str:
-    """Read the current catgirl's structured form of address for the player."""  # noqa: DOCSTRING_CJK
+    """Read the current neko's structured form of address for the player."""  # noqa: DOCSTRING_CJK
     # Callers that already hold a characters snapshot pass it in, so one
     # request does not pay a second stat + deepcopy of the whole config.
     if characters is None:

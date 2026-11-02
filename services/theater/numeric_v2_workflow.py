@@ -168,7 +168,7 @@ def _review_denies_narration_only_offer(
     The Guard reports ``offer_kind=exit_mention_only`` when its verified offer quote
     merely shows where the exit is and nobody invites the player. ``failure_reason``
     is diagnostic prose and is never parsed here: an absent or unknown kind keeps the
-    offer flag (fail closed), and a quote the catgirl speaks in dialogue never clears.
+    offer flag (fail closed), and a quote the neko speaks in dialogue never clears.
     """
 
     if (
@@ -3194,7 +3194,7 @@ async def _execute_numeric_v2_turn(
     commit_started_at = time.monotonic()
     try:
         async with character_config_mutation_lock:
-            # Character card may change during model call; successful output cannot commit to another catgirl's recovery slot.
+            # Character card may change during model call; successful output cannot commit to another neko's recovery slot.
             display_binding = ensure_current_binding(current.session)
             current_profile = actor._character_profile()
             same_display_name = str(display_binding.get("catgirl_name") or "") == str(

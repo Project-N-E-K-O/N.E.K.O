@@ -2853,7 +2853,7 @@ def test_every_join_starts_without_stale_peer_presence():
     assert out is False
 
 
-# -- Catgirl voice (OD-15 v4) --
+# -- Neko voice (OD-15 v4) --
 
 
 def test_voice_is_ignored_unless_the_credentials_open_the_gate():

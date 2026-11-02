@@ -489,7 +489,7 @@ Requirements:
 - Each key maps to an array of 2-4 short lines.
 - Each line must be very short.
 - Lines should sound like you playing with the player, not like system narration.
-- Catgirl tone, teasing, shyness, stubbornness, affection, and playful rivalry are allowed if they fit the character.
+- Neko tone, teasing, shyness, stubbornness, affection, and playful rivalry are allowed if they fit the character.
 - Do not include control JSON, difficulty, mood, or reason.
 
 Each required key has 2 examples showing the matching event and tone; write your own in-character lines and do not copy the examples.

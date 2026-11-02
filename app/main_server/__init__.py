@@ -1155,7 +1155,7 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             if _game_cleanup_task is None or _game_cleanup_task.done():
                 _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
-            # Catgirl visits: timed sweep and startup backfill for transcript uploads, crashed chips, digests, and summaries.
+            # Neko visits: timed sweep and startup backfill for transcript uploads, crashed chips, digests, and summaries.
             # Schedule both with create_task without awaiting on startup.
             try:
                 from main_routers.visit_router.background import start_visit_background_tasks

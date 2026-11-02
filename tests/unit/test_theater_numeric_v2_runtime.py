@@ -2077,7 +2077,7 @@ async def test_numeric_v2_preserves_one_session_per_story_and_catgirl(tmp_path):
     assert (await runtime.restore_story_session(_binding())).session.session_id == lan.session.session_id
     assert (await runtime.restore_story_session(other_binding)).session.session_id == mio.session.session_id
 
-    # Replace only the current catgirl's recovery slot; the other catgirl's Session must remain unchanged.
+    # Replace only the current neko's recovery slot; the other neko's Session must remain unchanged.
     restarted_lan = await runtime.replace_active_session(
         previous_session_id=lan.session.session_id,
         session_id="runtime_lan_restarted",
