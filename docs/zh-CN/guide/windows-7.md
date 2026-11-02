@@ -18,7 +18,7 @@ Windows 7 **不是官方支持的平台**。项目正常要求 Windows 8.1+（Py
 | Web 浏览器访问（`http://localhost:48911`） | ✅ 预期可用 | 请用 Chrome 109 或 Firefox 115 ESR |
 | 依赖安装 `setup_win7.bat` | ✅ 设计目标 | 纯 `pip`，不依赖 uv / Node |
 | 内置 Live2D / PNGTuber 模型 | ✅ 脚本自动解包 | `setup_win7.bat` 用 Python 标准库解包，不需要 `tar` / uv |
-| 聊天窗口、插件管理页（Node 构建产物） | ⚠️ 需在其他系统构建后拷贝 | 仓库不含这两份构建产物，项目要求的 Node.js 版本不支持 Win7，见[第三步](#第三步-拷贝前端构建产物) |
+| 聊天窗口、插件管理页（Node 构建产物） | ⚠️ 需在其他系统构建后拷贝 | 仓库不含这两份构建产物，项目要求的 Node.js 版本不支持 Win7，见[第三步](#copy-frontend-builds) |
 | Electron 桌面端（`N.E.K.O.exe`） | ❌ 不可用 | Electron 41 基于 Chromium 14x，要求 Windows 10+ |
 | `uv` 包管理 | ❌ 不可用 | uv 官方最低 Windows 10；请用 pip |
 | Playwright 浏览器自动化 | ❌ 不可用 | 浏览器内核不再支持 Win7 |
@@ -82,6 +82,8 @@ python -m venv .venv
 不要执行 `uv sync` / `uv run`——uv 不支持 Windows 7。
 :::
 
+<a id="copy-frontend-builds"></a>
+
 ## 第三步：拷贝前端构建产物
 
 聊天窗口和插件管理页需要 Node.js 构建，产物没有放进仓库，而项目要求的 Node.js 版本不支持 Win7。请在另一台 Windows 10+ / macOS / Linux 机器上：
@@ -131,7 +133,7 @@ Win7 上最后一代可用浏览器：**Chrome 109**（最终版）、**Firefox 
 | `python -m venv` 报错 | 确认用的是 Win7 构建的 3.11，且已装 VC++ 2015-2022 运行库 |
 | `setup_win7.bat` 提示已有 `.venv` 不可用 | `.venv` 是别的 Python 版本建的或从别的机器拷来的，删掉 `.venv` 文件夹后重跑 |
 | 启动即报 `os.add_dll_directory` 相关的 `OSError` | 没装 KB2533623 / KB3063858，见前置条件 |
-| 主页没有聊天窗口，或 `setup_win7.bat` 提示前端构建产物缺失 | 见[第三步](#第三步-拷贝前端构建产物) |
+| 主页没有聊天窗口，或 `setup_win7.bat` 提示前端构建产物缺失 | 见[第三步](#copy-frontend-builds) |
 | 端口被占用 | 见 [安装渠道](./install-options) 与启动日志中的端口提示 |
 | 中文路径乱码 / 崩溃 | 启动器已自动处理 UTF-8；如仍异常，手动设 `PYTHONUTF8=1` 后重试 |
 
