@@ -193,7 +193,7 @@ class FactsMixin:
                         # Scoped input bodies stay out of ordinary Memory logs, matching scoped
                         # extraction/persistence redaction rules; record lengths only.
                         logger.info(
-                            f"[Persona] {name}: scoped 新条目与角色卡矛盾，"
+                            f"[Persona] {name}: scoped/常驻区新条目与角色卡矛盾，"
                             f"无条件拒绝: card_len={len(old_text)} "
                             f"new_len={len(text)}"
                         )
@@ -403,6 +403,24 @@ class FactsMixin:
             ))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
+
+    async def acontradicts_character_card(self, name: str, text: str) -> bool:
+        """Whether ``text`` contradicts a protected character-card entry.
+
+        The card half of ``aadd_fact``'s contradiction check, for stores whose
+        entries live outside persona.json (memory/pinned_facts.py). Like the
+        scoped branch there it scans every card entry, whatever section holds
+        it, and the rejection log line records lengths only.
+        """
+        persona = await self.aensure_persona(name)
+        card_facts = self._collect_card_facts(persona)
+        if not card_facts:
+            return False
+        stop_names = await self._aget_entity_stop_names(name)
+        code, _ = self._evaluate_fact_contradiction(
+            name, text, card_facts, stop_names, redact_text=True,
+        )
+        return code == self.FACT_REJECTED_CARD
 
     @staticmethod
     def _find_entry_in_section(section_facts: list, entry_id: str) -> dict | None:

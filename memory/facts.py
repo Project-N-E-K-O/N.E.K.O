@@ -333,6 +333,41 @@ class FactStore:
         """
         self._dedup_resolver = resolver
 
+    # Pinned-fact section (memory/pinned_facts.py). Without one, the ``pin``
+    # fields of Stage-1 output are simply not read.
+    _pinned_fact_store = None
+
+    def attach_pinned_fact_store(self, store) -> None:
+        """Wire the pinned-fact section that private-chat Stage-1 results feed.
+
+        Set by the memory runtime next to ``attach_dedup_resolver``; the
+        store needs the persona manager for its character-card check, which
+        the FactStore does not hold.
+        """
+        self._pinned_fact_store = store
+
+    async def _aadmit_pinned_candidates(
+        self, lanlan_name: str, extracted, *, default_source: str = 'user_observation',
+    ) -> None:
+        """Offer one private-chat Stage-1 result to the pinned-fact section.
+
+        Best-effort and called only after the facts themselves persisted: a
+        failure here leaves the ordinary pipeline untouched, and the fact still
+        reaches the prompt the slow way.
+        """
+        store = self._pinned_fact_store
+        if store is None or not extracted:
+            return
+        try:
+            await store.aadmit_extracted(
+                lanlan_name, extracted, default_source=default_source,
+            )
+        except Exception as e:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: pinned-fact admission failed: "
+                f"{type(e).__name__}"
+            )
+
     def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
         self._time_indexed = time_indexed_memory
@@ -4864,6 +4899,9 @@ class FactStore:
         # Persist newly extracted facts with signal_processed=False.
         # Even zero new facts still drains previous unprocessed tail below.
         persisted_this_round = await self._apersist_new_facts(lanlan_name, extracted)
+        # The raw result, not the persisted rows: a fact that dedup folded into
+        # an existing one still has to renew its pinned entry.
+        await self._aadmit_pinned_candidates(lanlan_name, extracted)
 
         # Drain all signal_processed=False facts (historical tail + current additions).
         # Old facts lacking this field default True, avoiding months of historical facts
@@ -5029,12 +5067,17 @@ class FactStore:
                 )
         if not extracted:
             return []
-        return await self._apersist_new_facts(
+        created = await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
             expected_subject_generation=expected_subject_generation,
             reconciled_facts=reconciled_facts,
         )
+        if memory_subject is None:
+            # Private chat only: the pinned section renders into the private
+            # prompt, so scoped (group / member) content must never enter it.
+            await self._aadmit_pinned_candidates(lanlan_name, extracted)
+        return created
 
     # ── external import state (sidecar) ──────────────────────────────
 
@@ -5712,9 +5755,16 @@ class FactStore:
             return None
         if not extracted:
             return []
-        return await self._apersist_new_facts(
+        persisted = await self._apersist_new_facts(
             lanlan_name, extracted, default_source='ai_disclosure', subject=subject,
         )
+        if coerce_subject(subject) is None:
+            # Same private-only rule and source default as the persistence above:
+            # a fact without an explicit user_observation source is never pinned.
+            await self._aadmit_pinned_candidates(
+                lanlan_name, extracted, default_source='ai_disclosure',
+            )
+        return persisted
 
     async def _allm_extract_facts_with_known_pool(
         self,
