@@ -399,12 +399,16 @@ class PromotionMergeMixin:
         # near-duplicates that merge_into exists to catch.
         from config import PERSONA_MERGE_POOL_MAX_TOKENS
         from utils.tokenize import count_tokens, take_lines_within_token_budget
-        # take_lines_within_token_budget always keeps its first line, so a
-        # leading row that alone exceeds the budget would slip past it. Skip
-        # such rows rather than truncate them: merge_into rewrites its target
-        # from the text shown here, and a cut-off copy would drop the rest.
-        while pool_lines and count_tokens(pool_lines[0]) > PERSONA_MERGE_POOL_MAX_TOKENS:
-            pool_lines.pop(0)
+        # A row that alone exceeds the budget is dropped wherever it ranks:
+        # first, take_lines_within_token_budget would keep it past the budget;
+        # further down, its prefix cut would stop there and hide every
+        # smaller row behind it. Drop rather than truncate: merge_into
+        # rewrites its target from the text shown here, and a cut-off copy
+        # would lose the rest.
+        pool_lines = [
+            line for line in pool_lines
+            if count_tokens(line) <= PERSONA_MERGE_POOL_MAX_TOKENS
+        ]
         pool_lines, _dropped = take_lines_within_token_budget(
             pool_lines, PERSONA_MERGE_POOL_MAX_TOKENS,
         )

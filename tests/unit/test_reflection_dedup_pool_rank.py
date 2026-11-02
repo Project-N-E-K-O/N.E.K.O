@@ -220,13 +220,16 @@ async def test_promotion_pool_keeps_newest_similar_entry_under_budget(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_promotion_pool_skips_a_row_larger_than_the_whole_budget(tmp_path):
-    """No truncated copy: merge_into would rewrite the target from it."""
+@pytest.mark.parametrize("giant_rein", [9.0, 0.5], ids=["ranked_first", "ranked_middle"])
+async def test_promotion_pool_skips_a_row_larger_than_the_whole_budget(tmp_path, giant_rein):
+    """No truncated copy (merge_into would rewrite the target from it), and an
+    oversized row ranked mid-pool must not hide the smaller rows behind it."""
     from utils.tokenize import count_tokens
 
     _fs, _pm, re = _install(str(tmp_path))
+    # Same topic vector as `near`; evidence breaks the tie and sets its rank.
     giant = ("relationship", _persona_entry(
-        "giant", "主人睡前说晚安。" + "很长的导入备注" * 400, rein=1.0,
+        "giant", "主人睡前说晚安。" + "很长的导入备注" * 400, rein=giant_rein,
     ))
     near = ("relationship", _persona_entry("near", "主人每晚对小天说晚安", rein=1.0))
     other = ("relationship", _persona_entry("other", "主人喜欢咖啡", rein=1.0))
