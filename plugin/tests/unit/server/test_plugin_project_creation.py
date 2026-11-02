@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from plugin.neko_plugin_cli.core import project as creator
 from plugin.server.application import plugin_projects as service
 from plugin.server.infrastructure import development_access
+from plugin.server.routes import plugin_projects as routes
 from plugin.server.routes.plugin_projects import router
 
 ORIGIN = "http://127.0.0.1:48916"
@@ -176,12 +177,9 @@ async def test_filesystem_routes_require_local_development_access(
             assert (
                 await http.post(f"/plugin-projects/{endpoint}", json=request(tmp_path))
             ).status_code == 403
-        identity = request(tmp_path)
-        identity.pop("parent_dir")
-        for endpoint in ("browser/preview", "browser/bundle"):
-            assert (
-                await http.post(f"/plugin-projects/{endpoint}", json=identity)
-            ).status_code == 403
+        assert (
+            await http.post("/plugin-projects/pick-directory", json={})
+        ).status_code == 403
         assert (
             await http.post(
                 "/plugin-projects/open-directory", json={"path": str(tmp_path)}
@@ -219,69 +217,43 @@ def test_failed_git_initialization_rolls_back_only_the_new_directory(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("plugin_type", ["plugin", "adapter"])
-@pytest.mark.parametrize("packaged", [False, True])
-async def test_browser_bundle_is_portable_and_preserves_a_real_git_repository(
-    app, tmp_path, monkeypatch, plugin_type, packaged
-):
-    if packaged:
-        monkeypatch.setitem(service.__dict__, "__compiled__", object())
-    identity = request(tmp_path, plugin_type=plugin_type)
-    identity.pop("parent_dir")
+async def test_pick_directory_returns_the_native_selection(app, tmp_path, monkeypatch):
+    seen = {}
+
+    def pick(*, start_path):
+        seen["start_path"] = start_path
+        return str(tmp_path)
+
+    monkeypatch.setattr(routes, "pick_directory", pick)
     async with client(app) as http:
-        preview = await http.post("/plugin-projects/browser/preview", json=identity)
-        assert preview.status_code == 200, preview.text
-        assert list(tmp_path.iterdir()) == []
-        bundle = await http.post("/plugin-projects/browser/bundle", json=identity)
-        assert bundle.status_code == 200, bundle.text
-    result = bundle.json()
-    assert {key: result[key] for key in preview.json()} == preview.json()
-    assert result["created"] is False
-    assert result["project_dir"] == "project_example"
-    target = tmp_path / result["plugin_id"]
-    target.mkdir()
-    for directory in result["directories"]:
-        (target / directory).mkdir(parents=True, exist_ok=True)
-    for file in result["contents"]:
-        path = target / file["path"]
-        assert path.resolve().is_relative_to(target.resolve())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(base64.b64decode(file["content_base64"]))
-    assert not (target / ".git/hooks").exists()
-    assert not (target / ".git/config").exists()
-    assert set(preview.json()["files"]) - {".git/"} == {
-        file["path"]
-        for file in result["contents"]
-        if not file["path"].startswith(".git/")
+        result = await http.post(
+            "/plugin-projects/pick-directory", json={"start_path": "C:/start"}
+        )
+    assert result.status_code == 200
+    assert result.json() == {
+        "ok": True,
+        "cancelled": False,
+        "selected_root": str(tmp_path),
     }
-    assert (
-        await asyncio.to_thread(
-            subprocess.check_output,
-            ["git", "symbolic-ref", "HEAD"],
-            cwd=target,
-            text=True,
-        )
-    ).strip() == "refs/heads/main"
-    assert (
-        await asyncio.to_thread(
-            subprocess.run,
-            ["git", "rev-parse", "--verify", "HEAD"],
-            cwd=target,
-            capture_output=True,
-        )
-    ).returncode != 0
-    assert (
-        await asyncio.to_thread(
-            subprocess.check_output, ["git", "remote"], cwd=target, text=True
-        )
-    ) == ""
-    assert json.loads((target / ".vscode/tasks.json").read_text())["tasks"] == []
-    assert (
-        await asyncio.to_thread(
-            subprocess.check_output,
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=target,
-            text=True,
-        )
-    ).strip() == "true"
-    assert "uv run --project" not in (target / "README.md").read_text(encoding="utf-8")
+    assert seen == {"start_path": "C:/start"}
+
+
+@pytest.mark.asyncio
+async def test_pick_directory_reports_cancellation_and_unavailable_dialogs(
+    app, monkeypatch
+):
+    def cancel(*, start_path):
+        raise routes.DirectoryPickerCancelled()
+
+    def unavailable(*, start_path):
+        raise routes.DirectoryPickerUnavailable("directory_picker_unavailable", "no dialog")
+
+    async with client(app) as http:
+        monkeypatch.setattr(routes, "pick_directory", cancel)
+        cancelled = await http.post("/plugin-projects/pick-directory", json={})
+        assert cancelled.json() == {"ok": True, "cancelled": True, "selected_root": ""}
+        monkeypatch.setattr(routes, "pick_directory", unavailable)
+        failed = await http.post("/plugin-projects/pick-directory", json={})
+    assert failed.status_code == 400
+    assert failed.json()["detail"]["code"] == "directory_picker_unavailable"
+

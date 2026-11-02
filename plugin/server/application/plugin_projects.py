@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import sys
-from tempfile import TemporaryDirectory
 from pathlib import Path
 
 from plugin.neko_plugin_cli.core.project import (
     ProjectCreationError,
     create_project,
     prepare_project,
-    _run_git,
 )
 
 
@@ -88,49 +85,3 @@ def project_result(spec, project_dir: str, files, *, created: bool) -> dict:
         "files": [path.as_posix() for path in files] + [".git/"],
         "created": created,
     }
-
-
-def browser_project(*, create: bool, **identity) -> dict:
-    """Return a portable scaffold for writing through a browser directory handle.
-
-    The browser's chosen directory has no server-visible absolute path. Never
-    render source-checkout-relative tasks against the temporary staging path.
-    """
-    from plugin.neko_plugin_cli.templates.generator import render_plugin_files
-
-    spec = project_spec(**identity)
-    files = render_plugin_files(spec, Path(spec.plugin_id), repo_root=None)
-    result = project_result(spec, spec.plugin_id, files, created=False)
-    if not create:
-        return result
-
-    def git_without_templates(command, *, cwd):
-        # Git's optional sample hooks are browser-protected on Windows. An
-        # empty template still produces a real, portable, uncommitted repo.
-        _run_git(["init", "--template="] if command == ["init"] else command, cwd=cwd)
-
-    with TemporaryDirectory(prefix="neko-plugin-project-") as staging:
-        target = Path(staging) / spec.plugin_id
-        create_project(spec, target, repo_root=None, git_runner=git_without_templates)
-        result["directories"] = []
-        result["contents"] = []
-        for path in sorted(target.rglob("*")):
-            relative = path.relative_to(target).as_posix()
-            # Chromium protects .git/config writes. Repository-local settings
-            # are optional: HEAD, objects/ and refs/ form the empty repository.
-            # Leave config creation to the user's native Git tool.
-            if relative == ".git/config":
-                continue
-            if path.is_dir():
-                result["directories"].append(relative)
-            else:
-                result["contents"].append(
-                    {
-                        "path": relative,
-                        "content_base64": base64.b64encode(path.read_bytes()).decode(
-                            "ascii"
-                        ),
-                    }
-                )
-    # Staging a bundle does not mean it has been saved to the user's disk.
-    return result

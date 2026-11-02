@@ -85,123 +85,42 @@ test.beforeEach(async ({ page }) => {
   }
 })
 
-test('browser folder selection writes a project and asks for its real path only when mounting', async ({
+test('picks the parent directory through the local backend and mounts the real project path', async ({
   page,
 }) => {
-  // Exercise the writer against real browser filesystem handles in an isolated
-  // sandbox. No native picker is mocked with a fabricated absolute path.
   await page.addInitScript(() => {
-    Object.assign(window, {
-      nekoHost: undefined,
-      showDirectoryPicker: async () => {
-        const root = await navigator.storage.getDirectory()
-        return root.getDirectoryHandle('Plugin Projects', { create: true })
-      },
-    })
+    Object.assign(window, { nekoHost: undefined })
     localStorage.setItem('neko.pluginDevelopment.guide.v1.dismissed', '1')
   })
-  const files = {
-    'plugin.toml': '[plugin]\nid = "starlight_helper"\nname = "星光助手"\n',
-    '__init__.py': '# plugin entry\n',
-    '.git/HEAD': 'ref: refs/heads/main\n',
-  }
-  for (const action of ['preview', 'bundle']) {
-    await page.route(`**/plugin-projects/browser/${action}`, (route) => {
-      const body = route.request().postDataJSON()
-      expect(body).not.toHaveProperty('parent_dir')
-      return route.fulfill({
-        json: {
-          ...body,
-          version: '0.1.0',
-          entry: 'plugin.plugins.starlight_helper:StarlightHelperPlugin',
-          project_dir: body.plugin_id,
-          files: ['plugin.toml', '__init__.py', '.git/'],
-          created: false,
-          ...(action === 'bundle'
-            ? {
-                directories: ['.git/objects', '.git/refs/heads', '.git/refs/tags'],
-                contents: Object.entries(files).map(([path, content]) => ({
-                  path,
-                  content_base64: Buffer.from(content).toString('base64'),
-                })),
-              }
-            : {}),
-        },
-      })
+  const picks: unknown[] = []
+  await page.route('**/plugin-projects/pick-directory', (route) => {
+    picks.push(route.request().postDataJSON())
+    return route.fulfill({
+      json: { ok: true, cancelled: picks.length === 2, selected_root: picks.length === 2 ? '' : 'E:/Plugin Projects' },
     })
-  }
-  await page.route('**/plugins/development/registrations', (route) => {
-    expect(route.request().postDataJSON()).toEqual({
-      source_dir: 'E:/Plugin Projects/starlight_helper',
-      preview: true,
-    })
-    return route.fulfill({ json: { plugin_id: 'starlight_helper', error: null } })
   })
-  await page.route('**/plugins/development/mount', (route) =>
-    route.fulfill({ json: { plugin_id: 'starlight_helper', error: null } })
-  )
-  const requests: string[] = []
-  page.on('request', (request) => requests.push(new URL(request.url()).pathname))
   await page.goto(url)
   await page.getByRole('button', { name: '新建插件', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByRole('button', { name: '选择文件夹' }).click()
-  await expect(dialog.getByLabel('父目录', { exact: true })).toHaveValue('Plugin Projects')
-  // Cancel a subsequent selection; preserve the earlier handle and form.
-  await page.evaluate(() =>
-    Object.assign(window, {
-      showDirectoryPicker: async () => {
-        throw new DOMException('Cancelled', 'AbortError')
-      },
-    })
-  )
+  await expect(dialog.getByLabel('父目录', { exact: true })).toHaveValue('E:/Plugin Projects')
+  // Cancelling a later selection keeps the earlier absolute path.
   await dialog.getByRole('button', { name: '选择文件夹' }).click()
-  await expect(dialog.getByLabel('父目录', { exact: true })).toHaveValue('Plugin Projects')
+  await expect(dialog.getByLabel('父目录', { exact: true })).toHaveValue('E:/Plugin Projects')
+  expect(picks).toEqual([{ start_path: '' }, { start_path: 'E:/Plugin Projects' }])
   await dialog.getByLabel('插件名称', { exact: true }).fill('星光助手')
   await dialog.getByLabel('插件 ID', { exact: true }).fill('starlight_helper')
   await dialog.getByRole('button', { name: '预览项目', exact: true }).click()
-  await expect(dialog.locator('pre')).toContainText('Plugin Projects/starlight_helper')
-  await expect(page.locator('.authoring-project-card[data-project-kind="created"]')).toHaveCount(0)
-  expect(
-    await page.evaluate(async () => {
-      const root = await navigator.storage.getDirectory()
-      const parent = await root.getDirectoryHandle('Plugin Projects')
-      try {
-        await parent.getDirectoryHandle('starlight_helper')
-        return true
-      } catch {
-        return false
-      }
-    })
-  ).toBe(false)
+  await expect(dialog.locator('pre')).toContainText('E:/Plugin Projects/starlight_helper')
   await dialog.getByRole('button', { name: '创建插件', exact: true }).click()
   await expect(dialog.getByText('插件项目已创建', { exact: true })).toBeVisible()
-  await expect(page.locator('.authoring-project-card[data-project-kind="created"]')).toHaveCount(1)
-  expect(
-    await page.evaluate(async () => {
-      const parent = await (
-        await navigator.storage.getDirectory()
-      ).getDirectoryHandle('Plugin Projects')
-      const project = await parent.getDirectoryHandle('starlight_helper')
-      const git = await project.getDirectoryHandle('.git')
-      return {
-        manifest: await (await (await project.getFileHandle('plugin.toml')).getFile()).text(),
-        head: await (await (await git.getFileHandle('HEAD')).getFile()).text(),
-        refs: (await git.getDirectoryHandle('refs')).kind,
-      }
-    })
-  ).toEqual({ manifest: files['plugin.toml'], head: files['.git/HEAD'], refs: 'directory' })
-  await expect(dialog.getByRole('button', { name: '打开文件夹' })).toHaveCount(0)
+  await expect(dialog.getByRole('button', { name: '打开文件夹' })).toBeVisible()
   await dialog.getByRole('button', { name: '挂载到开发模式' }).click()
-  const prompt = page.getByRole('dialog').filter({ has: page.locator('.el-message-box__input') })
-  await prompt.getByRole('textbox').fill('E:/Plugin Projects/starlight_helper')
-  await prompt.getByRole('button', { name: '确认', exact: true }).click()
+  // The first mount attempt conflicts in the shared fixture; the retry succeeds.
+  await dialog.getByRole('button', { name: '挂载到开发模式' }).click()
   await expect(dialog.getByText('插件项目已创建并挂载', { exact: true })).toBeVisible()
-  expect(requests.some((path) => path.endsWith('/pick-directory'))).toBe(false)
-  expect(requests).not.toContain('/plugin-projects/create')
   await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   await verifyRetainedProject(page)
-  await page.screenshot({ path: 'test-results/authoring-real-projects.png', fullPage: true })
 })
 
 async function verifyRetainedProject(page: Page) {

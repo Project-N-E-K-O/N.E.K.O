@@ -11,11 +11,6 @@ export interface PluginProjectRequest {
 
 export type PluginProjectIdentity = Omit<PluginProjectRequest, 'parent_dir'>
 
-export interface PluginProjectBundle extends PluginProjectResult {
-  directories: string[]
-  contents: { path: string; content_base64: string }[]
-}
-
 export interface PluginProjectResult {
   plugin_id: string
   name: string
@@ -39,22 +34,38 @@ export const previewPluginProject = (request: PluginProjectRequest): Promise<Plu
 export const createPluginProject = (request: PluginProjectRequest): Promise<PluginProjectResult> =>
   post('/plugin-projects/create', request, config)
 
-export const previewBrowserProject = (
-  request: PluginProjectIdentity
-): Promise<PluginProjectResult> => post('/plugin-projects/browser/preview', request, config)
-export const bundleBrowserProject = (
-  request: PluginProjectIdentity
-): Promise<PluginProjectBundle> => post('/plugin-projects/browser/bundle', request, config)
+export interface PickedDirectory {
+  cancelled?: boolean
+  selected_root?: string
+}
 
 interface DirectoryHost {
-  pickDirectory?: (options: {
-    title: string
-    startPath?: string
-  }) => Promise<{ cancelled?: boolean; selected_root?: string }>
+  pickDirectory?: (options: { title: string; startPath?: string }) => Promise<PickedDirectory>
   openPath?: (options: { path: string }) => Promise<{ ok: boolean; error?: string }>
 }
 export const projectDirectoryHost = () =>
   (window as unknown as { nekoHost?: DirectoryHost }).nekoHost
+
+/**
+ * Choose a directory and return its absolute path, or null when cancelled.
+ * Browsers never expose absolute paths from their own folder pickers, so without a
+ * desktop host the local server shows the native dialog instead.
+ */
+export async function pickProjectDirectory(
+  startPath: string,
+  title: string
+): Promise<string | null> {
+  const bridge = projectDirectoryHost()
+  // The native dialog stays open until the user answers, so it outlives the default timeout.
+  const picked: PickedDirectory = bridge?.pickDirectory
+    ? await bridge.pickDirectory({ title, startPath })
+    : await post(
+        '/plugin-projects/pick-directory',
+        { start_path: startPath },
+        { ...config, timeout: 130_000 }
+      )
+  return picked.cancelled ? null : picked.selected_root?.trim() || null
+}
 
 export async function openProjectDirectory(path: string): Promise<void> {
   const bridge = projectDirectoryHost()

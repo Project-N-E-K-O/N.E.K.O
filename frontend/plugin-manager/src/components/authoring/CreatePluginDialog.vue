@@ -42,12 +42,7 @@
             t('authoring.parentDirectory')
           }}</label>
           <div class="authoring-directory-field">
-            <el-input
-              id="authoring-parent"
-              v-model="parentDir"
-              :readonly="step === 1 || busy"
-              @input="browserParent = null"
-            />
+            <el-input id="authoring-parent" v-model="parentDir" :readonly="step === 1 || busy" />
             <el-button :icon="FolderOpened" :disabled="step === 1 || busy" @click="pickParent">{{
               t('authoring.chooseFolder')
             }}</el-button>
@@ -116,13 +111,9 @@
           t(created ? 'common.close' : 'common.cancel')
         }}</el-button>
         <div>
-          <el-button
-            v-if="created && projectPath"
-            :disabled="busy"
-            :loading="busy"
-            @click="openCreated"
-            >{{ t('authoring.openFolder') }}</el-button
-          >
+          <el-button v-if="created" :disabled="busy" :loading="busy" @click="openCreated">{{
+            t('authoring.openFolder')
+          }}</el-button>
           <el-button
             v-if="created && !mounted"
             type="primary"
@@ -166,31 +157,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { FolderOpened } from '@element-plus/icons-vue'
-import { ElMessageBox } from 'element-plus'
 import { authoringEntry } from '@/utils/authoringEntry'
 import {
   createPluginProject,
   previewPluginProject,
-  previewBrowserProject,
-  bundleBrowserProject,
   openProjectDirectory,
+  pickProjectDirectory,
   type PluginProjectResult,
   type PluginProjectIdentity,
   type PluginProjectRequest,
 } from '@/api/pluginProjects'
-import {
-  pickProjectParent,
-  assertProjectAbsent,
-  ensureDirectoryWritable,
-  writeProjectBundle,
-  ProjectDirectoryError,
-} from '@/utils/projectDirectory'
 import { formatHttpError } from '@/utils/request'
-import { mountDevelopment, registerDevelopment } from '@/api/development'
+import { mountDevelopment } from '@/api/development'
 import type { AuthoringProjectDraft } from '@/types/authoring'
 
 const props = defineProps<{ visible: boolean; mode: 'create' | 'import'; existingIds: string[] }>()
@@ -204,8 +186,6 @@ const router = useRouter()
 const step = ref(0)
 const attempted = ref(false)
 const parentDir = ref('')
-const browserParent = shallowRef<FileSystemDirectoryHandle | null>(null)
-const projectPath = ref('')
 const busy = ref(false)
 const backendError = ref('')
 const preview = ref<PluginProjectResult | null>(null)
@@ -230,7 +210,6 @@ watch(
     created.value = null
     creationKey.value = crypto.randomUUID()
     mounted.value = false
-    projectPath.value = ''
     Object.assign(draft, { id: '', name: '', description: '', author: '', type: 'plugin' })
   }
 )
@@ -241,12 +220,14 @@ watch([draft, parentDir], () => {
   }
 })
 const validId = computed(() => /^[a-z][a-z0-9_]*$/.test(draft.id))
+// POSIX root, Windows drive or UNC; the server resolves and validates the rest.
+const ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\|\/|~)/
 const error = computed(() => {
   if (props.mode === 'import' && props.existingIds.includes(draft.id))
     return t('authoring.duplicateId')
   if (draft.id && !validId.value) return t('authoring.invalidId')
   if (attempted.value && (!draft.name.trim() || !validId.value)) return t('authoring.required')
-  if (attempted.value && props.mode === 'create' && !parentDir.value.trim())
+  if (attempted.value && props.mode === 'create' && !ABSOLUTE_PATH.test(parentDir.value.trim()))
     return t('authoring.invalidParent')
   return ''
 })
@@ -284,11 +265,10 @@ function failure(error: unknown) {
     PROJECT_EXISTS: 'directoryExists',
     INVALID_PARENT: 'invalidParent',
     GIT_NOT_FOUND: 'gitMissing',
-    PICKER_UNAVAILABLE: 'pickerUnavailable',
-    WRITE_DENIED: 'writeDenied',
-    PROJECT_WRITE_FAILED: 'projectWriteFailed',
+    directory_picker_unavailable: 'pickerUnavailable',
+    directory_picker_failed: 'pickerUnavailable',
   }
-  const code = error instanceof ProjectDirectoryError ? error.code : detail?.code
+  const code = detail?.code
   backendError.value =
     code && keys[code]
       ? t(`authoring.${keys[code]}`)
@@ -299,15 +279,11 @@ async function pickParent() {
   busy.value = true
   backendError.value = ''
   try {
-    const selected = await pickProjectParent(
-      parentDir.value,
-      t('authoring.parentDirectory'),
-      browserParent.value || undefined
+    const selected = await pickProjectDirectory(
+      parentDir.value.trim(),
+      t('authoring.parentDirectory')
     )
-    if (selected) {
-      browserParent.value = selected.kind === 'browser' ? selected.handle : null
-      parentDir.value = selected.kind === 'browser' ? selected.handle.name : selected.path
-    }
+    if (selected) parentDir.value = selected
   } catch (error) {
     failure(error)
   } finally {
@@ -332,34 +308,14 @@ async function advance() {
   busy.value = true
   backendError.value = ''
   try {
-    if (browserParent.value) {
-      const parent = browserParent.value
-      // Request permission while the Create button's user activation is live.
-      if (step.value === 1) await ensureDirectoryWritable(parent)
-      await assertProjectAbsent(parent, draft.id)
-      if (step.value === 0) {
-        const result = await previewBrowserProject(identity())
-        preview.value = { ...result, project_dir: `${parent.name}/${result.plugin_id}` }
-        step.value = 1
-      } else {
-        const bundle = await bundleBrowserProject(identity())
-        await writeProjectBundle(parent, bundle)
-        created.value = {
-          ...bundle,
-          project_dir: `${parent.name}/${bundle.plugin_id}`,
-          created: true,
-        }
-        preview.value = created.value
-      }
-    } else if (step.value === 0) {
+    if (step.value === 0) {
       preview.value = await previewPluginProject(request())
       step.value = 1
     } else {
       created.value = await createPluginProject(request())
       preview.value = created.value
-      projectPath.value = created.value.project_dir
+      emit('created', created.value, creationKey.value)
     }
-    if (created.value) emit('created', created.value, creationKey.value)
   } catch (error) {
     failure(error)
   } finally {
@@ -371,7 +327,7 @@ async function openCreated() {
   busy.value = true
   backendError.value = ''
   try {
-    await openProjectDirectory(projectPath.value)
+    await openProjectDirectory(created.value.project_dir)
   } catch (error) {
     failure(error)
   } finally {
@@ -383,42 +339,10 @@ async function mountCreated() {
   busy.value = true
   backendError.value = ''
   try {
-    if (!projectPath.value) {
-      let value: string
-      try {
-        ;({ value } = await ElMessageBox.prompt(
-          t('authoring.projectPathHint'),
-          t('authoring.mountDevelopment'),
-          {
-            inputPlaceholder: t('authoring.projectPath'),
-            inputPattern: /^(?:[a-zA-Z]:[\\/]|\\\\|\/).+/,
-            inputErrorMessage: t('authoring.invalidProjectPath'),
-            confirmButtonText: t('common.confirm'),
-            cancelButtonText: t('common.cancel'),
-          }
-        ))
-      } catch {
-        return
-      }
-      projectPath.value = value.trim()
-    }
-    // A pasted path must identify this project before registration enables
-    // development mode. Never infer an absolute path from the handle's name.
-    if (browserParent.value) {
-      const inspected = await registerDevelopment(projectPath.value, true)
-      if (inspected.error) throw new Error(inspected.error)
-      if (inspected.plugin_id !== created.value.plugin_id) {
-        projectPath.value = ''
-        throw new Error(t('authoring.projectMismatch'))
-      }
-    }
-    const result = await mountDevelopment(projectPath.value)
+    const result = await mountDevelopment(created.value.project_dir)
     if (result.error) throw new Error(result.error)
     mounted.value = true
-    emit('created', { ...created.value, project_dir: projectPath.value }, creationKey.value)
   } catch (error) {
-    // Allow correcting an unavailable or mistaken pasted path on retry.
-    if (browserParent.value) projectPath.value = ''
     backendError.value = t('authoring.mountFailed', {
       reason: formatHttpError(error) || String(error),
     })

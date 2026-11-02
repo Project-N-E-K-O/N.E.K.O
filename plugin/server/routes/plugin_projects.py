@@ -10,8 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from plugin.neko_plugin_cli.core.project import ProjectCreationError
-from plugin.server.application.plugin_projects import browser_project, create_or_preview
+from plugin.server.application.plugin_projects import create_or_preview
 from plugin.server.infrastructure.development_access import require_development_access
+from utils.directory_picker import (
+    DirectoryPickerCancelled,
+    DirectoryPickerUnavailable,
+    pick_directory,
+)
 
 router = APIRouter(
     prefix="/plugin-projects", dependencies=[Depends(require_development_access)]
@@ -31,10 +36,10 @@ class ProjectRequest(ProjectIdentity):
     parent_dir: str = Field(min_length=1, max_length=4096)
 
 
-async def _project(body: ProjectIdentity, *, create: bool, browser: bool = False):
+async def _project(body: ProjectRequest, *, create: bool):
     try:
         return await asyncio.to_thread(
-            browser_project if browser else create_or_preview,
+            create_or_preview,
             create=create,
             **body.model_dump(),
         )
@@ -63,18 +68,27 @@ async def create_plugin_project(body: ProjectRequest):
     return await _project(body, create=True)
 
 
-@router.post("/browser/preview")
-async def preview_browser_project(body: ProjectIdentity):
-    return await _project(body, create=False, browser=True)
-
-
-@router.post("/browser/bundle")
-async def bundle_browser_project(body: ProjectIdentity):
-    return await _project(body, create=True, browser=True)
-
-
 class DirectoryRequest(BaseModel):
     path: str = Field(default="", max_length=4096)
+
+
+class PickDirectoryRequest(BaseModel):
+    start_path: str = Field(default="", max_length=4096)
+
+
+@router.post("/pick-directory")
+async def pick_project_directory(body: PickDirectoryRequest):
+    # The dialog opens on the machine running this server; development access
+    # is limited to local requests, so that is the user's own desktop.
+    try:
+        selected = await asyncio.to_thread(pick_directory, start_path=body.start_path)
+    except DirectoryPickerCancelled:
+        return {"ok": True, "cancelled": True, "selected_root": ""}
+    except DirectoryPickerUnavailable as exc:
+        raise HTTPException(
+            400, {"code": exc.error_code, "message": exc.message}
+        ) from exc
+    return {"ok": True, "cancelled": False, "selected_root": selected}
 
 
 @router.post("/open-directory")
