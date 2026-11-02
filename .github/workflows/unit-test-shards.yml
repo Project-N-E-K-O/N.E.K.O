@@ -118,7 +118,7 @@ jobs:
         run: |
           $revisions = @(
             '16a48f711f6842e3fbd181c41675459bb3c025bc',
-            '299c0b4b8c14eb386c645ad180241c6756e0b5c1'
+            '52556bde9a824ad25354ad15ab3ffbff4b1ed9c4'
           )
           foreach ($revision in $revisions) {
             git fetch --no-tags origin $revision
@@ -136,7 +136,16 @@ jobs:
         run: New-Item -ItemType Directory -Force ".codex-tmp\historical-review-audit" | Out-Null
 
       - name: Run historical review evidence
-        run: uv run pytest tests/unit/test_pr3078_review_evidence.py -q --basetemp ".codex-tmp\historical-review-audit"
+        shell: pwsh
+        run: |
+          $report = ".codex-tmp\historical-review-audit-report.xml"
+          uv run pytest tests/unit/test_pr3078_review_evidence.py -q -rs --basetemp ".codex-tmp\historical-review-audit" --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # 本 job 已拉取全部历史提交，任何 skip 都意味着审计静默失效。
+          $suite = ([xml](Get-Content $report)).testsuites.testsuite
+          if ([int]$suite.tests -eq 0 -or [int]$suite.skipped -ne 0) {
+            throw "Historical review audit must run every case: tests=$($suite.tests) skipped=$($suite.skipped)."
+          }
 
   frontend-node:
     name: frontend-contract (Node)
