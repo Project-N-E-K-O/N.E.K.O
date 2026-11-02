@@ -646,6 +646,26 @@ async def test_promotion_rechecks_suppression_after_the_model_returns(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_amerge_into_refuses_a_target_retired_after_the_callers_snapshot(tmp_path):
+    """The promotion path checks the target on an unlocked snapshot; the
+    persona lock is where the last word is."""
+    env = _install(str(tmp_path))
+    await env.pm.asave_persona(NAME, {'master': {'facts': [
+        dict(env.pm._normalize_entry('主人喜欢猫'), id='p1', **_retired()),
+    ]}})
+
+    outcome = await env.pm.amerge_into(
+        NAME, 'p1', '主人养猫多年且很喜欢猫',
+        reflection_evidence={'reinforcement': 2.5, 'disputation': 0.0},
+        source_reflection_id='R1',
+    )
+
+    assert outcome == 'not_found'
+    entry = await _persona_entry(env.pm, 'master', 'p1')
+    assert entry['text'] == '主人喜欢猫'
+
+
+@pytest.mark.asyncio
 async def test_time_driven_promotion_skips_suppressed_reflections(tmp_path):
     env = _install(str(tmp_path))
     old = (datetime.now() - timedelta(days=365)).isoformat()

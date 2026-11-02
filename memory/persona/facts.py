@@ -598,7 +598,9 @@ class FactsMixin:
         consumes the freshest target state.
 
         Returns: 'merged' on success, 'noop' if already merged, 'not_found'
-        if `target_entry_id` is missing from the persona.
+        if `target_entry_id` is missing from the persona or permanently
+        suppressed (merging into a retired entry would hide the reflection
+        with it, and the caller would still mark it merged).
         """
         from memory.event_log import (
             EVT_PERSONA_ENTRY_UPDATED,
@@ -621,6 +623,14 @@ class FactsMixin:
                 logger.warning(
                     f"[Persona] {name}: amerge_into 找不到 target_entry_id="
                     f"{target_entry_id}"
+                )
+                return 'not_found'
+            if is_permanently_suppressed(target_entry):
+                # The caller checked an unlocked snapshot; introspection may
+                # have retired the target since.
+                logger.warning(
+                    f"[Persona] {name}: amerge_into 目标 target_entry_id="
+                    f"{target_entry_id} 已被永久压制"
                 )
                 return 'not_found'
 
