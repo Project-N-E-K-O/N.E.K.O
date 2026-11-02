@@ -1,10 +1,12 @@
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * Pacote de idioma português
  */
 export default {
+  authoring: authoringMessages['pt'],
   modelApi: modelApiMessages['pt'],
   modelBindings: modelBindingsMessages['pt'],
   development: {

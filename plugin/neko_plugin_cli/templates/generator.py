@@ -76,7 +76,7 @@ class PluginDevelopmentLayout:
 
     plugin_id: str
     is_default_source: bool
-    repo_root_from_workspace: str
+    repo_root_from_workspace: str | None
 
     def readme_cli_prefix(self) -> str:
         if self.is_default_source:
@@ -120,9 +120,11 @@ class PluginDevelopmentLayout:
         *,
         plugin_id: str,
         target_dir: Path,
-        repo_root: Path,
+        repo_root: Path | None,
     ) -> PluginDevelopmentLayout:
         resolved_target = target_dir.resolve()
+        if repo_root is None:
+            return cls(plugin_id, False, None)
         resolved_repo_root = repo_root.resolve()
         default_target = resolved_repo_root / "plugin" / "plugins" / plugin_id
         try:
@@ -138,105 +140,57 @@ class PluginDevelopmentLayout:
         )
 
 
+def render_plugin_files(
+    spec: PluginSpec,
+    target_dir: Path,
+    *,
+    repo_root: Path | None,
+) -> dict[Path, str]:
+    """Render one standard scaffold without touching the filesystem."""
+    if spec.plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
+        raise ValueError(format_unsupported_scaffold_type(spec.plugin_type))
+    if not _PYTHON_PLUGIN_ID_RE.fullmatch(spec.plugin_id):
+        raise ValueError("plugin_id must be a valid Python package name: use letters, numbers, and underscores only")
+    layout = PluginDevelopmentLayout.resolve(
+        plugin_id=spec.plugin_id, target_dir=target_dir, repo_root=repo_root,
+    )
+    files = {
+        Path("plugin.toml"): _render_plugin_toml(spec),
+        Path("config.example.toml"): _render_config_example_toml(spec),
+        Path("__init__.py"): _render_init_py(spec),
+    }
+    if spec.create_pyproject:
+        files[Path("pyproject.toml")] = _render_pyproject_toml(spec)
+    if spec.create_readme:
+        files[Path("README.md")] = _render_readme_md(spec, layout)
+    if spec.create_tests:
+        files[Path("tests/test_smoke.py")] = _render_smoke_test(spec)
+    if spec.create_gitignore:
+        files[Path(".gitignore")] = _render_gitignore()
+    if spec.create_vscode:
+        files[Path(".vscode/settings.json")] = _render_vscode_settings(layout)
+        files[Path(".vscode/tasks.json")] = _render_vscode_tasks(spec, layout)
+    if spec.create_github_actions:
+        files[Path("ruff.toml")] = render_ruff_config()
+        files[Path(".github/workflows/verify.yml")] = render_verify_workflow(spec)
+        files[Path(".github/workflows/release.yml")] = render_release_workflow(spec)
+    return files
+
+
 def generate_plugin(
     spec: PluginSpec,
     target_dir: Path,
     *,
-    repo_root: Path,
+    repo_root: Path | None,
 ) -> list[Path]:
-    """Generate all scaffold files and return the list of created paths."""
-    if spec.plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
-        raise ValueError(format_unsupported_scaffold_type(spec.plugin_type))
-    if not _PYTHON_PLUGIN_ID_RE.fullmatch(spec.plugin_id):
-        raise ValueError(
-            "plugin_id must be a valid Python package name: use letters, numbers, and underscores only"
-        )
-    layout = PluginDevelopmentLayout.resolve(
-        plugin_id=spec.plugin_id,
-        target_dir=target_dir,
-        repo_root=repo_root,
-    )
+    """Write exactly the same files returned by the preview renderer."""
+    files = render_plugin_files(spec, target_dir, repo_root=repo_root)
     target_dir.mkdir(parents=True, exist_ok=True)
-    created: list[Path] = []
-
-    # plugin.toml
-    toml_path = target_dir / "plugin.toml"
-    toml_path.write_text(_render_plugin_toml(spec), encoding="utf-8", newline="\n")
-    created.append(toml_path)
-
-    # config.example.toml
-    config_example_path = target_dir / "config.example.toml"
-    config_example_path.write_text(
-        _render_config_example_toml(spec),
-        encoding="utf-8",
-        newline="\n",
-    )
-    created.append(config_example_path)
-
-    # __init__.py
-    init_path = target_dir / "__init__.py"
-    init_path.write_text(_render_init_py(spec), encoding="utf-8", newline="\n")
-    created.append(init_path)
-
-    # pyproject.toml (optional)
-    if spec.create_pyproject:
-        pyproject_path = target_dir / "pyproject.toml"
-        pyproject_path.write_text(_render_pyproject_toml(spec), encoding="utf-8", newline="\n")
-        created.append(pyproject_path)
-
-    if spec.create_readme:
-        readme_path = target_dir / "README.md"
-        readme_path.write_text(
-            _render_readme_md(spec, layout),
-            encoding="utf-8",
-            newline="\n",
-        )
-        created.append(readme_path)
-
-    if spec.create_tests:
-        tests_dir = target_dir / "tests"
-        tests_dir.mkdir(parents=True, exist_ok=True)
-        smoke_path = tests_dir / "test_smoke.py"
-        smoke_path.write_text(_render_smoke_test(spec), encoding="utf-8", newline="\n")
-        created.append(smoke_path)
-
-    if spec.create_gitignore:
-        gitignore_path = target_dir / ".gitignore"
-        gitignore_path.write_text(_render_gitignore(), encoding="utf-8", newline="\n")
-        created.append(gitignore_path)
-
-    if spec.create_vscode:
-        vscode_dir = target_dir / ".vscode"
-        vscode_dir.mkdir(parents=True, exist_ok=True)
-        settings_path = vscode_dir / "settings.json"
-        settings_path.write_text(
-            _render_vscode_settings(layout), encoding="utf-8", newline="\n"
-        )
-        created.append(settings_path)
-
-        tasks_path = vscode_dir / "tasks.json"
-        tasks_path.write_text(
-            _render_vscode_tasks(spec, layout),
-            encoding="utf-8",
-            newline="\n",
-        )
-        created.append(tasks_path)
-
-    if spec.create_github_actions:
-        ruff_config_path = target_dir / "ruff.toml"
-        ruff_config_path.write_text(render_ruff_config(), encoding="utf-8", newline="\n")
-        created.append(ruff_config_path)
-
-        workflow_dir = target_dir / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True, exist_ok=True)
-        workflow_path = workflow_dir / "verify.yml"
-        workflow_path.write_text(render_verify_workflow(spec), encoding="utf-8", newline="\n")
-        created.append(workflow_path)
-        release_workflow_path = workflow_dir / "release.yml"
-        release_workflow_path.write_text(render_release_workflow(spec), encoding="utf-8", newline="\n")
-        created.append(release_workflow_path)
-
-    return created
+    for relative, content in files.items():
+        path = target_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="\n")
+    return [target_dir / relative for relative in files]
 
 
 def generate_repo_support_files(
@@ -579,6 +533,27 @@ def _render_readme_md(
     spec: PluginSpec,
     layout: PluginDevelopmentLayout,
 ) -> str:
+    if layout.repo_root_from_workspace is None:
+        return f'''# {spec.name or spec.plugin_id}
+
+{spec.description}
+
+## Development / 开发
+
+Open this folder in your editor. Load it from N.E.K.O's development plugins page
+when you are ready to run it. Runtime entries must use `async def`.
+
+在编辑器中打开本目录。需要运行时，在 N.E.K.O 的开发插件页面加载此目录。
+运行时入口使用 `async def`。
+
+- ID: `{spec.plugin_id}`
+- Entry: `{spec.entry_point}`
+- Version: `{spec.version}`
+- GitHub repository: `{_market_repo_name(spec.plugin_id)}`
+
+Dependencies belong in `pyproject.toml` and the plugin's own `vendor/` directory.
+The standard GitHub workflows verify and build the plugin using N.E.K.O.
+'''
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
     sync_command = layout.readme_plugin_command("sync", suffix=" --clean")
@@ -753,6 +728,8 @@ store.db
 
 def _render_vscode_settings(layout: PluginDevelopmentLayout) -> str:
     repo_root = layout.repo_root_from_workspace
+    if repo_root is None:
+        return json.dumps({"python.analysis.extraPaths": ["${workspaceFolder}/vendor"]}, indent=2) + "\n"
     analysis_path = (
         repo_root
         if Path(repo_root).is_absolute()
@@ -772,6 +749,8 @@ def _render_vscode_tasks(
     spec: PluginSpec,
     layout: PluginDevelopmentLayout,
 ) -> str:
+    if layout.repo_root_from_workspace is None:
+        return json.dumps({"version": "2.0.0", "tasks": []}, indent=2) + "\n"
     sync_command = layout.vscode_plugin_command("sync", suffix=" --clean")
     check_command = layout.vscode_plugin_command("check")
     release_check_command = layout.vscode_plugin_command("check -r")

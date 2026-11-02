@@ -54,6 +54,56 @@ def _register(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_mount_external_source_enables_development_without_starting(tmp_path, monkeypatch):
+    from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
+
+    start = AsyncMock(side_effect=AssertionError("Mount must not start plugin code"))
+    monkeypatch.setattr(PluginLifecycleService, "start_plugin", start)
+    source = _source(tmp_path / "external source")
+    assert store.development_enabled_sync() is False
+    result = await service.mount_development(str(source))
+    assert result["plugin_id"] == "demo"
+    assert result.get("error") is None
+    assert store.development_enabled_sync() is True
+    records = store.list_registration_records_sync()
+    assert len(records) == 1
+    assert records[0].source_dir == source.resolve()
+    assert service.state.plugins["demo"]["source"] == "development"
+    assert service.state.plugin_hosts == {}
+    start.assert_not_awaited()
+    # A retried request reuses the association, including its version.
+    repeated = await service.mount_development(str(source))
+    assert repeated["registration_id"] == result["registration_id"]
+    assert repeated["revision"] == result["revision"]
+    start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("problem", ["managed", "conflict", "missing"])
+async def test_invalid_mount_keeps_development_disabled(tmp_path, problem):
+    source = _source(tmp_path / ("installed" if problem == "managed" else "external source"))
+    if problem == "conflict":
+        service.state.plugins["demo"] = {"config_path": str(tmp_path / "installed" / "other" / "plugin.toml")}
+    if problem == "missing":
+        source = source / "missing"
+    with pytest.raises(ServerDomainError):
+        await service.mount_development(str(source))
+    assert store.development_enabled_sync() is False
+    assert store.list_registration_records_sync() == []
+
+
+@pytest.mark.asyncio
+async def test_ordinary_development_registration_still_starts(tmp_path, monkeypatch):
+    from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
+
+    start = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(PluginLifecycleService, "start_plugin", start)
+    store.set_enabled_sync(True)
+    await service.register_development(str(_source(tmp_path / "external source")))
+    start.assert_awaited_once_with("demo", persist_user_intent=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("marker", ["source", "development_ref"])
 @pytest.mark.parametrize("action", ["start", "stop", "reload", "refresh"])
 async def test_removed_registration_cannot_downgrade_cached_development(tmp_path, monkeypatch, marker, action):

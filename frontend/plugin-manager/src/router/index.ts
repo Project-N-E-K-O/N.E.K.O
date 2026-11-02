@@ -96,6 +96,12 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'development/workbench',
+        name: 'PluginAuthoring',
+        component: () => import('@/views/PluginAuthoring.vue'),
+        meta: { titleKey: 'authoring.title' },
+      },
+      {
         path: 'development',
         name: 'Development',
         component: () => import('@/views/Development.vue'),

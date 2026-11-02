@@ -13,8 +13,9 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
-from ..templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
+from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
+from ..core.project import create_project
 from ._resolve import parse_github_repository_remote
 
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -163,22 +164,12 @@ def handle(args: argparse.Namespace) -> int:
         features=["entry_point"],
         create_github_actions=True,
     )
-    target_created = False
     try:
-        target_dir.mkdir(parents=True, exist_ok=False)
-        target_created = True
-        created = generate_plugin(
-            spec,
-            target_dir,
-            repo_root=defaults.repo_root,
+        created = create_project(
+            spec, target_dir, repo_root=defaults.repo_root,
+            remote=args.remote, git_runner=_run_git,
         )
-        _run_git(["init"], cwd=target_dir)
-        _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target_dir)
-        if args.remote:
-            _run_git(["remote", "add", "origin", args.remote], cwd=target_dir)
     except Exception as exc:
-        if target_created and target_dir.exists():
-            shutil.rmtree(target_dir)
         print(
             "[FAIL] "
             + _tri(

@@ -1,10 +1,12 @@
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * 繁體中文語言包
  */
 export default {
+  authoring: authoringMessages['zh-TW'],
   modelApi: modelApiMessages['zh-TW'],
   modelBindings: modelBindingsMessages['zh-TW'],
   development: {

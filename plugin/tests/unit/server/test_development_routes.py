@@ -47,6 +47,33 @@ def mutation_headers(**extra):
 
 
 @pytest.mark.asyncio
+async def test_mount_route_uses_mount_only_service(app, monkeypatch, tmp_path):
+    from plugin.server.application.plugins import development_service
+
+    mount = AsyncMock(return_value={"plugin_id": "example", "registration_id": "registration", "revision": 1})
+    monkeypatch.setattr(development_service, "mount_development", mount)
+    source = str(tmp_path / "external source")
+    async with client(app, headers={"X-Neko-Development": "1"}) as http:
+        response = await http.post("/plugins/development/mount", json={"source_dir": source})
+    assert response.status_code == 200
+    mount.assert_awaited_once_with(source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer,header", [("192.168.1.2", True), ("127.0.0.1", False)])
+async def test_mount_route_requires_local_development_access(app, monkeypatch, tmp_path, peer, header):
+    from plugin.server.application.plugins import development_service
+
+    mount = AsyncMock()
+    monkeypatch.setattr(development_service, "mount_development", mount)
+    headers = {"X-Neko-Development": "1"} if header else {}
+    async with client(app, peer=peer, headers=headers) as http:
+        response = await http.post("/plugins/development/mount", json={"source_dir": str(tmp_path / "external")})
+    assert response.status_code == 403
+    mount.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("runtime_registered", [False, True])
 async def test_public_ui_metadata_hides_development_directory(app, tmp_path, monkeypatch, runtime_registered):
     from types import SimpleNamespace

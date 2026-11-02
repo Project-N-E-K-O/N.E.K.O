@@ -1,10 +1,12 @@
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * Русский языковой пакет
  */
 export default {
+  authoring: authoringMessages['ru'],
   modelApi: modelApiMessages['ru'],
   modelBindings: modelBindingsMessages['ru'],
   development: {

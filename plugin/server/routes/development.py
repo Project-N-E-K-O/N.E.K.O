@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from plugin.server.application.plugins import development as store
 from plugin.server.application.plugins import development_service as service
 from plugin.server.application.plugin_cli.development_artifacts import resolve_development_download_sync
 from plugin.server.application.plugins.operation_lock import PluginOperationBusy, bounded_operation_wait
@@ -31,6 +30,10 @@ class DevelopmentDirectory(BaseModel):
 class DevelopmentRebind(BaseModel):
     source_dir: str = Field(min_length=1, max_length=32768)
     revision: int = Field(ge=1)
+
+
+class DevelopmentMount(BaseModel):
+    source_dir: str = Field(min_length=1, max_length=32768)
 
 
 async def _operation(awaitable):
@@ -66,6 +69,11 @@ async def post_development_registration(body: DevelopmentDirectory):
         return await _operation(asyncio.to_thread(service.preview_development_sync,
             body.source_dir, body.registration_id, body.revision))
     return await _operation(service.register_development(body.source_dir))
+
+
+@router.post("/plugins/development/mount")
+async def post_development_mount(body: DevelopmentMount):
+    return await _operation(service.mount_development(body.source_dir))
 
 
 @router.patch("/plugins/development/registrations/{registration_id}")

@@ -196,14 +196,15 @@ async def set_development_enabled(enabled: bool) -> dict:
 
 
 @serialized_plugin_operation
-async def register_development(source_dir: str) -> dict:
+async def register_development(source_dir: str, *, start: bool = True) -> dict:
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
     from plugin.server.application.plugins.registry_service import PluginRegistryService
     record = await asyncio.to_thread(store.register_directory_sync, source_dir)
     try:
         await PluginRegistryService().refresh_plugin(record.plugin_id)
         await asyncio.to_thread(store.validate_development_snapshot_sync, record)
-        await PluginLifecycleService().start_plugin(record.plugin_id, persist_user_intent=True)
+        if start:
+            await PluginLifecycleService().start_plugin(record.plugin_id, persist_user_intent=True)
     except Exception as exc:
         # Registration is intentionally durable when loading fails.
         await asyncio.to_thread(_record_runtime_failure_sync, record, exc)
@@ -212,6 +213,16 @@ async def register_development(source_dir: str) -> dict:
         return result
     await asyncio.to_thread(_record_runtime_failure_sync, record, None)
     return await asyncio.to_thread(registration_view_sync, record)
+
+
+@serialized_plugin_operation
+async def mount_development(source_dir: str) -> dict:
+    """Associate external source without executing it; keep the ordinary load API unchanged."""
+    # Validate conflicts and managed-directory boundaries before enabling the mode.
+    await asyncio.to_thread(store.inspect_directory_sync, source_dir)
+    if not await asyncio.to_thread(store.development_enabled_sync):
+        await set_development_enabled(True)
+    return await register_development(source_dir, start=False)
 
 
 @serialized_plugin_operation

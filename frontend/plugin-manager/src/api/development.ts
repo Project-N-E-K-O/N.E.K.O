@@ -32,6 +32,8 @@ export const downloadDevelopmentPackage = async (packagePath: string): Promise<v
   }
 }
 export const getDevelopment = (): Promise<DevelopmentState> => get('/plugins/development', config)
+export const mountDevelopment = (source_dir: string): Promise<DevelopmentRegistration> =>
+  post('/plugins/development/mount', { source_dir }, config)
 export const setDevelopmentEnabled = async (enabled: boolean): Promise<DevelopmentState> => {
   if (enabled) return put('/plugins/development/settings', { enabled }, config)
   // Refresh the count/configuration estimate rather than using the page's stale

@@ -80,6 +80,11 @@ export default defineConfig({
         secure: false
       },
       // 代理所有插件服务器 API 请求
+      '/plugin-projects/': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false,
+      },
       '/plugin/': {
         target: BACKEND_TARGET,
         changeOrigin: true,

@@ -1,10 +1,12 @@
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * 日本語言語パック
  */
 export default {
+  authoring: authoringMessages['ja'],
   modelApi: modelApiMessages['ja'],
   modelBindings: modelBindingsMessages['ja'],
   development: {
