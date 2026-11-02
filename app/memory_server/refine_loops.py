@@ -29,7 +29,7 @@ from config import (
     SCOPED_REFINE_CRON_INTERVAL_SECONDS,
 )
 
-from . import gates, runtime
+from . import gates, review, runtime
 from ._shared import logger
 from .locale_state import (
     aget_subject_prompt_locale,
@@ -639,10 +639,26 @@ async def _run_introspection_tick() -> None:
     for name in catgirl_names:
         if not _introspection_due(name, now):
             continue
+        # Spawn under the lock character release takes: a name already
+        # retired (renamed / deleted) is skipped, and a run registered here
+        # is cancelled and drained by the release instead of applying its
+        # actions to the old identity after the model returns.
+        async with review._get_review_spawn_lock(name):
+            if name in review._retired_derived_task_names:
+                continue
+            existing = review.introspection_tasks.get(name)
+            if existing is not None and not existing.done():
+                return
+            task = runtime._spawn_background_task(run_with_character_prompt_locale(
+                name, _run_introspection_for_character, name,
+            ))
+            review.introspection_tasks[name] = task
+        # wait(), not await: a release cancelling the run must not cancel
+        # this loop with it.
+        await asyncio.wait({task})
+        if review.introspection_tasks.get(name) is task:
+            review.introspection_tasks.pop(name, None)
         # One character per tick: idleness is re-checked before the next.
-        await run_with_character_prompt_locale(
-            name, _run_introspection_for_character, name,
-        )
         return
 
 

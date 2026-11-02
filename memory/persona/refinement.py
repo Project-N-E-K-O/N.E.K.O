@@ -239,6 +239,11 @@ class RefinementMixin:
                     self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
                     dirty = True
                 elif verb == ACTION_MERGE:
+                    if any(src.get('suppress') for src in srcs):
+                        # A source in mention cooldown would leave the
+                        # do-not-mention section early as a fresh entry.
+                        stale += 1
+                        continue
                     merged = self._build_refine_merge_entry(
                         srcs, act['text'], now_iso, reason=reason,
                     )
@@ -358,13 +363,20 @@ class RefinementMixin:
                     src_ids_raw = act_obj.get('source_ids') or []
                     if not isinstance(src_ids_raw, list):
                         continue
+                    if any(
+                        is_permanently_suppressed(section_by_id.get(sid))
+                        for sid in src_ids_raw
+                    ):
+                        # The merged text was written from every source,
+                        # retired one included: dropping that source and
+                        # keeping the text would bring its content back.
+                        continue
                     valid_ids = [
                         sid for sid in src_ids_raw
                         if sid in cluster_ids
                         and sid in section_by_id
                         and sid not in consumed
                         and not section_by_id[sid].get('protected')
-                        and not is_permanently_suppressed(section_by_id[sid])
                     ]
                     if len(valid_ids) < 2:
                         continue

@@ -132,6 +132,8 @@ def import_document(incoming, existing, *, baseline=None):
     local_persona = {(subject, _entry_id(subject, row)): row for subject in SUBJECTS
                      for row in existing['persona'].get(subject, {}).get('facts', [])
                      if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
+    local_reflections = {(row.get('entity'), row.get('id')): row for row in existing['reflections']
+                         if isinstance(row, dict) and private(row) and isinstance(row.get('id'), str)}
     pending = set()
     if baseline is not None:
         previous = {(row['kind'], row['subject'], row['id']): row for row in baseline}
@@ -182,7 +184,8 @@ def import_document(incoming, existing, *, baseline=None):
             previous = local_persona.get((subject, row['id']), {})
             # The protocol omits receiver-only state and external-import ledgers.
             # Keep these locally; reflection links still come from the snapshot.
-            for field in ('suppress', 'suppressed_at', 'recent_mentions', 'sub_zero_days', 'sub_zero_last_increment_date'):
+            for field in ('suppress', 'suppressed_at', 'recent_mentions', 'sub_zero_days', 'sub_zero_last_increment_date',
+                          'permanent_suppression'):
                 if field in previous:
                     native[field] = deepcopy(previous[field])
             if previous.get('source') and previous['source'] != 'reflection':
@@ -204,6 +207,11 @@ def import_document(incoming, existing, *, baseline=None):
                           confirmed_at=iso(meta.get('evidenceReviewedAt') or incoming['completedAt']))
             if meta.get('promotedAt'):
                 native['promoted_at'] = iso(meta['promotedAt'])
+            # Introspection's suppression is this device's decision and not part
+            # of the protocol; a snapshot of the same row must not lift it.
+            previous = local_reflections.get((subject, row['id']), {})
+            if 'permanent_suppression' in previous:
+                native['permanent_suppression'] = deepcopy(previous['permanent_suppression'])
             result['reflections'].append(native)
     return result
 

@@ -199,6 +199,10 @@ class IntrospectionPlan:
 
 
 _NUMBER_RE = re.compile(r'\d+')
+# A run of '=' as long as the prompt's own delimiters. Entry text (a Workshop
+# card line, say) could otherwise close the memory block early and continue
+# as instructions.
+_DELIMITER_RUN_RE = re.compile(r'={6,}')
 
 
 def _parse_number(raw) -> int | None:
@@ -357,6 +361,7 @@ def _build_prompt(memory_text: str, *, ai_name: str, master_name: str) -> str:
     # caps on card and do-not-mention lines); this is the backstop for a
     # card import big enough to outgrow the sum.
     memory_text = truncate_to_tokens(memory_text, MEMORY_INTROSPECTION_INPUT_MAX_TOKENS)
+    memory_text = _DELIMITER_RUN_RE.sub('==', memory_text)
     lang = detect_prompt_language_with_ascii_fallback(
         memory_text, ui_language=get_global_language_full(),
     )

@@ -616,6 +616,16 @@ class PromotionMergeMixin:
                     f"discarding LLM decision={action!r} without persona write"
                 )
                 return 'no_longer_eligible'
+            if is_permanently_suppressed(current2):
+                # Introspection retired it during the LLM await; suppression
+                # changes neither status nor score, so the checks around
+                # this one cannot see it.
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: permanently "
+                    f"suppressed during LLM await; discarding LLM "
+                    f"decision={action!r}"
+                )
+                return 'no_longer_eligible'
             if (
                 memory_subject is not None
                 and (
@@ -661,6 +671,9 @@ class PromotionMergeMixin:
                 if (
                     current3 is None
                     or current3.get('status') != 'confirmed'
+                    # Introspection may retire it while the LLM was thinking;
+                    # suppression changes neither status nor score.
+                    or is_permanently_suppressed(current3)
                     or (
                         memory_subject is not None
                         and (
@@ -760,6 +773,13 @@ class PromotionMergeMixin:
                     f"{target_entry_id} not found in persona; skip"
                 )
                 return 'invalid_target'
+            if is_permanently_suppressed(target_entry):
+                # Merging into a retired entry would hide R's content with it.
+                logger.warning(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} is permanently suppressed; refuse"
+                )
+                return 'invalid_target'
             if not entry_matches_subject(target_entry, memory_subject):
                 # The LLM may hallucinate an entry ID in another domain because global lookup is unbounded; merging
                 # would overwrite that entry with this domain's text across isolation boundaries, so revalidate and reject it.
@@ -776,6 +796,9 @@ class PromotionMergeMixin:
                 if (
                     current3 is None
                     or current3.get('status') != 'confirmed'
+                    # Introspection may retire it while the LLM was thinking;
+                    # suppression changes neither status nor score.
+                    or is_permanently_suppressed(current3)
                     or (
                         memory_subject is not None
                         and (

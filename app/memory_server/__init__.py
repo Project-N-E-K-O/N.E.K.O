@@ -182,6 +182,7 @@ from .review import (  # noqa: F401
     compress_backup_tasks,
     correction_cancel_flags,
     correction_tasks,
+    introspection_tasks,
     maybe_spawn_review,
 )
 

@@ -323,12 +323,18 @@ class RefinementMixin:
                             "[Refine apply] reflection: merge source_ids 含 fact，拒绝"
                         )
                         continue
+                    if any(
+                        is_permanently_suppressed(refl_by_id.get(sid))
+                        for sid in src_ids_raw
+                    ):
+                        # Same rule as persona: the merged text carries the
+                        # retired source's content, so the whole merge goes.
+                        continue
                     valid_refl_ids = [
                         sid for sid in src_ids_raw
                         if sid in cluster_refl_ids
                         and sid in refl_by_id
                         and sid not in consumed
-                        and not is_permanently_suppressed(refl_by_id[sid])
                     ]
                     if len(valid_refl_ids) < 2:
                         continue
