@@ -6,7 +6,7 @@
 
 # Project N.E.K.O. 猫娘计划
 
-**开源的陪伴 Agent，和一起养大它们的社区。**
+**开源的伙伴 Agent，和一个人与猫娘共同生活的社区。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism（网络型情感知性生命体）
 

@@ -6,7 +6,7 @@
 
 # Project N.E.K.O.
 
-**Open-source companion agents, and the community that raises them.**
+**Open-source companion agents, and a community where humans and catgirls live together.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 

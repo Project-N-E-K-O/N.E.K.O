@@ -6,7 +6,7 @@
 
 # Project N.E.K.O.
 
-**オープンソースのコンパニオン Agent と、それを育てるコミュニティ。**
+**オープンソースのコンパニオン Agent と、人と猫娘がともに暮らすコミュニティ。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 
