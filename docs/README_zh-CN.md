@@ -207,7 +207,7 @@ uv run python launcher.py
 
 打开启动器输出的地址（通常是 `http://127.0.0.1:48911`），在 `/api_key` 配置服务商。手动分开启动各服务只用于排查问题。详见 [开发环境搭建](https://project-neko.online/zh-CN/guide/dev-setup) 与 [源码手动部署](https://project-neko.online/zh-CN/deployment/manual)。
 
-**Docker（Linux）**：在 `docker/` 目录下把 `env.template` 复制为 `.env`，再执行 `docker compose up -d`。默认监听 HTTP 48911 和 HTTPS 48912，可用 `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT` 修改。数据卷、TLS、镜像标签、从旧挂载布局升级、故障排查等，见 [Docker 部署文档](https://project-neko.online/zh-CN/deployment/docker) 与 [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md)。
+**Docker（Linux）**：需要 Docker Compose v2.24 或更高版本。在 `docker/` 目录下把 `env.template` 复制为 `.env`，在里面填好服务商和 API Key（`NEKO_CORE_API` / `NEKO_CORE_API_KEY`），再执行 `docker compose up -d`。默认监听 HTTP 48911 和 HTTPS 48912，可用 `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT` 修改。数据卷、TLS、镜像标签、从旧挂载布局升级、故障排查等，见 [Docker 部署文档](https://project-neko.online/zh-CN/deployment/docker) 与 [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md)。
 
 ## 文档
 
@@ -243,8 +243,10 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 | 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
 | 假名化设备标识（见下方说明） | 其他任何能识别到个人的信息（下方的 Steam64 ID 除外） |
 | 设备硬件档位：操作系统、CPU 架构、内存档位、CPU 档位 | |
-| 使用指标：功能使用次数、延迟与会话时长分布、错误类型、崩溃指纹（traceback 的哈希）、粗粒度设置状态（开 / 关、分档间隔）以及形象类型 | |
+| 使用指标：功能使用次数、延迟与会话时长分布、错误类型、粗粒度设置状态（开 / 关、分档间隔）以及形象类型 | |
 | **仅限发行版构建，且 Steamworks SDK 初始化成功、你已登录 Steam 客户端时**：Steam64 用户 ID | 其他任何账号体系的 ID（GitHub / Google / OpenAI 等） |
+
+崩溃指纹（traceback 的哈希）、新手引导步骤这类离散事件只写入本地的 `events-YYYYMMDD.jsonl` 文件，不会上传，本地清理会删除 7 天前的文件。
 
 > **假名化设备标识**：单向 SHA-256 哈希，原始输入（机器 ID、MAC、安装路径）不会上报。
 > - 主路径：`SHA256(OS_machine_id ‖ namespace)`。

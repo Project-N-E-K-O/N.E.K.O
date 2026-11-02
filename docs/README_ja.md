@@ -206,7 +206,7 @@ uv run python launcher.py
 
 ランチャーが表示する URL（通常は `http://127.0.0.1:48911`）を開き、`/api_key` でプロバイダーを設定します。サービスを手動で個別に起動するのは診断のときだけです。詳しくは [開発環境のセットアップ](https://project-neko.online/ja/guide/dev-setup) と [ソースからの手動セットアップ](https://project-neko.online/ja/deployment/manual) を参照してください。
 
-**Docker（Linux）**：`docker/` で `env.template` を `.env` にコピーしてから `docker compose up -d` を実行します。既定では HTTP は 48911、HTTPS は 48912 で待ち受けます。`NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT` で変更できます。ボリューム、TLS、イメージタグ、旧マウント構成からの移行、トラブルシューティングは [Docker ガイド](https://project-neko.online/ja/deployment/docker) と [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md) を参照してください。
+**Docker（Linux）**：Docker Compose v2.24 以降が必要です。`docker/` で `env.template` を `.env` にコピーし、プロバイダーと API キー（`NEKO_CORE_API` / `NEKO_CORE_API_KEY`）を設定してから `docker compose up -d` を実行します。既定では HTTP は 48911、HTTPS は 48912 で待ち受けます。`NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT` で変更できます。ボリューム、TLS、イメージタグ、旧マウント構成からの移行、トラブルシューティングは [Docker ガイド](https://project-neko.online/ja/deployment/docker) と [`docker/README_Docker.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docker/README_Docker.md) を参照してください。
 
 ## ドキュメント
 
@@ -242,8 +242,10 @@ N.E.K.O. は**トークン使用量テレメトリーをデフォルトで有効
 | アプリのバージョン、A/B 分岐、ロケール、タイムゾーン、配布チャネル（source / release / steam） | ファイルパス、Cookie、ブラウザーフィンガープリント |
 | 仮名化されたデバイス ID（下記参照） | その他の個人を特定できるあらゆる情報（下記の Steam64 ID を除く） |
 | デバイスのハードウェア区分：OS、CPU アーキテクチャ、RAM の区分、CPU の区分 | |
-| 利用指標：機能の利用回数、レイテンシーとセッション時間の分布、エラー種別、クラッシュの指紋（traceback のハッシュ）、大まかな設定状態（オン / オフ、区分された間隔）、アバターの種類 | |
+| 利用指標：機能の利用回数、レイテンシーとセッション時間の分布、エラー種別、大まかな設定状態（オン / オフ、区分された間隔）、アバターの種類 | |
 | **リリースビルドで、Steamworks SDK が初期化でき、Steam クライアントにログインしている場合のみ**：Steam64 ユーザー ID | 上記以外のアカウント ID（GitHub / Google / OpenAI など） |
+
+クラッシュの指紋（traceback のハッシュ）やオンボーディングの手順のような個別イベントは、ローカルの `events-YYYYMMDD.jsonl` ファイルにのみ書き込まれます。アップロードはされず、ローカルのクリーンアップで 7 日より古いファイルは削除されます。
 
 > **仮名化されたデバイス ID**：一方向の SHA-256 ハッシュです。元の入力（マシン ID、MAC、インストールパス）は送信しません。
 > - 主経路：`SHA256(OS_machine_id ‖ namespace)`。

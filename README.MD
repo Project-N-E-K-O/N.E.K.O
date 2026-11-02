@@ -207,7 +207,7 @@ uv run python launcher.py
 
 Open the URL the launcher prints (normally `http://127.0.0.1:48911`) and configure providers at `/api_key`. Splitting services by hand is only for diagnostics. See [Development Setup](https://project-neko.online/guide/dev-setup) and [Manual Source Setup](https://project-neko.online/deployment/manual).
 
-**Docker (Linux)**: in `docker/`, copy `env.template` to `.env`, then run `docker compose up -d`. By default it listens on HTTP 48911 and HTTPS 48912; override them with `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT`. For volumes, TLS, image tags, upgrading from the old mount layout and troubleshooting, see the [Docker guide](https://project-neko.online/deployment/docker) and [`docker/README_Docker.md`](docker/README_Docker.md).
+**Docker (Linux)**: requires Docker Compose v2.24 or newer. In `docker/`, copy `env.template` to `.env`, set your provider and API key there (`NEKO_CORE_API` / `NEKO_CORE_API_KEY`), then run `docker compose up -d`. By default it listens on HTTP 48911 and HTTPS 48912; override them with `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT`. For volumes, TLS, image tags, upgrading from the old mount layout and troubleshooting, see the [Docker guide](https://project-neko.online/deployment/docker) and [`docker/README_Docker.md`](docker/README_Docker.md).
 
 ## Documentation
 
@@ -243,8 +243,10 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 | App version, A/B branch, locale, time zone, distribution channel (source / release / steam) | File paths, cookies, browser fingerprints |
 | Pseudonymous device ID (see note below) | Any other PII that can identify a person (apart from the Steam64 ID below) |
 | Device hardware profile: OS, CPU architecture, RAM tier, CPU tier | |
-| Usage metrics: feature-use counts, latency and session-length histograms, error classes, crash fingerprints (a hash of the traceback), coarse settings state (on / off, bucketed intervals) and avatar type | |
+| Usage metrics: feature-use counts, latency and session-length histograms, error classes, coarse settings state (on / off, bucketed intervals) and avatar type | |
 | **Only in release builds, when the Steamworks SDK initializes and you are logged in to the Steam client**: your Steam64 user ID | Any other account ID (GitHub / Google / OpenAI, etc.) |
+
+Discrete events such as crash fingerprints (a hash of the traceback) and onboarding steps are written only to local `events-YYYYMMDD.jsonl` files. They are not uploaded, and local cleanup deletes files older than 7 days.
 
 > **Pseudonymous device ID**: a one-way SHA-256 hash. The raw inputs (machine ID, MAC, install path) are never sent.
 > - Primary path: `SHA256(OS_machine_id ‖ namespace)`.
