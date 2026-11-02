@@ -317,20 +317,28 @@ def test_model_may_only_target_ids_it_was_shown(tmp_path, monkeypatch):
     store = _store(tmp_path)
     asyncio.run(_seed(store, [("主人下周三考试", 14)]))
     newcomer: dict = {}
+    prompts: list[str] = []
 
     async def model(api_config, prompt, *, timeout, call_label):
-        store.apply_decisions(
-            _NAME, [{"text": "主人对花生过敏", "entity": "master", "ttl_days": 365}],
-            [("add", None)], now=_T0 + 1,
-        )
-        newcomer.update(store.get_active(_NAME, now=_T0 + 1)[-1])
-        answer = [{"candidate": 1, "action": "replace", "target": newcomer["id"]}]
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            store.apply_decisions(
+                _NAME, [{"text": "主人对花生过敏", "entity": "master", "ttl_days": 365}],
+                [("add", None)], now=_T0 + 1,
+            )
+            newcomer.update(store.get_active(_NAME, now=_T0 + 1)[-1])
+            answer = [{"candidate": 1, "action": "replace", "target": newcomer["id"]}]
+        else:
+            answer = [{"candidate": 1, "action": "add", "target": None}]
         return SimpleNamespace(content=json.dumps(answer)), 0
 
     monkeypatch.setattr("memory.thinking_llm.ainvoke_thinking", model)
 
     asyncio.run(store.aadmit_extracted(_NAME, [_pin("主人周六去北京", 3)], now=_T0 + 2))
 
+    # The guess is rejected, and since the file gained an entry the model had
+    # not seen, the add is decided again with it in view.
+    assert len(prompts) == 2 and "主人对花生过敏" in prompts[1]
     live = {e["id"]: e for e in store.get_active(_NAME, now=_T0 + 2)}
     assert live[newcomer["id"]]["text"] == "主人对花生过敏"
     assert sorted(e["text"] for e in live.values()) == sorted([
@@ -444,6 +452,44 @@ def test_a_decision_on_a_changed_entry_is_made_again(tmp_path, monkeypatch):
     assert (counts["removed"], counts["renewed"]) == (0, 1)
     [entry] = store.get_active(_NAME, now=_T0 + 2)
     assert entry["text"] == "主人的考试改到下周五"
+
+
+def test_concurrent_first_admissions_are_reconciled(tmp_path, monkeypatch):
+    # Cloud review #3598: two admissions into an empty section skip the model;
+    # without a check both land, "exam Wednesday" next to "exam moved to Friday".
+    store = _store(tmp_path)
+    real_snapshot = store.aget_active
+    snapshots = 0
+
+    async def snapshot(name, *, now=None):
+        nonlocal snapshots
+        snapshots += 1
+        active = await real_snapshot(name, now=now)
+        if snapshots == 1:
+            # The other admission lands right after our (empty) snapshot.
+            store.apply_decisions(
+                _NAME, [_candidate("主人下周三考试", 14)], [("add", None)], now=_T0,
+            )
+        return active
+
+    monkeypatch.setattr(store, "aget_active", snapshot)
+    prompts: list[str] = []
+
+    async def model(api_config, prompt, *, timeout, call_label):
+        prompts.append(prompt)
+        [exam] = store.get_active(_NAME, now=_T0)
+        answer = [{"candidate": 1, "action": "replace", "target": exam["id"]}]
+        return SimpleNamespace(content=json.dumps(answer)), 0
+
+    monkeypatch.setattr("memory.thinking_llm.ainvoke_thinking", model)
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人的考试改到下周五", 14)], now=_T0 + 1,
+    ))
+
+    assert len(prompts) == 1 and "主人下周三考试" in prompts[0]
+    assert (counts["added"], counts["replaced"]) == (0, 1)
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 1)] == ["主人的考试改到下周五"]
 
 
 def test_resolve_rounds_are_bounded(tmp_path, monkeypatch):

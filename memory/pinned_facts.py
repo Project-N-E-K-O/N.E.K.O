@@ -507,7 +507,8 @@ class PinnedFactStore:
 
         ``expected_revs`` maps entry ids to their ``rev`` in the snapshot the
         decisions were made on. With it, a targeted action whose entry another
-        admission has changed or removed since is NOT applied: its index goes to
+        admission has changed or removed since, and an add while the file holds
+        an entry the snapshot lacked, are NOT applied: their indices go to
         ``stale_out`` and the caller decides again on fresh state. Without it,
         such an action degrades: remove is dropped, replace / renew become add.
         An add whose text is already live renews that entry instead, so the
@@ -534,6 +535,14 @@ class PinnedFactStore:
                 else:
                     history.append(self._history_record(entry, "expire", ts))
                     counts["expired"] += 1
+            # Entries the decisions never saw: another admission added them
+            # after the snapshot (two first admissions into an empty section,
+            # say). An add may contradict one of them, so a checked round
+            # decides it again with them in view.
+            unseen = (
+                {e["id"] for e in live if e["id"] not in expected_revs}
+                if expected_revs is not None else set()
+            )
             touched: set[str] = set()
             for index, (candidate, (action, target_id)) in enumerate(zip(candidates, decisions)):
                 by_id = {e["id"]: e for e in live}
@@ -550,6 +559,11 @@ class PinnedFactStore:
                         continue
                     if target is None:
                         action = None if action == ACTION_REMOVE else ACTION_ADD
+                elif action == ACTION_ADD and unseen and not candidate.get("outdated"):
+                    counts["stale"] += 1
+                    if stale_out is not None:
+                        stale_out.append(index)
+                    continue
                 if candidate.get("outdated") and action != ACTION_REMOVE:
                     # Its own lifetime is over: it may only retract an entry.
                     action = None
@@ -674,9 +688,10 @@ class PinnedFactStore:
         adds, replaces or renews anything.
 
         Decisions are made on a snapshot. When another admission changes an
-        entry a decision targets before it is applied, the affected candidates
-        are decided again on fresh state, up to PINNED_FACT_RESOLVE_ATTEMPTS
-        rounds; the last round applies without the check.
+        entry a decision targets, or adds one an add was not decided against,
+        before it is applied, the affected candidates are decided again on
+        fresh state, up to PINNED_FACT_RESOLVE_ATTEMPTS rounds; the last round
+        applies without the check.
         """
         if not name or not extracted:
             return {}

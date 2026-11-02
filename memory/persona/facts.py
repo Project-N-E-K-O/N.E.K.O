@@ -407,6 +407,12 @@ class FactsMixin:
     # Card sections (filled from characters.json: the character card into
     # "neko", the master profile into "master") that a private fact of each
     # entity is checked against; see acontradicts_character_card.
+    # Known trade-off: a relationship-type field on the character card (how
+    # the character addresses the master, say) never blocks a master or neko
+    # fact. The keyword-overlap test rarely flags such pairs anyway, while
+    # scanning across cards rejects the master's birthday or age on the
+    # character's own (both measured for PR #3598). Revisit if the
+    # contradiction test learns whose field it is looking at.
     _CARD_SECTIONS_BY_ENTITY = {
         'master': ('master',),
         'neko': ('neko',),
