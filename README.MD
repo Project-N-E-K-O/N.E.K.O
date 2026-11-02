@@ -37,7 +37,7 @@ Personal agents such as OpenClaw showed that people want an AI of their own: one
 ### 🎮 Plays games with you
 
 - **Built-in two-player games**: air basketball, badminton, drawing guess, soccer, and watch-together. A mini-game SDK and a game-vision service let developers add more.
-- **Plays alongside you**: community plugins read the game's telemetry or screen and give her live callouts and commentary in War Thunder, Slay the Spire 2, Strinova, World of Warships and KARDS. None of them cheat or automate your play.
+- **Plays alongside you**: community plugins read the game's telemetry or screen and give her live callouts and commentary in War Thunder, Slay the Spire 2, Strinova, World of Warships and KARDS. None of them cheat, and any auto-play is opt-in.
 - **Takes the controls**: when you ask, plugins let her play by herself in Plants vs. Zombies, Titanfall 2, Half-Life & Portal and Subnautica; you can take over at any time. The bundled Minecraft plugin connects to a separately started local Minecraft agent server ([setup](plugin/plugins/game_agent_minecraft/README.md)).
 - **Knows your game**: companions for Genshin Impact, Honkai: Star Rail, Civilization VI, RimWorld and Overcooked! 2 read the game state so she can chat about your run and give advice.
 - **Screen awareness**: she can watch whatever you are playing and chime in.
