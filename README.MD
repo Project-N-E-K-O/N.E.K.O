@@ -242,7 +242,7 @@ Implementation:
 
 - Client metadata and reporting: [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) and [`utils/token_tracker/reporting.py`](utils/token_tracker/reporting.py).
 - Server transport and storage: [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md). Requests are HMAC-SHA256 signed, accepted only within ±5 minutes to block replays, and rate-limited to 120 per hour per device. Storage is append-only.
-- Each server process reports at most about once every 60 s, sharing one timer with local persistence.
+- Reporting runs from the same 60 s background loop that saves token data locally (each process also saves once at shutdown), and a separate interval check keeps each server process to at most about one report every 60 s.
 
 ## License
 

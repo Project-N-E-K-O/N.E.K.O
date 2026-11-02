@@ -242,7 +242,7 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 
 - 客户端元数据与上报：[`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) 和 [`utils/token_tracker/reporting.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/reporting.py)。
 - 服务端传输与存储：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。请求用 HMAC-SHA256 签名防篡改，只接受 ±5 分钟内的请求以防重放，每台设备每小时最多 120 次，存储只追加不修改。
-- 每个服务进程大约最多每 60 秒上报一次，和本地落盘共用同一个计时器。
+- 上报由本地保存 Token 数据的那个 60 秒后台循环顺带触发（进程退出时也会单独保存一次本地数据）；另有一道独立的间隔检查，保证每个服务进程大约最多每 60 秒上报一次。
 
 ## 许可证
 

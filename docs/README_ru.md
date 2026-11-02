@@ -243,7 +243,7 @@ uv run python launcher.py
 
 - Метаданные клиента и отправка: [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) и [`utils/token_tracker/reporting.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/reporting.py).
 - Передача и хранение на сервере: [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md). Запросы подписываются HMAC-SHA256; для защиты от повторов принимаются только запросы в пределах ±5 минут; действует лимит 120 запросов в час на устройство; хранилище работает только на дозапись.
-- Каждый серверный процесс отправляет данные не чаще примерно одного раза в 60 секунд и делит этот таймер с локальным сохранением.
+- Отправка запускается из того же фонового цикла с периодом 60 секунд, который сохраняет данные о токенах локально (при завершении каждый процесс тоже один раз сохраняет их), а отдельная проверка интервала ограничивает каждый серверный процесс примерно одной отправкой в 60 секунд.
 
 ## Лицензия
 
