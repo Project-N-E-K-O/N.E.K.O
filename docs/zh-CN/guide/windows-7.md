@@ -7,7 +7,7 @@ seoSchemaType: WebPage
 # Windows 7 支持说明（实验性）
 
 ::: warning 状态
-Windows 7 **不是官方支持的平台**。项目正常要求 Windows 8.1+（Python 3.11、uv、Node.js ≥ 20、Electron 41 均已放弃 Win7）。本页描述的只是**保守的 best-effort 适配**：保持 Python 3.11 与全部依赖锁定不变，补充引导提示与安装脚本。**未经官方测试，能不能跑、跑到什么程度，以你的真机验证为准。**
+Windows 7 **不是官方支持的平台**。项目正常要求 Windows 8.1+（Python 3.11、uv、项目要求的 Node.js 版本、Electron 41 均已放弃 Win7）。本页描述的只是**保守的 best-effort 适配**：保持 Python 3.11 与全部依赖锁定不变，补充引导提示与安装脚本。**未经官方测试，能不能跑、跑到什么程度，以你的真机验证为准。**
 :::
 
 ## 支持矩阵
@@ -18,7 +18,7 @@ Windows 7 **不是官方支持的平台**。项目正常要求 Windows 8.1+（Py
 | Web 浏览器访问（`http://localhost:48911`） | ✅ 预期可用 | 请用 Chrome 109 或 Firefox 115 ESR |
 | 依赖安装 `setup_win7.bat` | ✅ 设计目标 | 纯 `pip`，不依赖 uv / Node |
 | 内置 Live2D / PNGTuber 模型 | ✅ 脚本自动解包 | `setup_win7.bat` 用 Python 标准库解包，不需要 `tar` / uv |
-| 聊天窗口、插件管理页（Node 构建产物） | ⚠️ 需在其他系统构建后拷贝 | 仓库不含这两份构建产物，Node 20 不支持 Win7，见[第三步](#第三步-拷贝前端构建产物) |
+| 聊天窗口、插件管理页（Node 构建产物） | ⚠️ 需在其他系统构建后拷贝 | 仓库不含这两份构建产物，项目要求的 Node.js 版本不支持 Win7，见[第三步](#第三步-拷贝前端构建产物) |
 | Electron 桌面端（`N.E.K.O.exe`） | ❌ 不可用 | Electron 41 基于 Chromium 14x，要求 Windows 10+ |
 | `uv` 包管理 | ❌ 不可用 | uv 官方最低 Windows 10；请用 pip |
 | Playwright 浏览器自动化 | ❌ 不可用 | 浏览器内核不再支持 Win7 |
@@ -84,10 +84,10 @@ python -m venv .venv
 
 ## 第三步：拷贝前端构建产物
 
-聊天窗口和插件管理页需要 Node.js 构建，产物没有放进仓库，而 Node 20 不支持 Win7。请在另一台 Windows 10+ / macOS / Linux 机器上：
+聊天窗口和插件管理页需要 Node.js 构建，产物没有放进仓库，而项目要求的 Node.js 版本不支持 Win7。请在另一台 Windows 10+ / macOS / Linux 机器上：
 
 1. 检出与 Win7 机器**相同的 commit**；
-2. 按[开发环境搭建](./dev-setup)装好 uv 与 Node.js（≥ 20.19），运行 `build_frontend.bat`（Windows）或 `./build_frontend.sh`（macOS / Linux）；
+2. 按[开发环境搭建](./dev-setup)装好 uv 与 Node.js（`^22.12.0 || >=24.0.0`），运行 `build_frontend.bat`（Windows）或 `./build_frontend.sh`（macOS / Linux）；
 3. 把下面两个目录原样拷到 Win7 机器仓库的相同位置：
 
 | 目录 | 缺失时的表现 |
