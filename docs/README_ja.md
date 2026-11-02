@@ -36,7 +36,7 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
 ### 🎮 一緒にゲームをする
 
 - **内蔵の 2 人用ゲーム**：エアバスケットボール、バドミントン、お絵かき当て、サッカー、一緒に視聴。ミニゲーム SDK とゲーム視覚サービスで開発者が追加できます。
-- **隣で一緒に遊ぶ**：彼女があなたの 2P になります。コミュニティのプラグインがゲームのテレメトリーや画面を読み取り、War Thunder、Slay the Spire 2、Strinova、World of Warships、KARDS、Overcooked! 2 で彼女がリアルタイムに声をかけ、実況します。Minecraft では、あなたのすぐ隣で一緒にプレイします。チートは一切せず、自動プレイは自分で有効にした場合だけです。同梱の Minecraft プラグインは、別途起動したローカルの Minecraft Agent サーバーに接続します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
+- **隣で一緒に遊ぶ**：Overcooked! 2、Slay the Spire 2、Minecraft では、彼女があなたの 2P として一緒にプレイします。War Thunder、Strinova、World of Warships、KARDS では彼女があなたの副官になり、コミュニティのプラグインがゲームのテレメトリーや画面を読み取って、リアルタイムに声をかけ、実況します。チートは一切しません。自動プレイは自分で有効にした場合だけです。同梱の Minecraft プラグインは、別途起動したローカルの Minecraft Agent サーバーに接続します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
 - **自分で操作する**：頼めば、Plants vs. Zombies、Titanfall 2、Half-Life と Portal、Subnautica を彼女が自分で遊びます。いつでも交代できます。
 - **ゲームを理解する**：原神、崩壊：スターレイル、Civilization VI、RimWorld 向けのプラグインがゲームの状態を読み取り、進行について話したりアドバイスしたりできます。
 - **画面認識**：何を遊んでいても、彼女が見て話しかけてきます。
