@@ -501,16 +501,21 @@ class PinnedFactStore:
         *,
         now: Optional[float] = None,
         expected_revs: Optional[Dict[str, int]] = None,
+        retry_stale: bool = True,
         stale_out: Optional[List[int]] = None,
     ) -> Dict[str, int]:
         """Apply one decision per candidate (same order) against the current file.
 
         ``expected_revs`` maps entry ids to their ``rev`` in the snapshot the
         decisions were made on. With it, a targeted action whose entry another
-        admission has changed or removed since, and an add while the file holds
-        an entry the snapshot lacked, are NOT applied: their indices go to
-        ``stale_out`` and the caller decides again on fresh state. Without it,
-        such an action degrades: remove is dropped, replace / renew become add.
+        admission has changed or removed since was made on an outdated view,
+        and so is an add while the file holds an entry the snapshot lacked.
+        With ``retry_stale`` such decisions are NOT applied: their indices go
+        to ``stale_out`` and the caller decides again on fresh state. Without
+        it (no retry left) an outdated targeted action degrades instead of
+        undoing the newer change: remove is dropped, replace / renew become
+        add; an add goes ahead, since adding loses nothing. A target that is
+        simply gone degrades the same way when there is no snapshot at all.
         An add whose text is already live renews that entry instead, so the
         section never holds the same text twice.
 
@@ -548,18 +553,22 @@ class PinnedFactStore:
                 by_id = {e["id"]: e for e in live}
                 target = by_id.get(target_id) if target_id else None
                 if action in _TARGETED_ACTIONS:
-                    if expected_revs is not None and (
+                    outdated_view = expected_revs is not None and (
                         target is None
                         or (target_id not in touched
                             and target["rev"] != expected_revs.get(target_id))
-                    ):
+                    )
+                    if outdated_view and retry_stale:
                         counts["stale"] += 1
                         if stale_out is not None:
                             stale_out.append(index)
                         continue
-                    if target is None:
+                    if outdated_view or target is None:
+                        # Never undo a change this decision did not see.
                         action = None if action == ACTION_REMOVE else ACTION_ADD
-                elif action == ACTION_ADD and unseen and not candidate.get("outdated"):
+                        target = None
+                elif (action == ACTION_ADD and unseen and retry_stale
+                        and not candidate.get("outdated")):
                     counts["stale"] += 1
                     if stale_out is not None:
                         stale_out.append(index)
@@ -690,8 +699,9 @@ class PinnedFactStore:
         Decisions are made on a snapshot. When another admission changes an
         entry a decision targets, or adds one an add was not decided against,
         before it is applied, the affected candidates are decided again on
-        fresh state, up to PINNED_FACT_RESOLVE_ATTEMPTS rounds; the last round
-        applies without the check.
+        fresh state, up to PINNED_FACT_RESOLVE_ATTEMPTS rounds. The last round
+        still checks, and degrades an outdated decision instead of applying it
+        (see apply_decisions), so a slow admission never undoes a newer one.
         """
         if not name or not extracted:
             return {}
@@ -735,10 +745,8 @@ class PinnedFactStore:
             counts = await asyncio.to_thread(
                 self.apply_decisions, name, batch, decisions,
                 now=ts,
-                expected_revs=(
-                    {e["id"]: e["rev"] for e in active}
-                    if rounds < PINNED_FACT_RESOLVE_ATTEMPTS else None
-                ),
+                expected_revs={e["id"]: e["rev"] for e in active},
+                retry_stale=rounds < PINNED_FACT_RESOLVE_ATTEMPTS,
                 stale_out=stale,
             )
             for key, value in counts.items():

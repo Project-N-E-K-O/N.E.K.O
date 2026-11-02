@@ -163,9 +163,10 @@ together with PINNED_FACT_MAX_ACTIVE and PINNED_FACT_TEXT_MAX_TOKENS."""
 PINNED_FACT_RESOLVE_ATTEMPTS = 3
 """Resolve rounds per admission. A round's targeted decision is not applied
 when another admission changed that entry after the snapshot the model saw;
-those candidates are decided again on fresh state. The last round applies
-without the check (a vanished target then degrades: remove is dropped,
-replace / renew become add)."""
+those candidates are decided again on fresh state. The last round still
+checks, but degrades such a decision instead of applying it (remove is
+dropped, replace / renew become add), so an older view never undoes a
+newer change."""
 
 PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
 """Model tier of the add / replace / renew / remove decision, the same tier and

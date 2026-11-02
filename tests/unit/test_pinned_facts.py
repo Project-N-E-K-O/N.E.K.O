@@ -516,9 +516,44 @@ def test_resolve_rounds_are_bounded(tmp_path, monkeypatch):
     ))
 
     assert calls == PINNED_FACT_RESOLVE_ATTEMPTS
-    # The last round applies without the check.
-    assert counts["replaced"] == 1
-    assert store.get_active(_NAME, now=_T0 + 10)[0]["text"] == "主人的考试改到下周五"
+    # No retry left: the outdated replace becomes an add and leaves the entry
+    # the other admission kept changing alone.
+    assert (counts["replaced"], counts["added"]) == (0, 1)
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 10)] == [
+        "主人下周三考试", "主人的考试改到下周五",
+    ]
+
+
+def test_last_round_never_undoes_a_newer_correction(tmp_path, monkeypatch):
+    # Cloud review #3598: "exam cancelled" decided on an old snapshot must not
+    # delete the "exam moved to Friday" another admission wrote meanwhile,
+    # not even once the retries are used up.
+    from config import PINNED_FACT_RESOLVE_ATTEMPTS
+
+    store = _store(tmp_path)
+    [exam] = asyncio.run(_seed(store, [("主人下周三考试", 14)]))
+    calls = 0
+
+    async def model(api_config, prompt, *, timeout, call_label):
+        nonlocal calls
+        calls += 1
+        store.apply_decisions(
+            _NAME, [_candidate(f"主人的考试改到下周五（第{calls}次）", 14)],
+            [("replace", exam["id"])], now=_T0 + calls,
+        )
+        answer = [{"candidate": 1, "action": "remove", "target": exam["id"]}]
+        return SimpleNamespace(content=json.dumps(answer)), 0
+
+    monkeypatch.setattr("memory.thinking_llm.ainvoke_thinking", model)
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人的考试取消了", 3)], now=_T0 + 10,
+    ))
+
+    assert calls == PINNED_FACT_RESOLVE_ATTEMPTS
+    assert (counts["removed"], counts["skipped"]) == (0, 1)
+    [entry] = store.get_active(_NAME, now=_T0 + 10)
+    assert entry["text"] == f"主人的考试改到下周五（第{PINNED_FACT_RESOLVE_ATTEMPTS}次）"
 
 
 def test_mutation_holds_the_cloudsave_fence_across_read_and_write(tmp_path, monkeypatch):
