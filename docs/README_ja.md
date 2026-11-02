@@ -6,7 +6,7 @@
 
 # Project N.E.K.O.
 
-**コンパニオンのために作られた、オープンソースのパーソナル Agent スタック。**
+**オープンソースのコンパニオン Agent と、それを育てるコミュニティ。**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 

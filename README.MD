@@ -6,7 +6,7 @@
 
 # Project N.E.K.O.
 
-**An open-source personal-agent stack built for companionship.**
+**Open-source companion agents, and the community that raises them.**
 
 > **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 
