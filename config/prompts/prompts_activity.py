@@ -919,7 +919,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
 # Why no literal examples: any concrete phrase shipped here will
 # be overfit by the model — across users and weeks the same canned
 # line surfaces over and over and breaks immersion. The whole
-# point of the tone layer is the catgirl sounding fresh each round,
+# point of the tone layer is the neko sounding fresh each round,
 # which only works if we describe the *angle* and let the in-prompt
 # screen / dialogue / state context fill in the words.
 #
@@ -955,7 +955,7 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
 # skipped rendering for concise, which left focused_work prompts with
 # no style guidance — combined with the propensity directive (briefly chat about
 # only the screen content), this nudged the model toward [PASS]. Surfacing
-# the three angles abstractly keeps the catgirl present without
+# the three angles abstractly keeps the neko present without
 # changing source filtering and without leaking canned phrasing.
 #
 # Inner keys MUST stay in sync with the ``ActivityTone`` Literal in
@@ -1267,7 +1267,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
 # Most tones don't ship a quality bar — they always have *something*
 # worth saying (a screen detail, a care line, an atmosphere beat). The
 # exception is ``witty``: entertainment (watching anime / video / a
-# stream) is only worth interrupting for when the catgirl actually has a
+# stream) is only worth interrupting for when the neko actually has a
 # funny take. A flat, unfunny line there is worse than silence, so
 # ``witty`` ships one extra rendered line telling the model to reply
 # ``[PASS]`` (the Phase 2 skip sentinel, see prompts_proactive.py) rather

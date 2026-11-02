@@ -218,7 +218,7 @@ def test_capsule_runtime_projects_narration_display_kind_from_performance_phase(
 
 
 def test_capsule_runtime_streams_ordinary_performance_into_one_history_bubble():
-    """Ordinary micro-actions and dialogue share catgirl messages; scene narration retains separate bubbles."""  # noqa: DOCSTRING_CJK
+    """Ordinary micro-actions and dialogue share neko messages; scene narration retains separate bubbles."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     schema = _source("frontend/react-neko-chat/src/message-schema.ts")
@@ -286,7 +286,7 @@ def test_capsule_runtime_invalidates_pending_launch_when_turn_advances():
 
 
 def test_theater_character_switch_invalidates_restore_and_selector_requests():
-    """On catgirl changes, pending host restoration and script-selection requests must not publish old-character state."""  # noqa: DOCSTRING_CJK
+    """On neko changes, pending host restoration and script-selection requests must not publish old-character state."""  # noqa: DOCSTRING_CJK
 
     runtime = _source("static/app/app-theater-runtime.js")
     selector = _source("static/js/theater_selector.js")

@@ -1833,8 +1833,8 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
 
 @pytest.mark.unit
 def test_profile_rename_event_master_is_person_neutral():
-    """The owner's rename is recorded in the catgirl persona's master section; the reader is the catgirl,
-    while the user is the person renaming. First person would imply the catgirl renamed herself, so use
+    """The owner's rename is recorded in the neko persona's master section; the reader is the neko,
+    while the user is the person renaming. First person would imply the neko renamed herself, so use
     neutral statements with neither "我" nor "你"."""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         PROFILE_RENAME_EVENT_FIELD_MASTER,
@@ -3112,8 +3112,8 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
 
             _, _, master_basic_config, _, _, _, _, _, _ = cm.get_character_data()
             hidden_context = master_basic_config["__ai_context.profile_rename_events"]
-            # Record the owner's rename in the catgirl persona's master section, using neutral statements:
-            # no first-person "我" (which would imply the catgirl renamed herself), nor second-person "你".
+            # Record the owner's rename in the neko persona's master section, using neutral statements:
+            # no first-person "我" (which would imply the neko renamed herself), nor second-person "你".
             assert "改名记录" in hidden_context
             assert "我" not in hidden_context
             assert "你" not in hidden_context

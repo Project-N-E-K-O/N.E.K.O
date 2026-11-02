@@ -395,8 +395,8 @@ def resolve_recent_file_path(
     Resolve a logical recent filename to the actual storage path.
 
     Supports both:
-    - New layout: memory/<catgirl>/recent.json
-    - Legacy layout: memory/recent_<catgirl>.json
+    - New layout: memory/<neko>/recent.json
+    - Legacy layout: memory/recent_<neko>.json
     """
     catgirl_name = extract_catgirl_name_from_recent_filename(filename)
     if not catgirl_name:
@@ -436,10 +436,10 @@ def path_error_status_code(error_code: str) -> int:
 
 def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserved_route: bool = True) -> tuple[bool, str]:
     """
-    Validate a catgirl name for safe use in filenames.
+    Validate a neko name for safe use in filenames.
     
     Args:
-        name: The catgirl name to validate
+        name: The neko name to validate
         allow_dots: If True, permit dots in the name (for historical names during migration).
                     Path traversal via '..' is still rejected.
     
@@ -1338,7 +1338,7 @@ async def save_recent_file(request: Request):
     cm = get_config_manager()
     catgirl_name = extract_catgirl_name_from_recent_filename(filename)
     if catgirl_name is None:
-        logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
+        logger.warning(f"Failed to extract neko name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
     # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
@@ -1453,7 +1453,7 @@ async def save_recent_file(request: Request):
 @router.post('/update_catgirl_name')
 async def update_catgirl_name(request: Request):
     """
-    Update the catgirl name in memory files.
+    Update the neko name in memory files.
     1. Rename the memory files
     2. Update name references inside the file contents
     """
