@@ -227,7 +227,7 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 > - Fallback path: `SHA256(uuid.getnode() ‖ install path ‖ namespace)`.
 > - During migration both the new and the old ID are sent, so the server can merge them into one user cohort.
 >
-> The same OS install reproduces the same ID, so under GDPR / PIPL it is pseudonymous data, not fully anonymous data. It is used only for DAU de-duplication and version-compatibility attribution.
+> The primary ID stays the same as long as the OS machine ID does; the fallback ID can change if the network adapter (`uuid.getnode()`) or the install path changes. Because it is stable, under GDPR / PIPL it is pseudonymous data, not fully anonymous data. The server uses it to group reports from the same device: active-device counts (DAU / WAU / MAU), retention, version-compatibility attribution, and per-device attributes such as the hardware profile and, when reported, the Steam64 ID.
 >
 > **Steam64**: the public numeric ID that the Steam client exposes to every third-party SDK after you log in. It is the number at the end of your Steam profile URL. It contains no email, phone number or real name, but it stays the same across sessions.
 >
