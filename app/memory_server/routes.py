@@ -8075,16 +8075,12 @@ async def _new_dialog(
         # is read after entry, so reenter context before nested renderers that may read
         # global language; explicit _lang still serves table-driven strings in this function.
         with language_context(_activate_request_language(language)):
-            # Inject pending + confirmed reflections into context too (labeled sections).
-            try:
-                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-            except Exception as e:
-                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            # Persona + pending/confirmed reflections (labeled sections). Shared
+            # with weekly introspection, which must review exactly this block.
+            from memory.introspection import arender_injected_memory
             result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-            persona_md = await runtime.persona_manager.arender_persona_markdown(
-                lanlan_name, pending_reflections, confirmed_reflections,
+            persona_md = await arender_injected_memory(
+                runtime.persona_manager, runtime.reflection_engine, lanlan_name,
             )
         if persona_md:
             result += persona_md

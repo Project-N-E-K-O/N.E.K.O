@@ -899,6 +899,36 @@ MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
   at zero cost, so frequent polls do not waste LLM tokens.
 - Both cron loops share the interval, staggering starts through _INITIAL_DELAY_*."""
 
+# ---- Memory: weekly introspection ----
+# Reads the persona + reflection block exactly as /new_dialog injects it and
+# lets the correction-tier model (thinking on) suppress / rewrite / merge the
+# entries that are contradictory, redundant, hollow or stale. Gated on
+# powerful_memory like refine; runs only while the system is idle.
+
+MEMORY_INTROSPECTION_INTERVAL_SECONDS = 7 * 24 * 3600
+"""Seconds between two completed introspection runs of one character.
+A character with no recorded run is reviewed at its first idle moment, so
+existing users are covered right after the upgrade."""
+
+MEMORY_INTROSPECTION_RETRY_AFTER_FAILURE_SECONDS = 6 * 3600
+"""Backoff after a run whose model call failed or returned unparseable output;
+keeps a persistently failing model from being called on every idle poll."""
+
+MEMORY_INTROSPECTION_MAX_ROUNDS = 3
+"""Review → apply → re-render rounds per run. Each round re-renders because
+entries leaving the budget let others move up into it; a round with no
+applied action ends the run early."""
+
+MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND = 15
+"""Accepted suppress / rewrite / merge actions per round; the rest are
+rejected and counted as over_cap."""
+
+MEMORY_INTROSPECTION_INPUT_MAX_TOKENS = 16000
+"""Backstop cap on the annotated memory block in the prompt. The render is
+already bounded (persona and reflection pools of 2000 tokens each plus count
+caps on character-card and do-not-mention lines); this only bites when a
+very large character card outgrows that sum."""
+
 # ---- Memory: scoped subject eviction (group memory series 5/7, track one) ----
 # Scoped group/member entries receive no evidence signals (facts persist with
 # signal_processed=True, reflections directly confirmed, surfacing legacy-only),

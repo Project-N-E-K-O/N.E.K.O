@@ -1160,6 +1160,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
             # Group-memory series 5/7: lightweight scoped refine cron.
             _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
+            # Weekly introspection over the injected persona block.
+            _spawn_background_task(refine_loops._periodic_introspection_loop())
             # Keyed-write auxiliary data: expired staged leftovers and tombstones (key records retained permanently).
             # Background work does not block startup.
             from . import idempotency

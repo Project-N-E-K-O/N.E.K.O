@@ -5177,6 +5177,328 @@ memory_refine_prompt = MEMORY_REFINE_PROMPT["zh"]
 
 
 # =====================================================================
+# ======= Weekly memory introspection =================================
+# =====================================================================
+# memory.introspection renders the persona + reflection block exactly as
+# /new_dialog injects it, prefixes each bullet with [n] ([n RO] for
+# read-only character-card lines), and asks for suppress / rewrite / merge
+# actions. Code validates every number against the render's map; this
+# prompt only explains the rules. Rendering uses replace(AI_NAME /
+# MASTER_NAME / MAX_ACTIONS / MEMORY), so JSON-example braces need no
+# escaping.
+
+MEMORY_INTROSPECTION_PROMPT = {
+    "zh": """你在为「{AI_NAME}」做每周一次的长期记忆自省。下面是聊天模型此刻实际读到的长期记忆，与注入对话时一字不差。{MASTER_NAME} 是和 {AI_NAME} 聊天的用户。
+
+每条记忆行首的 [编号] 是它的编号。带 RO 的行（如 [3 RO]）是角色卡设定等只读条目：只用来对照，不能对它做任何操作。
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+逐条阅读，找出有问题的条目：
+1. 互相矛盾：两条说法冲突
+2. 冗余：同一个意思换了几种说法
+3. 空洞的关系定性：例如「形成了……默契／模式／纽带」「体现了／意味着……」，却没有任何具体事件
+4. 把 {AI_NAME} 自己的反应写成规律：例如「{AI_NAME}总是默许……」
+5. 主语或指代不清：读不出是谁做的、谁说的
+6. 过期或明显已经失效
+7. 和角色卡（RO 行）冲突
+
+可用操作：
+- suppress：永久压制这一条，之后不再注入。适合空洞的定性、过期、与角色卡冲突、或改不好的条目
+- rewrite：改写这一条。改写后必须更具体（写清是谁、做了什么、在什么情境下），不许改成另一句空话；改不具体就用 suppress
+- merge：把说同一件事的几条合并成一条。只能合并同一类条目：同一节人格条目之间，或反思条目之间
+- 没有问题的条目不用列出
+
+约束：
+- 本轮最多 {MAX_ACTIONS} 个操作，先处理对 {AI_NAME} 的言行影响最大的
+- 每个编号只能出现在一个操作里
+- 不能对 RO 行做任何操作
+- 每个操作都要写 reason
+- 改写与合并后的文本沿用原条目的语言
+- 不需要任何操作时，返回空数组 []
+
+只输出 JSON 数组：
+[
+  {"action": "suppress", "id": 12, "reason": "空洞的关系定性，没有具体事件"},
+  {"action": "rewrite", "id": 7, "text": "改写后的具体表述", "reason": "主语不清"},
+  {"action": "merge", "ids": [3, 9], "text": "合并后的一条", "reason": "同一个意思的两种说法"}
+]""",
+
+    "zh-TW": """你在為「{AI_NAME}」做每週一次的長期記憶自省。下面是聊天模型此刻實際讀到的長期記憶，與注入對話時一字不差。{MASTER_NAME} 是和 {AI_NAME} 聊天的使用者。
+
+每條記憶行首的 [編號] 是它的編號。帶 RO 的行（如 [3 RO]）是角色卡設定等唯讀條目：只用來對照，不能對它做任何操作。
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+逐條閱讀，找出有問題的條目：
+1. 互相矛盾：兩條說法衝突
+2. 冗餘：同一個意思換了幾種說法
+3. 空洞的關係定性：例如「形成了……默契／模式／紐帶」「體現了／意味著……」，卻沒有任何具體事件
+4. 把 {AI_NAME} 自己的反應寫成規律：例如「{AI_NAME}總是默許……」
+5. 主語或指代不清：讀不出是誰做的、誰說的
+6. 過期或明顯已經失效
+7. 和角色卡（RO 行）衝突
+
+可用操作：
+- suppress：永久壓制這一條，之後不再注入。適合空洞的定性、過期、與角色卡衝突、或改不好的條目
+- rewrite：改寫這一條。改寫後必須更具體（寫清是誰、做了什麼、在什麼情境下），不許改成另一句空話；改不具體就用 suppress
+- merge：把說同一件事的幾條合併成一條。只能合併同一類條目：同一節人格條目之間，或反思條目之間
+- 沒有問題的條目不用列出
+
+約束：
+- 本輪最多 {MAX_ACTIONS} 個操作，先處理對 {AI_NAME} 的言行影響最大的
+- 每個編號只能出現在一個操作裡
+- 不能對 RO 行做任何操作
+- 每個操作都要寫 reason
+- 改寫與合併後的文字沿用原條目的語言
+- 不需要任何操作時，回傳空陣列 []
+
+只輸出 JSON 陣列：
+[
+  {"action": "suppress", "id": 12, "reason": "空洞的關係定性，沒有具體事件"},
+  {"action": "rewrite", "id": 7, "text": "改寫後的具體表述", "reason": "主語不清"},
+  {"action": "merge", "ids": [3, 9], "text": "合併後的一條", "reason": "同一個意思的兩種說法"}
+]""",
+
+    "en": """You are running {AI_NAME}'s weekly review of long-term memory. Below is the long-term memory the chat model reads right now, exactly as it is injected into conversations. {MASTER_NAME} is the user who chats with {AI_NAME}.
+
+The [number] at the start of each memory line is its id. Lines marked RO (e.g. [3 RO]) are read-only entries such as character-card settings: use them only for comparison and never act on them.
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+Read every entry and find the problematic ones:
+1. Contradiction: two entries conflict
+2. Redundancy: the same idea phrased several ways
+3. Hollow relationship labels: e.g. "they have formed a tacit understanding / pattern / bond", "this reflects / means ...", with no concrete event behind it
+4. {AI_NAME}'s own reactions written up as a rule: e.g. "{AI_NAME} always goes along with ..."
+5. Unclear subject or reference: you cannot tell who did or said it
+6. Outdated or clearly no longer true
+7. Conflicts with the character card (RO lines)
+
+Available actions:
+- suppress: permanently suppress this entry so it is no longer injected. Use it for hollow labels, outdated entries, conflicts with the character card, or entries that cannot be fixed
+- rewrite: rewrite this entry. The rewrite must be more concrete (who, did what, in what situation); never turn it into another empty phrase — if it cannot be made concrete, use suppress
+- merge: combine several entries that say the same thing into one. Only merge entries of the same kind: persona entries within one section, or reflection entries with each other
+- do not list entries that have no problem
+
+Constraints:
+- at most {MAX_ACTIONS} actions this round; handle what most affects how {AI_NAME} speaks and behaves first
+- each id may appear in only one action
+- never act on RO lines
+- every action needs a reason
+- rewritten and merged text keeps the language of the original entries
+- if nothing needs to change, return an empty array []
+
+Output only a JSON array:
+[
+  {"action": "suppress", "id": 12, "reason": "hollow relationship label with no concrete event"},
+  {"action": "rewrite", "id": 7, "text": "the concrete rewritten statement", "reason": "unclear subject"},
+  {"action": "merge", "ids": [3, 9], "text": "the single merged entry", "reason": "two phrasings of the same idea"}
+]""",
+
+    "ja": """あなたは「{AI_NAME}」の長期記憶を週に一度見直します。以下は、チャットモデルがいま実際に読んでいる長期記憶で、会話に注入される内容と一字一句同じです。{MASTER_NAME} は {AI_NAME} と話しているユーザーです。
+
+各記憶行の先頭にある [番号] がその番号です。RO の付いた行（例：[3 RO]）はキャラクターカードの設定などの読み取り専用エントリです。照合にだけ使い、操作してはいけません。
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+1 件ずつ読み、問題のあるエントリを見つけてください：
+1. 矛盾：2 つの記述が食い違っている
+2. 冗長：同じ意味を何通りにも言い換えている
+3. 中身のない関係づけ：「……という暗黙の了解／パターン／絆が生まれた」「……を表している／意味している」などで、具体的な出来事がない
+4. {AI_NAME} 自身の反応を法則として書いている：例「{AI_NAME}はいつも……を黙認する」
+5. 主語や指示対象が不明：誰がしたのか、誰が言ったのか読み取れない
+6. 古くなった、または明らかにもう当てはまらない
+7. キャラクターカード（RO 行）と矛盾する
+
+使える操作：
+- suppress：このエントリを恒久的に抑制し、今後注入しない。中身のない関係づけ、古い内容、キャラクターカードとの矛盾、直しようのないエントリに使う
+- rewrite：このエントリを書き換える。書き換え後は必ずより具体的に（誰が、何を、どんな場面で）。別の空虚な言い回しにしてはいけない。具体的にできないなら suppress を使う
+- merge：同じことを言っている複数のエントリを 1 つにまとめる。同じ種類同士だけ：同じ節の persona エントリ同士、または振り返り（reflection）エントリ同士
+- 問題のないエントリは挙げなくてよい
+
+制約：
+- この回の操作は最大 {MAX_ACTIONS} 件。{AI_NAME} の言動への影響が大きいものから扱う
+- 各番号は 1 つの操作にしか使えない
+- RO 行には一切操作しない
+- すべての操作に reason を書く
+- 書き換え・統合後のテキストは元のエントリの言語のままにする
+- 操作が不要なら空配列 [] を返す
+
+JSON 配列だけを出力：
+[
+  {"action": "suppress", "id": 12, "reason": "具体的な出来事のない関係づけ"},
+  {"action": "rewrite", "id": 7, "text": "書き換えた具体的な記述", "reason": "主語が不明"},
+  {"action": "merge", "ids": [3, 9], "text": "統合した 1 件", "reason": "同じ意味の 2 通りの言い方"}
+]""",
+
+    "ko": """당신은 「{AI_NAME}」의 장기 기억을 주 1회 점검합니다. 아래는 채팅 모델이 지금 실제로 읽고 있는 장기 기억이며, 대화에 주입되는 내용과 한 글자도 다르지 않습니다. {MASTER_NAME}은(는) {AI_NAME}와(과) 대화하는 사용자입니다.
+
+각 기억 줄 앞의 [번호]가 그 항목의 번호입니다. RO가 붙은 줄(예: [3 RO])은 캐릭터 카드 설정 같은 읽기 전용 항목입니다. 대조용으로만 쓰고 어떤 작업도 하면 안 됩니다.
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+항목을 하나씩 읽고 문제가 있는 항목을 찾으세요:
+1. 서로 모순: 두 항목의 내용이 충돌함
+2. 중복: 같은 뜻을 여러 방식으로 말함
+3. 내용 없는 관계 규정: 예) 「……한 암묵적 이해/패턴/유대가 형성되었다」「……을(를) 보여 준다/의미한다」 같은데 구체적인 사건이 없음
+4. {AI_NAME} 자신의 반응을 규칙처럼 씀: 예) 「{AI_NAME}은(는) 늘 ……을(를) 묵인한다」
+5. 주어나 지시 대상이 불분명: 누가 했는지, 누가 말했는지 알 수 없음
+6. 오래되었거나 이미 맞지 않음이 분명함
+7. 캐릭터 카드(RO 줄)와 충돌함
+
+사용할 수 있는 작업:
+- suppress: 이 항목을 영구히 억제하여 더 이상 주입하지 않음. 내용 없는 관계 규정, 오래된 항목, 캐릭터 카드와의 충돌, 고칠 수 없는 항목에 사용
+- rewrite: 이 항목을 고쳐 씀. 고친 뒤에는 반드시 더 구체적이어야 함(누가, 무엇을, 어떤 상황에서). 또 다른 빈말로 바꾸면 안 되며, 구체적으로 만들 수 없으면 suppress를 사용
+- merge: 같은 내용을 말하는 여러 항목을 하나로 합침. 같은 종류끼리만: 같은 절의 persona 항목끼리, 또는 회고(reflection) 항목끼리
+- 문제없는 항목은 나열하지 않음
+
+제약:
+- 이번 회차 작업은 최대 {MAX_ACTIONS}개이며, {AI_NAME}의 말과 행동에 가장 큰 영향을 주는 것부터 처리
+- 각 번호는 하나의 작업에만 나올 수 있음
+- RO 줄에는 어떤 작업도 하지 않음
+- 모든 작업에 reason을 씀
+- 고쳐 쓰거나 합친 텍스트는 원래 항목의 언어를 유지
+- 작업이 필요 없으면 빈 배열 []을 반환
+
+JSON 배열만 출력:
+[
+  {"action": "suppress", "id": 12, "reason": "구체적인 사건 없는 관계 규정"},
+  {"action": "rewrite", "id": 7, "text": "구체적으로 고친 서술", "reason": "주어가 불분명"},
+  {"action": "merge", "ids": [3, 9], "text": "합친 한 항목", "reason": "같은 뜻의 두 가지 표현"}
+]""",
+
+    "ru": """Вы проводите еженедельную проверку долговременной памяти «{AI_NAME}». Ниже — долговременная память, которую чат-модель читает прямо сейчас, в точности в том виде, в каком она подставляется в диалог. {MASTER_NAME} — пользователь, который общается с {AI_NAME}.
+
+[Номер] в начале каждой строки памяти — её идентификатор. Строки с пометкой RO (например, [3 RO]) — записи только для чтения, такие как настройки карточки персонажа: используйте их лишь для сверки и не применяйте к ним никаких действий.
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+Прочитайте каждую запись и найдите проблемные:
+1. Противоречие: две записи конфликтуют
+2. Избыточность: одна и та же мысль в нескольких формулировках
+3. Пустые характеристики отношений: например, «между ними сложилось молчаливое понимание / закономерность / связь», «это отражает / означает …», без какого-либо конкретного события
+4. Собственные реакции {AI_NAME}, записанные как правило: например, «{AI_NAME} всегда молча соглашается с …»
+5. Неясный субъект или отсылка: нельзя понять, кто это сделал или сказал
+6. Устарело или явно больше не соответствует действительности
+7. Противоречит карточке персонажа (строкам RO)
+
+Доступные действия:
+- suppress: навсегда подавить запись, чтобы она больше не подставлялась. Подходит для пустых характеристик, устаревших записей, конфликтов с карточкой персонажа и записей, которые не удаётся исправить
+- rewrite: переписать запись. Новая формулировка обязана быть конкретнее (кто, что сделал, в какой ситуации); нельзя превращать её в другую пустую фразу — если конкретнее не получается, используйте suppress
+- merge: объединить несколько записей об одном и том же в одну. Объединять можно только записи одного вида: записи persona внутри одного раздела или записи reflection между собой
+- записи без проблем перечислять не нужно
+
+Ограничения:
+- в этом раунде не более {MAX_ACTIONS} действий; сначала то, что сильнее всего влияет на речь и поведение {AI_NAME}
+- каждый номер может встречаться только в одном действии
+- никаких действий над строками RO
+- у каждого действия должно быть поле reason
+- переписанный и объединённый текст сохраняет язык исходных записей
+- если ничего менять не нужно, верните пустой массив []
+
+Выведите только JSON-массив:
+[
+  {"action": "suppress", "id": 12, "reason": "пустая характеристика отношений без конкретного события"},
+  {"action": "rewrite", "id": 7, "text": "конкретная переписанная формулировка", "reason": "неясный субъект"},
+  {"action": "merge", "ids": [3, 9], "text": "одна объединённая запись", "reason": "две формулировки одной мысли"}
+]""",
+
+    "es": """Estás haciendo la revisión semanal de la memoria a largo plazo de «{AI_NAME}». A continuación está la memoria a largo plazo que el modelo de chat lee ahora mismo, exactamente tal como se inyecta en las conversaciones. {MASTER_NAME} es el usuario que conversa con {AI_NAME}.
+
+El [número] al inicio de cada línea de memoria es su identificador. Las líneas marcadas con RO (por ejemplo, [3 RO]) son entradas de solo lectura, como los ajustes de la ficha del personaje: úsalas solo para comparar y nunca apliques acciones sobre ellas.
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+Lee cada entrada y localiza las problemáticas:
+1. Contradicción: dos entradas chocan entre sí
+2. Redundancia: la misma idea dicha de varias maneras
+3. Etiquetas de relación vacías: p. ej. «han desarrollado una complicidad / un patrón / un vínculo», «esto refleja / significa …», sin ningún hecho concreto detrás
+4. Reacciones de {AI_NAME} escritas como una regla: p. ej. «{AI_NAME} siempre consiente …»
+5. Sujeto o referencia poco claros: no se entiende quién lo hizo o lo dijo
+6. Desactualizado o claramente ya no vigente
+7. Choca con la ficha del personaje (líneas RO)
+
+Acciones disponibles:
+- suppress: suprimir esta entrada de forma permanente para que ya no se inyecte. Úsala para etiquetas vacías, entradas desactualizadas, conflictos con la ficha del personaje o entradas que no se pueden arreglar
+- rewrite: reescribir esta entrada. La nueva versión debe ser más concreta (quién, qué hizo, en qué situación); nunca la conviertas en otra frase vacía; si no se puede concretar, usa suppress
+- merge: unir en una sola varias entradas que dicen lo mismo. Solo entre entradas del mismo tipo: entradas persona de una misma sección, o entradas reflection entre sí
+- no hace falta listar las entradas sin problemas
+
+Restricciones:
+- como máximo {MAX_ACTIONS} acciones en esta ronda; empieza por lo que más influye en cómo habla y actúa {AI_NAME}
+- cada número puede aparecer en una sola acción
+- ninguna acción sobre líneas RO
+- cada acción necesita un reason
+- el texto reescrito o fusionado conserva el idioma de las entradas originales
+- si no hace falta cambiar nada, devuelve un array vacío []
+
+Devuelve solo un array JSON:
+[
+  {"action": "suppress", "id": 12, "reason": "etiqueta de relación vacía sin hecho concreto"},
+  {"action": "rewrite", "id": 7, "text": "la afirmación concreta reescrita", "reason": "sujeto poco claro"},
+  {"action": "merge", "ids": [3, 9], "text": "la entrada única fusionada", "reason": "dos formulaciones de la misma idea"}
+]""",
+
+    "pt": """Você está fazendo a revisão semanal da memória de longo prazo de «{AI_NAME}». Abaixo está a memória de longo prazo que o modelo de chat lê agora, exatamente como é injetada nas conversas. {MASTER_NAME} é o usuário que conversa com {AI_NAME}.
+
+O [número] no início de cada linha de memória é o seu identificador. Linhas marcadas com RO (por exemplo, [3 RO]) são entradas somente leitura, como as configurações da ficha do personagem: use-as apenas para comparação e nunca aplique ações sobre elas.
+
+======以下为当前注入的记忆======
+{MEMORY}
+======以上为当前注入的记忆======
+
+Leia cada entrada e encontre as problemáticas:
+1. Contradição: duas entradas se contradizem
+2. Redundância: a mesma ideia dita de várias formas
+3. Rótulos de relação vazios: ex. «desenvolveram uma cumplicidade / um padrão / um vínculo», «isso reflete / significa …», sem nenhum acontecimento concreto
+4. Reações do próprio {AI_NAME} escritas como regra: ex. «{AI_NAME} sempre consente com …»
+5. Sujeito ou referência pouco claros: não dá para saber quem fez ou disse
+6. Desatualizado ou claramente não mais válido
+7. Conflita com a ficha do personagem (linhas RO)
+
+Ações disponíveis:
+- suppress: suprimir esta entrada permanentemente para que não seja mais injetada. Use para rótulos vazios, entradas desatualizadas, conflitos com a ficha do personagem ou entradas que não dá para consertar
+- rewrite: reescrever esta entrada. A nova versão deve ser mais concreta (quem, fez o quê, em que situação); nunca a transforme em outra frase vazia; se não for possível torná-la concreta, use suppress
+- merge: juntar em uma só várias entradas que dizem a mesma coisa. Somente entre entradas do mesmo tipo: entradas persona de uma mesma seção, ou entradas reflection entre si
+- não é preciso listar entradas sem problemas
+
+Restrições:
+- no máximo {MAX_ACTIONS} ações nesta rodada; comece pelo que mais afeta como {AI_NAME} fala e age
+- cada número pode aparecer em apenas uma ação
+- nenhuma ação sobre linhas RO
+- toda ação precisa de um reason
+- o texto reescrito ou unido mantém o idioma das entradas originais
+- se nada precisar mudar, retorne um array vazio []
+
+Retorne apenas um array JSON:
+[
+  {"action": "suppress", "id": 12, "reason": "rótulo de relação vazio sem acontecimento concreto"},
+  {"action": "rewrite", "id": 7, "text": "a afirmação concreta reescrita", "reason": "sujeito pouco claro"},
+  {"action": "merge", "ids": [3, 9], "text": "a entrada única unida", "reason": "duas formulações da mesma ideia"}
+]""",
+}
+
+
+def get_memory_introspection_prompt(lang: str = "zh") -> str:
+    return _loc(MEMORY_INTROSPECTION_PROMPT, lang)
+
+
+# =====================================================================
 # ===== Scoped lightweight refinement cluster prompt, group-memory series 5/7 =====
 # =====================================================================
 # Scoped group/member lightweight merge-only refinement deliberately differs from

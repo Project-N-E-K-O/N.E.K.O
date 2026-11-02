@@ -19,6 +19,8 @@ unabsorbed-facts → pending-reflections synthesis pass.
 """
 
 import asyncio
+import functools
+from datetime import datetime
 
 from config import (
     MEMORY_REFINE_CLUSTERS_PER_PASS,
@@ -34,6 +36,7 @@ from .locale_state import (
     run_with_character_prompt_locale,
 )
 from .gates import (
+    _INITIAL_DELAY_INTROSPECTION,
     _INITIAL_DELAY_PERSONA_REFINE,
     _INITIAL_DELAY_REFLECTION_REFINE,
     _INITIAL_DELAY_REFLECTION_SYNTHESIS,
@@ -64,6 +67,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
     )
     from memory.facts import safe_int_field
+    from memory.introspection import is_permanently_suppressed
     from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
@@ -90,6 +94,9 @@ async def _run_persona_refine_for_character(character: str) -> None:
             for e in section
             if isinstance(e, dict)
             and not e.get('protected')
+            # Retired by introspection: merging or splitting it would bring
+            # the text back as a fresh, unflagged entry.
+            and not is_permanently_suppressed(e)
             and e.get('id')
             and (
                 safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
@@ -181,6 +188,7 @@ async def _run_reflection_refine_for_character(
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
     )
     from memory.facts import safe_int_field
+    from memory.introspection import is_permanently_suppressed
     from memory.scopes import entry_matches_subject
     from memory.temporal import cooldown_elapsed
     from memory.refine import (
@@ -214,6 +222,7 @@ async def _run_reflection_refine_for_character(
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
+            and not is_permanently_suppressed(r)
             and entry_matches_subject(r, subject)
             and (
                 safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
@@ -521,6 +530,135 @@ async def _periodic_scoped_refine_loop():
             continue
         await _run_scoped_refine_round(catgirl_names)
         await asyncio.sleep(interval)
+
+
+# ── Weekly introspection over the injected memory block ─────────────
+
+_INTROSPECTION_LAST_RUN_KEY = 'introspection_last_run_at'
+_INTROSPECTION_LAST_FAILURE_KEY = 'introspection_last_failure_at'
+
+
+def _parse_maint_time(value, now: datetime) -> datetime | None:
+    """A stored timestamp, or None when missing, malformed or in the future.
+
+    A future stamp (clock moved back) is ignored rather than trusted: trusting
+    it would postpone the character's review by however far the clock jumped.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+    if parsed is None or parsed > now:
+        return None
+    return parsed
+
+
+def _introspection_due(name: str, now: datetime) -> bool:
+    """Never run → due now (the upgrade path); otherwise one interval after
+    the last completed run, and not within the backoff after a failure."""
+    from config import (
+        MEMORY_INTROSPECTION_INTERVAL_SECONDS,
+        MEMORY_INTROSPECTION_RETRY_AFTER_FAILURE_SECONDS,
+    )
+
+    view = gates._maint_view(name)
+    last_run = _parse_maint_time(view.get(_INTROSPECTION_LAST_RUN_KEY), now)
+    if (
+        last_run is not None
+        and (now - last_run).total_seconds() < MEMORY_INTROSPECTION_INTERVAL_SECONDS
+    ):
+        return False
+    last_failure = _parse_maint_time(view.get(_INTROSPECTION_LAST_FAILURE_KEY), now)
+    if (
+        last_failure is not None
+        and (now - last_failure).total_seconds()
+        < MEMORY_INTROSPECTION_RETRY_AFTER_FAILURE_SECONDS
+    ):
+        return False
+    return True
+
+
+def _mutate_stamp_introspection(key: str, stamp: str, state: dict) -> tuple[bool, None]:
+    """Mutator: record when an introspection run ended (``key`` says how)."""
+    state[key] = stamp
+    return True, None
+
+
+async def _astamp_introspection(name: str, *, completed: bool) -> None:
+    key = _INTROSPECTION_LAST_RUN_KEY if completed else _INTROSPECTION_LAST_FAILURE_KEY
+    await gates._amutate_maint_state(
+        name,
+        functools.partial(
+            _mutate_stamp_introspection, key, datetime.now().isoformat(),
+        ),
+    )
+
+
+async def _run_introspection_for_character(character: str) -> None:
+    """One introspection run, then record when it ended and how."""
+    from memory.introspection import arun_introspection
+
+    pm = runtime.persona_manager
+    engine_ref = runtime.reflection_engine
+    if pm is None or engine_ref is None:
+        return
+    try:
+        result = await arun_introspection(
+            character,
+            persona_manager=pm,
+            reflection_engine=engine_ref,
+            config_manager=runtime._config_manager,
+        )
+    except Exception:
+        await _astamp_introspection(character, completed=False)
+        raise
+    await _astamp_introspection(character, completed=result.completed)
+    logger.info(
+        f"[Introspection] {character}: 结束 rounds={result.rounds} "
+        f"applied={result.applied} rejected={dict(result.rejected)} "
+        f"completed={result.completed}"
+    )
+    if result.applied:
+        from .long_term_sync import queue_capture
+        queue_capture(character)
+
+
+async def _run_introspection_tick() -> None:
+    """Start at most one due character's run, and only while idle."""
+    if not gates._is_idle():
+        return
+    if not await gates._ais_powerful_memory_enabled():
+        return
+    try:
+        character_data = await runtime._config_manager.aload_characters()
+        catgirl_names = list(character_data.get('猫娘', {}).keys())
+    except Exception as e:
+        logger.debug(f"[Introspection] 加载角色列表失败: {e}")
+        return
+    now = datetime.now()
+    for name in catgirl_names:
+        if not _introspection_due(name, now):
+            continue
+        # One character per tick: idleness is re-checked before the next.
+        await run_with_character_prompt_locale(
+            name, _run_introspection_for_character, name,
+        )
+        return
+
+
+async def _periodic_introspection_loop():
+    """Weekly review of each character's injected memory (see
+    ``memory.introspection``). Polls at the idle-check cadence so a character
+    that has never been reviewed — every existing one right after the upgrade
+    — is picked up at the first idle moment; gated on powerful_memory like
+    the refine crons."""
+    await asyncio.sleep(_INITIAL_DELAY_INTROSPECTION)
+    while True:
+        try:
+            await _run_introspection_tick()
+        except Exception as e:
+            logger.warning(f"[Introspection] 本轮异常: {e}")
+        await asyncio.sleep(gates.IDLE_CHECK_INTERVAL)
 
 
 async def _periodic_reflection_synthesis_loop():

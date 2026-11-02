@@ -36,6 +36,8 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async, read_json_async
 
 
+from memory.introspection import is_permanently_suppressed
+
 from memory.stop_names import (
     acollect_stop_names,
     collect_stop_names,
@@ -181,6 +183,10 @@ class FactsMixin:
         is deliberately kept out of the ordinary Memory log, so the
         rejection line records lengths instead of excerpts."""
         for existing in section_facts:
+            if is_permanently_suppressed(existing):
+                # A retired entry must not absorb a new fact through a
+                # correction: the new text would inherit its suppression.
+                continue
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
                 is_card = existing.get('source') == 'character_card'

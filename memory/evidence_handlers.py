@@ -35,6 +35,7 @@ from memory.event_log import (
     EVT_PERSONA_ENTRY_UPDATED,
     EVT_PERSONA_EVIDENCE_UPDATED,
     EVT_PERSONA_FACT_ADDED,
+    EVT_PERSONA_SUPPRESSED,
     EVT_REFLECTION_EVIDENCE_UPDATED,
     EVT_REFLECTION_STATE_CHANGED,
     Reconciler,
@@ -219,6 +220,52 @@ def make_persona_evidence_handler(persona_manager):
             persona_manager._personas[name] = persona
             atomic_write_json(path, persona, indent=2, ensure_ascii=False)
         return changed
+
+    return _apply
+
+
+def make_persona_suppressed_handler(persona_manager):
+    """Build the `persona.suppressed` apply handler (weekly introspection).
+
+    The payload carries the whole ``permanent_suppression`` marker, so
+    replay is a plain idempotent assignment — same shape as the evidence
+    handler above. Without a registered handler this event type would stop
+    every later replay for the character (the reconciler pauses on unknown
+    types), which is why it is registered alongside its first emitter.
+    """
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY
+
+    def _apply(name: str, payload: dict) -> bool:
+        entity_key = payload.get('entity_key')
+        entry_id = payload.get('entry_id')
+        marker = payload.get(PERMANENT_SUPPRESSION_KEY)
+        if not entity_key or not entry_id or not marker:
+            return False
+        path = persona_manager._persona_path(name)
+        if not os.path.exists(path):
+            return False
+        # Load failures propagate, as in the evidence handler: a silent
+        # fallback would advance the sentinel past an unapplied suppression.
+        with open(path, encoding='utf-8') as f:
+            persona = json.load(f)
+        if not isinstance(persona, dict):
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 dict，实际 "
+                f"{type(persona).__name__}；view 结构异常，暂停 replay"
+            )
+        section = persona.get(entity_key)
+        if not isinstance(section, dict):
+            return False
+        for e in section.get('facts', []):
+            if not isinstance(e, dict) or e.get('id') != entry_id:
+                continue
+            if e.get(PERMANENT_SUPPRESSION_KEY) == marker:
+                return False
+            e[PERMANENT_SUPPRESSION_KEY] = marker
+            persona_manager._personas[name] = persona
+            atomic_write_json(path, persona, indent=2, ensure_ascii=False)
+            return True
+        return False
 
     return _apply
 
@@ -535,6 +582,10 @@ def register_evidence_handlers(
     reconciler.register(
         EVT_PERSONA_ENTRY_UPDATED,
         make_persona_entry_handler(persona_manager),
+    )
+    reconciler.register(
+        EVT_PERSONA_SUPPRESSED,
+        make_persona_suppressed_handler(persona_manager),
     )
     # RFC §3.5.6 + §3.9.6: archive + merge-on-promote both emit
     # EVT_REFLECTION_STATE_CHANGED. Dispatch on `to` inside the composite.

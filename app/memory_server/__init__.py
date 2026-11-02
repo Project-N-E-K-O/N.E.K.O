@@ -210,6 +210,7 @@ from .evidence_loops import (  # noqa: F401
 
 from . import refine_loops  # noqa: F401
 from .refine_loops import (  # noqa: F401
+    _periodic_introspection_loop,
     _periodic_persona_refine_loop,
     _periodic_reflection_refine_loop,
     _periodic_reflection_synthesis_loop,

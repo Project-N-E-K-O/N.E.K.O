@@ -31,6 +31,7 @@ from config import (
 )
 
 from memory.evidence import evidence_score
+from memory.introspection import is_permanently_suppressed
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
@@ -479,6 +480,14 @@ class PromotionMergeMixin:
                     f"skip"
                 )
                 return 'no_longer_eligible'
+            if is_permanently_suppressed(current):
+                # Promoting it would write its text back into persona as a
+                # fresh, unflagged entry — undoing the suppression.
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: permanently "
+                    f"suppressed by introspection; skip"
+                )
+                return 'no_longer_eligible'
             if evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
@@ -544,6 +553,7 @@ class PromotionMergeMixin:
                     if (
                         isinstance(e, dict)
                         and not e.get('protected')
+                        and not is_permanently_suppressed(e)
                         and entry_matches_subject(e, memory_subject)
                     ):
                         # A section can contain entries from multiple scopes (section keys omit
@@ -558,6 +568,9 @@ class PromotionMergeMixin:
             and entry_matches_subject(r, memory_subject)
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
+            # Retired entries are neither merge targets nor evidence that
+            # R is already covered.
+            and not is_permanently_suppressed(r)
         ]
 
         try:

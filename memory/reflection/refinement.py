@@ -41,6 +41,7 @@ from memory._reflection.refine import (
     build_merge_reflection,
     build_split_reflection,
 )
+from memory.introspection import is_permanently_suppressed
 
 
 
@@ -100,6 +101,124 @@ class RefinementMixin:
             id_factory=self._refine_reflection_id,
             normalizer=self._normalize_reflection,
         )
+
+    @staticmethod
+    def _apply_refine_modify(
+        src: dict, new_text: str, reason: str, now_iso: str,
+        *, absorbed_fact_ids: list[str] | tuple = (),
+    ) -> None:
+        """Rewrite ``src`` in place; the old text goes to ``modification_history``.
+
+        Shared by refine ``modify`` and introspection ``rewrite`` — the
+        reflection twin of ``PersonaManager._apply_refine_modify``.
+        """
+        absorbed = list(absorbed_fact_ids)
+        old_text = src.get('text', '')
+        src['text'] = new_text
+        existing_sources = list(src.get('source_fact_ids') or [])
+        src['source_fact_ids'] = sorted(set(existing_sources + absorbed))
+        mod_history = list(src.get('modification_history') or [])
+        mod_history.append({
+            'old_text': old_text,
+            'modified_at': now_iso,
+            'reason': reason,
+            'absorbed_fact_ids': absorbed,
+        })
+        src['modification_history'] = mod_history
+        # Changed text invalidates embeddings; re-embed on the next worker scan
+        src['embedding'] = None
+        src['embedding_text_sha256'] = None
+        src['embedding_model_id'] = None
+
+    async def aapply_introspection_actions(
+        self, name: str, actions: list[dict],
+    ) -> dict:
+        """Apply introspection actions already checked against the number map.
+
+        Twin of ``PersonaManager.aapply_introspection_actions``: every target
+        ``(reflection_id, text_at_render)`` must still be active with that
+        exact text, not already suppressed and not claimed by an earlier
+        action of this batch, or the whole action is skipped as stale.
+        ``rewrite`` / ``merge`` reuse the refine helpers; a merge also keeps
+        each source text in the new reflection's ``modification_history``.
+        Reflections have no event type for suppression, so all three write
+        straight to the view, as refine does.
+
+        Returns ``{'applied': n, 'stale': m}``.
+        """
+        from memory.introspection import (
+            ACTION_MERGE,
+            ACTION_REWRITE,
+            ACTION_SUPPRESS,
+            PERMANENT_SUPPRESSION_KEY,
+            build_permanent_suppression,
+        )
+
+        applied = 0
+        stale = 0
+        async with self._get_alock(name):
+            reflections = await self.aload_reflections(name)
+            refl_by_id = {
+                r.get('id'): r for r in reflections
+                if isinstance(r, dict) and r.get('id')
+            }
+            now = datetime.now()
+            now_iso = now.isoformat()
+            consumed: set[str] = set()
+            merged_away: set[str] = set()
+            produced: list[dict] = []
+            for act in actions:
+                srcs: list[dict] = []
+                for rid, text in act.get('targets') or ():
+                    src = refl_by_id.get(rid)
+                    if (
+                        src is None
+                        or rid in consumed
+                        or is_permanently_suppressed(src)
+                        or src.get('text') != text
+                    ):
+                        srcs = []
+                        break
+                    srcs.append(src)
+                if not srcs:
+                    stale += 1
+                    continue
+                verb = act.get('action')
+                reason = f"introspection: {act.get('reason') or verb}"
+                if verb == ACTION_SUPPRESS:
+                    srcs[0][PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                        act.get('reason') or verb, now_iso,
+                    )
+                elif verb == ACTION_REWRITE:
+                    self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
+                elif verb == ACTION_MERGE:
+                    merged = self._build_merge_reflection(
+                        srcs, [], {'text': act['text']},
+                        srcs[0].get('entity') or 'master', now,
+                    )
+                    merged['modification_history'] = [
+                        {
+                            'old_text': src.get('text', ''),
+                            'modified_at': now_iso,
+                            'reason': reason,
+                            'absorbed_fact_ids': [],
+                            'merged_from_id': src.get('id'),
+                        }
+                        for src in srcs
+                    ]
+                    produced.append(merged)
+                    merged_away.update(src.get('id') for src in srcs)
+                else:
+                    stale += 1
+                    continue
+                consumed.update(src.get('id') for src in srcs)
+                applied += 1
+            if applied:
+                await self.asave_reflections(name, [
+                    r for r in reflections
+                    if not (isinstance(r, dict) and r.get('id') in merged_away)
+                ] + produced)
+        return {'applied': applied, 'stale': stale}
 
     async def apply_refine_actions(
         self,
@@ -170,7 +289,9 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
                         continue
                     src = refl_by_id.get(src_id)
-                    if not src:
+                    # A source suppressed since the cluster was gathered must
+                    # not come back as fresh, unflagged pieces.
+                    if not src or is_permanently_suppressed(src):
                         continue
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
@@ -207,6 +328,7 @@ class RefinementMixin:
                         if sid in cluster_refl_ids
                         and sid in refl_by_id
                         and sid not in consumed
+                        and not is_permanently_suppressed(refl_by_id[sid])
                     ]
                     if len(valid_refl_ids) < 2:
                         continue
@@ -235,7 +357,7 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
                         continue
                     src = refl_by_id.get(src_id)
-                    if not src:
+                    if not src or is_permanently_suppressed(src):
                         continue
                     produce = act_obj.get('produce')
                     if not isinstance(produce, dict):
@@ -250,29 +372,17 @@ class RefinementMixin:
                         fid for fid in absorbed_fact_ids if fid in cluster_fact_ids
                     ]
                     reason = str(act_obj.get('reason') or 'refine_modify')
-                    old_text = src.get('text', '')
-                    src['text'] = new_text
-                    existing_sources = list(src.get('source_fact_ids') or [])
-                    src['source_fact_ids'] = sorted(
-                        set(existing_sources + valid_fact_sources)
+                    self._apply_refine_modify(
+                        src, new_text, reason, now_iso,
+                        absorbed_fact_ids=valid_fact_sources,
                     )
-                    mod_history = list(src.get('modification_history') or [])
-                    mod_history.append({
-                        'old_text': old_text,
-                        'modified_at': now_iso,
-                        'reason': reason,
-                        'absorbed_fact_ids': valid_fact_sources,
-                    })
-                    src['modification_history'] = mod_history
-                    # Changed text invalidates embeddings; re-embed on the next worker scan
-                    src['embedding'] = None
-                    src['embedding_text_sha256'] = None
-                    src['embedding_model_id'] = None
                     applied += 1
 
                 elif act == 'discard':
                     src_id = act_obj.get('source_id')
                     if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    if is_permanently_suppressed(refl_by_id.get(src_id)):
                         continue
                     consumed.add(src_id)
                     applied += 1

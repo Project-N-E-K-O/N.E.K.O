@@ -29,6 +29,7 @@ from config import (
 )
 
 from memory.evidence import evidence_score
+from memory.introspection import is_permanently_suppressed
 
 
 
@@ -306,6 +307,10 @@ class PromotionMixin:
             # fourteen-day thresholds; no reflection pending->promoted in one pass.
             for r in reflections:
                 if r.get('status') != 'confirmed':
+                    continue
+                if is_permanently_suppressed(r):
+                    # Same rule as the score-driven path: promotion would
+                    # copy the retired text into persona unflagged.
                     continue
                 promote_subject = subject_from_entry(r)
                 if scoped_only and promote_subject is None:
