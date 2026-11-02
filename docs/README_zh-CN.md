@@ -209,7 +209,7 @@ uv run python launcher.py
 
 N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只以假名化标识区分（见下方说明）。遥测用于跟踪版本兼容性、模型用量分布和错误率。
 
-**关闭方法**：设置环境变量 `DO_NOT_TRACK=1`（或 `NEKO_DO_NOT_TRACK=1`）即可完全禁用遥测。该变量在进程启动时读取，设置后重启 N.E.K.O. 即可，无需重新构建。Docker 部署请写进 `docker/.env`，再用 `docker compose up -d` 重建容器。
+**关闭方法**：设置环境变量 `DO_NOT_TRACK=1`（或 `NEKO_DO_NOT_TRACK=1`）即可完全停止远程上报；Token 用量仍会记录在本地的 `token_usage.json` 里，这个文件不会上传。该变量在进程启动时读取，设置后重启 N.E.K.O. 即可，无需重新构建。Docker 部署请写进 `docker/.env`，再用 `docker compose up -d` 重建容器。
 
 | ✅ 收集 | ❌ 不收集 |
 | --- | --- |
@@ -218,6 +218,8 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 | 调用次数、错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
 | 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
 | 假名化设备标识（见下方说明） | 任何能识别到个人的信息 |
+| 设备硬件档位：操作系统、CPU 架构、内存档位、CPU 档位 | |
+| 使用指标：功能使用次数、延迟与会话时长分布、错误类型、崩溃指纹（traceback 的哈希）、粗粒度设置状态（开 / 关、分档间隔）以及形象类型 | |
 | **仅限发行版构建，且 Steamworks SDK 初始化成功、你已登录 Steam 客户端时**：Steam64 用户 ID | 其他任何账号体系的 ID（GitHub / Google / OpenAI 等） |
 
 > **假名化设备标识**：单向 SHA-256 哈希，原始输入（机器 ID、MAC、安装路径）不会上报。

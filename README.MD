@@ -209,7 +209,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Repository rules for AI-assisted 
 
 N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation content and identifies a device only by a pseudonymous ID (see below). It is used to track version compatibility, model-usage distribution and error rates.
 
-**Opt out**: set `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is then fully disabled. The variable is read when a process starts, so restart N.E.K.O. after setting it; no rebuild is needed. With Docker, add it to `docker/.env` and recreate the container with `docker compose up -d`.
+**Opt out**: set `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Remote reporting is then fully disabled; token usage is still recorded locally in `token_usage.json`, which is not uploaded. The variable is read when a process starts, so restart N.E.K.O. after setting it; no rebuild is needed. With Docker, add it to `docker/.env` and recreate the container with `docker compose up -d`.
 
 | ✅ Collected | ❌ Not collected |
 | --- | --- |
@@ -218,6 +218,8 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 | Call and error counts | IP address, location, MAC, hardware serials |
 | App version, A/B branch, locale, time zone, distribution channel (source / release / steam) | File paths, cookies, browser fingerprints |
 | Pseudonymous device ID (see note below) | Any PII that can identify a person |
+| Device hardware profile: OS, CPU architecture, RAM tier, CPU tier | |
+| Usage metrics: feature-use counts, latency and session-length histograms, error classes, crash fingerprints (a hash of the traceback), coarse settings state (on / off, bucketed intervals) and avatar type | |
 | **Only in release builds, when the Steamworks SDK initializes and you are logged in to the Steam client**: your Steam64 user ID | Any other account ID (GitHub / Google / OpenAI, etc.) |
 
 > **Pseudonymous device ID**: a one-way SHA-256 hash. The raw inputs (machine ID, MAC, install path) are never sent.
