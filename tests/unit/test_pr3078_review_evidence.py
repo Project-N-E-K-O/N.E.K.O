@@ -3,6 +3,7 @@ import ast
 import asyncio
 import inspect
 import json
+import re
 import subprocess
 from pathlib import Path
 from types import MethodType, ModuleType
@@ -395,7 +396,10 @@ def test_ci_audit_job_fetches_every_pinned_revision():
     # silently skipped there too (HEAD was once re-pinned without this).
     workflow = (REPO_ROOT / ".github" / "workflows" / "unit-test-shards.yml").read_text(encoding="utf-8")
     job = workflow.split("  historical-review-audit:", 1)[1].split("\n  frontend-node:", 1)[0]
+    block = re.search(r"\$revisions\s*=\s*@\((.*?)\)", job, re.S)
+    assert block, "historical-review-audit has no $revisions list"
+    pinned = re.findall(r"'([0-9a-f]{40})'", block.group(1))
     for revision in (BASE, HEAD):
-        assert f"'{revision}'" in job, f"historical-review-audit does not fetch {revision}"
+        assert revision in pinned, f"historical-review-audit does not fetch {revision}"
 
 pytestmark = pytest.mark.unit_fast
