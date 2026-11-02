@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from plugin.neko_plugin_cli.core.project import ProjectCreationError
 from plugin.server.application.plugin_projects import create_or_preview
 from plugin.server.infrastructure.development_access import require_development_access
-from utils.directory_picker import (
+from plugin.server.infrastructure.directory_picker import (
     DirectoryPickerCancelled,
     DirectoryPickerUnavailable,
     pick_directory,
@@ -93,7 +93,10 @@ async def pick_project_directory(body: PickDirectoryRequest):
 
 @router.post("/open-directory")
 async def open_project_directory(body: DirectoryRequest):
-    from utils.directory_opener import DirectoryOpenError, open_directory
+    from plugin.server.infrastructure.directory_opener import (
+        DirectoryOpenError,
+        open_directory,
+    )
 
     path = Path(body.path).expanduser()
     if not path.is_absolute():
