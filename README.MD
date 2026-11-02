@@ -30,17 +30,16 @@ This README is for developers. If you just want to use N.E.K.O., get it free on 
 
 ## What it is
 
-Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and gets better the longer they keep it. N.E.K.O. takes that idea into companionship. It combines realtime voice and vision, a biomimetic long-term memory, embodied avatars, proactive behavior, agent tools and a plugin SDK in one runtime that runs locally and is licensed under Apache 2.0. Around that runtime sits a community that already builds plugins, forges story cards and sends companions to visit each other.
+Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and gets better the longer they keep it. N.E.K.O. takes that idea into companionship. Your companion talks with you in realtime voice, sees your screen, remembers your days together, and plays games with you: she calls out the fight beside you in War Thunder or Slay the Spire 2, or takes the controls herself in Plants vs. Zombies. Under the hood is one local runtime, licensed under Apache 2.0, with realtime voice and vision, a biomimetic long-term memory, embodied avatars, proactive behavior, agent tools and a plugin SDK. Around it, a community builds plugins, forges story cards and sends companions to visit each other.
 
 ## Highlights
 
 ### 🎮 Plays games with you
 
 - **Built-in two-player games**: air basketball, badminton, drawing guess, soccer, and watch-together. A mini-game SDK and a game-vision service let developers add more.
-- **Game companions from the community**:
-  - a War Thunder copilot that turns live in-game telemetry into combat events she reacts to (read-only: no cheats, no automation);
-  - a Touhou Little Maid bridge that lets her command the maid in Minecraft in natural language;
-  - a bundled Minecraft plugin that connects to a separately started local Minecraft agent server, which plays alongside you while she comments by voice ([setup](plugin/plugins/game_agent_minecraft/README.md)).
+- **Plays alongside you**: community plugins read the game's telemetry or screen and give her live callouts and commentary in War Thunder, Slay the Spire 2, Strinova, World of Warships and KARDS. None of them cheat or automate your play.
+- **Takes the controls**: when you ask, plugins let her play by herself in Plants vs. Zombies, Titanfall 2, Half-Life & Portal and Subnautica; you can take over at any time. The bundled Minecraft plugin connects to a separately started local Minecraft agent server ([setup](plugin/plugins/game_agent_minecraft/README.md)).
+- **Knows your game**: companions for Genshin Impact, Honkai: Star Rail, Civilization VI, RimWorld and Overcooked! 2 read the game state so she can chat about your run and give advice.
 - **Screen awareness**: she can watch whatever you are playing and chime in.
 
 ### 🐾 Has a social life
@@ -53,16 +52,16 @@ Personal agents such as OpenClaw showed that people want an AI of their own: one
 
 ### 🔌 A plugin market that is already busy
 
-**[market.project-neko.cn](https://market.project-neko.cn)** had 134 plugins, 9.8K downloads and 51 active developers as of November 2026. A few community favorites:
+**[market.project-neko.cn](https://market.project-neko.cn)** had 100+ plugins, 10K+ downloads and 50+ active developers as of October 2026. A few community favorites:
 
 | Plugin | What it adds |
 |---|---|
-| **War Thunder Catgirl Copilot** | Reads the game's local telemetry and turns it into battle reminders and company |
-| **Wine Fox** | Bridges the Touhou Little Maid Minecraft mod so she can direct the in-game maid |
-| **Eternal Companionship** | A continuous-state core for autonomous emotions, bodily rhythms and long-term memory |
+| **War Thunder Catgirl Copilot** | Reads the game's local telemetry and turns it into battle callouts and company |
+| **Slay the Spire 2 Companion** | Overlays her live commentary on the game as scrolling comments, rates each turn's risk and suggests plays; auto-play is optional |
+| **PVZ Agent** | She plays Plants vs. Zombies herself: watches the board, says her plan out loud and makes the moves, and you can steer her |
+| **Strinova Companion** | Plays Strinova alongside you with voice callouts, starting and stopping with the game |
 | **Live Streaming Assistant** | Handles live comments, viewer profiles and commentary on streaming platforms |
 | **Catgirl Diary** | She keeps a daily diary of small moments and moods |
-| **Music Playlist Management** | NetEase Cloud Music, QQ Music and Bilibili playlists; ask her for a song and it plays |
 
 Any developer can publish with the plugin SDK and the `neko-plugin` CLI.
 

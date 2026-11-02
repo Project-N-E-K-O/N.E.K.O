@@ -29,17 +29,16 @@
 
 ## N.E.K.O. とは
 
-OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を求めていることを示しました。自分のマシンで動き、自分を覚え、代わりに作業し、長く使うほど良くなる AI です。N.E.K.O. はこの考え方をコンパニオンに持ち込みました。リアルタイム音声と視覚、生物に倣った長期記憶、アバター、自発的な振る舞い、Agent ツール、プラグイン SDK を 1 つのローカルランタイムに統合し、Apache 2.0 で公開しています。このランタイムの周りには、すでにプラグインを作り、ストーリーカードを鍛え、コンパニオン同士を訪問させているコミュニティがあります。
+OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を求めていることを示しました。自分のマシンで動き、自分を覚え、代わりに作業し、長く使うほど良くなる AI です。N.E.K.O. はこの考え方をコンパニオンに持ち込みました。あなたのコンパニオンはリアルタイム音声で話し、画面を見て、一緒に過ごした日々を覚えていて、ゲームにも付き合います。War Thunder や Slay the Spire 2 では隣で戦況を伝え、Plants vs. Zombies では自分で操作して遊びます。中身は Apache 2.0 で公開されたローカルランタイムで、リアルタイム音声と視覚、生物に倣った長期記憶、アバター、自発的な振る舞い、Agent ツール、プラグイン SDK を備えています。その周りでは、コミュニティがプラグインを作り、ストーリーカードを鍛え、コンパニオン同士を訪問させています。
 
 ## ハイライト
 
 ### 🎮 一緒にゲームをする
 
 - **内蔵の 2 人用ゲーム**：エアバスケットボール、バドミントン、お絵かき当て、サッカー、一緒に視聴。ミニゲーム SDK とゲーム視覚サービスで開発者が追加できます。
-- **コミュニティのゲーム向けプラグイン**：
-  - War Thunder 猫娘副操縦士：ゲームのリアルタイムテレメトリーを戦闘イベントに変え、彼女が反応します（読み取り専用：チートなし、自動操作なし）；
-  - 東方リトルメイド連携：Minecraft の Touhou Little Maid MOD でメイドを自然言語で指示します；
-  - 同梱の Minecraft プラグイン：別途起動したローカルの Minecraft Agent サーバーに接続し、それが一緒に遊んで、彼女が音声で実況します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
+- **隣で一緒に遊ぶ**：コミュニティのプラグインがゲームのテレメトリーや画面を読み取り、War Thunder、Slay the Spire 2、Strinova、World of Warships、KARDS で彼女がリアルタイムに声をかけ、実況します。チートや自動操作は一切しません。
+- **自分で操作する**：頼めば、Plants vs. Zombies、Titanfall 2、Half-Life と Portal、Subnautica を彼女が自分で遊びます。いつでも交代できます。同梱の Minecraft プラグインは、別途起動したローカルの Minecraft Agent サーバーに接続します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
+- **ゲームを理解する**：原神、崩壊：スターレイル、Civilization VI、RimWorld、Overcooked! 2 向けのプラグインがゲームの状態を読み取り、進行について話したりアドバイスしたりできます。
 - **画面認識**：何を遊んでいても、彼女が見て話しかけてきます。
 
 ### 🐾 彼女にも交友関係がある
@@ -52,16 +51,16 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
 
 ### 🔌 すでににぎわっているプラグインマーケット
 
-**[market.project-neko.cn](https://market.project-neko.cn)** には、2026 年 11 月時点で 134 個のプラグイン、9.8K 回のダウンロード、51 人のアクティブ開発者がいます。コミュニティの人気プラグインの一部：
+**[market.project-neko.cn](https://market.project-neko.cn)** には、2026 年 10 月時点で 100 以上のプラグイン、1 万回以上のダウンロード、50 人以上のアクティブ開発者がいます。コミュニティの人気プラグインの一部：
 
 | プラグイン | できること |
 |---|---|
-| **War Thunder Catgirl Copilot** | ゲームのローカルテレメトリーを読み、戦闘中のリマインドと付き添いに変える |
-| **Wine Fox** | Minecraft の Touhou Little Maid MOD と連携し、ゲーム内のメイドを指示できる |
-| **Eternal Companionship** | 自律的な感情、体のリズム、長期記憶を扱う継続状態型のコア |
+| **War Thunder Catgirl Copilot** | ゲームのローカルテレメトリーを読み、戦闘中の声かけと付き添いに変える |
+| **Slay the Spire 2 Companion** | ゲーム画面に彼女の実況を弾幕で重ね、毎ターンの危険度と打ち筋を示す。自動プレイも選べる |
+| **PVZ Agent** | 彼女が Plants vs. Zombies を自分で遊ぶ。盤面を見て作戦を口に出し、自分で操作する。指示も出せる |
+| **Strinova Companion** | Strinova を一緒に遊び、音声で声をかける。ゲームに合わせて自動で起動・停止する |
 | **Live Streaming Assistant** | 配信プラットフォームでコメント、視聴者プロフィール、ツッコミを扱う |
 | **Catgirl Diary** | 彼女が毎日の小さな出来事と気分を日記に残す |
-| **Music Playlist Management** | NetEase Cloud Music、QQ Music、Bilibili のプレイリストに対応。曲を頼めば再生される |
 
 誰でもプラグイン SDK と `neko-plugin` CLI で公開できます。
 
