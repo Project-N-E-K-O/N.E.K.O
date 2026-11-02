@@ -236,9 +236,7 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 > - [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) 的 `_get_telemetry_metadata()` 只在发行版构建中、SDK 可用且 `Users.GetSteamID()` 返回非零值时读取该 ID。
 > - 源码运行永远不会上报：非发行版构建下该函数直接返回 `("source", "")`，即使 Steam 客户端开着也一样。
 >
-> **不想上报的话**，任选一种：
-> 1. 设置 `DO_NOT_TRACK=1`（关闭全部遥测）；
-> 2. 退出 Steam 客户端。
+> **不想上报的话**，请设置 `DO_NOT_TRACK=1`，这是关闭遥测的唯一开关。退出 Steam 客户端只会让本次运行读不到 Steam64：其余数据照常上报，之前已上报的 Steam64 也仍保留在服务端。
 
 实现位置：
 

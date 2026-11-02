@@ -235,9 +235,7 @@ N.E.K.O. は**トークン使用量テレメトリーをデフォルトで有効
 > - [`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) の `_get_telemetry_metadata()` は、リリースビルドで SDK が使えて `Users.GetSteamID()` が 0 以外を返すときだけ ID を読み取ります。
 > - ソース版からは送られません。リリースビルド以外ではこの関数が `("source", "")` を返します。Steam クライアントが起動していても同じです。
 >
-> **送りたくない場合**は、次のいずれかを行ってください。
-> 1. `DO_NOT_TRACK=1`（テレメトリー全体を無効化）；
-> 2. Steam クライアントを終了する。
+> **送りたくない場合**は `DO_NOT_TRACK=1` を設定してください。テレメトリーを止める唯一のスイッチです。Steam クライアントを終了しても、その回の実行で Steam64 が読み取られなくなるだけで、それ以外のデータは送信され続け、以前に送信された Steam64 もサーバーに残ります。
 
 実装の場所：
 
