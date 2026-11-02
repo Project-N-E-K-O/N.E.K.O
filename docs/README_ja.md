@@ -265,7 +265,7 @@ N.E.K.O. は**トークン使用量テレメトリーをデフォルトで有効
 実装の場所：
 
 - クライアントのメタデータと送信：[`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) と [`utils/token_tracker/reporting.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/reporting.py)。
-- サーバー側の通信と保存：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。リクエストは HMAC-SHA256 で署名され、リプレイ防止のため ±5 分以内のものだけを受け付け、デバイスごとに 1 時間 120 回までに制限されます。生のイベントは追記のみで、180 日後に削除されます。デバイステーブルと集計テーブルは随時更新され、集計データは無期限に保持されます。アカウントを削除すると、その Steam64 ID は拒否リストに入り、保存済みの Steam64 の関連付けも削除されます。
+- サーバー側の通信と保存：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。リクエストは HMAC-SHA256 で署名され、リプレイ防止のため ±5 分以内のものだけを受け付け、デバイスごとに 1 時間 120 回までに制限されます。生のイベントは追記のみで、古いものは管理用のクリーンアップエンドポイントで削除されます（既定では 180 日より前）。実行頻度はサーバー運用者が決めます。デバイステーブルと集計テーブルは随時更新され、集計データは無期限に保持されます。アカウントを削除すると、その Steam64 ID は拒否リストに入り、保存済みの Steam64 の関連付けも削除されます。
 - 送信は、トークンデータをローカル保存する 60 秒間隔のバックグラウンドループから行われます（各プロセスは終了時にもローカル保存を 1 回行います）。別の間隔チェックにより、各サーバープロセスの送信は最大でおよそ 60 秒に 1 回に抑えられます。
 
 ## ライセンス
