@@ -3,8 +3,12 @@
  *
  * 单层编码：scalabilityMode 必须显式 'L1T1'（SDK 对 vp9 默认三层 SVC）、simulcast 关、
  * maintain-framerate；autoSubscribe:false，host 收到 media{subscribe:true} 才订阅对端视频。
- * 串门不传音频：不开麦克风、不建本地音频轨。数据通道 topic visit.ctl / visit.text 可靠、
- * visit.lossy 不可靠；对端 vid 已知后定向发送。
+ * 数据通道 topic visit.ctl / visit.text 可靠、visit.lossy 不可靠；对端 vid 已知后定向发送。
+ *
+ * 猫娘语音（OD-15 v4）：只发父页交来的 TTS 旁路轨（publishTrack 一条 MediaStreamTrack），不开麦克风；
+ * source 只能报 Microphone（LiveKit 的音频来源枚举里没有「合成音频」，token 按它授权），
+ * dtx 开、red 关（red 会把码率翻倍），maxBitrate = audio_kbps（32）。收到 audio_subscribe 才订阅
+ * 对端音频；不 attach（SDK 不出声），mediaStreamTrack 交给控制器、由父页接进自家扬声器音量链。
  */
 (function (root) {
   'use strict';
@@ -14,6 +18,7 @@
   var SUB_RETRY_MAX_MS = 30000;
   var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
   var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 2 + 15 + 8 s 再留余量保留 iframe）
+  var SAMPLE_BOUND_MS = 3000;             // 单路入站取样的上限：短于控制器每拍 4 s，一路卡住不拖掉另一路
 
   /** 等退房 / 断开做完，但最多 CLEANUP_BOUND_MS：网络坏着时它可能一直不落定（失败也算完）。 */
   function boundCleanup(p) {
@@ -75,12 +80,21 @@
       opChain = opChain.then(function () { return p; }).then(null, function () {});
       return p;
     }
+    // 语音：与视频同一条队列、同一个 roomGen（发布中的轨 / 远端订阅的状态机与视频对偶）
+    var audioPublication = null;
+    var publishedAudio = null;
+    var audioSubscribeWanted = false;
+    var remoteAudioPublication = null;
+    var remoteAudioIdentity = null;
+    var remoteAudioTrack = null;
+    var audioSubRetries = 0;
+    var audioSubRetryTimer = null;
     var subscribeWanted = false;
     var peerVid = opts.peerVid || null;
     var remotePublication = null;
     var remoteIdentity = null;   // remotePublication 属于谁（核验出对端后据此丢掉不匹配的候选）
     var remoteTrack = null;
-    var rxMark = null;
+    var rxMarks = { video: null, audio: null };   // 入站统计的差分基准：视频 / 语音各一份（接收端码率自保要分轨算）
     var txMark = null;
     var statsEpoch = 0;   // 收发统计基准的代号：重置后，之前发出、迟到回来的取样不能把旧基准写回去
     var localQuality = null;
@@ -106,11 +120,12 @@
       return new LK.Room({
         adaptiveStream: false,
         dynacast: false,
+        webAudioMix: false,   // 远端语音不进 SDK 自己的 AudioContext：轨交父页出声
         publishDefaults: {
           simulcast: false,
           videoCodec: codecPref(c),
           scalabilityMode: 'L1T1',
-          videoEncoding: { maxBitrate: (publishCfg.bitrate_kbps || 560) * 1000, maxFramerate: publishCfg.fps || 30 },
+          videoEncoding: { maxBitrate: (publishCfg.bitrate_kbps || 528) * 1000, maxFramerate: publishCfg.fps || 30 },
           degradationPreference: 'maintain-framerate',
         },
       });
@@ -133,6 +148,13 @@
 
     function considerPublication(pub, participant) {
       if (!participant || !isPeer(participant.identity)) return;
+      if (pub && pub.kind === 'audio') {
+        if (pub !== remoteAudioPublication) audioSubRetries = 0;
+        remoteAudioPublication = pub;
+        remoteAudioIdentity = participant.identity;
+        if (audioSubscribeWanted) pub.setSubscribed(true);
+        return;
+      }
       if (!pub || pub.kind !== 'video') return;
       if (pub !== remotePublication) subRetries = 0;
       remotePublication = pub;
@@ -143,6 +165,35 @@
     function clearSubRetry() {
       if (subRetryTimer !== null) clearTimeout(subRetryTimer);
       subRetryTimer = null;
+    }
+
+    function clearAudioSubRetry() {
+      if (audioSubRetryTimer !== null) clearTimeout(audioSubRetryTimer);
+      audioSubRetryTimer = null;
+    }
+
+    /** 对端语音的发布没了（撤销 / 对端离开 / 核验出不是对端）：丢掉状态并通知控制器。 */
+    function dropRemoteAudio() {
+      clearAudioSubRetry();
+      remoteAudioPublication = null;
+      remoteAudioIdentity = null;
+      remoteAudioTrack = null;
+      rxMarks.audio = null;
+      handlers.onRemoteAudio(null);
+    }
+
+    /** 语音订阅失败：与视频的 retrySubscription 对偶。 */
+    function retryAudioSubscription(pub) {
+      clearAudioSubRetry();
+      var gen = roomGen;
+      var delay = Math.min(SUB_RETRY_MAX_MS, SUB_RETRY_BASE_MS * Math.pow(2, audioSubRetries));
+      audioSubRetries += 1;
+      audioSubRetryTimer = setTimeout(function () {
+        audioSubRetryTimer = null;
+        if (gen !== roomGen || !audioSubscribeWanted || pub !== remoteAudioPublication) return;
+        pub.setSubscribed(false);
+        pub.setSubscribed(true);
+      }, delay);
     }
 
     /** 订阅失败（暂时性协商失败）：同一发布仍想看时按退避重新请求，直到取消订阅 / 对端撤销发布 / 离房。 */
@@ -157,6 +208,51 @@
         pub.setSubscribed(false);
         pub.setSubscribed(true);
       }, delay);
+    }
+
+    /**
+     * 一条订阅轨的入站取样（getStats 差分，基准存 rxMarks[kind]）：{ track, epoch, rttS, kbps?, lossPct? }。
+     * 取样期间基准被重置、轨被换掉、比当前基准还旧、或 SAMPLE_BOUND_MS 内没回来时给 null（迟到的不动基准）。
+     */
+    function sampleInbound(kind, currentTrack, nowMs) {
+      var track = currentTrack();
+      var receiver = track && track.receiver;
+      if (!receiver || typeof receiver.getStats !== 'function') return Promise.resolve(null);
+      var epoch = statsEpoch;
+      var expired = false;   // 超过上限这拍已按没测到交出：迟到的报告也不写基准，下一拍仍按上一个有效取样差分
+      var bound = new Promise(function (resolve) {
+        setTimeout(function () { expired = true; resolve(null); }, SAMPLE_BOUND_MS);
+      });
+      return Promise.race([bound, receiver.getStats().then(function (report) {
+        if (expired || epoch !== statsEpoch || currentTrack() !== track) return null;
+        var inbound = null;
+        var rttS = null;
+        report.forEach(function (r) {
+          if (r.type === 'inbound-rtp' && r.kind === kind) inbound = r;
+          if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded') && typeof r.currentRoundTripTime === 'number') rttS = r.currentRoundTripTime;
+        });
+        if (!inbound) return null;
+        // 差分的时间用报告自己的 timestamp（getStats 完成时间参差时按发起时间算会把码率算偏）；没有才退回调用时刻
+        var at = typeof inbound.timestamp === 'number' && isFinite(inbound.timestamp) ? inbound.timestamp : nowMs;
+        var mark = { at: at, bytes: inbound.bytesReceived || 0, lost: inbound.packetsLost || 0, recv: inbound.packetsReceived || 0 };
+        var prev = rxMarks[kind];
+        // 慢回来的旧取样（比当前基准还早）不覆盖基准
+        if (prev && !(mark.at > prev.at)) return null;
+        rxMarks[kind] = mark;
+        var out = { track: track, epoch: epoch, rttS: rttS };
+        if (prev) {
+          out.kbps = Math.max(0, Math.round((mark.bytes - prev.bytes) * 8 / (mark.at - prev.at)));
+          var lost = Math.max(0, mark.lost - prev.lost);
+          var got = Math.max(0, mark.recv - prev.recv);
+          out.lossPct = lost + got > 0 ? lost * 100 / (lost + got) : 0;
+        }
+        return out;
+      }).catch(function () { return null; })]);
+    }
+
+    /** 等另一路取样期间这一路已过期（基准重置 / 换了轨）：丢掉，不拿旧轨的码率接着计时。 */
+    function stillCurrent(sample, track) {
+      return !!sample && sample.epoch === statsEpoch && sample.track === track;
     }
 
     function bind() {
@@ -174,11 +270,16 @@
           remotePublication = null;
           handlers.onRemoteTrack(null);
         }
+        if (remoteAudioPublication && p.identity === remoteAudioIdentity) dropRemoteAudio();
       });
       room.on(E.TrackPublished, function (pub, participant) {
         considerPublication(pub, participant);
       });
       room.on(E.TrackUnpublished, function (pub, participant) {
+        if (pub && pub === remoteAudioPublication) {
+          dropRemoteAudio();
+          return;
+        }
         if (pub === remotePublication && participant && isPeer(participant.identity)) {
           clearSubRetry();
           remotePublication = null;
@@ -186,16 +287,33 @@
         }
       });
       room.on(E.TrackSubscribed, function (track, pub, participant) {
+        if (track && track.kind === 'audio') {
+          // 只认当前那份语音发布；不 attach（SDK 不出声），轨交控制器
+          if (!participant || !isPeer(participant.identity) || !audioSubscribeWanted || !pub || pub !== remoteAudioPublication) return;
+          audioSubRetries = 0;
+          clearAudioSubRetry();
+          remoteAudioTrack = track;
+          rxMarks.audio = null;
+          handlers.onRemoteAudio(track.mediaStreamTrack);
+          return;
+        }
         if (!participant || !isPeer(participant.identity) || track.kind !== 'video' || !subscribeWanted) return;
         // 只认当前那份发布：迟到的旧发布（已被换掉或已撤销）订阅成功时不能把旧轨挂上去
         if (!pub || pub !== remotePublication) return;
         subRetries = 0;
         clearSubRetry();
         remoteTrack = track;
-        rxMark = null;
+        rxMarks.video = null;
         handlers.onRemoteTrack(track.mediaStreamTrack);
       });
       room.on(E.TrackUnsubscribed, function (track) {
+        if (track && track.kind === 'audio') {
+          if (track === remoteAudioTrack) {
+            remoteAudioTrack = null;
+            handlers.onRemoteAudio(null);
+          }
+          return;
+        }
         // 只认当前那条轨：迟到的旧轨取消订阅不能把已经换上的新轨也撤掉
         if (track && track.kind === 'video' && track === remoteTrack) {
           remoteTrack = null;
@@ -203,6 +321,13 @@
         }
       });
       room.on(E.TrackSubscriptionFailed, function (trackSid, participant) {
+        var apub = remoteAudioPublication;
+        if (apub && apub.trackSid && trackSid && apub.trackSid === trackSid) {
+          if (!audioSubscribeWanted || !participant || !isPeer(participant.identity)) return;
+          handlers.onLog('warn', 'livekit audio subscription failed', 'subscribe_failed');
+          retryAudioSubscription(apub);
+          return;
+        }
         var pub = remotePublication;
         if (!pub || !subscribeWanted || !participant || !isPeer(participant.identity)) return;
         if (pub.trackSid && trackSid && pub.trackSid !== trackSid) return;
@@ -294,6 +419,15 @@
             });
           });
           handlers.onState('joined', {});
+        }, function (err) {
+          // LiveKit 的连接异常不含凭证；保留一段压缩后的原因，方便区分
+          // 信令、ICE 和服务端拒绝，不能只留下笼统的 join_failed。
+          var code = err && (err.errorCode || err.code || err.name);
+          var message = err && err.message;
+          var detail = [code, message].filter(Boolean).join(': ')
+            .replace(/\s+/g, ' ').slice(0, 240) || 'join_failed';
+          handlers.onLog('warn', 'livekit connect rejected', detail);
+          throw err;
         });
       },
       updateCredentials: function (c) {
@@ -368,18 +502,80 @@
         if (publishesInFlight > 0 || profilesInFlight > 0) return serial(stop);
         return afterChain(Promise.resolve(stop()));
       },
+      /** 发布语音轨（父页 TTS 旁路转成的本页轨）；与视频的 publish 对偶：同一条轨不重复发，换轨先撤旧的。 */
+      publishAudio: function (track, kbps) {
+        publishesInFlight += 1;
+        var done = function (v) { publishesInFlight -= 1; return v; };
+        return serial(function () {
+          if (!room || !joined) return false;
+          if (audioPublication && publishedAudio === track) return true;
+          var gen = roomGen;
+          var current = room;
+          var before = audioPublication ? current.localParticipant.unpublishTrack(publishedAudio, false) : Promise.resolve();
+          return Promise.resolve(before).then(function () {
+            return current.localParticipant.publishTrack(track, {
+              source: LK.Track.Source.Microphone,
+              dtx: true,
+              red: false,
+              forceStereo: false,
+              audioPreset: { maxBitrate: kbps * 1000 },
+            });
+          }).then(function (pub) {
+            if (gen !== roomGen) {
+              return Promise.resolve(current.localParticipant.unpublishTrack(track, false))
+                .then(null, function () {}).then(function () { return false; });
+            }
+            audioPublication = pub;
+            publishedAudio = track;
+            return true;
+          });
+        }).then(done, function (err) { done(); throw err; });
+      },
+      unpublishAudio: function () {
+        var stop = function () {
+          if (!room || !audioPublication) return undefined;
+          var track = publishedAudio;
+          audioPublication = null;
+          publishedAudio = null;
+          // stopOnUnpublish=false：语音轨归控制器（voice.js），重新发布时复用
+          return room.localParticipant.unpublishTrack(track, false).catch(function () {});
+        };
+        if (publishesInFlight > 0 || profilesInFlight > 0) return serial(stop);
+        return afterChain(Promise.resolve(stop()));
+      },
+      setAudioSubscribe: function (on) {
+        audioSubscribeWanted = !!on;
+        if (!audioSubscribeWanted) clearAudioSubRetry();
+        if (remoteAudioPublication) remoteAudioPublication.setSubscribed(audioSubscribeWanted);
+        if (!audioSubscribeWanted) {
+          remoteAudioTrack = null;
+          rxMarks.audio = null;
+          handlers.onRemoteAudio(null);
+        }
+        return Promise.resolve();
+      },
       idle: function () {
         return opChain;
       },
       setPeerVid: function (vid) {
         peerVid = vid || peerVid;
+        // 语音同理：暂记的不是核验出来的对端就退订、丢掉
+        if (peerVid && remoteAudioPublication && remoteAudioIdentity !== peerVid) {
+          var staleAudio = remoteAudioPublication;
+          dropRemoteAudio();
+          try {
+            staleAudio.setSubscribed(false);
+          } catch (_) {
+            // 发布已不在
+          }
+        }
         // 核验前按「房里另一个人」暂记的远端发布若不是核验出来的对端：退订、丢掉
         if (!peerVid || !remotePublication || remoteIdentity === peerVid) return;
         var stale = remotePublication;
         remotePublication = null;
         remoteIdentity = null;
         remoteTrack = null;
-        rxMark = null;
+        rxMarks.video = null;
         clearSubRetry();
         try {
           stale.setSubscribed(false);
@@ -402,9 +598,17 @@
         roomGen += 1;
         publication = null;
         publishedTrack = null;
+        audioPublication = null;
+        publishedAudio = null;
+        audioSubRetries = 0;
+        clearAudioSubRetry();
+        // 同远端视频：离房前控制器已 stopAllMedia 停播对端语音，这里只清状态
+        remoteAudioPublication = null;
+        remoteAudioIdentity = null;
+        remoteAudioTrack = null;
         remotePublication = null;
         remoteTrack = null;
-        rxMark = null;
+        rxMarks = { video: null, audio: null };
         txMark = null;
         statsEpoch += 1;
         localQuality = null;
@@ -438,13 +642,15 @@
       remoteVideoAvailable: function () {
         return !!remotePublication;
       },
+      // LiveKit 没有服务端单轨码率上限：控制器按 receiverStats 做接收端码率自保（TRTC 由 Servers 用量核对执行）
+      rxGuard: true,
       stats: function () {
         return {};
       },
       /** 断线 / 重连：收发统计的差分基准作废。 */
       resetStats: function () {
         statsEpoch += 1;
-        rxMark = null;
+        rxMarks = { video: null, audio: null };
         txMark = null;
       },
       /** 当前连接质量换算的丢包样本（poor / lost 视同超阈值）；未知返回 undefined。 */
@@ -454,38 +660,29 @@
         if (localQuality === 'excellent' || localQuality === 'good') return 0;
         return undefined;
       },
-      /** host 侧接收统计（rx_kbps / loss_pct / rtt_ms），取自订阅轨的 RTCRtpReceiver；后端要字段齐全才转给对端。 */
+      /**
+       * 接收统计，取自订阅轨的 RTCRtpReceiver：对端视频（host）给 rx_kbps / loss_pct / rtt_ms（后端要字段齐全才转给对端），
+       * 对端语音给 rx_audio_kbps。两路分开差分，控制器据此分别做接收端码率自保（checkRxGuard）。
+       */
       receiverStats: function (nowMs) {
-        var receiver = remoteTrack && remoteTrack.receiver;
-        if (!receiver || typeof receiver.getStats !== 'function') return Promise.resolve(null);
-        var epoch = statsEpoch;
-        var sampled = remoteTrack;
-        return receiver.getStats().then(function (report) {
-          if (epoch !== statsEpoch || remoteTrack !== sampled) return null;
-          var inbound = null;
-          var rttS = null;
-          report.forEach(function (r) {
-            if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
-            if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded') && typeof r.currentRoundTripTime === 'number') rttS = r.currentRoundTripTime;
-          });
-          if (!inbound) return null;
-          // 差分的时间用报告自己的 timestamp（getStats 完成时间参差时按发起时间算会把码率算偏）；没有才退回调用时刻
-          var at = typeof inbound.timestamp === 'number' && isFinite(inbound.timestamp) ? inbound.timestamp : nowMs;
-          var mark = { at: at, bytes: inbound.bytesReceived || 0, lost: inbound.packetsLost || 0, recv: inbound.packetsReceived || 0 };
-          var prev = rxMark;
-          // 慢回来的旧取样（比当前基准还早）不覆盖基准
-          if (prev && !(mark.at > prev.at)) return null;
-          rxMark = mark;
+        return Promise.all([
+          sampleInbound('video', function () { return remoteTrack; }, nowMs),
+          sampleInbound('audio', function () { return remoteAudioTrack; }, nowMs),
+        ]).then(function (res) {
+          var video = stillCurrent(res[0], remoteTrack) ? res[0] : null;
+          var audio = stillCurrent(res[1], remoteAudioTrack) ? res[1] : null;
+          if (!video && !audio) return null;
           var out = {};
-          if (rttS !== null) out.rtt_ms = Math.round(rttS * 1000);
-          if (prev && mark.at > prev.at) {
-            out.rx_kbps = Math.max(0, Math.round((mark.bytes - prev.bytes) * 8 / (mark.at - prev.at)));
-            var lost = Math.max(0, mark.lost - prev.lost);
-            var got = Math.max(0, mark.recv - prev.recv);
-            out.loss_pct = lost + got > 0 ? lost * 100 / (lost + got) : 0;
+          if (video) {
+            if (video.rttS !== null) out.rtt_ms = Math.round(video.rttS * 1000);
+            if (typeof video.kbps === 'number') {
+              out.rx_kbps = video.kbps;
+              out.loss_pct = video.lossPct;
+            }
           }
+          if (audio && typeof audio.kbps === 'number') out.rx_audio_kbps = audio.kbps;
           return out;
-        }).catch(function () { return null; });
+        });
       },
       senderStats: function () {
         var track = publication && publication.track;

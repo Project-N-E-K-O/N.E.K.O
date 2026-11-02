@@ -18,6 +18,7 @@ All routes are declared without a trailing slash. Write operations can return `4
 | `POST` | `/api/memory/review_config` | Update the automatic recent-memory review toggle |
 | `GET` | `/api/memory/powerful_memory_config` | Read the powerful-memory toggle |
 | `POST` | `/api/memory/powerful_memory_config` | Update the powerful-memory toggle and run any required migration |
+| `GET` | `/api/memory/farewell-summary` | Read-only memory summary for the desktop exit farewell card |
 | `GET` | `/api/memory/legacy/scan` | Scan user-visible legacy memory roots without changing them |
 | `POST` | `/api/memory/legacy/purge` | Delete explicitly selected entries from scanned legacy roots |
 
@@ -216,6 +217,37 @@ Migration or persistence failure:
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
+
+## Farewell summary
+
+### `GET /api/memory/farewell-summary`
+
+Read-only summary of the currently selected character, shown on the desktop app's exit farewell card. The desktop main process calls it over loopback with a 1.2-second timeout, so the route only reads local files: it calls no model, triggers no sync, and writes nothing.
+
+```json
+{
+  "memory_count": 128,
+  "conversation_count": 342,
+  "flashback": {
+    "id": "fact_20260314103000_ab12cd34",
+    "text": "Master loves curling up at home with a book on rainy days",
+    "date": "2026-03-14"
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `memory_count` | Local memories, counted like the community card's `totalMemoryCount`: `facts.json` and `facts_archive.json` deduplicated, machine-log rows excluded. |
+| `conversation_count` | User messages in the character's `time_indexed.db` (one per conversation turn). Omitted when the database is missing or unreadable. |
+| `flashback` | One older memory worth recalling, or `null`. |
+| `flashback.id` | Memory ID; IDs that are not plain strings become an opaque stable token. |
+| `flashback.text` | The memory text, whitespace collapsed, at most 200 characters. |
+| `flashback.date` | Local date (`YYYY-MM-DD`) the memory happened, or was recorded when no event time exists. |
+
+The flashback is drawn only from shareable memories, using the same rules as `/api/card-drop/facts`: private, redacted, machine-log and `neko_visit` rows are skipped, as are archived rows carrying `subject_archived_at` or `arbitration_*`. Memories less than 7 days old are never chosen. Among the rest, memories of importance 5 or higher are preferred, and one is drawn from the oldest quarter weighted by importance, so consecutive calls can differ.
+
+When no character is selected the response is `{"flashback": null}`; when anything fails the counts are omitted rather than returning an error.
 
 ## Legacy memory cleanup
 

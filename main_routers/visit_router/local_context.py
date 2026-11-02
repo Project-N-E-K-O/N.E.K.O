@@ -119,3 +119,18 @@ def protected_display_names(
     """
     labels = tuple(speaker_label(s, lang) for s in ("own_cat", "own_human", "peer_cat", "peer_human"))
     return (*char_names, *labels, get_family_neutral_term(lang), *family_names)
+
+
+def protected_live_display_names(
+    lang: str | None, family_names: Iterable[str],
+) -> tuple[str, ...]:
+    """Names a peer card name must not replace in live visit UI.
+
+    A signed peer character name may legitimately match another character card
+    installed on this machine (notably when two local test profiles share one
+    character library).  The UI already carries the peer short code and side,
+    so hiding that real card name makes the identity less clear instead of more
+    clear.  Keep family/system/speaker labels protected here; memory attribution
+    continues to use :func:`protected_display_names` with every local card.
+    """
+    return protected_display_names(lang, family_names, ())

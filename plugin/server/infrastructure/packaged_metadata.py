@@ -75,7 +75,7 @@ from plugin.core.packaged_metadata import (
     source_stat_summary,
     unicode_renamed_source_files,
 )
-from plugin.logging_config import get_logger
+from plugin.logging_config import get_logger, info_once
 from utils.file_utils import atomic_write_bytes
 from plugin.utils.source_paths import METADATA_PROBE_PREFIX
 
@@ -916,7 +916,11 @@ def _validate_packaged_metadata(
         )
         return None
     if sorted(packaged_names) != sorted(summary.names):
-        logger.info(
+        # A plugin under development keeps differing on every rescan; say it
+        # once per process instead of on each install/upgrade rescan.
+        info_once(
+            logger,
+            ("packaged_metadata.source_set_differs", str(plugin_dir)),
             "plugin source file set differs from the packaged one; rebuild "
             "with 'neko-plugin build' to refresh its metadata: path={}",
             plugin_dir,

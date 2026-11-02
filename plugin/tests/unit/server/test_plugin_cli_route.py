@@ -747,7 +747,7 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
         assert unpack_body["payload_hash_verified"] is True
         assert (plugins_root / "bundle_alpha" / "plugin.toml").is_file()
         assert (plugins_root / "bundle_beta" / "plugin.toml").is_file()
-        assert (profiles_root / "route_workflow_bundle" / "default.toml").is_file()
+        assert not profiles_root.exists()
 
 
 @pytest.mark.asyncio
@@ -1267,7 +1267,7 @@ async def test_plugin_cli_upload_and_install_failure_cleans_staging_and_saved_pa
 
 
 @pytest.mark.asyncio
-async def test_fresh_install_reuses_verified_retained_profile_without_changing_its_bytes(
+async def test_fresh_install_leaves_verified_retained_profile_unclaimed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1313,13 +1313,14 @@ async def test_fresh_install_reuses_verified_retained_profile_without_changing_i
         set_global_manager(None)
 
     assert result["installed_plugin_count"] == 1
-    assert result["profile_reused"] is True
+    assert result["profile_reused"] is False
+    assert result["profile_dir"] is None
     assert (user_root / plugin_id / "plugin.toml").is_file()
     assert {path.name: path.read_bytes() for path in profile_dir.iterdir()} == before
 
 
 @pytest.mark.asyncio
-async def test_fresh_install_rejects_profile_owned_by_another_plugin(
+async def test_fresh_install_ignores_profile_owned_by_another_plugin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1360,21 +1361,17 @@ async def test_fresh_install_rejects_profile_owned_by_another_plugin(
     shutil.rmtree(previous_target)
     set_global_manager(manager)
     try:
-        with pytest.raises(
-            ServerDomainError,
-            match="profile ownership does not match",
-        ) as caught:
-            await PluginCliService().install(package=str(package_path))
+        result = await PluginCliService().install(package=str(package_path))
     finally:
         set_global_manager(None)
 
-    assert caught.value.code == "PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT"
-    assert not (user_root / incoming_id).exists()
+    assert result["profile_dir"] is None
+    assert (user_root / incoming_id / "plugin.toml").is_file()
     assert sentinel.read_bytes() == b"belongs-to-another-plugin\n"
 
 
 @pytest.mark.asyncio
-async def test_fresh_install_rejects_legacy_profile_with_unknown_ownership(
+async def test_fresh_install_ignores_legacy_profile_with_unknown_ownership(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1430,44 +1427,19 @@ async def test_fresh_install_rejects_legacy_profile_with_unknown_ownership(
     manager.load()
     set_global_manager(manager)
     try:
-        with pytest.raises(ServerDomainError) as caught:
-            await PluginCliService().install(package=str(package_path))
+        result = await PluginCliService().install(package=str(package_path))
     finally:
         set_global_manager(None)
 
-    assert caught.value.code == "PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT"
+    assert result["profile_dir"] is None
     assert sentinel.read_bytes() == b"legacy-owner-unknown\n"
-    assert not (user_root / plugin_id).exists()
+    assert (user_root / plugin_id / "plugin.toml").is_file()
 
 
-def test_existing_profile_without_source_manager_reports_not_ready(
-    tmp_path: Path,
-) -> None:
-    profile_dir = tmp_path / "profiles" / "demo"
-    profile_dir.mkdir(parents=True)
-    sentinel = profile_dir / "default.toml"
-    sentinel.write_bytes(b"unchanged\n")
-    previous_manager = plugin_cli_service.get_install_source_manager()
-    set_global_manager(None)
-
-    try:
-        with pytest.raises(ServerDomainError) as caught:
-            plugin_cli_service._validate_existing_profile_ownership(
-                profile_dir=profile_dir,
-                profiles_root=profile_dir.parent,
-                package_id="demo",
-                plugin_ids={"demo"},
-            )
-    finally:
-        set_global_manager(previous_manager)
-
-    assert caught.value.code == "INSTALL_SOURCE_NOT_READY"
-    assert caught.value.status_code == 503
-    assert sentinel.read_bytes() == b"unchanged\n"
 
 
 @pytest.mark.asyncio
-async def test_reused_profile_survives_failure_after_promotion(
+async def test_legacy_profile_survives_failure_after_code_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1523,7 +1495,7 @@ async def test_reused_profile_survives_failure_after_promotion(
 
 
 @pytest.mark.asyncio
-async def test_fresh_install_rejects_linked_legacy_profile_without_touching_target(
+async def test_fresh_install_ignores_linked_legacy_profile_without_touching_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1563,15 +1535,15 @@ async def test_fresh_install_rejects_linked_legacy_profile_without_touching_targ
         profiles_root=profiles_root,
     )
 
-    with pytest.raises(ServerDomainError, match="link or reparse point"):
-        await PluginCliService().install(package=str(package_path))
+    result = await PluginCliService().install(package=str(package_path))
 
-    assert not (user_root / plugin_id).exists()
+    assert result["profile_dir"] is None
+    assert (user_root / plugin_id / "plugin.toml").is_file()
     assert sentinel.read_bytes() == b"outside-must-survive"
 
 
 @pytest.mark.asyncio
-async def test_market_record_failure_removes_new_code_but_preserves_reused_profile(
+async def test_market_record_failure_removes_new_code_but_preserves_legacy_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

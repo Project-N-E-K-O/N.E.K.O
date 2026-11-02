@@ -52,6 +52,15 @@ def _texts(wire, role):
     return [p for p in wire.sent[role] if p.get("t") == "text"]
 
 
+def test_normal_assistant_mirror_strips_redundant_visit_speaker_labels():
+    clean = rtm_talk._without_repeated_speaker_prefix
+    assert clean("[咪咪] 你好呀", "咪咪", "11") == "你好呀"
+    assert clean("【11】：又见面了", "咪咪", "11") == "又见面了"
+    assert clean("[11]，你也来了。", "咪咪", "11") == "11，你也来了。"
+    assert clean("我刚才听见【11】叫我。", "咪咪", "11") == "我刚才听见11叫我。"
+    assert clean("[别人] 保留", "咪咪", "11") == "[别人] 保留"
+
+
 async def _gated(tmp_path, monkeypatch, **kw):
     """Both sides active, both opening lines blocked inside the LLM."""
     hgate, ggate = asyncio.Event(), asyncio.Event()
@@ -81,6 +90,9 @@ async def test_one_line_is_one_stream_raw_to_tts_and_redacted_outbound(tmp_path,
         deltas = "".join(p["txt"] for p in wire.sent["host"] if p.get("t") == "line_delta" and p["ln"] == final["ln"])
         assert deltas == final["txt"] and final["truncated"] is False
         assert len([s for s in host.host.streams if s.request_id == final["ln"]]) == 1
+        await wait_for(lambda: final["txt"] in host.host.outputs)
+        output_index = host.host.outputs.index(final["txt"])
+        assert host.host.output_finalized[output_index] is True
         # Local dialogue also enters spool/upload logs with the same prefix.
         lines = host.rt.journal.lines()
         assert any(r["from"] == "own_cat" and r["text"] == final["txt"] for r in lines)
@@ -100,6 +112,30 @@ async def test_tts_chars_and_requests_are_recorded_as_usage(tmp_path, monkeypatc
         assert usage["tts_chars"] == sum(len(c) for s in host.host.streams for c in s.pushed)
         assert usage["llm_output_tokens"] > 0
     finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_both_sides_warm_tts_on_activation_before_the_first_line_opens_a_stream(tmp_path, monkeypatch):
+    # The first line's start timeout counts from its first push, TTS cold start included: activation starts the worker first.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            await wait_for(lambda side=side: "warm_speech" in side.host.events)
+            assert side.host.streams == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_off_does_not_warm_tts(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch, settings={"visitVoiceEnabled": False})
+    try:
+        await settle()
+        assert "warm_speech" not in host.host.events and "warm_speech" not in guest.host.events
+    finally:
+        hgate.set()
+        ggate.set()
         await teardown(host, guest, wire=wire, clock=clock)
 
 
@@ -1799,6 +1835,98 @@ async def test_a_cancelled_family_line_to_the_own_cat_still_schedules_its_reply(
         await asyncio.gather(sending, return_exceptions=True)
         stuck.set()
         await wait_for(lambda: [p for p in plans if p is not None])  # Handler exited, but replies still queue.
+        # Booked in the room as well: a late peer pick-up must not replace this answer to the human.
+        assert rt.room.pending_reply is plans[-1]
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_reply_dropped_without_speaking_is_forgotten_by_the_room(tmp_path, monkeypatch):
+    # A leftover pending plan would keep every later pick-up of a line to a human away.
+    from main_logic.visit.room import LineRef, ReplyPlan
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    try:
+        gone = LineRef("g:900", 1, "guest")
+        rt.room._remember_aborted(gone.line_id)                # The replied line was cut off: the plan is stale.
+        plan = ReplyPlan(reply_to=gone, not_before=0.0)
+        rt.room.pending_reply = plan
+        rt.schedule_reply(plan)
+        task = rt._reply_task
+        hgate.set()                                           # Opening line finishes; the runner then drops the plan.
+        await wait_for(lambda: task.done(), timeout=10)
+        assert rt.room.pending_reply is None
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_a_reply_cancelled_while_the_peer_line_is_recorded_is_not_scheduled(tmp_path, monkeypatch):
+    # A human line that cancels the plan during the record await must not be undone once the write ends.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    plans: list = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "peer_cat":
+            await stuck.wait()
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    rt.schedule_reply = lambda plan, **kw: plans.append(plan)
+    framed: list = []
+    real_frame = rt._peer_line_frame
+
+    def frame_spy(m, ln, lp):
+        framed.append(ln)                                     # Posted right before the reply is applied, with no await between.
+        return real_frame(m, ln, lp)
+
+    rt._peer_line_frame = frame_spy
+    try:
+        ggate.set()                                           # Guest opening line (to the host cat) reaches the host.
+        await wait_for(lambda: rt.room.pending_reply is not None, timeout=10)
+        rt.room.pending_reply = None                          # What a human line does meanwhile (_cancel_pending).
+        stuck.set()
+        await wait_for(lambda: framed, timeout=10)
+        assert [p for p in plans if p is not None] == []
+    finally:
+        stuck.set()
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_an_own_line_starting_while_the_peer_line_is_recorded_keeps_the_reply(tmp_path, monkeypatch):
+    # An opening line that starts during the record await is not this plan: the reply must still be scheduled.
+    from main_logic.visit.room import LineRef
+
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    rt = host.rt
+    stuck = asyncio.Event()
+    real_record = rt.record_line
+    plans: list = []
+
+    async def slow_record(speaker, **kwargs):
+        if speaker == "peer_cat":
+            await stuck.wait()
+        return await real_record(speaker, **kwargs)
+
+    rt.record_line = slow_record
+    rt.schedule_reply = lambda plan, **kw: plans.append(plan)
+    try:
+        ggate.set()                                           # Guest opening line (to the host cat) reaches the host.
+        await wait_for(lambda: rt.room.pending_reply is not None, timeout=10)
+        pending = rt.room.pending_reply
+        rt.room.on_local_line_started(LineRef("h:950", rt.room.next_lp(), "host"), None, False, clock())
+        stuck.set()
+        await wait_for(lambda: pending in plans, timeout=10)
     finally:
         stuck.set()
         hgate.set()

@@ -2639,16 +2639,21 @@ class TurnMixin:
             user_message["metadata"] = metadata
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
+        raw_source = chat_input_source if chat_input_source is not None else source_value
+        original_id = (uuid4().hex if record_transcript_text and is_chat_input_source(raw_source)
+                       and getattr(self, '_config_manager', None) is not None else None)
+        if original_id:
+            user_message["chat_original_source"] = {"recordId": original_id,
+                "originalTime": str(int(_transcript_arrival_ts * 1000)), "origin": "chat"}
         self.sync_message_queue.put({"type": "user", "data": user_message})
         # Preserve the existing queue order before any source database await.
         # Save accepted raw text independently, even if the reply later fails.
-        original_id = None
-        raw_source = chat_input_source if chat_input_source is not None else source_value
-        if record_transcript_text and is_chat_input_source(raw_source) and getattr(self, '_config_manager', None) is not None:
+        if original_id and getattr(self, '_config_manager', None) is not None:
             try:
-                original_id = await save_original(
+                await save_original(
                     self.lanlan_name, 'user',
                     chat_original_text if chat_original_text is not None else record_transcript_text,
+                    record_id=original_id,
                     original_time=str(int(_transcript_arrival_ts * 1000)),
                     config_manager=self._config_manager,
                 )
@@ -3017,7 +3022,7 @@ class TurnMixin:
     # ------------------------------------------------------------------
     # Mirror channel (chat-bubble passthrough that enters context as
     # AIMessage; user-side inputs intentionally do NOT enter chat history
-    # as UserMessage — see ``main_logic.mirror_meta``).
+    # as UserMessage — see ``utils.mirror_meta``).
     # ------------------------------------------------------------------
 
     async def mirror_user_input(

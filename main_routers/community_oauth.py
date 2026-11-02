@@ -30,6 +30,11 @@ from main_routers.local_access import is_local_oauth_status_request as _loopback
 
 import main_routers.card_drop_router as C
 from main_logic import client_registration
+from utils.community_locale import community_bootstrap_locale_hints
+from services.chat_sync import host as _chat_sync_host
+# Re-exported: card_drop_router / visit_router.credentials read it as
+# ``community_oauth.status_session_saved``, and tests patch it here.
+from utils.community_session import status_session_saved
 from utils.social_base import auth_public_url as _configured_auth_public_url
 from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
 
@@ -358,7 +363,17 @@ async def _resolve_saved_oauth_status(
         str(snapshot["access_token"]),
     )
     if lookup.identity is not None:
-        return {"logged_in": True, "snapshot": snapshot, "auth": auth}
+        # Keep only the verified avatar projection for the profile endpoint.
+        # Other consumers still use the same auth/snapshot fields; no user
+        # payload or credentials are added to their public responses.
+        avatar = lookup.identity.user.get("avatar_url")
+        return {
+            "logged_in": True, "snapshot": snapshot, "auth": auth,
+            "verified_profile": {
+                "local_user_id": lookup.identity.local_user_id,
+                "avatar_url": avatar if isinstance(avatar, str) else None,
+            },
+        }
     if lookup.failure != "rejected":
         # Do not erase a usable offline session on network/service failures, but
         # also do not claim that an unvalidated bearer is currently logged in.
@@ -457,15 +472,6 @@ async def _resolve_saved_oauth_status(
     return status
 
 
-def status_session_saved(status: dict[str, Any]) -> bool:
-    """A saved session the cloud could not verify right now (offline, 5xx, refresh unavailable).
-
-    Not logged in, but also not a definite logout: a snapshot the cloud already
-    rejected and only local cleanup left behind does not count.
-    """
-    return bool(status.get("snapshot")) and not status.get("rejected")
-
-
 async def _run_oauth_status_resolution(
     records_key: str,
     records: tuple[dict | None, dict],
@@ -496,6 +502,13 @@ async def resolve_saved_oauth_status() -> dict[str, Any]:
             )
             _oauth_status_tasks[records_key] = task
     return await asyncio.shield(task)
+
+
+# Chat sync (services layer) joins this same resolver, so a rotating refresh
+# token is never refreshed twice. Late-bound: patches of this module reach it.
+_chat_sync_host.install_oauth_status_resolver(
+    resolve_saved_oauth_status=lambda: resolve_saved_oauth_status(),
+)
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
@@ -838,6 +851,51 @@ async def oauth_status_endpoint(request: Request):
         "community_base_url": C._social_base_url(),
         **session_fields,
     }
+
+
+@router.get("/oauth/profile", summary="读取当前社区账号头像")
+async def oauth_profile_endpoint(request: Request):
+    headers = {"Cache-Control": "no-store"}
+    if not C._local_request_source_allowed(request) or await _account_request_identity(request) is None:
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403, headers=headers)
+    try:
+        async with asyncio.timeout(6):
+            status = await resolve_saved_oauth_status()
+            snapshot = status.get("snapshot") or {}
+            if not status.get("logged_in"):
+                if snapshot.get("access_token") and not status.get("rejected"):
+                    # Unverified saved credentials are not a confirmed logout.
+                    return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
+                return JSONResponse({"local_user_id": None, "avatar_url": None}, headers=headers)
+            base = str(snapshot.get("base_url") or C._social_base_url()).rstrip("/")
+            profile = status.get("verified_profile")
+            if profile is None:
+                # Token refresh can succeed before a user profile was fetched.
+                lookup = await C._lookup_cloud_identity(base, snapshot.get("access_token") or "")
+                profile = None if lookup.identity is None else {
+                    "local_user_id": lookup.identity.local_user_id,
+                    "avatar_url": lookup.identity.user.get("avatar_url"),
+                }
+            current = await asyncio.to_thread(C._desktop_session_snapshot)
+            # Validation and a fallback lookup can both race a session change.
+            if not current or any(current.get(key) != snapshot.get(key) for key in (
+                "local_user_id", "access_token", "base_url", "auth_source",
+            )):
+                return JSONResponse({"detail": "session_changed"}, status_code=409, headers=headers)
+            # Legacy sessions can lack UUID metadata. Only the cloud-verified
+            # profile may supply it, while an existing stored ID must match.
+            if profile is None or not profile["local_user_id"] or (
+                snapshot.get("local_user_id") and profile["local_user_id"] != snapshot["local_user_id"]
+            ):
+                return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
+            avatar = profile["avatar_url"]
+            return JSONResponse({
+                "local_user_id": profile["local_user_id"],
+                "avatar_url": avatar if isinstance(avatar, str) else None,
+                "community_base_url": base,
+            }, headers=headers)
+    except TimeoutError:
+        return JSONResponse({"detail": "profile_unavailable"}, status_code=503, headers=headers)
 
 
 @contextlib.asynccontextmanager
@@ -1214,6 +1272,7 @@ async def _bootstrap_session(social_base: str, access_token: str) -> dict[str, A
             response = await client.post(
                 f"{social_base.rstrip('/')}/api/auth/session/bootstrap",
                 headers={"Authorization": f"Bearer {access_token}"},
+                json=await asyncio.to_thread(community_bootstrap_locale_hints),
             )
     except httpx.HTTPError as exc:
         logger.info("community_oauth: bootstrap failed: %s", exc)

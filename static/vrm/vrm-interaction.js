@@ -88,8 +88,6 @@ class VRMInteraction {
         this.enableFaceCamera = true;
 
         // 浮动按钮鼠标跟踪缓存（用于性能优化）
-        this._cachedBox = null;
-        this._cachedCorners = null;
         this._cachedScreenBounds = null; // { minX, maxX, minY, maxY }
         this._floatingButtonsPendingFrame = null; // RAF ID，用于取消
         this._lastModelUpdateTime = 0;
@@ -110,7 +108,7 @@ class VRMInteraction {
         this._dragHintPanLastPointer = null;
         this._dragHintApproachShown = false;
 
-        // F 目标模式：F 只负责进入/退出选点模式，已选目标在释放 F 后继续执行。
+        // 目标快捷键只负责进入/退出选点模式，释放后仍继续执行已确认的移动。
         this.targetMode = false;
         this.moveTarget = null;
         this.isMoving = false;
@@ -132,6 +130,9 @@ class VRMInteraction {
         this._movementKeyDownHandler = null;
         this._movementKeyUpHandler = null;
         this._movementBlurHandler = null;
+        this._movementShortcutChangedHandler = null;
+        this._movementHeldCode = null;
+        this._movementHeldModifiers = null;
     }
 
 
@@ -325,7 +326,21 @@ class VRMInteraction {
     _isEditableTarget(target) {
         if (target?.isContentEditable) return true;
         if (!target || typeof target.closest !== 'function') return false;
-        return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]');
+        if (target.closest('textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) return true;
+        const input = target.closest('input');
+        // Use the normalized DOM type: missing/invalid types remain text, while
+        // numeric and date/time editors keep their editing keys as well.
+        return !!input && !['button', 'checkbox', 'color', 'file', 'hidden', 'image',
+            'radio', 'range', 'reset', 'submit'].includes(input.type);
+    }
+
+    _isKeyboardInteractiveTarget(target) {
+        if (this._isEditableTarget(target)) return true;
+        if (!target || typeof target.closest !== 'function') return false;
+        return !!target.closest('input, button, a[href], summary, audio[controls], video[controls], '
+            + '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], '
+            + '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], '
+            + '[role="tab"], [role="slider"], [role="spinbutton"], [tabindex]:not([tabindex="-1"]):not(canvas)');
     }
 
     _screenPointToMovementTarget(clientX, clientY) {
@@ -784,29 +799,56 @@ class VRMInteraction {
         // 先清理旧的事件监听器
         this.cleanupDragAndZoom();
 
+        const exitMovementTargetMode = () => {
+            this._movementHeldCode = null;
+            this._movementHeldModifiers = null;
+            this.targetMode = false;
+            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
+        };
         this._movementKeyDownHandler = (e) => {
-            if (e.isComposing || e.keyCode === 229) return;
-            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229) return;
             if (this._isEditableTarget(e.target)) return;
-            if (e.code !== 'KeyF') return;
+            const hasCommandModifier = e.ctrlKey || e.altKey || e.metaKey;
+            // Keep native forward/backward focus traversal, even on the canvas.
+            // Tab with Ctrl/Alt/Meta can still be explicitly configured.
+            if (e.code === 'Tab' && !hasCommandModifier) return;
+            // Controls own their activation/navigation keys, not ordinary F/G
+            // bindings merely because a preceding click left them focused.
+            if (!hasCommandModifier && ['Enter', 'NumpadEnter', 'Space', 'Escape', 'ArrowUp',
+                'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.code)
+                && this._isKeyboardInteractiveTarget(e.target)) return;
+            const shortcut = window.nekoVrmGuidedMovementShortcut;
+            if (shortcut === undefined) {
+                // 旧页面/浏览器保留物理 F 的行为，包括 Shift+F。
+                if (e.code !== 'KeyF' || e.ctrlKey || e.metaKey || e.altKey) return;
+            } else {
+                if (!shortcut || e.code !== shortcut.code) return;
+                if (['ctrlKey', 'altKey', 'shiftKey', 'metaKey'].some(key => !!e[key] !== !!shortcut[key])) return;
+            }
             if (this.checkLocked() || isYuiGuideDragLocked()) return;
+            this._movementHeldCode = e.code;
+            this._movementHeldModifiers = shortcut === undefined ? null : { ...shortcut };
             this.targetMode = true;
             canvas.style.cursor = 'crosshair';
             e.preventDefault();
         };
         this._movementKeyUpHandler = (e) => {
-            if (e.code !== 'KeyF') return;
-            this.targetMode = false;
-            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
+            if (!this._movementHeldCode) return;
+            const modifiers = this._movementHeldModifiers;
+            const modifierReleased = modifiers && [
+                ['ctrlKey', 'Control'], ['altKey', 'Alt'], ['shiftKey', 'Shift'], ['metaKey', 'Meta']
+            ].some(([key, code]) => modifiers[key]
+                && (e.code === code + 'Left' || e.code === code + 'Right') && !e[key]);
+            if (e.code !== this._movementHeldCode && !modifierReleased) return;
+            exitMovementTargetMode();
         };
-        this._movementBlurHandler = () => {
-            // 失焦只退出选点模式；已确认的目标仍继续执行。
-            this.targetMode = false;
-            if (!this.isDragging && canvas) canvas.style.cursor = 'default';
-        };
+        // 失焦和改键只退出选点模式；已确认的目标仍继续执行。
+        this._movementBlurHandler = exitMovementTargetMode;
+        this._movementShortcutChangedHandler = exitMovementTargetMode;
         window.addEventListener('keydown', this._movementKeyDownHandler);
         window.addEventListener('keyup', this._movementKeyUpHandler);
         window.addEventListener('blur', this._movementBlurHandler);
+        window.addEventListener('neko:vrm-guided-movement-shortcut-changed', this._movementShortcutChangedHandler);
 
         // 1. 鼠标按下
         this.mouseDownHandler = (e) => {
@@ -1321,7 +1363,13 @@ class VRMInteraction {
             window.removeEventListener('blur', this._movementBlurHandler);
             this._movementBlurHandler = null;
         }
+        if (this._movementShortcutChangedHandler) {
+            window.removeEventListener('neko:vrm-guided-movement-shortcut-changed', this._movementShortcutChangedHandler);
+            this._movementShortcutChangedHandler = null;
+        }
         this.targetMode = false;
+        this._movementHeldCode = null;
+        this._movementHeldModifiers = null;
 
         if (this._touchGestures) {
             this._touchGestures.dispose();
@@ -1448,10 +1496,28 @@ class VRMInteraction {
             let modelMinX = Infinity, modelMaxX = -Infinity;
             let modelMinY = Infinity, modelMaxY = -Infinity;
 
-            corners.forEach(corner => {
-                const projected = corner.clone().project(camera);
+            camera.updateMatrixWorld(true);
+            const cameraCorners = corners.map(corner => corner.clone().applyMatrix4(camera.matrixWorldInverse));
+            const near = Math.max(camera.near, 0.0001);
+            const visibleCorners = cameraCorners.filter(corner => corner.z <= -near);
+            // 大模型可能穿过近裁剪面；加入盒边与裁剪面的交点，排除相机后方的反向投影。
+            for (let i = 0; i < cameraCorners.length; i++) {
+                for (const axisBit of [1, 2, 4]) {
+                    const j = i ^ axisBit;
+                    if (j <= i) continue;
+                    const a = cameraCorners[i], b = cameraCorners[j];
+                    if ((a.z <= -near) !== (b.z <= -near)) {
+                        visibleCorners.push(a.clone().lerp(b, (-near - a.z) / (b.z - a.z)));
+                    }
+                }
+            }
+            if (!visibleCorners.length) return position;
+            const projectedCorners = [];
+            visibleCorners.forEach(corner => {
+                const projected = corner.clone().applyMatrix4(camera.projectionMatrix);
                 const screenX = (projected.x * 0.5 + 0.5) * screenWidth;
                 const screenY = (-projected.y * 0.5 + 0.5) * screenHeight;
+                projectedCorners.push({ x: screenX, y: screenY, depth: -corner.z });
                 modelMinX = Math.min(modelMinX, screenX);
                 modelMaxX = Math.max(modelMaxX, screenX);
                 modelMinY = Math.min(modelMinY, screenY);
@@ -1477,47 +1543,33 @@ class VRMInteraction {
                 return position;
             }
 
-            // 6. 可见区域太小，需要将模型拉回
-            const modelCenterX = (modelMinX + modelMaxX) / 2;
-            const modelCenterY = (modelMinY + modelMaxY) / 2;
-            const screenCenterX = screenWidth / 2;
-            const screenCenterY = screenHeight / 2;
-
-            // 仅校正需要拉回的维度
+            // 按各顶点的真实投影深度求最小回移量，避免离相机很远的模型原点放大回弹距离。
+            const pixelToWorldX = 2 / (camera.projectionMatrix.elements[0] * screenWidth);
+            const pixelToWorldY = 2 / (camera.projectionMatrix.elements[5] * screenHeight);
             let moveX = 0, moveY = 0;
-
             if (needsClampH) {
                 if (modelMaxX < effectiveMinX) {
-                    moveX = effectiveMinX - modelMaxX;
+                    moveX = Math.min(...projectedCorners.map(p => (effectiveMinX - p.x) * p.depth * pixelToWorldX));
                 } else if (modelMinX > screenWidth - effectiveMinX) {
-                    moveX = (screenWidth - effectiveMinX) - modelMinX;
+                    moveX = Math.max(...projectedCorners.map(p => (screenWidth - effectiveMinX - p.x) * p.depth * pixelToWorldX));
                 }
             }
 
             if (needsClampV) {
                 if (modelMaxY < effectiveMinY) {
-                    moveY = effectiveMinY - modelMaxY;
+                    moveY = Math.min(...projectedCorners.map(p => (effectiveMinY - p.y) * p.depth * pixelToWorldY));
                 } else if (modelMinY > screenHeight - effectiveMinY) {
-                    moveY = (screenHeight - effectiveMinY) - modelMinY;
+                    moveY = Math.max(...projectedCorners.map(p => (screenHeight - effectiveMinY - p.y) * p.depth * pixelToWorldY));
                 }
             }
 
-            // 7. 将屏幕像素移动距离转换为世界空间距离
-            const modelCenter = position.clone();
-            const cameraDistance = camera.position.distanceTo(modelCenter);
-            const fov = camera.fov * (Math.PI / 180);
-            const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-            const worldWidth = worldHeight * (screenWidth / screenHeight);
-
-            const pixelToWorldX = worldWidth / screenWidth;
-            const pixelToWorldY = worldHeight / screenHeight;
-
-            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
+            const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+            const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
             const correctedPos = position.clone();
-            correctedPos.add(right.multiplyScalar(moveX * pixelToWorldX));
-            correctedPos.add(up.multiplyScalar(-moveY * pixelToWorldY)); // Y 轴反向
+            if (vrm.scene.parent) vrm.scene.parent.localToWorld(correctedPos);
+            correctedPos.addScaledVector(right, moveX);
+            correctedPos.addScaledVector(up, -moveY);
+            if (vrm.scene.parent) vrm.scene.parent.worldToLocal(correctedPos);
 
             return correctedPos;
 
@@ -1863,53 +1915,28 @@ class VRMInteraction {
     }
 
     /**
-     * 更新模型包围盒和屏幕边界缓存（在模型或骨骼更新时调用）
+     * 更新模型屏幕边界缓存（在模型或骨骼更新时调用）
      * 这个方法应该被外部调用，例如在模型加载、动画更新或骨骼变化时
      */
     updateModelBoundsCache() {
         if (!this.manager.currentModel?.vrm || !this.manager.camera || !this.manager.renderer || !THREE) {
-            this._cachedBox = null;
-            this._cachedCorners = null;
             this._cachedScreenBounds = null;
             return;
         }
 
         try {
-            const vrm = this.manager.currentModel.vrm;
             const camera = this.manager.camera;
             const renderer = this.manager.renderer;
-
-            // 计算模型在屏幕上的包围盒
-            this._cachedBox = new THREE.Box3().setFromObject(vrm.scene);
-            this._cachedCorners = [
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.min.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.min.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.max.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.max.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.min.y, this._cachedBox.max.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.min.y, this._cachedBox.max.z),
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.max.y, this._cachedBox.max.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.max.y, this._cachedBox.max.z),
-            ];
-
-            // 投影到屏幕空间并计算边界
-            const canvasRect = renderer.domElement.getBoundingClientRect();
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
-
-            this._cachedCorners.forEach(corner => {
-                const worldPos = corner.clone();
-                worldPos.project(camera);
-                const screenX = (worldPos.x * 0.5 + 0.5) * canvasRect.width + canvasRect.left;
-                const screenY = (-worldPos.y * 0.5 + 0.5) * canvasRect.height + canvasRect.top;
-                minX = Math.min(minX, screenX);
-                maxX = Math.max(maxX, screenX);
-                minY = Math.min(minY, screenY);
-                maxY = Math.max(maxY, screenY);
-            });
-
-            this._cachedScreenBounds = { minX, maxX, minY, maxY };
+            // 命中缓存与悬浮 UI 共用经过近裁剪的投影，避免放大后两套判定分叉。
+            const bounds = this.manager.getModelScreenBounds();
+            this._cachedScreenBounds = bounds ? {
+                minX: bounds.left, maxX: bounds.right,
+                minY: bounds.top, maxY: bounds.bottom
+            } : null;
             this._lastModelUpdateTime = Date.now();
+            if (!bounds) return;
+            const { left: minX, right: maxX, top: minY, bottom: maxY } = bounds;
+            const canvasRect = renderer.domElement.getBoundingClientRect();
 
             // Hit testing/hover still need fresh bounds in embedded views, but
             // desktop safe framing must not override the host's stable fit or
@@ -1958,8 +1985,6 @@ class VRMInteraction {
             }
         } catch (error) {
             console.warn('[VRM Interaction] 更新模型边界缓存失败:', error);
-            this._cachedBox = null;
-            this._cachedCorners = null;
             this._cachedScreenBounds = null;
         }
     }

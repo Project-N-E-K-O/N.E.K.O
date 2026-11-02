@@ -623,7 +623,7 @@ class TimeIndexedMemory:
                 db_path = expected_db_path
                 # Fall through to the 'create engine' branch below.
             elif not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
-                logger.info("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
+                logger.debug("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
                 self.dispose_engine(lanlan_name)
                 if not db_path:
                     db_path = cached_db_path
@@ -779,7 +779,7 @@ class TimeIndexedMemory:
             try:
                 engine.dispose()
                 engine_disposed = True
-                logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+                logger.debug(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
             except Exception as exc:
                 # Continue with _engine_cache cleanup below: the pool actually holding file handles is often
                 # cached there, so failure at this step must not skip the entire section.
@@ -1895,6 +1895,30 @@ class TimeIndexedMemory:
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 回填 FTS 索引失败: {e}")
             return None
+
+    def replace_fact_index(self, lanlan_name: str, rows: list[tuple[object, str]]) -> None:
+        """Replace only derived fact-search rows after an authoritative snapshot.
+
+        Failures propagate to the memory owner's file rollback and event replay.
+        Conversation/archive tables and their ordering remain untouched.
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_fts_table(lanlan_name):
+            raise OSError('fact_search_index_unavailable')
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        seen = set()
+        payload = []
+        for fact_id, content in rows:
+            key = (type(fact_id).__name__, fact_id)
+            if key not in seen:
+                seen.add(key)
+                payload.append({'fid': fact_id, 'content': ' '.join(fts_tokens(content, stop_names))})
+        with self.engines[lanlan_name].begin() as conn:
+            conn.execute(text(f'DELETE FROM {self.FACTS_FTS_TABLE}'))
+            if payload:
+                conn.execute(text(f'INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)'), payload)
+            conn.execute(text(f'INSERT OR REPLACE INTO {self.FACTS_FTS_META_TABLE}(key, value) VALUES(:key, :value)'),
+                         {'key': self._FTS_BACKFILL_META_KEY, 'value': datetime.now().isoformat()})
 
     async def abackfill_fact_index(
         self, lanlan_name: str, rows: list[tuple[object, str]],

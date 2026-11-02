@@ -88,13 +88,10 @@ if __name__ == "__main__":
         )
 
     # Use the shared rate-limited log filter
-    from utils.logger_config import create_main_server_filter, create_httpx_filter
+    from utils.logger_config import create_main_server_filter
 
     # Add filter to uvicorn access logs.
     logging.getLogger("uvicorn.access").addFilter(create_main_server_filter())
-
-    # Add availability-check filter to httpx logs.
-    logging.getLogger("httpx").addFilter(create_httpx_filter())
 
     # Precheck port before startup, avoiding uvicorn immediately exiting with unclear logs.
     if not _is_port_available(MAIN_SERVER_PORT):

@@ -462,6 +462,8 @@ async def _periodic_auto_promote_loop():
             try:
                 transitions = await _auto_promote_character(name, powerful)
                 if transitions:
+                    from .long_term_sync import queue_capture
+                    queue_capture(name)
                     logger.info(
                         f"[AutoPromote] {name}: {transitions} 条状态迁移"
                         f"({'score+merge' if powerful else 'time-driven'})"

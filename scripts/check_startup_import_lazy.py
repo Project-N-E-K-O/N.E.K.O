@@ -89,16 +89,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Startup-chain source trees: everything launcher_core.runtime.run_merged_servers
 # reaches via `from app import memory_server / agent_server / main_server`, plus the
-# launcher itself and the config package (imported by all of them).
+# launcher itself (launcher.py + launcher_core) and the config package (imported by
+# all of them). That includes knowledge (the Memory Server's knowledge routes) and
+# services (main_server's chat-sync / theater routers and main_logic.core import it
+# at module scope).
 DEFAULT_PATHS: list[str] = [
     "app",
     "brain",
     "config",
+    "knowledge",
     "main_logic",
     "main_routers",
     "memory",
+    "services",
     "utils",
     "launcher.py",
+    "launcher_core",
 ]
 
 EXCLUDE_DIRS = {

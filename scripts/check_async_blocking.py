@@ -83,7 +83,7 @@ import argparse
 import ast
 import sys
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATHS = [
@@ -98,6 +98,8 @@ DEFAULT_PATHS = [
     # already in scope above)
     "app/agent_server",
     "brain",
+    # shared services (chat_sync / theater) running on the main server loop
+    "services",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
 # pyzmq sockets (``sock.connect`` / ``sock.recv`` via async zmq) and
@@ -446,6 +448,376 @@ def _sync_body_has_blocking_call(
     return None
 
 
+# asyncio entry points whose argument must be an awaitable, mapped to the
+# keyword name of that argument. ``gather`` takes every positional arg.
+_ASYNCIO_AWAITABLE_ARG = {
+    "wait_for": "fut",
+    "shield": "arg",
+    "ensure_future": "coro_or_future",
+    "create_task": "coro",
+    "run_coroutine_threadsafe": "coro",
+}
+
+
+# Receivers trusted for ``<receiver>.create_task(coro)``: event loops and
+# ``asyncio.TaskGroup``. Two ways in: a plain name whose every binding in
+# its resolving scope comes from one of the asyncio constructors below
+# (``async with asyncio.TaskGroup() as group`` /
+# ``loop = asyncio.get_running_loop()``, see ``_scope_info``), or,
+# for attribute / call receivers such as ``self._loop`` that scope analysis
+# cannot see, the same tail-name matching as the queue/thread/socket
+# heuristics. A plain name is never trusted by its spelling alone. An unrelated
+# ``scheduler.create_task(...)`` may accept an already-computed value, so it
+# gets no suppression.
+TASK_OWNER_CONSTRUCTORS = {
+    "TaskGroup", "get_running_loop", "get_event_loop", "new_event_loop",
+}
+TASK_OWNER_EXACT = {
+    "loop", "event_loop", "get_running_loop", "get_event_loop",
+    "tg", "task_group", "taskgroup",
+}
+TASK_OWNER_SUFFIX = ("_loop", "_tg", "_task_group")
+
+
+def _asyncio_is_module(tree: ast.AST) -> bool:
+    """True when every binding of the name ``asyncio`` in the file is ``import asyncio``.
+
+    All asyncio-based trust in this module (awaitable slots, task-owner
+    constructors) keys on the spelling ``asyncio``. If anything else ever
+    binds that name -- a parameter, an assignment, ``import x as asyncio``,
+    ``from pkg import asyncio`` or ``*``, a def/class, ``except ... as asyncio`` --
+    the whole file falls back to the plain checks rather than resolving
+    which binding is live at each call.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == "asyncio":
+            return False
+        if isinstance(node, ast.arg) and node.arg == "asyncio":
+            return False
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                # ``import asyncio`` / ``import asyncio.subprocess`` bind the
+                # package; any ``... as asyncio`` other than the plain module
+                # binds something else.
+                if alias.asname == "asyncio" and alias.name != "asyncio":
+                    return False
+        elif isinstance(node, ast.ImportFrom):
+            # ``from pkg import *`` may bind ``asyncio`` too.
+            if any((alias.asname or alias.name) in ("asyncio", "*") for alias in node.names):
+                return False
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == "asyncio":
+                return False
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            if "asyncio" in node.names:
+                return False
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name == "asyncio":
+                return False
+        elif isinstance(node, ast.MatchMapping) and node.rest == "asyncio":
+            return False
+    return True
+
+
+def _is_task_owner_constructor(expr: ast.expr | None) -> bool:
+    """``asyncio.TaskGroup()`` / ``asyncio.get_running_loop()`` and friends."""
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and isinstance(expr.func.value, ast.Name)
+        and expr.func.value.id == "asyncio"
+        and expr.func.attr in TASK_OWNER_CONSTRUCTORS
+    )
+
+
+def _annotations_are_postponed(tree: ast.Module) -> bool:
+    """True under ``from __future__ import annotations`` (annotations never run)."""
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+
+
+def _definition_time_exprs(node: ast.AST, *, annotations: bool = True) -> list[ast.AST]:
+    """Parts of a def / lambda / class statement evaluated in the enclosing scope.
+
+    Decorators, argument defaults and annotations, the return annotation,
+    and class bases / keywords run when the statement executes; only the
+    body runs in the new scope. Pass ``annotations=False`` when they are
+    postponed (``from __future__ import annotations``) and never evaluated.
+    """
+    if isinstance(node, ast.ClassDef):
+        return [*node.decorator_list, *node.bases, *node.keywords]
+    args = node.args  # type: ignore[attr-defined]
+    exprs: list[ast.AST] = [
+        *getattr(node, "decorator_list", ()),
+        *args.defaults,
+        *(d for d in args.kw_defaults if d is not None),
+    ]
+    if not annotations:
+        return exprs
+    for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
+        if arg is not None and arg.annotation is not None:
+            exprs.append(arg.annotation)
+    returns = getattr(node, "returns", None)
+    if returns is not None:
+        exprs.append(returns)
+    return exprs
+
+
+_DECLARED_GLOBAL = "global"
+_DECLARED_NONLOCAL = "nonlocal"
+# name -> trusted, or one of the markers above for a ``global`` / ``nonlocal``
+# declaration (lookup continues at the module / in enclosing functions).
+ScopeVerdicts = dict[str, bool | str]
+
+
+def _scope_info(
+    scope: ast.AST,
+    *,
+    annotations: bool = True,
+    cache: dict[int, tuple[ScopeVerdicts, dict[str, bool], dict[str, bool]]] | None = None,
+) -> tuple[ScopeVerdicts, dict[str, bool], dict[str, bool]]:
+    """Task-owner verdicts of one scope, plus the writes that escape it.
+
+    Mirrors Python scoping: a name bound anywhere in a function is local to
+    the whole function, so the verdict is flow-insensitive. A local name is
+    trusted only when every one of its bindings in this scope is
+    ``name = asyncio.<constructor>()``, ``name: T = asyncio.<constructor>()``,
+    ``(name := asyncio.<constructor>())`` or
+    ``async with asyncio.<constructor>() as name`` (a bare annotation binds
+    nothing). Parameters, any other assignment / loop / walrus target,
+    ``del``, imports, ``except ... as``, match captures and nested def/class
+    names make it untrusted. Every binding in a class body is untrusted:
+    the namespace fills in execution order and a single verdict cannot say
+    which reads happen before a trusted assignment.
+
+    A name declared ``global`` / ``nonlocal`` here gets a marker instead of
+    a verdict, and writes through the declaration -- from this scope or a
+    nested one -- escape: ``global`` writes land on the module, ``nonlocal``
+    writes on the nearest enclosing function that binds the name. The two
+    returned dicts map escaping names to whether every such write was a
+    constructor binding; the scope that owns the name folds them into its
+    own verdict.
+
+    Bodies of nested functions and classes, and comprehension targets, are
+    their own scopes; definition-time expressions (decorators, defaults,
+    annotations unless postponed, bases) and walrus targets inside a
+    comprehension belong to this one.
+    """
+    if cache is not None and id(scope) in cache:
+        return cache[id(scope)]
+    is_module = isinstance(scope, ast.Module)
+    is_class = isinstance(scope, ast.ClassDef)
+    bindings: list[tuple[str, bool]] = []
+    declared_global: set[str] = set()
+    declared_nonlocal: set[str] = set()
+    child_globals: list[tuple[str, bool]] = []
+    child_nonlocals: list[tuple[str, bool]] = []
+    owner_targets: set[int] = set()
+
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = scope.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
+            if arg is not None:
+                bindings.append((arg.arg, False))
+        stack: list[ast.AST] = [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
+    else:
+        stack = list(getattr(scope, "body", []))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            if not isinstance(node, ast.Lambda):
+                bindings.append((node.name, False))
+            _child, escaping_globals, escaping_nonlocals = _scope_info(
+                node, annotations=annotations, cache=cache,
+            )
+            child_globals.extend(escaping_globals.items())
+            child_nonlocals.extend(escaping_nonlocals.items())
+            stack.extend(_definition_time_exprs(node, annotations=annotations))
+            continue
+        if isinstance(node, ast.comprehension):
+            stack.append(node.iter)
+            stack.extend(node.ifs)
+            continue
+        if isinstance(node, ast.AnnAssign):
+            if node.value is None:
+                continue
+            if isinstance(node.target, ast.Name) and _is_task_owner_constructor(node.value):
+                owner_targets.add(id(node.target))
+        elif isinstance(node, ast.Assign) and _is_task_owner_constructor(node.value):
+            owner_targets.update(id(t) for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.NamedExpr) and _is_task_owner_constructor(node.value):
+            owner_targets.add(id(node.target))
+        elif isinstance(node, ast.AsyncWith):
+            for item in node.items:
+                if isinstance(item.optional_vars, ast.Name) and _is_task_owner_constructor(item.context_expr):
+                    owner_targets.add(id(item.optional_vars))
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bindings.append((node.id, id(node) in owner_targets))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*":
+                    bindings.append(((alias.asname or alias.name).split(".")[0], False))
+        elif isinstance(node, ast.Global):
+            if not is_module:
+                declared_global.update(node.names)
+        elif isinstance(node, ast.Nonlocal):
+            declared_nonlocal.update(node.names)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+            bindings.append((node.name, False))
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bindings.append((node.rest, False))
+        stack.extend(ast.iter_child_nodes(node))
+
+    def merge(into: dict, name: str, trusted: bool) -> None:
+        into[name] = into.get(name, True) and trusted
+
+    verdicts: dict = {}
+    escaping_globals: dict[str, bool] = {}
+    escaping_nonlocals: dict[str, bool] = {}
+    for name, trusted in bindings:
+        if name in declared_global:
+            merge(escaping_globals, name, trusted)
+        elif name in declared_nonlocal:
+            merge(escaping_nonlocals, name, trusted)
+        else:
+            merge(verdicts, name, trusted and not is_class)
+    for name, trusted in child_globals:
+        if is_module:
+            # A nested ``global`` write binds the module name even when the
+            # module itself never assigns it.
+            merge(verdicts, name, trusted)
+        else:
+            merge(escaping_globals, name, trusted)
+    for name, trusted in child_nonlocals:
+        if is_module:
+            continue
+        if not is_class and name in verdicts:
+            merge(verdicts, name, trusted)
+        else:
+            merge(escaping_nonlocals, name, trusted)
+    for name in declared_global:
+        verdicts[name] = _DECLARED_GLOBAL
+    for name in declared_nonlocal:
+        verdicts[name] = _DECLARED_NONLOCAL
+    result = (verdicts, escaping_globals, escaping_nonlocals)
+    if cache is not None:
+        cache[id(scope)] = result
+    return result
+
+
+def _slot_calls(expr: ast.expr) -> list[ast.Call]:
+    """Calls whose result becomes the value of an awaitable slot.
+
+    A direct call, the value of an assignment expression
+    (``(coro := ws.recv())``), either result branch of a conditional
+    expression (``a.recv() if c else q.get()``), or the last operand of a
+    boolean expression (``existing or ws.recv()``). Conditions, earlier
+    boolean operands and nested argument calls keep the normal checks.
+    """
+    if isinstance(expr, ast.Call):
+        return [expr]
+    if isinstance(expr, ast.NamedExpr):
+        return _slot_calls(expr.value)
+    if isinstance(expr, ast.IfExp):
+        return _slot_calls(expr.body) + _slot_calls(expr.orelse)
+    if isinstance(expr, ast.BoolOp):
+        # Only the last operand is the result whenever it is evaluated; an
+        # earlier one may be skipped past when it is falsy (``b""``).
+        return _slot_calls(expr.values[-1])
+    return []
+
+
+def _expanded_elements(arg: ast.expr) -> list[ast.expr]:
+    """Element expressions of a statically visible ``*`` expansion.
+
+    ``*(f(x) for x in xs)`` / ``*[a(), b()]`` → the element calls; any other
+    starred value (``*coros``) yields nothing to inspect.
+    """
+    value = arg.value if isinstance(arg, ast.Starred) else arg
+    if isinstance(value, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+        return [value.elt]
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return list(value.elts)
+    return []
+
+
+def _awaitable_argument_slots(
+    call: ast.Call,
+    is_task_owner_name: Callable[[str], bool] | None = None,
+    *,
+    asyncio_is_module: bool = True,
+) -> list[ast.expr]:
+    """Return the arguments of ``call`` that asyncio requires to be awaitable.
+
+    Recognised forms: ``asyncio.wait_for`` / ``shield`` / ``ensure_future`` /
+    ``create_task`` / ``run_coroutine_threadsafe`` (first argument, or the
+    first element of a ``*`` literal), ``asyncio.gather`` (every positional
+    argument, including the elements of a literal or comprehension
+    expanded with ``*``), ``asyncio.as_completed`` (the elements of a
+    literal or comprehension first argument), and
+    ``<loop or TaskGroup>.create_task`` (see
+    ``TASK_OWNER_CONSTRUCTORS`` / ``TASK_OWNER_EXACT``;
+    ``is_task_owner_name`` resolves a plain-name receiver). Bare names such
+    as an imported ``wait_for`` are not resolved, so a same-named repo
+    helper can never hide a real blocking call. With ``asyncio_is_module``
+    false (see ``_asyncio_is_module``) the ``asyncio.*`` forms are not
+    trusted.
+    """
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return []
+    on_asyncio = (
+        asyncio_is_module
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "asyncio"
+    )
+    if on_asyncio and func.attr == "as_completed":
+        # The first argument is an iterable of awaitables.
+        if call.args and not isinstance(call.args[0], ast.Starred):
+            return _expanded_elements(call.args[0])
+        return [e for kw in call.keywords if kw.arg == "fs" for e in _expanded_elements(kw.value)]
+    if on_asyncio and func.attr == "gather":
+        slots: list[ast.expr] = []
+        for a in call.args:
+            if isinstance(a, ast.Starred):
+                slots.extend(_expanded_elements(a))
+            else:
+                slots.append(a)
+        return slots
+    task_owner = False
+    if func.attr == "create_task":
+        receiver = func.value
+        if isinstance(receiver, ast.Name):
+            task_owner = is_task_owner_name is not None and is_task_owner_name(receiver.id)
+        else:
+            root = receiver
+            while isinstance(root, (ast.Attribute, ast.Call, ast.Subscript)):
+                root = root.func if isinstance(root, ast.Call) else root.value
+            rooted_at_shadowed_asyncio = (
+                not asyncio_is_module and isinstance(root, ast.Name) and root.id == "asyncio"
+            )
+            task_owner = not rooted_at_shadowed_asyncio and _tail_matches(
+                _tail_name(receiver), TASK_OWNER_EXACT, TASK_OWNER_SUFFIX
+            )
+    if task_owner or (on_asyncio and func.attr in _ASYNCIO_AWAITABLE_ARG):
+        if call.args:
+            first = call.args[0]
+            if not isinstance(first, ast.Starred):
+                return [first]
+            # ``wait_for(*[ws.recv(), 10])``: the first element of a literal
+            # fills the slot. A comprehension's element also fills the later
+            # arguments (``timeout``, ``loop``), so it gets no suppression.
+            value = first.value
+            return list(value.elts[:1]) if isinstance(value, (ast.List, ast.Tuple)) else []
+        keyword = _ASYNCIO_AWAITABLE_ARG[func.attr]
+        return [kw.value for kw in call.keywords if kw.arg == keyword]
+    return []
+
+
 class AsyncBlockingChecker(ast.NodeVisitor):
     def __init__(
         self,
@@ -483,22 +855,111 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # its blocking body on the event-loop thread before the await.
         # Indexed by id() to avoid mutating the AST.
         self._awaited_call_ids: set[int] = set()
+        # ids of Call nodes sitting in an asyncio awaitable-argument slot
+        # (see ``_awaitable_argument_slots``). They lift the same
+        # queue/thread/socket heuristics as a direct ``await`` and nothing
+        # else: unlike ``await foo()``, the ambiguous-name skip in the
+        # depth-1 pass does not apply, so ``gather(foo())`` still reports a
+        # risky sync ``foo`` exactly as it did before slots existed.
+        self._slot_call_ids: set[int] = set()
+        # ``(_scope_info verdicts, is_class_body)`` of the module and each
+        # enclosing function / class body / comprehension, innermost last;
+        # a plain-name receiver resolves in the innermost scope that binds
+        # it. A class body is visible only to code directly inside it, not
+        # to its methods or comprehensions (Python's own rule).
+        self._task_owner_scopes: list[tuple[ScopeVerdicts, bool]] = []
+        self._scope_cache: dict[int, tuple[ScopeVerdicts, dict[str, bool], dict[str, bool]]] = {}
+        # Set per module in visit_Module; see ``_asyncio_is_module``.
+        self._asyncio_is_module = True
+        # Set per module in visit_Module; see ``_annotations_are_postponed``.
+        self._annotations_run = True
 
     # ── function tracking ────────────────────────────────────────────────
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._func_stack.append("async")
+    def visit_Module(self, node: ast.Module) -> None:
+        self._asyncio_is_module = _asyncio_is_module(node)
+        self._annotations_run = not _annotations_are_postponed(node)
+        self._task_owner_scopes.append((self._verdicts(node), False))
         self.generic_visit(node)
+        self._task_owner_scopes.pop()
+
+    def _verdicts(self, scope: ast.AST) -> ScopeVerdicts:
+        verdicts = _scope_info(scope, annotations=self._annotations_run, cache=self._scope_cache)[0]
+        if not self._asyncio_is_module:
+            # Constructor bindings are only meaningful on the real module.
+            verdicts = dict.fromkeys(verdicts, False)
+        return verdicts
+
+    def _visit_function(self, node: ast.AST, kind: str) -> None:
+        for expr in _definition_time_exprs(node, annotations=self._annotations_run):
+            self.visit(expr)
+        self._func_stack.append(kind)
+        self._task_owner_scopes.append((self._verdicts(node), False))
+        body = node.body  # type: ignore[attr-defined]
+        for child in body if isinstance(body, list) else [body]:
+            self.visit(child)
+        self._task_owner_scopes.pop()
         self._func_stack.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # Decorators, bases and keywords run in the enclosing scope; the
+        # body runs in the class namespace.
+        for expr in _definition_time_exprs(node, annotations=self._annotations_run):
+            self.visit(expr)
+        self._task_owner_scopes.append((self._verdicts(node), True))
+        for stmt in node.body:
+            self.visit(stmt)
+        self._task_owner_scopes.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node, "async")
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._func_stack.append("sync")
-        self.generic_visit(node)
-        self._func_stack.pop()
+        self._visit_function(node, "sync")
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._func_stack.append("sync")
-        self.generic_visit(node)
-        self._func_stack.pop()
+        self._visit_function(node, "sync")
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        # Comprehension targets live in their own scope and shadow any
+        # enclosing task owner of the same name. The outermost iterable is
+        # evaluated in the enclosing scope, before any target is bound.
+        generators = node.generators  # type: ignore[attr-defined]
+        self.visit(generators[0].iter)
+        targets = {
+            n.id
+            for gen in generators
+            for n in ast.walk(gen.target)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+        }
+        self._task_owner_scopes.append((dict.fromkeys(targets, False), False))
+        for index, gen in enumerate(generators):
+            self.visit(gen.target)
+            if index:
+                self.visit(gen.iter)
+            for cond in gen.ifs:
+                self.visit(cond)
+        for field in ("elt", "key", "value"):
+            child = getattr(node, field, None)
+            if child is not None:
+                self.visit(child)
+        self._task_owner_scopes.pop()
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
+
+    def _is_task_owner_name(self, name: str) -> bool:
+        for depth, (verdicts, is_class_body) in enumerate(reversed(self._task_owner_scopes)):
+            if is_class_body and depth:
+                continue
+            verdict = verdicts.get(name)
+            if verdict is None or verdict == _DECLARED_NONLOCAL:
+                continue
+            if verdict == _DECLARED_GLOBAL:
+                return self._task_owner_scopes[0][0].get(name) is True
+            return bool(verdict)
+        return False
 
     # ── helpers ─────────────────────────────────────────────────────────
     def _in_async_context(self) -> bool:
@@ -525,20 +986,41 @@ class AsyncBlockingChecker(ast.NodeVisitor):
     def visit_Await(self, node: ast.Await) -> None:
         # Mark the directly-awaited call for targeted suppression in
         # visit_Call (see _awaited_call_ids docstring). Arguments inside
-        # X(...) are NOT marked — a blocking call passed as an argument
-        # (``await gather(requests.get(...))``) is still evaluated
-        # synchronously before the await.
+        # X(...) are NOT marked here — only the asyncio awaitable slots
+        # in _mark_awaitable_arguments are, and even there the direct
+        # blocking-stdlib check still runs: ``await gather(requests.get(...))``
+        # evaluates requests.get synchronously before the await.
         if isinstance(node.value, ast.Call):
             self._awaited_call_ids.add(id(node.value))
         self.generic_visit(node)
 
+    def _mark_awaitable_arguments(self, call: ast.Call) -> None:
+        # Calls passed where asyncio requires an awaitable get the same
+        # heuristic suppression as a directly awaited call:
+        # ``asyncio.wait_for(ws.recv(), 10)`` with a blocking
+        # ``socket.recv()`` would hand bytes to wait_for and raise
+        # TypeError, so the argument must be a coroutine/future. Only
+        # these positions are marked; other arguments (and the outer
+        # call itself) keep the normal checks.
+        for arg in _awaitable_argument_slots(
+            call, self._is_task_owner_name, asyncio_is_module=self._asyncio_is_module,
+        ):
+            for slot_call in _slot_calls(arg):
+                self._slot_call_ids.add(id(slot_call))
+
     # ── the actual checks ────────────────────────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:
+        self._mark_awaitable_arguments(node)
         if self._in_async_context():
             awaited = id(node) in self._awaited_call_ids
             # queue/thread/socket heuristics are name-based type guesses;
-            # an ``await`` proves the receiver is an asyncio object.
-            if isinstance(node.func, ast.Attribute) and not awaited:
+            # an ``await`` (or an asyncio awaitable slot) proves the
+            # receiver is an asyncio object.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and not awaited
+                and id(node) not in self._slot_call_ids
+            ):
                 self._check_attribute_call(node)
             # Direct blocking stdlib calls (requests.get, shutil.copy, …)
             # and depth-1 transitive sync-helper dispatch are checked

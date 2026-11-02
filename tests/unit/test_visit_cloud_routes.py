@@ -207,6 +207,16 @@ def test_history_cleans_peer_display_names(env):
     assert "小明" not in names[1] and names[1].endswith("123456")
 
 
+def test_history_keeps_a_peer_card_name_that_is_installed_locally(env):
+    client, fake, *_ = env
+    fake.history_items = [{
+        "visit_id": V1, "role": "host", "peer_display_name": "Mimi", "peer_short_code": "ABCDEF",
+        "started_at": 1.0, "ended_at": 2.0,
+    }]
+    body = client.get("/api/visit/history", headers=GOOD).json()
+    assert body["items"][0]["peer_display_name"] == "Mimi"
+
+
 def test_history_maps_401_to_login_required(env):
     client, fake, *_ = env
     fake.history_mode = "401"

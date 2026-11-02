@@ -167,6 +167,15 @@ def test_new_catgirl_default_voice_id_prefers_configured_presets(monkeypatch):
     assert characters_crud._get_new_catgirl_default_voice_id() == "voice-custom"
 
 
+def test_new_catgirl_default_voice_id_wrapper_is_late_bound_to_utils(monkeypatch):
+    """add_catgirl and chat-sync import share one default; patching the utils function reaches both."""
+    from utils import api_config_loader
+
+    monkeypatch.setattr(api_config_loader, "get_new_character_default_voice_id", lambda: "voice-patched")
+    assert characters_crud._get_new_catgirl_default_voice_id() == "voice-patched"
+    assert characters_crud.DEFAULT_NEW_CATGIRL_FREE_VOICE_ID == api_config_loader.DEFAULT_NEW_CHARACTER_FREE_VOICE_ID
+
+
 def test_native_preview_provider_respects_custom_voice_collision():
     native_mgr = _FakeCharactersRouterConfigManager("gemini")
     colliding_mgr = _FakeCharactersRouterConfigManager("gemini", stored_voice_ids={"Puck"})

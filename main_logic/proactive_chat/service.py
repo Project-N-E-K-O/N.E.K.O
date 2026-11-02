@@ -119,6 +119,7 @@ from main_logic.proactive_chat.music_recommendation import (
     _build_music_playing_hint,
     _select_music_recommendation,
 )
+from main_logic.proactive_chat.music_refusal import is_music_refusal_cooldown_active
 from main_logic.proactive_chat.state import (
     _enter_proactive_phase2,
     _ensure_source_history_loaded,
@@ -526,6 +527,7 @@ async def _collect_sources_under_vision_consent(
     enabled_modes: list[str],
     lanlan_name: str,
     vision_consent_check: Any,
+    mgr: Any = None,
 ) -> tuple[list[str], dict[str, dict], bool]:
     """Collect enabled sources; screen and window sources only under vision consent.
 
@@ -550,6 +552,10 @@ async def _collect_sources_under_vision_consent(
         enabled_modes=enabled_modes,
         lanlan_name=lanlan_name,
         log=logger,
+        community_locale=(
+            _resolve_proactive_locale(command, mgr, fmt="full")
+            if "community" in enabled_modes else None
+        ),
     )
     if await _withhold_revoked_vision_sources(
         sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
@@ -586,7 +592,9 @@ async def handle_proactive_chat(
         is_playing_music = command.is_playing_music
         is_music_occupied = command.is_music_occupied
         current_track = command.current_track
-        music_cooldown = command.music_cooldown
+        # Card skips and verbal refusals are counted on the backend, so every
+        # window sees them; the frontend flag only covers player-side skips.
+        music_cooldown = command.music_cooldown or is_music_refusal_cooldown_active(lanlan_name)
 
         # Get session manager.
         mgr = session_manager.get(lanlan_name)
@@ -1433,6 +1441,7 @@ async def handle_proactive_chat(
                 enabled_modes=enabled_modes,
                 lanlan_name=lanlan_name,
                 vision_consent_check=vision_consent_check,
+                mgr=mgr,
             )
         )
         avatar_position = command.avatar_position

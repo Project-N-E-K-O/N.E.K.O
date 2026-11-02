@@ -39,6 +39,9 @@ class SyntheticRuntime:
         """Represent a local-only wake across all opted-in roles."""
         self.calls.append(("wake",))
 
+    def wake_scheduler(self):
+        self.calls.append(("recent-changed",))
+
     async def enable(self, uid, name):
         """Return a synthetic service-authoritative owner for the real local UID."""
         self.calls.append(("enable", uid, name))
@@ -172,6 +175,16 @@ def test_history_keeps_local_only_replies_outside_canonical_originals(local_clie
     runtime.calls.clear()
     assert client.get(f"/api/chat-sync/characters/{'f' * 32}/history").status_code == 404
     assert runtime.calls == []
+
+
+def test_recent_write_hint_is_local_only_content_free_and_does_not_force_catchup(local_client):
+    client, runtime = local_client
+    path = '/api/chat-sync/recent-changed'
+    assert client.post(path).json() == {'scheduled': True}
+    assert runtime.calls == [('recent-changed',)]
+    assert client.post(path, headers={'Origin': 'https://foreign.test'}).status_code == 403
+    assert client.post(path, json={'text': 'private chat'}).status_code == 422
+    assert runtime.calls == [('recent-changed',)]
 
 
 def test_foreground_wake_is_local_only_and_retains_origin_gate(local_client):
@@ -320,19 +333,23 @@ def test_history_consent_pins_task_without_accepting_ui_owner_or_snapshot(local_
     assert client.post(f"/api/chat-sync/characters/{'f' * 32}/history/preview").status_code == 404
 
 
-def test_writer_recovery_routes_keep_history_and_deletion_consent_separate(local_client):
+@pytest.mark.parametrize('history_available', [False, True])
+def test_writer_recovery_routes_keep_history_and_deletion_consent_separate(local_client, history_available):
     """Cloud checks only preview; exact reviewed task IDs authorize deletions later."""
     from unittest.mock import AsyncMock
     client, runtime = local_client
     runtime.recover_writer_role = AsyncMock(return_value={
-        "history": {"taskId": "f" * 32, "count": 2},
-        "deletions": {"taskId": "e" * 32, "count": 1},
+        "history": {"taskId": "f" * 32, "count": 2} if history_available else None,
+        "historyError": None if history_available else 'chat_sync_unavailable',
+        "deletions": {"taskId": "e" * 32, "count": 1, "localName": 'Neko', "cloudName": 'Cloud Neko'},
     })
     runtime.approve_recovery_deletions = AsyncMock(return_value={"status": "registered"})
     runtime.approve_history = AsyncMock()
     path = f"/api/chat-sync/characters/{UID}/recovery"
     result = client.post(path + "/preview", json={"serviceUrl": "https://sync.nekotech.cn"})
     assert result.status_code == 200 and result.headers["Cache-Control"] == "no-store"
+    assert result.json()['deletions']['taskId'] == 'e' * 32
+    assert (result.json()['history'] is not None) is history_available
     runtime.recover_writer_role.assert_awaited_once_with(UID, "Neko", service_url="https://sync.nekotech.cn")
     runtime.approve_recovery_deletions.assert_not_awaited()
     runtime.approve_history.assert_not_awaited()

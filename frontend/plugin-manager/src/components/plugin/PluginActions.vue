@@ -228,7 +228,8 @@ async function handleReload() {
 <style scoped>
 .plugin-actions {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 </style>

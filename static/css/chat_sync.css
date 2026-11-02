@@ -1,0 +1,95 @@
+/* Shared by the character editor and the transparent chat host. */
+#chat-sync-dialog {
+    box-sizing: border-box;
+    width: min(440px, calc(100vw - 32px));
+    max-width: none;
+    padding: 24px;
+    border: 1px solid rgba(64, 197, 241, 0.5);
+    border-radius: 22px;
+    background: linear-gradient(145deg, #ffffff, #f0faff);
+    color: #39768f;
+    box-shadow: 0 16px 48px rgba(24, 112, 153, 0.2);
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    pointer-events: auto;
+    overflow: visible;
+}
+#chat-sync-dialog::backdrop { background: rgba(30, 73, 96, 0.24); }
+#chat-sync-dialog button { font-family: inherit; pointer-events: auto; cursor: pointer; }
+#chat-sync-dialog .chat-sync-dialog-header { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
+#chat-sync-dialog .chat-sync-dialog-header > img { width: 26px; height: 26px; object-fit: contain; }
+#chat-sync-dialog h2 { flex: 1; margin: 0; color: #219fcf; font-size: 20px; font-weight: 700; }
+#chat-sync-dialog .chat-sync-close {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 6px;
+    border: 0;
+    border-radius: 50%;
+    background: #e8f6fc;
+}
+#chat-sync-dialog .chat-sync-close img { width: 16px; height: 16px; object-fit: contain; filter: brightness(0); opacity: 0.55; }
+#chat-sync-dialog .chat-sync-close:hover { background: #d5effb; }
+#chat-sync-dialog .chat-sync-recovery-row { display: flex; align-items: center; gap: 12px; }
+#chat-sync-dialog .chat-sync-recover {
+    flex: 1;
+    min-width: 0;
+    min-height: 46px;
+    padding: 12px 18px;
+    border: 1px solid #20afe6;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #45cef1, #17a7ed);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(38, 178, 231, 0.2);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+#chat-sync-dialog .chat-sync-recover:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
+#chat-sync-dialog .chat-sync-recover:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+#chat-sync-dialog .chat-sync-status { margin: 16px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+#chat-sync-dialog .chat-sync-help { position: relative; display: inline-flex; flex: 0 0 auto; }
+#chat-sync-dialog .chat-sync-help-button {
+    width: 25px;
+    height: 25px;
+    padding: 0;
+    border: 1.5px solid rgba(39, 184, 234, 0.65);
+    border-radius: 50%;
+    background: #effaff;
+    color: #1d9fcf;
+    font: 700 14px/1 Arial, sans-serif;
+    cursor: help;
+}
+#chat-sync-dialog .chat-sync-help-button:hover { background: #dff6ff; }
+#chat-sync-dialog button:focus-visible { outline: 2px solid #087fae; outline-offset: 3px; }
+#chat-sync-recovery-tooltip {
+    position: absolute;
+    z-index: 1;
+    top: calc(100% + 10px);
+    right: 0;
+    box-sizing: border-box;
+    width: min(300px, calc(100vw - 72px));
+    padding: 12px 14px;
+    border: 1px solid rgba(64, 197, 241, 0.4);
+    border-radius: 14px;
+    background: #fff;
+    color: #39768f;
+    box-shadow: 0 10px 28px rgba(22, 113, 151, 0.18);
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+    visibility: hidden;
+    pointer-events: none;
+}
+#chat-sync-dialog .chat-sync-help:hover #chat-sync-recovery-tooltip,
+#chat-sync-dialog .chat-sync-help:focus-within #chat-sync-recovery-tooltip { visibility: visible; }
+[data-theme="dark"] #chat-sync-dialog { background: linear-gradient(145deg, #243b4c, #1d303f); border-color: #3b687d; color: #d5eaf5; }
+[data-theme="dark"] #chat-sync-dialog h2 { color: #91dcf6; }
+[data-theme="dark"] #chat-sync-dialog .chat-sync-status { color: #abc4d0; }
+[data-theme="dark"] #chat-sync-dialog .chat-sync-close { background: #355063; }
+[data-theme="dark"] #chat-sync-dialog .chat-sync-close img { filter: brightness(0) invert(1); opacity: 0.85; }
+[data-theme="dark"] #chat-sync-dialog .chat-sync-close:hover { background: #42637a; }
+[data-theme="dark"] #chat-sync-dialog .chat-sync-help-button { background: #2b4a5c; color: #a3e7ff; border-color: #68bedc; }
+[data-theme="dark"] #chat-sync-recovery-tooltip { background: #243e4e; color: #d5eaf5; border-color: #48778c; }
+[data-theme="dark"] #chat-sync-dialog button:focus-visible { outline-color: #8edcff; }

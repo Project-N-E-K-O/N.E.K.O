@@ -177,7 +177,6 @@ let live2dModel = null;
 let currentModelInfo = null;
 let parameterInfo = null;
 let parameterGroups = {};
-let initialParameters = {};
 // 独立编辑草稿：只由用户操作更新，避免 motion/物理/呼吸的瞬时值混入保存结果。
 let draftParameters = {};
 let draftParameterIndexes = {};
@@ -908,8 +907,8 @@ async function loadModel(modelName) {
 
         live2dModel = window.live2dManager.getCurrentModel();
 
-        // 记录初始参数（在模型目录参数加载后）
-        recordInitialParameters();
+        // 从已加载的有效覆盖项初始化编辑草稿。
+        initializeParameterDraft();
 
         // 显示参数列表
         displayParameters();
@@ -926,15 +925,14 @@ async function loadModel(modelName) {
     }
 }
 
-// 记录初始参数
-function recordInitialParameters() {
+// 初始化独立的参数覆盖草稿
+function initializeParameterDraft() {
     if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
         return;
     }
 
     const coreModel = live2dModel.internalModel.coreModel;
     const manager = window.live2dManager;
-    initialParameters = {};
     draftParameters = {};
     draftParameterIndexes = {};
     parameterCatalog = manager && typeof manager._buildModelParameterCatalog === 'function'
@@ -957,15 +955,10 @@ function recordInitialParameters() {
         : rawEffectiveParameters;
 
     for (const parameter of parameterCatalog) {
-        try {
-            const value = coreModel.getParameterValueByIndex(parameter.index);
-            initialParameters[parameter.key] = value;
-            draftParameterIndexes[parameter.key] = parameter.index;
-            draftParameters[parameter.key] = Object.prototype.hasOwnProperty.call(effectiveParameters, parameter.key)
-                ? effectiveParameters[parameter.key]
-                : value;
-        } catch (e) {
-            console.warn(`记录参数 ${parameter.index} 失败:`, e);
+        draftParameterIndexes[parameter.key] = parameter.index;
+        // Untouched model/physics values are not custom overrides.
+        if (Object.prototype.hasOwnProperty.call(effectiveParameters, parameter.key)) {
+            draftParameters[parameter.key] = effectiveParameters[parameter.key];
         }
     }
 }
@@ -1212,7 +1205,6 @@ function displayParameters() {
                 const range = getParameterRange(coreModel, i);
                 let minValue = range.min;
                 let maxValue = range.max;
-                const initialValue = initialParameters[paramId] !== undefined ? initialParameters[paramId] : range.default;
 
                 // 确保当前值在范围内 (或者至少如果当前值超出范围，扩展范围以包含它)
                 if (currentValue < minValue) minValue = currentValue;
@@ -1317,7 +1309,8 @@ function displayParameters() {
                 });
 
                 resetBtn.addEventListener('click', () => {
-                    updateParameter(initialValue, 'reset');
+                    resetParameterOverrides([parameterCatalogByIndex.get(i) || { index: i, key: paramId }]);
+                    updateParameterUIValues();
                 });
 
                 controls.appendChild(sliderWrapper);
@@ -1376,6 +1369,33 @@ if (modelSelect) {
     });
 }
 
+function resetParameterOverrides(parameters) {
+    const coreModel = live2dModel?.internalModel?.coreModel;
+    if (!coreModel) return;
+    const manager = window.live2dManager;
+    for (const parameter of parameters) {
+        try {
+            let resetValue = parameter.defaultValue;
+            if (!Number.isFinite(resetValue) && typeof manager?._getCoreParameterDefaultValue === 'function') {
+                resetValue = manager._getCoreParameterDefaultValue(coreModel, parameter.index);
+            }
+            if (!Number.isFinite(resetValue)) {
+                const range = getParameterRange(coreModel, parameter.index);
+                if (range.hasDefault === true) resetValue = range.default;
+            }
+            // If a wrapper cannot expose the model default, release the override
+            // without inventing a zero or calling the loaded appearance a default.
+            if (Number.isFinite(resetValue)) {
+                coreModel.setParameterValueByIndex(parameter.index, resetValue);
+            }
+        } catch (e) {
+            console.warn(`重置参数索引 ${parameter.index} 失败:`, e);
+        }
+        delete draftParameters[parameter.key];
+        draftParameterIndexes[parameter.key] = parameter.index;
+    }
+}
+
 if (resetAllBtn) {
     resetAllBtn.addEventListener('click', () => {
         if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) return;
@@ -1392,28 +1412,8 @@ if (resetAllBtn) {
         draftParameters = {};
         draftParameterIndexes = {};
 
-        // 重置为模型在 .moc3 中声明的真正默认值，而不是页面加载时的外观。
-        for (const parameter of catalog) {
-            try {
-                let resetValue = parameter.defaultValue;
-                if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) {
-                    const range = getParameterRange(coreModel, parameter.index);
-                    if (range.hasDefault === true) resetValue = range.default;
-                }
-                if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) {
-                    // Unknown wrappers cannot expose the .moc3 default. Keep
-                    // the loaded value instead of fabricating a destructive 0.
-                    resetValue = initialParameters[parameter.key];
-                }
-                if (typeof resetValue !== 'number' || !Number.isFinite(resetValue)) continue;
-
-                coreModel.setParameterValueByIndex(parameter.index, resetValue);
-                draftParameters[parameter.key] = resetValue;
-                draftParameterIndexes[parameter.key] = parameter.index;
-            } catch (e) {
-                console.warn(`重置参数索引 ${parameter.index} 失败:`, e);
-            }
-        }
+        // Restore the preview and leave an empty override snapshot for Save.
+        resetParameterOverrides(catalog);
 
         // 更新UI中的滑块和输入框值，不重新渲染整个列表
         updateParameterUIValues();
@@ -1475,7 +1475,10 @@ async function persistParameterDraft(modelInfo, model, parameters, dependencies 
             modelInfo.path,
             position,
             scale,
-            parameters
+            parameters,
+            undefined,
+            undefined,
+            'replace'
         );
     } catch (error) {
         prefError = error.message;

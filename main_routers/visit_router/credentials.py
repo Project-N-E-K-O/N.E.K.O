@@ -14,7 +14,7 @@
 
 """N.E.K.O. Servers client for catgirl visits (design §5 PR-07, contract §4.7).
 
-Five calls, all through ``get_external_http_client()`` with redirects off:
+Six calls, all through ``get_external_http_client()`` with redirects off:
 
 * :func:`fetch_visit_credentials` -- ``POST /api/visit/credentials`` (bearer):
   room binding / invite code / transport / vendor grant / identity ticket.
@@ -24,6 +24,9 @@ Five calls, all through ``get_external_http_client()`` with redirects off:
   plus the revocation list, cached ``VISIT_PUBKEYS_CACHE_S``.
 * :func:`fetch_invite_preview` -- ``GET /api/visit/invites/{code}/preview``
   (bearer, read-only): data of the guest's confirmation dialog.
+* :func:`cancel_pending_host_invites` --
+  ``POST /api/visit/rooms/pending/cancel`` (bearer): invalidate this device's
+  unused invitations when a new local app run starts.
 * :class:`VisitGrant` -- renews the 10 min vendor grant while keeping the
   identity ticket (``credentials{refresh:true}``, §3.2.1 / §4.3).
 
@@ -51,6 +54,7 @@ import logging
 import math
 import re
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional
 from urllib.parse import urlsplit
@@ -305,6 +309,13 @@ class VisitQuotaExceeded(VisitServersError):
     http_status = 429
 
 
+class VisitConcurrencyLimit(VisitServersError):
+    """``429 concurrency_limit``: too many active visits or invitations."""
+
+    code = "VISIT_CONCURRENCY_LIMIT"
+    http_status = 429
+
+
 class VisitInviteNotFound(VisitServersError):
     """Preview ``404 invite_invalid``."""
 
@@ -341,6 +352,7 @@ CREDENTIALS_ERROR_CONTRACT: Mapping[tuple[int, str], ErrorFactory] = {
     (410, "invite_expiring"): VisitInviteInvalid,
     (410, "room_ended"): VisitRoomEnded,
     (429, "quota_exceeded"): VisitQuotaExceeded,
+    (429, "concurrency_limit"): VisitConcurrencyLimit,
 }
 """Every non-2xx, non-5xx ``(status, code)`` of ``POST /api/visit/credentials`` (§4.7)."""
 
@@ -350,8 +362,16 @@ PREVIEW_ERROR_CONTRACT: Mapping[tuple[int, str], ErrorFactory] = {
     (410, "invite_expired"): VisitInviteExpired,
     (403, "banned"): VisitBanned,
     (429, "rate_limited"): VisitRateLimited,
+    (429, "quota_exceeded"): VisitQuotaExceeded,
+    (429, "concurrency_limit"): VisitConcurrencyLimit,
 }
 """Every non-2xx, non-5xx ``(status, code)`` of ``GET /api/visit/invites/{code}/preview`` (§4.7)."""
+
+STARTUP_CANCEL_ERROR_CONTRACT: Mapping[tuple[int, str], ErrorFactory] = {
+    (401, "unauthenticated"): VisitLoginRequired,
+    (403, "banned"): VisitBanned,
+}
+"""Errors of the authenticated startup invitation reset."""
 
 CANCEL_DONE_REPLIES: frozenset[tuple[int, str]] = frozenset({
     (409, "guest_joined"),
@@ -631,6 +651,8 @@ class VisitCredentials:
     invite_code: Optional[str] = field(default=None, repr=False)
     invite_expires_at: Optional[float] = None
     cross_region: bool = False
+    audio: bool = False
+    """Servers' ``publish.audio`` (OD-15 v4): only a literal ``true`` allows the catgirl voice tracks."""
     entitlement: Optional[Mapping[str, Any]] = None
     account: str = ""
     """Community ``local_user_id`` that fetched these credentials (owns the room side)."""
@@ -644,12 +666,14 @@ class VisitCredentials:
         return (time.time() if wall_now is None else wall_now) > self.expires_at
 
     def with_renewed_vendor(self, renewed: "VisitCredentials") -> "VisitCredentials":
-        """Take the vendor grant of ``renewed``; keep the identity ticket and invite fields.
+        """Take the vendor grant and the voice gate of ``renewed``; keep the identity ticket and invite fields.
 
         The ticket is replayed as is on reconnects (same ``jti``), so a
-        renewal only swaps what the iframe needs to re-enter the room.
+        renewal only swaps what the iframe needs to re-enter the room. The
+        voice gate travels with the grant so Servers can turn voice off mid
+        visit; the runtime latches it (only on -> off takes effect).
         """
-        return replace(self, vendor=renewed.vendor, vendor_expires_at=renewed.vendor_expires_at)
+        return replace(self, vendor=renewed.vendor, vendor_expires_at=renewed.vendor_expires_at, audio=renewed.audio)
 
 
 class _BadResponse(ValueError):
@@ -733,7 +757,7 @@ def _parse_livekit(raw: Any) -> dict[str, Any]:
 
 def _parse_credentials(
     payload: Any, *, role: str, visit_id: str, char_tag: str, now: float, account: str = "",
-    tier: str = VISIT_VIDEO_TIER_DEFAULT,
+    tier: str = VISIT_VIDEO_TIER_DEFAULT, direct: bool = False,
 ) -> VisitCredentials:
     _need(isinstance(payload, Mapping), "body")
     transport = payload.get("transport")
@@ -809,8 +833,11 @@ def _parse_credentials(
         # On renewal / reconnect, an invitation may already have been redeemed and Servers may no longer return its code: validate it if present; absence is not a malformed response;
         # for the initial response, runtime handles a missing code (there is no invite_ready to send to the frontend)
         if invite_code is not None or invite_expires_at is not None:
-            _need(isinstance(invite_code, str) and INVITE_CODE_RE.fullmatch(invite_code) is not None,
-                  "invite_code")
+            if direct:
+                _need(invite_code is None, "invite_code")
+            else:
+                _need(isinstance(invite_code, str) and INVITE_CODE_RE.fullmatch(invite_code) is not None,
+                      "invite_code")
             _need(_finite(invite_expires_at), "invite_expires_at")
             # Invitations last only 10 min: a later expiry time is a malformed response (retry cutoff is based on it)
             _need(invite_expires_at - now <= VISIT_INVITE_CODE_TTL_S + VISIT_TICKET_CLOCK_TOLERANCE_S,
@@ -819,6 +846,10 @@ def _parse_credentials(
 
     cross_region = payload.get("cross_region", False)
     _need(isinstance(cross_region, bool), "cross_region")
+    # Voice gate (OD-15 v4): ``publish.audio``; older Servers omit it, and a non-mapping ``publish`` or anything but a
+    # literal true keeps the visit silent (never a malformed response).
+    publish = payload.get("publish")
+    audio = isinstance(publish, Mapping) and publish.get("audio") is True
     entitlement = payload.get("entitlement")
     if entitlement is not None:
         _need(isinstance(entitlement, Mapping) and len(entitlement) <= _ENTITLEMENT_MAX_KEYS, "entitlement")
@@ -840,6 +871,7 @@ def _parse_credentials(
         invite_code=invite_code,
         invite_expires_at=float(invite_expires_at) if invite_expires_at is not None else None,
         cross_region=cross_region,
+        audio=audio,
         entitlement=entitlement,
         account=account,
     )
@@ -853,6 +885,8 @@ async def fetch_visit_credentials(
     tier: str = VISIT_VIDEO_TIER_DEFAULT,
     display_name: str | None = None,
     invite_code: str | None = None,
+    target_user_id: str | None = None,
+    direct: bool = False,
     expect_account: str | None = None,
 ) -> VisitCredentials:
     """``POST {social_base}/api/visit/credentials`` and validate the reply (§4.7).
@@ -863,8 +897,9 @@ async def fetch_visit_credentials(
     switch landed meanwhile; a guest must not redeem the invite as another account).
 
     ``char_tag`` is the character's stable ``character_uid`` (see
-    :func:`resolve_char_tag`), never derived from the name. A guest must pass
-    ``invite_code`` (format-checked before any network); a host must not.
+    :func:`resolve_char_tag`), never derived from the name. A manual guest must
+    pass ``invite_code`` (format-checked before any network); a direct guest is
+    authorized by its current account. A host must never redeem a code.
     After a successful issue, starts a background pubkey refresh (not awaited).
     Raises a :class:`VisitServersError` subclass on every failure.
     """
@@ -875,10 +910,19 @@ async def fetch_visit_credentials(
         raise ValueError("char_tag must be the character's 32-hex character_uid")
     if not VISIT_TIERS.get(tier, {}).get("enabled"):
         raise ValueError("tier is not enabled")
-    if role == "guest":
+    if target_user_id is not None:
+        try:
+            target_user_id = str(uuid.UUID(target_user_id))
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("target_user_id must be a UUID") from None
+    if role == "guest" and not direct:
         invite_code = _require_invite_code(invite_code)
     elif invite_code is not None:
         raise ValueError("a host does not redeem an invite code")
+    if role == "guest" and direct and target_user_id is not None:
+        raise ValueError("a direct guest does not select its own target")
+    if role == "host" and direct and target_user_id is None:
+        raise ValueError("a direct host requires target_user_id")
 
     session = await _servers_session()
     if expect_account is not None and session.account != expect_account:
@@ -896,6 +940,10 @@ async def fetch_visit_credentials(
         body["display_name"] = str(display_name)[:_DISPLAY_NAME_MAX_CHARS]
     if invite_code is not None:
         body["invite_code"] = invite_code
+    if target_user_id is not None:
+        body["target_user_id"] = target_user_id
+    if direct:
+        body["direct"] = True
 
     resp = await _send(
         "POST",
@@ -910,7 +958,7 @@ async def fetch_visit_credentials(
     try:
         creds = _parse_credentials(
             _body_json(resp), role=role, visit_id=visit_id, char_tag=char_tag, now=time.time(),
-            account=session.account, tier=tier,
+            account=session.account, tier=tier, direct=direct,
         )
     except _BadResponse as exc:
         logger.warning("visit servers credentials: malformed reply field=%s", exc)
@@ -965,12 +1013,16 @@ class VisitGrant:
         *,
         display_name: str | None = None,
         invite_code: str | None = None,
+        target_user_id: str | None = None,
+        direct: bool = False,
         refresh_margin_s: float = VISIT_VENDOR_REFRESH_MARGIN_S,
         fetch: Callable[..., Awaitable[VisitCredentials]] | None = None,
     ) -> None:
         self._current = credentials
         self._display_name = display_name
         self._invite_code = invite_code if credentials.role == "guest" else None
+        self._target_user_id = target_user_id if credentials.role == "host" else None
+        self._direct = bool(direct)
         self._margin = float(refresh_margin_s)
         self._fetch = fetch or fetch_visit_credentials
         self._renewing: asyncio.Task | None = None
@@ -1022,6 +1074,8 @@ class VisitGrant:
             tier=cur.tier,
             display_name=self._display_name,
             invite_code=self._invite_code,
+            target_user_id=self._target_user_id,
+            direct=self._direct,
         )
         # tier comes from the request (renewal passes cur.tier); the response has no comparable field, so do not compare it here
         if (fresh.vid, fresh.visit_uid, fresh.transport) != (cur.vid, cur.visit_uid, cur.transport):
@@ -1236,6 +1290,45 @@ async def fetch_pubkeys(*, force_refresh: bool = False) -> PubkeySet:
     return await asyncio.to_thread(PubkeySet.from_runtime, now=time.time(), fetched=_pubkeys_fetched)
 
 
+# ── Startup invitation reset ───────────────────────────────────────────────
+
+
+async def cancel_pending_host_invites() -> int:
+    """Invalidate unused invitations owned by this desktop's previous run.
+
+    A 404 keeps rolling deployments compatible with an older Connect build;
+    no local visit runtime is restored either way.  Other failures are
+    surfaced to the startup task, which logs them without exposing secrets.
+    """
+    session = await _servers_session()
+    resp = await _send(
+        "POST",
+        f"{session.base_url}/api/visit/rooms/pending/cancel",
+        op="startup_invite_reset",
+        headers=session.headers(),
+        timeout=_CANCEL_TIMEOUT_S,
+    )
+    if resp.status_code == 404:
+        return 0
+    if not 200 <= resp.status_code < 300:
+        raise _map_error(
+            resp,
+            STARTUP_CANCEL_ERROR_CONTRACT,
+            op="startup_invite_reset",
+            account=session.account,
+        )
+    payload = _body_json(resp)
+    try:
+        _need(isinstance(payload, Mapping), "body")
+        _need(payload.get("ok") is True, "ok")
+        cancelled = payload.get("cancelled")
+        _need(type(cancelled) is int and 0 <= cancelled <= 100, "cancelled")
+    except _BadResponse as exc:
+        logger.warning("visit servers startup_invite_reset: malformed reply field=%s", exc)
+        raise VisitServersUnreachable("invalid_response") from None
+    return cancelled
+
+
 # ── Invitation preview ─────────────────────────────────────────────────────
 
 
@@ -1338,4 +1431,36 @@ async def fetch_invite_preview(
         )
     except _BadResponse as exc:
         logger.warning("visit servers invite_preview: malformed reply field=%s", exc)
+        raise VisitServersUnreachable("invalid_response") from None
+
+
+async def fetch_direct_visit_preview(
+    visit_id: str,
+    *,
+    generic_label: str,
+    protected_names: Iterable[str] = (),
+) -> InvitePreview:
+    """Preview a targeted mutual-friend invitation by visit id.
+
+    The Connect service authorizes this with the current community account;
+    unlike the manual fallback path, no redeemable invite code crosses the
+    desktop or Verse notification boundary.
+    """
+    require_visit_id(visit_id)
+    session = await _servers_session()
+    resp = await _send(
+        "GET",
+        f"{session.base_url}/api/visit/direct/{visit_id}/preview",
+        op="direct_invite_preview",
+        headers=session.headers(),
+        timeout=_PREVIEW_TIMEOUT_S,
+    )
+    if not 200 <= resp.status_code < 300:
+        raise _map_error(resp, PREVIEW_ERROR_CONTRACT, op="direct_invite_preview", account=session.account)
+    try:
+        return _parse_preview(
+            _body_json(resp), protected_names=protected_names, generic_label=generic_label,
+        )
+    except _BadResponse as exc:
+        logger.warning("visit servers direct_invite_preview: malformed reply field=%s", exc)
         raise VisitServersUnreachable("invalid_response") from None

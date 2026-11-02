@@ -752,13 +752,28 @@ EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
 # When daily diaries (memory/·memories/YYYY-MM-DD.md) undergo LLM fact extraction, cap
 # one day's combined diary input tokens to prevent oversized prompts.
 EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
-# Daily extraction concurrency cap: one LLM call per day; 30 serial days cost ~300–900s, hitting
-# upstream commit forwarding's 240s wall. Bounded concurrency reduces wall time to days / concurrency × call time.
-# Keep it moderate: extraction shares provider quotas, and per-character locks serialize disk writes.
-EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 4
-# Maximum diary days actually requiring extraction per import (daily fingerprint idempotent skips excluded):
-# 45 days / concurrency 4 ≈ 12 batches × ten-plus seconds fits 240s. Excess returns too_large
-# to prompt split imports; later imports skip prior days by fingerprint, avoiding repeated costs.
+# Raw byte cap for archives (zip) uploaded to external memory import. Molili shutdown exports carry
+# image attachments (~8.6 MB of a ~9 MB sample is attachments/); parsed text is still held to the
+# 8 MiB text budget. The main server's inbound body guard widens the external_import preview/commit
+# JSON routes by this value (base64 inflates 4/3); otherwise the global 16 MiB cap would 413
+# archives over ~12 MiB.
+EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+# Request-body cap for those two routes: the archive's base64 size plus 1 MiB of JSON headroom.
+EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES = 4 * ((EXTERNAL_IMPORT_MAX_ARCHIVE_BYTES + 2) // 3) + 1024 * 1024
+# Free-tier courtesy interval: minimum seconds between any two daily-extraction call starts
+# (0 = off). Concurrency slots bound how many calls are in flight; this interval bounds the start
+# rate. Together they turn bursts into a steady pace, which is what actually spares free quotas /
+# WAFs. Paid tiers can set 0.
+EXTERNAL_IMPORT_DAILY_CALL_INTERVAL = 1.0
+# Daily extraction concurrency cap: 30 serial days cost ~300–900s, hitting the upstream commit
+# forwarding window. Bounded concurrency reduces wall time to days / concurrency × call time. 5 is
+# the free-tier quota safe point (higher gets 429s; paid tiers may raise it); per-character locks
+# serialize disk writes.
+EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 5
+# Maximum extraction calls per import for diary days actually requiring extraction (daily
+# fingerprint idempotent skips excluded): 45 calls / concurrency 5 ≈ 9 waves × ten-plus seconds
+# fits the forwarding window. Over the cap, the days that fit run and the rest are deferred
+# (segmented resume); later imports skip finished days by fingerprint, avoiding repeated costs.
 EXTERNAL_IMPORT_DAILY_MAX_FILES = 45
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10

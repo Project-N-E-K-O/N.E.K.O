@@ -152,34 +152,12 @@ class MMDInteraction {
         }
 
         try {
-            const box = new THREE.Box3().setFromObject(mesh);
-            const corners = [
-                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
-                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
-                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
-                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
-                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
-                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
-                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
-                new THREE.Vector3(box.max.x, box.max.y, box.max.z)
-            ];
-
-            const canvas = this.manager.renderer.domElement;
-            const rect = canvas.getBoundingClientRect();
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
-
-            for (const corner of corners) {
-                corner.project(this.manager.camera);
-                const screenX = (corner.x * 0.5 + 0.5) * rect.width + rect.left;
-                const screenY = (-corner.y * 0.5 + 0.5) * rect.height + rect.top;
-                minX = Math.min(minX, screenX);
-                maxX = Math.max(maxX, screenX);
-                minY = Math.min(minY, screenY);
-                maxY = Math.max(maxY, screenY);
-            }
-
-            this._cachedScreenBounds = { minX, maxX, minY, maxY };
+            // 命中缓存与悬浮 UI 共用经过近裁剪的投影，避免放大后两套判定分叉。
+            const bounds = this.manager.getModelScreenBounds();
+            this._cachedScreenBounds = bounds ? {
+                minX: bounds.left, maxX: bounds.right,
+                minY: bounds.top, maxY: bounds.bottom
+            } : null;
         } catch (e) {
             this._cachedScreenBounds = null;
         }
@@ -873,10 +851,28 @@ class MMDInteraction {
 
             let modelMinX = Infinity, modelMaxX = -Infinity;
             let modelMinY = Infinity, modelMaxY = -Infinity;
-            for (const corner of corners) {
-                const projected = corner.clone().project(camera);
+            camera.updateMatrixWorld(true);
+            const cameraCorners = corners.map(corner => corner.clone().applyMatrix4(camera.matrixWorldInverse));
+            const near = Math.max(camera.near, 0.0001);
+            const visibleCorners = cameraCorners.filter(corner => corner.z <= -near);
+            // 大模型可能穿过近裁剪面；加入盒边与裁剪面的交点，排除相机后方的反向投影。
+            for (let i = 0; i < cameraCorners.length; i++) {
+                for (const axisBit of [1, 2, 4]) {
+                    const j = i ^ axisBit;
+                    if (j <= i) continue;
+                    const a = cameraCorners[i], b = cameraCorners[j];
+                    if ((a.z <= -near) !== (b.z <= -near)) {
+                        visibleCorners.push(a.clone().lerp(b, (-near - a.z) / (b.z - a.z)));
+                    }
+                }
+            }
+            if (!visibleCorners.length) return position;
+            const projectedCorners = [];
+            for (const corner of visibleCorners) {
+                const projected = corner.clone().applyMatrix4(camera.projectionMatrix);
                 const screenX = (projected.x * 0.5 + 0.5) * screenWidth;
                 const screenY = (-projected.y * 0.5 + 0.5) * screenHeight;
+                projectedCorners.push({ x: screenX, y: screenY, depth: -corner.z });
                 modelMinX = Math.min(modelMinX, screenX);
                 modelMaxX = Math.max(modelMaxX, screenX);
                 modelMinY = Math.min(modelMinY, screenY);
@@ -891,38 +887,32 @@ class MMDInteraction {
                 return position;
             }
 
-            let moveX = 0;
-            let moveY = 0;
+            // 按各顶点的真实投影深度求最小回移量，避免离相机很远的模型原点放大回弹距离。
+            const pixelToWorldX = 2 / (camera.projectionMatrix.elements[0] * screenWidth);
+            const pixelToWorldY = 2 / (camera.projectionMatrix.elements[5] * screenHeight);
+            let moveX = 0, moveY = 0;
             if (needsClampH) {
                 if (modelMaxX < effectiveMinX) {
-                    moveX = effectiveMinX - modelMaxX;
+                    moveX = Math.min(...projectedCorners.map(p => (effectiveMinX - p.x) * p.depth * pixelToWorldX));
                 } else if (modelMinX > screenWidth - effectiveMinX) {
-                    moveX = (screenWidth - effectiveMinX) - modelMinX;
+                    moveX = Math.max(...projectedCorners.map(p => (screenWidth - effectiveMinX - p.x) * p.depth * pixelToWorldX));
                 }
             }
             if (needsClampV) {
                 if (modelMaxY < effectiveMinY) {
-                    moveY = effectiveMinY - modelMaxY;
+                    moveY = Math.min(...projectedCorners.map(p => (effectiveMinY - p.y) * p.depth * pixelToWorldY));
                 } else if (modelMinY > screenHeight - effectiveMinY) {
-                    moveY = (screenHeight - effectiveMinY) - modelMinY;
+                    moveY = Math.max(...projectedCorners.map(p => (screenHeight - effectiveMinY - p.y) * p.depth * pixelToWorldY));
                 }
             }
 
-            const cameraDistance = camera.position.distanceTo(position);
-            if (cameraDistance < 0.001) {
-                return position;
-            }
-            const fov = camera.fov * (Math.PI / 180);
-            const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-            const worldWidth = worldHeight * (screenWidth / screenHeight);
-            const pixelToWorldX = worldWidth / screenWidth;
-            const pixelToWorldY = worldHeight / screenHeight;
-
-            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+            const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+            const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
             const correctedPosition = position.clone();
-            correctedPosition.add(right.multiplyScalar(moveX * pixelToWorldX));
-            correctedPosition.add(up.multiplyScalar(-moveY * pixelToWorldY));
+            if (mesh.parent) mesh.parent.localToWorld(correctedPosition);
+            correctedPosition.addScaledVector(right, moveX);
+            correctedPosition.addScaledVector(up, -moveY);
+            if (mesh.parent) mesh.parent.worldToLocal(correctedPosition);
 
             return correctedPosition;
         } catch (error) {

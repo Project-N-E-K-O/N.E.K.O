@@ -1,4 +1,4 @@
-"""Execute the served classic script to check identity-only passive restoration."""
+"""Sync controls stay independent of the capsule chat history display."""
 
 import json
 from pathlib import Path
@@ -39,7 +39,7 @@ def run_script(assertions: str) -> None:
                 :values && typeof values.count==='number'?key+':'+values.count:key; } };
         global.document = { addEventListener(name,callback) {documentEvents[name]=callback;},
             getElementById(){return headerButton;},createElement:element,body };
-        global.fetch = () => { throw new Error('Unexpected network from pure restoration'); };
+        global.fetch = () => { throw new Error('Unexpected chat-history request'); };
         vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'));
         const id = 'a'.repeat(32), other = 'b'.repeat(32);
         const original = {messageId:id,characterSyncId:'c'.repeat(32),role:'user',text:'same',
@@ -50,195 +50,95 @@ def run_script(assertions: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
-HISTORY_CONSENT_SETUP = r"""
-    const uid='c'.repeat(32), task='f'.repeat(32), requests=[];
-    let binding={enabled:true,ownerId:'owner',bindingId:'binding',generation:1,pendingOriginals:0,pendingDeletions:0};
-    let snapshot={taskId:task,characterSyncId:uid,localName:'Neko',cloudName:'Cloud Neko',
-        count:3,unverifiedCount:null,status:'preview',registeredCount:0,cancelledCount:0};
-    global.fetch=async(path,options)=>({ok:true,async json(){
-        requests.push({path,method:options.method,body:options.body});
-        if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
-        if(path.endsWith('/history/preview'))return snapshot;
-        if(path.endsWith('/history/approve'))return {...snapshot,status:'approved'};
-        if(path.endsWith('/history'))return {originals:[]};
-        throw new Error('Unexpected request '+path);
-    }});
-    documentEvents.DOMContentLoaded();
-    await headerButton.events.click();
-    const modal=body.children[0], action=name=>modal.querySelector('[data-sync-action="'+name+'"]'),
-        choice=name=>modal.querySelector('[data-history-action="'+name+'"]');
-    const content=()=>modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-    assert.equal(requests.filter(item=>item.path.includes('/history/preview')).length,0);
-"""
-
-
-@pytest.mark.parametrize("broken_observer", [False, True])
-def test_optional_trace_observer_never_changes_passive_history(broken_observer):
+@pytest.mark.parametrize('code,key', [
+    ('chat_sync_account_mismatch', 'errorAccountMismatch'),
+    ('chat_sync_writer_recovery_required', 'errorWriterRecovery'),
+    ('chat_sync_unavailable', 'errorNetwork'),
+    ('chat_sync_retry_later', 'errorRetryLater'),
+    ('chat_sync_session_changed', 'errorSessionChanged'),
+    ('private token from an unknown error', 'errorUnknown'),
+])
+def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
+    """The actual recovery listener uses localized reasons without leaking arbitrary details."""
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
     run_script(r"""(async()=>{
-        const observed=[], merged=[];
-        window.__nekoChatSyncTrace=(event,metadata)=>{
-            observed.push({event,metadata});
-            if(BROKEN)throw new Error('observer unavailable');
-        };
-        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages:items=>merged.push(items)};
-        global.fetch=async()=>({ok:true,json:async()=>({originals:[original]})});
-        await window.nekoChatSync.loadHistory({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor:1}}]});
-        assert.equal(merged.length,1);
-        assert.deepEqual(observed,[{event:'ui_merge_requested',metadata:{character_uid:original.characterSyncId,
-            message_id:id,local_message_id:'sync-original-'+id}}]);
-        assert.equal(JSON.stringify(observed).includes('same'),false);
+        const labels=LABELS,code=CODE,key=KEY;
+        window.t=(key,values={})=>labels[key.replace('chatSync.','')]
+            .replace(/{{(.*?)}}/g,(_,name)=>values[name]);
+        global.fetch=async(path)=>({ok:path.endsWith('/status'),json:async()=>path.endsWith('/status')
+            ?{writerRecoveryRequired:true,characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32)}]}
+            :{detail:code}});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],recover=modal.querySelector('[data-sync-action="recover"]');
+        await recover.events.click();
+        const shown=modal.querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes(labels[key]));
+        if(key==='errorUnknown')assert(!shown.includes(code));
+        else assert(shown.includes(code));
+        assert.notEqual(shown,labels.failed);
+        assert.equal(recover.disabled,false);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BROKEN", json.dumps(broken_observer)))
+    """.replace('LABELS', json.dumps(labels)).replace('CODE', json.dumps(code)).replace('KEY', json.dumps(key)))
 
 
-@pytest.mark.parametrize("busy", ["none", "turn", "speech", "queue", "unknown", "hidden"])
-def test_committed_history_hint_refreshes_now_or_after_real_idle(busy):
-    """A committed local hint uses passive reads; busy/hidden states retain it for retry."""
+@pytest.mark.parametrize('source', ['setup', 'binding'])
+def test_opening_sync_settings_shows_the_retained_failure_without_retrying(source):
+    """A local status read keeps setup and channel errors visible across dialog openings."""
     run_script(r"""(async()=>{
-        const requests=[], merged=[];
-        window.reactChatWindowHost={getState:()=>({messages:BUSY==='unknown'?[{id:'live',role:'assistant',status:'streaming'}]:[]}),
-            setMessages:messages=>merged.push(messages)};
-        window.appState=BUSY==='turn'||BUSY==='speech'?{assistantTurnId:'turn',assistantTurnAwaitingBubble:true}:{};
-        window._isProcessingRealisticQueue=BUSY==='queue';
-        document.visibilityState=BUSY==='hidden'?'hidden':'visible';
-        global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>path.endsWith('/status')
-            ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor:1}}]}
-            :{originals:[original]}};};
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:original.characterSyncId});
-        if(BUSY==='none'){assert.equal(merged.length,1);assert.equal(requests.length,2);return;}
-        assert.equal(merged.length,0);assert.equal(requests.length,0);
-        if(BUSY==='turn'||BUSY==='speech'){
-            const eventName=BUSY==='turn'?'neko-assistant-turn-end':'neko-assistant-speech-end';
-            windowEvents[eventName]({detail:{turnId:'turn'}});
-            window.appState.assistantTurnAwaitingBubble=false;
-            window.appState[BUSY==='turn'?'assistantTurnCompletedId':'assistantTurnSettledId']='turn';
-        }else if(BUSY==='queue'){
-            window._isProcessingRealisticQueue=false;
-            windowEvents['neko-realistic-queue-idle']({});
-        }else if(BUSY==='hidden'){
-            document.visibilityState='visible';await documentEvents.visibilitychange();
-        }else{
-            windowEvents['neko-assistant-turn-end']({detail:{turnId:'other-turn'}});
-        }
-        for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(merged.length,BUSY==='unknown'?0:1);
-        assert.ok(requests.every(path=>!path.endsWith('/sync')));
+        const requests=[];
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:'c'.repeat(32),
+            syncSetupError:SOURCE==='setup'?'chat_sync_account_mismatch':null,
+            binding:{writerRecoveryRequired:true,lastSyncError:SOURCE==='binding'?'chat_sync_account_mismatch':null}
+        }]})};};
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('errorAccountMismatch')&&shown.includes('chat_sync_account_mismatch'));
+        assert.deepEqual(requests,['/api/chat-sync/status']);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BUSY", json.dumps(busy)))
+    """.replace('SOURCE', json.dumps(source)))
 
 
-def test_local_history_hints_reject_foreign_uid_and_coalesce_without_losing_late_commit():
-    """A second commit during a local read gets one follow-up, without polling or cloud work."""
+def test_sync_settings_reports_pending_and_local_only_work():
     run_script(r"""(async()=>{
-        let cursor=1, release, waiting=false;
-        const requests=[], merged=[];
-        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages:messages=>merged.push(messages)};
-        global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>{
-            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor}}]};
-            if(!waiting){waiting=true;await new Promise(resolve=>{release=resolve;});}return{originals:[original]};
-        }};};
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:other});
-        assert.equal(merged.length,0);
-        requests.length=0;
-        const first=window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:original.characterSyncId});
-        for(let i=0;i<10&&!release;i++)await new Promise(resolve=>setImmediate(resolve));
-        cursor=2;
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:original.characterSyncId});
-        release();await first;
-        assert.equal(merged.length,2);
-        assert.equal(requests.filter(path=>path.endsWith('/history')).length,2);
-        assert.ok(requests.every(path=>path.endsWith('/history')||path.endsWith('/status')));
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async()=>({ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{pendingOriginals:3,
+                pendingDeletions:2,localOnlyOriginals:1,historyBackfill:{awaitingRegistration:4}}
+        }]})});
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('chatSync.pending')&&shown.includes('"originals":3')&&shown.includes('"deletions":2'));
+        assert(shown.includes('chatSync.oversizedLocalOnly')&&shown.includes('"count":1'));
+        assert(shown.includes('chatSync.historyAwaitingRegistration')&&shown.includes('"count":4'));
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
 
 
-def test_foreign_hint_cannot_replace_a_current_role_hint_deferred_by_busy():
-    """An old role's socket hint cannot strand the active role until fallback polling."""
-    run_script(r"""(async()=>{
-        let cursor=0;const merged=[];
-        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages:messages=>merged.push(messages)};
-        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')
-            ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor}}]}
-            :{originals:[original]}});
-        await window.nekoChatSync.loadHistory();merged.length=0;cursor=1;
-        window.appState={assistantTurnId:'turn',assistantTurnAwaitingBubble:true};
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:original.characterSyncId});
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:other});
-        windowEvents['neko-assistant-turn-end']({detail:{turnId:'turn'}});
-        window.appState.assistantTurnAwaitingBubble=false;window.appState.assistantTurnCompletedId='turn';
-        for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(merged.length,1);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_hint_hidden_during_history_io_keeps_cursor_for_foreground_retry():
-    """A hidden window must not consume a committed cursor while its read is in flight."""
-    run_script(r"""(async()=>{
-        let hide=true;const merged=[];
-        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages:messages=>merged.push(messages)};
-        global.fetch=async(path)=>({ok:true,json:async()=>{
-            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor:1}}]};
-            if(path.endsWith('/history')){if(hide)document.visibilityState='hidden';return{originals:[original]};}
-            return{};
-        }});
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:original.characterSyncId});
-        assert.equal(merged.length,0);
-        hide=false;document.visibilityState='visible';await documentEvents.visibilitychange();
-        assert.equal(merged.length,1);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("script", ["app-chat-adapter.js", "app-chat.js"])
-def test_realistic_queue_idle_event_only_after_current_owner_finishes(script):
-    """Execute the actual queue function; a replaced owner cannot announce idle."""
-    from tests.unit.test_app_websocket_static_routes import _block_after
-
-    source = (ROOT / "static/app" / script).read_text(encoding="utf-8")
-    body = _block_after(source, "async function processRealisticQueue(queueVersion) {")
-    code = r"""
-        global.CustomEvent=function(type){this.type=type;};
-        const events=[];window.dispatchEvent=event=>events.push(event.type);
-        window._realisticGeminiQueue=[];
-        function createRealisticQueueOwnerToken(){return 'owner';}
-        function getRealisticQueueItemText(item){return item;}
-        function getRealisticQueueItemTurnId(){return 'turn';}
-        const chatContainer={parentElement:null}, S={dom:{chatContainer}};
-        function createGeminiBubble(){window._realisticProcessingOwner='replacement';}
-        async function processRealisticQueue(queueVersion){BODY}
-        (async()=>{
-            await processRealisticQueue(1);
-            assert.deepEqual(events,['neko-realistic-queue-idle']);
-            events.length=0;window._realisticGeminiVersion=1;window._realisticGeminiQueue=['synthetic'];
-            await processRealisticQueue(1);
-            assert.equal(window._realisticProcessingOwner,'replacement');
-            assert.deepEqual(events,[]);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """
-    run_script(code.replace("BODY", body))
-
-
-def test_current_local_socket_dispatches_history_hint_and_stale_socket_is_ignored():
-    """Execute the actual onmessage handler, preserving its socket replacement fence."""
+def test_current_socket_refreshes_recent_memory_without_backfilling_capsule_history():
+    """Keep the new recent-memory notification and its socket replacement fence."""
     from tests.unit.test_app_websocket_static_routes import _block_after
 
     source = (ROOT / "static/app/app-websocket.js").read_text(encoding="utf-8")
     body = _block_after(source, "S.socket.onmessage = function (event) {")
     run_script(r"""
-        const calls=[], socket={}, S={socket}, _thisSocket=socket;
-        window.nekoChatSync.notifyHistoryCommitted=payload=>{calls.push(payload);return Promise.resolve();};
+        const calls=[], broadcasts=[], socket={}, S={socket}, _thisSocket=socket;
+        window.appInterpage={handleMemoryEdited:async name=>{calls.push(name);}};
+        global.BroadcastChannel=class {postMessage(data){broadcasts.push(data);}close(){}};
+        window.reactChatWindowHost={setMessages(){throw new Error('Capsule history must remain unchanged');}};
         function onmessage(event){BODY}
-        const hint={type:'chat_sync_history_changed',characterSyncId:original.characterSyncId};
+        const hint={type:'chat_sync_history_changed',characterSyncId:original.characterSyncId,memoryEditedName:'Neko'};
         onmessage({data:JSON.stringify(hint)});
-        assert.deepEqual(calls,[hint]);
+        assert.deepEqual(calls,['Neko']);
+        assert.deepEqual(broadcasts,[{action:'recent_memory_changed',catgirl_name:'Neko'}]);
         S.socket={};onmessage({data:JSON.stringify(hint)});
-        assert.deepEqual(calls,[hint]);
+        assert.deepEqual(calls,['Neko']);
     """.replace("BODY", body))
 
 
-def test_pc_pet_ipc_bridge_delivers_committed_hint_to_full_chat_passive_refresh():
-    """Use existing PC bridges/router, including both chat targets and stale-host filtering."""
+def test_pc_pet_ipc_bridge_delivers_hint_without_backfilling_full_chat_history():
+    """Keep both PC chat targets and stale-host filtering without replacing bubbles."""
     from tests.unit.test_app_websocket_static_routes import _block_after
 
     pc = ROOT.parent / "N.E.K.O.-PC"
@@ -294,7 +194,7 @@ def test_pc_pet_ipc_bridge_delivers_committed_hint_to_full_chat_passive_refresh(
             const hint={type:'chat_sync_history_changed',characterSyncId:original.characterSyncId};
             socket.emit('message',{data:JSON.stringify(hint)});
             for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));
-            assert.deepEqual(mirrored,[hint]);assert.equal(merged.length,1);
+            assert.deepEqual(mirrored,[hint]);assert.equal(merged.length,0);
             new pet.window.WebSocket('ws://synthetic.test');
             socket.emit('message',{data:JSON.stringify(hint)});
             assert.equal(mirrored.length,1);
@@ -304,581 +204,31 @@ def test_pc_pet_ipc_bridge_delivers_committed_hint_to_full_chat_passive_refresh(
     """.replace("PC_ROOT", json.dumps(str(pc))).replace("HELPERS", helpers).replace("CALLBACK", callback))
 
 
-def test_history_consent_displays_fixed_names_and_count_then_cancels_without_approval():
-    """Previewing never uploads, and cancel discards the reviewed task."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        await action('history').events.click();
-        assert.ok(content().includes('chatSync.historyLocalRole:Neko'));
-        assert.ok(content().includes('chatSync.historyCloudRole:Cloud Neko'));
-        assert.ok(content().includes('chatSync.historyCount:3'));
-        assert.ok(content().includes('chatSync.historyUnverifiedUnknown'));
-        await choice('cancel').events.click();
-        assert.equal(choice('approve'),undefined);
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')).length,0);
-        assert.equal(requests.filter(item=>item.path.endsWith('/sync')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_history_consent_approves_only_the_reviewed_task_as_background_work():
-    """Approval cannot rescan a new batch or claim that all chats were delivered."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        await action('history').events.click();
-        snapshot={...snapshot,taskId:'e'.repeat(32),count:20};
-        await choice('approve').events.click();
-        const approvals=requests.filter(item=>item.path.endsWith('/history/approve'));
-        assert.equal(approvals.length,1);
-        assert.deepEqual(JSON.parse(approvals[0].body),{taskId:task});
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/preview')).length,1);
-        assert.equal(requests.filter(item=>item.path.endsWith('/sync')).length,0);
-        assert.ok(content().includes('chatSync.historyQueued'));
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("paused", [False, True])
-@pytest.mark.parametrize("name", ["Neko", "Other"])
-def test_enable_and_resume_share_one_durable_history_and_profile_choice(paused, name):
-    """Opening does not grant anything; the labeled action approves all eligible chat once."""
+def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
+    """Old local test setup must not make a user's recovery request fail API validation."""
     run_script(r"""(async()=>{
-        const uid='c'.repeat(32), requests=[];
-        let binding=PAUSED?{enabled:false,ownerId:'owner',bindingId:'binding',generation:2}:null;
+        const uid='c'.repeat(32),requests=[];let needsRecovery=true;
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
-            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:REQUESTED_NAME,characterSyncId:uid,binding}]};
-            if(path.endsWith('/sync-choice'))return {pending:true};
-            if(path.endsWith('/sync-choice/run')){binding={enabled:true};return {completed:true,pending:false};}
-            if(path.endsWith('/history'))return {originals:[]};
-            throw new Error('Unexpected request '+path);
-        }});
-        documentEvents.DOMContentLoaded();await window.nekoChatSync.openSettings(REQUESTED_NAME);
-        const modal=body.children[0];
-        assert.equal(modal.querySelectorAll('*').some(n=>n.id==='chat-sync-include-history'),false);
-        assert.equal(requests.filter(x=>x.path.endsWith('/sync-choice')).length,0);
-        await modal.querySelector('[data-sync-action="enable"]').events.click();
-        const choices=requests.filter(x=>x.path.endsWith('/sync-choice'));
-        assert.equal(choices.length,1);
-        assert.deepEqual(JSON.parse(choices[0].body),{enabled:true,includeHistory:true});
-        const runs=requests.filter(x=>x.path.endsWith('/sync-choice/run'));
-        assert.equal(runs.length,1);
-        assert.ok(requests.indexOf(choices[0])<requests.indexOf(runs[0]));
-        assert.equal(requests.filter(x=>x.path.endsWith('/history/approve')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("PAUSED", json.dumps(paused)).replace("REQUESTED_NAME", json.dumps(name)))
-
-
-@pytest.mark.parametrize('error', ['chat_sync_login_required', 'chat_sync_unavailable'])
-def test_manual_enable_retains_consent_and_reports_the_real_attempt_error(error):
-    """Persisted consent survives a failed manual pass without hiding a login error."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];
-        global.fetch=async(path,options)=>{
-            requests.push(path);
-            return {ok:!path.endsWith('/sync-choice/run'),async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{
-                    displayName:'Other',characterSyncId:uid,binding:null,syncPending:true}]};
-                if(path.endsWith('/sync-choice'))return {pending:true};
-                if(path.endsWith('/sync-choice/run'))return {detail:ERROR};
-                throw new Error('Unexpected request '+path);
-            }};
-        };
-        await window.nekoChatSync.openSettings('Other');
-        const modal=body.children[0];
-        await modal.querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
-        const content=modal.querySelectorAll('*').map(node=>node.textContent||'').join('\n');
-        assert.ok(content.includes(ERROR==='chat_sync_login_required'?'chatSync.loginRequired':'chatSync.initialHistoryFailed'));
-        assert.equal(requests.filter(path=>path.endsWith('/pause')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('ERROR',json.dumps(error)))
-
-
-def test_initial_default_origin_does_not_cancel_the_first_enable_click():
-    """An absent setting and the built-in origin are the same service, not a context switch."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];let reads=0;
-        global.fetch=async(path)=>({ok:true,async json(){
-            requests.push(path);
-            if(path.endsWith('/status'))return {serviceUrl:++reads===1?null:'https://sync.nekotech.cn',
+            if(path.endsWith('/status'))return {serviceUrl:'https://localhost:8443',
+                writerRecoveryRequired:needsRecovery,
                 characters:[{displayName:'Neko',characterSyncId:uid,binding:null}]};
-            if(path.endsWith('/sync-choice'))return {pending:true};
-            if(path.endsWith('/sync-choice/run'))return {completed:true,pending:false};
+            if(path.endsWith('/recovery/preview')){
+                needsRecovery=false;
+                return {history:{taskId:'f'.repeat(32),characterSyncId:uid,localName:'Neko',
+                    cloudName:'Cloud Neko',count:0,unverifiedCount:null,status:'preview'},deletions:{count:0}};
+            }
             if(path.endsWith('/history'))return {originals:[]};
             throw new Error('Unexpected request '+path);
         }});
         await window.nekoChatSync.openSettings();
-        await body.children[0].querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice')).length,1);
-        assert.equal(requests.filter(path=>path.endsWith('/sync-choice/run')).length,1);
+        await body.children[0].querySelector('[data-sync-action="recover"]').events.click();
+        assert.deepEqual(requests.filter(item=>item.path.endsWith('/recovery/preview')).map(item=>JSON.parse(item.body)),
+            [{serviceUrl:'https://sync.nekotech.cn'}]);
+        assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')
+            || item.path.endsWith('/recovery/deletions/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
-
-
-def test_empty_history_consumes_its_cursor_and_only_reloads_after_it_changes():
-    """Successful empty restoration must not refetch the same history every local poll."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];let cursor=1;
-        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages(){throw new Error('Empty merge');}};
-        global.fetch=async(path)=>({ok:true,async json(){
-            requests.push(path);
-            return path.endsWith('/status')?{characters:[{displayName:'Neko',characterSyncId:uid,binding:{cursor}}]}:
-                {originals:[],localReplies:[]};
-        }});
-        documentEvents.DOMContentLoaded();
-        const tick=intervals.find(item=>item.delay===5000).callback;
-        await tick();await tick();
-        assert.equal(requests.filter(path=>path.endsWith('/history')).length,1);
-        cursor=2;await tick();
-        assert.equal(requests.filter(path=>path.endsWith('/history')).length,2);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("change", ["role", "closed", "binding", "service"])
-def test_combined_enable_rejects_context_changed_before_consent(change):
-    """A stale UI response cannot authorize another role, grant or origin."""
-    run_script(r"""(async()=>{
-        const uid='c'.repeat(32), requests=[];let binding=null,service='https://sync.test',reads=0;
-        global.fetch=async(path,options)=>({ok:true,async json(){
-            requests.push(path);
-            if(path.endsWith('/status')){
-                if(++reads===2){
-                    if(CHANGE==='role')window.lanlan_config.lanlan_name='Other';
-                    if(CHANGE==='closed')modal.children.find(n=>n.textContent==='chatSync.close').events.click();
-                    if(CHANGE==='binding')binding={enabled:true,ownerId:'owner',bindingId:'other',generation:2};
-                    if(CHANGE==='service')service='https://other.test';
-                }
-                return {serviceUrl:service,characters:[{displayName:'Neko',characterSyncId:uid,binding}]};
-            }
-            if(path.endsWith('/history'))return {originals:[]};
-            throw new Error('Unexpected mutation '+path);
-        }});
-        documentEvents.DOMContentLoaded();await headerButton.events.click();
-        const modal=body.children[0];
-        await modal.querySelector('[data-sync-action="enable"]').events.click();
-        assert.equal(requests.filter(p=>p.endsWith('/sync-choice')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("CHANGE", json.dumps(change)))
-
-
-@pytest.mark.parametrize("change", ["role", "generation", "paused", "service", "closed"])
-def test_history_consent_rejects_a_changed_context_before_approval(change):
-    """The fixed task cannot follow a role, binding, service or dialog change."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        await action('history').events.click();
-        const approve=choice('approve'), change=CHANGE;
-        if(change==='role')window.lanlan_config.lanlan_name='Other';
-        if(change==='generation')binding={...binding,generation:2};
-        if(change==='paused')binding={...binding,enabled:false};
-        if(change==='service')binding={...binding,bindingId:'different'};
-        if(change==='closed'){
-            modal.children.find(node=>node.textContent==='chatSync.close').events.click();
-        }
-        await approve.events.click();
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')).length,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("CHANGE", json.dumps(change)))
-
-
-def test_history_consent_empty_snapshot_explains_unverified_local_records():
-    """Unknown legacy counts never appear as zero verified or complete backup."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        snapshot={...snapshot,count:0};
-        await action('history').events.click();
-        assert.ok(content().includes('chatSync.historyEmpty'));
-        assert.ok(content().includes('chatSync.historyUnverifiedUnknown'));
-        assert.equal(choice('approve'),undefined);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("latest_status", ["approved", "preview"])
-def test_history_consent_status_keeps_unregistered_members_visible(latest_status):
-    """A newer preview cannot hide the remainder of an already approved snapshot."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        binding={...binding,pendingOriginals:200,historyBackfill:{...snapshot,
-            status:LATEST_STATUS,count:503,registeredCount:200,cancelledCount:2,awaitingRegistration:301}};
-        await headerButton.events.click();
-        assert.ok(content().includes('chatSync.historyAwaitingRegistration:301'));
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("LATEST_STATUS", json.dumps(latest_status)))
-
-
-def test_history_consent_blocks_duplicate_requests_and_late_closed_dialog_preview():
-    """A slow preview disables submissions and cannot recreate dismissed consent."""
-    run_script("(async()=>{" + HISTORY_CONSENT_SETUP + r"""
-        const previous=global.fetch;
-        let release,entered;
-        const waiting=new Promise(resolve=>entered=resolve), delayed=new Promise(resolve=>release=resolve);
-        global.fetch=async(path,options)=>{
-            if(path.endsWith('/history/preview')){entered();await delayed;}
-            return previous(path,options);
-        };
-        const preparing=action('history').events.click();
-        await waiting;
-        assert.equal(action('history').disabled,true);
-        await action('history').events.click();
-        modal.children.find(node=>node.textContent==='chatSync.close').events.click();
-        release();
-        await preparing;
-        assert.equal(choice('approve'),undefined);
-        assert.equal(requests.filter(item=>item.path.endsWith('/history/preview')).length,1);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_same_text_distinct_ids_survive_and_exact_live_identity_is_replaced():
-    """Only an explicit backend source ID can replace an optimistic bubble."""
-    run_script(r"""
-        const current = [{id:'optimistic',role:'user',blocks:[{type:'text',text:'same'}],status:'sent'}];
-        const originals = [original, {...original,messageId:other,originSeq:2}];
-        const merged = window.nekoChatSync.mergeHistory(current, originals, new Set(), new Map([['optimistic',id]]), 'Neko');
-        assert.deepEqual(merged.map(x=>x.id), ['optimistic','sync-original-'+other]);
-        assert.deepEqual(merged.map(x=>x.blocks[0].text), ['same','same']);
-        assert.equal(merged[0].actions,undefined);
-    """)
-
-
-def test_memory_browser_save_receipt_hides_exact_chat_without_bubble_actions():
-    """The saved receipt fences old pages and never deletes equal-text siblings."""
-    run_script(r"""(async()=>{
-        window.location={origin:'http://localhost'};
-        let messages=[];
-        window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;}};
-        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')
-            ? {characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
-            : {originals:[original,{...original,messageId:other,originSeq:2}]}});
-        await window.nekoChatSync.loadHistory();
-        const data={action:'chat_sync_deleted',characterSyncId:original.characterSyncId,
-            receipt:{messageIds:[id],localMessageIds:[]}};
-        windowEvents.message({origin:'https://foreign.invalid',data});
-        assert.equal(messages.length,2);
-        global.fetch=async()=>{throw new Error('synthetic history outage');};
-        windowEvents.message({origin:window.location.origin,data});
-        assert.deepEqual(messages.map(item=>item.id),['sync-original-'+other]);
-        assert.equal(messages[0].actions,undefined);
-        assert.equal(windowEvents['react-chat-window:action'],undefined);
-    })().catch(error=>{console.error(error);process.exitCode=1;});""")
-
-
-def test_retired_delete_actions_are_removed_without_affecting_other_actions():
-    run_script(r"""
-        const keep={action:'unrelated',label:'keep'};
-        const current=[{id:'live',role:'user',actions:[{action:'chat_sync_delete_original'},keep]}];
-        const merged=window.nekoChatSync.mergeHistory(current,[original],new Set(),new Map([['live',id]]),'Neko');
-        assert.deepEqual(merged[0].actions,[keep]);
-    """)
-
-
-def test_streaming_and_unsaved_live_messages_survive_download():
-    """A displayed source cannot disappear before its final original was stored."""
-    run_script(r"""
-        const current = [{id:'streaming',role:'assistant',status:'streaming',turnId:'turn-one'},
-            {id:'unsaved',role:'user',status:'sending'}];
-        const merged = window.nekoChatSync.mergeHistory(current,[original],new Set(),new Map([['unsaved',other]]),'Neko',
-            new Map([['turn-one',other]]));
-        assert.deepEqual(merged.map(x=>x.id),['sync-original-'+id,'streaming','unsaved']);
-        assert.equal(merged[1].status,'streaming');
-    """)
-
-
-def test_local_only_reply_stays_between_older_and_newer_originals():
-    """A retained local reply keeps its known time after every passive refresh."""
-    run_script(r"""
-        const time=Number(original.originalTime);
-        const local={id:'local-only',role:'assistant',createdAt:time+1000,status:'sent',
-            turnId:'local-turn',blocks:[{type:'text',text:'same'}]};
-        const originals=[{...original,messageId:other,originalTime:String(time+2000),originSeq:2},original];
-        const current=[local];
-        const merged=window.nekoChatSync.mergeHistory(current,originals,new Set(),new Map(),'Neko');
-        assert.deepEqual(merged.map(item=>item.id),['sync-original-'+id,'local-only','sync-original-'+other]);
-        assert.equal(merged[1].actions,undefined);
-        assert.equal(merged[1].turnId,'local-turn');
-        assert.deepEqual(merged.map(item=>item.sortKey),[0,1,2]);
-        const refreshed=window.nekoChatSync.mergeHistory(merged,originals,new Set([id,other]),new Map(),'Neko');
-        assert.deepEqual(refreshed,merged);
-        assert.equal(local.sortKey,undefined);
-        assert.deepEqual(current,[local]);
-    """)
-
-
-def test_retained_reply_order_preserves_ties_and_unknown_times():
-    """Known source times interleave; missing live times are never guessed."""
-    run_script(r"""
-        const time=Number(original.originalTime);
-        const current=[{id:'first-sentence',role:'assistant',createdAt:time,status:'streaming'},
-            {id:'second-sentence',role:'assistant',createdAt:time,status:'streaming'},
-            {id:'unknown',role:'user',status:'sending'}];
-        const originals=[original,{...original,messageId:other,originSeq:2,originalTime:String(time+2000)}];
-        const merged=window.nekoChatSync.mergeHistory(current,originals,new Set(),new Map(),'Neko');
-        assert.deepEqual(merged.map(item=>item.id),['sync-original-'+id,'first-sentence','second-sentence',
-            'sync-original-'+other,'unknown']);
-        assert.equal(merged[1].status,'streaming');
-        assert.equal(merged[4].status,'sending');
-        assert.equal(merged[4].createdAt,undefined);
-    """)
-
-
-@pytest.mark.parametrize("bound", [False, True])
-def test_fresh_window_restores_local_only_replies_without_sync_actions(bound):
-    """New windows restore explicit local bytes even before cloud consent exists."""
-    run_script(r"""(async()=>{
-        const merged=[],requests=[];
-        window.appendMessage=()=>{throw new Error('restoration submitted a reply');};
-        window.sendTextPayload=()=>{throw new Error('restoration submitted input');};
-        global.WebSocket=()=>{throw new Error('restoration opened a model socket');};
-        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages:items=>merged.push(items)};
-        const local={messageId:other,characterSyncId:original.characterSyncId,role:'assistant',text:'local only',
-            originalTime:String(Number(original.originalTime)+1000)};
-        global.fetch=async(path,options)=>{
-            requests.push([path,options.method]);
-            return {ok:true,json:async()=>({originals:BOUND?[original]:[],localReplies:[local]})};
-        };
-        const role={displayName:'Neko',characterSyncId:original.characterSyncId,binding:BOUND?{cursor:1}:null};
-        await window.nekoChatSync.loadHistory({characters:[role]});
-        assert.equal(merged.length,1);
-        const restored=merged[0].find(item=>item.id==='local-reply-'+other);
-        assert.equal(restored.blocks[0].text,'local only');
-        assert.equal(restored.createdAt,Number(local.originalTime));
-        assert.equal(restored.actions,undefined);
-        assert.deepEqual(requests,[['/api/chat-sync/characters/'+original.characterSyncId+'/history','GET']]);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BOUND", json.dumps(bound)))
-
-
-def test_local_only_identity_replaces_exact_split_bubbles_without_text_deduplication():
-    """Local restoration joins the same turn; equal text in another turn survives."""
-    run_script(r"""
-        const time=Number(original.originalTime),local={messageId:other,characterSyncId:original.characterSyncId,
-            role:'assistant',text:'same',originalTime:String(time+1000)};
-        const current=[{id:'sentence-one',role:'assistant',turnId:'local-turn',createdAt:time+1000},
-            {id:'sentence-two',role:'assistant',turnId:'local-turn',createdAt:time+1000},
-            {id:'different-turn',role:'assistant',turnId:'other-turn',createdAt:time+2000,blocks:[{type:'text',text:'same'}]}];
-        const merge=items=>window.nekoChatSync.mergeHistory(items,[original],new Set(),new Map(),'Neko',
-            new Map([['local-turn',other]]),[local]);
-        const merged=merge(current);
-        assert.deepEqual(merged.map(item=>item.id),['sync-original-'+id,'sentence-one','sentence-two','different-turn']);
-        assert.equal(merged[1].actions,undefined);
-        assert.deepEqual(merge(merged),merged);
-    """)
-
-
-def test_deleted_known_sources_do_not_reappear_from_live_bubbles():
-    """An omitted previously known ID is removed together with its exact live alias."""
-    run_script(r"""
-        const current = [{id:'sync-original-'+id,role:'user'}, {id:'local-copy',role:'user'}, {id:'untouched',role:'assistant'}];
-        const merged = window.nekoChatSync.mergeHistory(current,[],new Set([id]),new Map([['local-copy',id]]),'Neko');
-        assert.deepEqual(merged.map(x=>x.id),['untouched']);
-    """)
-
-
-def test_assistant_turn_identity_handles_delayed_realistic_rendering():
-    """Delayed split bubbles use an explicit turn map rather than text or position."""
-    run_script(r"""
-        const current = [{id:'sentence-1',role:'assistant',turnId:'turn-one'}, {id:'sentence-2',role:'assistant',turnId:'turn-one'}];
-        const merged = window.nekoChatSync.mergeHistory(current,[{...original,role:'assistant'}],new Set(),new Map(),'Neko',
-            new Map([['turn-one',id]]));
-        assert.deepEqual(merged.map(x=>x.id),['sentence-1','sentence-2']);
-        assert.equal(merged[0].actions,undefined);
-        assert.equal(merged[1].actions,undefined);
-    """)
-
-
-def test_sync_keeps_live_split_bubble_keys_and_blocks_without_replaying_entry():
-    """Canonical identity adds metadata; it must not remount already visible text."""
-    run_script(r"""
-        const first=[{type:'text',text:'First.'}],second=[{type:'text',text:'Second.'}];
-        const current=[{id:'live-1',role:'assistant',turnId:'turn',blocks:first},
-            {id:'live-2',role:'assistant',turnId:'turn',blocks:second}];
-        const mappings=new Map([['turn',id]]),record={...original,role:'assistant',text:'First. Second.'};
-        const merge=items=>window.nekoChatSync.mergeHistory(items,[record],new Set([id]),new Map(),'Neko',mappings);
-        const merged=merge(current);
-        assert.deepEqual(merged.map(x=>x.id),['live-1','live-2']);
-        assert.equal(merged[0].blocks,first);assert.equal(merged[1].blocks,second);
-        assert.deepEqual(merge(merged),merged);
-        assert.deepEqual(window.nekoChatSync.mergeHistory(merged,[],new Set([id]),new Map(),'Neko',mappings),[]);
-    """)
-
-
-def test_unknown_original_time_never_becomes_download_time():
-    """Unknown source time remains unknown in the current-window message view."""
-    run_script(r"""
-        const merged = window.nekoChatSync.mergeHistory([],[{...original,originalTime:null}],new Set(),new Map(),'Neko');
-        assert.equal(merged[0].createdAt,0);
-        assert.equal(merged[0].time,'chatSync.unknownTime');
-    """)
-
-
-def test_history_uses_passive_host_set_without_append_or_models():
-    """A local original page restores without generating reactions or re-uploading."""
-    run_script(r"""
-        (async()=>{
-            let calls=[];
-            window.reactChatWindowHost={getState(){return {messages:[{id:'live',role:'user',status:'sending'}]};},
-                setMessages(messages){calls.push(messages);}, appendMessage(){throw new Error('Active append used');}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}}]};
-                assert.equal(path,'/api/chat-sync/characters/'+'c'.repeat(32)+'/history');
-                // A late historical page can arrive after its same-millisecond successor.
-                return {originals:[{...original,messageId:other,originSeq:2},original]};
-            }});
-            await window.nekoChatSync.loadHistory();
-            assert.equal(calls.length,1);
-            assert.deepEqual(calls[0].map(x=>x.id),['sync-original-'+id,'sync-original-'+other,'live']);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_automatic_local_cursor_refresh_is_passive_and_skips_unchanged_history():
-    """The cloud worker's committed cursor reaches the current idle chat window."""
-    run_script(r"""
-        (async()=>{
-            let messages=[], cursor=1, historyCalls=0;
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;},
-                appendMessage(){throw new Error('Automatic refresh triggered reaction');}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                assert.ok(path.startsWith('/api/chat-sync/'),'Browser must only call local backend');
-                if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{cursor}}]};
-                historyCalls++;
-                return {originals:cursor===1?[original]:[original,{...original,messageId:other,originSeq:2}]};
-            }});
-            documentEvents.DOMContentLoaded();
-            assert.equal(intervals[0].delay,5000);
-            await intervals[0].callback();
-            assert.equal(messages.length,1);
-            await intervals[0].callback();
-            assert.equal(historyCalls,1);
-            cursor=2;
-            await intervals[0].callback();
-            assert.deepEqual(messages.map(item=>item.id),['sync-original-'+id,'sync-original-'+other]);
-            assert.equal(historyCalls,2);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("completion", ["assistantTurnCompletedId", "assistantTurnSettledId"])
-@pytest.mark.parametrize("busy", [None, "streaming", "sending", "realistic", "awaiting", "submitted", "pending", "hidden"])
-def test_completed_retained_turn_refreshes_only_after_real_busy_state_finishes(completion, busy):
-    """A completed ID remains valid while real streaming/queued work still fences UI."""
-    run_script("(async()=>{" + r"""
-        let applied=0, requests=0;
-        const completion=COMPLETION, busy=BUSY;
-        window._nekoAssistantTurnId='retained';
-        window.appState={assistantTurnId:'retained',[completion]:'retained'};
-        window.reactChatWindowHost={getState(){return {messages:busy==='streaming'||busy==='sending'
-            ?[{id:'live',status:busy}]:[]};},setMessages(){applied++;},appendMessage(){throw new Error('reaction');}};
-        if(busy==='realistic')window._isProcessingRealisticQueue=true;
-        if(busy==='awaiting')window.appState.assistantTurnAwaitingBubble=true;
-        if(busy==='submitted')window._lastSubmittedRequestId='submitted';
-        if(busy==='pending')window.appState.pendingTextTurnSubmitAt=Date.now();
-        if(busy==='hidden')document.visibilityState='hidden';
-        global.fetch=async(path)=>({ok:true,async json(){
-            requests++;
-            if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{cursor:1}}]};
-            assert.ok(path.endsWith('/history'));return {originals:[original]};
-        }});
-        documentEvents.DOMContentLoaded();
-        await intervals[0].callback();
-        assert.equal(applied,busy?0:1);
-        assert.equal(requests,busy?0:2);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("COMPLETION", json.dumps(completion)).replace("BUSY", json.dumps(busy)))
-
-
-@pytest.mark.parametrize("busy", [None, "realistic", "active", "unknown", "unidentified", "sending"])
-def test_completed_turn_tail_bubbles_refresh_after_the_render_queue_drains(busy):
-    """Exact end events release old tail bubbles without releasing genuine work."""
-    run_script("(async()=>{" + r"""
-        const busy=BUSY;
-        let applied=0,requests=0;
-        const messages=['previous','latest'].map(turnId=>({id:turnId,role:'assistant',turnId,status:'streaming'}));
-        window.appState={assistantTurnId:'latest',assistantTurnCompletedId:'latest'};
-        window.reactChatWindowHost={getState(){return {messages};},setMessages(){applied++;}};
-        windowEvents['neko-assistant-turn-end']?.({detail:{turnId:'previous',source:'turn_end'}});
-        windowEvents['neko-assistant-turn-end']?.({detail:{turnId:'latest',source:'turn_end'}});
-        if(busy==='realistic')window._isProcessingRealisticQueue=true;
-        if(busy==='active')window.appState.assistantTurnId='new-active';
-        if(busy==='unknown')messages.push({id:'unknown',role:'assistant',turnId:'unconfirmed',status:'streaming'});
-        if(busy==='unidentified')messages.push({id:'unidentified',role:'assistant',status:'streaming'});
-        if(busy==='sending')messages.push({id:'pending',role:'user',turnId:'latest',status:'sending'});
-        global.fetch=async(path)=>({ok:true,async json(){
-            requests++;
-            if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{cursor:1}}]};
-            return {originals:[original]};
-        }});
-        documentEvents.DOMContentLoaded();
-        await intervals[0].callback();
-        assert.equal(applied,busy?0:1);
-        assert.equal(requests,busy?0:2);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BUSY", json.dumps(busy)))
-
-
-@pytest.mark.parametrize("completion", ["assistantTurnCompletedId", "assistantTurnSettledId"])
-def test_existing_completion_releases_only_its_exact_assistant_tail(completion):
-    """A page can observe completion state even if it missed the end event."""
-    run_script("(async()=>{" + r"""
-        let applied=0;
-        window.appState={assistantTurnId:'retained',[COMPLETION]:'retained'};
-        window.reactChatWindowHost={getState(){return {messages:[
-            {id:'tail',role:'assistant',turnId:'retained',status:'streaming'}]};},setMessages(){applied++;}};
-        global.fetch=async(path)=>({ok:true,async json(){
-            if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{cursor:1}}]};
-            return {originals:[original]};
-        }});
-        documentEvents.DOMContentLoaded();
-        await intervals[0].callback();
-        assert.equal(applied,1);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("COMPLETION", json.dumps(completion)))
-
-
-@pytest.mark.parametrize("lifecycle", ["explicit_null", "legacy_missing", "current_active", "unknown_streaming"])
-def test_current_lifecycle_distinguishes_cleared_role_from_legacy_fallback(lifecycle):
-    """Cleared current state ignores an old role ID while real and legacy work waits."""
-    run_script(r"""(async()=>{
-        const lifecycle=LIFECYCLE, requests=[], merged=[];
-        const messages=lifecycle==='unknown_streaming'
-            ?[{id:'unknown-live',role:'assistant',turnId:'unknown-current',status:'streaming'}]:[];
-        window._nekoAssistantTurnId='old-role-turn';
-        window.appState={assistantTurnId:null,assistantTurnCompletedId:null,assistantTurnSettledId:null,
-            assistantTurnAwaitingBubble:false,pendingTextTurnSubmitAt:0};
-        if(lifecycle==='legacy_missing')delete window.appState.assistantTurnId;
-        if(lifecycle==='current_active')window.appState.assistantTurnId='current-role-turn';
-        window.reactChatWindowHost={getState:()=>({messages}),setMessages:items=>merged.push(items),
-            appendMessage(){throw new Error('Passive restoration must not enqueue a reaction');}};
-        document.visibilityState='visible';
-        global.fetch=async(path)=>{requests.push(path);return {ok:true,json:async()=>path.endsWith('/status')
-            ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor:1}}]}
-            :{originals:[original]}};};
-        documentEvents.DOMContentLoaded();
-        await window.nekoChatSync.notifyHistoryCommitted({type:'chat_sync_history_changed',characterSyncId:original.characterSyncId});
-        if(lifecycle==='explicit_null'){
-            assert.equal(merged.length,1);
-        }else{
-            assert.equal(merged.length,0);
-            assert.equal(requests.length,0);
-            window.appState.assistantTurnCompletedId='unrelated-turn';
-            await intervals[0].callback();
-            assert.equal(merged.length,0);
-            if(lifecycle==='legacy_missing')window._nekoAssistantTurnId=null;
-            if(lifecycle==='current_active'){
-                window.appState.assistantTurnCompletedId='old-role-turn';
-                await intervals[0].callback();
-                assert.equal(merged.length,0);
-                window.appState.assistantTurnCompletedId='current-role-turn';
-            }
-            if(lifecycle==='unknown_streaming')messages[0].status='sent';
-            await intervals[0].callback();
-            assert.equal(merged.length,1);
-        }
-        assert.deepEqual(merged[0].map(item=>item.id),lifecycle==='unknown_streaming'
-            ?['sync-original-'+id,'unknown-live']:['sync-original-'+id]);
-        assert.equal(requests.length,2);
-        assert.ok(requests.every(path=>path.endsWith('/status')||path.endsWith('/history')));
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("LIFECYCLE", json.dumps(lifecycle)))
 
 
 def test_foreground_wake_coalesces_visibility_and_pageshow_without_manual_sync():
@@ -896,6 +246,7 @@ def test_foreground_wake_coalesces_visibility_and_pageshow_without_manual_sync()
                 return {ok:true,json:async()=>({characters:[]})};
             };
             documentEvents.DOMContentLoaded();
+            assert.equal(intervals.length,0);
             document.visibilityState='hidden';
             await documentEvents.visibilitychange();
             assert.equal(wakeCount,0);
@@ -908,274 +259,6 @@ def test_foreground_wake_coalesces_visibility_and_pageshow_without_manual_sync()
     """)
 
 
-def test_automatic_history_defers_streaming_before_and_during_io_without_consuming_cursor():
-    """A deferred cursor remains retryable when the same live turn finishes."""
-    run_script(r"""
-        (async()=>{
-            let messages=[], requests=0, applied=0, beginDuringRead=true;
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;applied++;}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                requests++;
-                if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{cursor:1}}]};
-                if(beginDuringRead)window._nekoAssistantTurnId='active-turn';
-                return {originals:[original]};
-            }});
-            documentEvents.DOMContentLoaded();
-            window._nekoAssistantTurnId='active-turn';
-            await intervals[0].callback();
-            assert.equal(requests,0);
-            window._nekoAssistantTurnId=null;
-            await intervals[0].callback();
-            assert.equal(applied,0);
-            window._nekoAssistantTurnId=null;
-            beginDuringRead=false;
-            await intervals[0].callback();
-            assert.equal(applied,1);
-            assert.equal(messages[0].id,'sync-original-'+id);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_automatic_history_cannot_replace_new_role_after_local_io():
-    """The automatic path keeps the same role and latest-request fences."""
-    run_script(r"""
-        (async()=>{
-            window.reactChatWindowHost={getState(){return {messages:[]};},setMessages(){throw new Error('Stale auto history applied');}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{cursor:1}}]};
-                window.lanlan_config.lanlan_name='Other';
-                return {originals:[original]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await intervals[0].callback();
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_late_old_character_page_cannot_replace_new_character_window():
-    """Changing the active local profile while a page waits prevents its application."""
-    run_script(r"""
-        (async()=>{
-            window.reactChatWindowHost={getState(){return {messages:[]};},setMessages(){throw new Error('Stale page applied');}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}}]};
-                window.lanlan_config.lanlan_name='Other';
-                return {originals:[original]};
-            }});
-            await window.nekoChatSync.loadHistory();
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_latest_same_character_history_wins_when_responses_arrive_out_of_order():
-    """An older page cannot revive a message after a newer empty deletion view."""
-    run_script(r"""
-        (async()=>{
-            let messages=[], releaseOld, enteredOld;
-            const oldEntered=new Promise(resolve=>enteredOld=resolve);
-            const oldPage=new Promise(resolve=>releaseOld=resolve);
-            let histories=0;
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}}]};
-                if(++histories===1){enteredOld();return await oldPage;}
-                return {originals:[]};
-            }});
-            const old=window.nekoChatSync.loadHistory();
-            await oldEntered;
-            await window.nekoChatSync.loadHistory();
-            assert.deepEqual(messages,[]);
-            releaseOld({originals:[original]});
-            await old;
-            assert.deepEqual(messages,[]);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_clear_receipt_removes_live_original_not_seen_in_previous_history():
-    """Clear's exact backend boundary also removes newly saved optimistic aliases."""
-    run_script(r"""
-        (async()=>{
-            let messages=[{id:'new-live',role:'user',status:'sent'}];
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            window.nekoChatSync.markUserRequest('request','new-live');
-            window.nekoChatSync.markAcceptedUser({request_id:'request',message_id:id});
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',
-                    characterSyncId:'c'.repeat(32),binding:{enabled:true,pendingOriginals:0,pendingDeletions:0}}]};
-                if(path.endsWith('/clear'))return {messageIds:[id],pending:true};
-                return {originals:[]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-            assert.deepEqual(messages,[]);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("restored", [False, True])
-@pytest.mark.parametrize("bound", [False, True])
-def test_clear_local_reply_receipt_hides_exact_alias_despite_history_failure(restored, bound):
-    """Local IDs are hidden separately, including delayed bubbles after clearing."""
-    run_script(r"""(async()=>{
-        let messages=[{id:RESTORED?'local-reply-'+other:'live-local',role:'assistant',turnId:'local-turn',status:'sent'}],failed=false;
-        window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;}};
-        window.nekoChatSync.markAssistantOriginal(other,'local-turn');
-        global.fetch=async(path)=>({ok:true,async json(){
-            if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',
-                characterSyncId:original.characterSyncId,binding:BOUND?{enabled:true,pendingOriginals:0,pendingDeletions:0}:null}]};
-            if(path.endsWith('/clear')){failed=true;return {messageIds:[],localMessageIds:[other],pending:false};}
-            if(failed)throw new Error('history unavailable');
-            return {originals:[],localReplies:RESTORED?[{messageId:other,characterSyncId:original.characterSyncId,
-                role:'assistant',text:'local reply',originalTime:original.originalTime}]:[]};
-        }});
-        documentEvents.DOMContentLoaded();
-        await headerButton.events.click();
-        const clear=body.children[0].querySelector('[data-sync-action="clear"]');
-        assert.equal(clear.disabled,false);
-        await clear.events.click();
-        assert.deepEqual(messages,[]);
-        messages=[{id:'delayed-local-tail',role:'assistant',turnId:'local-turn',status:'sent'}];
-        global.fetch=async()=>({ok:true,json:async()=>({originals:[],localReplies:[]})});
-        await window.nekoChatSync.loadHistory({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,
-            binding:BOUND?{cursor:0}:null}]});
-        assert.deepEqual(messages,[]);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("RESTORED", json.dumps(restored)).replace("BOUND", json.dumps(bound)))
-
-
-@pytest.mark.parametrize("bound", [False, True])
-def test_stale_local_history_cannot_revive_clear_after_status_failure(bound):
-    """The successful clear receipt fences already-running local history reads."""
-    run_script(r"""
-    (async()=>{
-        const uid=original.characterSyncId;
-        const role={displayName:'Neko',characterSyncId:uid,
-            binding:BOUND?{enabled:true,pendingOriginals:0,pendingDeletions:0,cursor:0}:null};
-        const local={messageId:other,characterSyncId:uid,role:'assistant',
-            text:'synthetic local reply',originalTime:original.originalTime};
-        let messages=[{id:'local-reply-'+other,role:'assistant',status:'sent'}];
-        let cleared=false,release,enter;
-        const waiting=new Promise(resolve=>enter=resolve),blocked=new Promise(resolve=>release=resolve);
-        window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;}};
-        global.fetch=async(path)=>({ok:true,json:async()=>{
-            if(path.endsWith('/status')){
-                if(cleared)throw new Error('synthetic post-clear status unavailable');
-                return {serviceUrl:'https://sync.test',characters:[role]};
-            }
-            if(path.endsWith('/clear')){
-                cleared=true;
-                return {messageIds:[],localMessageIds:[other],pending:false};
-            }
-            if(path.endsWith('/history')){
-                enter();
-                await blocked;
-                return {originals:[],localReplies:[local]};
-            }
-            throw new Error('unexpected request');
-        }});
-        documentEvents.DOMContentLoaded();
-        await headerButton.events.click();
-        const pending=window.nekoChatSync.loadHistory({characters:[role]});
-        await waiting;
-        await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-        assert.deepEqual(messages,[],'clear receipt must first hide the local reply');
-        release();
-        await pending;
-        assert.deepEqual(messages,[],'stale in-flight history must not restore a cleared local reply');
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BOUND", json.dumps(bound)))
-
-
-def test_clear_click_cannot_retarget_a_new_role_during_status_refresh():
-    """The clicked role is fixed before I/O rather than following a global active UID."""
-    run_script(r"""
-        (async()=>{
-            let statusRequests=0;
-            window.reactChatWindowHost={getState(){return {messages:[]};}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                assert.ok(path.endsWith('/status'),'A changed role must not reach clear');
-                if(++statusRequests===2)window.lanlan_config.lanlan_name='Other';
-                return {serviceUrl:'https://sync.test',characters:[
-                    {displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}},
-                    {displayName:'Other',characterSyncId:'e'.repeat(32),binding:{enabled:true}}]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_clear_receipt_keeps_its_original_role_after_inflight_role_change():
-    """A late clear receipt cannot write deleted display identities into another role."""
-    run_script(r"""
-        (async()=>{
-            let messages=[{id:'other-live',role:'user',status:'sent'}];
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            window.nekoChatSync.markLiveOriginal(id,'other-live');
-            global.fetch=async(path)=>({ok:true,async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[
-                    {displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}},
-                    {displayName:'Other',characterSyncId:'e'.repeat(32),binding:{enabled:true}}]};
-                if(path.endsWith('/clear')){
-                    assert.ok(path.includes('c'.repeat(32)));
-                    window.lanlan_config.lanlan_name='Other';
-                    await window.nekoChatSync.loadHistory();
-                    return {messageIds:[id],pending:true};
-                }
-                return {originals:[]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="clear"]').events.click();
-            assert.deepEqual(messages.map(message=>message.id),['other-live']);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-def test_failed_sync_still_restores_pages_already_committed_locally():
-    """A later cloud failure cannot leave earlier committed download pages invisible."""
-    run_script(r"""
-        (async()=>{
-            let messages=[];
-            window.reactChatWindowHost={getState(){return {messages};},setMessages(next){messages=next;}};
-            global.fetch=async(path)=>({ok:!path.endsWith('/sync'),async json(){
-                if(path.endsWith('/status'))return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',
-                    characterSyncId:'c'.repeat(32),binding:{enabled:true,pendingOriginals:0,pendingDeletions:0}}]};
-                if(path.endsWith('/sync'))return {detail:'chat_sync_unavailable'};
-                return {originals:[original]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            await body.children[0].querySelector('[data-sync-action="sync"]').events.click();
-            assert.deepEqual(messages.map(message=>message.id),['sync-original-'+id]);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
-
-
-@pytest.mark.parametrize("busy", ["sending", "streaming", "active-turn"])
-def test_clear_is_blocked_by_existing_unfinished_chat_states(busy):
-    """An in-progress reply cannot fall outside the user's reviewed clear boundary."""
-    run_script(r"""
-        (async()=>{
-            const busy=BUSY;
-            window._nekoAssistantTurnId=busy==='active-turn'?'turn-one':null;
-            window.reactChatWindowHost={getState(){return {messages:[{id:'live',status:busy}]};}};
-            global.fetch=async(path)=>({ok:true,async json(){
-                assert.ok(path.endsWith('/status'),'Clear must not reach its API while busy');
-                return {serviceUrl:'https://sync.test',characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),binding:{enabled:true}}]};
-            }});
-            documentEvents.DOMContentLoaded();
-            await headerButton.events.click();
-            const button=body.children[0].querySelector('[data-sync-action="clear"]');
-            assert.equal(button.disabled,true);
-            await button.events.click();
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("BUSY", json.dumps(busy)))
-
-
 @pytest.mark.parametrize("locale", ["en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"])
 def test_sync_locale_namespace_is_complete(locale):
     """Every supported locale supplies the same feature labels and message placeholders."""
@@ -1186,57 +269,59 @@ def test_sync_locale_namespace_is_complete(locale):
     assert "{{deletions}}" in actual["pending"]
 
 
-def test_both_served_pages_restore_sync_without_a_header_control():
-    """Both chat entrypoints keep passive restoration without an extra user action."""
+@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end'])
+def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger):
+    run_script(r"""(async()=>{
+        const trigger=TRIGGER,requests=[];
+        const current=[{id:'live-user',role:'user',createdAt:3,blocks:[{type:'text',text:'same'}]},
+            {id:'live-assistant',role:'assistant',status:'streaming',turnId:'live-turn',createdAt:1,
+                blocks:[{type:'text',text:'split reply'},{type:'image',url:'local-image'}]}];
+        const before=JSON.stringify(current);
+        window.reactChatWindowHost={getState:()=>({messages:current}),
+            setMessages(){throw new Error('Sync cannot replace chat history');},
+            appendMessage(){throw new Error('Sync cannot replay chat bubbles');}};
+        global.fetch=async(path,options)=>{
+            requests.push(path);assert.equal(path,'/api/chat-sync/wake');assert.equal(options.method,'POST');
+            return {ok:true,json:async()=>({scheduled:true})};
+        };
+        documentEvents.DOMContentLoaded();
+        assert.equal(intervals.length,0);
+        if(trigger==='foreground')await windowEvents.pageshow();
+        else if(trigger==='connect'&&windowEvents['voice-input-socket-open'])await windowEvents['voice-input-socket-open']();
+        else if(trigger==='turn_end'&&windowEvents['neko-assistant-turn-end'])await windowEvents['neko-assistant-turn-end']({detail:{turnId:'live-turn'}});
+        assert.deepEqual(requests,trigger==='foreground'?['/api/chat-sync/wake']:[]);
+        assert.equal(JSON.stringify(current),before);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('TRIGGER', json.dumps(trigger)))
+
+
+@pytest.mark.parametrize('original_id', [None, 'a' * 32])
+def test_voice_transcript_uses_the_pre_sync_merge_window(original_id):
+    from tests.unit.test_app_websocket_static_routes import _block_after
+
+    source = (ROOT / 'static/app/app-websocket.js').read_text(encoding='utf-8')
+    handler = _block_after(source, "} else if (response.type === 'user_transcript') {")
+    run_script(r"""
+        const S={isRecording:true,lastVoiceUserMessage:{textContent:'first ',isConnected:true},lastVoiceUserMessageTime:Date.now()};
+        const C={VOICE_TRANSCRIPT_MERGE_WINDOW:1000};
+        function removeExternalAsrPreview(){}
+        function resolveAssistantRequestId(){return '';}
+        global.CustomEvent=class {};
+        window.dispatchEvent=()=>{};
+        window.appendMessage=()=>{throw new Error('A nearby transcript must merge into the existing bubble');};
+        function receive(response){HANDLER}
+        receive({type:'user_transcript',text:'second',chat_original_id:ORIGINAL_ID});
+        assert.equal(S.lastVoiceUserMessage.textContent,'first second');
+    """.replace('HANDLER', handler).replace('ORIGINAL_ID', json.dumps(original_id)))
+
+
+def test_both_served_pages_keep_sync_controls_without_a_header_control():
+    """Both chat entrypoints retain account controls and foreground wake."""
     for name in ("index", "chat"):
         html = (ROOT / f"templates/{name}.html").read_text(encoding="utf-8")
         assert 'id="chatSyncButton"' not in html
         assert 'id="react-chat-window-root"' in html
         assert '/static/app/app-chat-sync.js?v=' in html
-
-
-@pytest.mark.parametrize("lifecycle", ["poll", "pageshow", "visibilitychange"])
-def test_chat_host_refreshes_and_wakes_without_a_sync_button(lifecycle):
-    """Removing the header control must not disable local polling or foreground catchup."""
-    run_script(r"""
-        (async()=>{
-            const lifecycle=LIFECYCLE, requests=[];
-            let messages=[], cursor=1;
-            document.getElementById=name=>name==='react-chat-window-root'?body:null;
-            document.visibilityState='visible';
-            window.reactChatWindowHost={getState:()=>({messages}),setMessages:next=>{messages=next;},
-                appendMessage(){throw new Error('Passive sync must not invoke message reactions');}};
-            global.fetch=async(path,options)=>{
-                requests.push({path,method:options.method});
-                assert.ok(path.endsWith('/status')||path.endsWith('/history')||path.endsWith('/wake'));
-                if(path.endsWith('/wake'))assert.equal(options.method,'POST');
-                return {ok:true,json:async()=>path.endsWith('/status')
-                    ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{cursor}}]}
-                    :path.endsWith('/history')?{originals:cursor===1?[original]:[original,{...original,messageId:other,originSeq:2}]}:{}};
-            };
-            documentEvents.DOMContentLoaded();
-            assert.equal(intervals.length,1);
-            await intervals[0].callback();
-            assert.deepEqual(messages.map(message=>message.id),['sync-original-'+id]);
-            cursor=2;
-            if(lifecycle==='poll')await intervals[0].callback();
-            else if(lifecycle==='pageshow'){
-                windowEvents.pagehide();
-                await windowEvents.pageshow();
-                assert.equal(intervals.length,2);
-            }else{
-                document.visibilityState='hidden';
-                const previous=requests.length;
-                await documentEvents.visibilitychange();
-                assert.equal(requests.length,previous);
-                document.visibilityState='visible';
-                await documentEvents.visibilitychange();
-            }
-            assert.deepEqual(messages.map(message=>message.id),['sync-original-'+id,'sync-original-'+other]);
-            assert.equal(requests.filter(request=>request.path.endsWith('/wake')).length,lifecycle==='poll'?0:1);
-            assert.equal(body.children.length,0);
-        })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace("LIFECYCLE", json.dumps(lifecycle)))
 
 
 @pytest.mark.parametrize("kind", ["chat", "profile"])
@@ -1266,6 +351,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                     page.add_style_tag(content=react_source)
                 else:
                     page.add_style_tag(path=str(built))
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
             for css in re.findall(r"<style>(.*?)</style>", template, re.DOTALL):
                 page.add_style_tag(content=css)
             page.evaluate("""() => {
@@ -1299,11 +385,9 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
                 "nodes => nodes.every(node => getComputedStyle(node).pointerEvents === 'auto')"
             )
             if kind == "chat":
-                modal.locator("summary").click()
-                assert modal.locator('input[type="url"]').count() == 0
-                assert modal.locator('[data-sync-action="save"]').count() == 0
-                modal.locator('[data-sync-action="sync"]').click()
-                page.wait_for_function("window.fetchCalls.some(path => path.endsWith('/sync'))")
+                assert modal.locator('[data-sync-action]').count() == 1
+                assert modal.locator('[data-sync-action="recover"]').is_disabled()
+                assert modal.locator('input, summary').count() == 0
                 modal.get_by_role("button", name="chatSync.close", exact=True).click()
             else:
                 modal.locator('[data-profile-choice="close"]').click()
@@ -1312,66 +396,87 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             browser.close()
 
 
-def test_history_consent_real_browser_shows_safe_names_and_submits_only_reviewed_task():
-    """The served dialog renders actual labels and explicit consent without cloud I/O."""
+@pytest.mark.parametrize("change", ["closed", "role", "uid"])
+def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
+    """An old recovery result cannot prompt deletion for a newly opened character."""
+    run_script(r"""(async()=>{
+        const uid='c'.repeat(32),requests=[];let release,changed=false;
+        window.confirm=()=>{throw new Error('Stale recovery requested deletion consent');};
+        global.fetch=async(path,options)=>({ok:true,async json(){
+            requests.push({path,body:options.body});
+            if(path.endsWith('/status'))return {writerRecoveryRequired:true,characters:[{
+                displayName:changed&&CHANGE==='role'?'Other':'Neko',
+                characterSyncId:changed&&CHANGE==='uid'?'d'.repeat(32):uid,binding:null}]};
+            if(path.endsWith('/recovery/preview'))return await new Promise(resolve=>{release=resolve;});
+            throw new Error('Unexpected request '+path);
+        }});
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],recover=modal.querySelector('[data-sync-action="recover"]');
+        const pending=recover.events.click();
+        await new Promise(resolve=>setImmediate(resolve));
+        await recover.events.click();
+        assert.equal(requests.filter(item=>item.path.endsWith('/recovery/preview')).length,1);
+        changed=true;
+        if(CHANGE==='closed')modal.close();
+        else if(CHANGE==='role')await window.nekoChatSync.openSettings('Other');
+        release({history:{localName:'Neko',cloudName:'Cloud Neko'},deletions:{count:1,taskId:'e'.repeat(32)}});
+        await pending;
+        assert.equal(requests.filter(item=>item.path.endsWith('/recovery/deletions/approve')
+            ||item.path.endsWith('/history/approve')).length,0);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('CHANGE', json.dumps(change)))
+
+
+@pytest.mark.parametrize("theme,language,width,needs_recovery", [
+    ("light", "zh-CN", 375, True), ("dark", "zh-CN", 1280, True), ("dark", "ru", 375, False),
+])
+def test_recovery_panel_tooltip_is_accessible_and_fits_the_viewport(theme, language, width, needs_recovery):
+    """Mouse and keyboard help remain usable even while the recovery button is disabled."""
     from playwright.sync_api import sync_playwright
 
-    labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
+    labels = json.loads((ROOT / "static/locales" / (language + ".json")).read_text(encoding="utf-8"))["chatSync"]
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
+            page = browser.new_page(viewport={"width": width, "height": 700})
             page.route("**/*", lambda route: route.abort())
-            page.set_content('<button id="chatSyncButton">Sync</button>')
-            page.evaluate("""labels => {
-                window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
-                    .replace(/{{(.*?)}}/g, (_, name) => values[name]);
-                window.setInterval = () => 1;
-                window.lanlan_config = {lanlan_name: 'Synthetic'};
-                window.requests = [];
-                window.fetch = async (path, options) => {
-                    window.requests.push({path, body: options.body});
-                    return {ok: true, json: async () => {
-                        if (path.endsWith('/status')) return {serviceUrl: 'https://sync.test', characters: [{displayName: 'Synthetic',
-                            characterSyncId: 'c'.repeat(32), binding: {enabled: true, ownerId: 'owner', bindingId: 'binding',
-                                generation: 1, pendingOriginals: 0, pendingDeletions: 0}}]};
-                        if (path.endsWith('/history/preview')) return {taskId: 'f'.repeat(32), characterSyncId: 'c'.repeat(32),
-                            localName: 'Synthetic', cloudName: 'Cloud <b>Neko</b>', count: 3, unverifiedCount: null, status: 'preview'};
-                        if (path.endsWith('/history/approve')) return {status: 'approved'};
-                        throw new Error('Unexpected request: ' + path);
-                    }};
-                };
-            }""", labels)
+            page.set_content('<html data-theme="' + theme + '"><body></body></html>')
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
+            page.evaluate("""({labels,needsRecovery})=>{
+                window.t=key=>labels[key.replace('chatSync.','')];
+                window.setInterval=()=>1;window.lanlan_config={lanlan_name:'Synthetic'};
+                window.fetch=async()=>({ok:true,json:async()=>({writerRecoveryRequired:needsRecovery,
+                    characters:[{displayName:'Synthetic',characterSyncId:'c'.repeat(32),binding:null}]})});
+            }""", {"labels": labels, "needsRecovery": needs_recovery})
             page.add_script_tag(path=str(SCRIPT))
-            page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
-            page.locator("#chatSyncButton").click()
-            modal = page.locator("#chat-sync-dialog")
-            modal.locator("summary").click()
-            modal.get_by_role("button", name=labels["previewHistory"], exact=True).click()
-            preview = modal.get_by_role("group", name=labels["historyPreview"], exact=True)
-            preview.get_by_text("Local character: Synthetic", exact=True).wait_for()
-            preview.get_by_text("Cloud character: Cloud <b>Neko</b>", exact=True).wait_for()
-            preview.get_by_text("Verified messages in this preview: 3", exact=True).wait_for()
-            assert preview.locator("b").count() == 0
-            preview.get_by_text(labels["historyUnverifiedUnknown"], exact=True).wait_for()
-            preview.get_by_role("button", name=labels["historyCancel"], exact=True).click()
-            assert preview.get_by_role("button").count() == 0
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/history/approve'))") is False
-            modal.get_by_role("button", name=labels["previewHistory"], exact=True).click()
-            preview.get_by_role("button", name=labels["historyApprove"], exact=True).click()
-            page.wait_for_function("window.requests.some(item => item.path.endsWith('/history/approve'))")
-            modal.get_by_role("status").filter(has_text=labels["historyQueued"]).wait_for()
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/history/approve')).map(item => JSON.parse(item.body))") == [
-                {"taskId": "f" * 32}
-            ]
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/sync'))") is False
+            page.evaluate("async()=>await window.nekoChatSync.openSettings()")
+            modal = page.locator('#chat-sync-dialog')
+            assert modal.locator('[data-sync-action]').evaluate_all("nodes=>nodes.map(node=>node.dataset.syncAction)") == ['recover']
+            assert modal.locator('[data-sync-action="recover"]').is_enabled() == needs_recovery
+            assert modal.locator('details, [data-history-action]').count() == 0
+            help_button = modal.get_by_role('button', name=labels['recoverWriterHelp'], exact=True)
+            tooltip = modal.get_by_role('tooltip', include_hidden=True)
+            assert not tooltip.is_visible()
+            help_button.hover()
+            assert tooltip.is_visible()
+            page.mouse.move(0, 0)
+            help_button.focus()
+            assert tooltip.is_visible()
+            assert help_button.get_attribute('aria-describedby') == tooltip.get_attribute('id')
+            bounds = tooltip.bounding_box()
+            assert bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= width
+            assert bounds['y'] >= 0 and bounds['y'] + bounds['height'] <= 700
+            assert modal.bounding_box()['width'] <= width - 32
+            modal.get_by_role('button', name=labels['close'], exact=True).click()
+            assert page.locator('dialog[open]').count() == 0
         finally:
             browser.close()
 
 
 @pytest.mark.parametrize("approve_deletions", [False, True])
-def test_writer_recovery_real_browser_requires_separate_exact_task_consents(approve_deletions):
-    """Real served controls require cloud checks before either renewed permission."""
+@pytest.mark.parametrize("history_available", [False, True])
+def test_writer_recovery_keeps_separate_deletion_consent_without_history_controls(approve_deletions, history_available):
+    """The compact recovery panel cannot publish history or copied deletes by opening it."""
     from playwright.sync_api import sync_playwright
 
     labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
@@ -1381,7 +486,7 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
             page = browser.new_page()
             page.route("**/*", lambda route: route.abort())
             page.set_content('<button id="chatSyncButton">Sync</button>')
-            page.evaluate("""labels => {
+            page.evaluate("""({labels, historyAvailable}) => {
                 window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
                     .replace(/{{(.*?)}}/g, (_, name) => values[name]);
                 window.setInterval = () => 1;
@@ -1390,31 +495,30 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
                 window.fetch = async (path, options) => {
                     window.requests.push({path, body: options.body});
                     return {ok: true, json: async () => {
-                        if (path.endsWith('/status')) return {serviceUrl: 'https://sync.test',
+                        if (path.endsWith('/status')) return {serviceUrl: 'https://localhost:8443',
                             writerRecoveryRequired: window.needsRecovery, characters: [{displayName: 'Synthetic',
                             characterSyncId: 'c'.repeat(32), binding: {enabled: !window.needsRecovery,
-                                ownerId: 'owner', bindingId: 'binding', generation: 1,
-                                pendingOriginals: 0, pendingDeletions: 0}}]};
+                                ownerId: 'owner', bindingId: 'binding', generation: 1}}]};
                         if (path.endsWith('/recovery/preview')) {
                             window.needsRecovery = false;
-                            return {history: {taskId: 'f'.repeat(32), characterSyncId: 'c'.repeat(32),
-                                localName: 'Synthetic', cloudName: 'Cloud Neko', count: 3,
-                                unverifiedCount: null, status: 'preview'},
-                                deletions: {taskId: 'e'.repeat(32), count: 2}};
+                            return {history: historyAvailable ? {localName: 'Synthetic', cloudName: 'Cloud Neko', count: 3} : null,
+                                historyError: historyAvailable ? null : 'chat_sync_unavailable',
+                                deletions: {taskId: 'e'.repeat(32), count: 2, localName: 'Synthetic', cloudName: 'Cloud Neko'}};
                         }
                         if (path.endsWith('/recovery/deletions/approve')) return {status: 'registered'};
-                        if (path.endsWith('/history/approve')) return {status: 'approved'};
                         if (path.endsWith('/history')) return {originals: []};
                         throw new Error('Unexpected request: ' + path);
                     }};
                 };
-            }""", labels)
+            }""", {"labels": labels, "historyAvailable": history_available})
             page.add_script_tag(path=str(SCRIPT))
             page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
             page.locator("#chatSyncButton").click()
             modal = page.locator("#chat-sync-dialog")
-            assert modal.locator('[data-sync-action="enable"]').is_disabled()
-            assert modal.locator('[data-sync-action="history"]').is_disabled()
+            assert modal.locator('[data-sync-action]').count() == 1
+            assert modal.locator('[data-sync-action="recover"]').is_enabled()
+            assert modal.locator('[data-history-action], details').count() == 0
+            assert page.evaluate("window.requests.every(item => item.body === undefined)")
             messages = []
 
             def consent(dialog):
@@ -1423,15 +527,13 @@ def test_writer_recovery_real_browser_requires_separate_exact_task_consents(appr
 
             page.on("dialog", consent)
             modal.get_by_role("button", name=labels["recoverWriter"], exact=True).click()
-            preview = modal.get_by_role("group", name=labels["historyPreview"], exact=True)
-            preview.get_by_text("Verified messages in this preview: 3", exact=True).wait_for()
+            modal.get_by_role("status").filter(has_text=labels["recoveryChecked"]).wait_for()
+            if not history_available:
+                assert labels['initialHistoryFailed'] in modal.get_by_role('status').inner_text()
             assert messages and "2" in messages[0] and "Synthetic" in messages[0] and "Cloud Neko" in messages[0]
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.test"}]
+            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.nekotech.cn"}]
             assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/history/approve'))") is False
-            preview.get_by_role("button", name=labels["historyApprove"], exact=True).click()
-            page.wait_for_function("window.requests.some(item => item.path.endsWith('/history/approve'))")
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/history/approve')).map(item => JSON.parse(item.body))") == [{"taskId": "f" * 32}]
-            assert page.evaluate("window.requests.some(item => item.path.endsWith('/sync') || item.path.endsWith('/enable'))") is False
+            assert page.evaluate("window.requests.some(item => ['/history/approve','/sync-choice','/enable','/sync'].some(suffix => item.path.endsWith(suffix)))") is False
+            assert modal.locator('[data-sync-action="recover"]').is_disabled()
         finally:
             browser.close()

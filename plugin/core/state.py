@@ -9,7 +9,6 @@ import threading
 import time
 import uuid
 from collections import deque
-import multiprocessing
 from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
 from plugin._types.events import EventHandler
@@ -17,8 +16,8 @@ from plugin.logging_config import get_logger
 from plugin.settings import (
     EVENT_QUEUE_MAX,
     LIFECYCLE_QUEUE_MAX,
-    resolve_message_plane_rpc_endpoint,
     MESSAGE_QUEUE_MAX,
+    resolve_message_plane_rpc_endpoint,
 )
 
 try:
@@ -31,9 +30,9 @@ try:
 except Exception:  # pragma: no cover
     ormsgpack = None
 
-from plugin.core.message_plane_transport import format_rpc_error
 from contextlib import contextmanager
 
+from plugin.core.message_plane_transport import format_rpc_error
 
 MAX_DELETED_BUS_IDS = 20000
 
@@ -196,19 +195,6 @@ class BusChangeHub:
                 continue
 
 
-def _start_method_inherits_manager_proxies() -> bool:
-    """Whether children inherit this process's global response-map proxies.
-
-    Spawn and forkserver start from fresh module state, and PluginHost does
-    not pass these proxies as launch arguments. Fork retains the existing
-    shared-map behavior. An unknown context keeps the conservative fallback.
-    """
-    try:
-        return multiprocessing.get_start_method() == "fork"
-    except (RuntimeError, ValueError):
-        return True
-
-
 class GlobalState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -244,17 +230,7 @@ class GlobalState:
 
         self._event_queue: Optional[asyncio.Queue] = None
         self._lifecycle_queue: Optional[asyncio.Queue] = None
-        self._message_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_queue: Optional[asyncio.Queue] = None
-        self._plugin_response_map: Optional[Any] = None
-        self._plugin_response_map_manager: Optional[Any] = None
-        self._plugin_response_event_map: Optional[Any] = None
-        self._plugin_response_notify_event: Optional[Any] = None
-        self._is_plugin_child_process = False
-        # True means response/event maps are ordinary process-local dicts without Manager. Then
-        # _get_or_create_response_event must create threading.Event instead of mgr.Event(),
-        # or absent managers yield None and degrade event wakeups to short polling.
-        self._response_maps_are_local = False
         self._plugin_comm_lock = threading.Lock()
 
         # Per-plugin downlink senders for routing plugin-to-plugin responses
@@ -675,12 +651,6 @@ class GlobalState:
         return self._lifecycle_queue
 
     @property
-    def message_queue(self) -> asyncio.Queue:
-        if self._message_queue is None:
-            self._message_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
-        return self._message_queue
-    
-    @property
     def plugin_comm_queue(self) -> asyncio.Queue:
         """Central in-process queue for plugin-to-plugin requests (asyncio.Queue)."""
         if self._plugin_comm_queue is None:
@@ -716,105 +686,7 @@ class GlobalState:
             return
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.pop(pid, None)
-    
-    def _initialize_response_maps(self) -> None:
-        if self._is_plugin_child_process or not _start_method_inherits_manager_proxies():
-            self._plugin_response_map = {}
-            self._response_maps_are_local = True
-            if self._plugin_response_event_map is None:
-                self._plugin_response_event_map = {}
-        else:
-            if self._plugin_response_map_manager is None:
-                self._plugin_response_map_manager = multiprocessing.Manager()
-            self._plugin_response_map = self._plugin_response_map_manager.dict()
-            if self._plugin_response_event_map is None:
-                self._plugin_response_event_map = self._plugin_response_map_manager.dict()
 
-    @property
-    def plugin_response_map(self) -> Any:
-        """Shared response maps under fork, otherwise process-local maps."""
-        if self._plugin_response_map is None:
-            with self._plugin_comm_lock:
-                if self._plugin_response_map is None:
-                    self._initialize_response_maps()
-        return self._plugin_response_map
-
-    def mark_plugin_child_process(self) -> None:
-        """Mark this process as a plugin child so it never starts its own Manager."""
-        self._is_plugin_child_process = True
-
-    @property
-    def plugin_response_event_map(self) -> Any:
-        """Cross-process response notifications mapping request_id to Event."""
-        if self._plugin_response_event_map is None:
-            # Prefer reusing the existing Manager created for plugin_response_map.
-            _ = self.plugin_response_map
-        return self._plugin_response_event_map
-
-    @property
-    def plugin_response_notify_event(self) -> Any:
-        """Single cross-process event used to wake waiters when any response arrives.
-
-        This avoids per-request Event creation which is expensive and can diverge across processes.
-        Important: on Linux (fork), this must be created in the parent before plugin processes start.
-        """
-        if self._plugin_response_notify_event is None:
-            with self._plugin_comm_lock:
-                if self._plugin_response_notify_event is None:
-                    # multiprocessing.Event is backed by a shared semaphore/pipe and works across fork.
-                    self._plugin_response_notify_event = multiprocessing.Event()
-        return self._plugin_response_notify_event
-
-    def _get_or_create_response_event(self, request_id: str):
-        rid = str(request_id)
-        # Force init of shared manager + maps (important: do not create a new Manager per process)
-        _ = self.plugin_response_map
-        try:
-            event_map = self.plugin_response_event_map
-            ev = event_map.get(rid)
-        except Exception:
-            ev = None
-        if ev is not None:
-            return ev
-        try:
-            mgr = self._plugin_response_map_manager
-            if mgr is None and not self._response_maps_are_local:
-                _ = self.plugin_response_map
-                mgr = self._plugin_response_map_manager
-            if mgr is None:
-                if self._is_plugin_child_process or not self._response_maps_are_local:
-                    # Child-plugin responses use ZMQ, so nobody sets this event; preserve caller short-poll
-                    # fallback as before.
-                    return None
-                # Server processes with spawn-local maps use threading.Event.
-                # Its set/wait/clear API matches mgr.Event, and all waiting happens in
-                # this process's thread pool, as documented at call sites,
-                # so thread events suffice while avoiding per-wait/set manager round trips.
-                ev = threading.Event()
-            else:
-                ev = mgr.Event()
-            try:
-                event_map = self.plugin_response_event_map
-                try:
-                    stored = event_map.setdefault(rid, ev)
-                    ev = stored if stored is not None else ev
-                except Exception:
-                    event_map[rid] = ev
-                try:
-                    existing = event_map.get(rid)
-                    if existing is not None:
-                        ev = existing
-                except Exception:
-                    logger.bind(component="server").debug(
-                        f"Failed to retrieve response event for request_id={rid}", exc_info=True
-                    )
-            except Exception:
-                logger.bind(component="server").debug(
-                    f"Failed to store response event for request_id={rid}", exc_info=True
-                )
-            return ev
-        except Exception:
-            return None
 
     def append_message_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -1477,316 +1349,13 @@ class GlobalState:
             except Exception:
                 pass
         return removed
-    
-    def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
-        """
-        Set plugin responses from the main process.
-        
-        Args:
-            request_id: Request ID.
-            response: Response data.
-            timeout: Seconds until expiry.
-        """
-        rid = str(request_id).strip()
-        if not rid:
-            return
-        # Store responses with current time + timeout + buffer expiration.
-        # Buffer accommodates network latency etc.
-        expire_time = time.time() + timeout + 1.0  # Extra 1 s buffer.
-        resp_map = self.plugin_response_map
-        resp_map[rid] = {
-            "response": response,
-            "expire_time": expire_time
-        }
 
-        try:
-            ev = self._get_or_create_response_event(rid)
-            if ev is not None:
-                ev.set()
-        except Exception:
-            pass
 
-        try:
-            self.plugin_response_notify_event.set()
-        except Exception:
-            pass
-    
-    def get_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get and remove plugin responses from plugin processes.
-        
-        Expired responses are cleaned automatically and return None.
-        
-        Returns:
-            Response data, or None if missing/expired.
-        """
-        current_time = time.time()
-
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-
-        resp_map = self.plugin_response_map
-        response_data = resp_map.pop(rid, None)
-
-        if response_data is None:
-            return None
-
-        expire_time = response_data.get("expire_time", 0)
-        if current_time > expire_time:
-            try:
-                event_map = self.plugin_response_event_map
-                event_map.pop(rid, None)
-                # Also clear original request_id events when different.
-                if request_id != rid:
-                    event_map.pop(request_id, None)
-            except Exception:
-                logger.bind(component="server").debug(
-                    f"Failed to remove response event for request_id={request_id}", exc_info=True
-                )
-            return None
-        try:
-            event_map = self.plugin_response_event_map
-            event_map.pop(rid, None)
-            # Also clear original request_id events when different.
-            if request_id != rid:
-                event_map.pop(request_id, None)
-        except Exception:
-            logger.bind(component="server").debug(
-                f"Failed to remove response event for request_id={request_id}", exc_info=True
-            )
-        # Return actual response data.
-        return response_data.get("response")
-
-    async def wait_for_plugin_response_async(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
-        """Async response waiting eliminates polling through pure event-driven behavior.
-        
-        Unlike synchronous time.sleep polling, use asyncio.Event
-        for zero-delay response notification.
-        """
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-        
-        # Fast path checks already-arrived responses first.
-        got = self.get_plugin_response(rid)
-        if got is not None:
-            return got
-        
-        # Create async waiting events.
-        async_event = asyncio.Event()
-        
-        # Register callbacks for immediate arrival notification.
-        def check_and_notify():
-            response = self.get_plugin_response(rid)
-            if response is not None:
-                async_event.set()
-                return response
-            return None
-        
-        # Enforce timeout with asyncio.wait_for.
-        try:
-            # Start short-interval background polling.
-            async def wait_with_polling():
-                # Check once first.
-                result = check_and_notify()
-                if result is not None:
-                    return result
-                
-                # Await events or use short polling as fallback.
-                while True:
-                    # Try synchronous events when available.
-                    per_req_ev = None
-                    try:
-                        per_req_ev = self._get_or_create_response_event(rid)
-                    except Exception:
-                        pass
-                    
-                    if per_req_ev is not None:
-                        # Wait on thread events through the thread pool.
-                        loop = asyncio.get_running_loop()
-                        ev = per_req_ev  # Capture variables against None-type problems.
-                        await loop.run_in_executor(
-                            None,
-                            lambda ev=ev: ev.wait(timeout=0.01)
-                        )
-                    else:
-                        # Fallback: brief sleep.
-                        await asyncio.sleep(0.001)  # 1 ms, ten times faster than the synchronous 10 ms interval.
-                    
-                    # Check responses.
-                    result = check_and_notify()
-                    if result is not None:
-                        return result
-                    
-                    # Avoid spinning on set events whose responses were consumed.
-                    await asyncio.sleep(0.005)
-            
-            return await asyncio.wait_for(wait_with_polling(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-    
-    def wait_for_plugin_response(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
-        """Synchronous: block until response arrives or timeout, then pop and return it.
-
-        This avoids client-side polling loops.
-        """
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-        deadline = time.time() + max(0.0, float(timeout))
-        per_req_ev = None
-        try:
-            per_req_ev = self._get_or_create_response_event(rid)
-        except Exception:
-            per_req_ev = None
-
-        # Fast path: check once before waiting.
-        got = self.get_plugin_response(rid)
-        if got is not None:
-            return got
-
-        while True:
-            # Fast path: check again before waiting.
-            got = self.get_plugin_response(rid)
-            if got is not None:
-                return got
-
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return None
-            if per_req_ev is None:
-                # Fallback to short sleep if per-request event is unavailable.
-                time.sleep(min(0.01, remaining))
-            else:
-                try:
-                    per_req_ev.wait(timeout=min(0.1, remaining))
-
-                    got = self.get_plugin_response(rid)
-                    if got is not None:
-                        return got
-
-                    # If the event is left in a signaled state (e.g. another waiter consumed the response),
-                    # wait() would return immediately and cause a tight loop. Back off briefly.
-                    time.sleep(min(0.01, remaining))
-                except Exception:
-                    time.sleep(min(0.01, remaining))
-
-            got = self.get_plugin_response(rid)
-            if got is not None:
-                return got
-
-    async def peek_plugin_response_async(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """Async: get plugin responses without removing them."""
-        # Peek never waits, so call the synchronous version directly.
-        return self.peek_plugin_response(request_id)
-    
-    def peek_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """Get plugin responses without removal, called by plugin processes.
-
-        Like get_plugin_response(), without pop.
-        Mainly checks whether responses already arrived on timeout, detecting orphan responses.
-
-        Expired response entries are still removed automatically.
-
-        Returns:
-            Response data, or None if missing/expired.
-        """
-        current_time = time.time()
-
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-
-        response_data = self.plugin_response_map.get(rid, None)
-        if response_data is None:
-            return None
-
-        expire_time = response_data.get("expire_time", 0)
-        if current_time > expire_time:
-            self.plugin_response_map.pop(rid, None)
-            if request_id != rid:
-                self.plugin_response_map.pop(request_id, None)
-            try:
-                event_map = self.plugin_response_event_map
-                event_map.pop(rid, None)
-                # Also clear original request_id events when different.
-                if request_id != rid:
-                    event_map.pop(request_id, None)
-            except Exception:
-                logger.bind(component="server").debug(
-                    f"Failed to remove response event for request_id={request_id}", exc_info=True
-                )
-            return None
-
-        return response_data.get("response")
-    
-    def cleanup_expired_responses(self) -> int:
-        """
-        Clean expired responses, periodically called by main processes.
-        
-        Returns:
-            Number removed.
-        """
-        current_time = time.time()
-        expired_ids = []
-        
-        # Find all expired responses.
-        try:
-            # Snapshot to avoid dictionary-mutation RuntimeError during iteration.
-            resp_map = self.plugin_response_map
-            for request_id, response_data in list(resp_map.items()):
-                expire_time = response_data.get("expire_time", 0)
-                if current_time > expire_time:
-                    expired_ids.append(request_id)
-        except Exception as e:
-            # If iteration fails, return the expired-ID count already found.
-            logger.bind(component="server").debug(f"Error iterating expired responses: {e}")
-        
-        # Delete expired responses.
-        resp_map = self.plugin_response_map
-        for request_id in expired_ids:
-            resp_map.pop(request_id, None)
-            try:
-                event_map = self.plugin_response_event_map
-                rid = str(request_id).strip()
-                if rid:
-                    event_map.pop(rid, None)
-                if request_id != rid:
-                    event_map.pop(request_id, None)
-            except Exception:
-                pass
-        
-        return len(expired_ids)
-    
     def close_plugin_resources(self) -> None:
-        """
-        Clean inter-plugin communication resources on main-process shutdown.
-        
-        Includes:
-        - Closing inter-plugin queues.
-        - Clearing response maps.
-        - Shutting down Manager, if present.
-        """
-        # Reset the in-process comm queue
+        """Drop run-owned routing references after the router has stopped."""
         self._plugin_comm_queue = None
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.clear()
-        
-        # Both local maps and Manager proxies belong to this server run.
-        with self._plugin_comm_lock:
-            try:
-                if self._plugin_response_map_manager is not None:
-                    self._plugin_response_map_manager.shutdown()
-                    logger.bind(component="server").debug("Plugin response map manager shut down")
-            except Exception as e:
-                logger.bind(component="server").debug(f"Error shutting down plugin response map manager: {e}")
-            finally:
-                self._plugin_response_map = None
-                self._plugin_response_event_map = None
-                self._plugin_response_notify_event = None
-                self._plugin_response_map_manager = None
-                self._response_maps_are_local = False
 
     def save_frozen_state_memory(self, plugin_id: str, state_data: bytes) -> None:
         """Store plugin frozen state in memory."""
@@ -1898,7 +1467,9 @@ state = GlobalState()
 # isn't reachable and we silently skip — matching the historical
 # "main_logic-less" plugin runtime contract.
 try:
-    from main_logic.agent_event_bus import register_user_utterance_sink as _register_sink
+    from main_logic.agent_event_bus import (
+        register_user_utterance_sink as _register_sink,
+    )
     _register_sink(state.add_user_context_event)
 except Exception as _exc:
     # Distinguish expected partial-env from real regression:

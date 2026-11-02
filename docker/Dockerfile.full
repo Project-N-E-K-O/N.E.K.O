@@ -304,6 +304,17 @@ ENV PYTHONPATH="/app:$PYTHONPATH"
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# ── 镜像身份 ─────────────────────────────────────────────────────────────
+# CI 构建时注入，运行时由 entrypoint 打印：中枢排障第一问是"你跑的是哪一版"，
+# 而滚动 tag（latest / ci-standard）在容器里反查不出任何东西。
+#
+# 位置很关键：ENV 的值每个 commit 都不同，声明在所有重活（apt / uv sync /
+# 模型资产）之后，才不会让它们每次构建全量失效；它之后只剩一条横幅 RUN。
+ARG NEKO_BUILD_VERSION=""
+ARG NEKO_BUILD_REVISION=""
+ENV NEKO_BUILD_VERSION=${NEKO_BUILD_VERSION} \
+    NEKO_BUILD_REVISION=${NEKO_BUILD_REVISION}
+
 # 12. Expose ports
 EXPOSE 80 443
 

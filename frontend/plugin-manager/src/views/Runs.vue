@@ -1,364 +1,389 @@
 <template>
-  <div class="runs-page" data-yui-guide-id="runs-page">
-    <el-row :gutter="20">
-      <el-col :span="10">
-        <el-card data-yui-guide-id="runs-list-panel">
-          <template #header>
-            <div class="card-header">
-              <span>{{ $t('runs.title') }}</span>
-              <div class="actions">
-                <el-button :icon="Refresh" size="small" data-yui-guide-id="runs-list-refresh" @click="handleRefresh" :loading="loading" />
-              </div>
-            </div>
-          </template>
-
-          <div v-if="!connected" class="hint" data-yui-guide-id="runs-ws-disconnected">
-            <el-alert type="warning" :closable="false">
-              <template #title>
-                <span>{{ $t(runsStore.connecting ? 'runs.wsConnecting' : 'runs.wsDisconnected') }}</span>
-              </template>
-            </el-alert>
+  <div
+    ref="pageElement"
+    class="runs-page"
+    :data-detail="showingDetail && !!selectedRun"
+    data-yui-guide-id="runs-page"
+  >
+    <div class="runs-workspace" :class="{ 'runs-workspace--single': !runs.length && !selectedRun }">
+      <section
+        class="runs-list-pane"
+        data-yui-guide-id="runs-list-panel"
+        :aria-label="t('runs.title')"
+      >
+        <header class="runs-pane-header">
+          <div class="runs-pane-title">
+            <h1>{{ t('runs.title') }}</h1>
+            <span v-if="listLoaded" class="runs-count">{{ runs.length }}</span>
           </div>
-
-          <el-table
-            :data="runs"
+          <el-button
+            v-if="refreshInList"
+            :icon="Refresh"
+            text
             size="small"
-            style="width: 100%"
-            data-yui-guide-id="runs-table"
-            highlight-current-row
-            @current-change="handleSelect"
-            @row-click="handleSelect"
-            :row-key="(row: RunRecord) => row.run_id"
+            data-yui-guide-id="runs-refresh"
+            :loading="refreshing"
+            @click="refreshWorkbench"
+            >{{ t('common.refresh') }}</el-button
           >
-            <el-table-column prop="status" :label="$t('runs.status')" width="110">
-              <template #default="scope">
-                <el-tag size="small" :type="statusTagType(scope.row.status)">
-                  {{ scope.row.status }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="plugin_id" :label="$t('runs.pluginId')" width="120" />
-            <el-table-column prop="entry_id" :label="$t('runs.entryId')" />
-            <el-table-column :label="$t('runs.updatedAt')" width="160">
-              <template #default="scope">
-                {{ formatTs(scope.row.updated_at) }}
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <div v-if="runs.length === 0" class="empty" data-yui-guide-id="runs-empty">
-            <el-empty :description="$t('runs.noRuns')" />
+        </header>
+        <div class="runs-list-scroll">
+          <div v-if="listError" class="runs-feedback" role="alert">
+            <span>{{ t(listError) }}</span
+            ><el-button size="small" :loading="refreshing" @click="refreshWorkbench">{{
+              t('runs.retry')
+            }}</el-button>
           </div>
-        </el-card>
-      </el-col>
-
-      <el-col :span="14">
-        <el-card data-yui-guide-id="runs-detail-panel">
-          <template #header>
-            <div class="card-header">
-              <span>{{ $t('runs.detail') }}</span>
-              <div class="actions">
-                <el-button
-                  v-if="selectedRun"
-                  size="small"
-                  :icon="Refresh"
-                  data-yui-guide-id="runs-detail-refresh"
-                  @click="handleRefreshSelected"
-                  :loading="loadingSelected"
-                >
-                  {{ $t('common.refresh') }}
-                </el-button>
-                <el-button
-                  v-if="selectedRun && canCancelSelected"
-                  size="small"
-                  type="danger"
-                  data-yui-guide-id="runs-detail-cancel"
-                  @click="handleCancel"
-                >
-                  {{ $t('runs.cancel') }}
-                </el-button>
-              </div>
-            </div>
-          </template>
-
-          <div v-if="!selectedRun" class="empty" data-yui-guide-id="runs-detail-empty">
-            <el-empty :description="$t('runs.selectRun')" />
+          <p
+            v-else-if="!connected"
+            class="runs-connection-note"
+            data-yui-guide-id="runs-ws-disconnected"
+            role="status"
+          >
+            {{ t(connecting ? 'runs.wsConnecting' : 'runs.wsDisconnected') }}
+          </p>
+          <div v-if="listLoading && !runs.length" class="runs-empty" role="status">
+            <el-icon class="is-loading"><Loading /></el-icon><span>{{ t('common.loading') }}</span>
           </div>
-
-          <div v-else class="detail" data-yui-guide-id="runs-detail-summary">
-            <el-descriptions :column="2" size="small" border>
-              <el-descriptions-item :label="$t('runs.runId')">{{ selectedRun.run_id }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.status')">{{ selectedRun.status }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.pluginId')">{{ selectedRun.plugin_id }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.entryId')">{{ selectedRun.entry_id }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.stage')">{{ selectedRun.stage || '-' }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.message')">{{ selectedRun.message || '-' }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.progress')" :span="2">
-                <el-progress
-                  :percentage="Math.round(((selectedRun.progress ?? 0) as number) * 100)"
-                  :stroke-width="14"
-                />
-              </el-descriptions-item>
-              <el-descriptions-item :label="$t('runs.error')" :span="2">
-                <pre class="error-text">{{ formatError(selectedRun.error) }}</pre>
-              </el-descriptions-item>
-            </el-descriptions>
-
-            <div class="export-section" data-yui-guide-id="runs-export-section">
-              <div class="export-header">
-                <span>{{ $t('runs.export') }}</span>
-              </div>
-              <el-table :data="selectedExports" size="small" style="width: 100%" data-yui-guide-id="runs-export-table" :row-key="(row: ExportItem) => row.export_item_id">
-                <el-table-column prop="type" :label="$t('runs.exportType')" width="120" />
-                <el-table-column :label="$t('runs.exportContent')">
-                  <template #default="scope">
-                    <div v-if="scope.row.type === 'text'" class="export-text">{{ scope.row.text }}</div>
-                    <div v-else-if="scope.row.type === 'url'"><a :href="scope.row.url" @click.prevent="openExternalUrl(scope.row.url)">{{ scope.row.url }}</a></div>
-                    <div v-else-if="scope.row.type === 'binary_url'"><a :href="scope.row.binary_url" @click.prevent="openExternalUrl(scope.row.binary_url)">{{ scope.row.binary_url }}</a></div>
-                    <div v-else-if="scope.row.type === 'json'" class="export-json">
-                      <el-collapse>
-                        <el-collapse-item :title="scope.row.label || scope.row.description || 'JSON'">
-                          <pre class="json-block">{{ formatJson(scope.row.json ?? scope.row.json_data) }}</pre>
-                        </el-collapse-item>
-                      </el-collapse>
-                    </div>
-                    <div v-else class="export-text">{{ scope.row.binary }}</div>
-                  </template>
-                </el-table-column>
-                <el-table-column :label="$t('runs.createdAt')" width="160">
-                  <template #default="scope">{{ formatTs(scope.row.created_at) }}</template>
-                </el-table-column>
-              </el-table>
-
-              <div v-if="selectedExports.length === 0" class="empty">
-                <el-empty :description="$t('runs.noExport')" />
-              </div>
-            </div>
+          <div
+            v-else-if="listLoaded && !runs.length && !listError"
+            class="runs-empty"
+            data-yui-guide-id="runs-empty"
+          >
+            <el-icon><Tickets /></el-icon><strong>{{ t('runs.noRuns') }}</strong>
+            <p>{{ t('runs.emptyHint') }}</p>
           </div>
-        </el-card>
-      </el-col>
-    </el-row>
+          <RunList
+            v-if="runs.length"
+            ref="runList"
+            :runs="runs"
+            :selected-id="selectedId"
+            @select="selectRun"
+          />
+        </div>
+      </section>
+      <section
+        v-if="runs.length || selectedRun"
+        id="run-detail-panel"
+        class="runs-detail-pane"
+        data-yui-guide-id="runs-detail-panel"
+        :aria-label="t('runs.detail')"
+      >
+        <header class="runs-pane-header">
+          <div class="runs-pane-title">
+            <button ref="backButton" type="button" class="runs-back" @click="backToList">
+              <el-icon><ArrowLeft /></el-icon>{{ t('common.back') }}
+            </button>
+            <h2>{{ t('runs.detail') }}</h2>
+          </div>
+          <div class="runs-actions">
+            <el-button
+              v-if="!refreshInList"
+              :icon="Refresh"
+              text
+              size="small"
+              data-yui-guide-id="runs-refresh"
+              :loading="refreshing"
+              @click="refreshWorkbench"
+              >{{ t('common.refresh') }}</el-button
+            >
+            <el-button
+              v-if="canCancel"
+              plain
+              type="danger"
+              size="small"
+              data-yui-guide-id="runs-detail-cancel"
+              :loading="cancellingId === selectedId"
+              :disabled="!!cancellingId"
+              @click="cancelSelected"
+              >{{ t('runs.cancel') }}</el-button
+            >
+          </div>
+        </header>
+        <div ref="detailScroll" class="runs-detail-scroll">
+          <div
+            v-if="!selectedRun"
+            class="runs-empty runs-empty--detail"
+            data-yui-guide-id="runs-detail-empty"
+          >
+            <el-icon><Document /></el-icon><strong>{{ t('runs.selectRun') }}</strong>
+            <p>{{ t('runs.selectHint') }}</p>
+          </div>
+          <RunDetail
+            v-else
+            :key="selectedRun.run_id"
+            :run="selectedRun"
+            :outputs="outputs"
+            :detail="detail"
+            :output="output"
+            :cancel-uncertain="cancelUncertain"
+            :visible="width >= 900 || showingDetail"
+            @retry="retryDetail"
+            @retry-output="retryOutput"
+          />
+        </div>
+      </section>
+    </div>
   </div>
 </template>
-
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useElementSize } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
-import dayjs from 'dayjs'
-import { useRunsStore, type RunRecord, type ExportItem } from '@/stores/runs'
-import { openExternalUrl } from '@/utils/openExternal'
-import { isRunsRequestCancelled, runsRequestErrorKey } from '@/utils/runsError'
+import { ArrowLeft, Document, Loading, Refresh, Tickets } from '@element-plus/icons-vue'
+import { useRunWorkbench } from '@/composables/useRunWorkbench'
+import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
+import RunList from '@/components/runs/RunList.vue'
+import RunDetail from '@/components/runs/RunDetail.vue'
 
 defineOptions({ name: 'RunHistory' })
-
-const runsStore = useRunsStore()
 const { t } = useI18n()
-
-const loading = ref(false)
-const loadingSelected = ref(false)
-const lastSelectedRunId = ref<string | null>(null)
-let pendingSelectedRunId: string | null = null
-let disposed = false
-
-function showRequestError(error: unknown) {
-  if (!disposed && !isRunsRequestCancelled(error)) ElMessage.error(t(runsRequestErrorKey(error)))
+const {
+  runs,
+  selectedId,
+  selectedRun,
+  outputs,
+  detail,
+  output,
+  cancelUncertain,
+  connected,
+  connecting,
+  listLoaded,
+  listLoading,
+  listError,
+  refreshing,
+  canCancel,
+  cancellingId,
+  select,
+  refreshWorkbench,
+  retryDetail,
+  retryOutput,
+  cancelSelected,
+} = useRunWorkbench()
+const pageElement = ref<HTMLElement>()
+const detailScroll = ref<HTMLElement>()
+const backButton = ref<HTMLButtonElement>()
+const runList = ref<InstanceType<typeof RunList>>()
+const { width } = useElementSize(pageElement)
+const showingDetail = ref(!!selectedId.value)
+// Keep a single refresh action in the visible header, including the empty state.
+const refreshInList = computed(
+  () =>
+    (!runs.value.length && !selectedRun.value) ||
+    (width.value > 0 && width.value < 900 && !(showingDetail.value && selectedRun.value))
+)
+async function selectRun(id: string) {
+  void select(id)
+  showingDetail.value = true
+  await nextTick()
+  if (width.value > 0 && width.value < 900) backButton.value?.focus({ preventScroll: true })
 }
-
-const connected = computed(() => runsStore.connected)
-const runs = computed(() => runsStore.runs)
-const selectedRun = computed(() => runsStore.selectedRun)
-const selectedExports = computed(() => runsStore.selectedExports)
-
-const canCancelSelected = computed(() => {
-  const r = selectedRun.value
-  if (!r) return false
-  const st = String(r.status || '')
-  return st === 'queued' || st === 'running' || st === 'cancel_requested'
-})
-
-function formatTs(ts: unknown): string {
-  const n = Number(ts)
-  if (!Number.isFinite(n) || n <= 0) return '-'
-  return dayjs(n * 1000).format('YYYY-MM-DD HH:mm:ss')
+async function backToList() {
+  showingDetail.value = false
+  await nextTick()
+  runList.value?.focusSelected()
 }
-
-function formatError(err: unknown): string {
-  if (!err) return '-'
-  try {
-    if (typeof err === 'string') return err
-    if (typeof err === 'object') return JSON.stringify(err, null, 2)
-    return String(err)
-  } catch {
-    return String(err)
-  }
-}
-
-function formatJson(json: unknown): string {
-  return JSON.stringify(json, null, 2)
-}
-
-function statusTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
-  if (status === 'succeeded') return 'success'
-  if (status === 'running' || status === 'queued' || status === 'cancel_requested') return 'warning'
-  if (status === 'failed' || status === 'timeout') return 'danger'
-  return 'info'
-}
-
-async function handleRefresh() {
-  loading.value = true
-  try {
-    await runsStore.refreshRuns()
-  } catch (error) {
-    showRequestError(error)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleRefreshSelected() {
-  if (!selectedRun.value || disposed || loadingSelected.value) return
-  const runId = selectedRun.value.run_id
-  lastSelectedRunId.value = null
-  loadingSelected.value = true
-  try {
-    const results = await Promise.allSettled([
-      runsStore.loadRun(runId),
-      runsStore.loadExports(runId)
-    ])
-    for (const result of results) {
-      if (result.status === 'rejected') throw result.reason
-    }
-    if (!disposed) lastSelectedRunId.value = runId
-  } catch (error) {
-    showRequestError(error)
-  } finally {
-    loadingSelected.value = false
-    const nextRunId = pendingSelectedRunId
-    pendingSelectedRunId = null
-    if (!disposed && nextRunId) {
-      runsStore.selectRun(nextRunId)
-      await handleRefreshSelected()
-    }
-  }
-}
-
-async function handleCancel() {
-  if (!selectedRun.value) return
-  const runId = selectedRun.value.run_id
-  try {
-    await ElMessageBox.confirm(
-      String(t('runs.cancelConfirmMessage', { runId })),
-      String(t('runs.cancelConfirmTitle')),
-      {
-        type: 'warning'
-      }
-    )
-  } catch {
-    return
-  }
-
-  if (disposed) return
-  try {
-    await runsStore.cancelRun(runId)
-    if (disposed) return
-    await handleRefreshSelected()
-    if (!disposed) ElMessage.success(String(t('runs.cancelSuccess')))
-  } catch (error) {
-    showRequestError(error)
-  }
-}
-
-async function handleSelect(row: RunRecord | null) {
-  if (!row || !row.run_id || disposed) return
-  const rid = String(row.run_id)
-  if (!rid) return
-  if (loadingSelected.value) {
-    pendingSelectedRunId = rid === selectedRun.value?.run_id ? null : rid
-    return
-  }
-  if (lastSelectedRunId.value === rid) return
-  runsStore.selectRun(rid)
-  await handleRefreshSelected()
-}
-
-onMounted(async () => {
-  await handleRefresh()
-})
-
-onUnmounted(() => {
-  disposed = true
-  pendingSelectedRunId = null
-  runsStore.disconnect()
+watch(selectedId, async () => {
+  await nextTick()
+  if (detailScroll.value) detailScroll.value.scrollTop = 0
 })
 </script>
-
 <style scoped>
 .runs-page {
-  padding: 0;
+  --run-radius: var(--radius-card);
+  container-type: inline-size;
+  container-name: run-workbench;
+  height: 100%;
+  min-height: v-bind('PANEL_HOST_MIN_HEIGHT');
+  background: var(--surface-workspace);
+  min-width: 0;
 }
-
-.card-header {
+.runs-workspace {
+  height: 100%;
+  min-height: inherit;
+  display: grid;
+  grid-template-columns: clamp(320px, 34cqw, 440px) minmax(0, 1fr);
+}
+.runs-list-pane,
+.runs-detail-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.runs-list-pane {
+  border-inline-end: 1px solid var(--surface-border);
+}
+.runs-pane-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--surface-border);
+  flex-shrink: 0;
 }
-
-.actions {
+.runs-pane-title {
   display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+}
+.runs-pane-title h1,
+.runs-pane-title h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.runs-count {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-secondary);
+}
+.runs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
   gap: 8px;
 }
-
-.hint {
-  margin-bottom: 12px;
+.runs-actions :deep(.el-button + .el-button) {
+  margin-inline-start: 0;
 }
-
-.detail {
+.runs-list-scroll,
+.runs-detail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.runs-detail-scroll {
+  padding: 20px 24px;
+}
+.runs-page :deep(.el-button) {
+  border-radius: var(--run-radius);
+}
+.runs-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 20px;
+  color: var(--el-color-warning);
+  font-size: 0.8125rem;
+}
+.runs-connection-note {
+  margin: 0;
+  padding: 12px 20px;
+  font-size: 0.75rem;
+  color: var(--el-text-color-secondary);
+  border-bottom: 1px solid var(--surface-border);
+}
+.runs-empty {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 40px 20px;
+  min-height: 240px;
+  color: var(--el-text-color-secondary);
+  font-size: 0.8125rem;
 }
-
-.export-section {
-  margin-top: 10px;
+.runs-empty > .el-icon {
+  font-size: 28px;
+  color: var(--el-color-primary);
+  opacity: 0.7;
 }
-
-.export-header {
-  font-weight: 600;
-  margin-bottom: 8px;
+.runs-empty strong {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--el-text-color-regular);
 }
-
-.export-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.export-json :deep(.el-collapse-item__header) {
-  font-size: 12px;
-  height: 28px;
-  line-height: 28px;
-}
-
-.json-block {
+.runs-empty p {
   margin: 0;
-  padding: 8px;
-  font-size: 12px;
-  background: var(--el-fill-color-lighter);
-  border-radius: 4px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 400px;
-  overflow-y: auto;
+  max-width: 28em;
 }
-
-.error-text {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+.runs-empty--detail {
+  min-height: 100%;
 }
-
-.empty {
-  margin-top: 10px;
+.runs-workspace--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.runs-workspace--single .runs-list-pane {
+  border-inline-end: 0;
+}
+.runs-workspace--single .runs-empty {
+  min-height: 100%;
+}
+.runs-back {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 0;
+  border-radius: var(--run-radius);
+  padding: 3px;
+  color: var(--el-text-color-regular);
+  font: inherit;
+  font-size: 0.75rem;
+  background: transparent;
+  cursor: pointer;
+}
+.runs-back:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+@supports (grid-template-rows: subgrid) {
+  .runs-workspace {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .runs-list-pane,
+  .runs-detail-pane {
+    display: grid;
+    grid-row: 1/-1;
+    grid-template-rows: subgrid;
+  }
+}
+@container run-workbench (max-width: 899px) {
+  .runs-workspace {
+    display: flex;
+    flex-direction: column;
+  }
+  .runs-list-pane,
+  .runs-detail-pane {
+    display: flex;
+    flex: 1;
+    border-inline-end: 0;
+    grid-template-rows: none;
+    grid-row: auto;
+  }
+  .runs-workspace .runs-detail-pane {
+    display: none;
+  }
+  .runs-page[data-detail='true'] .runs-list-pane {
+    display: none;
+  }
+  .runs-page[data-detail='true'] .runs-detail-pane {
+    display: flex;
+  }
+  .runs-back {
+    display: inline-flex;
+  }
+  .runs-pane-header {
+    flex-wrap: wrap;
+    padding-inline: 16px;
+  }
+  .runs-detail-scroll {
+    padding: 18px 16px;
+  }
+}
+@media (pointer: coarse) {
+  .runs-back {
+    min-height: 44px;
+  }
 }
 </style>

@@ -18,8 +18,10 @@ Two routers, decorated with paths relative to the package router
 (``prefix='/api/visit'``):
 
 * :data:`router` -- start / join a visit, behind the ``NEKO_VISIT_ENABLED``
-  release switch: ``POST /rooms``, ``GET /invites/{invite_code}/preview``,
-  ``POST /rooms/{visit_id}/join``, ``POST /rooms/{visit_id}/accept``.
+  release switch: ``POST /rooms``, ``GET /rooms/current``,
+  ``GET /invites/{invite_code}/preview``, ``GET /direct/{visit_id}/preview``,
+  ``POST /rooms/{visit_id}/join``, ``POST /rooms/{visit_id}/join-direct``,
+  ``POST /rooms/{visit_id}/accept``.
 * :data:`data_router` -- always available (ending or inspecting a visit,
   exporting its transcript): ``POST /route/end``, ``GET /state``,
   ``GET /transcript``.
@@ -40,33 +42,48 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
+import uuid
 from collections.abc import AsyncIterator, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.visit_settings import VISIT_INVITE_PREVIEW_REUSE_S, VISIT_VIDEO_TIER_DEFAULT
+from config.prompts.prompts_visit import (
+    build_visit_direct_invite_question_prompt,
+    build_visit_last_summary_block,
+    get_visit_direct_invite_question_fallback,
+)
+from config.visit_settings import (
+    VISIT_CROP_DEFAULT,
+    VISIT_INVITE_PREVIEW_REUSE_S,
+    VISIT_LAST_SUMMARY_MAX_TOKENS,
+    VISIT_VIDEO_TIER_DEFAULT,
+)
 from main_logic.visit import char_lifecycle, local_chars, memory_bridge
 from main_logic.visit.limits import Blocklist
 from main_logic.visit.memory_commit import SIDE_RANK
 from main_logic.visit.recovery import pending_upload_owner, read_pending_upload_doc_sync
 from main_logic.visit.spool import VisitSpool
-from main_logic.visit.subjects import derive_short_code
+from main_logic.visit.subjects import PeerRoster, derive_short_code
 from main_routers.system_router._shared import _read_json_object
-from main_routers.visit_router import accounts, cloud_routes, runtime, transport_ws
+from main_routers.visit_router import accounts, cloud_routes, llm as visit_llm, persona, runtime, transport_ws
 from main_routers.visit_router import credentials as cr
 from main_routers.visit_router import transcript_upload as tu
 from main_routers.visit_router.local_context import (
     load_character_context,
     prompt_lang,
-    protected_display_names,
+    protected_live_display_names,
     speaker_label,
 )
 from main_routers.visit_router.local_guard import http_denied, visit_enabled
 from utils.logger_config import get_module_logger
+from utils.mirror_meta import build_mirror_meta
+from utils.tokenize import atruncate_to_tokens
 from utils.visit_wire import VISIT_ID_RE
 
 logger = get_module_logger(__name__, "Main")
@@ -142,6 +159,16 @@ _previews: dict[tuple[str, str], tuple[float, cr.InvitePreview, int]] = {}
 
 _PREVIEWS_MAX = 32
 
+_DIRECT_QUESTION_PERSONA_MAX_TOKENS = 900
+_DIRECT_QUESTION_OUTPUT_MAX_TOKENS = 96
+_DIRECT_QUESTION_TIMEOUT_S = 8
+_DIRECT_QUESTION_MAX_CHARS = 180
+_DIRECT_QUESTION_PREFIX_RE = re.compile(r"^\s*(?:[-*#>]\s*)?(?:\[[^\]\n]{1,48}\]|【[^】\n]{1,48}】)\s*[:：]?\s*")
+_direct_questions: dict[tuple[str, str, str], tuple[float, str]] = {}
+"""(community account, character, visit id) → (invite expiry, generated question)."""
+_direct_question_deliveries: dict[tuple[str, str, str], float] = {}
+"""Questions already handed to the ordinary assistant reply path, until invite expiry."""
+
 
 def _remember_preview(account: Optional[str], invite_code: str, preview: cr.InvitePreview, epoch: int) -> None:
     if not account:
@@ -177,12 +204,27 @@ async def _fetch_preview(invite_code: str, account: Optional[str]) -> tuple[cr.I
     preview = await cr.fetch_invite_preview(
         invite_code,
         generic_label=speaker_label("peer_cat", lang),
-        protected_names=protected_display_names(lang, ctx.family_names, ctx.char_names),
+        protected_names=protected_live_display_names(lang, ctx.family_names),
     )
     # Logout/account switch during request, including A→B→A: preview may use another session's authorization; do not cache.
     if epoch is None or runtime.account_epoch() != epoch:
         return preview, None
     _remember_preview(account, invite_code, preview, epoch)
+    return preview, epoch
+
+
+async def _fetch_direct_preview(visit_id: str, account: Optional[str]) -> tuple[cr.InvitePreview, Optional[int]]:
+    """Targeted counterpart of :func:`_fetch_preview`, authorized by account."""
+    epoch = runtime.account_epoch()
+    lang = prompt_lang()
+    ctx = await load_character_context()
+    preview = await cr.fetch_direct_visit_preview(
+        visit_id,
+        generic_label=speaker_label("peer_cat", lang),
+        protected_names=protected_live_display_names(lang, ctx.family_names),
+    )
+    if epoch is None or runtime.account_epoch() != epoch:
+        return preview, None
     return preview, epoch
 
 
@@ -193,6 +235,124 @@ async def _locally_blocked(preview: cr.InvitePreview) -> bool:
         logger.warning("visit: blocklist unavailable: %s", type(exc).__name__)
         return True
     return cr.is_locally_blocked(preview, blocklist)
+
+
+def _direct_question_text(raw: str, fallback: str, lang: str | None) -> str:
+    """Collapse a one-shot reply to safe, label-free chat text."""
+    text = " ".join(part.strip() for part in str(raw or "").splitlines() if part.strip())
+    text = _DIRECT_QUESTION_PREFIX_RE.sub("", text, count=1)
+    text = text.strip(" \t\r\n\"'“”‘’`")
+    # A model can still echo a bracketed speaker name in the middle.  The chat
+    # already displays the speaker above the bubble, so brackets are never
+    # useful here and previously caused the duplicated-name bug.
+    text = text.translate(str.maketrans({"[": "", "]": "", "【": "", "】": ""}))
+    if not text or len(text) > _DIRECT_QUESTION_MAX_CHARS:
+        return fallback
+    if not text.endswith(("?", "？")):
+        text += "？" if str(lang or "").lower().startswith(("zh", "ja")) else "?"
+    return text
+
+
+async def _generate_direct_invite_question(
+    preview: cr.InvitePreview,
+    *,
+    account: str,
+    catgirl: str,
+    own_char_uid: str,
+    persona_text: str,
+    lang: str,
+) -> tuple[str, bool]:
+    """Generate a persona question, using only this pair's prior visit summary."""
+    fallback = get_visit_direct_invite_question_fallback(preview.host_display_name, lang)
+    memory_block = ""
+    memory_used = False
+    own_uid = await accounts.lookup_visit_uid(account)
+    if own_uid and preview.host_visit_uid:
+        try:
+            forgetting = await memory_bridge.forget_in_progress(
+                _config_dir(), own_char_uid, preview.host_visit_uid, own_uid=own_uid,
+            )
+            summary = None if forgetting else await PeerRoster(
+                _config_dir(), own_uid=own_uid,
+            ).get_last_summary(preview.host_visit_uid, catgirl)
+            if isinstance(summary, Mapping) and str(summary.get("text") or "").strip():
+                summary_text = await atruncate_to_tokens(
+                    str(summary["text"]), VISIT_LAST_SUMMARY_MAX_TOKENS,
+                )
+                try:
+                    date = datetime.fromtimestamp(float(summary.get("ended_at") or 0)).date().isoformat()
+                except (TypeError, ValueError, OverflowError, OSError):
+                    date = ""
+                memory_block = build_visit_last_summary_block(
+                    summary_text,
+                    date=date,
+                    peer_display=preview.host_display_name,
+                    lang=lang,
+                )
+                memory_used = bool(memory_block)
+        except Exception as exc:  # noqa: BLE001 - A damaged optional memory must not hide a real invite.
+            logger.warning("visit: direct invite memory unavailable: %s", type(exc).__name__)
+    try:
+        prompt = build_visit_direct_invite_question_prompt(
+            name=catgirl,
+            persona_text=await atruncate_to_tokens(
+                persona_text, _DIRECT_QUESTION_PERSONA_MAX_TOKENS,
+            ),
+            peer_display=preview.host_display_name,
+            memory_block=memory_block,
+            lang=lang,
+        )
+        raw = await visit_llm.one_shot(
+            prompt,
+            max_tokens=_DIRECT_QUESTION_OUTPUT_MAX_TOKENS,
+            timeout=_DIRECT_QUESTION_TIMEOUT_S,
+            model_type="conversation",
+        )
+    except Exception as exc:  # noqa: BLE001 - Fixed wording keeps the invitation actionable offline.
+        logger.info("visit: direct invite question fallback: %s", type(exc).__name__)
+        return fallback, memory_used
+    return _direct_question_text(raw, fallback, lang), memory_used
+
+
+async def _deliver_direct_invite_question(
+    question: str,
+    *,
+    catgirl: str,
+    visit_id: str,
+) -> dict[str, Any]:
+    """Deliver the invite question through the ordinary assistant text + speech path."""
+    from main_routers.shared_state import get_session_manager
+
+    manager = get_session_manager().get(catgirl)
+    speak = getattr(manager, "mirror_assistant_speech", None)
+    if not callable(speak):
+        return {"ok": False, "reason": "project_tts_unavailable", "audio_sent": False}
+    request_id = f"visit-direct-invite-question:{visit_id}"
+    metadata = build_mirror_meta(
+        source="neko_visit",
+        kind="visit_direct_invite_question",
+        session_id=visit_id,
+        event={"memory_enabled": False},
+    )
+    try:
+        result = await speak(
+            question,
+            metadata=metadata,
+            request_id=request_id,
+            speech_correlation_id=request_id,
+            mirror_text=True,
+            emit_turn_end_after=True,
+            interrupt_audio=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - Invitation remains actionable when TTS is unavailable.
+        logger.warning("visit: direct invite question TTS failed: %s", type(exc).__name__)
+        return {
+            "ok": False,
+            "reason": "project_tts_failed",
+            "error_type": type(exc).__name__,
+            "audio_sent": False,
+        }
+    return dict(result) if isinstance(result, Mapping) else {"ok": True}
 
 
 @router.get("/invites/{invite_code}/preview")
@@ -361,16 +521,209 @@ async def create_room(request: Request):
     name = payload.get("catgirl")
     if not _valid_name(name):
         return _error(400, "catgirl_required")
-    crop = payload.get("crop", "upper")
+    crop = payload.get("crop", VISIT_CROP_DEFAULT)
     if crop not in _CROPS:
         return _error(400, "crop_format")
+    target_user_id = payload.get("target_user_id")
+    if target_user_id is not None:
+        try:
+            target_user_id = str(uuid.UUID(str(target_user_id)))
+        except (ValueError, AttributeError):
+            return _error(400, "target_user_id_format")
     refused = await _refuse_before_admission(request)
     if refused is not None:
         return refused
-    admitted = await _admit(name, "host", crop=crop)
+    # Startup invalidates the previous process's unused invitations.  Wait for
+    # (or retry a failed) reset before minting a room so a quick click cannot
+    # race cleanup and revive or collide with the old code.
+    from main_routers.visit_router import background
+
+    reset_failure = await background.wait_startup_invite_reset()
+    if reset_failure is not None:
+        return _servers_error(reset_failure)
+    # A new Electron run can bind while the long-lived backend stays up.  Its
+    # pending-invite cleanup must retire before this request mints a new room,
+    # otherwise a delayed bulk cancel can invalidate the fresh invitation.
+    from main_routers.visit_router import display_socket
+
+    restart_failure = await display_socket.wait_desktop_restart_reset()
+    if restart_failure is not None:
+        return _servers_error(restart_failure)
+    admitted = await _admit(
+        name, "host", crop=crop, target_user_id=target_user_id,
+        direct=target_user_id is not None,
+    )
     if isinstance(admitted, JSONResponse):
         return admitted
-    return JSONResponse({"visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
+    body = {"visit_id": admitted.visit_id, "phase": "pending"}
+    if target_user_id is not None:
+        body["target_user_id"] = target_user_id
+    return JSONResponse(body, status_code=202)
+
+
+@router.get("/direct/{visit_id}/preview")
+async def preview_direct_invite(request: Request, visit_id: str):
+    """Preview a targeted invitation using account authorization, not a code."""
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    try:
+        preview, epoch = await _fetch_direct_preview(visit_id, await accounts.local_account())
+    except cr.VisitServersError as exc:
+        return _servers_error(exc)
+    if epoch is None:
+        return _error(409, "VISIT_E_BUSY", reason="account_change")
+    return JSONResponse(preview.to_public(locally_blocked=await _locally_blocked(preview)))
+
+
+@router.get("/direct/{visit_id}/question")
+async def direct_invite_question(request: Request, visit_id: str, catgirl: str = ""):
+    """Ask about an account-bound invitation in the current catgirl's voice.
+
+    Only the last-summary memory for exactly this community peer and local
+    character is considered.  The response intentionally contains no visit
+    credential, private uid, or memory text.
+    """
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or VISIT_ID_RE.fullmatch(visit_id) is None:
+        return _error(400, "visit_id_format")
+    if not _valid_name(catgirl):
+        return _error(400, "catgirl_required")
+    switch_off = await runtime.visit_switch_refusal()
+    if switch_off is not None:
+        return _refused(switch_off.status, switch_off.body)
+    account = await accounts.local_account()
+    if not account:
+        return _servers_error(cr.VisitLoginRequired())
+    try:
+        preview, epoch = await _fetch_direct_preview(visit_id, account)
+    except cr.VisitServersError as exc:
+        return _servers_error(exc)
+    if epoch is None or runtime.account_epoch() != epoch:
+        return _error(409, "VISIT_E_BUSY", reason="account_change")
+    if time.time() >= preview.expires_at:
+        return _servers_error(cr.VisitInviteExpired())
+    if await _locally_blocked(preview):
+        return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
+    try:
+        own_char_uid = await _resolve_uid(catgirl)
+        gate = await persona.persona_gate(catgirl)
+    except _CharacterLookupFailed:
+        return _error(503, "character_unavailable")
+    if own_char_uid is None:
+        return _error(404, "catgirl_not_found")
+    cache_key = (account, catgirl, visit_id)
+    cached = _direct_questions.get(cache_key)
+    if cached is not None and time.time() < cached[0]:
+        return JSONResponse({"question": cached[1], "memory_used": None})
+    for key, (expires_at, _question) in list(_direct_questions.items()):
+        if time.time() >= expires_at:
+            _direct_questions.pop(key, None)
+    question, memory_used = await _generate_direct_invite_question(
+        preview,
+        account=account,
+        catgirl=catgirl,
+        own_char_uid=own_char_uid,
+        persona_text=gate.text if gate.ok and gate.text else "",
+        lang=prompt_lang(),
+    )
+    _direct_questions[cache_key] = (preview.expires_at, question)
+    while len(_direct_questions) > _PREVIEWS_MAX:
+        _direct_questions.pop(next(iter(_direct_questions)))
+    return JSONResponse({"question": question, "memory_used": memory_used})
+
+
+@router.post("/direct/{visit_id}/deliver-question")
+async def deliver_direct_invite_question(request: Request, visit_id: str):
+    """Send the cached question once through the normal assistant reply lifecycle."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or VISIT_ID_RE.fullmatch(visit_id) is None:
+        return _error(400, "visit_id_format")
+    catgirl = payload.get("catgirl")
+    if not _valid_name(catgirl):
+        return _error(400, "catgirl_required")
+    switch_off = await runtime.visit_switch_refusal()
+    if switch_off is not None:
+        return _refused(switch_off.status, switch_off.body)
+    account = await accounts.local_account()
+    if not account:
+        return _servers_error(cr.VisitLoginRequired())
+    cache_key = (account, catgirl, visit_id)
+    cached = _direct_questions.get(cache_key)
+    if cached is None or time.time() >= cached[0]:
+        return _error(409, "direct_invite_question_not_ready")
+    delivered_until = _direct_question_deliveries.get(cache_key, 0)
+    if time.time() < delivered_until:
+        return {"ok": True, "duplicate": True, "delivered": True}
+    # Mark before awaiting the manager so concurrent notification + poll paths
+    # cannot create two ordinary assistant turns for one invitation.  Even when
+    # TTS later fails, mirror_assistant_speech has already published the text.
+    _direct_question_deliveries[cache_key] = cached[0]
+    while len(_direct_question_deliveries) > _PREVIEWS_MAX:
+        _direct_question_deliveries.pop(next(iter(_direct_question_deliveries)))
+    result = await _deliver_direct_invite_question(
+        cached[1],
+        catgirl=catgirl,
+        visit_id=visit_id,
+    )
+    body = dict(result) if isinstance(result, Mapping) else {"ok": True}
+    unavailable = body.get("reason") == "project_tts_unavailable"
+    if unavailable:
+        _direct_question_deliveries.pop(cache_key, None)
+    body["delivered"] = not unavailable
+    return body
+
+
+@router.post("/rooms/{visit_id}/join-direct")
+async def join_direct_room(request: Request, visit_id: str):
+    """Join a mutual-friend invitation bound to the signed-in account."""
+    payload = await _read_json_object(request)
+    denied = http_denied(request, payload)
+    if denied is not None:
+        return denied
+    if not isinstance(visit_id, str) or not VISIT_ID_RE.fullmatch(visit_id):
+        return _error(400, "visit_id_format")
+    name = payload.get("catgirl")
+    if not _valid_name(name):
+        return _error(400, "catgirl_required")
+    if payload.get("confirm") is not True:
+        return _error(400, "confirm_required")
+    crop = payload.get("crop", VISIT_CROP_DEFAULT)
+    if crop not in _CROPS:
+        return _error(400, "crop_format")
+    switch_off = await runtime.visit_switch_refusal()
+    if switch_off is not None:
+        return _refused(switch_off.status, switch_off.body)
+    refused = await _refuse_before_admission(request)
+    if refused is not None:
+        return refused
+    account = await accounts.local_account()
+    try:
+        preview, preview_epoch = await _fetch_direct_preview(visit_id, account)
+    except cr.VisitServersError as exc:
+        return _servers_error(exc)
+    if await _locally_blocked(preview):
+        return _servers_error(cr.VisitInviteInvalid("peer_blocked"))
+    if time.time() >= preview.expires_at:
+        return _servers_error(cr.VisitInviteInvalid("invite_expired"))
+    if not account:
+        return _servers_error(cr.VisitLoginRequired())
+    if preview_epoch is None:
+        return _refused(409, {"reason": "busy"})
+    admitted = await _admit(
+        name, "guest", expect_account=account, expect_epoch=preview_epoch,
+        visit_id=visit_id, crop=crop, direct=True,
+    )
+    if isinstance(admitted, JSONResponse):
+        return admitted
+    return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
 
 
 @router.post("/rooms/{visit_id}/join")
@@ -390,6 +743,9 @@ async def join_room(request: Request, visit_id: str):
         return _servers_error(cr.VisitInviteFormat())
     if payload.get("confirm") is not True:
         return _error(400, "confirm_required")
+    crop = payload.get("crop", VISIT_CROP_DEFAULT)
+    if crop not in _CROPS:
+        return _error(400, "crop_format")
     # Visits disabled: reject before proxy preview, no network; start_visit rechecks too.
     switch_off = await runtime.visit_switch_refusal()
     if switch_off is not None:
@@ -425,7 +781,7 @@ async def join_room(request: Request, visit_id: str):
         # Logout/account switch during preview, including A→B→A, means preview no longer represents current account.
         return _refused(409, {"reason": "busy"})
     admitted = await _admit(name, "guest", expect_account=account, expect_epoch=preview_epoch,
-                            invite_code=invite_code, visit_id=visit_id)
+                            invite_code=invite_code, visit_id=visit_id, crop=crop)
     if isinstance(admitted, JSONResponse):
         return admitted
     return JSONResponse({"ok": True, "visit_id": admitted.visit_id, "phase": "pending"}, status_code=202)
@@ -502,6 +858,38 @@ async def _owned_by_current_account(rt: runtime.VisitRuntime) -> bool:
     return owner is not None and owner == current
 
 
+@router.get("/rooms/current")
+async def current_host_room(request: Request, catgirl: str = ""):
+    """Recover this account's still-pending host invitation after a lost display frame.
+
+    The general state snapshot deliberately never contains an invite code.  This
+    narrower endpoint keeps that contract while letting the explicit invite flow
+    recover from a page reload, display-socket handover, or a missed
+    ``invite_ready`` frame.  The local-origin/CSRF gate and account ownership
+    check are the same ones used by the rest of the visit surface.
+    """
+    denied = http_denied(request)
+    if denied is not None:
+        return denied
+    if not _valid_name(catgirl):
+        return _error(400, "catgirl_required")
+    rt = runtime.get_runtime(catgirl)
+    if (rt is None or rt.side != "host"
+            or rt.phase not in (runtime.PHASE_PENDING, runtime.PHASE_INVITE_READY)
+            or not await _owned_by_current_account(rt)):
+        return JSONResponse({"error": "no_pending_invite"}, status_code=404)
+    body: dict[str, Any] = {"visit_id": rt.visit_id, "phase": rt.phase}
+    if rt.target_user_id:
+        body["target_user_id"] = rt.target_user_id
+    creds = rt.creds
+    # Do not expose a redeemable code until the transport page has actually
+    # joined and the runtime has entered invite_ready (same rule as WS push).
+    if rt.phase == runtime.PHASE_INVITE_READY and creds is not None and creds.invite_code:
+        body["invite_code"] = creds.invite_code
+        body["invite_expires_at"] = creds.invite_expires_at
+    return JSONResponse(body)
+
+
 IDLE_STATE: Mapping[str, Any] = {
     "active": False, "role": None, "side": None, "visit_id": None, "phase": None, "transport": None,
     "tier": None, "crop": None, "peer": None, "connected": False, "reconnecting": False, "rtt_ms": None,
@@ -538,6 +926,10 @@ async def visit_state(request: Request, catgirl: str = ""):
         # Shared computer changed community account: report visiting only, never peer/room/dialogue of that visit.
         return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"],
                              **release_info()})
+    # The owner needs the friend identity to restore the invitation's cancel control after reload.
+    # Keep it out of the redacted response above and never include a redeemable invite code.
+    if rt.side == "host" and rt.target_user_id:
+        snapshot["target_user_id"] = rt.target_user_id
     return JSONResponse({**snapshot, **release_info()})
 
 

@@ -35,76 +35,6 @@ def _prepend_sys_path(path: Path, index: int) -> None:
 _prepend_sys_path(_PROJECT_ROOT, 0)
 _prepend_sys_path(_PLUGIN_PACKAGE_ROOT, 1)
 
-
-def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
-    if not isinstance(endpoint, str) or not endpoint.startswith("tcp://"):
-        return None
-    host_port = endpoint[6:]
-    if ":" not in host_port:
-        return None
-    host, port_text = host_port.rsplit(":", 1)
-    if not host:
-        return None
-    try:
-        port = int(port_text)
-    except (TypeError, ValueError):
-        return None
-    if port <= 0 or port > 65535:
-        return None
-    return host, port
-
-
-def _is_tcp_port_available(host: str, port: int) -> bool:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind((host, port))
-        return True
-    except OSError:
-        return False
-    finally:
-        try:
-            probe.close()
-        except OSError:
-            pass
-
-
-def _find_next_available_port(host: str, start_port: int, max_tries: int = 50) -> int | None:
-    for port in range(start_port, start_port + max_tries):
-        if _is_tcp_port_available(host, port):
-            return port
-    return None
-
-
-def _ensure_plugin_zmq_endpoint_available() -> None:
-    endpoint = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", "tcp://127.0.0.1:38765")
-    parsed = _parse_tcp_endpoint(endpoint)
-    if parsed is None:
-        return
-    host, base_port = parsed
-    if _is_tcp_port_available(host, base_port):
-        return
-
-    fallback_port = _find_next_available_port(host, base_port + 1, max_tries=100)
-    if fallback_port is None:
-        return
-
-    fallback_endpoint = f"tcp://{host}:{fallback_port}"
-    os.environ["NEKO_PLUGIN_ZMQ_IPC_ENDPOINT"] = fallback_endpoint
-    try:
-        print(
-            (
-                "[user_plugin_server] NEKO_PLUGIN_ZMQ_IPC_ENDPOINT occupied, "
-                f"fallback to {fallback_endpoint}"
-            ),
-            file=sys.stderr,
-        )
-    except (OSError, ValueError, RuntimeError):
-        pass
-
-
-_ensure_plugin_zmq_endpoint_available()
-
 from config import USER_PLUGIN_SERVER_PORT
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -174,26 +104,7 @@ def _configure_windows_event_loop_policy() -> None:
             pass
 
 
-def _disable_windows_plugin_zmq_when_tornado_missing() -> None:
-    if sys.platform != "win32":
-        return
-    try:
-        import tornado  # type: ignore  # noqa: F401
-        return
-    except Exception:
-        pass
-    os.environ["NEKO_PLUGIN_ZMQ_IPC_ENABLED"] = "false"
-    try:
-        print(
-            "[user_plugin_server] tornado not found on Windows; disable plugin ZeroMQ IPC",
-            file=sys.stderr,
-        )
-    except (OSError, RuntimeError, ValueError):
-        pass
-
-
 _configure_windows_event_loop_policy()
-_disable_windows_plugin_zmq_when_tornado_missing()
 
 from plugin.server.http_app import build_plugin_server_app  # noqa: E402
 

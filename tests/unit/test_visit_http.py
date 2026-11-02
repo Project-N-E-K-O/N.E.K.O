@@ -33,7 +33,7 @@ from main_logic.visit.limits import Blocklist
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
-from main_routers.visit_router import accounts, http, memory_routes, persona, transport_ws
+from main_routers.visit_router import accounts, background, display_socket, http, memory_routes, persona, transport_ws
 from main_routers.visit_router import credentials as cr
 from main_routers.visit_router import router as visit_router
 from main_routers.visit_router import runtime as rtm
@@ -67,14 +67,14 @@ OTHER_OWN = "e" * 24
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
     rtm.register_visit_route_kind()
     monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
     yield
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
 
 
@@ -89,6 +89,7 @@ class Env:
         self.preview_mode = "ok"
         self.preview_visit_id = VISIT_ID
         self.preview_expires = NOW + 600
+        self.preview_display_name = "Mimi"
         self.preview_calls: list[str] = []
         self.account: str | None = "acct"     # Same community account as fixture-issued credentials.
         self.own_uid: str | None = OWN
@@ -156,6 +157,8 @@ class Env:
             replies = {
                 "404": (404, {"code": "invite_invalid"}), "410": (410, {"code": "invite_expired"}),
                 "403": (403, {"code": "banned"}), "429": (429, {"code": "rate_limited", "retry_after_s": 9}),
+                "quota": (429, {"code": "quota_exceeded", "retry_after_s": 3600}),
+                "concurrency": (429, {"code": "concurrency_limit", "retry_after_s": 60}),
                 "401": (401, {"code": "unauthenticated"}),
             }
             if self.preview_mode == "503":
@@ -166,7 +169,7 @@ class Env:
             return httpx.Response(200, json={
                 "visit_id": self.preview_visit_id, "host_visit_uid": HOST_UID,
                 "host_short_code": HOST_UID[:6].upper(), "cross_region": False, "expires_at": self.preview_expires,
-                "host_display_name": "Mimi",
+                "host_display_name": self.preview_display_name,
             })
         return self.servers.handler(request)
 
@@ -206,6 +209,7 @@ def _no_slot(name="Host") -> bool:
 
 START_CALLS = [
     ("POST", "/api/visit/rooms", {"catgirl": "Host"}),
+    ("GET", "/api/visit/rooms/current?catgirl=Host", None),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/join", {"catgirl": "Guest", "invite_code": INVITE, "confirm": True}),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/accept", {"catgirl": "Host", "accept": True}),
     ("GET", f"/api/visit/invites/{INVITE}/preview", None),
@@ -697,6 +701,13 @@ async def test_preview_returns_the_dialog_fields_without_the_host_uid(env):
     assert (await _join(env)).status_code == 202
 
 
+async def test_preview_keeps_a_peer_card_name_that_is_also_installed_locally(env):
+    env.preview_display_name = "Host"
+    body = (await _preview(env)).json()
+    assert body["host_display_name"] == "Host"
+    assert body["host_short_code"] == HOST_UID[:6].upper()
+
+
 async def test_preview_marks_a_locally_blocked_host(env):
     await Blocklist(env.guest.config_dir).ablock(HOST_UID, display_name_at_block="Mimi")
     body = (await _preview(env)).json()
@@ -706,6 +717,8 @@ async def test_preview_marks_a_locally_blocked_host(env):
 @pytest.mark.parametrize("mode,status,code", [
     ("404", 404, "invite_invalid"), ("410", 410, "invite_expired"), ("403", 403, "VISIT_BANNED"),
     ("429", 429, "rate_limited"), ("401", 409, "VISIT_LOGIN_REQUIRED"), ("503", 503, "servers_unreachable"),
+    ("quota", 429, "VISIT_QUOTA_EXCEEDED"),
+    ("concurrency", 429, "VISIT_CONCURRENCY_LIMIT"),
 ])
 async def test_preview_maps_servers_errors(env, mode, status, code):
     env.preview_mode = mode
@@ -789,6 +802,20 @@ async def test_join_format_gates(env):
     async with env.client() as c:
         resp = await c.post(f"/api/visit/rooms/{VISIT_ID}/join", headers=GOOD, json=body)
     assert resp.status_code == 400 and resp.json()["code"] == "confirm_required"
+    assert env.preview_calls == [] and _no_slot("Guest")
+
+
+async def test_join_applies_the_guest_crop_preference(env):
+    resp = await _join(env, crop="upper")
+    assert resp.status_code == 202
+    runtime = rtm.get_runtime("Guest")
+    assert runtime is not None and runtime.side == "guest"
+    assert runtime.crop == "upper"
+
+
+async def test_join_rejects_an_unknown_crop_before_preview(env):
+    resp = await _join(env, crop="giant")
+    assert resp.status_code == 400 and resp.json()["code"] == "crop_format"
     assert env.preview_calls == [] and _no_slot("Guest")
 
 
@@ -921,6 +948,109 @@ async def test_state_never_carries_the_invite_code(env):
         resp = await c.get("/api/visit/state?catgirl=Host", headers=GOOD)
     assert resp.status_code == 200 and resp.json()["phase"] == "invite_ready"
     assert "invite_code" not in _keys(resp.json()) and INVITE not in resp.text
+
+
+async def test_state_restores_host_invitation_target_only_to_its_owner(env):
+    await _rooms(env)
+    target = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    env.host.rt.target_user_id = target
+    async with env.client() as client:
+        restored = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+    assert restored.json()["target_user_id"] == target
+    assert restored.json()["phase"] == "pending"
+    assert "target_user_id" not in hidden.json() and target not in hidden.text
+    assert "invite_code" not in restored.json()
+
+
+async def test_current_host_room_recovers_only_the_owned_pending_invite(env):
+    async with env.client() as c:
+        missing = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert missing.status_code == 404
+
+    await _rooms(env)
+    async with env.client() as c:
+        pending = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert pending.status_code == 200
+    assert pending.json()["phase"] == "pending" and "invite_code" not in pending.json()
+
+    rt = env.host.rt
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await settle()
+    async with env.client() as c:
+        ready = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert ready.status_code == 200
+    assert ready.json() == {"visit_id": rt.visit_id, "phase": "invite_ready",
+                            "invite_code": INVITE, "invite_expires_at": NOW + 600}
+    assert hidden.status_code == 404 and INVITE not in hidden.text
+
+
+async def test_create_room_after_restart_always_mints_a_fresh_local_visit_id(env):
+    created = await _rooms(env)
+    assert created.status_code == 202
+    assert created.json()["phase"] == "pending"
+    assert created.json()["visit_id"] != VISIT_ID
+    assert env.host.rt is not None and env.host.rt.visit_id == created.json()["visit_id"]
+
+
+async def test_create_room_waits_for_desktop_restart_cleanup(env, monkeypatch):
+    async def cleanup_failed():
+        return cr.VisitServersUnreachable("desktop_restart_reset")
+
+    monkeypatch.setattr(display_socket, "wait_desktop_restart_reset", cleanup_failed)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 503
+    assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_desktop_restart_cleanup_needs_it(env, monkeypatch):
+    async def no_local_invites():
+        return 0
+
+    async def signed_out():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(rtm, "reset_pending_host_invites_for_desktop_restart", no_local_invites)
+    monkeypatch.setattr(cr, "cancel_pending_host_invites", signed_out)
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-a"})
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-b"})
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    # Symmetric with the startup reset: signed out is a login prompt, not "servers unreachable".
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert env.host.rt is None
+
+
+async def test_create_room_refuses_when_startup_invite_cleanup_failed(env, monkeypatch):
+    async def cleanup_failed():
+        return cr.VisitServersUnreachable("startup_invite_reset")
+
+    monkeypatch.setattr(background, "wait_startup_invite_reset", cleanup_failed)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 503
+    assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_startup_invite_cleanup_needs_it(env, monkeypatch):
+    async def signed_out():
+        return cr.VisitLoginRequired("no_session")
+
+    monkeypatch.setattr(background, "wait_startup_invite_reset", signed_out)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert env.host.rt is None
 
 
 async def test_state_of_an_idle_character_has_the_same_keys(env):

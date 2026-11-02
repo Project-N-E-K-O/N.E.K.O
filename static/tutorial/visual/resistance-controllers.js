@@ -829,6 +829,7 @@
                 this.document.querySelectorAll([
                     '[data-neko-sidepanel-type="chat-settings"]',
                     '[data-neko-sidepanel-type="animation-settings"]',
+                    '[data-neko-sidepanel-type="cat-settings"]',
                     '[data-neko-sidepanel-type="character-settings"]',
                     '[data-neko-sidepanel-type="interval-proactive-vision"]'
                 ].join(',')).forEach((panel) => panels.add(panel));

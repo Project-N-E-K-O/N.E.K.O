@@ -41,6 +41,8 @@ for code that wants to migrate off the per-field views.
 from collections.abc import MutableMapping
 from typing import Dict
 
+from services.chat_sync import host as _chat_sync_host
+
 # Steamworks handle lives at the L1 ``utils`` layer (see utils/steam_state.py)
 # so low-layer consumers (utils.config_manager GeoIP probe,
 # utils.language_utils Steam-language detection) can read it without
@@ -296,3 +298,20 @@ def get_remove_one_catgirl():
     """Fast path: delete a single catgirl (stop its thread, clean dicts)."""
     _check_initialized('remove_one_catgirl')
     return _state['remove_one_catgirl']
+
+
+def _conversation_busy(manager) -> bool:
+    """Look up the session-state busy predicate on every call (late-bound)."""
+    from main_logic import session_state
+    return session_state.conversation_busy(manager)
+
+
+# services.chat_sync must not import this layer, so this registry pushes its
+# accessors down at import time. The lambdas look up the getters on every call:
+# patches of this module reach chat sync, and before init_shared_state() runs
+# chat sync sees the same RuntimeError as every router.
+_chat_sync_host.install_conversation_registry(
+    get_session_manager=lambda: get_session_manager(),
+    get_init_one_catgirl=lambda: get_init_one_catgirl(),
+    conversation_busy=_conversation_busy,
+)

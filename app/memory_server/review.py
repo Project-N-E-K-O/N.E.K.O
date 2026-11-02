@@ -861,6 +861,9 @@ async def _run_backup_compress(
         # 'merged' and 'moot' both mean backlog handled or obsolete; clear backoff counts.
         await _clear_compress_backup_failure(lanlan_name, admission_generation)
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩完成：{status}")
+        if status == 'merged':
+            from .long_term_sync import queue_capture
+            queue_capture(lanlan_name, force=True)
     except asyncio.CancelledError:
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩被取消（主路径已成功）")
     except Exception as e:
@@ -898,6 +901,8 @@ async def _on_compress_done(
         if task is not None and not task.done():
             task.cancel()
         await _clear_compress_backup_failure(lanlan_name, admission_generation)
+        from .long_term_sync import queue_capture
+        queue_capture(lanlan_name, force=True)
         return
     # ok=False: primary compression failed → launch background fallback.
     if not snapshot:
@@ -1083,6 +1088,8 @@ async def _run_review_in_background(
             )
             if applied:
                 logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
+                from .long_term_sync import queue_capture
+                queue_capture(lanlan_name, force=True)
         elif status == 'white':
             applied = await gates._amutate_maint_state(
                 lanlan_name,

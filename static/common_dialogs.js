@@ -1504,6 +1504,9 @@
  */
 (function() {
     'use strict';
+
+    // Pages can reuse dialogs while retaining their existing keyboard and zoom behavior.
+    if (document.currentScript?.dataset.dialogsOnly === 'true') return;
     
     // 禁用 Ctrl+/-、Ctrl+0 和 Ctrl/Cmd+W 键盘快捷键
     document.addEventListener('keydown', function(event) {

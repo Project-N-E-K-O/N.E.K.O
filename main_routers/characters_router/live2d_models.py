@@ -1013,6 +1013,17 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # Save the configuration.
         await _config_manager.asave_characters(characters)
+        # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
+        # Complements the startup snapshot, which misses a switch until the next launch.
+        try:
+            from utils.instrument import counter as _instr_counter
+            from utils.token_tracker import resolve_avatar_telemetry_type
+            _instr_counter(
+                "avatar_model_saved",
+                type=resolve_avatar_telemetry_type(characters['猫娘'][name]),
+            )
+        except Exception:
+            pass  # Telemetry must never affect saving the model.
         # Fast path: refresh only the edited character's session_manager (avatar configuration), without iterating over the other N-1 entries.
         init_one_catgirl = get_init_one_catgirl()
         if apply_runtime:

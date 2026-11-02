@@ -352,6 +352,12 @@ async def test_corrupt_store_preserves_ordinary_startup_discovery(tmp_path, monk
     from plugin.server.application.plugins import registry_service as registry
     from plugin.server.lifecycle import ServerLifecycleService
     source = _source(store.settings.PLUGIN_CONFIG_ROOTS[0], "ordinary", "ordinary")
+    # This checks discovery of an opted-in plugin, not the auto-start default.
+    manifest = source / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + "[plugin_runtime]\nauto_start=true\n",
+        encoding="utf-8",
+    )
     store._store_path().parent.mkdir(parents=True, exist_ok=True)
     store._store_path().write_text(corruption, encoding="utf-8")
     manager = registry.PluginRegistryService()
@@ -418,7 +424,7 @@ async def test_ordinary_lifecycle_can_start_after_corrupt_development_store(tmp_
             self.started = False
             hosts.append(self)
 
-        async def start(self, message_target_queue, startup_timeout=None):
+        async def start(self, startup_timeout=None):
             self.started = True
 
         async def shutdown(self, timeout=None):
@@ -1070,7 +1076,7 @@ async def test_start_integrates_source_policy_and_does_not_write_metadata_to_sou
         def __init__(self, **kwargs):
             calls["host"] = kwargs
             self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
-        async def start(self, message_target_queue, startup_timeout=None, startup_failure=None):
+        async def start(self, startup_timeout=None, startup_failure=None):
             calls["started"] = True
         async def shutdown(self, timeout=None):
             pass

@@ -126,12 +126,15 @@ jobs:
         with:
           # i18n-sync / docstring-cjk are diff-based and need full history to
           # diff against the merge-base of origin/main. The other steps don't
-          # care, but fetch-depth: 0 has negligible cost on this repo.
+          # care. filter: blob:none keeps the full commit graph but skips the
+          # historical binary assets (hundreds of MB); git show/diff lazily
+          # fetch the few old blobs the checks actually read.
           #
           # The checkout@v5 bump also fixes a credential-handling regression the
           # old @v4 tripped against the runner's git 2.54 on the full-history
           # fetch ("could not read Username", git exit 128).
           fetch-depth: 0
+          filter: blob:none
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -231,8 +234,9 @@ jobs:
         with:
           # The baseline-growth step below diffs scripts/nonascii_asset_baseline.txt
           # against the merge-base, which a shallow clone cannot reach. Same
-          # trade the prompts-i18n job already makes: negligible on this repo.
+          # blobless full-history trade the prompts-i18n job makes.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -265,11 +269,17 @@ jobs:
 
       - name: Enforce top-level module layering (no inversions, no cycles)
         # Top-level packages have a strict ordering — only higher layers may
-        # depend on lower ones (config/steamworks → utils → memory/main_logic
-        # → main_routers → plugin → brain → app). The walker descends into
+        # depend on lower ones (config/steamworks → utils →
+        # knowledge/memory/main_logic/services → main_routers/theater_workshop
+        # → plugin → brain → app/launcher_core). The walker descends into
         # function bodies and string-form dynamic imports
         # (importlib.import_module / __import__), so deferred / conditional
-        # imports cannot smuggle in a layer inversion or cycle. Run
+        # imports cannot smuggle in a layer inversion or cycle. FORBIDDEN_EDGES
+        # pins what layers cannot express (e.g. services never imports
+        # main_logic; Main-side code reaches knowledge over HTTP only), and a
+        # top-level directory with tracked Python code that is in no layer
+        # fails the check (scripts/ is exempt as tooling; tests/, docs/ and
+        # deps/ are never scanned). Run
         # `python scripts/check_module_layering.py --show-layers` to print
         # the hierarchy. Companion unit test: tests/unit/test_module_layering.py.
         run: python scripts/check_module_layering.py

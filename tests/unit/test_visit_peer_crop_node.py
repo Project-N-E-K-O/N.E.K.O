@@ -248,8 +248,8 @@ def test_visitor_layer_fits_a_narrow_viewport():
         """,
         files=BRIDGE_FILES,
     )
-    assert out["left"] >= 0
-    assert out["left"] + out["width"] <= 360 + 1
+    assert out["left"] >= 12
+    assert out["left"] + out["width"] <= 348 + 1
     assert abs(out["width"] / out["height"] - 320 / 448) < 0.01
 
 
@@ -401,7 +401,7 @@ def test_reload_recovery_waits_for_a_token_before_asking_the_backend():
         """,
         files=BRIDGE_FILES,
     )
-    assert out["late"] == {"fetched": ["tok"], "result": False, "lookups": 3}
+    assert out["late"] == {"fetched": ["tok"], "result": True, "lookups": 3}
     assert out["never"]["fetched"] == [] and out["never"]["result"] is False
     assert 3 <= out["never"]["lookups"] <= 5
 
@@ -537,6 +537,42 @@ def test_auxiliary_state_events_do_not_void_the_reload_snapshot():
     assert out == {"result": True, "frame": True}
 
 
+def test_chat_snapshot_relay_ahead_of_reload_recovery_keeps_away_and_peer_hidden():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const runs = {};
+        for (const side of ['guest', 'host']) {
+          const h = makeBridge();
+          const box = h.ctx.document.createElement('div');
+          box.id = 'live2d-container';
+          h.ctx.document.body.appendChild(box);
+          let respond;
+          h.ctx.fetch = () => new Promise((r) => { respond = r; });
+          let result;
+          h.bridge.recoverAfterReload('Neko').then((r) => { result = r; });   // Pet 窗自己的重载恢复还在路上
+          await settle();
+          h.side = side;
+          // chat 窗读到快照后的中继顺序：阶段帧（建 iframe、恢复作废）→ 出门 → 对端显隐
+          change(h, 'started', { peer_crop: 'full' });
+          if (side === 'guest') change(h, 'departed');
+          change(h, 'peer_hidden');
+          respond({ ok: true, json: () => Promise.resolve({ active: true, visit_id: VISIT_ID, side, phase: 'active',
+                                                             room: { peer_crop: 'full' }, peer: { hidden: true } }) });
+          await settle();
+          await settle();
+          const f = h.ctx.document.getElementById('visit-frame');
+          runs[side] = { result, frame: !!f, away: box.classList.contains('visiting-away'),
+                         hidden: h.bridge._state.peerHidden === true, dim: f ? (f.style.opacity || '') : null };
+          change(h, 'ended'); await advance(15100);
+        }
+        return runs;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["guest"] == {"result": False, "frame": True, "away": True, "hidden": True, "dim": ""}
+    assert out["host"] == {"result": False, "frame": True, "away": False, "hidden": True, "dim": "0.6"}
+
+
 def test_recovery_waits_for_page_config_within_the_overall_deadline():
     out = run_visit_js(
         _BRIDGE_JS + """
@@ -599,7 +635,7 @@ def test_visit_state_request_is_bounded_and_retried():
         """,
         files=BRIDGE_FILES,
     )
-    assert out == {"calls": 2, "result": True, "frame": True, "calls2": 1, "result2": False}
+    assert out == {"calls": 2, "result": True, "frame": True, "calls2": 1, "result2": True}
 
 
 def test_iframe_that_never_becomes_ready_is_reloaded():
@@ -1176,3 +1212,99 @@ def test_normal_closure_voids_a_pending_reload_snapshot():
         files=BRIDGE_FILES,
     )
     assert out == {"rebuilt": False}
+
+
+def test_voice_messages_drive_the_tts_tap_and_peer_playback_and_ended_closes_both():
+    # OD-15 v4: voice{on} opens / closes the TTS tap handed to the iframe; remote_audio{on} routes the peer voice
+    # into the speaker chain; a retired iframe takes both down at once.
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        const frame = await open(h, 'host');
+        change(h, 'started');
+        const calls = [];
+        const peerTrack = { id: 'peer-voice' };
+        h.child.__nekoVisitFrameSink.setLocalVoice = (s) => calls.push(['setLocalVoice', s ? s.id : null]);
+        h.child.__nekoVisitFrameSink.remoteAudioTrack = () => peerTrack;
+        h.ctx.appAudioPlayback = {
+          openAssistantVoiceTap: () => { calls.push(['open']); return Promise.resolve({ stream: { id: 'tap' }, close() { calls.push(['close']); } }); },
+          playExternalVoiceTrack: (t) => { calls.push(['play', t.id]); return Promise.resolve({ stop() { calls.push(['stop', t.id]); } }); },
+        };
+        const msg = (data) => h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data });
+        msg({ t: 'voice', on: true });
+        msg({ t: 'remote_audio', on: true });
+        await settle();
+        const during = calls.slice();
+        msg({ t: 'remote_audio', on: false });
+        await settle();
+        msg({ t: 'remote_audio', on: true });
+        await settle();
+        calls.length = 0;
+        change(h, 'ending');                         // ending already drops both directions (private chat is back)
+        await settle();
+        const atEnding = calls.slice();
+        msg({ t: 'voice', on: true });               // a late voice-on queued before ending: must not reopen the tap
+        msg({ t: 'remote_audio', on: true });        // nor may a late remote-audio-on start the peer voice again
+        await settle();
+        const lateOn = calls.slice(atEnding.length);
+        change(h, 'ended');
+        await settle();
+        return { during, after: atEnding, lateOn, afterEnded: calls.slice(atEnding.length + lateOn.length) };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["during"] == [["open"], ["play", "peer-voice"], ["setLocalVoice", "tap"]]
+    assert out["after"] == [["setLocalVoice", None], ["close"], ["stop", "peer-voice"]]
+    assert out["lateOn"] == [] and out["afterEnded"] == []
+
+
+def test_voice_from_another_frame_is_ignored():
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'guest', false);
+        const calls = [];
+        h.ctx.appAudioPlayback = { openAssistantVoiceTap: () => { calls.push('open'); return Promise.resolve(null); } };
+        h.bridge._onFrameMessage({ source: {}, origin: h.ctx.location.origin, data: { t: 'voice', on: true } });
+        h.bridge._onFrameMessage({ source: h.child, origin: 'http://evil.example', data: { t: 'voice', on: true } });
+        await settle();
+        return calls;
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out == []
+
+
+def test_voice_off_frame_closes_voice_before_ending_and_latches():
+    # The backend writes visit_state_change{voice_off} on the main connection before handing private chat back;
+    # private TTS audio follows on that same connection, so the tap must be gone and stay gone from here on.
+    out = run_visit_js(
+        _BRIDGE_JS + """
+        const h = makeBridge();
+        await open(h, 'guest', false);
+        change(h, 'started');
+        const calls = [];
+        h.child.__nekoVisitFrameSink.setLocalVoice = (s) => calls.push(['setLocalVoice', s ? s.id : null]);
+        h.child.__nekoVisitFrameSink.remoteAudioTrack = () => ({ id: 'peer-voice' });
+        h.ctx.appAudioPlayback = {
+          openAssistantVoiceTap: () => { calls.push(['open']); return Promise.resolve({ stream: { id: 'tap' }, close() { calls.push(['close']); } }); },
+          playExternalVoiceTrack: (t) => { calls.push(['play', t.id]); return Promise.resolve({ stop() { calls.push(['stop', t.id]); } }); },
+        };
+        const msg = (data) => h.bridge._onFrameMessage({ source: h.child, origin: h.ctx.location.origin, data });
+        msg({ t: 'voice', on: true });
+        msg({ t: 'remote_audio', on: true });
+        await settle();
+        calls.length = 0;
+        change(h, 'voice_off');
+        await settle();
+        const atVoiceOff = calls.slice();
+        msg({ t: 'voice', on: true });
+        msg({ t: 'remote_audio', on: true });
+        await settle();
+        return { atVoiceOff, late: calls.slice(atVoiceOff.length), phase: h.bridge._state.phase };
+        """,
+        files=BRIDGE_FILES,
+    )
+    assert out["atVoiceOff"] == [["setLocalVoice", None], ["close"], ["stop", "peer-voice"]]
+    assert out["late"] == []
+    assert out["phase"] == "active"                  # voice_off is not a phase: the visit view stays as it was

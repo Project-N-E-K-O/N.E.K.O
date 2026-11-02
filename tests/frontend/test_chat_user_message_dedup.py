@@ -1,5 +1,65 @@
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
+
+
+@pytest.mark.frontend
+def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: Page, running_server: str):
+    sync_reads = []
+    role_name = ''
+
+    def sync_api(route):
+        path = route.request.url.split('/api/chat-sync', 1)[1]
+        if path != '/wake':
+            sync_reads.append(path)
+        route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': 'c' * 32,
+            'binding': {'cursor': 1}}], 'originals': [{
+            'messageId': 'a' * 32, 'role': 'user', 'text': 'archived original must stay out',
+            'originalTime': '1791540000123',
+        }]})
+
+    mock_page.route('**/api/chat-sync/**', sync_api)
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
+    # The shared fixture has no model assets; release its unrelated model-manager gate.
+    mock_page.evaluate("""() => {
+        window.appState.proactiveChatEnabled = false;
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.reactChatWindowHost.openWindow();
+    }""")
+    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
+    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
+    mock_page.evaluate("""() => {
+        const host = window.reactChatWindowHost;
+        host.setChatSurfaceMode('compact');
+        host.setMessages([
+            {id:'session-user',role:'user',author:'User',time:'10:00',blocks:[{type:'text',text:'current question'}]},
+            {id:'session-reply-1',role:'assistant',author:'Neko',time:'10:01',blocks:[{type:'text',text:'first reply bubble'}]},
+            {id:'session-reply-2',role:'assistant',author:'Neko',time:'10:01',blocks:[{type:'text',text:'second reply bubble'}]},
+        ]);
+        host.setCompactHistoryOpen(true);
+    }""")
+    history = mock_page.locator('.compact-export-history-anchor[data-compact-export-history-open="true"]')
+    rows = history.locator('.compact-export-history-message')
+    expect(rows).to_have_count(3)
+    expected_ids = ['session-user', 'session-reply-1', 'session-reply-2']
+    assert rows.evaluate_all('(items) => items.map(item => item.dataset.compactExportHistoryMessageId)') == expected_ids
+    mock_page.evaluate("""() => {
+        window.dispatchEvent(new Event('voice-input-socket-open'));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {detail:{turnId:'previous-turn'}}));
+        document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    # Cover the retired five-second original-history poll as well as the immediate hooks.
+    mock_page.wait_for_timeout(5200)
+    expect(rows).to_have_count(3)
+    expect(history).to_contain_text('current question')
+    expect(history).to_contain_text('first reply bubble')
+    expect(history).to_contain_text('second reply bubble')
+    expect(history).not_to_contain_text('archived original must stay out')
+    assert rows.evaluate_all('(items) => items.map(item => item.dataset.compactExportHistoryMessageId)') == expected_ids
+    # Character-profile observations still use /status; no chat-original read is allowed.
+    assert all(path == '/status' for path in sync_reads)
 
 
 def _open_react_chat_page(mock_page: Page, running_server: str) -> None:

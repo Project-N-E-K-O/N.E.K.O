@@ -1885,8 +1885,12 @@ def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
     assert "你" not in context
 
 
-def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
-    """Character config with master rename events and a persisted prompt locale."""
+def _rename_card_sync_fixture(td: str, language: str | None = "zh-CN"):
+    """Character config with master rename events and a persisted prompt locale.
+
+    ``language=None`` leaves ``prompt_locale.json`` unwritten, as for a
+    character whose sessions never declared a language.
+    """
     from memory.persona import PersonaManager
 
     cm = _make_config_manager(Path(td))
@@ -1906,18 +1910,29 @@ def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
     locale_dir = Path(cm.memory_dir) / her_name
     locale_dir.mkdir(parents=True, exist_ok=True)
     locale_path = locale_dir / "prompt_locale.json"
-    locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
+    if language is not None:
+        locale_path.write_text(json.dumps({"language": language}), encoding="utf-8")
 
     pm = PersonaManager()
     pm._config_manager = cm
     persona = {"master": {"facts": []}, "neko": {"facts": []}}
 
-    def rename_text() -> str:
+    def rename_entry() -> dict:
         for fact in persona["master"]["facts"]:
             text = str(fact.get("text") or "")
             if text.startswith(("改名记录:", "Profile Rename Record:")):
-                return text
-        return ""
+                return fact
+        return {}
+
+    def rename_text() -> str:
+        return str(rename_entry().get("text") or "")
+
+    def add_master_rename(old_name: str, new_name: str) -> None:
+        current = cm.load_characters()
+        current["主人"]["_reserved"]["ai_context"]["rename_events"].append(
+            {"type": "profile_rename", "old_name": old_name, "new_name": new_name},
+        )
+        cm.save_characters(current)
 
     return SimpleNamespace(
         cm=cm,
@@ -1925,7 +1940,9 @@ def _rename_card_sync_fixture(td: str, language: str = "zh-CN"):
         persona=persona,
         her_name=her_name,
         locale_path=locale_path,
+        rename_entry=rename_entry,
         rename_text=rename_text,
+        add_master_rename=add_master_rename,
     )
 
 
@@ -2050,6 +2067,169 @@ def test_persona_card_sync_skips_when_durable_locale_read_fails_transiently():
             assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
 
         assert fx.rename_text() == pinned
+
+
+@pytest.mark.unit
+def test_persona_card_sync_without_durable_locale_keeps_rename_fact_language():
+    """Without prompt_locale.json the session and process languages must not take turns.
+
+    Session-end sync runs in the session language, a background ensure a few
+    seconds later in the process language; both persisted the rename fact, so
+    it flipped between the two sentences on every session.
+    """
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        assert not fx.locale_path.exists()
+
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        first = fx.rename_text()
+        assert first.startswith("改名记录:")
+        assert fx.rename_entry().get("source_fingerprint")
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == first
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_persona_card_sync_without_durable_locale_keeps_rename_fact_language():
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+
+        with language_context("zh-CN"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is True
+        first = fx.rename_text()
+        assert first.startswith("改名记录:")
+
+        with language_context("en"):
+            assert await fx.pm._async_sync_character_card(fx.her_name, fx.persona) is False
+
+        assert fx.rename_text() == first
+
+
+@pytest.mark.unit
+def test_persona_card_sync_without_durable_locale_survives_persona_reload():
+    """The fingerprint must ride along in persona.json, or every reload rewrites the fact."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        with language_context("zh-CN"):
+            fx.pm.ensure_persona(fx.her_name)
+        persona_path = Path(fx.pm._persona_path(fx.her_name))
+        saved = persona_path.read_text(encoding="utf-8")
+        assert "改名记录:" in saved
+
+        fx.pm._personas.clear()
+        with language_context("en"):
+            fx.pm.ensure_persona(fx.her_name)
+
+        assert persona_path.read_text(encoding="utf-8") == saved
+
+
+@pytest.mark.unit
+def test_persona_card_sync_without_durable_locale_rewrites_when_renames_change():
+    """A new rename event changes the fingerprint, so the fact is rendered again."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        old_fingerprint = fx.rename_entry()["source_fingerprint"]
+
+        fx.add_master_rename("棍母", "阿坤")
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        rewritten = fx.rename_text()
+        assert rewritten.startswith("Profile Rename Record:")
+        assert "棍母" in rewritten and "阿坤" in rewritten
+        new_fingerprint = fx.rename_entry()["source_fingerprint"]
+        assert new_fingerprint and new_fingerprint != old_fingerprint
+
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        assert fx.rename_text() == rewritten
+
+
+@pytest.mark.unit
+def test_persona_card_sync_backfills_fingerprint_on_legacy_entry_once():
+    """An entry saved before fingerprints existed is written once, then stays put."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        fx.rename_entry().pop("source_fingerprint")
+
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        backfilled = fx.rename_text()
+        assert fx.rename_entry().get("source_fingerprint")
+
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is False
+        assert fx.rename_text() == backfilled
+
+
+@pytest.mark.unit
+def test_persona_card_sync_with_durable_locale_still_follows_locale_change():
+    """A persisted language keeps text comparison, so changing it re-renders the fact."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language="zh-CN")
+        with language_context("en"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        assert fx.rename_text().startswith("改名记录:")
+        fingerprint = fx.rename_entry()["source_fingerprint"]
+
+        fx.locale_path.write_text('{"language": "en"}', encoding="utf-8")
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        assert fx.rename_text().startswith("Profile Rename Record:")
+        assert fx.rename_entry()["source_fingerprint"] == fingerprint
+
+
+@pytest.mark.unit
+def test_persona_card_sync_user_ai_context_field_still_compares_by_text():
+    """A user field that only shares the __ai_context. prefix is not a synthetic field."""
+    from utils.language_utils import language_context
+
+    with TemporaryDirectory() as td:
+        fx = _rename_card_sync_fixture(td, language=None)
+        characters = fx.cm.load_characters()
+        characters["主人"]["__ai_context.profile_rename_events"] = "用户自己写的字段"
+        fx.cm.save_characters(characters)
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+
+        def _user_entry() -> dict:
+            return next(
+                fact for fact in fx.persona["master"]["facts"]
+                if fact.get("text") in ("用户自己写的字段", "用户改过的字段")
+            )
+
+        assert "source_fingerprint" not in _user_entry()
+        characters = fx.cm.load_characters()
+        characters["主人"]["__ai_context.profile_rename_events"] = "用户改过的字段"
+        fx.cm.save_characters(characters)
+        with language_context("zh-CN"):
+            assert fx.pm._sync_character_card(fx.her_name, fx.persona) is True
+        assert _user_entry()["text"] == "用户改过的字段"
+        assert fx.rename_text().startswith("改名记录:")
 
 
 @pytest.mark.unit

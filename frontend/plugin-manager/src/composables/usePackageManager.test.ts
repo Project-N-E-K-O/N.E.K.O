@@ -191,7 +191,7 @@ describe('usePackageManager safe installation flow', () => {
   it('confirms a matching upgrade and forwards the confirmation token', async () => {
     const manager = usePackageManager()
     manager.installForm.value.package = 'demo.neko-plugin'
-    manager.installForm.value.profiles_root = 'profiles/custom'
+    manager.installForm.value.plugins_root = 'plugins/custom'
     vi.mocked(planPluginInstall).mockResolvedValue(upgradePlan)
     vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
     vi.mocked(installPluginPackage).mockResolvedValue({
@@ -204,12 +204,12 @@ describe('usePackageManager safe installation flow', () => {
 
     expect(planPluginInstall).toHaveBeenCalledWith(
       expect.objectContaining({
-        profiles_root: 'profiles/custom',
+        plugins_root: 'plugins/custom',
       })
     )
     expect(installPluginPackage).toHaveBeenCalledWith(
       expect.objectContaining({
-        profiles_root: 'profiles/custom',
+        plugins_root: 'plugins/custom',
         confirm_upgrade: true,
         confirmation_token: 'a'.repeat(64),
       })

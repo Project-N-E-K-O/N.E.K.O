@@ -77,20 +77,19 @@ import { useLogsStore } from '@/stores/logs'
 import { useLogStream } from '@/composables/useLogStream'
 import { getPluginLogDirectory, getPluginLogExportUrl } from '@/api/logs'
 import { openLocalPath } from '@/utils/openExternal'
-import { API_BASE_URL, PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
+import { API_BASE_URL, PANEL_FILL_HEIGHT } from '@/utils/constants'
 
 const props = withDefaults(defineProps<{
   pluginId: string
   height?: string
 }>(), {
-  // 默认填满宿主容器（宿主必须提供确定高度，见 PluginDetail 的 --fill 链）；
-  // min/max 只做兜底，理由见 utils/constants.ts。
+  // Fill the host's definite height; a viewport cap would leave a gap when
+  // the surrounding layout gives this panel more room.
   height: PANEL_FILL_HEIGHT,
 })
 
 const viewerStyle = computed(() => ({
   height: props.height,
-  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const { t } = useI18n()
@@ -337,9 +336,9 @@ onMounted(async () => {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
   padding: 8px;
 }
 
@@ -349,14 +348,14 @@ onMounted(async () => {
   gap: 8px;
   align-items: center;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-chip);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.5;
 }
 
 .log-item:hover {
-  background: var(--el-fill-color-light);
+  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--surface-card));
 }
 
 .log-time,

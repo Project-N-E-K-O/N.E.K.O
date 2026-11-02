@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from datetime import datetime, timezone
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -15,12 +15,12 @@ import socket
 import sys
 import threading
 import time
-import hashlib
 import types
 import uuid
 import weakref
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Iterator
 
 from config import (
     MAIN_SERVER_PORT,
@@ -28,15 +28,18 @@ from config import (
     TOOL_SERVER_PORT,
     USER_PLUGIN_SERVER_PORT,
 )
-from plugin.logging_config import logger
-
 from plugin._types.events import EVENT_META_ATTR
+from plugin.core.communication import (
+    STARTUP_RESULT_REQ_ID,
+    PluginCommunicationResourceManager,
+)
+from plugin.core.context import PluginContext
+from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.core.model_gateway_access import model_gateway_access
-from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
-from plugin.core.context import PluginContext
-from plugin.core.communication import PluginCommunicationResourceManager, STARTUP_RESULT_REQ_ID
+from plugin.logging_config import logger
+from plugin.sdk import PERSIST_ATTR
 
 if TYPE_CHECKING:
     # Keep server API models out of the child startup import path. The SDK
@@ -45,25 +48,30 @@ if TYPE_CHECKING:
 
 from plugin._types.exceptions import (
     PluginLifecycleError,
-    PluginEntryNotFoundError,
-    PluginError,
 )
-from plugin.settings import (
-    PLUGIN_TRIGGER_TIMEOUT,
-    PLUGIN_SHUTDOWN_TIMEOUT,
-    QUEUE_GET_TIMEOUT,
-    PROCESS_SHUTDOWN_TIMEOUT,
-    PROCESS_TERMINATE_TIMEOUT,
+from plugin.core.bus.types import dispatch_bus_change
+from plugin.core.zmq_transport import (
+    CH_CMD,
+    CH_COMM,
+    CH_MSG,
+    CH_RES,
+    CH_RESP,
+    CH_STS,
+    ChildTransport,
+    HostTransport,
 )
-from plugin.sdk.shared.core.entry_runtime import prepare_entry_kwargs, resolve_entry_timeout
+from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
 from plugin.sdk.shared.core.finish import normalize_structured_data
 from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
-from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
-from plugin.core.bus.types import dispatch_bus_change
-from plugin.core.zmq_transport import (
-    HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
+from plugin.settings import (
+    PLUGIN_SHUTDOWN_TIMEOUT,
+    PLUGIN_TRIGGER_TIMEOUT,
+    PROCESS_SHUTDOWN_TIMEOUT,
+    PROCESS_TERMINATE_TIMEOUT,
+    QUEUE_GET_TIMEOUT,
 )
+from utils import process_creation
 
 
 def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
@@ -105,9 +113,6 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
         )
 
 
-_TIMEOUT_UNSET = object()
-
-
 # ============================================================================
 # Drop inherited host HTTP sockets after fork.
 # ============================================================================
@@ -138,8 +143,8 @@ _TIMEOUT_UNSET = object()
 #
 # Never touch ZMQ: zmq.Context.instance() retains descriptor numbers in libzmq accounting after fork.
 # Closing/reusing those numbers makes zmq_ctx_term close unrelated fds. Leave AF_UNIX
-# untouched too: state.plugin_response_map Manager proxies are intentionally
-# inherited by children.
+# untouched too: local IPC users may still own those descriptors.
+# Local IPC ownership remains with its original runtime.
 #
 # Inherited client-direction sockets are outside this change: children may inherit host clients targeting
 # these ports, but ephemeral local ports exclude them. They do not hang peers, merely delay closure
@@ -768,8 +773,7 @@ async def _handle_config_update_command(
 ) -> None:
     """Handle CONFIG_UPDATE for hot configuration changes.
 
-    ``res_sender`` must expose ``.put(obj, timeout=...)`` — either a
-    :class:`ChannelSender` or legacy ``mp.Queue``.
+    ``res_sender`` is the :class:`ChannelSender` for the result channel.
     """
     req_id = msg.get("req_id", "unknown")
     new_config = msg.get("config", {})
@@ -904,16 +908,15 @@ def _plugin_process_runner(
     uplink_token: str = "",
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
-    message_uplink_endpoint: str = "",
-    image_uplink_endpoint: str | None = None,
     *,
+    message_uplink_endpoint: str,
+    image_uplink_endpoint: str | None = None,
     model_gateway_options: dict[str, str] | None = None,
 ) -> None:
     """Separate-process runner communicating with hosts through ZMQ."""
     uplink_token = str(uplink_token or "").strip()
     if not uplink_token:
         raise ValueError("Plugin child process requires an uplink token")
-    state.mark_plugin_child_process()
 
     # Store the process-level stop event.
     process_stop_event = stop_event
@@ -939,11 +942,9 @@ def _plugin_process_runner(
         )
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    child_transport_kwargs: dict[str, object] = {}
-    if message_uplink_endpoint:
-        child_transport_kwargs["message_uplink_endpoint"] = (
-            message_uplink_endpoint
-        )
+    child_transport_kwargs: dict[str, object] = {
+        "message_uplink_endpoint": message_uplink_endpoint,
+    }
     if image_uplink_endpoint:
         child_transport_kwargs["image_uplink_endpoint"] = image_uplink_endpoint
     child_transport = ChildTransport(
@@ -993,11 +994,6 @@ def _plugin_process_runner(
             status_queue=status_sender,
             message_queue=message_sender,
             _plugin_comm_queue=comm_sender,
-            _zmq_ipc_client=None,
-            _cmd_queue=None,
-            _res_queue=None,
-            _response_queue=None,
-            _response_pending={},
             _image_transport=child_transport,
             _entry_map=None,
             _instance=None,
@@ -1011,30 +1007,6 @@ def _plugin_process_runner(
         # timer / custom-event handlers before that point would have no reader
         # for their reply, so they wait here instead of timing out (Codex).
         ctx._downlink_ready = threading.Event()
-
-        try:
-            from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
-
-            enabled = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED")
-            if enabled is None:
-                use_zmq = bool(PLUGIN_ZMQ_IPC_ENABLED)
-            else:
-                use_zmq = str(enabled).lower() in ("true", "1", "yes", "on")
-
-            if use_zmq:
-                from plugin.utils.zeromq_ipc import ZmqIpcClient
-                endpoint = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", PLUGIN_ZMQ_IPC_ENDPOINT)
-                ctx._zmq_ipc_client = ZmqIpcClient(plugin_id=plugin_id, endpoint=endpoint)
-                try:
-                    logger.info("[Plugin Process] ZeroMQ IPC enabled: {}", endpoint)
-                except Exception:
-                    pass
-        except Exception:
-            try:
-                logger.warning("[Plugin Process] ZeroMQ IPC enabled but client init failed")
-            except Exception:
-                pass
-            pass
 
         # Routers are composition units within ordinary plugins, never standalone plugin entry points.
         if isinstance(cls, type) and issubclass(cls, PluginRouter):
@@ -1068,7 +1040,9 @@ def _plugin_process_runner(
         startup_config_fingerprint: str | None = None
         effective_cfg: dict[str, object] = {}
         try:
-            from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+            from plugin.server.infrastructure.config_resolver import (
+                resolve_plugin_config_from_path,
+            )
 
             resolved_config = resolve_plugin_config_from_path(
                 plugin_id,
@@ -1082,7 +1056,9 @@ def _plugin_process_runner(
             # Keep the applied identity in the child, where the effective
             # configuration is actually resolved immediately before startup.
             # The parent must not hash its earlier pre-spawn snapshot.
-            from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+            from plugin.server.infrastructure.config_fingerprint import (
+                fingerprint_config,
+            )
 
             startup_config_fingerprint = fingerprint_config(effective_cfg)
         except Exception as e:
@@ -1099,7 +1075,9 @@ def _plugin_process_runner(
                     raise TypeError("Startup effective config must be a mapping")
                 effective_cfg = fallback_cfg
                 ctx._set_effective_config_cache(effective_cfg)
-                from plugin.server.infrastructure.config_fingerprint import fingerprint_config
+                from plugin.server.infrastructure.config_fingerprint import (
+                    fingerprint_config,
+                )
 
                 startup_config_fingerprint = fingerprint_config(effective_cfg)
             except Exception as e:
@@ -1347,42 +1325,33 @@ def _plugin_process_runner(
         if ui_context_map:
             logger.info("Plugin UI contexts collected: {}", list(ui_context_map.keys()))
 
-        # asyncio.Queue fed from the downlink for plugin-to-plugin responses
-        _response_inbox: asyncio.Queue = asyncio.Queue()
-        ctx._response_queue = _response_inbox
-        _startup_pending_downlink: list[tuple[str, dict]] = []
+        _pending_downlink: list[tuple[str, dict]] = []
 
         async def _route_response(msg: Any) -> None:
-            dispatch_direct = getattr(ctx, "_dispatch_direct_response", None)
-            if callable(dispatch_direct):
-                try:
-                    if dispatch_direct(msg):
-                        return
-                except Exception:
-                    logger.exception("Failed to dispatch SDK-owned response")
-            await _response_inbox.put(msg)
+            if not ctx._dispatch_rpc_response(msg):
+                logger.warning("Unknown plugin RPC response type")
 
-        async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
-            poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+        async def _lifecycle_downlink_pump(stop_event: asyncio.Event) -> None:
+            poll_ms = max(1, int(QUEUE_GET_TIMEOUT * 1000))
             while not stop_event.is_set():
                 result = await child_transport.recv_downlink(timeout_ms=poll_ms)
                 if result is None:
                     continue
                 ch, msg = result
                 if ch == CH_RESP:
-                    await _response_inbox.put(msg)
+                    await _route_response(msg)
                     continue
-                if ch == CH_CMD and isinstance(msg, dict) and msg.get("type") == "STOP":
-                    stop_event.set()
-                    break
                 if isinstance(msg, dict):
-                    _startup_pending_downlink.append((ch, msg))
+                    _pending_downlink.append((ch, msg))
 
-        async def _run_startup_with_downlink(startup_callable: Any) -> None:
+        async def _run_with_downlink(awaitable: Any) -> Any:
+            # Lifecycle callbacks may await host replies while the ordinary
+            # command reader is paused. Defer commands to preserve their order;
+            # even a queued STOP must not cut off the shutdown callback's replies.
             stop_event = asyncio.Event()
-            pump_task = asyncio.create_task(_startup_downlink_pump(stop_event), name="startup-downlink-pump")
+            pump_task = asyncio.create_task(_lifecycle_downlink_pump(stop_event), name="lifecycle-downlink-pump")
             try:
-                await startup_callable()
+                return await awaitable
             finally:
                 stop_event.set()
                 pump_task.cancel()
@@ -1421,7 +1390,7 @@ def _plugin_process_runner(
         if startup_fn:
             try:
                 with ctx._handler_scope("lifecycle.startup"):
-                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_startup_with_downlink(startup_fn)))
+                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(startup_fn())))
             except (KeyboardInterrupt, SystemExit):
                 # Propagate system-level interruptions directly.
                 raise
@@ -1445,7 +1414,7 @@ def _plugin_process_runner(
             try:
                 logger.info("[Plugin Process] Executing unfreeze lifecycle (restored from frozen state)...")
                 with ctx._handler_scope("lifecycle.unfreeze"):
-                    asyncio.run(_run_with_model_client_cleanup(ctx, unfreeze_fn()))
+                    asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(unfreeze_fn())))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1540,57 +1509,6 @@ def _plugin_process_runner(
         #  Async command loop  (replaces the old sync while-loop)
         # ────────────────────────────────────────────────────
 
-        _STALL_THRESHOLD = 5.0
-
-        async def _run_with_watchdog(coro, label: str, timeout_seconds):
-            """Run *coro* with a stall-detection watchdog and timeout."""
-            task = asyncio.ensure_future(coro)
-
-            async def _watchdog():
-                while not task.done():
-                    t0 = time.monotonic()
-                    await asyncio.sleep(1.0)
-                    wall = time.monotonic() - t0
-                    if wall > _STALL_THRESHOLD and not task.done():
-                        logger.warning(
-                            "[Plugin Process] Event-loop stall: sleep(1s) took {:.1f}s "
-                            "in '{}'. Likely blocking I/O in async code.",
-                            wall, label,
-                        )
-
-            wd = asyncio.create_task(_watchdog())
-            try:
-                return await asyncio.wait_for(task, timeout=timeout_seconds)
-            finally:
-                wd.cancel()
-
-        def _resolve_timeout(entry_id: str, requested_timeout: Any = _TIMEOUT_UNSET):
-            # _TIMEOUT_UNSET distinguishes absent entry timeouts from explicit timeout<=0 -> None.
-            entry_timeout = resolve_entry_timeout(entry_meta_map.get(entry_id), _TIMEOUT_UNSET)
-            entry_has_timeout = entry_timeout is not _TIMEOUT_UNSET
-
-            if requested_timeout is not _TIMEOUT_UNSET:
-                if requested_timeout is None:
-                    # Caller None delegates to entry settings.
-                    return entry_timeout if entry_has_timeout else None
-                try:
-                    explicit_timeout = float(requested_timeout)
-                except (TypeError, ValueError):
-                    pass
-                else:
-                    if explicit_timeout <= 0:
-                        return entry_timeout if entry_has_timeout else None
-                    # Explicit entry timeout None disables limits; respect it.
-                    if entry_has_timeout and entry_timeout is None:
-                        return None
-                    # Positive entry timeout uses the smaller limit.
-                    if entry_has_timeout:
-                        return min(explicit_timeout, entry_timeout)
-                    return explicit_timeout
-
-            if entry_has_timeout:
-                return entry_timeout
-            return PLUGIN_TRIGGER_TIMEOUT
 
         async def _save_plugin_state(reason: str) -> None:
             sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
@@ -1612,186 +1530,26 @@ def _plugin_process_runner(
         # run_id → asyncio.Task – used by CANCEL_RUN to propagate cancellation
         _run_tasks: Dict[str, asyncio.Task] = {}
 
-        async def _handle_trigger(msg: dict):
-            entry_id = msg.get("entry_id")
-            args = msg.get("args", {})
-            req_id = msg.get("req_id", "unknown")
+        executor = EntryExecutor(
+            plugin_id=plugin_id, context=ctx, instance=instance, entries=entry_map,
+            metadata=entry_meta_map, events=events_by_type, default_timeout=PLUGIN_TRIGGER_TIMEOUT,
+            refresh=_rebuild_entry_map, should_persist=_should_persist, persist=_save_plugin_state, logger=logger,
+        )
 
-            if not entry_id or not isinstance(args, dict):
-                res_sender.put(
-                    {"req_id": req_id, "success": False, "data": None,
-                     "error": "Invalid TRIGGER payload: 'entry_id' required, 'args' must be dict"},
-                    timeout=10.0,
-                )
-                return
-
-            logger.info("[Plugin Process] TRIGGER entry='{}' req_id={}", entry_id, req_id)
-
-            method = (
-                entry_map.get(entry_id)
-                or getattr(instance, entry_id, None)
-                or getattr(instance, f"entry_{entry_id}", None)
-            )
-            if method is None and hasattr(instance, "collect_entries") and callable(instance.collect_entries):
-                try:
-                    _rebuild_entry_map()
-                    method = (
-                        entry_map.get(entry_id)
-                        or getattr(instance, entry_id, None)
-                        or getattr(instance, f"entry_{entry_id}", None)
-                    )
-                    if method is not None:
-                        logger.info(
-                            "[Plugin Process] Rebuilt dynamic entry map and resolved entry='{}' req_id={}",
-                            entry_id,
-                            req_id,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to rebuild entry map while resolving '{}' req_id={}: {}",
-                        entry_id,
-                        req_id,
-                        e,
-                    )
-            ret = {"req_id": req_id, "success": False, "data": None, "error": None}
-
-            run_id = None
-            lanlan_name = None
+        async def _execute_command(msg: dict):
+            logger.info("[Plugin Process] {} entry={} req_id={}", msg.get("type"),
+                        msg.get("event_id") or msg.get("entry_id"), msg.get("req_id"))
+            ret = await execute_entry_command(executor, msg)
             try:
-                ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
-                if isinstance(ctx_obj, dict):
-                    run_id = ctx_obj.get("run_id")
-                    lanlan_name = ctx_obj.get("lanlan_name")
-                    if lanlan_name:
-                        ctx._current_lanlan = str(lanlan_name)
+                await asyncio.to_thread(res_sender.put, ret, timeout=10.0)
             except Exception:
-                pass
+                logger.exception("Failed to send response for req_id={}", msg.get("req_id"))
 
-            try:
-                if not method:
-                    raise PluginEntryNotFoundError(plugin_id, entry_id)
-
-                if not (asyncio.iscoroutinefunction(method) or inspect.iscoroutinefunction(method)):
-                    ret["error"] = f"Entry '{entry_id}' must be 'async def'. Sync entries are not supported."
-                    return
-
-                requested_timeout = msg["timeout"] if "timeout" in msg else _TIMEOUT_UNSET
-                timeout_seconds = _resolve_timeout(entry_id, requested_timeout)
-                call_args = prepare_entry_kwargs(
-                    plugin_id=plugin_id,
-                    entry_id=entry_id,
-                    handler=method,
-                    meta=entry_meta_map.get(entry_id),
-                    args=args,
-                )
-
-                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id), ctx._lanlan_scope(lanlan_name):
-                    result = await _run_with_watchdog(
-                        method(**call_args), entry_id, timeout_seconds,
-                    )
-
-                if hasattr(result, "is_ok") and callable(result.is_ok):
-                    if result.is_ok():
-                        ret["success"] = True
-                        ret["data"] = result.value
-                    else:
-                        ret["success"] = False
-                        err = result.error
-                        ret["error"] = str(err) if err is not None else "Unknown error"
-                else:
-                    ret["success"] = True
-                    ret["data"] = result
-
-                if _should_persist(method):
-                    try:
-                        await _save_plugin_state("auto")
-                    except Exception:
-                        pass
-
-            except asyncio.CancelledError:
-                ret["error"] = "Execution cancelled"
-            except asyncio.TimeoutError:
-                requested_timeout = msg["timeout"] if "timeout" in msg else _TIMEOUT_UNSET
-                resolved_timeout = _resolve_timeout(entry_id, requested_timeout)
-                logger.error("Entry '{}' timed out after {}s", entry_id, resolved_timeout)
-                ret["error"] = f"Execution timed out after {resolved_timeout}s"
-            except PluginError as e:
-                logger.warning("Plugin error executing '{}': {}", entry_id, e)
-                ret["error"] = str(e)
-            except Exception as e:
-                logger.exception("Unexpected error executing '{}'", entry_id)
-                ret["error"] = f"Unexpected error: {e}"
-            finally:
-                if run_id:
-                    _run_tasks.pop(run_id, None)
-                try:
-                    res_sender.put(ret, timeout=10.0)
-                except Exception:
-                    logger.exception("Failed to send response for req_id={}", req_id)
+        async def _handle_trigger(msg: dict):
+            await _execute_command(msg)
 
         async def _handle_trigger_custom(msg: dict):
-            event_type = msg.get("event_type")
-            event_id = msg.get("event_id")
-            args = msg.get("args", {})
-            req_id = msg.get("req_id", "unknown")
-
-            logger.info("[Plugin Process] TRIGGER_CUSTOM {}.{} req_id={}", event_type, event_id, req_id)
-
-            lanlan_name = None
-            try:
-                ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
-                if isinstance(ctx_obj, dict):
-                    lanlan_name = ctx_obj.get("lanlan_name")
-                    if lanlan_name:
-                        ctx._current_lanlan = str(lanlan_name)
-            except Exception:
-                pass
-
-            custom_events = events_by_type.get(event_type, {})
-            method = custom_events.get(event_id)
-            ret = {"req_id": req_id, "success": False, "data": None, "error": None}
-
-            try:
-                if not method:
-                    ret["error"] = f"Custom event '{event_type}.{event_id}' not found"
-                    return
-
-                if not asyncio.iscoroutinefunction(method):
-                    ret["error"] = f"Custom event '{event_type}.{event_id}' must be 'async def'."
-                    return
-
-                with ctx._handler_scope(f"{event_type}.{event_id}"), ctx._lanlan_scope(lanlan_name):
-                    result = await _run_with_watchdog(
-                        method(**args),
-                        f"{event_type}.{event_id}",
-                        PLUGIN_TRIGGER_TIMEOUT,
-                    )
-
-                if hasattr(result, "is_ok") and callable(result.is_ok):
-                    if result.is_ok():
-                        ret["success"] = True
-                        ret["data"] = result.value
-                    else:
-                        ret["success"] = False
-                        err = result.error
-                        ret["error"] = str(err) if err is not None else "Unknown error"
-                else:
-                    ret["success"] = True
-                    ret["data"] = result
-
-            except asyncio.CancelledError:
-                ret["error"] = "Execution cancelled"
-            except asyncio.TimeoutError:
-                logger.error("Custom event {}.{} timed out", event_type, event_id)
-                ret["error"] = f"Custom event timed out after {PLUGIN_TRIGGER_TIMEOUT}s"
-            except Exception as e:
-                logger.exception("Error executing custom event {}.{}", event_type, event_id)
-                ret["error"] = str(e)
-            finally:
-                try:
-                    res_sender.put(ret, timeout=10.0)
-                except Exception:
-                    logger.exception("Failed to send response for req_id={}", req_id)
+            await _execute_command(msg)
 
         async def _handle_ui_context(msg: dict):
             req_id = msg.get("req_id", "unknown")
@@ -1877,7 +1635,7 @@ def _plugin_process_runner(
                     logger.exception("Failed to send UI context response for req_id={}", req_id)
 
         async def _async_command_loop():
-            poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+            poll_ms = max(1, int(QUEUE_GET_TIMEOUT * 1000))
             on_command_loop_start = getattr(instance, "_on_command_loop_start", None)
             if callable(on_command_loop_start):
                 try:
@@ -1906,8 +1664,8 @@ def _plugin_process_runner(
                     pass
 
                 try:
-                    if _startup_pending_downlink:
-                        result = _startup_pending_downlink.pop(0)
+                    if _pending_downlink:
+                        result = _pending_downlink.pop(0)
                     else:
                         result = await child_transport.recv_downlink(timeout_ms=poll_ms)
                 except asyncio.CancelledError:
@@ -1951,7 +1709,7 @@ def _plugin_process_runner(
                         freeze_fn = lifecycle_events.get("freeze")
                         if freeze_fn:
                             with ctx._handler_scope("lifecycle.freeze"):
-                                await freeze_fn()
+                                await _run_with_downlink(freeze_fn())
                         if freezable_keys:
                             await _save_plugin_state("freeze")
                         ret["success"] = True
@@ -1980,24 +1738,16 @@ def _plugin_process_runner(
 
                 # ── CONFIG_UPDATE ──
                 if msg_type == "CONFIG_UPDATE":
-                    # The loop awaits this handler INLINE, so it cannot route
-                    # anyone else's IMAGE_UPLOAD_RESULT until it returns. A
-                    # timer or custom-event upload running concurrently would
-                    # otherwise send into a loop that is not reading and could
-                    # only time out (Codex P2) -- the same failure as the
-                    # startup window, from the same cause.
-                    #
-                    # So the flag means "responses are being routed right now",
-                    # not "the loop started once". Cleared for the duration and
-                    # restored in a finally, so a handler that raises cannot
-                    # leave uploads blocked for the rest of the process.
+                    # Preserve the image-upload gate during config changes.
+                    # Control replies still drain, but business commands wait
+                    # until the update and its callbacks have completed.
                     ctx._downlink_ready.clear()
                     try:
-                        await _handle_config_update_command(
+                        await _run_with_downlink(_handle_config_update_command(
                             msg=msg, ctx=ctx, events_by_type=events_by_type,
                             plugin_id=plugin_id, res_sender=res_sender,
                             logger=logger,
-                        )
+                        ))
                     finally:
                         ctx._downlink_ready.set()
                     continue
@@ -2071,7 +1821,7 @@ def _plugin_process_runner(
                 with ctx._handler_scope("lifecycle.shutdown"):
                     result = shutdown_fn()
                     if asyncio.iscoroutine(result):
-                        asyncio.run(_run_with_model_client_cleanup(ctx, result))
+                        asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -2100,7 +1850,7 @@ def _plugin_process_runner(
                 with ctx._handler_scope("lifecycle.shutdown"):
                     result = shutdown_fn()
                     if asyncio.iscoroutine(result):
-                        asyncio.run(_run_with_model_client_cleanup(ctx, result))
+                        asyncio.run(_run_with_model_client_cleanup(ctx, _run_with_downlink(result)))
         except BaseException:
             pass
         try:
@@ -2192,23 +1942,6 @@ class PluginHost:
         if source_only:
             self._startup_options["source_only"] = True
 
-        # Shared response notification primitives must be initialized before
-        # forking, otherwise each child creates its own Manager proxies.
-        try:
-            _ = state.plugin_response_map
-        except Exception as e:
-            logger.warning(
-                "Failed to pre-initialize plugin_response_map for plugin {}: {}",
-                plugin_id, e
-            )
-        try:
-            _ = state.plugin_response_notify_event
-        except Exception as e:
-            logger.warning(
-                "Failed to pre-initialize plugin_response_notify_event for plugin {}: {}",
-                plugin_id, e
-            )
-
         # POSIX fork inherits all host fds; _close_inherited_host_sockets
         # drops HTTP sockets inside children, described above.
         self.process = multiprocessing.Process(
@@ -2222,9 +1955,9 @@ class PluginHost:
                 getattr(self.transport, "uplink_token", ""),
                 self._process_stop_event,
                 self._startup_options,
-                getattr(self.transport, "message_uplink_endpoint", ""),
             ),
             kwargs={
+                "message_uplink_endpoint": self.transport.message_uplink_endpoint,
                 "image_uplink_endpoint": getattr(
                     self.transport,
                     "image_uplink_endpoint",
@@ -2239,6 +1972,7 @@ class PluginHost:
         self.comm_manager = PluginCommunicationResourceManager(
             plugin_id=plugin_id,
             transport=self.transport,
+            process_status=lambda: self.process.is_alive() if self.process.pid is not None else None,
         )
     
     def clear_inherited_credentials(self, *, keep_launch_options: bool = False) -> None:
@@ -2248,32 +1982,28 @@ class PluginHost:
         if not keep_launch_options and options is not None:
             options.clear()
 
-    def _start_process(self) -> None:
+    def _start_process(
+        self, *, deadline: float | None = None, cancel_event: threading.Event | None = None,
+    ) -> None:
         # The fork hook must retain this child's own launch options while
         # clearing credentials of every other host, including in-flight starts.
         _FORKING_HOST.host = self
         try:
-            self.process.start()
+            process_creation.start(self.process, deadline=deadline, cancel_event=cancel_event)
         finally:
             del _FORKING_HOST.host
 
     async def start(
         self,
-        message_target_queue=None,
         startup_timeout: float | None = None,
         startup_failure: str = "warn",
     ) -> Any:
-        """
-        Start background tasks from async contexts.
-        
-        Args:
-            message_target_queue: Main-process queue receiving plugin pushes.
-        """
+        """Start background tasks from async contexts."""
         # Register this plugin's downlink sender so plugin_router can
         # route plugin-to-plugin responses back to the child process.
         state.register_downlink_sender(self.plugin_id, self.comm_manager.send_plugin_response)
 
-        await self.comm_manager.start(message_target_queue=message_target_queue)
+        await self.comm_manager.start()
         should_wait_for_startup = startup_timeout is not None and startup_timeout > 0
         startup_failure_policy = str(startup_failure or "warn").strip().lower()
         self._startup_options["startup_failure"] = startup_failure_policy
@@ -2290,6 +2020,8 @@ class PluginHost:
             await self.comm_manager.prepare_startup_wait()
 
         start_task: asyncio.Task | None = None
+        creation_cancelled = threading.Event()
+        creation_deadline: float | None = None
         try:
             from config.network import resolve_user_plugin_base
 
@@ -2302,9 +2034,14 @@ class PluginHost:
                 "token": self._model_gateway_token,
             })
             _refresh_child_storage_layout_env(self.logger)
-            start_task = asyncio.create_task(asyncio.to_thread(self._start_process))
+            if should_wait_for_startup:
+                creation_deadline = time.monotonic() + float(startup_timeout)
+            start_task = asyncio.create_task(asyncio.to_thread(
+                self._start_process, deadline=creation_deadline, cancel_event=creation_cancelled,
+            ))
             await asyncio.shield(start_task)
         except asyncio.CancelledError:
+            creation_cancelled.set()
             self._revoke_model_gateway_access()
             # Canceling to_thread does not stop spawn or its argument pickling.
             # Keep launch options and transport intact until the worker exits,
@@ -2318,7 +2055,7 @@ class PluginHost:
                     continue
             cleanup_task.result()
             raise
-        except BaseException:
+        except BaseException as exc:
             self._revoke_model_gateway_access()
             self.logger.error(
                 "Plugin {} process failed to start, shutting down comm_manager",
@@ -2330,6 +2067,10 @@ class PluginHost:
             except Exception:
                 pass
             await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            if isinstance(exc, process_creation.ProcessCreationTimeout):
+                raise PluginLifecycleError(
+                    self.plugin_id, "startup", f"startup timed out after {startup_timeout}s",
+                ) from exc
             raise
         finally:
             self._model_gateway_starting = False
@@ -2367,8 +2108,11 @@ class PluginHost:
 
         if should_wait_for_startup:
             try:
+                remaining = creation_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("startup deadline expired during process creation")
                 startup_result = await self.comm_manager.wait_for_startup(
-                    timeout=float(startup_timeout),
+                    timeout=remaining,
                     allow_startup_error=startup_failure_policy != "fail",
                 )
                 if isinstance(startup_result, dict) and startup_result.get("startup_error"):
@@ -2466,8 +2210,8 @@ class PluginHost:
         
         Close sequentially:
         1. Send stop.
-        2. Close communication resources.
-        3. Close the process.
+        2. Wait for process cleanup while control communication remains available.
+        3. Close communication resources and transport.
         """
         self.logger.info(f"Shutting down plugin {self.plugin_id}")
         self._revoke_model_gateway_access()
@@ -2482,15 +2226,14 @@ class PluginHost:
         # 1. Send stop.
         await self.comm_manager.send_stop_command()
 
-        # 2. Close communication resources.
-        await self.comm_manager.shutdown(timeout=timeout)
-
-        # 3. Unregister downlink sender & close ZMQ transport
-        state.remove_downlink_sender(self.plugin_id)
-        self.transport.close()
-
-        # 4. Close the process.
-        success = await asyncio.to_thread(self._shutdown_process, timeout)
+        try:
+            success = await asyncio.to_thread(self._shutdown_process, timeout)
+        finally:
+            try:
+                await self.comm_manager.shutdown(timeout=timeout)
+            finally:
+                state.remove_downlink_sender(self.plugin_id)
+                self.transport.close()
         
         if success:
             self.logger.info(f"Plugin {self.plugin_id} shutdown successfully")
@@ -2673,7 +2416,7 @@ class PluginHost:
             pid=pid,
             status=status,
             communication={
-                "pending_requests": len(self.comm_manager._pending_futures),
+                "pending_requests": self.comm_manager.get_pending_requests_count(),
                 "consumer_running": (
                     self.comm_manager._uplink_consumer_task is not None
                     and not self.comm_manager._uplink_consumer_task.done()

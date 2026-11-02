@@ -60,6 +60,37 @@ CHARACTER_RESERVED_FIELDS = tuple(
 )
 
 
+# COMPAT(v1->v2): legacy flat field names from before the move into _reserved. Migration treats these top-level keys as
+# legacy config, folds them into _reserved and deletes them from the profile, so no ordinary field written to a profile
+# (e.g. the per-heading section fields from external imports) may use these names.
+CHARACTER_LEGACY_FLAT_RESERVED_FIELDS = (
+    "voice_id",
+    "system_prompt",
+    "model_type",
+    "live3d_sub_type",
+    "live2d_item_id",
+    "item_id",
+    "live2d",
+    "live2d_idle_animation",
+    "vrm",
+    "vrm_animation",
+    "idleAnimation",
+    "idleAnimations",
+    "lighting",
+    "vrm_rotation",
+    "mmd",
+    "mmd_animation",
+    "mmd_idle_animation",
+    "mmd_idle_animations",
+    "pngtuber",
+    "pngtuber_idle_image",
+    "pngtuber_talking_image",
+    "pngtuber_happy_image",
+    "pngtuber_sad_image",
+    "pngtuber_angry_image",
+    "pngtuber_surprised_image",
+)
+
 def get_character_reserved_fields() -> tuple[str, ...]:
     """Return the reserved character-profile fields (deduplicated, ordered)."""
     return CHARACTER_RESERVED_FIELDS

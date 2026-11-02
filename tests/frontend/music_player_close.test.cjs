@@ -37,6 +37,7 @@ function createSurface(t, options = {}) {
     let relay = () => {};
     const RealDate = w.Date;
     w.Date = class extends RealDate { static now() { return now; } };
+    Object.defineProperty(w.performance, 'now', { value: () => now });
     const schedule = (fn, ms = 0, interval = 0) => {
         const id = ++timerId;
         timers.set(id, { fn, at: now + Number(ms), interval });
@@ -196,6 +197,524 @@ function pair(t, options = {}) {
 const endedState = { track: {name:'finished', artist:'test'}, playbackId:'finished-1', paused:true,
     ended:true, currentTime:60, duration:60, volume:0.2 };
 const remoteEvent = (type, payload) => ({ sender:'remote-owner', type, payload });
+
+function offerRecommendation(s, awarenessState, options = {}) {
+    const events = [], awareness = [], messages = new Map();
+    const socket = awarenessState === undefined ? null : { readyState: awarenessState,
+        send(value) { awareness.push(JSON.parse(value)); } };
+    s.w.appState = { socket };
+    s.w.lanlan_config = { lanlan_name: 'Neko' };
+    s.w.nekoLocalMutationSecurity = { getMutationHeaders: async () => ({}) };
+    s.w.AbortSignal.timeout = () => undefined;
+    s.w.fetch = async (url, init) => {
+        if (!init || !init.body) return { ok: true, json: async () => ({ domains: [] }) };
+        if (options.capture && url.endsWith('/capture-context')) return { ok:true,
+            json:async () => ({success:true,context:options.capture()}) };
+        if (options.capture && url.endsWith('/dispatch')) return {ok:true,json:async () => ({success:true,dispatch_grant:true})};
+        const event = JSON.parse(init.body); events.push(event);
+        const telemetry = options.capture ? {event_id:event.event_id,
+            payload_hash:require('node:crypto').createHash('sha256')
+                .update(Buffer.from(init.headers['X-NEKO-Feedback-Canonical'], 'base64')).digest('hex'),
+            status:'durable', ...(options.telemetry ? options.telemetry(event) : {})} : undefined;
+        return { ok: true, status: 200, json: async () => ({ success: true, state: event.kind,
+            playback_grant: event.kind === 'accepted', telemetry }) };
+    };
+    s.w.reactChatWindowHost = { appendMessage(m) { messages.set(m.id, m); },
+        updateMessage(id, patch) { Object.assign(messages.get(id), patch); } };
+    // Exercise the real consent controller AND dispatcher, not the smoke fixture shortcut.
+    s.w.eval(fs.readFileSync(path.join(root, 'static/app/app-chat.js'), 'utf8'));
+    s.w.eval(fs.readFileSync(path.join(root, 'static/app/app-recommendations.js'), 'utf8'));
+    const id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    s.w.nekoMusicRecommendations.offer({ id, state: 'pending', expires_at: s.w.Date.now()/1000+1800,
+        ...(options.offerContext ? {offer_context:options.offerContext} : {}),
+        track: { name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3', cover: '' } });
+    const message = messages.values().next().value;
+    const action = name => s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', { detail: { message,
+        action: { action: name, payload: { recommendationId: id, kind: 'accepted' } } } }));
+    return { events, awareness, socket, message,
+        choose: () => action('music_recommendation_decision'), show: () => action('music_recommendation_shown') };
+}
+
+async function startRecommendation(s, awarenessState) {
+    const r = offerRecommendation(s, awarenessState);
+    r.choose();
+    await s.advance(100);
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.ok(r.events.some(event => event.kind === 'accepted'));
+    assert.ok(r.events.some(event => event.kind === 'playing'));
+    const audio = s.players[0].audio;
+    audio.currentTime = 12;
+    audio.played = { length: 1, start: () => 0, end: () => 12 };
+    return r;
+}
+
+const feedbackBinding = owner => ({owner_key:owner,account_incarnation:'account-a',clear_generation:1,
+    registration_id:'device-a',registration_version:1,binding_revision:1,anchor_id:'anchor-a',anchor_token:'proof-a'});
+
+for (const failure of ['authentication_required', 'account_mismatch', 'session_changed']) {
+    for (const stage of ['dispatch reply', 'player factory', 'delayed play']) {
+        test(`known ${failure} retires original account playback across ${stage}`, async t => {
+            const s = createSurface(t, {deferInit:stage === 'player factory'});
+            const owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+            const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},capture:()=>feedbackBinding(owner)});
+            await flush();
+            const base = s.w.fetch; let release, revoked = false;
+            s.w.fetch = async (url, init) => {
+                if (revoked && url.endsWith('/capture-context')) return {ok:false,status:503,
+                    json:async()=>({success:false,error_code:failure})};
+                const result = await base(url, init);
+                if (url.endsWith('/dispatch') && stage === 'dispatch reply') return new Promise(resolve => {release = () => resolve(result);});
+                return result;
+            };
+            r.choose(); await flush();
+            if (stage === 'dispatch reply') assert.equal(typeof release, 'function', 'real dispatch reached the response barrier');
+            revoked = true; await s.w.nekoFeedbackCapture.refresh();
+            assert.equal(s.w.nekoFeedbackCapture.capture().owner_key, undefined);
+            if (stage === 'dispatch reply') release();
+            if (stage === 'player factory') s.completeInit();
+            await s.advance(100);
+            assert.equal(r.events.filter(e => e.kind === 'playing').length, 0);
+            assert.ok(s.players.every(player => player.audio.paused), 'no retired operation reaches actual audio play');
+            assert.equal(s.w.isMusicPending(), false, 'the canceled dispatcher releases its own pending state');
+            if (stage === 'dispatch reply') {
+                assert.equal(s.players.length, 0);
+                assert.equal(r.message.blocks[0].state, 'unavailable', 'a spent grant cannot leave the card preparing forever');
+            }
+        });
+    }
+}
+
+test('switching to another verified owner and back cannot revive an old in-flight dispatch', async t => {
+    const s = createSurface(t), original = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    let owner = original;
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:original,offer_id:id},capture:()=>feedbackBinding(owner)});
+    await flush(); const base = s.w.fetch; let release;
+    s.w.fetch = async (url, init) => {
+        const result = await base(url, init);
+        if (url.endsWith('/dispatch')) return new Promise(resolve => {release = () => resolve(result);});
+        return result;
+    };
+    r.choose(); await flush(); assert.equal(typeof release, 'function');
+    owner = 'b'.repeat(64); await s.w.nekoFeedbackCapture.refresh();
+    owner = original; await s.w.nekoFeedbackCapture.refresh();
+    release(); await s.advance(100);
+    assert.equal(s.players.length, 0);
+    assert.equal(r.message.blocks[0].state, 'unavailable');
+});
+
+for (const variant of ['401 HTML', '401 empty', '401 JSON', '503 HTML']) {
+    test(`HTTP identity status is preserved independently of body decoding: ${variant}`, async t => {
+        const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+        const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},capture:()=>feedbackBinding(owner)});
+        await flush(); const base = s.w.fetch; let release, revoked = false;
+        s.w.fetch = async (url, init) => {
+            if (revoked && url.endsWith('/capture-context')) {
+                const body = variant === '401 JSON' ? JSON.stringify({success:false,error_code:'authentication_required'})
+                    : variant === '401 empty' ? '' : '<html>Authentication required</html>';
+                return new Response(body, {status:variant === '503 HTML' ? 503 : 401,
+                    headers:{'Content-Type':variant === '401 JSON' ? 'application/json' : 'text/html'}});
+            }
+            const result = await base(url, init);
+            if (url.endsWith('/dispatch')) return new Promise(resolve => {release = () => resolve(result);});
+            return result;
+        };
+        r.choose(); await flush(); assert.equal(typeof release, 'function');
+        revoked = true; await s.w.nekoFeedbackCapture.refresh(); release(); await s.advance(100);
+        assert.equal(r.events.filter(event => event.kind === 'playing').length, variant === '503 HTML' ? 1 : 0);
+        if (variant === '503 HTML') assert.equal(s.players[0].audio.paused, false);
+        else { assert.equal(s.players.length, 0); assert.equal(r.message.blocks[0].state, 'unavailable'); }
+    });
+}
+
+test('an old-revision HTTP 401 cannot revoke a new page lifecycle operation', async t => {
+    const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},capture:()=>feedbackBinding(owner)});
+    await flush(); const base = s.w.fetch; let finishCapture, finishDispatch;
+    s.w.fetch = async (url, init) => {
+        if (url.endsWith('/capture-context')) return new Promise(resolve => {
+            finishCapture = () => resolve(new Response('<html>Old authentication failure</html>', {status:401}));
+        });
+        const result = await base(url, init);
+        if (url.endsWith('/dispatch')) return new Promise(resolve => {finishDispatch = () => resolve(result);});
+        return result;
+    };
+    const oldRefresh = s.w.nekoFeedbackCapture.refresh(); await flush();
+    assert.equal(typeof finishCapture, 'function');
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pagehide'));
+    s.w.dispatchEvent(new s.w.PageTransitionEvent('pageshow'));
+    r.choose(); await flush(); assert.equal(typeof finishDispatch, 'function');
+    finishCapture(); await oldRefresh;
+    assert.equal(s.w.nekoFeedbackCapture.capture().owner_key, owner, 'the old response cannot invalidate current qualification');
+    finishDispatch(); await s.advance(100);
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.equal(r.events.filter(event => event.kind === 'playing').length, 1);
+});
+
+for (const condition of ['transient 503', 'upgrade 426', 'same-owner clear']) {
+    test(`${condition} only changes statistics qualification and preserves a pending legitimate dispatch`, async t => {
+        const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+        let generation = 1, failure = false;
+        const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},
+            capture:()=>({...feedbackBinding(owner),clear_generation:generation,binding_revision:generation})});
+        await flush(); const base = s.w.fetch; let release;
+        s.w.fetch = async (url, init) => {
+            if (failure && url.endsWith('/capture-context')) return {ok:false,status:condition === 'upgrade 426' ? 426 : 503,
+                json:async()=>({success:false,error_code:condition === 'upgrade 426' ? 'upgrade_required' : 'cloud_unavailable'})};
+            const result = await base(url, init);
+            if (url.endsWith('/dispatch')) return new Promise(resolve => {release = () => resolve(result);});
+            return result;
+        };
+        r.choose(); await flush(); assert.equal(typeof release, 'function');
+        if (condition === 'same-owner clear') generation = 2; else failure = true;
+        await s.w.nekoFeedbackCapture.refresh();
+        release(); await s.advance(100);
+        assert.equal(s.players.length, 1);
+        assert.equal(s.players[0].audio.paused, false);
+        assert.equal(r.events.filter(e => e.kind === 'playing').length, 1);
+    });
+}
+
+test('an initial anonymous offer without any verified control still plays normally', async t => {
+    const s = createSurface(t), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:'anonymous-owner',offer_id:id},capture:()=>null});
+    await flush(); r.choose(); await s.advance(100);
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.equal(r.events.filter(e => e.kind === 'playing').length, 1);
+});
+
+for (const authenticatedOrigin of [false, true]) {
+    test(`a late first authentication failure only retires a previously bound offer: ${authenticatedOrigin}`, async t => {
+        const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+        const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id,
+            ...(authenticatedOrigin ? {origin_context:feedbackBinding(owner)} : {})},capture:()=>null});
+        const base = s.w.fetch; let finishCapture, finishDispatch;
+        s.w.fetch = async (url, init) => {
+            if (url.endsWith('/capture-context')) return new Promise(resolve => {
+                finishCapture = () => resolve({ok:false,status:503,json:async()=>({success:false,error_code:'authentication_required'})});
+            });
+            const result = await base(url, init);
+            if (url.endsWith('/dispatch')) return new Promise(resolve => {finishDispatch = () => resolve(result);});
+            return result;
+        };
+        await flush(); assert.equal(typeof finishCapture, 'function');
+        assert.equal(s.w.nekoFeedbackCapture.capture().owner_key, undefined, 'no renderer control has ever been verified');
+        r.choose(); await flush(); assert.equal(typeof finishDispatch, 'function');
+        finishCapture(); await flush(); finishDispatch(); await s.advance(100);
+        if (authenticatedOrigin) {
+            assert.equal(s.players.length, 0, 'the original native binding still identifies the retired account operation');
+            assert.equal(r.message.blocks[0].state, 'unavailable');
+        } else {
+            assert.equal(s.players.length, 1, 'an unknown or anonymous offer keeps its legitimate business grant');
+            assert.equal(s.players[0].audio.paused, false);
+        }
+    });
+}
+
+test('explicit logout cancels the old grant while a new anonymous local choice remains usable', async t => {
+    const s = createSurface(t), owner = 'a'.repeat(64), id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id},capture:()=>feedbackBinding(owner)});
+    await flush(); const base = s.w.fetch; let release, revoked = false;
+    s.w.fetch = async (url, init) => {
+        if (revoked && url.endsWith('/capture-context')) return {ok:false,status:503,
+            json:async()=>({success:false,error_code:'authentication_required'})};
+        const result = await base(url, init);
+        if (url.includes(id) && url.endsWith('/dispatch')) return new Promise(resolve => {release = () => resolve(result);});
+        return result;
+    };
+    r.choose(); await flush(); assert.equal(typeof release, 'function');
+    revoked = true; await s.w.nekoFeedbackCapture.refresh();
+    const anonymousId = '29f3bbca-a275-43d4-923d-1b2ceee91943'; let message;
+    const append = s.w.reactChatWindowHost.appendMessage;
+    s.w.reactChatWindowHost.appendMessage = value => {message = value; append(value);};
+    s.w.nekoMusicRecommendations.offer({id:anonymousId,state:'pending',expires_at:s.w.Date.now()/1000+1800,
+        offer_context:{owner_key:'anonymous-owner',offer_id:anonymousId},
+        track:{name:'Anonymous new choice',artist:'Neko',url:'https://music.163.com/anonymous.mp3'}});
+    s.w.dispatchEvent(new s.w.CustomEvent('react-chat-window:action', {detail:{message,
+        action:{action:'music_recommendation_decision',payload:{recommendationId:anonymousId,kind:'accepted'}}}}));
+    await s.advance(100);
+    assert.equal(s.players.length, 1);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.equal(s.players[0]._musicPlaybackReportContext.recommendationId, anonymousId);
+    release(); await s.advance(100);
+    assert.equal(s.players.length, 1, 'releasing the old account response never takes over the new player');
+    assert.equal(s.players[0]._musicPlaybackReportContext.recommendationId, anonymousId);
+});
+
+test('v2 real player callbacks checkpoint independent disjoint ranges without changing playback state', async t => {
+    const s = createSurface(t), events = [];
+    const offerContext = { owner_key: 'a'.repeat(64), offer_id: 'offer-v2', origin_context: { capture: { tick_ms: 1 } } };
+    let generation = 1;
+    s.w.nekoFeedbackCapture = { capture: () => ({ clear_generation: generation, capture: { tick_ms: Math.floor(s.w.performance.now()) } }) };
+    s.w.nekoMusicRecommendations = { recordPlayback(id, kind, fields) { events.push(JSON.parse(JSON.stringify({ id, kind, fields }))); } };
+    const playing = s.w.sendMusicMessageDetailed({name:'v2', url:'https://music.163.com/test.mp3'}, true,
+        {recommendationId:'offer-v2', offerContext});
+    await s.advance(100); await playing;
+    const player = s.players[0], audio = player.audio;
+    for (let i = 1; i <= 16; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    const checkpoint = events.find(e => e.kind === 'measurement');
+    assert.ok(checkpoint, 'existing timeupdate produces a 15-second checkpoint');
+    assert.equal(checkpoint.fields.measurement.version, 'playback_elapsed_observed_v2');
+    assert.equal(checkpoint.fields.measurement.range_start_ms, 0);
+    assert.equal(checkpoint.fields.measurement.range_end_ms, 15000);
+    assert.equal(audio.paused, false);
+    assert.equal(events.filter(e => e.kind === 'playing').length, 1, 'checkpoints do not fabricate playing transitions');
+    audio.pause();
+    const paused = events.findLast(e => e.kind === 'paused');
+    assert.equal(paused.fields.measurement.range_start_ms, 15000);
+    assert.equal(paused.fields.measurement.range_end_ms, 16000);
+    offerContext.owner_key = 'mutated-after-dispatch';
+    assert.equal(player._musicPlaybackReportContext.offerContext.owner_key, 'a'.repeat(64));
+    generation = 2;
+    s.w.dispatchEvent(new s.w.Event('neko:feedback-capture-changed'));
+    await audio.play();
+    for (let i = 1; i <= 2; i++) { await s.advance(1000); audio.currentTime = 16 + i; player.emit('timeupdate'); }
+    audio.pause();
+    const renewed = events.findLast(e => e.kind === 'paused').fields.measurement;
+    assert.equal(renewed.range_start_ms, 0);
+    assert.equal(renewed.range_end_ms, 2000);
+    assert.notEqual(renewed.epoch_id, checkpoint.fields.measurement.epoch_id);
+    assert.equal(renewed.origin_context.clear_generation, 2);
+    assert.equal(checkpoint.fields.measurement.origin_context.clear_generation, 1);
+    assert.equal(s.players.length, 1, 'control refresh does not restart the audio player');
+    audio.ended = true; player.emit('ended');
+    await audio.play();
+    for (let i = 1; i <= 2; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    audio.pause();
+    const replay = events.findLast(e => e.kind === 'measurement').fields.measurement;
+    assert.equal(replay.range_start_ms, 2000);
+    assert.equal(replay.range_end_ms, 4000, 'a short replay must flush on pause even after the business state became terminal');
+    assert.equal(events.findLast(e => e.kind !== 'measurement').kind, 'ended', 'replay statistics do not rewrite the old terminal business state');
+});
+
+test('actual app capture bridge advances a playing audio after clear and holds observations during failed refresh', async t => {
+    const s = createSurface(t);
+    const id = '19f3bbca-a275-43d4-923d-1b2ceee91943';
+    let generation = 1, failed = false;
+    const owner = 'a'.repeat(64);
+    const r = offerRecommendation(s, undefined, {offerContext:{owner_key:owner,offer_id:id,origin_context:{capture:{tick_ms:0}}},
+        capture() {
+            if (failed) throw new TypeError('synthetic network failure');
+            return {owner_key:owner,account_incarnation:'account-a',clear_generation:generation,
+                registration_id:'device-a',registration_version:1,binding_revision:generation,
+                anchor_id:'anchor-'+generation,anchor_token:'proof-'+generation};
+        }, telemetry(event) { return event.context.clear_generation < generation ? {status:'discarded',reason:'binding_changed'} : {}; } });
+    await flush(); r.choose(); await s.advance(100);
+    const player = s.players[0], audio = player.audio;
+    generation = 2;
+    for (let i = 1; i <= 16; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); await flush(); }
+    const retired = r.events.find(event => event.kind === 'measurement');
+    assert.equal(retired.context.clear_generation, 1);
+    assert.equal(s.w.nekoFeedbackCapture.capture().clear_generation, 2);
+    assert.equal(audio.paused, false);
+    assert.equal(s.players.length, 1);
+    failed = true; await s.w.nekoFeedbackCapture.refresh();
+    assert.equal(s.w.nekoFeedbackCapture.capture().owner_key, undefined);
+    for (let i = 17; i <= 18; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    audio.pause(); await flush();
+    const held = r.events.findLast(event => event.measurement);
+    assert.equal(held.context.owner_key, undefined);
+    assert.equal(held.measurement.origin_context.owner_key, undefined);
+    failed = false; generation = 3; await s.w.nekoFeedbackCapture.refresh();
+    await audio.play();
+    for (let i = 19; i <= 20; i++) { await s.advance(1000); audio.currentTime = i; player.emit('timeupdate'); }
+    audio.pause(); await flush();
+    const resumed = r.events.findLast(event => event.measurement);
+    assert.equal(resumed.context.clear_generation, 3);
+    assert.equal(resumed.measurement.origin_context.clear_generation, 3);
+    assert.equal(resumed.measurement.range_start_ms, 0);
+    assert.equal(resumed.measurement.range_end_ms, 2000);
+    assert.equal(retired.context.clear_generation, 1);
+    assert.equal(held.context.owner_key, undefined);
+    assert.equal(s.players.length, 1, 'qualification changes never rebuild or replace audio');
+    assert.equal(r.events.filter(event => event.kind === 'accepted').length, 1);
+});
+
+for (const stage of ['dispatcher', 'library', 'factory', 'delayed play', 'media wait', 'interaction unlock']) {
+    for (const invalidation of ['hidden then restored', 'clear', 'character']) {
+        test(`recommendation cancellation crosses ${stage} after ${invalidation}`, async t => {
+            const s = createSurface(t, { deferInit: stage === 'factory', mediaPending: stage === 'media wait' });
+            const r = offerRecommendation(s);
+            const send = s.w.sendMusicMessage, detailed = s.w.sendMusicMessageDetailed, Player = s.w.APlayer;
+            if (stage === 'dispatcher') { delete s.w.sendMusicMessage; delete s.w.sendMusicMessageDetailed; }
+            if (stage === 'library') delete s.w.APlayer;
+            r.show(); await s.advance(10000);
+            assert.equal(r.events.filter(event => event.kind === 'accepted').length, 1);
+            if (invalidation === 'hidden then restored') {
+                let hidden = true;
+                Object.defineProperty(s.w.document, 'visibilityState', { configurable: true, get: () => hidden ? 'hidden' : 'visible' });
+                s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+                hidden = false;
+                s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+            } else if (invalidation === 'clear') s.w.dispatchEvent(new s.w.Event('react-chat-window:messages-cleared'));
+            else s.w.lanlan_config.lanlan_name = 'Other';
+            if (stage === 'dispatcher') {
+                s.w.sendMusicMessage = send; s.w.sendMusicMessageDetailed = detailed;
+                s.w.dispatchEvent(new s.w.Event('music-ui-ready'));
+            }
+            if (stage === 'library') {
+                s.w.APlayer = Player;
+                const script = [...s.w.document.scripts].find(node => /APlayer/.test(node.src));
+                assert.ok(script, 'library wait reached'); script.onload();
+            }
+            if (stage === 'factory') s.completeInit();
+            if (stage === 'interaction unlock') s.w.document.body.click();
+            await s.advance(101);
+            assert.equal(r.events.filter(event => event.kind === 'playing').length, 0);
+            assert.ok(s.players.every(player => player.audio.paused), 'no retired recommendation starts audio');
+            assert.equal(s.w.isMusicPending(), false, 'the owned pending count is released');
+            assert.equal(s.bar(), null, 'canceled initialization releases its own bar');
+            if (invalidation === 'hidden then restored') {
+                assert.equal(r.message.blocks[0].state, 'failed');
+                assert.equal(r.events.filter(event => event.kind === 'failed').length, 1);
+            }
+        });
+    }
+}
+
+test('explicit recommendation remains allowed through delayed play when hidden', async t => {
+    const s = createSurface(t), r = offerRecommendation(s);
+    r.choose(); await flush();
+    Object.defineProperty(s.w.document, 'visibilityState', { get: () => 'hidden' });
+    s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+    await s.advance(101);
+    assert.equal(s.players[0].audio.paused, false);
+    assert.equal(r.events.filter(event => event.kind === 'playing').length, 1);
+});
+
+test('retiring a recommendation does not destroy a replacement player', async t => {
+    const s = createSurface(t), r = offerRecommendation(s);
+    r.show(); await s.advance(10000);
+    const old = s.players[0];
+    const replacement = s.w.dispatchMusicPlayDetailed({ name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3' });
+    await flush();
+    s.w.dispatchEvent(new s.w.Event('react-chat-window:messages-cleared'));
+    await s.advance(101);
+    assert.equal((await replacement).ok, true);
+    assert.equal(s.players.at(-1), old, 'same media can transfer to a new request on the existing player');
+    assert.equal(old._musicPlaybackReportContext.recommendationId, '');
+    assert.equal(s.players.at(-1).destroyed, false);
+    assert.equal(s.players.at(-1).audio.paused, false);
+});
+
+test('hiding after music has started does not cancel playback while metadata is pending', async t => {
+    const s = createSurface(t, { mediaPending: true }), r = offerRecommendation(s);
+    r.show(); await s.advance(10100);
+    const player = s.players[0];
+    assert.equal(player.audio.paused, false);
+    Object.defineProperty(s.w.document, 'visibilityState', { get: () => 'hidden' });
+    s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
+    player.audio.dispatchEvent(new s.w.Event('loadedmetadata'));
+    await flush();
+    assert.equal(player.destroyed, false);
+    assert.equal(player.audio.paused, false);
+    assert.equal(r.events.filter(event => event.kind === 'failed').length, 0);
+});
+
+for (const transport of ['IPC', 'BroadcastChannel']) {
+    for (const awarenessState of [undefined, 1, 3]) {
+        for (const paused of [false, true]) {
+            test(`recommendation handoff preserves final listening facts (${transport}, socket=${awarenessState}, paused=${paused})`, async t => {
+                const { owner, follower } = pair(t, { asyncTransport: true,
+                    ...(transport === 'BroadcastChannel' ? { channelHub: new Set() } : {}) });
+                const r = await startRecommendation(owner, awarenessState);
+                const previousPlayer = owner.players[0];
+                if (paused) previousPlayer.pause();
+                await (await follower.start(true)).promise;
+                await follower.advance(100);
+                await owner.advance(1000);
+                await flush();
+                assert.equal(previousPlayer.destroyed, true, 'new owner retires the old player');
+                assert.equal(follower.players[0].destroyed, false, 'new owner keeps its player');
+                assert.equal(follower.players[0].audio.paused, false);
+                const terminal = r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind));
+                assert.equal(terminal.length, 1, 'handoff records exactly one terminal fact');
+                assert.equal(terminal[0].kind, 'stopped');
+                assert.equal(terminal[0].listened_seconds, 12);
+                assert.equal(terminal[0].position_seconds, 12);
+                assert.equal(terminal[0].playback_id, r.events.find(event => event.kind === 'playing').playback_id);
+                const count = r.events.length;
+                previousPlayer.emit('play'); previousPlayer.emit('pause'); previousPlayer.emit('ended');
+                owner.w.destroyMusicPlayer(true, true, true);
+                await flush();
+                assert.equal(r.events.length, count, 'late callbacks cannot re-open the retired evidence');
+            });
+        }
+    }
+}
+
+for (const [name, startState, endState] of [['missing', undefined, undefined], ['closed', 3, 3],
+    ['open', 1, 1], ['reconnected', 3, 1], ['disconnected after playing', 1, 3]]) {
+    test(`recommendation close reports its final evidence with ${name} awareness socket`, async t => {
+        const s = createSurface(t), r = await startRecommendation(s, startState);
+        if (r.socket) r.socket.readyState = endState;
+        s.clickClose(); await flush();
+        s.w.destroyMusicPlayer(true, true, true); await flush();
+        const terminal = r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind));
+        assert.equal(terminal.length, 1, 'close and repeated teardown produce exactly one terminal event');
+        assert.equal(terminal[0].kind, 'stopped');
+        assert.equal(terminal[0].listened_seconds, 12);
+        assert.equal(terminal[0].position_seconds, 12);
+        assert.equal(r.message.blocks[0].state, 'stopped');
+        if (startState === 3 && endState === 3 || startState === undefined) assert.equal(r.awareness.length, 0);
+    });
+}
+
+for (const state of ['ended', 'failed']) {
+    test(`recommendation ${state} stays terminal after close without awareness socket`, async t => {
+        const s = createSurface(t), r = await startRecommendation(s);
+        if (state === 'ended') s.players[0].finish();
+        else { s.players[0].audio.error = { code: 3 }; s.players[0].emit('error'); await s.advance(220); }
+        await flush();
+        s.clickClose(); await flush();
+        assert.deepEqual(r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind)).map(event => event.kind), [state]);
+        assert.equal(r.message.blocks[0].state, state);
+    });
+}
+
+test('paused recommendation closes with final evidence when awareness never connected', async t => {
+    const s = createSurface(t), r = await startRecommendation(s, 3);
+    s.players[0].pause(); await flush();
+    assert.equal(r.message.blocks[0].state, 'paused');
+    s.clickClose(); await flush();
+    assert.deepEqual(r.events.filter(event => ['paused', 'stopped'].includes(event.kind)).map(event => event.kind), ['paused', 'stopped']);
+    assert.equal(r.events.at(-1).listened_seconds, 12);
+});
+
+test('replacing an offline-started recommendation finalizes only the old evidence identity', async t => {
+    const s = createSurface(t), r = await startRecommendation(s);
+    // Ordinary user intent can adopt the same media through the real dispatcher.
+    const result = await s.w.dispatchMusicPlayDetailed({ name: 'Recommended', artist: 'Neko', url: 'https://music.163.com/test.mp3' });
+    await flush();
+    assert.equal(result.ok, true);
+    s.clickClose(); await flush();
+    const terminal = r.events.filter(event => ['stopped', 'ended', 'failed'].includes(event.kind));
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0].kind, 'stopped');
+    assert.equal(terminal[0].reason, 'replaced');
+    assert.equal(terminal[0].listened_seconds, 12);
+    assert.equal(terminal[0].playback_id, r.events.find(event => event.kind === 'playing').playback_id);
+});
+
+for (const transport of ['Electron IPC', 'web BroadcastChannel']) {
+    test(`${transport} mirrors chat append/update and bookkeeping without echo`, t => {
+        const options=transport==='web BroadcastChannel'?{channelHub:new Set()}:{};
+        const {owner,follower}=pair(t,options);
+        const events=[], messages=new Map();
+        follower.w.reactChatWindowHost={appendMessage(m){messages.set(m.id,m);},
+            updateMessage(id,patch){Object.assign(messages.get(id),patch);}};
+        follower.w.addEventListener('neko:chat-mirror',e=>events.push(e.detail));
+        const message={id:'consent',blocks:[{type:'music_recommendation',state:'pending'}]};
+        owner.w.__nekoMirrorChatAppend(null,message);
+        owner.w.__nekoMirrorChatUpdate(null,'consent',{blocks:[{type:'music_recommendation',state:'skipped'}]});
+        assert.equal(messages.get('consent').blocks[0].state,'skipped');
+        assert.equal(events.length,2);
+        assert.equal(follower.sent.filter(e=>e.type==='chat_mirror'||e.type==='append'||e.type==='update').length,0);
+        assert.equal(owner.players.length+follower.players.length,0);
+    });
+}
 
 for (const stage of ['late player', 'canceled factory', 'rejected factory', 'media wait']) {
     test(`rejected replacement removes superseded bar after ${stage}`, async t => {

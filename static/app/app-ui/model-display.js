@@ -175,6 +175,14 @@
         return currentControls;
     }
 
+    function isModelContainerVisible(container) {
+        return !!(container
+            && !container.classList.contains('minimized')
+            && !container.classList.contains('hidden')
+            && container.style.display !== 'none'
+            && getComputedStyle(container).display !== 'none');
+    }
+
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
@@ -326,11 +334,7 @@
         }
 
         // 检测模型是否已经可见（避免不必要的淡入动画导致闪烁）
-        const isAlreadyVisible = container &&
-            !container.classList.contains('minimized') &&
-            !container.classList.contains('hidden') &&
-            container.style.display !== 'none' &&
-            getComputedStyle(container).display !== 'none';
+        const isAlreadyVisible = isModelContainerVisible(container);
 
         // 教程临时模型与用户模型互换时，工具栏和锁图标可能只残留其中一个；
         // 按当前模型分别校验并自愈，避免从猫咪形态回来后永久缺少锁开关。
@@ -798,6 +802,7 @@
                 console.log('[showCurrentModel] 开始显示VRM模型');
 
                 const vrmContainer = document.getElementById('vrm-container');
+                const isVrmAlreadyVisible = isModelContainerVisible(vrmContainer);
                 console.log('[showCurrentModel] vrmContainer存在:', !!vrmContainer);
                 if (vrmContainer) {
                     // 取消延迟隐藏定时器
@@ -818,11 +823,6 @@
                         window._vrmCanvasFadeInListener = null;
                     }
 
-                    const isVrmAlreadyVisible =
-                        !vrmContainer.classList.contains('minimized') &&
-                        !vrmContainer.classList.contains('hidden') &&
-                        vrmContainer.style.display !== 'none' &&
-                        getComputedStyle(vrmContainer).display !== 'none';
                     const modelReturnEnterRect = !isVrmAlreadyVisible ? I.consumeModelReturnEnterRect() : null;
 
                     const vrmCanvasInner = document.getElementById('vrm-canvas');
@@ -887,12 +887,12 @@
                     live2dContainer.classList.add('hidden');
                 }
 
-                // 检查VRM浮动按钮是否存在
+                // 已显示的工具栏保留悬停状态，避免开麦时先隐藏再重现。
                 const vrmOverlayControls = I.ensureActiveModelOverlayControls('vrm');
                 const vrmFloatingButtons = vrmOverlayControls.floatingButtons;
                 console.log('[showCurrentModel] VRM浮动按钮存在:', !!vrmFloatingButtons, 'vrmManager存在:', !!window.vrmManager);
 
-                if (vrmFloatingButtons) {
+                if (vrmFloatingButtons && !isVrmAlreadyVisible) {
                     if (isMobileViewport()) {
                         vrmFloatingButtons.style.removeProperty('display');
                         vrmFloatingButtons.style.removeProperty('visibility');
@@ -905,7 +905,7 @@
                 }
 
                 const vrmLockIcon = vrmOverlayControls.lockIcon || document.getElementById('vrm-lock-icon');
-                if (vrmLockIcon) {
+                if (vrmLockIcon && !isVrmAlreadyVisible) {
                     if (isMobileViewport()) {
                         vrmLockIcon.style.removeProperty('display');
                         vrmLockIcon.style.removeProperty('visibility');
@@ -917,7 +917,7 @@
                     }
                 }
 
-                if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
+                if (!isVrmAlreadyVisible && window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
                     window.vrmManager.core.setLocked(false);
                 }
 
@@ -973,6 +973,7 @@
 
                 // 显示 MMD 容器
                 const mmdContainer = document.getElementById('mmd-container');
+                const isMmdAlreadyVisible = isModelContainerVisible(mmdContainer);
                 const modelReturnEnterRect = mmdContainer ? I.consumeModelReturnEnterRect() : null;
                 if (mmdContainer) {
                     I.prepareModelReturnContainer(mmdContainer, modelReturnEnterRect, { clearPointerEvents: true });
@@ -986,19 +987,21 @@
                     mmdCanvas.style.setProperty('visibility', 'visible', 'important');
                     mmdCanvas.style.setProperty('pointer-events', 'auto', 'important');
                     // 渐入动画
-                    mmdCanvas.style.transition = 'none';
-                    mmdCanvas.style.opacity = '0';
-                    void mmdCanvas.offsetWidth;
-                    mmdCanvas.style.transition = I.NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION;
-                    mmdCanvas.style.opacity = '1';
-                    if (window._mmdCanvasFadeInId) clearTimeout(window._mmdCanvasFadeInId);
-                    window._mmdCanvasFadeInId = setTimeout(() => {
-                        if (mmdCanvas) {
-                            mmdCanvas.style.transition = '';
-                            mmdCanvas.style.opacity = '';
-                        }
-                        window._mmdCanvasFadeInId = null;
-                    }, I.NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS);
+                    if (!isMmdAlreadyVisible) {
+                        mmdCanvas.style.transition = 'none';
+                        mmdCanvas.style.opacity = '0';
+                        void mmdCanvas.offsetWidth;
+                        mmdCanvas.style.transition = I.NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION;
+                        mmdCanvas.style.opacity = '1';
+                        if (window._mmdCanvasFadeInId) clearTimeout(window._mmdCanvasFadeInId);
+                        window._mmdCanvasFadeInId = setTimeout(() => {
+                            if (mmdCanvas) {
+                                mmdCanvas.style.transition = '';
+                                mmdCanvas.style.opacity = '';
+                            }
+                            window._mmdCanvasFadeInId = null;
+                        }, I.NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS);
+                    }
                 }
 
                 // 隐藏 VRM
@@ -1011,10 +1014,10 @@
                 const live2dContainerMmd = document.getElementById('live2d-container');
                 if (live2dContainerMmd) { live2dContainerMmd.style.display = 'none'; live2dContainerMmd.classList.add('hidden'); }
 
-                // 显示 MMD 浮动按钮
+                // 与 VRM 一致，已显示的工具栏保留当前状态。
                 const mmdOverlayControls = I.ensureActiveModelOverlayControls('mmd');
                 const mmdFloatingButtons = mmdOverlayControls.floatingButtons;
-                if (mmdFloatingButtons) {
+                if (mmdFloatingButtons && !isMmdAlreadyVisible) {
                     const isMmdMobile = typeof window.isMobileWidth === 'function'
                         ? window.isMobileWidth()
                         : (window.innerWidth <= 768);
@@ -1066,13 +1069,17 @@
 
             } else if (effectiveModelType === 'pngtuber') {
                 const pngtuberContainer = document.getElementById('pngtuber-container');
+                const isPngtuberAlreadyVisible = !!(window.pngtuberManager && window.pngtuberManager.image
+                    && isModelContainerVisible(pngtuberContainer));
+                // 复用已显示的模型和工具栏；返回时暂存的摆放配置仍需加载。
+                const shouldLoadPngtuber = !isPngtuberAlreadyVisible || !!I.pendingPngtuberReturnConfig;
                 const basePngtuberConfig = catgirlConfig.pngtuber || catgirlConfig._reserved?.avatar?.pngtuber || window.lanlan_config?.pngtuber || {};
                 const pngtuberConfig = I.pendingPngtuberReturnConfig
                     ? Object.assign({}, basePngtuberConfig, I.pendingPngtuberReturnConfig)
                     : basePngtuberConfig;
                 I.pendingPngtuberReturnConfig = null;
 
-                if (window.loadPNGTuberAvatar) {
+                if (shouldLoadPngtuber && window.loadPNGTuberAvatar) {
                     await window.loadPNGTuberAvatar(pngtuberConfig);
                 }
                 if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
@@ -1124,9 +1131,6 @@
                     if (lockIcon) lockIcon.style.display = 'none';
                 });
 
-                if (window.pngtuberManager && typeof window.pngtuberManager.setupFloatingButtons === 'function') {
-                    window.pngtuberManager.setupFloatingButtons();
-                }
                 I.ensureActiveModelOverlayControls('pngtuber');
             } else {
                 // 显示 Live2D 模型

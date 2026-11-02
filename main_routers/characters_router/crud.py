@@ -84,6 +84,9 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
+from utils.api_config_loader import (  # noqa: F401 - re-exported by the characters_router facade
+    DEFAULT_NEW_CHARACTER_FREE_VOICE_ID as DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
+)
 from utils.asyncio_retirement import await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
@@ -124,21 +127,19 @@ from services.theater.numeric_v2_maintenance import (
 )
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
-
-
-DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+from services.chat_sync import host as _chat_sync_host
 
 
 def _get_new_catgirl_default_voice_id() -> str:
-    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
-    from utils.api_config_loader import get_free_voices
+    """Late-bound alias of ``utils.api_config_loader.get_new_character_default_voice_id``.
 
-    free_voices = get_free_voices() or {}
-    return (
-        free_voices.get('cuteGirl')
-        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
-        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
-    )
+    add_catgirl looks this name up here, so patching it still reaches that
+    route; resolving the utils attribute at call time keeps patches of the
+    utils function effective too, and survives ``importlib.reload`` of crud.
+    """
+    from utils import api_config_loader
+
+    return api_config_loader.get_new_character_default_voice_id()
 
 
 EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"
@@ -1151,6 +1152,16 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     return result
 
 
+# Chat sync's confirmed remote rename (services layer) reuses this exact
+# transaction. The lambda looks the function up on every call, so patches of
+# _rename_catgirl_serialized reach chat sync and reload(crud) just reinstalls.
+_chat_sync_host.install_rename_transaction(
+    rename_character=lambda old_name, new_name, *, sync_commit=None: _rename_catgirl_serialized(
+        old_name, new_name, sync_commit=sync_commit,
+    ),
+)
+
+
 async def _visit_name_refusal(config_manager, name: str, label: str):
     """409 while ``name`` is held by a pending retirement or rename of the visit data (design OD-13)."""
     from main_routers.visit_router import character_hooks as visit_hooks
@@ -2063,6 +2074,78 @@ async def _delete_catgirl_by_name(name: str):
             return await _delete_catgirl_by_name_serialized(name)
         finally:
             end_character_mutation(name)
+
+
+async def _delete_synced_character(uid: str, before_delete):
+    """Apply an authenticated remote deletion by UID under the ordinary lifecycle lock."""
+    from utils.config_manager import assign_new_character_uid
+    from utils.config_manager.reserved_schema import ensure_catgirl_character_id
+
+    async with character_config_mutation_lock:
+        await before_delete()
+        cm = get_config_manager()
+        characters = await cm.aload_characters()
+        name = next((key for key, raw in characters.get('猫娘', {}).items()
+                     if isinstance(raw, dict) and get_character_uid(raw) == uid), None)
+        if name is None:
+            return True
+        managers = get_session_manager() or {}
+        sockets = [manager.websocket for manager in managers.values() if getattr(manager, 'websocket', None)]
+        if _chat_sync_host.conversation_busy(managers.get(name)) or is_character_lifecycle_locked(name):
+            return False
+        previous_current = characters.get('当前猫娘', '')
+        switched = previous_current == name
+        fallback = None
+        created_fallback = False
+        success = False
+        try:
+            if switched:
+                fallback = next((key for key in characters['猫娘'] if key != name), None)
+                if fallback is None:
+                    default_name, default_role = next(iter(cm.get_default_characters()['猫娘'].items()))
+                    fallback = default_name if default_name != name else f"{default_name} (2)"
+                    default_role = copy.deepcopy(default_role)
+                    assign_new_character_uid(default_role)
+                    ensure_catgirl_character_id(default_role)
+                    characters['猫娘'][fallback] = default_role
+                    created_fallback = True
+                characters['当前猫娘'] = fallback
+                await before_delete()
+                await cm.asave_characters(characters)
+                if created_fallback:
+                    await get_init_one_catgirl()(fallback, is_new=False)
+                await get_switch_current_catgirl_fast()()
+                await force_disable_agent_for_character_switch(fallback, name)
+            await before_delete()
+            result = await _delete_catgirl_by_name_serialized(name)
+            success = isinstance(result, dict) and result.get('success') is True
+        finally:
+            end_character_mutation(name)
+            if switched and not success:
+                async def restore_previous_character():
+                    latest = await cm.aload_characters()
+                    if name in latest.get('猫娘', {}):
+                        latest['当前猫娘'] = previous_current
+                        if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
+                            del latest['猫娘'][fallback]
+                        await cm.asave_characters(latest)
+                        if created_fallback:
+                            await get_remove_one_catgirl()(fallback)
+                        await get_switch_current_catgirl_fast()()
+                try:
+                    await _await_cleanup_to_completion(restore_previous_character())
+                except (Exception, asyncio.CancelledError):
+                    logger.exception("Failed to restore current character after sync deletion")
+        if success and switched:
+            frame = json.dumps({'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback})
+            await asyncio.gather(*(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
+                                 return_exceptions=True)
+        return success
+
+
+_chat_sync_host.install_delete_transaction(
+    delete_character=lambda uid, before_delete: _delete_synced_character(uid, before_delete),
+)
 
 
 async def _cleanup_deleted_chat_avatar(directory, uid):

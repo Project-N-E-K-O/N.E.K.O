@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
+      - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
@@ -25,6 +26,7 @@ on:
     branches: [main]
     paths:
       - 'plugin/**'
+      - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -39,6 +41,36 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plugin-process-startup:
+    name: Plugin process startup (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Exercise real fork and exec creation
+        # The Windows suite skips POSIX fork tests. Keep the actual inherited
+        # pipe race and child-side lock reset on a platform that executes them.
+        run: >-
+          uv run pytest
+          plugin/tests/unit/core/test_process_creation.py
+          plugin/tests/unit/server/test_plugin_process_creation.py
+          plugin/tests/unit/server/test_plugin_metadata_scanner.py
+          plugin/tests/unit/server/test_autostart_concurrency.py
+          plugin/tests/unit/core/test_host_model_gateway.py
+          plugin/tests/unit/core/test_host_socket_inheritance.py
+          plugin/tests/unit/server/test_plugin_operation_lock.py
+          plugin/tests/integration/test_lifecycle_control_rpc.py
+          plugin/tests/integration/test_concurrent_plugin_startup.py
+          -q
+
   plugin-pytest:
     name: Plugin pytest (Windows)
     # windows-latest, not ubuntu: the plugin suite exercises Windows-specific

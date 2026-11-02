@@ -30,6 +30,7 @@ import re
 import asyncio
 import secrets
 import threading
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -39,6 +40,7 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+    EXTERNAL_IMPORT_DAILY_CALL_INTERVAL,
     EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     EXTERNAL_IMPORT_DAILY_MAX_FILES,
@@ -338,6 +340,19 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # Per-character file locks.
         self._locks_guard = threading.Lock()  # Protect the _locks dictionary itself.
         self._persist_alocks: dict[str, asyncio.Lock] = {}
+        # Courtesy call-start interval for external daily imports: it lives on the shared FactStore, so several characters
+        # importing at once share one interval (they share one provider quota).
+        # The last call time is stored on the gate lock object (gate.last_call_at), so sharing this one lock
+        # when the runtime hot-replaces the FactStore shares the interval state as well.
+        # Built at construction (not lazily): runtime hot replacement copies this object to the new
+        # FactStore, and a lazily built gate could be copied as None, leaving old and new imports with separate gates.
+        # asyncio.Lock only binds an event loop on its first wait, so creating it at construction is safe.
+        self._external_daily_call_gate: asyncio.Lock = asyncio.Lock()
+        self._external_daily_call_gate.last_call_at = 0.0
+        # Ordering hint for segmented external daily imports: days extracted in this process whose facts all matched existing
+        # facts and left no completion marker ({character: {day fingerprint}}). Only used to order them after deferred days;
+        # never skips a day on its own and is never persisted, so a rollback or restart clears it and restores the original order, keeping rollback self-healing intact.
+        self._external_daily_deduped_fps: dict[str, set[str]] = {}
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
@@ -2784,10 +2799,26 @@ class FactStore:
         max_retries: int = 3,
         timeout: float = 60,
         thinking: bool = False,
+        parse_max_retries: int | None = None,
+        failure_info: dict | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
         terminal failure (caller decides whether to abort / swallow).
+
+        ``parse_max_retries`` caps JSON-parse failures separately (``None`` =
+        same as ``max_retries``). A caller with its own fallback for malformed
+        or truncated output (the external daily import splits the batch) sets
+        it to 1 while network errors / 429 / 5xx keep the full backoff budget.
+
+        ``failure_info``: on terminal failure, ``failure_info["reason"]`` is set
+        to ``"parse"`` (the last attempt returned unparseable JSON) or
+        ``"transport"`` (network / provider / other error), so a caller can
+        tell output it might repair from an outage it cannot.
+
+        ``before_attempt`` is awaited before every provider attempt, retries
+        included (the external daily import paces all its calls through it).
 
         Note: no longer accepts temperature. The project-wide convention is to
         never send that parameter (gatekeeper: scripts/check_no_temperature.py).
@@ -2812,12 +2843,18 @@ class FactStore:
         from memory.thinking_llm import ainvoke_thinking, describe_output
 
         retries = 0
+        parse_failures = 0
+        last_failure = "transport"
         while retries < max_retries:
             resp = None
             try:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
                 if thinking:
+                    # Keep the hook right before the actual request: config reads / client construction can also suspend, and putting it before them
+                    # would scramble the real call-start order of concurrent requests
+                    if before_attempt is not None:
+                        await before_attempt()
                     resp, _ = await ainvoke_thinking(
                         api_config, prompt, timeout=timeout,
                         call_label=f"{lanlan_name} {call_type}",
@@ -2833,6 +2870,8 @@ class FactStore:
                         provider_type=api_config.get('provider_type'),
                     )
                     try:
+                        if before_attempt is not None:
+                            await before_attempt()
                         resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
                     finally:
                         await llm.aclose()
@@ -2841,6 +2880,7 @@ class FactStore:
                 return robust_json_loads(raw)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 retries += 1
+                last_failure = "transport"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} 网络错误 {type(e).__name__}, "
                     f"重试 {retries}/{max_retries}"
@@ -2850,15 +2890,20 @@ class FactStore:
                 continue
             except json.JSONDecodeError as e:
                 retries += 1
+                parse_failures += 1
+                last_failure = "parse"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
                     f"(重试 {retries}/{max_retries}): {e} ({describe_output(resp)})"
                 )
+                if parse_max_retries is not None and parse_failures >= parse_max_retries:
+                    break
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
             except Exception as e:
                 retries += 1
+                last_failure = "transport"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} 失败 "
                     f"(重试 {retries}/{max_retries}): {type(e).__name__}: {e}"
@@ -2870,12 +2915,17 @@ class FactStore:
         logger.warning(
             f"[FactStore] {lanlan_name}: {call_type} 达到最大重试 {max_retries}，放弃"
         )
+        if failure_info is not None:
+            failure_info["reason"] = last_failure
         return None
 
     async def _allm_extract_facts(
         self, lanlan_name: str, messages: list,
         *, treat_malformed_as_failure: bool = False,
         speaker_label: str | None = None,
+        parse_max_retries: int | None = None,
+        failure_info: dict | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2920,6 +2970,9 @@ class FactStore:
             prompt, lanlan_name,
             tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
             call_type="memory_fact_extraction",
+            parse_max_retries=parse_max_retries,
+            failure_info=failure_info,
+            before_attempt=before_attempt,
         )
         if extracted is None:
             return None
@@ -2929,6 +2982,8 @@ class FactStore:
                     f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
                     f"{type(extracted).__name__}，当作抽取失败（可重试，不 checkpoint）"
                 )
+                if failure_info is not None:
+                    failure_info["reason"] = "schema"
                 return None
             logger.warning(
                 f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
@@ -5201,6 +5256,7 @@ class FactStore:
     async def aimport_external_daily(
         self, lanlan_name: str, candidates: list[dict], source_format: str,
         imported_at: str,
+        on_progress: Callable[[dict], None] | None = None,
     ) -> dict:
         """LLM-extract facts from imported daily journals (Stage-1, no signals).
 
@@ -5211,7 +5267,9 @@ class FactStore:
         file (one file == one day); each day's fragments are joined into a single
         user turn and extracted independently so the day's ``event_date`` can be
         stamped onto every fact it yields. A day whose joined fragments exceed
-        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` is split into multiple
+        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` — or the per-batch fragment
+        cap in ``batch_daily_fragments`` (dense days otherwise overflow the
+        4096 output guard in a single call) — is split into multiple
         extraction batches (``batch_daily_fragments``) rather than truncated —
         no journal tail is silently dropped (Greptile P1). Days run concurrently
         under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
@@ -5242,13 +5300,23 @@ class FactStore:
         re-extraction output is absorbed by the same-date FTS5 dedup in
         ``_apersist_new_facts``.
 
-        After fingerprint filtering, more than ``EXTERNAL_IMPORT_DAILY_MAX_FILES``
-        genuinely-new days raises ``ExternalMemoryImportTooLargeError`` — an
-        unbounded workspace would mean hundreds of LLM calls and blow the 240s
-        window even under bounded concurrency; the frontend guides splitting
-        the import, and already-imported days keep skipping for free (Codex P2).
+        After fingerprint filtering, the genuinely-new days are capped at
+        ``EXTERNAL_IMPORT_DAILY_MAX_FILES`` extraction calls per import (an
+        unbounded workspace would mean hundreds of LLM calls and blow the
+        forwarding window even under bounded concurrency, Codex P2). Over the
+        cap, the oldest days that fit are imported and the rest are deferred
+        (``deferred_days``): the caller reports a retryable partial result, and
+        each re-import skips the finished days by fingerprint and continues
+        with the next ones, so any history converges in a few imports. Files
+        never imported before go first, then previously imported files whose
+        content changed (their facts often all dedupe and leave no fingerprint,
+        so putting them first would re-select them forever). A day that alone
+        needs more calls than the cap can never run; it is set aside
+        (``oversized_days``) instead of blocking later days, and only when
+        nothing else is left does ``ExternalMemoryImportTooLargeError`` raise.
 
-        Returns ``{'added': int, 'days': int, 'failed_days': int, 'skipped_days': int}``.
+        Returns ``{'added': int, 'days': int, 'failed_days': int,
+        'skipped_days': int, 'deferred_days': int, 'oversized_days': int}``.
         """
         from memory.external_markdown_import import batch_daily_fragments
         from memory.persona.fusion import ExternalMemoryImportTooLargeError
@@ -5296,9 +5364,10 @@ class FactStore:
         skipped_days = len(by_file) - len(pending)
 
         # Precompute batches and cap total extraction calls, not days: one huge diary file can split into
-        # dozens of serial calls, with len(pending) failing to prevent the 240s wall (Codex P2). tiktoken
-        # encoding is synchronous CPU work; offload to thread pool.
-        batches_by_file: dict[str, list[str]] = await asyncio.to_thread(
+        # dozens of serial calls, with len(pending) failing to prevent the forwarding wall (Codex P2). tiktoken
+        # encoding is synchronous CPU work; offload to thread pool. Batches keep fragment groups (not joined
+        # text) so a failed batch can be split in half adaptively without re-parsing the joined string.
+        groups_by_file: dict[str, list[list[str]]] = await asyncio.to_thread(
             lambda: {
                 source_file: batch_daily_fragments(
                     [p for p in (str(g.get("text") or "").strip() for g in group) if p],
@@ -5307,26 +5376,122 @@ class FactStore:
                 for source_file, group in pending.items()
             }
         )
-        total_batches = sum(len(b) for b in batches_by_file.values())
+        total_batches = sum(len(b) for b in groups_by_file.values())
+        deferred_days = 0
+        oversized_days = 0
         if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
-            raise ExternalMemoryImportTooLargeError(
-                f"daily import needs {total_batches} extraction calls across "
-                f"{len(pending)} new journal days (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); "
-                "split the workspace"
+            # Segmented resume: over the per-import call cap, the days that fit run now and the rest are deferred to the next
+            # import. Finished days skip by daily fingerprint, so every re-import moves further ahead and
+            # any number of days converges within a few imports, as long as each day fits one import (Molili archives cannot be split; rejecting the whole archive would
+            # leave long-time users unable to import ever).
+            # - Days that alone exceed the cap are set aside (oversized): retrying cannot progress them, but they must not
+            #   block later dates; only when nothing else is left are they rejected as too_large.
+            # - Never-imported files go first, then files imported before whose content changed, each from
+            #   earliest to latest: facts extracted from edited old diaries often all dedupe against existing facts,
+            #   such days record no completion marker (see _aload_imported_day_fps, kept for rollback self-healing),
+            #   and if they came first they would be re-selected every time and fill the budget, starving the genuinely new dates.
+            # Days just tried in this process whose facts all deduped go last: otherwise they are re-selected every time and
+            # fill the budget, so deferred days never get their turn (e.g. the same history was already imported from another source).
+            recently_deduped = self._external_daily_deduped_fps.get(lanlan_name, set())
+            previously_imported_files = {
+                str(meta.get('file'))
+                for f in await self.aload_facts_full(lanlan_name)
+                if isinstance(meta := f.get('external_import'), dict) and meta.get('file')
+            }
+            ordered = sorted(
+                groups_by_file,
+                key=lambda f: (
+                    day_fps[f] in recently_deduped,
+                    f in previously_imported_files,
+                    day_dates.get(f) or "",
+                    f,
+                ),
             )
+            oversized = [
+                f for f in ordered if len(groups_by_file[f]) > EXTERNAL_IMPORT_DAILY_MAX_FILES
+            ]
+            oversized_set = set(oversized)
+            selectable = [f for f in ordered if f not in oversized_set]
+            if not selectable:
+                raise ExternalMemoryImportTooLargeError(
+                    f"daily journal {oversized[0]} alone needs "
+                    f"{len(groups_by_file[oversized[0]])} extraction calls "
+                    f"(cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split that day"
+                )
+            if all(day_fps[f] in recently_deduped for f in selectable):
+                # Every remaining day already ran in this process and all of its facts
+                # deduped against existing ones, so re-running them cannot add anything and
+                # (having no completion fingerprint) they would be re-selected forever. Count
+                # them as skipped and let this import finish. The hint is in-memory only:
+                # a reload / restart clears it and the next import tries them again.
+                logger.info(
+                    f"[FactStore] {lanlan_name}: {len(selectable)} remaining daily journal(s) "
+                    "already deduped entirely in this process; finishing the import"
+                )
+                skipped_days += len(selectable)
+                selectable = []
+            selected: list[str] = []
+            used_calls = 0
+            for source_file in selectable:
+                calls = len(groups_by_file[source_file])
+                if used_calls + calls > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+                    break
+                selected.append(source_file)
+                used_calls += calls
+            deferred_days = len(selectable) - len(selected)
+            oversized_days = len(oversized)
+            logger.info(
+                f"[FactStore] {lanlan_name}: 外部 daily 导入超过单次 "
+                f"{EXTERNAL_IMPORT_DAILY_MAX_FILES} 次调用上限，本次先导 "
+                f"{len(selected)} 天（{used_calls} 次调用），{deferred_days} 天顺延到下次导入，"
+                f"{oversized_days} 天单独超上限"
+            )
+            pending = {source_file: pending[source_file] for source_file in selected}
+            groups_by_file = {source_file: groups_by_file[source_file] for source_file in selected}
+            total_batches = used_calls
+        # Progress reporting (for the external import progress bar): report the total first, then +1 per finished batch
+        if on_progress is not None:
+            on_progress({'daily_total': total_batches, 'daily_done': 0})
 
+        daily_progress = {'done': 0}
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
+        # Extra call budget for split-in-half recursion: the cap above only counts the pre-split batches, and each split of a failed batch
+        # adds 2 calls. The budget matches the cap (total calls <= 2x cap); once spent, failed batches
+        # fail the day directly (day-atomic, retryable) instead of recursing unboundedly into the forwarding timeout.
+        split_budget = {'left': EXTERNAL_IMPORT_DAILY_MAX_FILES}
+
+        # Free-tier courtesy interval: the minimum gap between any two extraction call starts (across days / batches, and across
+        # concurrent imports of several characters, since the lock and timestamp live on the shared FactStore), turning
+        # concurrency bursts into a steady pace. Concurrency slots bound how many calls are in flight; this interval bounds the
+        # start rate; together they actually spare free quotas / WAFs. The lock only covers the time arithmetic and
+        # sleep, never the LLM call itself (so it does not extend concurrency slot residency).
+        call_gate = self._external_daily_call_gate
+
+        async def _polite_gap() -> None:
+            if EXTERNAL_IMPORT_DAILY_CALL_INTERVAL <= 0:
+                return
+            async with call_gate:
+                now = asyncio.get_running_loop().time()
+                wait = call_gate.last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                call_gate.last_call_at = asyncio.get_running_loop().time()
 
         async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
             """One day's extraction+persist; returns (added, day_failed)."""
             event_date = day_dates[source_file]
-            batches = batches_by_file[source_file]
-            # Extract all batches for a day before persistence; any failed batch prevents persisting the entire day.
-            # Persisting early batches with full-day fingerprints before later failure makes retries skip the whole day,
-            # permanently losing failed content (Greptile P1). Atomic days leave no facts/fingerprints on failure, retrying
-            # from scratch; gather likewise counts persistence crashes as failed_days without fingerprint residue.
-            day_extracted: list[dict] = []
-            for batch_text in batches:
+
+            async def _extract_group(fragments: list[str], depth: int) -> list[dict] | None:
+                """One batch's extraction; ``None`` = day-terminal failure.
+
+                The dominant failure shape is the batch's output JSON hitting
+                the 4096 output guard mid-JSON -- blind retries of the same
+                batch re-truncate. Split in half and retry each half instead:
+                halves halve the output size and dense days converge under the
+                guard; a single fragment that still fails is a real failure.
+                Day-atomic semantics unchanged -- any leaf failure propagates
+                up, nothing persists, no fingerprint residue."""
+                batch_text = "\n".join(fragments)
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
                 )
@@ -5334,28 +5499,74 @@ class FactStore:
                 # per-character locks. Keep writes outside slots so other days' LLM calls start sooner.
                 # Malformed non-arrays are retryable failed days, never empty-extraction sidecar checkpoints,
                 # which would skip later LLM calls and silently lose that day's facts (Codex P2).
+                # Arrays without object elements, or mixing elements persistence would drop, are equally
+                # strict (split fallback): _apersist_new_facts_locked silently drops non-dicts and dicts
+                # without a valid text, so accepting the batch and recording its fingerprint would make
+                # re-imports skip the dropped content forever (wehos 14 / coderabbit).
+                def _persistable_element(element: object) -> bool:
+                    # Must mirror _apersist_new_facts_locked's drop conditions one-to-one (not
+                    # _as_fact_entry, which promotes bare strings; this path does not).
+                    if not isinstance(element, dict):
+                        return False
+                    text = element.get('text')
+                    return isinstance(text, str) and bool(text.strip())
+
+                failure: dict = {}
                 async with llm_slots:
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
+                        failure_info=failure,
+                        # The courtesy interval runs before every actual request (including internal network retries): under rate limiting
+                        # retries must queue too instead of starting alongside other batches.
+                        before_attempt=_polite_gap,
+                        # Truncation-type failures go to _extract_group's split-in-half recursion (each half is itself
+                        # a subset retry); blindly retrying the same batch 3 times is pure waste, so split after 1 parse failure.
+                        # Parse failures only: network errors / 429 / 5xx still retry with full backoff,
+                        # since a single-fragment batch cannot be split and one hiccup must not drop the whole day.
+                        parse_max_retries=1,
                     )
-                if extracted is None:
+                has_malformed_elements = (
+                    extracted is not None and any(not _persistable_element(f) for f in extracted)
+                )
+                if extracted is None or has_malformed_elements:
+                    # Only output-type failures (parse failure / wrong shape) might be fixed by splitting; network /
+                    # 429 / 5xx failures after full backoff would only burn more quota and time if split.
+                    output_failure = extracted is not None or failure.get("reason") in {"parse", "schema"}
+                    if output_failure and len(fragments) >= 2 and depth < 6 and split_budget['left'] >= 2:
+                        split_budget['left'] -= 2
+                        mid = len(fragments) // 2
+                        logger.warning(
+                            f"[FactStore] {lanlan_name}: 外部 daily 抽取批次失败，"
+                            f"拆半重试（{len(fragments)} 片段 → {mid}+{len(fragments) - mid}）"
+                        )
+                        left = await _extract_group(fragments[:mid], depth + 1)
+                        if left is None:
+                            return None
+                        right = await _extract_group(fragments[mid:], depth + 1)
+                        if right is None:
+                            return None
+                        return left + right
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
                         f"放弃 {source_file}（整天重试重抽）"
                     )
-                    return 0, True
-                batch_facts = [f for f in extracted if isinstance(f, dict)]
-                if extracted and not batch_facts:
-                    # Nonempty arrays without object elements (e.g. ["Master likes tea"]) are schema failures,
-                    # not confirmed empty extraction; treat_malformed_as_failure rejects non-arrays only,
-                    # not arrays wrapping strings. Treat as retryable failed days, avoiding empty checkpoints
-                    # that silently skip future LLM extraction and lose facts (Codex P2).
-                    logger.warning(
-                        f"[FactStore] {lanlan_name}: 外部 daily 抽取返回无 object 元素的"
-                        f"数组，放弃 {source_file}（整天重试重抽）"
-                    )
+                    return None
+                return [f for f in extracted if isinstance(f, dict)]
+
+            # Extract all batches for a day before persistence; any failed batch prevents persisting the entire day.
+            # Persisting early batches with full-day fingerprints before later failure makes retries skip the whole day,
+            # permanently losing failed content (Greptile P1). Atomic days leave no facts/fingerprints on failure, retrying
+            # from scratch; gather likewise counts persistence crashes as failed_days without fingerprint residue.
+            # Failed batches no longer retry blindly; they split in half recursively (see _extract_group).
+            day_extracted: list[dict] = []
+            for fragments in groups_by_file[source_file]:
+                batch_facts = await _extract_group(fragments, 0)
+                if batch_facts is None:
                     return 0, True
                 day_extracted.extend(batch_facts)
+                daily_progress['done'] += 1
+                if on_progress is not None:
+                    on_progress({'daily_done': daily_progress['done']})
             if not day_extracted:
                 # Empty-extraction days: LLM found no facts, leaving sidecar as sole fingerprint carrier;
                 # otherwise every reimport re-extracts the day and consumes cap allowance (Codex P2 follow-up).
@@ -5412,6 +5623,11 @@ class FactStore:
             #    A concurrent empty-extraction sidecar would defeat that recovery.
             # Most days lack this sidecar fingerprint, returning after one stat (Codex).
             await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
+            if not new_facts:
+                # Facts were extracted but all deduped: record no completion marker (see above), only the in-process ordering hint
+                self._external_daily_deduped_fps.setdefault(lanlan_name, set()).add(
+                    day_fps[source_file]
+                )
             return len(new_facts), False
 
         outcomes = await asyncio.gather(
@@ -5437,6 +5653,8 @@ class FactStore:
             "days": len(by_file),
             "failed_days": failed_days,
             "skipped_days": skipped_days,
+            "deferred_days": deferred_days,
+            "oversized_days": oversized_days,
         }
 
     @staticmethod

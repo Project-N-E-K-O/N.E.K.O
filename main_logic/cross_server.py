@@ -170,7 +170,7 @@ def normalize_assistant_text(text, tool_names=None):
     return normalize_text(head + stripped)
 
 
-# Mirror schema + detection now lives in main_logic.mirror_meta;
+# Mirror schema + detection lives in utils.mirror_meta (re-exported by main_logic.mirror_meta);
 # cross_server only consumes those helpers — does not own the schema.
 from main_logic.mirror_meta import (
     MIRROR_USER_INPUT_TYPES,
@@ -216,7 +216,7 @@ def merge_unsynced_tail_assistants(chat_history, last_synced_index):
         return 0
 
     # Keep only the latest proactive message, discarding older redundancy to avoid persistent-memory growth.
-    merged = {'role': 'assistant', 'content': [{'type': 'text', 'text': parts[-1]}]}
+    merged = {**chat_history[-1], 'content': [{'type': 'text', 'text': parts[-1]}]}
     removed = consecutive - 1
     chat_history[first_idx:] = [merged]
     logger.info(f"[cleanup] 精简了 {consecutive} 条未同步的连续主动搭话消息，仅保留最后一条")
@@ -327,7 +327,7 @@ def _latest_user_message_has_source(messages: list[dict], source: str) -> bool:
     return False
 
 
-def _append_user_input_cache_to_history(chat_history: list, text: object, sources: set[str]) -> bool:
+def _append_user_input_cache_to_history(chat_history: list, text: object, sources: set[str], proof=None) -> bool:
     user_text = str(text or "")
     if not user_text:
         sources.clear()
@@ -339,9 +339,19 @@ def _append_user_input_cache_to_history(chat_history: list, text: object, source
         item["metadata"] = {"sources": normalized_sources}
         if len(normalized_sources) == 1:
             item["source"] = normalized_sources[0]
+    if proof:
+        item.setdefault("metadata", {})["chat_original_source"] = dict(proof)
     chat_history.append(item)
     sources.clear()
     return True
+
+
+def _assistant_history_message(text, proof):
+    """Preserve producer identity in the original archive, outside model context."""
+    item = {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}
+    if proof:
+        item['metadata'] = {'chat_original_source': dict(proof)}
+    return item
 
 
 def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
@@ -941,9 +951,11 @@ async def run_sync_connector(
         )
 
     user_input_cache = ''
+    user_input_proof = None
     user_input_sources: set[str] = set()
     text_output_cache = ''  # lanlan's current message.
     text_output_request_id = None
+    text_output_proof = None
     # Raw originals use server-created identities and never normalized memory text.
     original_output = AssistantOriginalBuffer(tail_grace=LATE_TEXT_GRACE_SECONDS)
     current_turn = 'user'
@@ -983,12 +995,14 @@ async def run_sync_connector(
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
-                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''
                                 current_turn = 'assistant'
                                 text_output_request_id = message["data"].get("request_id")
                                 current_turn_start_index = len(chat_history)
                                 text_output_cache = datetime.now().strftime('[%Y%m%d %a %H:%M] ')
+                                text_output_proof = message['data'].get('chat_original_source')
+                                text_output_proof = dict(text_output_proof) if isinstance(text_output_proof, dict) else None
 
                                 if bullet_slot is not None and bullet_slot.ws is not None:
                                     try:
@@ -1034,6 +1048,7 @@ async def run_sync_connector(
                                 for source_value in _iter_source_values(transcript_metadata.get("sources")):
                                     user_input_sources.add(source_value)
                             if user_input_cache == '':
+                                user_input_proof = message['data'].get('chat_original_source')
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})  # Interrupt frontend audio playback.
                             user_input_cache += data
                             # Send user transcripts to monitor for secondary-terminal display.
@@ -1068,6 +1083,8 @@ async def run_sync_connector(
                                 # Provenance only: keep the whole reply local,
                                 # without changing memory or forwarding a UI event.
                                 original_output.mark_tool(message.get("chat_original_id"))
+                                if text_output_proof and text_output_proof.get('recordId') == message.get('chat_original_id'):
+                                    text_output_proof['origin'] = 'tool'
                                 continue
                             if message["data"] == "google disconnected":
                                 original_output.discard()
@@ -1076,12 +1093,14 @@ async def run_sync_connector(
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                             
                             elif message["data"] == "response_discarded_clear":
                                 original_output.discard()
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                             
                             if message["data"] == "renew session":
                                 # Check shutdown state.
@@ -1093,7 +1112,7 @@ async def run_sync_connector(
                                 
                                 # First process unfinished user-input buffers, if any.
                                 if user_input_cache:
-                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''
                                 
                                 # Then process unfinished output buffers, if any.
@@ -1101,9 +1120,10 @@ async def run_sync_connector(
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
-                                            {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
+                                            _assistant_history_message(text_output_cache, text_output_proof))
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                                 current_turn_start_index = len(chat_history)
                                 # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -1190,6 +1210,7 @@ async def run_sync_connector(
                                         original_output.discard()
                                         text_output_cache = ''
                                         text_output_request_id = None
+                                        text_output_proof = None
                                         current_turn = 'user'
                                         current_turn_start_index = len(chat_history)
                                         had_user_input_this_turn = False
@@ -1205,9 +1226,10 @@ async def run_sync_connector(
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
-                                        {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
+                                        _assistant_history_message(text_output_cache, text_output_proof))
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                                 # Only kind == 'avatar_interaction' enters isolation; otherwise process as
                                 # proactive / normal.
                                 # Core labels turn-end meta atomically and clears it if user input takes over avatar
@@ -1415,7 +1437,7 @@ async def run_sync_connector(
                                 
                                 # First process any unfinished user-input buffers.
                                 if user_input_cache:
-                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''
                                 
                                 # Then process any unfinished output buffers.
@@ -1423,9 +1445,10 @@ async def run_sync_connector(
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
-                                        {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
+                                        _assistant_history_message(text_output_cache, text_output_proof))
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                                 current_turn_start_index = len(chat_history)
                                 # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -1559,6 +1582,7 @@ async def run_sync_connector(
                         user_input_sources.clear()
                         text_output_cache = ''
                         text_output_request_id = None
+                        text_output_proof = None
                         current_turn = 'user'
                         had_user_input_this_turn = False
                         current_turn_start_index = 0

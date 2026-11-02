@@ -699,8 +699,8 @@ async def test_market_upgrade_delegates_file_replacement_to_shared_transaction(
 
     assert len(calls) == 1
     assert calls[0]["layout"].installed_dir == plugin_dir.resolve()
-    assert calls[0]["additional_targets"] == (profiles_root / "demo",)
-    assert calls[0]["preserve_targets"] == (profiles_root / "demo",)
+    assert calls[0]["additional_targets"] == ()
+    assert calls[0]["preserve_targets"] == ()
     assert task["result"] == {
         "operation": "upgrade",
         "restarted": False,
@@ -899,7 +899,7 @@ async def test_market_upgrade_does_not_hold_operation_lock_while_downloading(
 
 
 @pytest.mark.asyncio
-async def test_market_upgrade_preserves_profile_at_recorded_custom_location(
+async def test_market_upgrade_ignores_profile_at_recorded_custom_location(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -948,14 +948,14 @@ async def test_market_upgrade_preserves_profile_at_recorded_custom_location(
     )
     await market_bridge._do_upgrade({}, _payload(), {})
 
-    assert calls[0]["additional_targets"] == (custom_profile_dir.resolve(),)
-    assert calls[0]["preserve_targets"] == (custom_profile_dir.resolve(),)
-    assert upload_calls[0]["profiles_root"] == str(custom_profile_dir.parent)
-    assert upload_calls[0]["_allow_external_profiles_root"] is True
+    assert calls[0]["additional_targets"] == ()
+    assert calls[0]["preserve_targets"] == ()
+    assert "profiles_root" not in upload_calls[0]
+    assert "_allow_external_profiles_root" not in upload_calls[0]
 
 
 @pytest.mark.asyncio
-async def test_market_upgrade_rejects_symlinked_recorded_profile_ancestor(
+async def test_market_upgrade_ignores_symlinked_recorded_profile_ancestor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -986,10 +986,19 @@ async def test_market_upgrade_rejects_symlinked_recorded_profile_ancestor(
 
     monkeypatch.setattr(Path, "is_symlink", _is_symlink)
 
-    with pytest.raises(market_bridge._TaskError) as exc_info:
-        await market_bridge._do_upgrade({}, _payload(), {})
+    calls = []
 
-    assert exc_info.value.code == "unsafe_profile_path"
+    async def replace_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            install_result={"operation": "upgrade"}, restarted=False,
+            rollback_status="not_needed", backup_dir=tmp_path / "backup",
+        )
+
+    monkeypatch.setattr(market_bridge, "replace_plugin", replace_code)
+    await market_bridge._do_upgrade({}, _payload(), {})
+    assert calls[0]["additional_targets"] == ()
+    assert calls[0]["preserve_targets"] == ()
 
 
 @pytest.mark.asyncio
@@ -1102,7 +1111,7 @@ async def test_market_manual_takeover_revalidates_backup_after_stop(
 
 
 @pytest.mark.asyncio
-async def test_market_manual_takeover_rejects_unowned_existing_profile(
+async def test_market_manual_takeover_ignores_unowned_existing_package_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1152,16 +1161,25 @@ async def test_market_manual_takeover_rejects_unowned_existing_profile(
         )
     )
 
-    with pytest.raises(market_bridge._TaskError) as exc_info:
-        await market_bridge._do_upgrade({}, payload, {})
+    calls = []
 
-    assert exc_info.value.code == "manual_takeover_profile_target_exists"
+    async def replace_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            install_result={"operation": "upgrade"}, restarted=False,
+            rollback_status="not_needed", backup_dir=tmp_path / "backup",
+        )
+
+    monkeypatch.setattr(market_bridge, "replace_plugin", replace_code)
+    await market_bridge._do_upgrade({}, payload, {})
+    assert calls[0]["additional_targets"] == ()
+    assert calls[0]["preserve_targets"] == ()
     assert sentinel.read_text(encoding="utf-8") == "belongs_to_user = true\n"
     assert plugin_dir.is_dir()
 
 
 @pytest.mark.asyncio
-async def test_market_upgrade_rolls_back_plugin_profile_with_plugin_directory(
+async def test_market_upgrade_rolls_back_code_and_leaves_package_profile_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1193,12 +1211,8 @@ async def test_market_upgrade_rolls_back_plugin_profile_with_plugin_directory(
     async def install_then_fail(**kwargs: Any) -> dict[str, object]:
         if plugin_dir.exists():
             shutil.rmtree(plugin_dir)
-        if profile_dir.exists():
-            shutil.rmtree(profile_dir)
         plugin_dir.mkdir(parents=True)
-        profile_dir.mkdir(parents=True)
         (plugin_dir / "plugin.toml").write_text(DEMO_MANIFEST_V2, encoding="utf-8")
-        (profile_dir / "default.toml").write_text("version = 2\n", encoding="utf-8")
         raise RuntimeError("install failed after promotion")
 
     monkeypatch.setattr(
@@ -1351,10 +1365,7 @@ async def test_market_upgrade_preserves_existing_profile_files_on_success(
 
     async def install_new(**kwargs: Any) -> dict[str, object]:
         plugin_dir.mkdir(parents=True)
-        profile_dir.mkdir(parents=True)
         (plugin_dir / "plugin.toml").write_text(DEMO_MANIFEST_V2, encoding="utf-8")
-        (profile_dir / "default.toml").write_text("package_value = true\n", encoding="utf-8")
-        (profile_dir / "new.toml").write_text("new = true\n", encoding="utf-8")
         return {"operation": "upgrade"}
 
     monkeypatch.setattr(
@@ -1368,11 +1379,11 @@ async def test_market_upgrade_preserves_existing_profile_files_on_success(
     assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == DEMO_MANIFEST_V2
     assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
     assert (profile_dir / "custom.toml").read_text(encoding="utf-8") == "custom = true\n"
-    assert (profile_dir / "new.toml").read_text(encoding="utf-8") == "new = true\n"
+    assert not (profile_dir / "new.toml").exists()
 
 
 @pytest.mark.asyncio
-async def test_market_upgrade_uses_package_id_for_profile_backup(
+async def test_market_upgrade_leaves_differently_named_package_profile_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1417,12 +1428,9 @@ async def test_market_upgrade_uses_package_id_for_profile_backup(
     )
 
     async def install_new(**kwargs: Any) -> dict[str, object]:
-        if profile_dir.exists():
-            raise FileExistsError(profile_dir)
+        assert profile_dir.is_dir()
         plugin_dir.mkdir(parents=True)
-        profile_dir.mkdir(parents=True)
         (plugin_dir / "plugin.toml").write_text(DEMO_MANIFEST_V2, encoding="utf-8")
-        (profile_dir / "new.toml").write_text("new = true\n", encoding="utf-8")
         return {"operation": "upgrade"}
 
     monkeypatch.setattr(
@@ -1434,7 +1442,7 @@ async def test_market_upgrade_uses_package_id_for_profile_backup(
     await market_bridge._do_upgrade({}, _payload(plugin_id), {})
 
     assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
-    assert (profile_dir / "new.toml").read_text(encoding="utf-8") == "new = true\n"
+    assert not (profile_dir / "new.toml").exists()
 
 
 @pytest.mark.asyncio
@@ -1629,12 +1637,7 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
 
     async def install_new(**_kwargs: Any) -> dict[str, object]:
         plugin_dir.mkdir(parents=True)
-        profile_dir.mkdir(parents=True)
         (plugin_dir / "plugin.toml").write_text(DEMO_MANIFEST_V2, encoding="utf-8")
-        (profile_dir / "generated.toml").write_text(
-            "replacement = true\n",
-            encoding="utf-8",
-        )
         manager.current = _entry("demo", "demo", channel="market")
         manager.current.source_detail = SimpleNamespace(version="2.0.0")
         return {"operation": "upgrade"}

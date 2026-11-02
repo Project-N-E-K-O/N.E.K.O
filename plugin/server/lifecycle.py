@@ -79,7 +79,7 @@ async def _held(lock: _CrossLoopLock) -> AsyncIterator[None]:
 
 @runtime_checkable
 class _PluginHostContract(Protocol):
-    async def start(self, message_target_queue: object) -> None: ...
+    async def start(self) -> None: ...
 
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None: ...
 
@@ -882,7 +882,10 @@ class ServerLifecycleService:
                 had_errors = True
                 logger.warning("failed to stop message_plane runner: {}", exc)
 
-        # Phase 2: parallel shutdown of all async components
+        # Keep control RPC available until plugin cleanup callbacks have finished.
+        hosts_stopped = asyncio.Event()
+
+        # Phase 2: parallel shutdown of async components; router follows hosts.
         async def _stop_metrics():
             await metrics_collector.stop()
 
@@ -893,10 +896,14 @@ class ServerLifecycleService:
             await bus_subscription_manager.stop()
 
         async def _stop_router():
+            await hosts_stopped.wait()
             await plugin_router.stop()
 
         async def _stop_hosts():
-            return await self._shutdown_hosts()
+            try:
+                return await self._shutdown_hosts()
+            finally:
+                hosts_stopped.set()
 
         parallel_tasks = {
             "metrics": asyncio.create_task(_stop_metrics()),
@@ -1007,15 +1014,6 @@ async def _ensure_plugin_router_started() -> None:
     the port split and orphaned runner this PR already fixed twice, reachable
     through a door the delivery-path call opened.
     """
-    try:
-        _ = state.plugin_response_map
-    except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
-        logger.warning(
-            "failed to initialize plugin response map early: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
-
     await plugin_router.start()
     logger.debug("plugin router started")
 

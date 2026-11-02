@@ -332,6 +332,17 @@ class ReceiveMixin:
         self._set_phase(PHASE_AWAITING)
         creds = self.creds
         if self.side == "host":
+            if self.direct:
+                # A directed room exists only because this host's family
+                # explicitly invited this account.  The guest has just made
+                # the only remaining human decision before joining; asking
+                # the host a second time would duplicate consent and can leave
+                # an accepted invitation stuck at the door.
+                # Activation can take up to VISIT_ACTIVATION_ALLOWANCE_S. Keep
+                # the receive pipeline free for heartbeats, leave and acks while
+                # the runtime-owned acceptance task performs that bounded work.
+                self.spawn(self._auto_accept_direct(), name="direct-accept")
+                return
             from config.visit_settings import VISIT_ACCEPT_TIMEOUT_S
 
             self._accept_deadline = now + VISIT_ACCEPT_TIMEOUT_S
@@ -346,20 +357,29 @@ class ReceiveMixin:
         else:
             await self.push(PHASE_AWAITING)
 
+    async def _auto_accept_direct(self) -> None:
+        status, body = await self.accept(True)
+        if status == 200 or self.finalizing:
+            return
+        logger.warning(
+            "visit %s: direct auto-accept failed (%s, %s)",
+            self.visit_id[:6], status, body.get("error") if isinstance(body, dict) else None,
+        )
+        self.request_finalize("declined")
+
     async def _clean_peer_name(self, raw: Optional[str], uid: str) -> str:
         from main_logic.visit.sanitize import neutralize_display_name
         from main_logic.visit.subjects import derive_short_code
-        from main_routers.visit_router.local_context import prompt_lang, protected_display_names
+        from main_routers.visit_router.local_context import prompt_lang, protected_live_display_names
 
         lang = self.lang or prompt_lang()
         try:
             ctx = await self.deps.character_context()
             family = tuple(getattr(ctx, "family_names", ()) or ())
-            chars = tuple(getattr(ctx, "char_names", ()) or ())
         except Exception:  # noqa: BLE001 - If local names are unreadable, rely only on generic rules.
-            family, chars = (), ()
+            family = ()
         return neutralize_display_name(
-            raw, protected_names=protected_display_names(lang, family, chars),
+            raw, protected_names=protected_live_display_names(lang, family),
             generic_label=self.speaker_label("peer_cat", lang), short_code=derive_short_code(uid),
         )
 
@@ -686,6 +706,11 @@ class ReceiveMixin:
             # Goes into the next local prompt: sanitize again on receiving side and truncate to farewell limits (peers may ignore LineSpeaker caps).
             self.last_peer_goodbye = clamp_peer_line(txt)[:VISIT_GOODBYE_MAX_CHARS]
         self._post_display(self._peer_line_frame(m, ln, lp))
+        if (reply is not None and not reply.goodbye and self.room is not None
+                and self.room.pending_reply is not reply):
+            # A human line cancelled or replaced this plan while the line was being recorded:
+            # scheduling it now would replace the newer reply.
+            reply = None
         if reply is not None or say_goodbye:
             self.apply_effects(RoomEffects(reply=reply, say_goodbye=say_goodbye))
 

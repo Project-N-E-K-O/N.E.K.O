@@ -540,7 +540,6 @@ async def _persist_changed_runtime_intent(
 class PluginHostContract(Protocol):
     async def start(
         self,
-        message_target_queue: object,
         startup_timeout: float | None = None,
         startup_failure: str = "warn",
     ) -> object: ...
@@ -953,12 +952,11 @@ async def _start_host_with_timeout(
     *,
     plugin_id: str,
     host_obj: PluginHostContract,
-    message_target_queue: object,
     startup_timeout: float | None,
     startup_failure: str,
 ) -> object:
     start_method = host_obj.start
-    kwargs: dict[str, object] = {"message_target_queue": message_target_queue}
+    kwargs: dict[str, object] = {}
     if _start_method_accepts_kwarg(start_method, "startup_failure"):
         kwargs["startup_failure"] = startup_failure
     if startup_timeout is not None and _start_method_accepts_kwarg(start_method, "startup_timeout"):
@@ -1204,7 +1202,8 @@ class PluginLifecycleService:
 
             runtime_obj = conf.get("plugin_runtime")
             enabled_value = True
-            auto_start_value = True
+            # 没写 plugin_runtime.auto_start 时默认关闭，和 PluginRuntimeSchema 一致。
+            auto_start_value = False
             startup_timeout_value: float | None = _normalize_runtime_timeout(
                 PLUGIN_STARTUP_TIMEOUT,
                 plugin_id=current_plugin_id,
@@ -1214,7 +1213,7 @@ class PluginLifecycleService:
             if isinstance(runtime_obj, Mapping):
                 runtime_cfg = _normalize_mapping(runtime_obj, context=f"plugin_config[{current_plugin_id}].plugin_runtime")
                 enabled_value = parse_bool_config(runtime_cfg.get("enabled"), default=True)
-                auto_start_value = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
+                auto_start_value = parse_bool_config(runtime_cfg.get("auto_start"), default=False)
                 if "timeout" in runtime_cfg:
                     startup_timeout_value = _normalize_runtime_timeout(
                         runtime_cfg.get("timeout"),
@@ -1457,7 +1456,6 @@ class PluginLifecycleService:
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
                 host_obj=host_obj,
-                message_target_queue=state.message_queue,
                 startup_timeout=startup_timeout_value,
                 startup_failure=startup_failure_policy,
             )

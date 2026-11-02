@@ -1,263 +1,213 @@
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
+
+import { fetchBridge } from '@/api/marketBridge'
+
+const LOG_PREFIX = '[github-mirror]'
+const STORAGE_KEY = 'neko.market.github-mirror-source.v2'
+/** The single-proxy switch that preceded per-source settings. */
+const LEGACY_STORAGE_KEY = 'neko.market.github-mirror-source'
+
+const log = {
+  warn: (...args: unknown[]) => console.warn(LOG_PREFIX, ...args),
+}
 
 export type GithubMirrorMode = 'direct' | 'auto' | 'specified'
 
+/** Proxies the backend can route GitHub Release downloads through; same ids
+ *  as ``GITHUB_DOWNLOAD_SOURCES`` in ``plugin/server/infrastructure/package_sources.py``. */
 export const GITHUB_PROXY_SOURCES = [
-  { id: 'gh-proxy-com', label: 'https://gh-proxy.com/', baseUrl: 'https://gh-proxy.com/' },
-  { id: 'gh-proxy-org', label: 'https://gh-proxy.org/', baseUrl: 'https://gh-proxy.org/' },
-  { id: 'hk-gh-proxy-org', label: 'https://hk.gh-proxy.org/', baseUrl: 'https://hk.gh-proxy.org/' },
-  { id: 'cdn-gh-proxy-org', label: 'https://cdn.gh-proxy.org/', baseUrl: 'https://cdn.gh-proxy.org/' },
-  { id: 'edgeone-gh-proxy-org', label: 'https://edgeone.gh-proxy.org/', baseUrl: 'https://edgeone.gh-proxy.org/' },
+  { id: 'gh-proxy-com', label: 'https://gh-proxy.com/' },
+  { id: 'gh-proxy-org', label: 'https://gh-proxy.org/' },
+  { id: 'hk-gh-proxy-org', label: 'https://hk.gh-proxy.org/' },
+  { id: 'cdn-gh-proxy-org', label: 'https://cdn.gh-proxy.org/' },
+  { id: 'edgeone-gh-proxy-org', label: 'https://edgeone.gh-proxy.org/' },
 ] as const
 
-export type GithubProxySourceId = typeof GITHUB_PROXY_SOURCES[number]['id']
-export const GITHUB_DIRECT_SOURCE = {
-  id: 'github-direct',
-  baseUrl: 'https://github.com/',
-} as const
-export const GITHUB_SPEED_TEST_SOURCES = [GITHUB_DIRECT_SOURCE, ...GITHUB_PROXY_SOURCES] as const
-export type GithubMirrorSourceId = typeof GITHUB_SPEED_TEST_SOURCES[number]['id']
+export type GithubProxySourceId = (typeof GITHUB_PROXY_SOURCES)[number]['id']
 
-const STORAGE_KEY = 'neko.market.github-mirror-source.v2'
-const LEGACY_STORAGE_KEY = 'neko.market.github-mirror-source'
-const DEFAULT_PROXY_ID: GithubProxySourceId = 'gh-proxy-com'
-export const AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS = 5 * 60 * 1000
-
-interface StoredMirrorSource {
+interface DownloadPreferences {
   mode: GithubMirrorMode
-  specifiedSourceId: GithubProxySourceId
-  autoSourceId: GithubMirrorSourceId | null
-  autoMeasuredAt: number | null
+  specified_source_id: GithubProxySourceId
 }
 
-export interface GithubMirrorMeasurement {
-  id: GithubMirrorSourceId
-  latency_ms: number | null
-  available: boolean
-  status_code?: number | null
+interface ServerDownloadPreferences extends DownloadPreferences {
+  /** False until the server has stored a choice of its own. */
+  configured: boolean
 }
 
-export class GithubMirrorMeasurementError extends Error {
-  readonly code: 'service_unavailable' | 'invalid_response'
-
-  constructor(code: 'service_unavailable' | 'invalid_response') {
-    super(code)
-    this.name = 'GithubMirrorMeasurementError'
-    this.code = code
-  }
+const DEFAULT_PREFERENCES: DownloadPreferences = {
+  mode: 'auto',
+  specified_source_id: 'gh-proxy-com',
 }
 
-function isSourceId(value: unknown): value is GithubProxySourceId {
-  return typeof value === 'string' && GITHUB_PROXY_SOURCES.some((source) => source.id === value)
+function isMode(value: unknown): value is GithubMirrorMode {
+  return value === 'direct' || value === 'auto' || value === 'specified'
 }
 
-function isMirrorSourceId(value: unknown): value is GithubMirrorSourceId {
-  return typeof value === 'string' && GITHUB_SPEED_TEST_SOURCES.some((source) => source.id === value)
+function isProxySourceId(value: unknown): value is GithubProxySourceId {
+  return GITHUB_PROXY_SOURCES.some((source) => source.id === value)
 }
 
-/** Whether a URL is a credential-free GitHub Release asset safe to proxy. */
-export function isGithubReleaseDownloadUrl(url: string): boolean {
+/**
+ * Browser copy of the last known setting. It only fills the form before the
+ * server answers, and seeds a server that was never configured so the choice
+ * made while this setting lived in the browser carries over.
+ */
+function loadCachedPreferences(): DownloadPreferences {
   try {
-    const parsed = new URL(url)
-    return (
-      parsed.protocol === 'https:'
-      && parsed.hostname.toLowerCase() === 'github.com'
-      && !parsed.username
-      && !parsed.password
-      && parsed.pathname.includes('/releases/download/')
-    )
-  } catch {
-    return false
-  }
-}
-
-function loadSettings(): StoredMirrorSource {
-  const defaults: StoredMirrorSource = {
-    mode: 'auto',
-    specifiedSourceId: DEFAULT_PROXY_ID,
-    autoSourceId: null,
-    autoMeasuredAt: null,
-  }
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<StoredMirrorSource>
-      return {
-        mode: parsed.mode === 'auto' || parsed.mode === 'specified' ? parsed.mode : 'direct',
-        specifiedSourceId: isSourceId(parsed.specifiedSourceId) ? parsed.specifiedSourceId : DEFAULT_PROXY_ID,
-        autoSourceId: isMirrorSourceId(parsed.autoSourceId) ? parsed.autoSourceId : null,
-        autoMeasuredAt: typeof parsed.autoMeasuredAt === 'number' && parsed.autoMeasuredAt > 0
-          ? parsed.autoMeasuredAt
-          : null,
-      }
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) {
+      return localStorage.getItem(LEGACY_STORAGE_KEY) === 'github-proxy'
+        ? { ...DEFAULT_PREFERENCES, mode: 'specified' }
+        : DEFAULT_PREFERENCES
     }
-    // Keep the former single-source setting working after the upgrade.
-    if (window.localStorage.getItem(LEGACY_STORAGE_KEY) === 'github-proxy') {
-      return { ...defaults, mode: 'specified' }
+    const parsed = JSON.parse(raw) as { mode?: unknown; specifiedSourceId?: unknown }
+    return {
+      mode: isMode(parsed.mode) ? parsed.mode : DEFAULT_PREFERENCES.mode,
+      specified_source_id: isProxySourceId(parsed.specifiedSourceId)
+        ? parsed.specifiedSourceId
+        : DEFAULT_PREFERENCES.specified_source_id,
     }
   } catch {
-    // Fall back to the direct source when storage is unavailable or malformed.
+    // Unavailable or malformed storage: the server setting still applies.
+    return DEFAULT_PREFERENCES
   }
-  return defaults
 }
 
-const initial = loadSettings()
-const mode = ref<GithubMirrorMode>(initial.mode)
-const specifiedSourceId = ref<GithubProxySourceId>(initial.specifiedSourceId)
-const autoSourceId = ref<GithubMirrorSourceId | null>(initial.autoSourceId)
-const autoMeasuredAt = ref<number | null>(initial.autoMeasuredAt)
-const autoMeasurementClock = ref(Date.now())
-let autoMeasurementExpiryTimer: ReturnType<typeof setTimeout> | null = null
-
-function scheduleAutoMeasurementExpiry() {
-  if (autoMeasurementExpiryTimer !== null) {
-    clearTimeout(autoMeasurementExpiryTimer)
-    autoMeasurementExpiryTimer = null
-  }
-  if (autoMeasuredAt.value === null) return
-
-  const remaining = autoMeasuredAt.value + AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS - Date.now()
-  if (remaining <= 0) {
-    autoMeasurementClock.value = Date.now()
-    return
-  }
-  autoMeasurementExpiryTimer = setTimeout(() => {
-    autoMeasurementExpiryTimer = null
-    autoMeasurementClock.value = Date.now()
-  }, remaining)
-}
-
-function persist() {
+function cachePreferences(preferences: DownloadPreferences) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      mode: mode.value,
-      specifiedSourceId: specifiedSourceId.value,
-      autoSourceId: autoSourceId.value,
-      autoMeasuredAt: autoMeasuredAt.value,
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      mode: preferences.mode,
+      specifiedSourceId: preferences.specified_source_id,
     }))
   } catch {
-    // Keep the in-memory choice when localStorage is unavailable.
+    // Storage is optional; the server keeps the setting.
   }
+}
+
+const cached = loadCachedPreferences()
+const mode = ref<GithubMirrorMode>(cached.mode)
+const specifiedSourceId = ref<GithubProxySourceId>(cached.specified_source_id)
+const saveFailed = ref(false)
+/** Set on the first edit, so a late server answer cannot revert the form. */
+let edited = false
+let initialization: Promise<void> | null = null
+/** Saves run one at a time, in the order they were made. */
+let writes: Promise<void> = Promise.resolve()
+
+function apply(preferences: DownloadPreferences) {
+  mode.value = preferences.mode
+  specifiedSourceId.value = preferences.specified_source_id
+  cachePreferences(preferences)
+}
+
+async function requestPreferences(init?: RequestInit): Promise<ServerDownloadPreferences> {
+  const response = await fetchBridge('/market/download-preferences', init, {
+    throwOnTransportError: true,
+  })
+  if (!response?.ok) throw new Error('download_preferences_unavailable')
+  const value = (await response.json()) as Partial<ServerDownloadPreferences>
+  if (!isMode(value.mode) || !isProxySourceId(value.specified_source_id)) {
+    throw new Error('invalid_download_preferences')
+  }
+  return {
+    mode: value.mode,
+    specified_source_id: value.specified_source_id,
+    configured: value.configured === true,
+  }
+}
+
+function putPreferences(body: DownloadPreferences & { initialize_only?: boolean }) {
+  return requestPreferences({
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+async function loadServerPreferences() {
+  let preferences = await requestPreferences()
+  if (!preferences.configured) {
+    // `initialize_only` keeps whatever another window stored in the meantime.
+    preferences = await putPreferences({ ...cached, initialize_only: true })
+  }
+  if (!edited) apply(preferences)
+}
+
+function initialize(): Promise<void> {
+  if (!initialization) {
+    initialization = loadServerPreferences().catch((error: unknown) => {
+      // Let the next caller retry instead of caching the failure.
+      initialization = null
+      throw error
+    })
+  }
+  return initialization
+}
+
+function save(next: DownloadPreferences): Promise<void> {
+  edited = true
+  apply(next)
+  writes = writes.then(async () => {
+    try {
+      await initialize()
+      await putPreferences(next)
+      saveFailed.value = false
+    } catch (error) {
+      log.warn('saving download preferences failed', error)
+      saveFailed.value = true
+    }
+  })
+  return writes
 }
 
 function setMode(next: GithubMirrorMode) {
-  mode.value = next
-  persist()
+  void save({ mode: next, specified_source_id: specifiedSourceId.value })
 }
 
 function setSpecifiedSourceId(next: GithubProxySourceId) {
-  specifiedSourceId.value = next
-  persist()
+  void save({ mode: mode.value, specified_source_id: next })
 }
 
-function setAutoSourceId(next: GithubMirrorSourceId, measuredAt = Date.now()) {
-  autoSourceId.value = next
-  autoMeasuredAt.value = measuredAt
-  autoMeasurementClock.value = Date.now()
-  scheduleAutoMeasurementExpiry()
-  persist()
-}
-
-function clearAutoSource() {
-  autoSourceId.value = null
-  autoMeasuredAt.value = null
-  autoMeasurementClock.value = Date.now()
-  scheduleAutoMeasurementExpiry()
-  persist()
-}
-
-function isAutoMeasurementFresh() {
-  const now = Math.max(autoMeasurementClock.value, Date.now())
-  return (
-    autoSourceId.value !== null
-    && autoMeasuredAt.value !== null
-    && now - autoMeasuredAt.value < AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS
-  )
-}
-
-const autoMeasurementFresh = computed(() => isAutoMeasurementFresh())
-
-const activeSource = computed(() => {
-  if (mode.value === 'specified') {
-    return GITHUB_PROXY_SOURCES.find((source) => source.id === specifiedSourceId.value) ?? null
+/** Resolve once the server holds the setting shown in the form, since every
+ *  install reads its download policy from the server. */
+async function ensureDownloadPreferences(): Promise<void> {
+  await settleWrites()
+  if (saveFailed.value) {
+    // Retry the latest edit; the form still shows it.
+    void save({ mode: mode.value, specified_source_id: specifiedSourceId.value })
+    await settleWrites()
   }
-  if (mode.value === 'auto' && autoSourceId.value && isAutoMeasurementFresh()) {
-    return GITHUB_SPEED_TEST_SOURCES.find((source) => source.id === autoSourceId.value) ?? null
-  }
-  return null
-})
-
-scheduleAutoMeasurementExpiry()
-
-async function measureSpeedTestSources(): Promise<GithubMirrorMeasurement[]> {
-  let response: Response
-  try {
-    response = await fetch('/market/github-proxy/measure')
-  } catch {
-    throw new GithubMirrorMeasurementError('service_unavailable')
-  }
-  if (!response.ok) throw new GithubMirrorMeasurementError('service_unavailable')
-
-  let data: { sources?: GithubMirrorMeasurement[] }
-  try {
-    data = await response.json() as { sources?: GithubMirrorMeasurement[] }
-  } catch {
-    throw new GithubMirrorMeasurementError('invalid_response')
-  }
-  return (data.sources ?? []).filter((item) => (
-    GITHUB_SPEED_TEST_SOURCES.some((source) => source.id === item.id)
-  ))
+  if (saveFailed.value) throw new Error('download_preferences_save_failed')
+  await initialize()
 }
 
-function fastestAvailableSource(measurements: GithubMirrorMeasurement[]): GithubMirrorMeasurement | null {
-  return measurements
-    .filter((item) => item.available && typeof item.latency_ms === 'number')
-    .sort((left, right) => Number(left.latency_ms) - Number(right.latency_ms))[0] ?? null
+/** Wait for every queued save, including those made while waiting. */
+async function settleWrites(): Promise<void> {
+  let settled: Promise<void>
+  do {
+    settled = writes
+    await settled
+  } while (settled !== writes)
 }
 
-async function refreshAutoSource() {
-  const measurements = await measureSpeedTestSources()
-  const fastest = fastestAvailableSource(measurements)
-  if (fastest) setAutoSourceId(fastest.id)
-  else clearAutoSource()
-  return { measurements, fastest }
-}
-
-/** Refresh an expired automatic result before a Market installation uses it. */
-async function ensureAutoSource() {
-  if (mode.value !== 'auto' || isAutoMeasurementFresh()) return null
-  return refreshAutoSource()
-}
-
-/** Return a GitHub Release URL through the selected mirror when applicable. */
-function resolveGithubDownloadUrl(url: string): string {
-  if (mode.value === 'auto' && !isAutoMeasurementFresh()) return url
-  const source = activeSource.value
-  if (!source) return url
-  if (source.id === GITHUB_DIRECT_SOURCE.id) return url
-
-  if (!isGithubReleaseDownloadUrl(url)) return url
-
-  return `${source.baseUrl}${url}`
+/** Forget the backend's learned route timings so the next install chooses again. */
+async function resetDownloadHistory(): Promise<void> {
+  const response = await fetchBridge('/market/download-history/reset', { method: 'POST' }, {
+    throwOnTransportError: true,
+  })
+  if (!response?.ok) throw new Error('download_history_reset_failed')
 }
 
 export function useGithubMirrorSource() {
   return {
     mode,
     specifiedSourceId,
-    autoSourceId,
-    autoMeasuredAt,
-    autoMeasurementFresh,
-    activeSource,
+    saveFailed,
     sources: GITHUB_PROXY_SOURCES,
-    speedTestSources: GITHUB_SPEED_TEST_SOURCES,
     setMode,
     setSpecifiedSourceId,
-    setAutoSourceId,
-    clearAutoSource,
-    measureSpeedTestSources,
-    refreshAutoSource,
-    ensureAutoSource,
-    resolveGithubDownloadUrl,
+    ensureDownloadPreferences,
+    resetDownloadHistory,
   }
 }

@@ -1,6 +1,7 @@
-// Trusted SDK avatar provider, symmetric with vrm-host.mjs.
+// Trusted SDK avatar provider, symmetric with vrm-host.mjs. Idle motions, breathing and blinking
+// play by default in pixi-live2d-display, the counterpart of the VRM idle clip.
 export function create(container) {
-  const app = new PIXI.Application({backgroundAlpha:0,antialias:true,width:280,height:320});
+  const app = new PIXI.Application({backgroundAlpha:0,antialias:true,width:280,height:320,resolution:Math.min(globalThis.devicePixelRatio || 1,2),autoDensity:true});
   container.append(app.view);
   let model = null, disposed = false, mouthLevel = 0;
   return {

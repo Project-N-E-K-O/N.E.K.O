@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json
+from utils.preferences_store_lock import preferences_store_lock
 from utils.character_memory import (
     evict_character_runtime_caches,
     retire_character_runtime_caches,
@@ -1728,7 +1729,12 @@ def import_local_cloudsave_snapshot(
         if use_cloud_apply_fence
         else nullcontext()
     )
-    with fence_scope:
+    # A writer can pass its maintenance check immediately before this fence.
+    # Hold the actual preferences lock from the first journal read until apply
+    # or rollback ends; a staged copy must not overwrite later committed facts.
+    with fence_scope, preferences_store_lock(
+        config_manager.get_runtime_config_path("user_preferences.json")
+    ):
         _assert_deadline_not_exceeded(
             deadline_monotonic,
             operation="import",

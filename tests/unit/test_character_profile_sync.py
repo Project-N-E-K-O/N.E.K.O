@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -458,7 +458,7 @@ async def test_cloud_import_is_explicit_uid_stable_local_default_and_repeat_is_n
     config.data["猫娘"].pop("Synthetic")
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    monkeypatch.setattr("main_routers.characters_router.crud._get_new_catgirl_default_voice_id", lambda: "local-default-voice")
+    monkeypatch.setattr("utils.api_config_loader.get_new_character_default_voice_id", lambda: "local-default-voice")
     try:
         await runtime.configure("https://sync.test")
         service.head = head()
@@ -486,7 +486,7 @@ async def test_import_config_binding_gap_recovers_same_reviewed_snapshot_after_c
     config.data["猫娘"].pop("Synthetic")
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    monkeypatch.setattr("main_routers.characters_router.crud._get_new_catgirl_default_voice_id", lambda: "local")
+    monkeypatch.setattr("utils.api_config_loader.get_new_character_default_voice_id", lambda: "local")
     try:
         await runtime.configure("https://sync.test")
         service.head = head()
@@ -502,6 +502,8 @@ async def test_import_config_binding_gap_recovers_same_reviewed_snapshot_after_c
         result = await runtime.profiles.import_role(UID, 1, preview["profileHash"])
         assert result["enabled"] and len(config.saves) == 1
         assert config.data["猫娘"]["Synthetic"]["_reserved"]["system_prompt"] == PROFILE["systemPrompt"]
+        # The isolating patch above must reach import_new, not the user's real free_voices config.
+        assert config.data["猫娘"]["Synthetic"]["_reserved"]["voice_id"] == "local"
     finally:
         await runtime.close()
 
@@ -607,6 +609,31 @@ async def test_confirmed_remote_rename_reuses_local_name_validation_before_any_m
         await adapter.apply(UID, state, AsyncMock(), confirm_rename=True)
     rename.assert_not_awaited()
     assert not config.saves
+    # A valid name does reach the patched transaction, so the check above is
+    # not vacuous; a non-dict result never commits.
+    commit = AsyncMock()
+    state["head"]["name"] = "Renamed"
+    with pytest.raises(ValueError, match="character_profile_rename_failed"):
+        await adapter.apply(UID, state, commit, confirm_rename=True)
+    rename.assert_awaited_once_with("Synthetic", "Renamed", sync_commit=commit)
+    assert not config.saves
+
+
+@pytest.mark.parametrize("name", [
+    "", "   ", "\t", "Synthetic", "Synthetic Renamed", " Synthetic", "Synthetic ",
+    "a" * 60, "a" * 61, "猫" * 30, "猫" * 31, "猫" * 29 + "ab", "猫" * 29 + "abc",
+    "bad\x00name", "bad\nname", "bad\x7fname", "../unsafe", "a/b", "a\\b", "a.b", "trailing.", ".",
+    "CON", "com1", "api", "a:b", "名字·テスト", "O'Neil", "(括号)",
+])
+def test_profile_sync_name_rule_matches_the_desktop_profile_name_validation(name):
+    """Chat sync drops the router's UI messages but must refuse exactly the same names."""
+    from main_routers.characters_router._shared import _validate_profile_name
+    from services.chat_sync import profile_sync
+    from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+
+    desktop_ok = _validate_profile_name(name) is None
+    assert validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS).ok is desktop_ok
+    assert profile_sync._profile_name_invalid(name) is (not desktop_ok or name != name.strip())
 
 
 @pytest.mark.asyncio
@@ -632,7 +659,8 @@ async def test_unbound_profile_import_cannot_commit_after_writer_recovery_epoch(
     config.data['猫娘'].pop('Synthetic')
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
-    monkeypatch.setattr('main_routers.characters_router.crud._get_new_catgirl_default_voice_id', lambda: 'local')
+    default_voice = MagicMock(return_value='local')
+    monkeypatch.setattr('utils.api_config_loader.get_new_character_default_voice_id', default_voice)
     await runtime.configure('https://sync.test')
     service.head = head()
     entered, release = asyncio.Event(), asyncio.Event()
@@ -651,6 +679,8 @@ async def test_unbound_profile_import_cannot_commit_after_writer_recovery_epoch(
             await task
         assert not config.saves
         assert not runtime.state.binding(UID)['enabled']
+        # The refused commit came after import_new built the role through the patched default.
+        default_voice.assert_called_once_with()
     finally:
         await runtime.close()
 
@@ -658,13 +688,16 @@ async def test_unbound_profile_import_cannot_commit_after_writer_recovery_epoch(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("selected_uid", [None, "b" * 32])
 async def test_current_role_automatic_profile_keeps_inactive_approved_bytes(tmp_path, config, selected_uid):
-    """An approved profile waits locally while its role is not currently used."""
+    """Later approved edits still wait while their role is not currently used."""
     from tests.unit.test_chat_sync_runtime import select_runtime_current
     runtime, service, _ = await bound(tmp_path, config)
     try:
         config.data["当前猫娘"] = "Synthetic"
         local = await runtime.profiles.local(UID)
-        await runtime.profiles.approve(UID, local["local_hash"], 0)
+        runtime.profiles.store.remote(local["domain"], head())
+        config.data["猫娘"]["Synthetic"]["_reserved"]["system_prompt"] = "later approved edit"
+        local = await runtime.profiles.local(UID)
+        await runtime.profiles.approve(UID, local["local_hash"], 1)
         operation = runtime.profiles.store.next_operation(local["domain"])
         select_runtime_current(runtime, selected_uid)
         service.requests.clear()
@@ -672,6 +705,193 @@ async def test_current_role_automatic_profile_keeps_inactive_approved_bytes(tmp_
         assert service.requests == []
         assert runtime.profiles.store.next_operation(local["domain"]) == operation
         assert config.saves == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected_uid", [None, "b" * 32])
+async def test_inactive_initial_profile_publication_completes_without_polling_or_chat(tmp_path, config, selected_uid):
+    """Initial explicit consent finishes its fixed publication after switching away."""
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    from services.chat_sync.ledger import ChatOriginal, SourceLocator
+
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        local = await runtime.profiles.local(UID)
+        await runtime.profiles.approve(UID, local["local_hash"], 0)
+        operation = runtime.profiles.store.next_operation(local["domain"])
+        runtime.ledger.capture(DOMAIN, SourceLocator("initial", "test", "1"), ChatOriginal("user", "stays queued"))
+        select_runtime_current(runtime, selected_uid)
+        service.requests.clear()
+        presence = await runtime.session_presence_provider()
+
+        await runtime._automatic_profiles(runtime.state.bindings(), presence)
+        state = runtime.profiles.store.status(local["domain"])
+        assert state["base_revision"] == state["head_revision"] == 1
+        assert state["pending"] == 0
+        assert [request.method for request in service.profile_requests] == ["PUT"]
+        assert service.profile_requests[0].content == bytes(operation["body"])
+        assert len(runtime.ledger.pending(DOMAIN)) == 1 and runtime.ledger.cursor(DOMAIN) == 0
+        assert config.saves == []
+
+        # Completion must not turn an inactive role into a periodic profile reader.
+        service.requests.clear()
+        await runtime._automatic_profiles(runtime.state.bindings(), presence)
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound_before_approval", [False, True])
+async def test_saved_initial_profile_finishes_off_selection_without_consuming_history(tmp_path, config, bound_before_approval):
+    """A saved first choice can finish registration/binding, while history still waits."""
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    from services.chat_sync.source import ChatOriginalSource
+    from services.chat_sync.ledger import ChatOriginal
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    try:
+        source.commit_unbound(UID, "f" * 32, ChatOriginal("user", "approved history waits"))
+        await runtime.request_new_role_sync(UID, "Synthetic")
+        saved = runtime.state.new_role(UID)
+        runtime.state.record_new_role_error(UID, saved["requestId"], "chat_sync_unavailable")
+        if bound_before_approval:
+            await runtime.enable(UID, "Synthetic")
+        selected = select_runtime_current(runtime, "b" * 32)
+        presence = await runtime.session_presence_provider()
+        await runtime._start_new_role_sync(presence)
+        await runtime._flights["new-role"]
+
+        state = runtime.profiles.store.status(DOMAIN.key())
+        assert state["base_revision"] == state["head_revision"] == 1
+        assert state["pending"] == 0 and runtime.state.binding(UID)["enabled"]
+        retained = runtime.state.new_role(UID)
+        assert "lastError" not in retained
+        assert retained["requestId"] == saved["requestId"] and retained["canonical"] == saved["canonical"]
+        assert retained["afterSeq"] == saved["afterSeq"]
+        assert source.task(UID) is None
+        assert runtime.ledger.pending(DOMAIN) == [] and runtime.ledger.cursor(DOMAIN) == 0
+        assert [request.method for request in service.profile_requests] == ["PUT"]
+        assert config.saves == []
+
+        # Returning to the role resumes its original history authorization, without republishing.
+        selected[0] = UID
+        runtime.test_clock[0] += 30_000
+        await runtime._start_new_role_sync(presence)
+        await runtime._flights["new-role"]
+        assert runtime.state.new_role(UID) is None
+        assert source.approved_tasks(UID)
+        assert [request.method for request in service.profile_requests] == ["PUT"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_initial_profile_retry_gate_keeps_error_until_a_confirmed_upload(tmp_path, config):
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        await runtime.request_new_role_sync(UID, "Synthetic")
+        await runtime.enable(UID, "Synthetic")
+        saved = runtime.state.new_role(UID)
+        runtime.state.record_new_role_error(UID, saved["requestId"], "chat_sync_unavailable")
+        presence = await runtime.session_presence_provider()
+        runtime.scheduler.failure(DOMAIN.key(), "profile", runtime.state.binding(UID)["generation"], presence, OSError())
+        await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
+        assert runtime.state.new_role_errors() == {UID: "chat_sync_unavailable"}
+        assert service.profile_requests == []
+        assert runtime.profiles.store.status(DOMAIN.key())["pending"] == 1
+        runtime.test_clock[0] += 30_000
+        await runtime._run_new_role_sync(UID, saved, presence, initial_profile_only=True)
+        assert runtime.state.new_role_errors() == {}
+        assert runtime.state.new_role(UID)["requestId"] == saved["requestId"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_inactive_initial_profile_recovers_exact_approved_bytes_after_restart(tmp_path, config):
+    """Legacy approved revision-zero tasks recover without reading a later local draft."""
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    runtime, service, _ = await bound(tmp_path, config)
+    local = await runtime.profiles.local(UID)
+    await runtime.profiles.approve(UID, local["local_hash"], 0)
+    operation = runtime.profiles.store.next_operation(local["domain"])
+    await runtime.close()
+
+    runtime, _, _ = setup_runtime(tmp_path, service)
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    try:
+        config.data["猫娘"]["Synthetic"]["_reserved"]["system_prompt"] = "later unapproved draft"
+        select_runtime_current(runtime, None)
+        await runtime._automatic_profiles(runtime.state.bindings(), await runtime.session_presence_provider())
+        assert [request.content for request in service.profile_requests] == [bytes(operation["body"])]
+        assert runtime.profiles.store.next_operation(local["domain"]) is None
+        assert config.data["猫娘"]["Synthetic"]["_reserved"]["system_prompt"] == "later unapproved draft"
+        assert config.saves == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", ["draft", "paused", "owner", "session", "writer", "retry", "throttled", "auth"])
+async def test_inactive_initial_profile_keeps_consent_account_writer_and_retry_fences(tmp_path, config, blocked):
+    """Initial setup is a selection exception, never an authority or backpressure exception."""
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    from services.chat_sync.runtime import ChatSyncServiceError
+
+    runtime, service, session = await bound(tmp_path, config)
+    try:
+        local = await runtime.profiles.local(UID)
+        if blocked != "draft":
+            await runtime.profiles.approve(UID, local["local_hash"], 0)
+        bindings = runtime.state.bindings()
+        presence = await runtime.session_presence_provider()
+        if blocked == "paused":
+            await runtime.pause(UID)
+        elif blocked == "owner":
+            service.owner = OTHER_OWNER
+        elif blocked == "session":
+            session["logged_in"] = False
+        elif blocked == "writer":
+            runtime.prepare_writer_recovery()
+        elif blocked in {"retry", "throttled", "auth"}:
+            runtime.scheduler.failure(DOMAIN.key(), "profile", bindings[0]["generation"], presence,
+                ChatSyncServiceError({"retry": 503, "throttled": 429, "auth": 403}[blocked], 240000))
+        select_runtime_current(runtime, "b" * 32)
+        service.requests.clear()
+        await runtime._automatic_profiles(bindings, presence)
+        assert service.profile_requests == []
+        assert runtime.profiles.store.status(local["domain"])["base_revision"] == 0
+        assert config.saves == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_inactive_initial_profile_waiting_for_lock_rechecks_pause(tmp_path, config):
+    """A pause can revoke first publication while it waits behind another profile operation."""
+    from tests.unit.test_chat_sync_runtime import select_runtime_current
+    runtime, service, _ = await bound(tmp_path, config)
+    try:
+        local = await runtime.profiles.local(UID)
+        await runtime.profiles.approve(UID, local["local_hash"], 0)
+        select_runtime_current(runtime, "b" * 32)
+        await runtime.profiles.lock.acquire()
+        task = asyncio.create_task(runtime._automatic_profiles(runtime.state.bindings(), await runtime.session_presence_provider()))
+        try:
+            await asyncio.sleep(.01)
+            assert not task.done()
+            await runtime.pause(UID)
+        finally:
+            runtime.profiles.lock.release()
+        await asyncio.wait_for(task, 2)
+        assert service.profile_requests == []
+        assert runtime.profiles.store.next_operation(local["domain"]) is not None
     finally:
         await runtime.close()
 
@@ -806,7 +1026,7 @@ async def test_current_role_explicit_inactive_profile_apply_remains_authorized(t
 
 
 @pytest.mark.asyncio
-async def test_new_role_choice_is_local_durable_and_current_role_only(tmp_path, config):
+async def test_new_role_choice_is_local_durable_and_history_current_role_only(tmp_path, config):
     from tests.unit.test_chat_sync_runtime import select_runtime_current
     runtime, service, session = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
@@ -822,7 +1042,8 @@ async def test_new_role_choice_is_local_durable_and_current_role_only(tmp_path, 
         assert type(runtime.state)(runtime.state.path).new_role(UID) == request
         select_runtime_current(runtime, 'b' * 32)
         await runtime._start_new_role_sync('synthetic-presence')
-        assert 'new-role' not in runtime._flights
+        await runtime._flights['new-role']
+        assert service.requests == [] and source.task(UID) is None
         select_runtime_current(runtime)
         session['logged_in'] = True
         presence = await runtime.session_presence_provider()
@@ -842,7 +1063,8 @@ async def test_new_role_choice_is_local_durable_and_current_role_only(tmp_path, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason', ['profile-edit', 'pause', 'writer-epoch'])
-async def test_new_role_choice_cannot_override_later_local_decisions(tmp_path, config, reason):
+@pytest.mark.parametrize('initial_profile_only', [False, True])
+async def test_new_role_choice_cannot_override_later_local_decisions(tmp_path, config, reason, initial_profile_only):
     runtime, service, _ = setup_runtime(tmp_path, ProfileService())
     runtime.profiles.adapter = DesktopProfileAdapter(config)
     try:
@@ -856,7 +1078,7 @@ async def test_new_role_choice_cannot_override_later_local_decisions(tmp_path, c
         else:
             request['epoch'] = ['copied-installation', 'stale-lineage']
         service.requests.clear()
-        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider())
+        await runtime._run_new_role_sync(UID, request, await runtime.session_presence_provider(), initial_profile_only=initial_profile_only)
         assert not service.requests
         assert (runtime.state.new_role(UID) is None) == (reason == 'pause')
         if reason == 'pause':
@@ -1438,3 +1660,158 @@ async def test_cloud_directory_accepts_one_complete_legacy_response():
 
     assert await read_character_directory(request, OWNER) == {'characters': roles}
     assert calls == ['/prototype/chat-sync/characters?limit=100']
+
+
+class RetiredProfileService(ProfileService):
+    """Return explicit retirement without accessing the deployed service."""
+
+    def __init__(self):
+        super().__init__()
+        self.retirement_status = 410
+        self.retirement_body = {"detail": "character_deleted"}
+
+    async def request(self, request):
+        if request.method == "GET" and request.url.path.endswith(f"/{UID}/profile"):
+            self.requests.append(request)
+            if self.on_request:
+                await self.on_request(request)
+            return httpx.Response(self.retirement_status, json=self.retirement_body)
+        return await super().request(request)
+
+
+async def retiring_runtime(tmp_path, config):
+    runtime, service, session = setup_runtime(tmp_path, RetiredProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(config)
+    await runtime.configure("https://sync.test")
+    await runtime.enable(UID, "Synthetic")
+    return runtime, service, session
+
+
+@pytest.mark.asyncio
+async def test_remote_role_delete_cleans_paused_noncurrent_role_and_all_sync_copies(tmp_path, config):
+    from contextlib import closing
+    from services.chat_sync.writer import store_connection
+    from tests.unit.test_chat_sync_runtime import capture
+
+    runtime, service, _session = await retiring_runtime(tmp_path, config)
+    try:
+        capture(runtime)
+        await runtime.profiles.local(UID)
+        await runtime.pause(UID)
+        runtime.profiles.adapter.delete = AsyncMock(return_value=True)
+        await runtime.reconcile_deleted_characters()
+        runtime.profiles.adapter.delete.assert_awaited_once()
+        assert runtime.profiles.adapter.delete.call_args.args[0] == UID
+        assert runtime.state.binding(UID) is None
+        for filename, tables in (("originals.sqlite3", ("chat_originals", "chat_pending", "chat_downloaded")),
+                                 ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox"))):
+            with closing(store_connection(runtime.state.path.parent / filename)) as connection:
+                for table in tables:
+                    assert connection.execute(f"SELECT count(*) FROM {table} WHERE domain=?", (DOMAIN.key(),)).fetchone()[0] == 0
+        assert not any(request.method == "DELETE" for request in service.requests)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,detail", [(404, "prototype_character_not_found"), (403, "prototype_binding_forbidden"),
+                                          (410, "unknown"), (503, "character_deleted")])
+async def test_remote_role_delete_never_uses_generic_http_failure(tmp_path, config, status, detail):
+    runtime, service, _session = await retiring_runtime(tmp_path, config)
+    try:
+        service.retirement_status, service.retirement_body = status, {"detail": detail}
+        runtime.profiles.adapter.delete = AsyncMock(return_value=True)
+        await runtime.reconcile_deleted_characters()
+        runtime.profiles.adapter.delete.assert_not_awaited()
+        assert runtime.state.binding(UID)["enabled"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["logout", "account", "rebind"])
+async def test_remote_role_delete_rejects_changed_authority(tmp_path, config, boundary):
+    runtime, service, session = await retiring_runtime(tmp_path, config)
+    try:
+        runtime.profiles.adapter.delete = AsyncMock(return_value=True)
+        if boundary == "account":
+            service.owner = OTHER_OWNER
+        else:
+            async def change(request):
+                if boundary == "logout":
+                    session["logged_in"] = False
+                else:
+                    await runtime.pause(UID)
+            service.on_request = change
+        await runtime.reconcile_deleted_characters()
+        runtime.profiles.adapter.delete.assert_not_awaited()
+        assert runtime.state.binding(UID) is not None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_role_delete_retries_busy_host_then_failed_local_purge(tmp_path, config, monkeypatch):
+    runtime, _service, _session = await retiring_runtime(tmp_path, config)
+    try:
+        runtime.profiles.adapter.delete = AsyncMock(side_effect=[False, True, True])
+        purge = runtime._purge_retired_character
+        def fail(*_args):
+            raise OSError("synthetic local cleanup failure")
+        monkeypatch.setattr(runtime, "_purge_retired_character", fail)
+        await runtime.reconcile_deleted_characters()
+        assert runtime.state.binding(UID) is not None
+        assert not runtime.state.binding(UID)["enabled"]
+        await runtime.reconcile_deleted_characters()
+        assert runtime.state.binding(UID) is not None
+        monkeypatch.setattr(runtime, "_purge_retired_character", purge)
+        runtime.test_clock[0] += 30_000
+        await runtime.reconcile_deleted_characters()
+        assert runtime.state.binding(UID) is None
+        assert runtime.profiles.adapter.delete.await_count == 3
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 503, 429])
+async def test_retirement_poll_obeys_durable_error_and_origin_gates(tmp_path, config, status):
+    runtime, service, session = await retiring_runtime(tmp_path, config)
+    try:
+        service.retirement_status, service.retirement_body = status, {"detail": "unavailable"}
+        service.requests.clear()
+        await runtime.reconcile_deleted_characters()
+        requests = len(service.requests)
+        assert requests > 0
+        await runtime.reconcile_deleted_characters()
+        assert len(service.requests) == requests
+        if status in (401, 403):
+            runtime.test_clock[0] += 60_000
+            await runtime.reconcile_deleted_characters()
+            assert len(service.requests) == requests
+            session["snapshot"]["access_token"] = "synthetic-fresh-login"
+        else:
+            runtime.test_clock[0] += 30_000
+        await runtime.reconcile_deleted_characters()
+        assert len(service.requests) > requests
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_retirement_pause_cannot_adopt_a_newer_activation(tmp_path, config, monkeypatch):
+    runtime, _service, _session = await retiring_runtime(tmp_path, config)
+    try:
+        pause = runtime._pause_retired_character
+        def activate_before_pause(binding, fingerprint, epoch):
+            runtime._pause(UID)
+            runtime._activate(runtime.state.binding(UID), binding["binding_id"], fingerprint, epoch)
+            return pause(binding, fingerprint, epoch)
+        monkeypatch.setattr(runtime, "_pause_retired_character", activate_before_pause)
+        runtime.profiles.adapter.delete = AsyncMock(return_value=True)
+        await runtime.reconcile_deleted_characters()
+        runtime.profiles.adapter.delete.assert_not_awaited()
+        assert runtime.state.binding(UID) is not None
+        assert runtime.state.binding(UID)["enabled"]
+    finally:
+        await runtime.close()

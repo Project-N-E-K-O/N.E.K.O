@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Process-wide serialization for every read and write of ``<character>/recent.json``.
+"""Cross-process serialization for every read and write of ``<character>/recent.json``.
 
-This module is deliberately a leaf: it depends only on ``utils.file_utils``,
-``os`` and ``threading``. ``memory``, ``main_routers`` and ``utils`` can all
+This module is deliberately a leaf. ``memory``, ``main_routers`` and ``utils`` can all
 import it without dragging in the memory god-module and without inverting the
 dependency direction.
 
@@ -31,13 +30,18 @@ Both helpers block on file IO. Call them from a worker thread
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
+import stat
 import threading
+import tempfile
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
+
+from filelock import FileLock
 
 from utils.file_utils import atomic_write_json
 
@@ -72,6 +76,7 @@ __all__ = [
     "restore_recent_deletions",
     "restore_recent_registry_state",
     "set_recent_pending_unlocked",
+    "subscribe_recent_changes",
     "snapshot_recent_redirects",
     "snapshot_recent_deletions",
     "mark_recent_deleted",
@@ -114,7 +119,49 @@ class RecentGenerationConflictError(RuntimeError):
 #
 # Deliberately avoid RLock: every *_unlocked helper requires caller ownership; reentrancy would merely hide
 # bugs where an inner nested RMW persists the outer transaction's partially modified state.
-_LOCKS: dict[str, threading.Lock] = {}
+class _RecentFileLock:
+    """Keep thread exclusion and extend the same critical section across processes."""
+
+    def __init__(self, path):
+        self._thread = threading.Lock()
+        # Lock files must survive character moves/deletion without recreating
+        # deleted directories or colliding when two character folders merge.
+        key = hashlib.sha256(os.path.realpath(path).encode('utf-8')).hexdigest()
+        user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
+        self._file = FileLock(os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock'), thread_local=False)
+
+    def acquire(self):
+        self._thread.acquire()
+        try:
+            directory = os.path.dirname(self._file.lock_file)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            info = os.lstat(directory)
+            if (not stat.S_ISDIR(info.st_mode) or (hasattr(os, 'getuid')
+                    and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
+                raise PermissionError(f'unsafe recent lock directory: {directory}')
+            self._file.acquire()
+        except BaseException:
+            self._thread.release()
+            raise
+
+    def release(self):
+        try:
+            self._file.release()
+        finally:
+            self._thread.release()
+
+    def locked(self):
+        return self._thread.locked()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_):
+        self.release()
+
+
+_LOCKS: dict[str, _RecentFileLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
 _PENDING_GUARD = threading.Lock()
@@ -122,7 +169,19 @@ _REDIRECTS: dict[str, str] = {}
 _DELETED: set[str] = set()
 _GENERATIONS: dict[str, int] = {}
 _CONTENT_VERSIONS: dict[str, int] = {}
+_CHANGE_LISTENERS: set = set()
 _NEXT_GENERATION = 1
+
+
+def subscribe_recent_changes(callback):
+    """Subscribe a nonblocking hint after successful writes; return its cleanup."""
+    with _LOCKS_GUARD:
+        _CHANGE_LISTENERS.add(callback)
+
+    def unsubscribe():
+        with _LOCKS_GUARD:
+            _CHANGE_LISTENERS.discard(callback)
+    return unsubscribe
 
 
 def _lock_key(path: Any) -> str:
@@ -138,13 +197,13 @@ def _resolve_key_unlocked(key: str) -> str:
     return key
 
 
-def recent_file_lock(path: Any) -> threading.Lock:
+def recent_file_lock(path: Any) -> _RecentFileLock:
     """Return the process-wide lock guarding one recent.json path."""
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         lock = _LOCKS.get(key)
         if lock is None:
-            lock = threading.Lock()
+            lock = _RecentFileLock(key)
             _LOCKS[key] = lock
     return lock
 
@@ -179,7 +238,7 @@ def recent_file_access(
             resolved_key = _resolve_key_unlocked(original_key)
             lock = _LOCKS.get(resolved_key)
             if lock is None:
-                lock = threading.Lock()
+                lock = _RecentFileLock(resolved_key)
                 _LOCKS[resolved_key] = lock
         lock.acquire()
         with _LOCKS_GUARD:
@@ -212,7 +271,7 @@ def recent_file_locks(paths: list[Any]) -> Iterator[None]:
         release_recent_file_locks(locks)
 
 
-def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
+def acquire_recent_file_locks(paths: list[Any]) -> list[_RecentFileLock]:
     """Acquire physical path locks for a transaction spanning multiple calls."""
     original_keys = {_lock_key(path) for path in paths}
     while True:
@@ -226,7 +285,7 @@ def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
             for key in sorted(scoped_keys):
                 lock = _LOCKS.get(key)
                 if lock is None:
-                    lock = threading.Lock()
+                    lock = _RecentFileLock(key)
                     _LOCKS[key] = lock
                 locks.append(lock)
         for lock in locks:
@@ -243,7 +302,7 @@ def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
         release_recent_file_locks(locks)
 
 
-def release_recent_file_locks(locks: list[threading.Lock]) -> None:
+def release_recent_file_locks(locks: list[_RecentFileLock]) -> None:
     """Release locks returned by ``acquire_recent_file_locks``."""
     for lock in reversed(locks):
         lock.release()
@@ -478,6 +537,13 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
+        listeners = tuple(_CHANGE_LISTENERS)
+    for callback in listeners:
+        try:
+            callback(key)
+        except Exception:
+            # Optional hints must never turn a committed local save into a failure.
+            pass
 
 
 def recent_sidecar_path(path: Any, filename: str) -> str:

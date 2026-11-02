@@ -1,0 +1,67 @@
+name: Docker Config
+
+# Docker 侧的配置与宿主脚本回归。
+#
+# 这三个测试覆盖的都是「不会让镜像构建失败、只会在部署时静默失效」的东西：
+#   docker/nginx/      反代配置分层：渲染两种模式 + 分层不变量 + nginx -t
+#   docker/watchdog/   宿主自愈看门狗（隔离 harness，mock docker/curl，不碰真实宿主）
+#   docker/            宿主预检 preflight.sh（挂载源符号链接与属主）
+#
+# 在此之前它们只能靠人工 sudo 执行，等于没有覆盖。分层背景见 docker/nginx/README.md。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+      - '.github/workflows/docker-config.yml'
+  pull_request:
+    paths:
+      - 'docker/**'
+      - '.github/workflows/docker-config.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-config-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-scripts:
+    name: Nginx 分层 + 宿主脚本
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # nginx 只用于 test-render.sh 的可选 T5（nginx -t）；
+      # 渲染本身与分层不变量检查不依赖它，缺了只是跳过 T5。
+      - name: Install nginx
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nginx
+
+      # 真解析一遍：YAML 语法、${} 插值、env_file(required: false)、覆盖文件合并。
+      # 这些错了 compose 会直接拒绝启动，属于"部署当天才发现"的类型。
+      - name: Compose 配置校验
+        run: |
+          docker compose -f docker/docker-compose.yml config > /dev/null
+
+          # 资源上限示例默认全部注释；用"取消注释后的形态"验证合并结果，
+          # 直接合并空覆盖验证不到任何东西。
+          sed 's/^    # mem_limit: 2g/    mem_limit: 2g/' \
+              docker/compose.limits.example.yaml > /tmp/neko-limits.yaml
+          # 注意 compose config 会把字节值加引号输出（mem_limit: "2147483648"），
+          # 所以模式必须容忍引号 —— 第一版就是漏了引号，被 CI 抓到的。
+          merged=$(docker compose -f docker/docker-compose.yml -f /tmp/neko-limits.yaml config)
+          printf '%s\n' "$merged" | grep -qE 'mem_limit: ?"?(2g|2147483648)"?' \
+            || { echo "资源上限覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
+
+      - name: Nginx 配置分层（渲染 + 分层不变量）
+        run: sudo bash docker/nginx/test-render.sh
+
+      - name: 宿主看门狗 harness
+        run: sudo bash docker/watchdog/test-watchdog.sh
+
+      - name: 宿主预检 harness
+        run: sudo bash docker/test-preflight.sh
+
+      - name: 宿主备份 harness
+        run: bash docker/test-backup.sh

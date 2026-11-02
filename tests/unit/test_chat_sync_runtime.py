@@ -83,7 +83,7 @@ class SyntheticService:
         })
 
 
-def setup_runtime(tmp_path, service=None):
+def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memory_adapter=None, long_term_memory_adapter=None):
     """Inject only synthetic session state and an in-memory HTTP transport."""
     service = service or SyntheticService()
     session = {"logged_in": True, "snapshot": {
@@ -117,12 +117,18 @@ def setup_runtime(tmp_path, service=None):
         """Select one disposable role without loading production configuration."""
         return UID
 
+    async def recent_character_name(uid):
+        return 'Neko' if uid == UID else None
+
     runtime = DesktopChatSyncRuntime(
         tmp_path / "chat_sync", resolve,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(service.request)),
         session_commit_guard=commit_guard,
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
+        fixed_service_url=fixed_service_url,
+        recent_memory_adapter=recent_memory_adapter, recent_character_name=recent_character_name,
+        long_term_memory_adapter=long_term_memory_adapter,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -462,9 +468,11 @@ async def test_production_history_notifier_routes_only_exact_local_character_uid
         websocket=SimpleNamespace(send_json=send_json))})
     runtime = await module.get_desktop_chat_sync_runtime(config)
     try:
+        assert runtime.chat_history_provider is None
+        assert runtime.recent_memory is not None
         await runtime.history_changed(UID)
         await runtime.history_changed(OTHER_UID)
-        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID}]
+        assert sent == [{"type": "chat_sync_history_changed", "characterSyncId": UID, "memoryEditedName": "Synthetic"}]
         assert await runtime.current_character_uid_provider() == UID
         character_data["当前猫娘"] = "Other"
         assert await runtime.current_character_uid_provider() == OTHER_UID
@@ -1784,6 +1792,94 @@ def test_default_is_disabled_and_state_survives_restart(tmp_path):
     assert DesktopSyncState(state.path).settings()["device_id"] == device
 
 
+@pytest.mark.asyncio
+async def test_production_factory_reports_builtin_service_for_legacy_setup(tmp_path, monkeypatch):
+    """The actual desktop factory cannot revive a persisted local test endpoint."""
+    import services.chat_sync.runtime as module
+
+    config = SimpleNamespace(app_docs_dir=tmp_path / "selected", local_state_dir=tmp_path / "anchor")
+    monkeypatch.setattr(module, "_runtimes", {})
+    monkeypatch.setattr(module, "_runtime_lock", asyncio.Lock())
+    runtime = await module.get_desktop_chat_sync_runtime(config)
+    try:
+        runtime.state.configure("https://localhost:8443")
+        status = await runtime.status()
+        assert status["serviceUrl"] == "https://sync.nekotech.cn"
+        assert status["writerRecoveryRequired"] is True
+        assert runtime.state.settings()["service_url"] == "https://localhost:8443"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_service_blocks_legacy_origin_without_retargeting_saved_tasks(tmp_path):
+    """A saved test origin requires recovery before any old permission reaches the built-in service."""
+    from services.chat_sync.writer import WriterQuarantined
+
+    runtime, service, _ = setup_runtime(tmp_path, fixed_service_url="https://sync.nekotech.cn")
+    try:
+        runtime.state.configure("https://localhost:8443")
+        prepared = runtime.state.prepare_binding(DOMAIN)
+        binding = runtime.state.activate(prepared, BINDING)
+        runtime.ledger.queue_deletion(DOMAIN, ["d" * 32])
+        pending = runtime.ledger.pending_deletions(DOMAIN)
+
+        status = await runtime.status()
+        assert status["serviceUrl"] == "https://sync.nekotech.cn"
+        assert status["writerRecoveryRequired"] is True
+        assert status["bindings"][0]["enabled"] == 0
+        with pytest.raises(WriterQuarantined):
+            await runtime._identity("synthetic-a")
+        assert service.requests == []
+        assert runtime.state.settings()["service_url"] == "https://localhost:8443"
+        assert runtime.state.binding(UID) == binding
+        assert runtime.ledger.pending_deletions(DOMAIN) == pending
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_service_changes_legacy_origin_only_inside_explicit_recovery(tmp_path):
+    """Existing recovery stages old deletes and revokes old bindings before using the built-in origin."""
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = setup_runtime(tmp_path, fixed_service_url="https://sync.nekotech.cn")
+    try:
+        runtime.state.configure("https://localhost:8443")
+        prepared = runtime.state.prepare_binding(DOMAIN)
+        runtime.state.activate(prepared, BINDING)
+        runtime.ledger.queue_deletion(DOMAIN, ["d" * 32])
+        runtime.enable = AsyncMock(side_effect=ValueError("synthetic_stop_after_recovery"))
+
+        with pytest.raises(ValueError, match="synthetic_stop_after_recovery"):
+            await runtime.recover_writer_role(UID, "Neko", service_url="https://sync.nekotech.cn")
+        runtime.writer.check()
+        assert runtime.state.settings()["service_url"] == "https://sync.nekotech.cn"
+        binding = runtime.state.binding(UID)
+        assert binding["enabled"] == 0 and binding["binding_id"] is None
+        assert runtime.ledger.pending_deletions(DOMAIN) == []
+        with sqlite3.connect(runtime.state.path.parent / "sources.sqlite3") as conn:
+            assert conn.execute("SELECT message_id FROM source_recovery_delete_ids").fetchall() == [("d" * 32,)]
+        runtime.enable.assert_awaited_once_with(UID, "Neko")
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_service_requires_no_setup_and_rejects_custom_configuration(tmp_path):
+    """Production origin policy applies to actual HTTP even without a saved configuration."""
+    runtime, service, _ = setup_runtime(tmp_path, fixed_service_url="https://sync.nekotech.cn")
+    try:
+        assert await runtime._identity("synthetic-a") == OWNER
+        assert str(service.requests[0].url) == "https://sync.nekotech.cn/v1/chat-sync/identity"
+        with pytest.raises(ValueError, match="invalid_chat_sync_service_url"):
+            await runtime.configure("https://localhost:8443")
+        assert runtime.state.settings()["service_url"] == "https://sync.nekotech.cn"
+    finally:
+        await runtime.close()
+
+
 @pytest.mark.parametrize("url", [
     "http://sync.test", "https://user:secret@sync.test", "https://sync.test/path",
     "https://sync.test?query=1", "https://sync.test#fragment", " https://sync.test",
@@ -2311,7 +2407,7 @@ def test_manual_sync_and_detached_flush_share_only_the_deletion_flight(tmp_path)
 
 def test_saved_session_commit_guard_shares_the_actual_logout_file_lock(tmp_path, monkeypatch):
     """Use real credential locks and logout code only against disposable synthetic files."""
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait
     import threading
     from main_routers import card_drop_router as credentials
 
@@ -2334,8 +2430,13 @@ def test_saved_session_commit_guard_shares_the_actual_logout_file_lock(tmp_path,
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with _saved_session_commit_guard(fingerprint):
+            # The guard holds the very lock file the logout writer takes.
+            assert (tmp_path / "social.json.lock").exists()
             clearing = pool.submit(logout)
             assert entered.wait(2)
+            # Unfenced, this cleanup of two small files finishes well within the
+            # window; fenced, it waits for the guard (the lock timeout is 2 s).
+            assert not wait([clearing], timeout=0.3).done
             assert not clearing.done()
         assert clearing.result(timeout=2) is True
     with pytest.raises(ValueError, match="chat_sync_login_required"):
@@ -2897,6 +2998,27 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
     asyncio.run(scenario())
 
 
+@pytest.mark.asyncio
+async def test_default_memory_adapter_imports_stay_off_the_event_loop(tmp_path, monkeypatch):
+    import builtins
+    from services.chat_sync import runtime as module
+    original = builtins.__import__
+    main_thread = threading.get_ident()
+    imported = set()
+    def checked_import(name, *args, **kwargs):
+        if name in {'memory.recent_sync', 'memory.long_term_sync'}:
+            assert threading.get_ident() != main_thread, 'memory import blocked the event loop'
+            imported.add(name)
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', checked_import)
+    manager = SimpleNamespace(app_docs_dir=tmp_path / 'isolated', local_state_dir=tmp_path / 'installation')
+    try:
+        await module.get_desktop_chat_sync_runtime(manager)
+        assert imported == {'memory.recent_sync', 'memory.long_term_sync'}
+    finally:
+        await module.close_desktop_chat_sync_runtimes()
+
+
 def test_real_loop_exit_leaves_late_default_construction_without_http_or_worker(tmp_path):
     """Exercise genuine asyncio.run teardown without pytest's nested-loop patch."""
     script = r'''
@@ -2907,7 +3029,17 @@ import sqlite3
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
+from tests.real_root_isolation import install
+from utils.config_manager import ConfigManager
+
+install(ConfigManager)
+from utils import logger_config
+logger_config.RobustLoggerConfig._get_documents_directory = lambda self: Path(sys.argv[1]) / 'logs'
 from services.chat_sync import runtime as module
+# Warm imports before timing constructor cancellation; import placement is
+# independently checked by the event-loop regression above.
+from memory.recent_sync import RecentMemoryAdapter
+from memory.long_term_sync import DesktopLongTermAdapter
 
 entered, release = threading.Event(), threading.Event()
 created = []
@@ -2955,39 +3087,69 @@ assert created[0].http is None and created[0]._scheduler_task is None
 assert not created[0]._background and module._runtimes == {}
 assert connections and all(connection.was_closed for connection in connections)
 '''
-    result = subprocess.run([sys.executable, "-c", script, str(tmp_path / "isolated")],
-                            capture_output=True, text=True, timeout=10)
+    result = subprocess.run([sys.executable, "-X", "utf8", "-c", script, str(tmp_path / "isolated")],
+                            capture_output=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+@contextmanager
+def _controlled_pull_deadline(monkeypatch):
+    """Advance only this test's loop after the intended request is waiting."""
+    import services.chat_sync.runtime as module
+
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    network_budget = 60
+    offset = 0
+
+    def advance(seconds=network_budget + 1):
+        nonlocal offset
+        offset += seconds
+
+    # Real SQLite/witness preparation must not consume a tiny wall-clock budget.
+    # Advancing the loop still exercises the production asyncio.timeout callback.
+    with monkeypatch.context() as clock_patch:
+        clock_patch.setattr(module, "_PULL_NETWORK_SECONDS", network_budget)
+        clock_patch.setattr(loop, "time", lambda: real_time() + offset)
+        yield advance
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["identity", "changes"])
 async def test_pull_network_budget_releases_stalled_get(tmp_path, monkeypatch, endpoint):
     """A download deadline releases the lock without accepting an incomplete page."""
-    import services.chat_sync.runtime as module
     runtime, service, _ = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
     original = runtime._request
-    cancelled = asyncio.Event()
+    entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def stalled(method, path, token, **kwargs):
         if endpoint in path:
+            entered.set()
             try:
                 await asyncio.Event().wait()
             finally:
                 cancelled.set()
         return await original(method, path, token, **kwargs)
 
-    monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", .05, raising=False)
     monkeypatch.setattr(runtime, "_request", stalled)
     try:
-        with pytest.raises(ValueError, match="^chat_sync_pull_timeout$"):
-            await asyncio.wait_for(runtime._channel_pass(UID, "pull", manual=True), .5)
-        await asyncio.wait_for(cancelled.wait(), 1)
-        assert not runtime._pull_lock.locked()
-        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_pull_timeout"
-        assert runtime.ledger.cursor(DOMAIN) == 0
+        with _controlled_pull_deadline(monkeypatch) as expire:
+            task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                expire()
+                await asyncio.wait_for(cancelled.wait(), 1)
+                with pytest.raises(ValueError, match="^chat_sync_pull_timeout$"):
+                    await asyncio.wait_for(task, 5)
+                assert not runtime._pull_lock.locked()
+                assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_pull_timeout"
+                assert runtime.ledger.cursor(DOMAIN) == 0
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
     finally:
         await runtime.close()
 
@@ -3000,28 +3162,53 @@ async def test_pull_budget_is_shared_and_external_cancel_stays_cancelled(tmp_pat
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
     original = runtime._request
-    started = asyncio.Event()
+    identity_entered, release_identity, changes_entered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    changes_cancelled = asyncio.Event()
 
     async def delayed(method, path, token, **kwargs):
-        started.set()
-        await asyncio.sleep(.06)
+        if path.endswith("/identity"):
+            identity_entered.set()
+            await release_identity.wait()
+        elif "/changes" in path:
+            changes_entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                changes_cancelled.set()
         return await original(method, path, token, **kwargs)
 
-    monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", .1)
     monkeypatch.setattr(runtime, "_request", delayed)
     try:
-        with pytest.raises(ValueError, match="^chat_sync_pull_timeout$"):
-            await runtime._channel_pass(UID, "pull", manual=True)
-        runtime.test_clock[0] += 3001
-        started.clear()
-        task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
-        await started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert not runtime._pull_lock.locked()
-        # The same identity remains unbounded for write/control operations.
-        assert await runtime._identity("synthetic-a") == OWNER
+        with _controlled_pull_deadline(monkeypatch) as advance:
+            task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
+            try:
+                await asyncio.wait_for(identity_entered.wait(), 5)
+                half_budget = module._PULL_NETWORK_SECONDS / 2
+                advance(half_budget)
+                release_identity.set()
+                await asyncio.wait_for(changes_entered.wait(), 5)
+                # Only the shared deadline has expired: resetting the budget for
+                # changes would leave another half-budget and fail this assertion.
+                advance(half_budget + 1)
+                await asyncio.wait_for(changes_cancelled.wait(), 1)
+                with pytest.raises(ValueError, match="^chat_sync_pull_timeout$"):
+                    await asyncio.wait_for(task, 5)
+                runtime.test_clock[0] += 3001
+                identity_entered.clear()
+                release_identity.clear()
+                task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
+                await asyncio.wait_for(identity_entered.wait(), 5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert not runtime._pull_lock.locked()
+                # Direct identity calls still have no pull deadline.
+                release_identity.set()
+                assert await runtime._identity("synthetic-a") == OWNER
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
     finally:
         await runtime.close()
 
@@ -3039,7 +3226,6 @@ def chat_ledger_rows(runtime):
 @pytest.mark.parametrize("stop", ["timeout", "cancel", "pause", "logout", "close"])
 async def test_pull_stall_preserves_complete_outbox(tmp_path, monkeypatch, endpoint, stop):
     """No incomplete download can alter pending bytes, fixed IDs or tombstones."""
-    import services.chat_sync.runtime as module
     runtime, service, session = setup_runtime(tmp_path)
     await runtime.configure("https://sync.test")
     await runtime.enable(UID, "Neko")
@@ -3051,7 +3237,7 @@ async def test_pull_stall_preserves_complete_outbox(tmp_path, monkeypatch, endpo
     before = chat_ledger_rows(runtime)
     writer_epoch = runtime.writer.epoch()
     hints = []
-    entered = asyncio.Event()
+    entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def notify(uid):
         hints.append(uid)
@@ -3059,37 +3245,47 @@ async def test_pull_stall_preserves_complete_outbox(tmp_path, monkeypatch, endpo
     async def block(request):
         if endpoint in request.url.path:
             entered.set()
-            await asyncio.Event().wait()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
 
     runtime.history_changed = notify
     service.on_request = block
-    monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", .1)
-    task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
     try:
-        await asyncio.wait_for(entered.wait(), 1)
-        if stop == "cancel":
-            task.cancel()
-        elif stop == "pause":
-            await runtime.pause(UID)
-        elif stop == "logout":
-            session["logged_in"] = False
-        elif stop == "close":
-            runtime._track(task)
-            await runtime.close()
-        expected = asyncio.CancelledError if stop in {"cancel", "close"} else ValueError
-        with pytest.raises(expected):
-            await asyncio.wait_for(task, 1)
-        assert chat_ledger_rows(runtime) == before
-        runtime.writer.require_epoch(writer_epoch)
-        assert runtime.ledger.seal_batch(DOMAIN, byte_budget=10000) == batch
-        assert runtime.ledger.pending_deletions(DOMAIN) == [deletion]
-        assert len(runtime.ledger.pending(DOMAIN)) == 3
-        assert runtime.ledger.cursor(DOMAIN) == 0 and hints == []
-        assert not runtime._pull_lock.locked()
+        with _controlled_pull_deadline(monkeypatch) as expire:
+            task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                if stop == "cancel":
+                    task.cancel()
+                elif stop == "pause":
+                    await runtime.pause(UID)
+                elif stop == "logout":
+                    session["logged_in"] = False
+                elif stop == "close":
+                    runtime._track(task)
+                    await runtime.close()
+                if stop not in {"cancel", "close"}:
+                    expire()
+                # Observe network cancellation independently of durable local
+                # cleanup, which can take longer on Windows or a loaded disk.
+                await asyncio.wait_for(cancelled.wait(), 1)
+                expected = asyncio.CancelledError if stop in {"cancel", "close"} else ValueError
+                with pytest.raises(expected):
+                    await asyncio.wait_for(task, 5)
+                assert chat_ledger_rows(runtime) == before
+                runtime.writer.require_epoch(writer_epoch)
+                assert runtime.ledger.seal_batch(DOMAIN, byte_budget=10000) == batch
+                assert runtime.ledger.pending_deletions(DOMAIN) == [deletion]
+                assert len(runtime.ledger.pending(DOMAIN)) == 3
+                assert runtime.ledger.cursor(DOMAIN) == 0 and hints == []
+                assert not runtime._pull_lock.locked()
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
     finally:
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
         await runtime.close()
 
 
@@ -3244,23 +3440,38 @@ async def test_pull_timeout_leaves_inactive_role_until_it_becomes_current(tmp_pa
     runtime.state.activate(runtime.state.prepare_binding(other), BINDING)
     selected = select_runtime_current(runtime)
     used = False
+    entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def block_first(request):
         nonlocal used
         if not used and endpoint in request.url.path:
             used = True
-            await asyncio.Event().wait()
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
 
     service.on_request = block_first
-    monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", .1)
     try:
         presence = await runtime.session_presence_provider()
-        await asyncio.wait_for(runtime._automatic_channel("pull", presence), 1)
-        assert runtime.ledger.cursor(DOMAIN) == 0
-        assert runtime.ledger.cursor(other) == 0
-        assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_pull_timeout"
-        assert runtime.scheduler.last_error(other.key()) is None
-        assert not runtime._pull_lock.locked()
+        with _controlled_pull_deadline(monkeypatch) as expire:
+            task = asyncio.create_task(runtime._automatic_channel("pull", presence))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                expire()
+                await asyncio.wait_for(cancelled.wait(), 1)
+                await asyncio.wait_for(task, 5)
+                assert used
+                assert runtime.ledger.cursor(DOMAIN) == 0
+                assert runtime.ledger.cursor(other) == 0
+                assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_pull_timeout"
+                assert runtime.scheduler.last_error(other.key()) is None
+                assert not runtime._pull_lock.locked()
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         selected[0] = OTHER_UID
         monkeypatch.setattr(module, "_PULL_NETWORK_SECONDS", 5)
         await asyncio.wait_for(runtime._automatic_channel("pull", presence), 6)
@@ -3673,6 +3884,293 @@ async def test_explicit_pause_revokes_retained_on_without_a_setup_error(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_history", [False, True])
+async def test_memory_browser_archive_is_the_shared_history_source(tmp_path, include_history):
+    """Pre-enable chats survive review and sync once only with history consent."""
+    from memory.chat_history import read_chat_history
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_chat_history import archive
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    path = tmp_path / "time_indexed.db"
+    archive(path, [{"type": "human", "data": {"content": "same"}}] * 2 + [
+        {"type": "ai", "data": {"content": "tool", "metadata": {"chat_original_source": {
+            "recordId": "3" * 32, "originalTime": "1234567890123", "origin": "tool"}}}}])
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_local_reply(UID, "4" * 32, ChatOriginal("assistant", "earlier tool record", original_time="1234567890122"), "tool")
+    async def history(uid):
+        return read_chat_history(path, uid)
+    runtime.chat_history_provider = history
+    try:
+        local = await runtime.history(UID)
+        ids = {row["messageId"] for row in local}
+        assert len(local) == len(ids) == 4
+        assert len(await runtime.local_replies(UID)) == 0
+        assert service.requests == [] and runtime.state.bindings() == []
+        (tmp_path / "recent.json").write_text('[]')
+        assert await runtime.history(UID) == local
+        await runtime.save_character_sync_choice(UID, "Synthetic", True, include_history=include_history)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        result = await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert result["uploaded"] == (4 if include_history else 0)
+        assert {json.loads(raw)["messageId"] for raw in service.records} == (ids if include_history else set())
+        assert len(await runtime.history(UID)) == 4
+        assert (await runtime.preview_history(UID, "Synthetic"))["count"] == (0 if include_history else 4)
+        await runtime.clear(UID)
+        assert await runtime.history(UID) == []
+        assert await runtime.local_replies(UID) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ValueError, OSError, sqlite3.DatabaseError])
+async def test_unavailable_archive_keeps_existing_history_and_sync_choice_usable(tmp_path, failure):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_unbound(UID, "f" * 32, ChatOriginal("user", "existing local chat"))
+    runtime.chat_history_provider = AsyncMock(side_effect=failure("private archive detail"))
+    try:
+        assert [row["text"] for row in await runtime.history(UID)] == ["existing local chat"]
+        await runtime.save_character_sync_choice(UID, "Synthetic", True, include_history=True)
+        assert runtime.state.new_role(UID) is not None
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["save", "request"])
+async def test_bound_history_choice_requires_a_complete_archive_before_freezing_range(tmp_path, entry):
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_unbound(UID, "1" * 32, ChatOriginal("user", "already indexed"))
+    available = False
+    async def history(uid):
+        if not available:
+            raise sqlite3.OperationalError("private locked archive")
+        return [{"messageId": "2" * 32, "role": "assistant", "text": "restored older chat", "origin": "legacy",
+                 "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}]
+    try:
+        await runtime.enable(UID, "Synthetic")
+        await runtime.save_character_sync_choice(UID, "Synthetic", True)
+        previous = runtime.state.new_role(UID)
+        runtime.chat_history_provider = history
+        assert [row["text"] for row in await runtime.history(UID)] == ["already indexed"]
+        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+            if entry == "save":
+                await runtime.save_character_sync_choice(UID, "Synthetic", True)
+            else:
+                await runtime.request_new_role_sync(UID, "Synthetic", replace=True)
+        assert runtime.state.new_role(UID) == previous
+        available = True
+        await runtime.save_character_sync_choice(UID, "Synthetic", True)
+        assert runtime.state.new_role(UID)["throughSeq"] > previous["throughSeq"]
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert {json.loads(raw)["text"] for raw in service.records} == {"already indexed", "restored older chat"}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_unbound_history_grant_retries_unavailable_archive_without_finishing_early(tmp_path):
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    available = False
+    async def history(uid):
+        if not available:
+            raise OSError("private archive failure")
+        return [{"messageId": "2" * 32, "role": "user", "text": "older archive chat", "origin": "legacy",
+                 "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}]
+    runtime.chat_history_provider = history
+    try:
+        await runtime.request_new_role_sync(UID, "Synthetic")
+        saved = runtime.state.new_role(UID)
+        presence = await runtime.session_presence_provider()
+        await runtime._run_new_role_sync(UID, saved, presence)
+        pending = runtime.state.new_role(UID)
+        assert pending and pending["requestId"] == saved["requestId"]
+        assert pending["lastError"] == "chat_sync_unavailable"
+        assert not service.records
+        available = True
+        await runtime._run_new_role_sync(UID, pending, presence)
+        await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert runtime.state.new_role(UID) is None
+        assert [json.loads(raw)["text"] for raw in service.records] == ["older archive chat"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_bad_archive_original_is_isolated_and_user_tool_provenance_cannot_block_neighbors(tmp_path):
+    from unittest.mock import AsyncMock
+    runtime, _, _ = setup_runtime(tmp_path)
+    base = {"role": "user", "text": "kept user", "origin": "tool", "originalTime": None,
+            "timezone": None, "conversationId": None, "replyToMessageId": None}
+    runtime.chat_history_provider = AsyncMock(return_value=[
+        {**base, "messageId": "1" * 32},
+        {**base, "messageId": "2" * 32, "originalTime": 123},
+        {**base, "messageId": "3" * 32, "role": "assistant", "origin": "tool", "text": "kept tool"}])
+    try:
+        assert {row["text"] for row in await runtime.history(UID)} == {"kept user", "kept tool"}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_excluding_old_history_cannot_use_an_unavailable_archive_cutoff(tmp_path):
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    available = False
+    async def history(uid):
+        if not available:
+            raise OSError("private archive failure")
+        return [{"messageId": "2" * 32, "role": "user", "text": "excluded older chat", "origin": "legacy",
+                 "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}]
+    runtime.chat_history_provider = history
+    try:
+        with pytest.raises(ValueError, match="chat_sync_unavailable"):
+            await runtime.request_new_role_sync(UID, "Synthetic", include_history=False)
+        assert runtime.state.new_role(UID) is None and runtime.state.choices() == {}
+        available = True
+        await runtime.request_new_role_sync(UID, "Synthetic", include_history=False)
+        await runtime._run_new_role_sync(UID, runtime.state.new_role(UID), await runtime.session_presence_provider())
+        await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert service.records == []
+        assert [row["text"] for row in await runtime.history(UID)] == ["excluded older chat"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_bound_choice_without_history_can_save_while_archive_is_unavailable(tmp_path, enabled):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+    runtime, _, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        await runtime.enable(UID, "Synthetic")
+        runtime.chat_history_provider = AsyncMock(side_effect=OSError())
+        await runtime.save_character_sync_choice(UID, "Synthetic", enabled, include_history=False)
+        assert runtime.state.choices()[UID] is enabled
+        assert runtime.state.new_role(UID) is None
+        if not enabled:
+            runtime.chat_history_provider.assert_not_awaited()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["provider", "batch"])
+async def test_archive_tolerance_does_not_swallow_writer_quarantine(tmp_path, monkeypatch, stage):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.writer import WriterQuarantined
+    runtime, _, _ = setup_runtime(tmp_path)
+    runtime.chat_history_provider = AsyncMock(return_value=[{
+        "messageId": "2" * 32, "role": "user", "text": "archive text", "origin": "legacy",
+        "originalTime": None, "timezone": None, "conversationId": None, "replyToMessageId": None}])
+    if stage == "provider":
+        runtime.chat_history_provider.side_effect = WriterQuarantined()
+    else:
+        def quarantined(*_args):
+            raise WriterQuarantined()
+        monkeypatch.setattr(ChatOriginalSource, "commit_history", quarantined)
+    try:
+        with pytest.raises(WriterQuarantined):
+            await runtime._refresh_chat_history(UID)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_conflicting_archive_batch_keeps_existing_roles_and_reports_incomplete_refresh(tmp_path, caplog):
+    from unittest.mock import AsyncMock
+    runtime, _, _ = setup_runtime(tmp_path)
+    source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+    source.commit_unbound(UID, "1" * 32, ChatOriginal("user", "existing target chat"))
+    source.commit_unbound(OTHER_UID, "2" * 32, ChatOriginal("user", "other role private chat"))
+    base = {"role": "user", "origin": "legacy", "originalTime": None, "timezone": None,
+            "conversationId": None, "replyToMessageId": None}
+    runtime.chat_history_provider = AsyncMock(return_value=[
+        {**base, "messageId": "3" * 32, "text": "rolled back archive chat"},
+        {**base, "messageId": "2" * 32, "text": "private conflicting archive chat"}])
+    try:
+        assert await runtime._refresh_chat_history(UID) is False
+        assert [row["text"] for row in await runtime.history(UID)] == ["existing target chat"]
+        assert source.stored_ids(UID) == {"1" * 32}
+        assert [row["text"] for row in source.local_history(OTHER_UID)] == ["other role private chat"]
+        assert "archive" in caplog.text.lower() and "private" not in caplog.text
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["chat", "proactive", "tool", "agent"])
+async def test_history_refresh_during_reply_tail_cannot_steal_live_upload(tmp_path, monkeypatch, origin):
+    """Archive caching precedes the delayed original seal in a real completed turn."""
+    from unittest.mock import AsyncMock
+    from memory.chat_history import read_chat_history
+    import services.chat_sync.source as source_module
+    from tests.unit.test_chat_history import archive
+
+    runtime, service, _ = setup_runtime(tmp_path)
+    path = tmp_path / "time_indexed.db"
+    proof = {"recordId": "5" * 32, "originalTime": "1234567890123", "origin": origin}
+    archive(path, [{"type": "ai", "data": {"content": "reply", "metadata": {"chat_original_source": proof}}}])
+    async def history(uid):
+        return read_chat_history(path, uid)
+    runtime.chat_history_provider = history
+    monkeypatch.setattr("services.chat_sync.runtime.get_desktop_chat_sync_runtime", AsyncMock(return_value=runtime))
+    monkeypatch.setattr(source_module, "character_uid_for", AsyncMock(return_value=UID))
+    original_save, tool_save = source_module.save_original, source_module.save_local_reply
+    async def save(*args, **kwargs):
+        return await original_save(*args, config_manager=SimpleNamespace(), **kwargs)
+    async def save_tool(*args, **kwargs):
+        return await tool_save(*args, config_manager=SimpleNamespace(), **kwargs)
+    monkeypatch.setattr(source_module, "save_original", save)
+    monkeypatch.setattr(source_module, "save_local_reply", save_tool)
+    buffer = source_module.AssistantOriginalBuffer(tail_grace=3600)
+    try:
+        await runtime.enable(UID, "Synthetic")
+        buffer.append({"chat_original_source": proof, "text": "reply"})
+        await buffer.finish("Synthetic", proof["recordId"])
+        await runtime.history(UID)
+        source = ChatOriginalSource(runtime.state.path.parent / "sources.sqlite3")
+        assert proof["recordId"] not in source.stored_ids(UID)
+        # A late tail must retain the full producer bytes, not the earlier archive projection.
+        buffer.append({"chat_original_source": proof, "text": " late tail"})
+        await buffer.flush_terminated(character_uid=UID)
+        result = await runtime.sync(UID, byte_budget=10000, max_pull_pages=1)
+        assert result["uploaded"] == 1
+        row, = map(json.loads, service.records)
+        assert row["messageId"] == proof["recordId"] and row["text"] == "reply late tail"
+        assert len(await runtime.history(UID)) == 1
+        assert (await runtime.sync(UID, byte_budget=10000, max_pull_pages=1))["uploaded"] == 0
+    finally:
+        buffer.discard()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_active_bound_card_history_is_not_reported_as_awaiting_enable(tmp_path):
     """Deferred history processing for a non-current role does not falsify enabled UI state."""
     from services.chat_sync.profile_sync import DesktopProfileAdapter
@@ -3746,6 +4244,69 @@ async def test_failed_combined_history_cancels_only_its_own_unapproved_preview(t
         assert len(other) == 1
         assert other[0][1] == ('approved' if after_approval else 'cancelled')
         assert source.task(UID, manual['taskId'])['status'] == 'preview'
+        assert runtime.state.new_role_errors() == {UID: 'chat_sync_session_changed'}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('manual', [False, True])
+async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_retry(tmp_path, manual):
+    """The real owner check must diagnose retained consent and leave all old work intact."""
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, service, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        await runtime.enable(UID, 'Synthetic')
+        capture(runtime)
+        pending = runtime.ledger.pending(DOMAIN)
+        await runtime.pause(UID)
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        runtime.state.defer_new_role(UID, runtime.test_clock[0] + 30_000)
+        saved, binding = runtime.state.new_role(UID), runtime.state.binding(UID)
+        service.owner = OTHER_OWNER
+        service.requests.clear()
+        operation = runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider(), manual=manual)
+        if manual:
+            with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
+                await operation
+        else:
+            await operation
+        retained = runtime.state.new_role(UID)
+        assert retained['lastError'] == 'chat_sync_account_mismatch'
+        assert retained['next_at'] == saved['next_at'] and 'error' not in retained
+        assert (await runtime.status())['syncSetupErrors'] == {UID: 'chat_sync_account_mismatch'}
+        assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
+        assert [request.url.path for request in service.requests] == ['/v1/chat-sync/identity']
+        with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
+            await runtime.recover_writer_role(UID, 'Synthetic')
+        assert runtime.state.binding(UID) == binding and runtime.ledger.pending(DOMAIN) == pending
+        service.owner = OWNER
+        await runtime._run_new_role_sync(UID, retained, await runtime.session_presence_provider())
+        assert runtime.state.new_role(UID) is None and runtime.state.new_role_errors() == {}
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_setup_diagnostics_cannot_expose_unknown_errors_or_overwrite_a_newer_choice(tmp_path, monkeypatch):
+    """Retained diagnostics contain fixed codes and belong to one saved request."""
+    from unittest.mock import AsyncMock
+    from services.chat_sync.profile_sync import DesktopProfileAdapter
+    from tests.unit.test_character_profile_sync import Config, ProfileService
+
+    runtime, _, _ = setup_runtime(tmp_path, ProfileService())
+    runtime.profiles.adapter = DesktopProfileAdapter(Config())
+    try:
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        saved = runtime.state.new_role(UID)
+        monkeypatch.setattr(runtime, 'enable', AsyncMock(side_effect=ValueError('private token in an unknown error')))
+        await runtime._run_new_role_sync(UID, saved, await runtime.session_presence_provider())
+        assert runtime.state.new_role_errors() == {}
+        await runtime.save_character_sync_choice(UID, 'Synthetic', True)
+        runtime.state.record_new_role_error(UID, saved['requestId'], 'chat_sync_account_mismatch')
         assert runtime.state.new_role_errors() == {}
     finally:
         await runtime.close()

@@ -33,14 +33,13 @@ import hashlib
 import os
 import re
 import json
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request, Response
+import httpx
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from utils.character_memory import (
@@ -69,6 +68,11 @@ from memory.external_markdown_import import (
     batch_daily_fragments,
     build_import_candidates,
     collect_markdown_files,
+)
+from memory.external_molili_import import (
+    MAX_ZIP_BYTES,
+    build_molili_candidates,
+    detect_molili_archive,
 )
 
 
@@ -807,14 +811,9 @@ def _recent_browser_identity_token(path: Path) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
-def _read_recent_browser_text_unlocked(path: Path, *, allow_missing: bool = False) -> str:
+def _read_recent_browser_text_unlocked(path: Path) -> str:
     """Build one editable disk-plus-pending snapshot while its lock is held."""
-    try:
-        content = read_recent_text_unlocked(path)
-    except FileNotFoundError:
-        if not allow_missing:
-            raise
-        content = '[]'
+    content = read_recent_text_unlocked(path)
     pending = get_recent_pending_unlocked(path)
     if not pending:
         return content
@@ -836,11 +835,11 @@ def _read_recent_browser_text(path: Path) -> str:
         return _read_recent_browser_text_unlocked(resolved_path)
 
 
-def _read_recent_browser_snapshot(path: Path, *, allow_missing: bool = False) -> tuple[str, str]:
+def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
     """Read editable content and its opaque identity while holding one lock."""
     with recent_file_access(path) as resolved_path:
         return (
-            _read_recent_browser_text_unlocked(resolved_path, allow_missing=allow_missing),
+            _read_recent_browser_text_unlocked(resolved_path),
             _recent_browser_identity_token(Path(resolved_path)),
         )
 
@@ -956,15 +955,13 @@ def _write_recent_browser_payload(
     expected_identity_token: str | None,
     expected_generation: tuple[str, int],
     browser_chat: list | None = None,
-    allow_missing: bool = False,
-    before_write=None,
 ) -> tuple[bool, str, str]:
     """Replace a browser snapshot unless disk or pending state changed since read."""
     with recent_file_access(
         path, expected_generation=expected_generation,
     ) as resolved_path:
         current_identity_token = _recent_browser_identity_token(Path(resolved_path))
-        current_text = _read_recent_browser_text_unlocked(resolved_path, allow_missing=allow_missing)
+        current_text = _read_recent_browser_text_unlocked(resolved_path)
         current_fingerprint = _recent_browser_fingerprint(current_text)
         if (
             expected_identity_token is not None
@@ -974,15 +971,24 @@ def _write_recent_browser_payload(
             and expected_fingerprint != current_fingerprint
         ):
             return False, current_fingerprint, current_identity_token
+        # Retain projection identity through edits without accepting IDs supplied by the browser.
+        from memory.recent_sync import ID_KEY, TIME_KEY
+        from utils.llm_client import message_metadata
+        current_rows = json.loads(current_text)
+        if not isinstance(current_rows, list):
+            current_rows = []
+        for item, edit in zip(payload, browser_chat or []):
+            source = edit.get("source_index") if isinstance(edit, dict) else None
+            if type(source) is int and 0 <= source < len(current_rows):
+                key = message_metadata(current_rows[source]).get(ID_KEY)
+                source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
+                if key and item.get("type") == source_type:
+                    item["data"].setdefault("metadata", {})[ID_KEY] = key
+                    item["data"]["metadata"][TIME_KEY] = message_metadata(current_rows[source]).get(TIME_KEY)
         # Maintain theater capsules only through /cache and /theater/forget; browser saves preserve them unchanged.
         payload = _merge_browser_payload_with_theater(
             current_text, payload, browser_chat,
         )
-        # Register exact deletion intent only after CAS and theater validation.
-        # The callback commits local outboxes, never remote I/O. It runs before
-        # JSON replacement so a crash cannot silently lose an approved deletion.
-        if before_write is not None:
-            before_write()
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])
         saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1254,54 +1260,11 @@ async def get_recent_files():
             seen.add(logical_name)
             file_names.append(logical_name)
 
-    # A role with phone-only history may not have a recent-memory file yet.
-    # Listing its logical editor target never writes memory or binds a role.
-    loader = getattr(cm, 'aload_characters', None)
-    if loader is not None:
-        from utils.config_manager.reserved_schema import get_character_uid
-        characters = await loader()
-        for name, profile in characters.get('猫娘', {}).items():
-            logical_name = f'recent_{name}.json'
-            if (isinstance(profile, dict) and get_character_uid(profile)
-                    and validate_recent_filename(logical_name)[0] and logical_name not in seen):
-                seen.add(logical_name)
-                file_names.append(logical_name)
-
     return {"files": sorted(file_names)}
 
 
-async def _memory_chat_uid(cm, name: str) -> str | None:
-    """Resolve saved role identity; never associate raw chats by display text."""
-    from utils.config_manager.reserved_schema import get_character_uid
-    loader = getattr(cm, 'aload_characters', None)
-    if loader is None:
-        return None
-    data = await loader()
-    profile = data.get('猫娘', {}).get(name)
-    return get_character_uid(profile) if isinstance(profile, dict) else None
-
-
-def _memory_chat_binding(binding) -> dict | None:
-    """Fence an editor against account, binding and generation changes."""
-    if binding is None:
-        return None
-    return {key: binding[key] for key in ('owner_id', 'binding_id', 'generation')}
-
-
-async def _memory_chat_snapshot(cm, uid: str) -> dict:
-    from services.chat_sync.runtime import get_desktop_chat_sync_runtime
-    runtime = await get_desktop_chat_sync_runtime(cm)
-    binding = _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))
-    originals = await runtime.history(uid)
-    local_replies = await runtime.local_replies(uid)
-    if binding != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid)):
-        raise HTTPException(409, 'chat_sync_binding_changed')
-    return {'characterSyncId': uid, 'binding': binding,
-            'originals': originals, 'localReplies': local_replies}
-
-
 @router.get('/recent_file')
-async def get_recent_file(filename: str, request: Request = None, include_chat_sync: bool = False):
+async def get_recent_file(filename: str):
     """Get the content of the specified recent*.json file."""
     # Reject path traversal attempts
     if '/' in filename or '\\' in filename or '..' in filename:
@@ -1313,15 +1276,7 @@ async def get_recent_file(filename: str, request: Request = None, include_chat_s
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
 
-    uid = None
-    if include_chat_sync:
-        from main_routers.chat_sync_router import _local_access
-        await _local_access(request, Response())
-        uid = await _memory_chat_uid(cm, extract_catgirl_name_from_recent_filename(filename))
-
-    resolved_path, path_error, path_error_code, catgirl_name = resolve_recent_file_path(cm, filename)
-    if resolved_path is None and uid and path_error_code == PATH_ERROR_NOT_FOUND:
-        resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
+    resolved_path, path_error, path_error_code, _catgirl_name = resolve_recent_file_path(cm, filename)
     if resolved_path is None:
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
@@ -1330,22 +1285,18 @@ async def get_recent_file(filename: str, request: Request = None, include_chat_s
     # Hold the file lock: on Windows even a bare open() can make concurrent os.replace raise PermissionError.
     try:
         content, identity_token = await asyncio.to_thread(
-            _read_recent_browser_snapshot, resolved_path, **({'allow_missing': True} if uid else {}),
+            _read_recent_browser_snapshot, resolved_path,
         )
     except RecentFileDeletedError:
         return JSONResponse(
             {"success": False, "error": "文件不存在"},
             status_code=path_error_status_code(PATH_ERROR_NOT_FOUND),
         )
-    result = {
+    return {
         "content": content,
         "fingerprint": _recent_browser_fingerprint(content),
         "identity_token": identity_token,
     }
-    if include_chat_sync:
-        result['chat_sync'] = await _memory_chat_snapshot(cm, uid) if uid else None
-        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
-    return result
 
 
 @router.post('/recent_file/save')
@@ -1390,26 +1341,6 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
-    sync_edit = data.get('chat_sync')
-    runtime = None
-    if sync_edit is not None:
-        from main_routers.chat_sync_router import _local_access
-        from services.chat_sync.ledger import _message_ids
-        from services.chat_sync.runtime import get_desktop_chat_sync_runtime
-        await _local_access(request, Response())
-        try:
-            if (not isinstance(sync_edit, dict)
-                    or set(sync_edit) != {'characterSyncId', 'binding', 'messageIds', 'localMessageIds'}):
-                raise ValueError('chat_sync_invalid_editor_save')
-            _message_ids(sync_edit['messageIds'], allow_empty=True)
-            _message_ids(sync_edit['localMessageIds'], allow_empty=True)
-        except (ValueError, TypeError):
-            raise HTTPException(400, 'chat_sync_invalid_editor_save') from None
-        uid = await _memory_chat_uid(cm, catgirl_name)
-        if not uid or uid != sync_edit['characterSyncId']:
-            raise HTTPException(409, 'chat_sync_binding_changed')
-        runtime = await get_desktop_chat_sync_runtime(cm)
-
     # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
     # runtime nested paths, or CAS comparisons lose their target.
     resolved_path, _path_error, path_error_code, _ = resolve_recent_file_path(
@@ -1446,58 +1377,17 @@ async def save_recent_file(request: Request):
                 **({"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": None} if t == "ai" else {})
             }
         })
-    deletion_receipt = None
-    loop = asyncio.get_running_loop()
-
-    async def _register_chat_deletions():
-        nonlocal deletion_receipt
-        from services.chat_sync.source import clear_local_replies
-        from services.chat_sync.profile_sync import DesktopProfileAdapter
-        if (sync_edit['messageIds'] or sync_edit['localMessageIds']) and DesktopProfileAdapter(cm).busy(catgirl_name):
-            raise HTTPException(409, 'chat_sync_reply_in_progress')
-        # Recheck inside the locked save, after the recent-file CAS succeeded.
-        if (uid != await _memory_chat_uid(cm, catgirl_name)
-                or sync_edit['binding'] != _memory_chat_binding(await asyncio.to_thread(runtime.state.binding, uid))):
-            raise HTTPException(409, 'chat_sync_binding_changed')
-        ids = sync_edit['messageIds']
-        try:
-            deletion_receipt = (await runtime.delete(uid, ids, expected_binding=sync_edit['binding']) if ids else
-                                {'messageIds': [], 'deletionIds': [], 'pending': False})
-        except ValueError as exc:
-            if str(exc) == 'chat_sync_binding_changed':
-                raise HTTPException(409, 'chat_sync_binding_changed') from None
-            raise
-        deletion_receipt['localMessageIds'] = []
-        deletion_receipt['localMessageIds'] = await clear_local_replies(runtime, uid, sync_edit['localMessageIds'])
-        if ids:
-            runtime.start_deletion_flush(uid)
-
-    def _before_write():
-        # The event loop remains free while the recent-file worker owns its lock.
-        # Reuse the normal durable deletion/outage pipeline; never infer IDs from
-        # edited memory, source indexes, text, or timestamps. Tool reply deletion
-        # stays local until a future explicit tool-sync protocol is approved.
-        asyncio.run_coroutine_threadsafe(_register_chat_deletions(), loop).result()
-
     async def _commit_browser_save():
         try:
-            # The locked file worker must not occupy the pool used by its
-            # async deletion callback; even a one-worker default pool can finish.
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-save") as save_executor:
-                saved, saved_fingerprint, saved_identity_token = await loop.run_in_executor(
-                    save_executor, partial(
-                        _write_recent_browser_payload,
-                        resolved_path,
-                        arr,
-                        expected_fingerprint=snapshot_fingerprint,
-                        expected_identity_token=snapshot_identity_token,
-                        expected_generation=admission_generation,
-                        browser_chat=chat,
-                        allow_missing=runtime is not None,
-                        before_write=_before_write if runtime is not None else None,
-                    ),
-                )
-
+            saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _write_recent_browser_payload,
+                resolved_path,
+                arr,
+                expected_fingerprint=snapshot_fingerprint,
+                expected_identity_token=snapshot_identity_token,
+                expected_generation=admission_generation,
+                browser_chat=chat,
+            )
         except _RecentBrowserTheaterEditRejected:
             return JSONResponse(
                 {
@@ -1538,17 +1428,13 @@ async def save_recent_file(request: Request):
                 logger.warning(f"Failed to cancel correction task: {e}")
         
         # Return success with a context-refresh hint.
-        result = {
+        return {
             "success": True,
             "need_refresh": True,
             "catgirl_name": catgirl_name,
             "fingerprint": saved_fingerprint,
             "identity_token": saved_identity_token,
         }
-        if deletion_receipt is not None:
-            result['chat_deletion'] = deletion_receipt
-            result['characterSyncId'] = uid
-        return result
 
     try:
         result, save_cancelled = await _await_browser_save_transaction(
@@ -1559,15 +1445,8 @@ async def save_recent_file(request: Request):
         return result
     except MaintenanceModeError:
         raise
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Failed to save recent file: {e}")
-        if deletion_receipt is not None:
-            # The outbox is durable even if JSON replacement fails. Keep this
-            # partial outcome visible; retries of the same exact IDs are safe.
-            return JSONResponse({'success': False, 'code': 'CHAT_DELETION_SAVED_MEMORY_FAILED',
-                                 'chat_deletion': deletion_receipt, 'characterSyncId': uid}, status_code=503)
         return {"success": False, "error": str(e)}
 
 
@@ -1649,6 +1528,23 @@ def _load_memory_toggle_enabled(config_manager, key):
     if not isinstance(enabled, bool):
         raise _InvalidMemoryToggleValue('Invalid memory setting value')
     return enabled
+
+
+@router.get('/farewell-summary')
+async def get_farewell_summary():
+    """Read-only memory summary of the active character for the desktop exit farewell card.
+
+    ``memory_count`` / ``conversation_count`` / ``flashback``; a field that
+    cannot be read is omitted (``flashback`` is ``null``). No LLM, sync or
+    writes: the desktop waits at most 1.2 s for this during quit.
+    """
+    try:
+        from main_logic.farewell_summary import build_farewell_summary
+
+        return await build_farewell_summary()
+    except Exception as exc:
+        logger.warning("farewell-summary unavailable: %s", type(exc).__name__)
+        return {"flashback": None}
 
 
 @router.get('/review_config')
@@ -1920,7 +1816,7 @@ def _external_import_error(message: str, status_code: int = 400) -> JSONResponse
     return JSONResponse({"success": False, "error": message}, status_code=status_code)
 
 
-def _decode_external_archive(raw: object) -> bytes | None:
+def _decode_external_archive(raw: object, *, max_bytes: int = MAX_TOTAL_BYTES) -> bytes | None:
     if raw in (None, ""):
         return None
     if not isinstance(raw, str):
@@ -1928,7 +1824,7 @@ def _decode_external_archive(raw: object) -> bytes | None:
     value = raw.strip()
     if value.startswith("data:") and "," in value:
         value = value.split(",", 1)[1]
-    max_base64_chars = 4 * ((MAX_TOTAL_BYTES + 2) // 3)
+    max_base64_chars = 4 * ((max_bytes + 2) // 3)
     if len(value) > max_base64_chars:
         raise ExternalMemoryImportError("Archive upload is too large")
     try:
@@ -1946,18 +1842,38 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     )
     if not validation.ok:
         raise ExternalMemoryImportError("Invalid target character name")
-    archive_bytes = _decode_external_archive(payload.get("archive_b64"))
+    requested_format = str(payload.get("source_format") or "auto").strip().lower()
+    # Image attachments dominate Molili archives (~8.6 MB of a ~9 MB sample is attachments/), so the decode
+    # cap is widened per format; the 8 MiB text budget is still enforced by each parser on the text it actually parses.
+    # auto also decodes up to the Molili cap first: before sniffing we cannot know whether it is Molili; archives that
+    # fail the sniff get an extra 8 MiB check, so OpenClaw/Hermes caps are unchanged.
+    archive_cap = MAX_ZIP_BYTES if requested_format in {"molili", "auto"} else MAX_TOTAL_BYTES
+    archive_bytes = _decode_external_archive(payload.get("archive_b64"), max_bytes=archive_cap)
     direct_files = payload.get("files")
     if archive_bytes is not None and direct_files:
         raise ExternalMemoryImportError("Choose either a ZIP archive or Markdown files, not both")
-    sources = collect_markdown_files(
-        direct_files if isinstance(direct_files, list) else None,
-        archive_bytes=archive_bytes,
+    is_molili = requested_format == "molili" or (
+        requested_format == "auto"
+        and archive_bytes is not None
+        and detect_molili_archive(archive_bytes)
     )
-    analysis = build_import_candidates(
-        sources,
-        source_format=str(payload.get("source_format") or "auto"),
-    )
+    if not is_molili and archive_bytes is not None and len(archive_bytes) > MAX_TOTAL_BYTES:
+        raise ExternalMemoryImportError("Archive upload is too large")
+    if is_molili:
+        analysis = build_molili_candidates(
+            archive_bytes=archive_bytes,
+            files=direct_files if isinstance(direct_files, list) else None,
+            source_format=requested_format,
+        )
+    else:
+        sources = collect_markdown_files(
+            direct_files if isinstance(direct_files, list) else None,
+            archive_bytes=archive_bytes,
+        )
+        analysis = build_import_candidates(
+            sources,
+            source_format=str(payload.get("source_format") or "auto"),
+        )
     return validation.normalized, analysis
 
 
@@ -2002,7 +1918,7 @@ async def preview_external_memory_import(request: Request):
         persona_candidate_tokens, daily_candidate_tokens, daily_extraction_calls = (
             await asyncio.to_thread(_eta_inputs)
         )
-        return {
+        response = {
             "success": True,
             "character_name": character_name,
             "source_format": analysis["source_format"],
@@ -2018,6 +1934,13 @@ async def preview_external_memory_import(request: Request):
             "candidates": analysis["candidates"][:100],
             "truncated_preview": len(analysis["candidates"]) > 100,
         }
+        if "character_card" in analysis:
+            # Molili only: card prefill material and the skip report; the frontend creates the character first, then imports memories
+            response["character_card"] = analysis["character_card"]
+            response["master_profile"] = analysis.get("master_profile") or {}
+            response["skipped"] = analysis["skipped"]
+            response["snapshot_time"] = analysis.get("snapshot_time", "")
+        return response
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
     except Exception as exc:
@@ -2065,10 +1988,13 @@ async def commit_external_memory_import(request: Request):
             # a durable preference. ``render_language`` is a validated, render-only
             # fallback; the memory server still resolves durable state at execution.
             json=memory_payload,
-            # Persona import now runs synchronous LLM fusion per entity, potentially tens of seconds each;
-            # 30s is insufficient. Allow 240s for master+neko; frontend commit timeout
-            # (memory_browser.js, 270s) stays slightly higher so backend responses arrive before frontend disconnect.
-            timeout=240.0,
+            # Persona import runs synchronous LLM fusion per entity (tens of seconds each), and full
+            # first imports such as Molili (30+ days × fragment-capped extraction batches) were
+            # measured past 240s: a brand-new character's first import hit ReadTimeout at exactly
+            # 240s (the server kept running, but the browser only saw a 500). Allow 480s for fusion
+            # plus full daily extraction; the frontend commit timeout (540s) stays slightly higher
+            # so backend responses arrive before frontend disconnect.
+            timeout=480.0,
         )
         if response.status_code != 200:
             try:
@@ -2117,9 +2043,57 @@ async def commit_external_memory_import(request: Request):
         raise
     except ExternalMemoryImportError as exc:
         return _external_import_error(str(exc))
+    except httpx.TimeoutException:
+        # The forwarding window running out is not an import failure: the memory server keeps running and daily fingerprints are
+        # idempotent, so a later re-import finishes it. Give the frontend a stable error code: httpx timeout exceptions may str() to
+        # an empty string, which the frontend's message regex cannot recognise and would show as a generic failure.
+        logger.warning("External memory import forward timed out; memory server keeps running")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "External memory import timed out; the memory server may still be finishing it",
+                "error_code": "external_import_timeout",
+            },
+            status_code=504,
+        )
     except Exception as exc:
         logger.exception("External memory import failed")
         return _external_import_error(f"External memory import failed: {exc}", 500)
+
+
+@router.get('/external_import/progress')
+async def get_external_import_progress(request: Request):
+    """Forward per-character external-import progress counters from memory_server.
+
+    Polled by the Molili import progress modal; same forwarding convention as
+    preview/commit."""
+    character_name = request.query_params.get('character_name') or ''
+    validation = validate_character_name(
+        character_name, allow_dots=True, max_length=50,
+    )
+    if not validation.ok:
+        return _external_import_error('Invalid target character name')
+    from config import MEMORY_SERVER_PORT
+    from utils.internal_http_client import get_internal_http_client
+
+    client = get_internal_http_client()
+    try:
+        response = await client.get(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/import_progress/"
+            + quote(validation.normalized, safe=''),
+            timeout=10.0,
+        )
+    except Exception as exc:
+        logger.warning(f"External import progress forward failed: {exc}")
+        return JSONResponse(
+            {'success': False, 'error': f'progress forward failed: {exc}'},
+            status_code=502,
+        )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {'success': False, 'error': f'HTTP {response.status_code}'}
+    return JSONResponse(payload, status_code=response.status_code)
 
 
 @router.get('/legacy/scan')

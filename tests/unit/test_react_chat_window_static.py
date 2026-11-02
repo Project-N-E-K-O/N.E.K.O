@@ -27,7 +27,6 @@ APP_INTERPAGE_PATH = JavaScriptParts(
 )
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-ui-popup.js"
 AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-popup-common.js"
-STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "jukebox" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
@@ -90,23 +89,71 @@ def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_appro
     assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
 
 
-def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
+def test_chat_settings_cat_toggles_live_in_dedicated_cat_panel():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
-
-    assert "id: 'auto-cat'" in chat_settings_block
-    assert "id: 'cat-audio'" in chat_settings_block
-    assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
-    assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
-    cat_audio_config = chat_settings_block.split("{ id: 'cat-audio'", 1)[1].split("}", 1)[0]
-    assert "dependsOnToggleId" not in cat_audio_config
-    assert "neko:auto-cat-setting-changed" not in source
-
-    cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
-        "const indicator = document.createElement('div');",
-        1,
+    cat_panel_block = source.split("function createCatSettingsSidePanel(", 1)[1].split(
+        "function createTextGuardSlider(", 1
     )[0]
-    assert "window.nekoIdleCatAudio.isEnabled()" in cat_audio_init_block
+
+    # 自动变猫 / 重力猫猫 / 猫猫音效不再混入对话设置面板，改由独立「猫咪设置」
+    # 侧边面板承载（浏览器部署的唯一入口，与桌面壳聚合设置页「通用 → 猫咪」
+    # 分组共用状态层，双入口）。
+    for toggle_id in ("'auto-cat'", "'gravity-cat'", "'cat-audio'"):
+        assert toggle_id not in chat_settings_block
+        assert f"id: {toggle_id}" in cat_panel_block
+    order = [cat_panel_block.index(f"id: {toggle_id}") for toggle_id in ("'auto-cat'", "'gravity-cat'", "'cat-audio'")]
+    assert order == sorted(order)
+    assert "data-neko-sidepanel-type', 'cat-settings'" in cat_panel_block
+    assert "settings.toggles.catSettings" in source
+
+    # 弹层菜单顺序：动画设置 → 猫咪设置 → 主动搭话
+    popup_content = source.split("function createSettingsPopupContent(", 1)[1]
+    assert popup_content.index("animationSettings") < popup_content.index("catSettings")
+    assert popup_content.index("catSettings") < popup_content.index("id: 'proactive-chat'")
+
+    # 教程护栏：猫咪面板必须与对话/动画面板同样受 isTutorialHoverDisabled 保护，
+    # 否则教程演示设置面板时悬停猫咪入口会展开交互面板、收掉演示中的面板。
+    tutorial_guard_block = source.split("const isTutorialHoverDisabled = () => {", 1)[1].split(
+        "].includes(sidePanelType);", 1
+    )[0]
+    assert "'cat-settings'" in tutorial_guard_block
+    for sibling in ("'chat-settings'", "'animation-settings'", "'visit-settings'"):
+        assert sibling in tutorial_guard_block
+
+    # 教程侧按 data-neko-sidepanel-type 找面板的两处列表也要覆盖 cat-settings。
+    repo_root = Path(__file__).resolve().parents[2]
+    for tutorial_relative_path in (
+        "static/tutorial/yui-guide/page-handoff.js",
+        "static/tutorial/visual/resistance-controllers.js",
+    ):
+        tutorial_source = (repo_root / tutorial_relative_path).read_text(encoding="utf-8")
+        assert '[data-neko-sidepanel-type="cat-settings"]' in tutorial_source, tutorial_relative_path
+
+    # 行为断言：初始化确实读状态层 getter 赋值、切换确实调 setter(isChecked)，
+    # 仅「字符串存在」级检查抓不到读错值 / 传错参数。
+    for toggle_id, getter, setter in (
+        ("'auto-cat'", "window.nekoAutoGoodbye.isAutoCatEnabled()", "window.nekoAutoGoodbye.setAutoCatEnabled(isChecked)"),
+        ("'gravity-cat'", "window.nekoIdleCat1Playground.isGravityCatEnabled()", "window.nekoIdleCat1Playground.setGravityCatEnabled(isChecked)"),
+        ("'cat-audio'", "window.nekoIdleCatAudio.isEnabled()", "window.nekoIdleCatAudio.setEnabled(isChecked)"),
+    ):
+        init_block = source.split(f"}} else if (toggle.id === {toggle_id}", 1)[1].split(
+            "const indicator = document.createElement('div');", 1
+        )[0]
+        assert getter in init_block, toggle_id
+        change_block = source.split(f"}} else if (toggle.id === {toggle_id}) {{", 1)[1].split("}", 1)[0]
+        assert setter in change_block, toggle_id
+
+    # 双入口同步：面板展开时重读 getter 同步复选框（桌面壳聚合设置页可回写状态层，
+    # 弹层 DOM 只在页面加载时创建一次）。切块到包装器函数体，断言同步调用真实存在——
+    # 只查标识符的话，删掉调用但留下定义的假实现仍会绿。
+    expand_wrapper_block = cat_panel_block.split("container._expand = () => {", 1)[1].split("};", 1)[0]
+    assert "syncCheckedStates();" in expand_wrapper_block
+    assert "originalExpand();" in expand_wrapper_block
+
+    assert "nekoAutoGoodbye.setAutoCatEnabled" in source
+    assert "nekoIdleCat1Playground.setGravityCatEnabled" in source
+    assert "nekoIdleCatAudio.setEnabled" in source
 
     dependency_block = source.split("const updateDependentToggleState = () => {", 1)[1].split(
         "const updateStyle = () => {",
@@ -126,27 +173,6 @@ def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     assert "toggleItem._nekoUpdateSettingsToggleStyle();" in source
     assert "const refreshDependentToggles = () => {" in source
     assert "candidate._nekoUpdateSettingsToggleStyle();" in source
-
-    cat_audio_change_block = source.split("} else if (toggle.id === 'cat-audio')", 1)[1].split(
-        "}",
-        1,
-    )[0]
-    assert "window.nekoIdleCatAudio.setEnabled(isChecked)" in cat_audio_change_block
-
-    en_locale = json.loads((STATIC_LOCALES_DIR / "en.json").read_text(encoding="utf-8"))
-    ja_locale = json.loads((STATIC_LOCALES_DIR / "ja.json").read_text(encoding="utf-8"))
-    ko_locale = json.loads((STATIC_LOCALES_DIR / "ko.json").read_text(encoding="utf-8"))
-    ru_locale = json.loads((STATIC_LOCALES_DIR / "ru.json").read_text(encoding="utf-8"))
-    zh_cn_locale = json.loads((STATIC_LOCALES_DIR / "zh-CN.json").read_text(encoding="utf-8"))
-    zh_tw_locale = json.loads((STATIC_LOCALES_DIR / "zh-TW.json").read_text(encoding="utf-8"))
-
-    assert en_locale["settings"]["toggles"]["catAudio"] == "Cat Audio"
-    assert "Volume" not in en_locale["settings"]["toggles"]["catAudio"]
-    assert "音量" not in ja_locale["settings"]["toggles"]["catAudio"]
-    assert "볼륨" not in ko_locale["settings"]["toggles"]["catAudio"]
-    assert "Громкость" not in ru_locale["settings"]["toggles"]["catAudio"]
-    assert zh_cn_locale["settings"]["toggles"]["catAudio"] == "猫猫音效"
-    assert zh_tw_locale["settings"]["toggles"]["catAudio"] == "貓貓音效"
 
 
 def test_model_settings_proactive_controls_use_right_aligned_sliders():
@@ -230,10 +256,12 @@ def test_choice_prompt_sources_have_distinct_accessibility_labels():
             "{choicePrompt.options.slice",
             1,
         )[0]
-        assert "choicePrompt.source === 'mini_game_invite'" in choice_prompt_block
-        assert "chat.miniGameInviteOptionsAriaLabel" in choice_prompt_block
+        assert "<MiniGameInvitePrompt" in source
         assert "choicePrompt.source === 'new_user_icebreaker'" in choice_prompt_block
         assert "chat.newUserIcebreakerOptionsAriaLabel" in choice_prompt_block
+    invitation_source = (REACT_CHAT_APP_PATH.parent / 'MiniGameInvitePrompt.tsx').read_text(encoding='utf-8')
+    assert "chat.miniGameInviteOptionsAriaLabel" in invitation_source
+    assert "chat.newUserIcebreakerOptionsAriaLabel" not in invitation_source
 
 
 def test_react_chat_host_can_clear_only_yui_guide_messages():
@@ -1216,7 +1244,7 @@ def test_compact_tool_fan_tooltips_stay_noninteractive_and_anchored():
     # into rounded/gradient/backdrop-filter glass; earlier assertions for
     # border-radius:0 / background:#ffffff / box-shadow:none / specific dark colors
     # were intentionally obsolete and produced false alarms on visual iterations.
-    assert "pointer-events: none;" in tooltip_block, "tooltip 不能吃掉指针事件"
+    assert re.search(r"\bpointer-events\s*:\s*none(?:\s*!important)?\s*;", tooltip_block), "tooltip 不能吃掉指针事件"
     assert "user-select: none;" in tooltip_block
     assert "left: calc(100% + 5px);" in tooltip_block, "tooltip 锚点定在按钮右侧"
     assert "top: calc(100% - 6px);" in tooltip_block
@@ -1308,6 +1336,8 @@ def test_compact_choice_hit_contract_uses_real_options_only():
 
 def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_polling():
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    host_styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     placement_effect = app_source.split("if (!compactChoiceLayerOpen) return;", 1)[1].split(
         "const requestCompactChatState = useCallback",
@@ -1321,6 +1351,69 @@ def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_poll
     assert "schedulePlacementUpdateWithDesktopLayout(layout);" in placement_effect
     assert "requestAnimationFrame(trackPlacement)" not in placement_effect
     assert "const trackPlacement = () =>" not in placement_effect
+
+    above_choice = styles.split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"]',
+        1,
+    )[1].split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]',
+        1,
+    )[0]
+    assert "--compact-visit-layer-reserved-block-size" in above_choice
+    choice_base = styles.split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]',
+        1,
+    )[1].split(
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar',
+        1,
+    )[0]
+    assert "--compact-choice-available-block-size" in choice_base
+    desktop_selector = 'body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {'
+    assert "var(--compact-choice-available-block-size, 240px)" in css_block(
+        styles,
+        desktop_selector,
+        "/* 串门工具条使用独立 Portal",
+    )
+    visit_anchor = css_block(
+        styles,
+        'body > .compact-chat-visit-anchor[data-chat-surface-mode="compact"] {',
+        ".composer-visit-bar",
+    )
+    assert "top: max(" in visit_anchor
+    assert "--compact-visit-layer-reserved-block-size" in visit_anchor
+    assert "bottom: auto;" in visit_anchor
+    assert "var(--compact-choice-available-block-size, 240px)" in css_block(
+        host_styles,
+        desktop_selector,
+        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]',
+    )
+    assert "const requiredAbove = layerHeight + gap + visitReserve;" in placement_effect
+    assert "availableAbove - gap - visitReserve" in placement_effect
+
+
+def test_compact_visit_geometry_separates_visual_container_from_button_hits():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    collector = script.split("function collectCompactVisitGeometryItems(element)", 1)[1].split(
+        "function collectCompactCompositeGeometryItems(element, kind)",
+        1,
+    )[0]
+    surface = script.split("function collectCompactSurfaceGeometryItems()", 1)[1].split(
+        "function getCompactInteractionGeometrySnapshot()",
+        1,
+    )[0]
+
+    assert "var visualRect = normalizeCompactDomRect(element.getBoundingClientRect());" in collector
+    visual = collector.split("id: 'visit:visual'", 1)[1].split("interactive: false", 1)[0]
+    assert "visualRect: visualRect" in visual
+    assert "hitRect: null" in visual and "nativeRect: null" in visual
+    assert "querySelectorAll('.composer-visit-bar-action')" in collector
+    action = collector.split("id: child.getAttribute('data-visit-bar-action')", 1)[1].split(
+        "interactive: true",
+        1,
+    )[0]
+    assert "hitRect: rect" in action and "nativeRect: rect" in action
+    assert "if (compactGeometryItem === 'visit')" in surface
+    assert "collectCompactVisitGeometryItems(element)" in surface
 
 
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
@@ -2495,6 +2588,41 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source
     assert "'--compact-history-slot-height'" in app_source
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
+
+
+def test_compact_visit_system_prompts_remain_legible_in_both_themes():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    # The choice layer may dim ordinary history, but it must not dim its two
+    # actionable visit system cards (visit finished / save to diary).
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll," not in styles
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {" in styles
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {" in styles
+    assert "opacity: 1;\n  filter: none;" in styles
+
+    light_system_block = css_block(
+        styles,
+        ".compact-export-history-message.is-system .compact-export-history-bubble {",
+        ".compact-export-history-message.is-system .compact-export-history-meta",
+    )
+    assert "background: rgba(242, 246, 252, 0.96);" in light_system_block
+    assert "color: #2f435e;" in light_system_block
+    assert "border-color:" in light_system_block
+
+    dark_system_block = css_block(
+        styles,
+        '[data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-bubble {',
+        '[data-theme="dark"] .compact-export-history-message.is-system .compact-export-history-meta',
+    )
+    assert "background: rgba(30, 42, 59, 0.96);" in dark_system_block
+    assert "color: #edf4ff;" in dark_system_block
+    assert "border-color:" in dark_system_block
+
+    # The confirmation actions need explicit theme-aware contrast as well.
+    assert ".compact-export-history-message.is-system .message-action-button.variant-secondary {" in styles
+    assert ".compact-export-history-message.is-system .message-action-button.variant-danger {" in styles
+    assert '[data-theme="dark"] .compact-export-history-message.is-system .message-action-button.variant-secondary {' in styles
+    assert '[data-theme="dark"] .compact-export-history-message.is-system .message-action-button.variant-danger {' in styles
 
 
 def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():

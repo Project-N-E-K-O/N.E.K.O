@@ -316,8 +316,12 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
         if rt.handoff is not None:
             rt.handoff.skip("debrief")
         try:
-            await rt.host.mirror_assistant_output(text, metadata=rt._mirror_meta("visit_debrief"),
-                                                  request_id=f"visit-debrief-summary:{rt.visit_id}")
+            await rt.host.mirror_assistant_output(
+                text,
+                metadata=rt._mirror_meta("visit_debrief"),
+                request_id=f"visit-debrief-summary:{rt.visit_id}",
+                finalize_turn=True,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: debrief summary not shown: %s", rt.visit_id[:6], type(exc).__name__)
     else:

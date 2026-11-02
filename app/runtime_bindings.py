@@ -49,6 +49,7 @@ from __future__ import annotations
 _INSTALLED: dict[str, bool] = {
     "config_runtime": False,
     "user_directives_sink": False,
+    "music_refusal_sink": False,
     "quota_hooks": False,
 }
 
@@ -163,6 +164,41 @@ def install_runtime_bindings() -> None:
                     # Logger itself unavailable (very early import / broken configuration): follow the
                     # config_runtime block's policy and swallow to avoid a second startup crash;
                     # caller (app/__init__) already printed a stderr breadcrumb.
+                    pass
+
+    # ---- main_logic.agent_event_bus ← proactive music refusal sink --------
+    # A verbal "stop playing songs" pauses proactive music recommendations.
+    # Registered here next to the user_directives sink so both utterance
+    # consumers are wired in one place.
+    if not _INSTALLED["music_refusal_sink"]:
+        try:
+            from main_logic.agent_event_bus import register_user_utterance_sink
+            from main_logic.proactive_chat.music_refusal import on_user_utterance
+            register_user_utterance_sink(on_user_utterance)
+            _INSTALLED["music_refusal_sink"] = True
+        except Exception as exc:
+            _expected_absent = {
+                "config",
+                "config.prompts.prompts_music_refusal",
+                "main_logic",
+                "main_logic.agent_event_bus",
+                "main_logic.proactive_chat",
+                "main_logic.proactive_chat.music_refusal",
+            }
+            _is_expected_absent = (
+                isinstance(exc, ModuleNotFoundError)
+                and getattr(exc, "name", None) in _expected_absent
+            )
+            if not _is_expected_absent:
+                try:
+                    from utils.logger_config import get_module_logger
+                    get_module_logger(__name__, "App").warning(
+                        "install_runtime_bindings(music_refusal_sink) "
+                        "failed unexpectedly",
+                        exc_info=True,
+                    )
+                except Exception:
+                    # Same policy as the user_directives block above.
                     pass
 
     # ---- main_logic.agent_event_bus ← main_logic.quota dropper -----------

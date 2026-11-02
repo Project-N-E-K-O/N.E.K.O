@@ -33,6 +33,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
+from services.chat_sync import host as _chat_sync_host
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -749,6 +750,15 @@ def _social_session_locks(paths: list[Path]):
         for path in sorted(set(paths), key=str):
             locks.enter_context(_social_session_lock(path))
         yield
+
+
+# Chat sync (services layer) observes the saved session and fences its local
+# commits with the same locks the logout/refresh/login writers hold. The lambdas
+# look up this module's attributes on every call, so patches here reach it too.
+_chat_sync_host.install_saved_session_store(
+    saved_session_snapshot=lambda: _desktop_session_snapshot(),
+    saved_session_writer_fence=lambda: _social_session_locks(_social_session_paths()),
+)
 
 
 def _save_auth_unlocked(data: dict) -> bool:

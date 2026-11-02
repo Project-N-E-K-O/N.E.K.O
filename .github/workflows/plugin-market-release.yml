@@ -6,6 +6,16 @@ on:
       plugin-id:
         required: true
         type: string
+      plugin-directory:
+        description: Repository-relative directory containing plugin.toml; empty means repository root
+        required: false
+        type: string
+        default: ''
+      package-name:
+        description: Optional release attachment filename, for example voice_bridge-0.7.1.neko-plugin
+        required: false
+        type: string
+        default: ''
       neko-repository:
         required: false
         type: string
@@ -22,6 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PLUGIN_ID: ${{ inputs.plugin-id }}
+      PLUGIN_DIRECTORY: ${{ inputs.plugin-directory }}
+      PACKAGE_NAME: ${{ inputs.package-name }}
+      MARKET_MODE: release
       NEKO_REPOSITORY: ${{ inputs.neko-repository }}
       NEKO_REF: ${{ inputs.neko-ref }}
     steps:
@@ -52,17 +65,94 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Mount plugin into N.E.K.O tree
+        run: |
+          uv run --no-project python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import tomllib
+
+          plugin_id = os.environ["PLUGIN_ID"]
+          if re.fullmatch(r"[a-z][a-z0-9_]*", plugin_id) is None:
+              raise SystemExit("Invalid plugin-id")
+          # Same path contract as Market: never trim a real directory name.
+          def normalize_plugin_directory(value):
+              path = "" if value is None else value
+              if (not isinstance(path, str) or len(path) > 500 or path.startswith("/")
+                      or any(c in path for c in "\\:%?#")
+                      or any(ord(c) < 32 or ord(c) == 127 for c in path)):
+                  raise ValueError("Invalid plugin-directory: use a repository-relative directory")
+              while path.startswith("./"):
+                  path = path[2:]
+              path = path.rstrip("/")
+              if path in {"", "."}:
+                  return ""
+              if any(p in ("", ".", "..") or p != p.strip() or p.endswith(".") for p in path.split("/")):
+                  raise ValueError("Invalid plugin-directory: ambiguous names and traversal are forbidden")
+              return path
+
+          directory = normalize_plugin_directory(os.environ["PLUGIN_DIRECTORY"])
+          package_name = os.environ["PACKAGE_NAME"] or f"{plugin_id}.neko-plugin"
+          if len(package_name) > 255 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.neko-plugin", package_name) is None:
+              raise SystemExit("Invalid package-name: use a plain .neko-plugin filename, without paths or wildcards")
+          repository = Path("plugin-repo").resolve(strict=True)
+          source = (repository / directory).resolve(strict=True)
+          if not source.is_relative_to(repository) or not source.is_dir():
+              raise SystemExit("plugin-directory must stay inside the checked-out repository")
+          if any(p.is_symlink() for p in [repository / directory, *(repository / directory).parents]
+                 if p.is_relative_to(repository)) or any(p.is_symlink() for p in source.rglob("*")):
+              raise SystemExit("Plugin source must not contain symbolic links")
+          manifest = tomllib.loads((source / "plugin.toml").read_text(encoding="utf-8"))
+          plugin = manifest.get("plugin", {})
+          if plugin.get("id") != plugin_id:
+              raise SystemExit("plugin-id must match the selected directory's plugin.toml [plugin].id")
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          tag_version = tag[1:] if tag.startswith(("v", "V")) else tag
+          if os.environ.get("GITHUB_REF_TYPE") == "tag" and tag_version != plugin.get("version"):
+              raise SystemExit("Release tag must match the selected plugin.toml [plugin].version")
+          if os.environ["MARKET_MODE"] == "release":
+              if re.fullmatch(r"[^/\s]+/[^/\s]+", os.environ.get("GITHUB_REPOSITORY", "")) is None:
+                  raise SystemExit("GITHUB_REPOSITORY must be owner/repository")
+              if not (repository / ".github/workflows/release.yml").is_file():
+                  raise SystemExit("The repository must provide .github/workflows/release.yml")
+          plugins = (Path("neko").resolve(strict=True) / "plugin/plugins").resolve()
+          if not plugins.is_relative_to(Path("neko").resolve(strict=True)):
+              raise SystemExit("Unsafe N.E.K.O plugin destination")
+          plugins.mkdir(parents=True, exist_ok=True)
+          destination = plugins / plugin_id
+          if destination.is_symlink() or not destination.resolve().is_relative_to(plugins):
+              raise SystemExit("Unsafe plugin destination")
+          if destination.exists():
+              shutil.rmtree(destination)
+          shutil.copytree(source, destination)
+          # Fill missing repository-level tooling files; plugin-owned files win.
+          def inherit_tooling(shared, mounted):
+              if shared.is_dir():
+                  if mounted.exists() and not mounted.is_dir():
+                      raise SystemExit("Shared tooling directory conflicts with a plugin file")
+                  mounted.mkdir(exist_ok=True)
+                  for child in shared.iterdir():
+                      inherit_tooling(child, mounted / child.name)
+              elif not mounted.exists():
+                  shutil.copy2(shared, mounted)
+
+          for name in (".github", ".vscode", ".gitignore"):
+              shared = repository / name
+              if source != repository and (shared.exists() or shared.is_symlink()):
+                  if shared.is_symlink() or (shared.is_dir() and any(p.is_symlink() for p in shared.rglob("*"))):
+                      raise SystemExit("Shared tooling must not contain symbolic links")
+                  inherit_tooling(shared, destination / name)
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
+              output.write(f"MARKET_PLUGIN_DIRECTORY={directory}\nMARKET_PACKAGE_NAME={package_name}\n")
+          PY
+
       - name: Ruff check
         run: >-
           uvx ruff==0.12.4 check --ignore-noqa --isolated
-          --target-version py311 --line-length 120
-          --select E4,E7,E9,F,I --exclude vendor plugin-repo
-
-      - name: Mount plugin into N.E.K.O tree
-        run: |
-          rm -rf "neko/plugin/plugins/${PLUGIN_ID}"
-          mkdir -p neko/plugin/plugins
-          cp -R plugin-repo "neko/plugin/plugins/${PLUGIN_ID}"
+          --no-respect-gitignore --target-version py311 --line-length 120
+          --select E4,E7,E9,F,I --exclude vendor "plugin-repo/${MARKET_PLUGIN_DIRECTORY}"
 
       - name: Sync plugin dependencies
         working-directory: neko
@@ -73,42 +163,52 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p plugin/neko_plugin_cli/target
-          uv run python -m plugin.neko_plugin_cli.cli check -r --market-release "${PLUGIN_ID}" | tee "plugin/neko_plugin_cli/target/${PLUGIN_ID}.market-release-check.txt"
+          uv run python -m plugin.neko_plugin_cli.cli check -r "${PLUGIN_ID}" | tee "plugin/neko_plugin_cli/target/${PLUGIN_ID}.market-release-check.txt"
 
       - name: Write Market evidence
         working-directory: neko
         run: |
-          PACKAGE="plugin/neko_plugin_cli/target/${PLUGIN_ID}.neko-plugin"
-          EVIDENCE="plugin/neko_plugin_cli/target/market-evidence.json"
-          test -f "$PACKAGE"
-          export PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{print $1}')"
           export NEKO_COMMIT="$(git rev-parse HEAD)"
-          export EVIDENCE
-          python - <<'PY'
+          uv run --no-project python - <<'PY'
+          import hashlib
           import json
           import os
+          from pathlib import Path
           import tomllib
           import zipfile
-          from pathlib import Path
 
-          package = Path(f'plugin/neko_plugin_cli/target/{os.environ["PLUGIN_ID"]}.neko-plugin')
+          plugin_id = os.environ["PLUGIN_ID"]
+          target = Path("plugin/neko_plugin_cli/target").resolve(strict=True)
+          original = target / f"{plugin_id}.neko-plugin"
+          package = target / os.environ["MARKET_PACKAGE_NAME"]
+          if original.is_symlink() or package.is_symlink() or package.parent != target:
+              raise SystemExit("Unsafe package path")
+          if package != original:
+              if package.exists():
+                  raise SystemExit("Selected package-name already exists")
+              original.rename(package)
           payload_hash = None
           with zipfile.ZipFile(package) as archive:
-              try:
-                  metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
-                  candidate = metadata.get("payload", {}).get("hash")
-                  if isinstance(candidate, str):
-                      payload_hash = candidate
-              except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-                  pass
-
+              if archive.namelist().count("manifest.toml") != 1:
+                  raise SystemExit("Package must contain exactly one manifest.toml")
+              manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
+              source = tomllib.loads(Path(f"plugin/plugins/{plugin_id}/plugin.toml").read_text(encoding="utf-8"))["plugin"]
+              if manifest.get("id") != plugin_id or manifest.get("package_type") != "plugin" or manifest.get("version") != source["version"]:
+                  raise SystemExit("Actual package identity/version does not match the selected plugin")
+              tag = os.environ.get("GITHUB_REF_NAME", "")
+              tag_version = tag[1:] if tag.startswith(("v", "V")) else tag
+              if os.environ.get("GITHUB_REF_TYPE") == "tag" and tag_version != manifest["version"]:
+                  raise SystemExit("Actual package version does not match release tag")
+              metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
+              payload_hash = metadata.get("payload", {}).get("hash")
+              if not isinstance(payload_hash, str) or len(payload_hash) != 64:
+                  raise SystemExit("Package payload hash is missing")
+          data = package.read_bytes()
           evidence = {
               "schema_version": 1,
-              "mode": "release",
-              "ref_type": os.environ["GITHUB_REF_TYPE"],
-              "ref_name": os.environ["GITHUB_REF_NAME"],
-              "plugin_id": os.environ["PLUGIN_ID"],
-              "version": os.environ["GITHUB_REF_NAME"].removeprefix("v"),
+              "mode": os.environ["MARKET_MODE"],
+              "plugin_id": plugin_id,
+              "plugin_directory": os.environ["MARKET_PLUGIN_DIRECTORY"],
               "source_commit": os.environ["GITHUB_SHA"],
               "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
@@ -116,15 +216,16 @@ jobs:
               "neko_ref": os.environ["NEKO_REF"],
               "neko_commit": os.environ["NEKO_COMMIT"],
               "package": {
-                  "name": f'{os.environ["PLUGIN_ID"]}.neko-plugin',
-                  "sha256": os.environ["PACKAGE_SHA256"],
-                  "size": package.stat().st_size,
+                  "name": package.name,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
                   "payload_hash": payload_hash,
               },
           }
-          Path(os.environ["EVIDENCE"]).write_text(
-              json.dumps(evidence, sort_keys=True) + "\n",
-              encoding="utf-8",
+          if os.environ["MARKET_MODE"] == "release":
+              evidence.update(ref_type=os.environ["GITHUB_REF_TYPE"], ref_name=os.environ["GITHUB_REF_NAME"], version=manifest["version"])
+          Path("plugin/neko_plugin_cli/target/market-evidence.json").write_text(
+              json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8",
           )
           PY
 
@@ -140,6 +241,6 @@ jobs:
         with:
           fail_on_unmatched_files: true
           files: |
-            neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.neko-plugin
+            neko/plugin/neko_plugin_cli/target/${{ env.MARKET_PACKAGE_NAME }}
             neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.market-release-check.txt
             neko/plugin/neko_plugin_cli/target/market-evidence.json

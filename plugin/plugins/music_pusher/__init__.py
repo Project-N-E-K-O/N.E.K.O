@@ -1493,12 +1493,13 @@ class MusicPusherPlugin(NekoPluginBase):
         merged_meta.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         merged_meta.setdefault("push_marker", "music_pusher_proactive")
         merged_meta.setdefault("plugin_marker", "music_pusher")
+        merged_meta.setdefault("description", description)
         self.ctx.push_message(
             source="music_pusher",
-            message_type="proactive_notification",
-            description=description,
+            visibility=[],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": content}],
             priority=priority,
-            content=content,
             metadata=merged_meta,
             target_lanlan=target_lanlan,
         )
@@ -1538,29 +1539,50 @@ class MusicPusherPlugin(NekoPluginBase):
         if not domains:
             raise ValueError("url 无法安全加入播放白名单")
 
+        allowlist_part: dict[str, Any] = {
+            "type": "ui_action",
+            "action": "media_allowlist_add",
+            "domains": domains,
+        }
+        if http_urls:
+            allowlist_part["http_urls"] = http_urls
         self.ctx.push_message(
             source="music_pusher",
-            message_type="music_allowlist_add",
-            description=f"Allow music host: {domains[0]}",
+            visibility=[],
+            ai_behavior="blind",
+            parts=[allowlist_part],
             priority=7,
-            metadata={"domains": domains, "http_urls": http_urls, "event_id": event_id},
+            metadata={
+                "domains": domains,
+                "http_urls": http_urls,
+                "event_id": event_id,
+                "description": f"Allow music host: {domains[0]}",
+            },
             target_lanlan=target_lanlan,
         )
-
         if _stopped():
             return False
         if play_push_started is not None:
             play_push_started.set()
         self.ctx.push_message(
             source="music_pusher",
-            message_type="music_play_url",
-            description=f"🎵 用户分享链接 [{title or 'External Link'}]",
+            visibility=["chat"],
+            ai_behavior="blind",
+            parts=[{
+                "type": "ui_action",
+                "action": "media_play_url",
+                "url": url,
+                "name": title or "用户分享的音乐",
+                "artist": artist or "用户",
+                "media_type": "audio",
+            }],
             priority=9,
             metadata={
                 "url": url,
                 "name": title or "用户分享的音乐",
                 "artist": artist or "用户",
                 "event_id": event_id,
+                "description": f"🎵 用户分享链接 [{title or 'External Link'}]",
             },
             target_lanlan=target_lanlan,
         )

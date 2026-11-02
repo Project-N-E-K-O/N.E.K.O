@@ -319,7 +319,9 @@ def _should_refresh_workshop_card_face(face_path: Path, meta_path: Path) -> bool
         # on the card indicates an orphan from interrupted rendering and permits later retries.
         return _has_workshop_card_face_marker(face_path)
 
-    if origin in {'self', 'imported'}:
+    # molili marks a card created or imported by the user through the Molili import wizard;
+    # its face is user-owned just like self / imported ones.
+    if origin in {'self', 'imported', 'molili'}:
         return False
 
     return not _is_workshop_card_face_normalized(face_path)

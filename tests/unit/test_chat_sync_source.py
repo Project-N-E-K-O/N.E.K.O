@@ -53,6 +53,29 @@ def source_for(runtime):
     return ChatOriginalSource(Path(runtime.state.path).parent / "sources.sqlite3")
 
 
+def test_archive_batch_uses_one_transaction_and_rolls_back_conflicting_records(tmp_path, monkeypatch):
+    source = source_for(make_runtime(tmp_path, bound=False))
+    connect, statements = source._connect, []
+    def counted_connection():
+        connection = connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+    monkeypatch.setattr(source, "_connect", counted_connection)
+    trace = Mock()
+    monkeypatch.setattr(source_module, "get_trace", lambda: trace)
+    records = [(f"{index:032x}", RAW, None) for index in range(1, 41)]
+    records.append(("f" * 32, ChatOriginal("assistant", "tool text"), "tool"))
+    source.commit_history(UID, records)
+    assert statements.count("BEGIN IMMEDIATE") == statements.count("COMMIT") == 1
+    assert len(source.stored_ids(UID)) == 41
+    assert trace.emit.call_count == 41
+    before = source.stored_ids(UID)
+    with pytest.raises(ValueError, match="identity_conflict"):
+        source.commit_history(UID, [("e" * 32, RAW, None), ("f" * 32, RAW, None)])
+    assert source.stored_ids(UID) == before
+    assert trace.emit.call_count == 41
+
+
 def test_purge_erases_recovery_and_outage_copies_but_keeps_identities(tmp_path):
     """A permanent local delete leaves no readable body in recovery or outage storage."""
     from services.chat_sync.recovery import save_outage
@@ -315,6 +338,29 @@ def test_local_only_reply_is_durable_exact_and_never_an_upload_candidate(tmp_pat
         for table in ("source_originals", "source_unbound", "source_origin_streams", "source_history_members"):
             assert conn.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
     assert runtime.ledger.pending(DOMAIN) == []
+
+
+def test_legacy_tool_history_reuses_identity_without_approving_upload_and_cannot_revive_after_delete(tmp_path):
+    source = ChatOriginalSource(tmp_path / "sources.sqlite3")
+    raw = ChatOriginal("assistant", "  tool call and reply\n🙂  ", original_time=RAW.original_time, timezone="UTC")
+    source.commit_local_reply(UID, "5" * 32, raw, "tool")
+    source.commit_local_reply(UID, "6" * 32, raw, "agent")
+    source.commit_local_reply("b" * 32, "7" * 32, raw, "tool")
+    source.clear_local_replies(UID, ["6" * 32])
+    source.include_local_replies(UID)
+    source.include_local_replies(UID)
+    assert [row["messageId"] for row in source.local_history(UID, OWNER)] == ["5" * 32]
+    assert source.pending(200) == []
+    assert source.read_local_replies(source.path, UID) == []
+    with sqlite3.connect(source.path) as conn:
+        assert conn.execute("SELECT origin,deleted FROM source_local_replies WHERE record_id=?", ("5" * 32,)).fetchone() == ("tool", 0)
+        assert conn.execute("SELECT next_seq FROM source_origin_streams WHERE uid=?", (UID,)).fetchone() == (2,)
+    source.purge(OWNER, UID, ["5" * 32])
+    source.commit_local_reply(UID, "5" * 32, raw, "tool")
+    source.include_local_replies(UID)
+    assert source.local_history(UID, OWNER) == []
+    assert source.pending(200) == []
+    assert len(source.read_local_replies(source.path, "b" * 32)) == 1
 
 
 @pytest.mark.parametrize("first_local", [False, True])
@@ -951,7 +997,7 @@ async def test_realtime_tool_scope_keeps_preface_and_rotated_continuation_local(
     assert manager._chat_original_turns["old-speech"] == original_proof
 
 @pytest.mark.asyncio
-async def test_source_diagnostic_exclusion_is_once_per_reply_and_never_uploads(monkeypatch):
+async def test_source_diagnostic_does_not_label_tool_text_as_excluded(monkeypatch):
     """Actual collector exclusions identify one reply without logging every chunk."""
     trace, save = Mock(enabled=True), AsyncMock()
     monkeypatch.setattr(source_module, "get_trace", lambda: trace)
@@ -961,10 +1007,7 @@ async def test_source_diagnostic_exclusion_is_once_per_reply_and_never_uploads(m
     buffer = AssistantOriginalBuffer()
     for _ in range(10):
         buffer.append({"chat_original_source": proof, "text": "private-original"})
-    trace.emit.assert_called_once_with(
-        "assistant_source_excluded", message_id=proof["recordId"], source_origin="agent",
-        source_reason="nonchat_origin",
-    )
+    trace.emit.assert_not_called()
     await buffer.finish("private-role", proof["recordId"])
     save.assert_not_awaited()
     trace.emit.assert_called_with(
@@ -972,7 +1015,7 @@ async def test_source_diagnostic_exclusion_is_once_per_reply_and_never_uploads(m
         source_reason="local_saved", outcome="success",
     )
     buffer.append({"chat_original_source": proof, "text": "private-original"})
-    assert sum(call.args[0] == "assistant_source_excluded" for call in trace.emit.call_args_list) == 2
+    assert sum(call.args[0] == "assistant_source_excluded" for call in trace.emit.call_args_list) == 1
     assert "private-" not in str(trace.emit.call_args_list)
 
 
@@ -1215,9 +1258,12 @@ async def test_real_turn_input_preserves_full_text_without_waiting_for_reply(mon
     assert save.await_args.args == ("Lan", "user", RAW.text)
     assert save.await_args.kwargs["original_time"].isdigit()
     assert manager.sync_message_queue.messages[-1]["data"]["data"] == RAW.text.strip()
+    proof = manager.sync_message_queue.messages[-1]["data"]["chat_original_source"]
+    assert proof['recordId'] == save.await_args.kwargs['record_id']
+    assert proof['originalTime'] == save.await_args.kwargs['original_time']
     manager.websocket.send_json.assert_awaited_once_with({
         "type": "chat_original_identity", "role": "user",
-        "request_id": "accepted-request", "message_id": "6" * 32,
+        "request_id": "accepted-request", "message_id": proof['recordId'],
     })
 
 
@@ -1328,7 +1374,7 @@ async def test_actual_connector_saves_exact_reply_and_keeps_memory_projection_se
 @pytest.mark.parametrize(
     "tool_error", [False, True], ids=["tool-success", "tool-failure"]
 )
-async def test_actual_tool_dispatch_keeps_whole_reply_local(
+async def test_actual_tool_dispatch_syncs_complete_reply_text(
     tmp_path, monkeypatch, prefix, post_text, tool_error
 ):
     from tests.unit.test_tool_calling import _FakeLLM, _init_bare
@@ -1470,9 +1516,16 @@ async def test_actual_tool_dispatch_keeps_whole_reply_local(
         "pending_upload_sources": len(source.pending(200)),
         "ledger_pending": len(runtime.ledger.pending(DOMAIN)),
     }
-    assert len(local) == 1, report
-    assert local[0]["text"] == "".join(visible) == prefix + post_text
-    assert source.pending(200) == [] and runtime.ledger.pending(DOMAIN) == []
+    assert local == [], report
+    pending = source.pending(200)
+    assert len(pending) == 1, report
+    row, _ = pending[0]
+    assert json.loads(row["original"])["text"] == "".join(visible) == prefix + post_text
+    assert row["record_id"] == terminal["chat_original_id"]
+    assert await recover_sources(runtime) == 1
+    assert await recover_sources(runtime) == 0
+    assert len(runtime.ledger.pending(DOMAIN)) == 1
+    assert seen == [{"sample": "050"}], "Reading or synchronizing history must not execute a tool again"
 
 
 @pytest.mark.asyncio

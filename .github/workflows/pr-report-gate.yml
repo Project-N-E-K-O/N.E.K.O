@@ -30,6 +30,7 @@ jobs:
         with:
           # The check diffs HEAD against origin/<base> to list changed files.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5

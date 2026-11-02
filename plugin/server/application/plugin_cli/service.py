@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass, replace
 import hashlib
 import secrets
 import shutil
-import stat
 import threading
 import tomllib
 import uuid
@@ -34,6 +33,12 @@ from plugin.server.infrastructure.autostart_approvals import (
     clear_autostart_pending,
     is_autostart_approved,
     mark_autostart_pending,
+)
+from plugin.server.infrastructure.runtime_overrides import (
+    RuntimeOverridePersistenceError,
+    get_runtime_override_entry,
+    restore_runtime_override,
+    set_runtime_auto_start_override,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugin_cli.install_plan import (
@@ -143,78 +148,6 @@ _PACKAGE_ERROR_PATTERNS = (
 )
 
 
-def _is_link_or_reparse(path: Path) -> bool:
-    """Return whether ``path`` is a symlink or Windows reparse point."""
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return False
-    file_attributes = getattr(metadata, "st_file_attributes", 0)
-    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return path.is_symlink() or bool(file_attributes & reparse_attribute)
-
-
-def _validate_existing_profile_ownership(
-    *,
-    profile_dir: Path,
-    profiles_root: Path,
-    package_id: str,
-    plugin_ids: set[str],
-) -> None:
-    """Fail closed unless install-source history owns an existing profile.
-
-    A profile directory name is selected by the package manifest and is not
-    proof that the directory belongs to the incoming package. Removed entries
-    remain in the source ledger, so a legitimate reinstall can reuse its
-    retained profile without letting an unrelated package claim orphaned state.
-    """
-
-    manager = get_install_source_manager()
-    if manager is None:
-        raise ServerDomainError(
-            code="INSTALL_SOURCE_NOT_READY",
-            message="install source manager is not initialised",
-            status_code=503,
-            details={"hint": "wait for FastAPI lifespan startup to complete"},
-        )
-    owners = []
-    resolved_profile = profile_dir.resolve(strict=False)
-    for entry in manager.list_entries(include_removed=True):
-        # Only an explicit modern ownership record is proof. ``None`` is
-        # a legacy row whose profile ownership was never recorded.
-        if entry.profile_installed is not True:
-            continue
-        recorded_key = entry.package_id
-        if entry.profile_dir:
-            recorded_profile = Path(entry.profile_dir).expanduser()
-        elif recorded_key:
-            recorded_profile = profiles_root / recorded_key
-        else:
-            continue
-        if recorded_profile.resolve(strict=False) == resolved_profile:
-            owners.append(entry)
-
-    ownership_matches = bool(owners) and all(
-        owner.plugin_id in plugin_ids and owner.package_id == package_id
-        for owner in owners
-    )
-    if ownership_matches:
-        return
-
-    raise ServerDomainError(
-        code="PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT",
-        message="existing package profile ownership does not match the incoming package",
-        status_code=409,
-        details={
-            "package_id": package_id,
-            "plugin_ids": sorted(plugin_ids),
-            "recorded_plugin_ids": sorted(
-                {owner.plugin_id for owner in owners if owner.plugin_id}
-            ),
-        },
-    )
-
-
 def _classify_package_error(exc: Exception) -> str | None:
     if isinstance(exc, ServerDomainError) and exc.code.startswith("PLUGIN_PACKAGE_"):
         return exc.code
@@ -261,7 +194,6 @@ def _replacement_error_details(
 class _StagedBuiltinOverride:
     result: InstallResult
     plugin_dir: Path
-    profile_dir: Path | None
 
 
 def _require_within(path: Path, root: Path, *, field: str) -> Path:
@@ -372,6 +304,7 @@ class PluginCliService:
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
         _allow_external_profiles_root: bool = False,
+        _preserve_autostart_plugin_id: str | None = None,
     ) -> dict[str, object]:
         install_source_manager = get_install_source_manager()
         reload_install_source = getattr(install_source_manager, "load", None)
@@ -392,6 +325,19 @@ class PluginCliService:
                 details=plan_dict,
             )
         if action == "install":
+            # The Market replacement transaction has already backed up the old
+            # directory. Its absence does not make this a first installation.
+            preserve_autostart = _preserve_autostart_plugin_id is not None
+            if preserve_autostart and (
+                plan_dict.get("package_type") != "plugin"
+                or plan_dict.get("plugin_id") != _preserve_autostart_plugin_id
+            ):
+                raise ServerDomainError(
+                    code="PLUGIN_PACKAGE_IDENTITY_MISMATCH",
+                    message="plugin identity mismatch in Market replacement",
+                    status_code=409,
+                    details=plan_dict,
+                )
             # Register before elevation, matching the overwrite-install path. If registration happens after installation and the disk write
             # fails, the plugin is already on disk and we can only warn — then on next startup, "no pending approval
             # record" is treated as approved, so third-party code runs before the user's first launch (coderabbit
@@ -407,7 +353,10 @@ class PluginCliService:
             gate_plugin_ids = bundle_ids or [
                 pid for pid in (str(plan_dict.get("plugin_id") or "").strip(),) if pid
             ]
+            if preserve_autostart:
+                gate_plugin_ids = []
             gate_restore: list[str] = []
+            autostart_pref_restore: list[tuple[str, object, object]] = []
             for gate_plugin_id in gate_plugin_ids:
                 if await asyncio.to_thread(is_autostart_approved, gate_plugin_id):
                     gate_restore.append(gate_plugin_id)
@@ -421,6 +370,15 @@ class PluginCliService:
                                 "have auto-start explicitly approved",
                                 done,
                             )
+                    for done, previous, written in autostart_pref_restore:
+                        if not await asyncio.to_thread(
+                            _restore_first_install_autostart, done, previous, written
+                        ):
+                            logger.error(
+                                "could not restore the auto-start preference for "
+                                "plugin_id={} while refusing the install",
+                                done,
+                            )
                     raise ServerDomainError(
                         code="PLUGIN_AUTOSTART_GATE_UNAVAILABLE",
                         message=(
@@ -431,6 +389,45 @@ class PluginCliService:
                         status_code=500,
                         details={"plugin_id": gate_plugin_id},
                     )
+                try:
+                    autostart_pref_restore.append(
+                        (
+                            gate_plugin_id,
+                            *await asyncio.to_thread(
+                                _persist_first_install_autostart_off, gate_plugin_id
+                            ),
+                        )
+                    )
+                except RuntimeOverridePersistenceError as exc:
+                    for done in gate_restore:
+                        if not await asyncio.to_thread(clear_autostart_pending, done):
+                            logger.error(
+                                "could not restore the autostart approval for "
+                                "plugin_id={} while refusing the install; it must "
+                                "have auto-start explicitly approved",
+                                done,
+                            )
+                    for done, previous, written in autostart_pref_restore:
+                        if not await asyncio.to_thread(
+                            _restore_first_install_autostart, done, previous, written
+                        ):
+                            logger.error(
+                                "could not restore the auto-start preference for "
+                                "plugin_id={} while refusing the install",
+                                done,
+                            )
+                    raise ServerDomainError(
+                        code="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+                        message=(
+                            "cannot record auto-start as off; refusing to install "
+                            "a plugin that would default to auto-start"
+                        ),
+                        status_code=500,
+                        details={
+                            "plugin_id": gate_plugin_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    ) from exc
             try:
                 result = await asyncio.to_thread(
                     self._install_sync,
@@ -475,6 +472,23 @@ class PluginCliService:
                             "id must have auto-start explicitly approved",
                             gate_plugin_id,
                         )
+                for pref_plugin_id, previous, written in autostart_pref_restore:
+                    # 残骸还在就保持自动启动为关。目录已经清掉才把原来的偏好还回去。
+                    if gate_root is None or await asyncio.to_thread(
+                        _plugin_directory_exists, gate_root, pref_plugin_id
+                    ):
+                        continue
+                    if not await asyncio.to_thread(
+                        _restore_first_install_autostart,
+                        pref_plugin_id,
+                        previous,
+                        written,
+                    ):
+                        logger.error(
+                            "install rollback could not restore the auto-start "
+                            "preference for plugin_id={}",
+                            pref_plugin_id,
+                        )
                 raise
             # Attach to install()'s success exit, not to one particular source-registration path.
             # Upload installation (upload_and_install) registers the source itself and does not use
@@ -484,9 +498,11 @@ class PluginCliService:
             # Register again using the manifest ID from the installation result. The ID above comes from the plan, but
             # directory name and [plugin].id may differ; both registrations are idempotent. This one is already on disk,
             # so failure cannot reject it; emit a warning instead of raising.
-            unrecorded = await asyncio.to_thread(
-                _mark_new_install_awaiting_autostart, result
-            )
+            unrecorded = []
+            if not preserve_autostart:
+                unrecorded = await asyncio.to_thread(
+                    _mark_new_install_awaiting_autostart, result
+                )
             if unrecorded:
                 result["autostart_gate_warning"] = (
                     "could not record as awaiting approval: "
@@ -536,28 +552,14 @@ class PluginCliService:
             field="directory_name",
         )
         target_dir = target_root / directory_name
-        profiles_root_path = (
-            Path(profiles_root).expanduser().resolve()
-            if profiles_root and _allow_external_profiles_root
-            else (
-                _require_within(
-                    Path(profiles_root).expanduser().resolve(),
-                    policy.package_profiles_root,
-                    field="profiles_root",
-                )
-                if profiles_root
-                else policy.package_profiles_root
-            )
-        )
         _require_safe_directory_name(
             str(plan_dict["package_id"]),
             field="package_id",
         )
-        installed_package_id = _require_safe_directory_name(
+        _require_safe_directory_name(
             str(plan_dict["installed_package_id"] or plan_dict["package_id"]),
             field="installed_package_id",
         )
-        profile_dir = profiles_root_path / installed_package_id
         package_path = self._resolve_package_path(package)
         plan = self._apply_installed_package_identity(
             build_install_plan(
@@ -567,7 +569,6 @@ class PluginCliService:
             ),
             package_path=package_path,
             target_root=target_root,
-            profiles_root=profiles_root_path,
         )
         if (
             plan.action not in REPLACEMENT_ACTIONS
@@ -586,6 +587,7 @@ class PluginCliService:
         # would make it run on next startup before the user has ever launched it (codex). Treat it as a fresh install
         # and put the gate before elevation.
         manifestless_gate_restore = False
+        manifestless_autostart_pref: tuple[object, object] | None = None
         if plan.manifestless_state:
             manifestless_gate_restore = await asyncio.to_thread(
                 is_autostart_approved, plan.plugin_id
@@ -600,11 +602,37 @@ class PluginCliService:
                     status_code=500,
                     details={"plugin_id": plan.plugin_id},
                 )
+            try:
+                manifestless_autostart_pref = await asyncio.to_thread(
+                    _persist_first_install_autostart_off, plan.plugin_id
+                )
+            except RuntimeOverridePersistenceError as exc:
+                # 文件还没动，所以这里直接还原批准位。回滚路径仍要先看盘。
+                approval_plugin_id = plan.plugin_id
+                if manifestless_gate_restore and not await asyncio.to_thread(
+                    clear_autostart_pending, approval_plugin_id
+                ):
+                    logger.error(
+                        "could not restore the autostart approval for "
+                        "plugin_id={} while refusing the install",
+                        approval_plugin_id,
+                    )
+                raise ServerDomainError(
+                    code="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+                    message=(
+                        "cannot record auto-start as off; refusing to install "
+                        "code that would default to auto-start"
+                    ),
+                    status_code=500,
+                    details={
+                        "plugin_id": plan.plugin_id,
+                        "error_type": type(exc).__name__,
+                    },
+                ) from exc
 
         manual_manager: InstallSourceManager | None = None
         manual_entry: LockEntry | None = None
         expected_manual_snapshot = ""
-        manual_package_has_profiles = False
         if plan.reason == "manual_takeover":
             manual_manager = self._require_install_source_manager()
             manual_entry = manual_manager.entry_for_directory(target_dir)
@@ -634,23 +662,6 @@ class PluginCliService:
                     status_code=409,
                     details=asdict(plan),
                 )
-            inspected = await asyncio.to_thread(inspect_package, package_path)
-            manual_package_has_profiles = bool(getattr(inspected, "profile_names", ()))
-            if manual_package_has_profiles and (
-                profile_dir.exists() or profile_dir.is_symlink()
-            ):
-                raise ServerDomainError(
-                    code="PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT",
-                    message=(
-                        "manual takeover cannot claim an existing package profile"
-                    ),
-                    status_code=409,
-                    details={
-                        "package_id": plan.package_id,
-                        "plugin_id": plan.plugin_id,
-                    },
-                )
-
         async def validate_manifestless_backup(backup_dir: Path) -> None:
             if not await asyncio.to_thread(is_manifestless_state_directory, backup_dir):
                 raise ValueError("manifest-less plugin state changed before installation")
@@ -681,7 +692,6 @@ class PluginCliService:
                 self._install_sync,
                 package=package,
                 plugins_root=plugins_root,
-                profiles_root=profiles_root,
                 on_conflict="fail",
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
@@ -700,20 +710,7 @@ class PluginCliService:
             result = await replacement_transaction.replace_plugin(
                 layout=resolve_plugin_layout(plan.plugin_id, target_dir),
                 install_new=install_new,
-                additional_targets=(
-                    (profile_dir,)
-                    if manual_manager is None or manual_package_has_profiles
-                    else ()
-                ),
-                preserve_targets=(
-                    ()
-                    if manual_manager is not None
-                    else (
-                        (target_dir, profile_dir)
-                        if plan.manifestless_state
-                        else (profile_dir,)
-                    )
-                ),
+                preserve_targets=((target_dir,) if plan.manifestless_state else ()),
                 initialize_runtime_config=not plan.manifestless_state,
                 validate_backup=(
                     validate_manual_takeover_backup
@@ -724,9 +721,10 @@ class PluginCliService:
                 ),
             )
         except replacement_transaction.ReplacePluginError as exc:
-            if manifestless_gate_restore and not await asyncio.to_thread(
+            manifest_gone = plan.manifestless_state and not await asyncio.to_thread(
                 (target_dir / "plugin.toml").exists
-            ):
+            )
+            if manifestless_gate_restore and manifest_gone:
                 # Same criterion as elsewhere: inspect disk, not intent. If the manifest remains, code remains on disk,
                 # so keep blocking; restore approval only after rollback actually cleans it up.
                 if not await asyncio.to_thread(
@@ -738,6 +736,16 @@ class PluginCliService:
                         "auto-start approval",
                         plan.plugin_id,
                     )
+            if manifest_gone and manifestless_autostart_pref is not None and not await asyncio.to_thread(
+                _restore_first_install_autostart,
+                plan.plugin_id,
+                *manifestless_autostart_pref,
+            ):
+                logger.error(
+                    "manifestless replacement rollback could not restore the "
+                    "auto-start preference for plugin_id={}",
+                    plan.plugin_id,
+                )
             source_restored = True
             if manual_entry is not None and source_write_attempted:
                 try:
@@ -827,7 +835,6 @@ class PluginCliService:
             ),
             package_path=package_path,
             target_root=policy.user_plugins_root,
-            profiles_root=policy.package_profiles_root,
         )
         if not expected_plugin_id or expected_plugin_id != plan.plugin_id:
             raise ValueError("Market plugin identity does not match the builtin override plan")
@@ -868,15 +875,9 @@ class PluginCliService:
             self._stage_builtin_override_sync,
             package=package_path,
             plugins_root=policy.user_plugins_root,
-            profiles_root=policy.package_profiles_root,
             plan=plan,
         )
         target_dir = policy.user_plugins_root / plan.directory_name
-        target_profile_dir = (
-            policy.package_profiles_root / plan.package_id
-            if staged.profile_dir is not None
-            else None
-        )
         original_lock_entry = manager.entry_for_directory(target_dir, include_removed=True)
         lock_warnings: list[str] = []
 
@@ -894,7 +895,7 @@ class PluginCliService:
                 plugin_id=plan.plugin_id,
                 market_detail=detail,
                 package_id=plan.package_id,
-                profile_dir=str(target_profile_dir) if target_profile_dir is not None else "",
+                profile_dir="",
             )
             lock_warnings.extend(warnings)
             return entry
@@ -967,8 +968,6 @@ class PluginCliService:
                     staged_plugin_dir=staged.plugin_dir,
                     target_plugin_dir=target_dir,
                     confirmation_token=plan.confirmation_token,
-                    staged_profile_dir=staged.profile_dir,
-                    target_profile_dir=target_profile_dir,
                 ),
                 rebuild_plan=rebuild_plan,
                 read_lock_snapshot=read_lock_snapshot,
@@ -1008,7 +1007,7 @@ class PluginCliService:
         staged_result.update(
             {
                 "plugins_root": str(policy.user_plugins_root),
-                "profiles_root": str(policy.package_profiles_root),
+                "profiles_root": None,
                 "installed_plugins": [
                     {
                         "source_folder": plan.plugin_id,
@@ -1017,7 +1016,7 @@ class PluginCliService:
                         "renamed": False,
                     }
                 ],
-                "profile_dir": str(target_profile_dir) if target_profile_dir is not None else None,
+                "profile_dir": None,
                 "operation": "override_builtin",
                 "restarted": switched.restarted,
                 "rollback_status": "not_needed",
@@ -1218,6 +1217,7 @@ class PluginCliService:
         _allow_external_profiles_root: bool = False,
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
+        _preserve_autostart_plugin_id: str | None = None,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
 
@@ -1225,6 +1225,11 @@ class PluginCliService:
         ``channel="market"`` and mode (``install`` / ``upgrade`` / ``reinstall``)
         in a single call. When ``None`` this method is exactly equivalent to
         :meth:`upload_and_unpack` (no lock write).
+
+        ``_preserve_autostart_plugin_id`` is internal replacement context from
+        the Market transaction, which has validated the existing install and
+        moved its code aside. Only that same single plugin keeps its auto-start
+        preference and approval; a normal first install still initializes them.
 
         ``install_source_override`` schema (design §3.3.1):
 
@@ -1282,7 +1287,6 @@ class PluginCliService:
             owns_saved_package = content is not None or package_path is not None
             saved: dict[str, object] | None = None
             unpacked_target_dirs: list[Path] = []
-            unpacked_profile_dirs: list[Path] = []
             if package_path is not None:
                 saved = await asyncio.to_thread(
                     self._save_package_file_sync,
@@ -1308,7 +1312,6 @@ class PluginCliService:
                     _allow_external_profiles_root=_allow_external_profiles_root,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
-                unpacked_profile_dirs = self._extract_unpack_profile_dirs(install_result)
                 warning = await self._record_install_source_best_effort(
                     install_result=install_result,
                     package_filename=str(saved["name"]),
@@ -1326,7 +1329,6 @@ class PluginCliService:
                 self._cleanup_after_failure(
                     saved=saved,
                     unpacked_target_dirs=unpacked_target_dirs,
-                    unpacked_profile_dirs=unpacked_profile_dirs,
                     delete_saved_package=owns_saved_package,
                 )
                 raise
@@ -1341,7 +1343,6 @@ class PluginCliService:
         saved: dict[str, object] | None = None
         unpack_result: dict[str, object] | None = None
         unpacked_target_dirs: list[Path] = []
-        unpacked_profile_dirs: list[Path] = []
         owns_saved_package = False
 
         try:
@@ -1442,9 +1443,9 @@ class PluginCliService:
                         else None
                     ),
                     _allow_external_profiles_root=_allow_external_profiles_root,
+                    _preserve_autostart_plugin_id=_preserve_autostart_plugin_id,
                 )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
-            unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
@@ -1625,7 +1626,6 @@ class PluginCliService:
             self._cleanup_after_failure(
                 saved=saved,
                 unpacked_target_dirs=unpacked_target_dirs,
-                unpacked_profile_dirs=unpacked_profile_dirs,
                 delete_saved_package=owns_saved_package,
             )
             raise
@@ -1633,7 +1633,6 @@ class PluginCliService:
             self._cleanup_after_failure(
                 saved=saved,
                 unpacked_target_dirs=unpacked_target_dirs,
-                unpacked_profile_dirs=unpacked_profile_dirs,
                 delete_saved_package=owns_saved_package,
             )
             raise
@@ -1663,16 +1662,6 @@ class PluginCliService:
                 target_dirs.append(Path(target_dir_raw))
         return target_dirs
 
-    @staticmethod
-    def _extract_unpack_profile_dirs(unpack_result: dict[str, object]) -> list[Path]:
-        """Return promoted profile dirs created by the unpack operation."""
-
-        if unpack_result.get("profile_reused") is True:
-            return []
-        profile_dir_raw = unpack_result.get("profile_dir")
-        if isinstance(profile_dir_raw, str) and profile_dir_raw:
-            return [Path(profile_dir_raw)]
-        return []
 
     @classmethod
     def _extract_unpack_target(
@@ -1778,7 +1767,6 @@ class PluginCliService:
         *,
         saved: dict[str, object] | None,
         unpacked_target_dirs: list[Path] | None = None,
-        unpacked_profile_dirs: list[Path] | None = None,
         delete_saved_package: bool = True,
     ) -> None:
         """Best-effort fs cleanup on upload_and_install failure (R3.6).
@@ -1792,8 +1780,6 @@ class PluginCliService:
 
         for unpacked_target_dir in unpacked_target_dirs or []:
             self._cleanup_failed_unpack(unpacked_target_dir)
-        for unpacked_profile_dir in unpacked_profile_dirs or []:
-            self._cleanup_failed_unpack(unpacked_profile_dir)
         if delete_saved_package and saved is not None:
             saved_path_raw = saved.get("path")
             if isinstance(saved_path_raw, str) and saved_path_raw:
@@ -2098,19 +2084,6 @@ class PluginCliService:
                 if plugins_root
                 else policy.user_plugins_root
             )
-            profiles_root_path = (
-                Path(profiles_root).expanduser().resolve()
-                if profiles_root and _allow_external_profiles_root
-                else (
-                    _require_within(
-                        Path(profiles_root).expanduser().resolve(),
-                        policy.package_profiles_root,
-                        field="profiles_root",
-                    )
-                    if profiles_root
-                    else policy.package_profiles_root
-                )
-            )
             package_path = self._resolve_package_path(package)
             plan = self._apply_installed_package_identity(
                 build_install_plan(
@@ -2120,24 +2093,7 @@ class PluginCliService:
                 ),
                 package_path=package_path,
                 target_root=target_root,
-                profiles_root=profiles_root_path,
             )
-            if plan.action == "override_builtin" or plan.reason == "manual_takeover":
-                inspected = inspect_package(package_path)
-                target_profile_dir = profiles_root_path / plan.package_id
-                if getattr(inspected, "profile_names", ()) and (
-                    target_profile_dir.exists() or target_profile_dir.is_symlink()
-                ):
-                    plan = replace(
-                        plan,
-                        action="blocked",
-                        confirmation_token="",
-                        reason=(
-                            "manual_takeover_profile_target_exists"
-                            if plan.reason == "manual_takeover"
-                            else "override_profile_target_exists"
-                        ),
-                    )
             from plugin.server.application.plugins.development import list_registration_records_sync
             incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or (plan.plugin_id,))
             try:
@@ -2166,8 +2122,10 @@ class PluginCliService:
         *,
         package_path: Path,
         target_root: Path,
-        profiles_root: Path,
     ) -> PluginInstallPlan:
+        # A fresh bundle has no single executable directory or source row.
+        if not plan.directory_name:
+            return plan
         target_dir = target_root / plan.directory_name
         manager = get_install_source_manager()
         entry_reader = getattr(manager, "entry_for_directory", None)
@@ -2240,8 +2198,7 @@ class PluginCliService:
             )
         if not installed_package_id:
             # Legacy rows predate package identity tracking. Directory
-            # existence cannot prove ownership because stale or unrelated
-            # profile trees may share the incoming name. Historical official
+            # existence cannot prove package identity. Historical official
             # single-plugin packages used plugin_id as package_id, so use that
             # conservative baseline and fail closed on any ambiguous rename.
             installed_package_id = plan.plugin_id
@@ -2260,7 +2217,7 @@ class PluginCliService:
         *,
         package: str,
         plugins_root: str | None,
-        profiles_root: str | None,
+        profiles_root: str | None = None,
         on_conflict: str,
         use_staging: bool = True,
         forced_directory_name: str | None = None,
@@ -2270,31 +2227,16 @@ class PluginCliService:
             policy = self._path_policy()
             policy.ensure_writable_layout()
             install_plugins_root = policy.user_plugins_root
-            install_profiles_root = policy.package_profiles_root
             plugins_root_path = (
                 _require_within(Path(plugins_root).expanduser().resolve(), install_plugins_root, field="plugins_root")
                 if plugins_root
                 else install_plugins_root
-            )
-            profiles_root_path = (
-                Path(profiles_root).expanduser().resolve()
-                if profiles_root and _allow_external_profiles_root
-                else (
-                    _require_within(
-                        Path(profiles_root).expanduser().resolve(),
-                        install_profiles_root,
-                        field="profiles_root",
-                    )
-                    if profiles_root
-                    else install_profiles_root
-                )
             )
             package_path = self._resolve_package_path(package)
             if use_staging:
                 result = self._install_via_staging_sync(
                     package=package_path,
                     plugins_root=plugins_root_path,
-                    profiles_root=profiles_root_path,
                     on_conflict=on_conflict,
                     forced_directory_name=forced_directory_name,
                 )
@@ -2304,7 +2246,6 @@ class PluginCliService:
                 result = install_package(
                     package_path,
                     plugins_root=plugins_root_path,
-                    profiles_root=profiles_root_path,
                     on_conflict=on_conflict,
                 )
             return result.model_dump(mode="json")
@@ -2316,45 +2257,31 @@ class PluginCliService:
         *,
         package: Path,
         plugins_root: Path,
-        profiles_root: Path,
         on_conflict: str,
         forced_directory_name: str | None = None,
     ) -> InstallResult:
-        """Extract into a staging tree, then rename into place atomically."""
-
+        """Validate the whole archive and promote only its executable trees."""
         forced_directory_name = (
             _require_safe_directory_name(forced_directory_name, field="forced_directory_name")
             if forced_directory_name is not None
             else None
         )
-        staging_token = uuid.uuid4().hex
-        staging_plugins = plugins_root / f".neko_staging_{staging_token}"
-        staging_profiles = profiles_root / f".neko_staging_{staging_token}"
+        staging_plugins = plugins_root / f".neko_staging_{uuid.uuid4().hex}"
         staging_plugins.mkdir(parents=True, exist_ok=True)
-        staging_profiles.mkdir(parents=True, exist_ok=True)
         installer = PackageInstaller()
         promoted_plugins: list[InstalledPlugin] = []
-        promoted_profile: Path | None = None
-        profile_reused = False
-
         try:
             staged = install_package(
                 package,
                 plugins_root=staging_plugins,
-                profiles_root=staging_profiles,
                 on_conflict="fail",
             )
-
             for item in staged.installed_plugins:
                 source_dir = Path(item.target_dir)
                 desired_name = forced_directory_name or item.target_plugin_id
-                desired = plugins_root / desired_name
-                final_dir = installer.resolve_plugin_target_dir(
-                    desired,
-                )
-                if source_dir.resolve() != final_dir.resolve():
-                    final_dir.parent.mkdir(parents=True, exist_ok=True)
-                    source_dir.rename(final_dir)
+                final_dir = installer.resolve_plugin_target_dir(plugins_root / desired_name)
+                final_dir.parent.mkdir(parents=True, exist_ok=True)
+                source_dir.rename(final_dir)
                 promoted_plugins.append(
                     InstalledPlugin(
                         source_folder=item.source_folder,
@@ -2365,55 +2292,14 @@ class PluginCliService:
                 )
                 if not (final_dir / "plugin.toml").is_file():
                     raise ValueError(f"promoted plugin is missing plugin.toml: {final_dir}")
-
-            if staged.profile_dir is not None:
-                source_profile = Path(staged.profile_dir)
-                desired_profile = profiles_root / source_profile.name
-                if _is_link_or_reparse(desired_profile):
-                    raise ValueError(
-                        "existing package profile path is a link or reparse point: "
-                        f"{desired_profile.name}"
-                    )
-                if desired_profile.exists():
-                    if not desired_profile.is_dir():
-                        raise ValueError(
-                            "existing package profile path is not a directory: "
-                            f"{desired_profile.name}"
-                        )
-                    _validate_existing_profile_ownership(
-                        profile_dir=desired_profile,
-                        profiles_root=profiles_root,
-                        package_id=staged.package_id,
-                        plugin_ids={
-                            self._read_installed_plugin_toml_id(Path(item.target_dir))
-                            for item in promoted_plugins
-                        },
-                    )
-                    # A verified prior install can leave its package profile
-                    # behind after executable deletion. Reuse it byte-for-byte. The
-                    # staged defaults are intentionally not merged here, so a
-                    # failed fresh install never mutates legacy state.
-                    promoted_profile = desired_profile.resolve()
-                    profile_reused = True
-                else:
-                    desired_profile = installer.resolve_target_dir(
-                        desired_profile,
-                        on_conflict=on_conflict,
-                    )
-                    if source_profile.resolve() != desired_profile.resolve():
-                        desired_profile.parent.mkdir(parents=True, exist_ok=True)
-                        source_profile.rename(desired_profile)
-                    promoted_profile = desired_profile
-
             return InstallResult(
                 package_path=staged.package_path,
                 package_type=staged.package_type,
                 package_id=staged.package_id,
                 plugins_root=plugins_root,
-                profiles_root=profiles_root,
+                profiles_root=None,
                 installed_plugins=promoted_plugins,
-                profile_dir=promoted_profile,
-                profile_reused=profile_reused,
+                profile_dir=None,
                 metadata_found=staged.metadata_found,
                 payload_hash=staged.payload_hash,
                 payload_hash_verified=staged.payload_hash_verified,
@@ -2422,35 +2308,26 @@ class PluginCliService:
         except Exception:
             for item in promoted_plugins:
                 shutil.rmtree(item.target_dir, ignore_errors=True)
-            if promoted_profile is not None and not profile_reused:
-                shutil.rmtree(promoted_profile, ignore_errors=True)
             raise
         finally:
             shutil.rmtree(staging_plugins, ignore_errors=True)
-            shutil.rmtree(staging_profiles, ignore_errors=True)
 
     def _stage_builtin_override_sync(
         self,
         *,
         package: Path,
         plugins_root: Path,
-        profiles_root: Path,
         plan: PluginInstallPlan,
     ) -> _StagedBuiltinOverride:
-        """Extract and validate an override without touching either live source."""
-
+        """Extract and validate override code without touching either live source."""
         staging_token = uuid.uuid4().hex
         unpack_plugins = plugins_root / f".neko_override_unpack_{staging_token}"
-        unpack_profiles = profiles_root / f".neko_override_unpack_{staging_token}"
         staged_plugin_dir = plugins_root / f".neko_override_staging_{staging_token}"
-        staged_profile_dir = profiles_root / f".neko_override_staging_{staging_token}"
-        unpack_plugins.mkdir(parents=True, exist_ok=False)
-        unpack_profiles.mkdir(parents=True, exist_ok=False)
+        unpack_plugins.mkdir(parents=True, exist_ok=True)
         try:
             staged = install_package(
                 package,
                 plugins_root=unpack_plugins,
-                profiles_root=unpack_profiles,
                 on_conflict="fail",
             )
             if staged.package_type != "plugin" or len(staged.installed_plugins) != 1:
@@ -2467,30 +2344,17 @@ class PluginCliService:
                 raise ValueError("staged builtin override identity does not match the plan")
             if staged.payload_hash_verified is False:
                 raise ValueError("builtin override package payload hash is not verified")
-            unpacked_profile_dir = Path(staged.profile_dir).resolve() if staged.profile_dir else None
-            if unpacked_profile_dir is not None and unpacked_profile_dir.name != plan.package_id:
-                raise ValueError("staged builtin override profile identity does not match the package")
             unpacked_plugin_dir.rename(staged_plugin_dir)
-            if unpacked_profile_dir is not None:
-                unpacked_profile_dir.rename(staged_profile_dir)
-            return _StagedBuiltinOverride(
-                result=staged,
-                plugin_dir=staged_plugin_dir,
-                profile_dir=staged_profile_dir if unpacked_profile_dir is not None else None,
-            )
+            return _StagedBuiltinOverride(result=staged, plugin_dir=staged_plugin_dir)
         except Exception:
             shutil.rmtree(staged_plugin_dir, ignore_errors=True)
-            shutil.rmtree(staged_profile_dir, ignore_errors=True)
             raise
         finally:
             shutil.rmtree(unpack_plugins, ignore_errors=True)
-            shutil.rmtree(unpack_profiles, ignore_errors=True)
 
     @staticmethod
     def _cleanup_builtin_override_staging_sync(staged: _StagedBuiltinOverride) -> None:
         shutil.rmtree(staged.plugin_dir, ignore_errors=True)
-        if staged.profile_dir is not None:
-            shutil.rmtree(staged.profile_dir, ignore_errors=True)
 
     @staticmethod
     def _sha256_file(path: str | Path) -> str:
@@ -2918,6 +2782,32 @@ def _installed_manifest_plugin_id(target_dir: object) -> str:
     return str(plugin_table.get("id") or "").strip()
 
 
+def _persist_first_install_autostart_off(plugin_id: str) -> tuple[object, object]:
+    """Turn auto-start off for a plugin that has just been installed locally.
+
+    The package manifest may declare ``auto_start = true``. That must not become
+    the switch state: the first local copy stays off until the user enables it.
+    Returns ``(previous entry, written entry)`` so a failed install can restore
+    the previous preference.
+    """
+    previous = get_runtime_override_entry(plugin_id)
+    set_runtime_auto_start_override(plugin_id, False)
+    return previous, get_runtime_override_entry(plugin_id)
+
+
+def _restore_first_install_autostart(
+    plugin_id: str, previous: object, written: object
+) -> bool:
+    try:
+        return restore_runtime_override(
+            plugin_id, previous, expected_current=written
+        )
+    except RuntimeOverridePersistenceError:
+        # Keep the original install error and let callers restore the remaining
+        # bundle entries. Each caller already reports an unsuccessful restore.
+        return False
+
+
 def _mark_new_install_awaiting_autostart(install_result: dict) -> list[str]:
     """Withhold autostart from a plugin the user has installed but never run.
 
@@ -2931,6 +2821,10 @@ def _mark_new_install_awaiting_autostart(install_result: dict) -> list[str]:
     overlaps the install can register the freshly written directory before this
     runs, at which point the plugin looks pre-existing and skips the gate
     entirely (greptile); a stale registry produces the mirror error (codex).
+
+    The saved auto-start preference is forced off here as well. Plan ids are
+    withheld before the files land; this pass covers the manifest id, which can
+    differ from the directory name.
     """
     from plugin.server.infrastructure.autostart_approvals import mark_autostart_pending
 
@@ -2953,7 +2847,17 @@ def _mark_new_install_awaiting_autostart(install_result: dict) -> list[str]:
             plugin_id = Path(str(target_dir)).name
         if not plugin_id:
             continue
-        if not mark_autostart_pending(plugin_id):
+        pending_ok = mark_autostart_pending(plugin_id)
+        preference_ok = True
+        try:
+            _persist_first_install_autostart_off(plugin_id)
+        except RuntimeOverridePersistenceError:
+            preference_ok = False
+            logger.error(
+                "could not record auto-start as off for newly installed plugin_id={}",
+                plugin_id,
+            )
+        if not pending_ok or not preference_ok:
             unrecorded.append(plugin_id)
     return unrecorded
 

@@ -47,6 +47,7 @@
     <link rel="stylesheet" href="/static/css/storage-location.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <link rel="stylesheet" href="/static/css/social-embed.css?v={{ static_asset_version }}">
+    <link rel="stylesheet" href="/static/css/social-hub.css?v={{ static_asset_version }}">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
     <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
@@ -369,6 +370,7 @@
     <script src="/static/avatar/avatar-ui-buttons/methods-return.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-social-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/social-hub.js?v={{ static_asset_version }}"></script>
     <script src="/static/forge-drop-tokens.js?v={{ static_asset_version }}"></script>
     <script src="/static/forge-drop-overlay.js?v={{ static_asset_version }}"></script>
     <script src="/static/forge-avatar-reaction.js?v={{ static_asset_version }}"></script>
@@ -407,6 +409,8 @@
 
     <script type="module" src="/static/js/APlayer/main.js?v={{ static_asset_version }}"></script>
     <script src="/static/jukebox/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-recommendations.js?v={{ static_asset_version }}"></script>
+    <script src="/static/feedback-upgrade-notice.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/jukebox/jukebox-loader.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_ui.js?v={{ static_asset_version }}"></script>
@@ -481,7 +485,9 @@
     <script src="/static/visit/text-mouth-driver.js?v={{ static_asset_version }}"></script>
     <script src="/static/visit/visit-settings.js?v={{ static_asset_version }}"></script>
     <script src="/static/visit/crop-geometry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/voice-relay.js?v={{ static_asset_version }}"></script>
     <script src="/static/visit/parent-bridge.js?v={{ static_asset_version }}"></script>
+    <script src="/static/visit/display-relay.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/bridge.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/core.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/motion/player.js?v={{ static_asset_version }}"></script>

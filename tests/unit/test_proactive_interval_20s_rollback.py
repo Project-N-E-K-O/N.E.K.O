@@ -38,7 +38,7 @@ def test_retired_interval_branch_rolls_back_overwritten_value(tmp_path):
     assert branch in tt._TELEMETRY_BRANCHES
     assert branch != "proactive_interval_20s"
     # Preference restored to control group's 15s.
-    mock_save.assert_called_once_with({"proactiveChatInterval": 15})
+    mock_save.assert_called_once_with({"proactiveChatInterval": 15}, audit_origin="system")
     # Branch file overwritten by redraw (inherently idempotent marker).
     assert _read_branch(tmp_path) == branch
 

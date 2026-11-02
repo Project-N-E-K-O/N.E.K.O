@@ -567,8 +567,12 @@ def _discover_registry_snapshot_sync(
             if not path.parent.name.startswith(".")
         ]
         logger.info(
-            "Found {} plugin.toml files in {}: {}",
+            "Found {} plugin.toml files in {}",
             len(found_toml_files),
+            resolved_root,
+        )
+        logger.debug(
+            "plugin.toml files in {}: {}",
             resolved_root,
             [str(path) for path in found_toml_files],
         )
@@ -1249,17 +1253,16 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
                 continue
             if raw_meta.get("runtime_enabled") is False:
                 continue
-            if raw_meta.get("runtime_auto_start") is False:
+            if raw_meta.get("runtime_auto_start") is not True:
                 continue
             if raw_meta.get("runtime_load_state") == "failed":
                 continue
             if raw_meta.get("runtime_source_missing") is True:
                 continue
             if not is_autostart_approved(plugin_id):
-                # Installation and execution differ; only execution represents user action. manifest
-                # auto_start defaults true, letting newly installed plugins run next launch
-                # without ever being started by users. Block only newly installed, never-user-started plugins;
-                # existing plugins have no records and autostart normally.
+                # Only plugins with explicit autostart enabled are candidates.
+                # Newly installed plugins must also be approved before autostart;
+                # existing enabled plugins without a pending record remain approved.
                 continue
             candidates.add(plugin_id)
     return _build_ordered_plugin_ids_sync(candidates)

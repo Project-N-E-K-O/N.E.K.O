@@ -170,6 +170,40 @@ def test_overlap_then_clean_regeneration_is_saved(env):
     assert len(llm.prompts) == 2 and view["state"] == "unreviewed" and "error" not in view
 
 
+def test_retry_rephrases_public_traits_caught_in_a_sentence_about_family(env):
+    client, _tmp, state, llm, scan = env
+    state["cards"]["A"] = "{LANLAN_NAME}是一只永远充满元气的猫娘，喜欢陪伴{MASTER_NAME}。\n喜欢晒太阳。"
+    scan.sections = []
+    opening = "{LANLAN_NAME}是一只永远充满元气的猫娘。喜欢晒太阳。"
+    rephrased = "你是{LANLAN_NAME}，活泼开朗、爱晒太阳的猫娘。"
+    llm.replies = [opening, rephrased]
+
+    view = _generate(client)
+
+    assert view["state"] == "unreviewed" and view["text"] == rephrased
+    assert view["edited"] is False and view["reviewed"] is False
+    assert len(llm.prompts) == 2
+    matched_fragment = "lanlan_name 是 一 只 永 远 充 满"
+    assert matched_fragment not in llm.prompts[0]
+    assert matched_fragment in llm.prompts[1]
+
+
+def test_retry_receives_a_phone_token_in_its_feedback(env):
+    client, _tmp, state, llm, scan = env
+    phone = "13800138000"
+    state["cards"]["A"] = CARD + f"\n联系电话{phone}。"
+    scan.sections = []
+    llm.replies = [GOOD_PERSONA + f"联系电话{phone}。", GOOD_PERSONA]
+
+    view = _generate(client)
+
+    assert view["state"] == "unreviewed" and view["text"] == GOOD_PERSONA
+    assert "error" not in view and len(llm.prompts) == 2
+    assert llm.prompts[1].startswith(llm.prompts[0])
+    feedback = llm.prompts[1][len(llm.prompts[0]):]
+    assert phone in feedback
+
+
 def test_rule_sections_catch_a_private_sentence_the_scan_missed(env):
     client, _tmp, _state, llm, scan = env
     scan.sections = []

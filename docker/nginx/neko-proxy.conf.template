@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# L1b —— server 骨架
+#
+# 渲染目标：/etc/nginx/conf.d/neko-proxy.conf
+#
+# 这个文件只负责「组装」，不含任何路由或 TLS 细节：
+#   listener.conf   L1a 监听器层 —— HTTP 与 HTTPS 两种模式唯一的差异
+#   locations.conf  L1c 路由表   —— 两种模式共用同一份
+#
+# 之所以用 include 而不是把内容拼进同一个文件：让「模式差异」和「路由」各自成为
+# 一个可单独 diff、单独评审的文件。nginx 的 include 在 server / location 上下文中
+# 都合法。
+# ─────────────────────────────────────────────────────────────────────────────
+server {
+    # L1a：监听器 + （HTTPS 模式下）证书与 HSTS
+    include @@NGINX_NEKO_DIR@@/listener.conf;
+
+    server_name _;
+
+    # 禁用默认的 Nginx 版本显示
+    server_tokens off;
+
+    # 取消客户端请求体大小限制
+    client_max_body_size 0;
+
+    # L1c：路由表，按上游服务分组
+    include @@NGINX_NEKO_DIR@@/locations.conf;
+}

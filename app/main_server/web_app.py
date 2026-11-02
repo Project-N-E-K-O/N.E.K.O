@@ -168,6 +168,14 @@ class CustomStaticFiles(StaticFiles):
 class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
     """The repository ``static/`` mount; also answers retired asset URLs."""
 
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # Windows file associations may classify .mjs as text/plain. Only
+        # repository assets get this override, not user model/mod directories.
+        if path.endswith(".mjs"):
+            response.headers["Content-Type"] = "application/javascript"
+        return response
+
 
 class AvatarToolStaticFiles(CustomStaticFiles):
     """Expose generated media only; private records never enter HTTP space."""
@@ -373,6 +381,7 @@ from main_routers.characters_router import router as characters_router  # noqa
 from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
+from main_routers.proactive_feedback_router import router as proactive_feedback_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
 from main_routers.widget_mode_router import router as widget_mode_router  # noqa
 from main_routers.icebreaker_router import router as icebreaker_router  # noqa
@@ -798,6 +807,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 # Mount all routes.
 app.include_router(config_router)
 app.include_router(proactive_router)
+app.include_router(proactive_feedback_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)

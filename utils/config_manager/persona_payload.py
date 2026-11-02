@@ -19,6 +19,8 @@ Builds the effective character payload (persona overrides, synthetic AI
 context fields, prompt guidance) and hosts the default-YUI free-voice
 binding helpers. Stateless module-level functions.
 """
+import hashlib
+import json
 import re
 from copy import deepcopy
 
@@ -260,26 +262,11 @@ def _build_effective_character_payload(
 
     effective_payload = deepcopy(character_payload)
     override = _get_persona_override(character_payload)
-    if not isinstance(override, dict):
-        for field, value in _build_ai_context_fields(
-            character_payload,
-            existing_fields=set(effective_payload.keys()),
-            entity=entity,
-            lang=lang,
-        ).items():
+    if isinstance(override, dict):
+        profile = _normalize_persona_override_profile(override.get("profile"))
+        for field, value in profile.items():
             effective_payload[field] = value
-        return effective_payload
-
-    profile = _normalize_persona_override_profile(override.get("profile"))
-    for field, value in profile.items():
-        effective_payload[field] = value
-    for field, value in _build_ai_context_fields(
-        character_payload,
-        existing_fields=set(effective_payload.keys()),
-        entity=entity,
-        lang=lang,
-    ).items():
-        effective_payload[field] = value
+    _apply_ai_context_fields(effective_payload, character_payload, entity=entity, lang=lang)
     return effective_payload
 
 
@@ -325,6 +312,12 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
 
 
 _AI_CONTEXT_RENAME_EVENT_FIELD = "__ai_context.profile_rename_events"
+# Where the effective payload (a deep copy, never saved back) carries the
+# fingerprint of each synthetic field it rendered.
+_AI_CONTEXT_FINGERPRINTS_KEY = "synthetic_field_fingerprints"
+# Bump when the rendered rename wording changes: personas that compare stored
+# facts by fingerprint only re-render when the fingerprint moves.
+_AI_CONTEXT_FINGERPRINT_VERSION = 1
 
 
 def _unique_ai_context_field_name(existing_fields: set[str] | None) -> str:
@@ -367,13 +360,62 @@ def _resolve_profile_rename_language(explicit: str | None) -> str | None:
         return None
 
 
-def _build_ai_context_fields(
+def _collect_profile_rename_events(rename_events: list) -> tuple[list[str], str, list[str]]:
+    """Reduce raw rename events to ``(old_names, current_name, legacy_lines)``."""
+    old_names: list[str] = []
+    current_name = ""
+    legacy_lines: list[str] = []
+    for event in rename_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or "").strip() != "profile_rename":
+            continue
+        old_name = str(event.get("old_name") or "").strip()
+        new_name = str(event.get("new_name") or "").strip()
+        if old_name and new_name:
+            if old_name not in old_names:
+                old_names.append(old_name)
+            current_name = new_name
+        else:
+            text = str(event.get("text") or "").strip()
+            if not text:
+                continue
+            legacy_lines.append(text)
+
+    if current_name:
+        old_names = [name for name in old_names if name != current_name]
+    return old_names, current_name, legacy_lines
+
+
+def _profile_rename_fingerprint(
+    entity: str, old_names: list[str], current_name: str, legacy_lines: list[str],
+) -> str:
+    """Language-independent digest of what a rename sentence states.
+
+    Built from the event content only, never from localized wording, so the
+    same events give the same fingerprint whichever language rendered them.
+    """
+    source = json.dumps(
+        {
+            "version": _AI_CONTEXT_FINGERPRINT_VERSION,
+            "entity": entity,
+            "old_names": old_names,
+            "current_name": current_name,
+            "legacy_lines": legacy_lines,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _render_ai_context_fields(
     character_payload: dict,
     existing_fields: set[str] | None = None,
     entity: str = "neko",
     lang: str | None = None,
-) -> dict[str, str]:
-    """Expand hidden runtime events into synthetic fields used only for prompt/memory sync.
+) -> dict[str, tuple[str, str]]:
+    """Render synthetic fields as ``{field: (text, source_fingerprint)}``.
 
     entity indicates whether this payload is the catgirl (neko) or the master, which decides
     the person used in rename records: the master's records go into the master section of the
@@ -399,28 +441,7 @@ def _build_ai_context_fields(
     from config.prompts.prompts_memory import render_profile_rename_event_context
 
     field_name = _unique_ai_context_field_name(existing_fields)
-    old_names: list[str] = []
-    current_name = ""
-    legacy_lines: list[str] = []
-    for event in rename_events:
-        if not isinstance(event, dict):
-            continue
-        if str(event.get("type") or "").strip() != "profile_rename":
-            continue
-        old_name = str(event.get("old_name") or "").strip()
-        new_name = str(event.get("new_name") or "").strip()
-        if old_name and new_name:
-            if old_name not in old_names:
-                old_names.append(old_name)
-            current_name = new_name
-        else:
-            text = str(event.get("text") or "").strip()
-            if not text:
-                continue
-            legacy_lines.append(text)
-
-    if current_name:
-        old_names = [name for name in old_names if name != current_name]
+    old_names, current_name, legacy_lines = _collect_profile_rename_events(rename_events)
 
     lines: list[str] = []
     if old_names and current_name:
@@ -432,7 +453,69 @@ def _build_ai_context_fields(
 
     if not lines:
         return {}
-    return {field_name: "\n".join(lines)}
+    fingerprint = _profile_rename_fingerprint(entity, old_names, current_name, legacy_lines)
+    return {field_name: ("\n".join(lines), fingerprint)}
+
+
+def _build_ai_context_fields(
+    character_payload: dict,
+    existing_fields: set[str] | None = None,
+    entity: str = "neko",
+    lang: str | None = None,
+) -> dict[str, str]:
+    """Expand hidden runtime events into synthetic fields used only for prompt/memory sync."""
+    return {
+        field: text
+        for field, (text, _) in _render_ai_context_fields(
+            character_payload, existing_fields=existing_fields, entity=entity, lang=lang,
+        ).items()
+    }
+
+
+def _apply_ai_context_fields(
+    effective_payload: dict,
+    character_payload: dict,
+    entity: str,
+    lang: str | None,
+) -> None:
+    """Add the synthetic fields and record their fingerprints on ``effective_payload``."""
+    rendered = _render_ai_context_fields(
+        character_payload,
+        existing_fields=set(effective_payload.keys()),
+        entity=entity,
+        lang=lang,
+    )
+    for field, (text, _) in rendered.items():
+        effective_payload[field] = text
+    if rendered:
+        set_reserved(
+            effective_payload,
+            "ai_context",
+            _AI_CONTEXT_FINGERPRINTS_KEY,
+            {field: fingerprint for field, (_, fingerprint) in rendered.items()},
+        )
+        return
+    # A map copied over from the raw payload would describe fields not rendered here.
+    ai_context = get_reserved(effective_payload, "ai_context", default=None)
+    if isinstance(ai_context, dict):
+        ai_context.pop(_AI_CONTEXT_FINGERPRINTS_KEY, None)
+
+
+def ai_context_field_fingerprints(effective_payload: dict) -> dict[str, str]:
+    """Fingerprints of the synthetic fields in a payload from ``get_character_data``.
+
+    Maps each synthetic ``__ai_context.*`` field to a digest of the events it
+    was rendered from. Card sync compares it instead of the text when no
+    language is persisted, so a render in another language is not a change.
+    """
+    stored = get_reserved(effective_payload, "ai_context", _AI_CONTEXT_FINGERPRINTS_KEY, default=None)
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        str(field): fingerprint
+        for field, fingerprint in stored.items()
+        if isinstance(fingerprint, str) and fingerprint
+    }
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:

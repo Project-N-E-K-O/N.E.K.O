@@ -57,3 +57,44 @@ def test_published_reasons_are_unchanged():
 def test_pending_count_query_is_exported():
     src = _src()
     assert "mod.pendingAudioCountForSpeech = pendingAudioCountForSpeech;" in src
+
+
+def _fn_body(src: str, header: str) -> str:
+    start = src.index(header)
+    depth = 0
+    for i in range(src.index("{", start), len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+    raise AssertionError("unbalanced braces")
+
+
+def test_visit_voice_tap_reads_the_analyser_output_before_speaker_volume():
+    # OD-15 v4: the peer hears this catgirl's TTS (after per-speech gain) regardless of the local speaker volume.
+    src = _src()
+    body = _fn_body(src, "async function openAssistantVoiceTap()")
+    assert "initializeGlobalAnalyser();" in body
+    assert "var analyser = S.globalAnalyser;" in body
+    assert "destination.channelCount = 1;" in body
+    assert "analyser.connect(destination);" in body
+    assert "speakerGainNode" not in body
+    assert "analyser.disconnect(destination);" in body
+    assert "track.stop()" in body
+    assert "getUserMedia" not in src
+
+
+def test_visit_peer_voice_joins_after_the_analyser():
+    # The peer voice follows speaker volume / output device, never drives lip sync and never loops back into the tap.
+    body = _fn_body(_src(), "async function playExternalVoiceTrack(track)")
+    assert "source.connect(S.speakerGainNode || context.destination);" in body
+    assert "globalAnalyser" not in body.replace("initializeGlobalAnalyser();", "")
+    assert "source.disconnect();" in body
+
+
+def test_visit_voice_entry_points_are_exported():
+    src = _src()
+    assert "mod.openAssistantVoiceTap = openAssistantVoiceTap;" in src
+    assert "mod.playExternalVoiceTrack = playExternalVoiceTrack;" in src

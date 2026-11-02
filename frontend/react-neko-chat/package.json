@@ -12,13 +12,13 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run && npm run test:music",
-    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs",
+    "test:music": "node --test ../../tests/frontend/music_player_close.test.cjs ../../tests/frontend/music_recommendations.test.cjs ../../tests/frontend/recommendation_countdown.test.cjs ../../tests/frontend/proactive_recommendations.test.cjs ../../tests/frontend/proactive_registration_failures.test.cjs ../../tests/frontend/recommendation_outbox_retry.test.cjs ../../tests/frontend/recommendation_snapshot_config.test.cjs ../../tests/frontend/message_reaction_export.test.cjs ../../tests/frontend/playback_observation.test.cjs ../../tests/frontend/recommendation_capture_handoff.test.cjs ../../tests/frontend/feedback_devices.test.cjs",
     "sync-css": "node scripts/sync-css.mjs"
   },
   "dependencies": {
     "@xyflow/react": "12.12.0",
     "clsx": "^2.1.1",
-    "katex": "^0.18.9",
+    "katex": "^0.19.1",
     "react": "^18.3.1",
     "react-markdown": "^10.1.0",
     "react-dom": "^18.3.1",
@@ -36,7 +36,7 @@
     "jsdom": "^27.0.0",
     "typescript": "^5.6.3",
     "vite": "^7.3.6",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "katex": "$katex"

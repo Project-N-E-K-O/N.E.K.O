@@ -108,7 +108,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const installForm = ref<PluginCliInstallRequest>({
     package: '',
     plugins_root: '',
-    profiles_root: '',
     on_conflict: 'fail',
   })
 
@@ -175,12 +174,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   })
   const {
     filterText: pluginFilter,
-    useRegex,
-    filterMode,
     selectedTypes,
     layoutMode,
     selectedPluginIds,
-    regexError,
     pluginCount,
     adapterCount,
     filteredPurePlugins,
@@ -758,7 +754,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     inspectResult.value = null
     const response = await installPackagePath(installForm.value.package || '', {
       pluginsRoot: installForm.value.plugins_root,
-      profilesRoot: installForm.value.profiles_root,
     })
     if (!response) {
       return
@@ -851,10 +846,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     layoutMode,
     buildMode,
     pluginFilter,
-    useRegex,
-    filterMode,
     selectedTypes,
-    regexError,
     pluginsLoading,
     packagesLoading,
     localPackages,

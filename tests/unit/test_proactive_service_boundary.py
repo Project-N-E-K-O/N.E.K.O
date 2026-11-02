@@ -365,7 +365,7 @@ async def test_successful_proactive_query_is_remembered(monkeypatch) -> None:
     fetch = AsyncMock(
         return_value={
             "success": True,
-            "data": [{"name": "童年", "url": "/music/childhood"}],
+            "data": [{"name": "童年", "url": "/api/music/play/netease/1"}],
         }
     )
     monkeypatch.setattr(music_recommendation, "fetch_music_content", fetch)
@@ -403,7 +403,7 @@ async def test_music_failsafe_only_applies_to_strict_song_request(
     fetch = AsyncMock(
         return_value={
             "success": True,
-            "data": [{"name": "童年", "url": "/music/childhood"}],
+            "data": [{"name": "童年", "url": "/api/music/play/netease/1"}],
             "best_match": {"status": "fuzzy"},
         }
     )
@@ -1164,7 +1164,7 @@ async def test_screen_and_window_sources_follow_live_vision_consent(monkeypatch,
     monkeypatch.setattr(preferences, "aload_global_conversation_settings", load_settings)
     collected_modes = []
 
-    async def fake_collect(*, command, enabled_modes, lanlan_name, log):
+    async def fake_collect(*, command, enabled_modes, lanlan_name, log, community_locale=None):
         collected_modes.append(list(enabled_modes))
         if case == "revoked-during":
             consent["enabled"] = False
@@ -1243,3 +1243,69 @@ async def test_withhold_revoked_vision_sources_keeps_other_sources(monkeypatch, 
 
     assert withheld is declined
     assert set(sources) == ({"news"} if declined else {"vision", "window", "news"})
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_status", [None, 401, 403, 200])
+@pytest.mark.parametrize(
+    ("request_locale", "render_locale", "manager_locale", "explicit", "expected"),
+    [
+        ("ja", None, "en", False, "ja"),
+        (None, "ja", "en", False, "ja"),
+        (None, "ja", "zh-TW", True, "zh-TW"),
+        ("pt", "ja", "zh-TW", True, "pt"),
+        ("undefined", None, "zh-TW", True, "zh-TW"),
+        (None, None, "ko", False, "ko"),
+        (None, None, None, False, "en"),
+    ],
+)
+async def test_community_source_uses_round_locale_through_http(
+    monkeypatch, auth_status, request_locale, render_locale, manager_locale, explicit, expected,
+):
+    import httpx
+    from utils.web_scraper import trending_content
+
+    # Coverage can preload the compatibility facade before the collector is
+    # imported. Patch the dependency captured by that collector, so this test
+    # cannot fall through to the real credential loader of an older module instance.
+    source_fetch = service.collect_proactive_sources.__globals__["_fetch_source"]
+    feed_globals = source_fetch.__globals__["fetch_neko_community_feed"].__globals__
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if "Authorization" in request.headers and auth_status != 200:
+            return httpx.Response(auth_status)
+        return httpx.Response(200, json={"items": [{"id": "card", "title": "Recommended"}]})
+
+    command = contracts.ProactiveChatCommand(
+        i18n_language=request_locale, render_language=render_locale,
+    )
+    manager = SimpleNamespace(user_language=manager_locale, _user_language_explicit=explicit)
+    transport = httpx.MockTransport(handle)
+    isolated = httpx.AsyncClient(transport=transport)
+    async with httpx.AsyncClient(transport=transport) as shared:
+        monkeypatch.setattr(service, "get_global_language_full", lambda: "en")
+        monkeypatch.setattr(trending_content, "get_global_language_full", lambda: "en")
+        monkeypatch.setitem(feed_globals, "get_external_http_client", lambda: shared)
+        monkeypatch.setitem(feed_globals, "_neko_community_access_token", AsyncMock(
+            return_value="desktop-token" if auth_status else "",
+        ))
+        monkeypatch.setattr(trending_content.httpx, "AsyncClient", lambda **kwargs: isolated)
+        modes, sources, withheld = await service._collect_sources_under_vision_consent(
+            command=command, enabled_modes=["community"], lanlan_name="Yui",
+            vision_consent_check=AsyncMock(return_value=True), mgr=manager,
+        )
+    await isolated.aclose()
+
+    assert modes == ["community"]
+    assert withheld is False
+    assert sources["community"]["raw_data"]["posts"][0]["id"] == "card"
+    assert len(requests) == (2 if auth_status in (401, 403) else 1)
+    body = json.loads(requests[-1].content)
+    if auth_status == 200:
+        assert "locale" not in body, "authenticated requests honor the account preference"
+    else:
+        assert body["locale"] == expected
+    assert manager.user_language == manager_locale
+    assert manager._user_language_explicit is explicit

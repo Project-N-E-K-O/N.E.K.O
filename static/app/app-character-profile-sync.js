@@ -143,10 +143,15 @@
             if (!role) throw new Error('chat_sync_character_not_found');
             // The labeled card switch is the sole affirmative action for saved settings and trusted history.
             await api('/characters/' + role.characterSyncId + '/sync-choice', {enabled, includeHistory: true});
-            window.showMessage(text('syncChoiceSaved'), 'success');
-        } catch (_) {
+            if (enabled && (status.writerRecoveryRequired || (role.binding && role.binding.writerRecoveryRequired))) {
+                window.showMessage(window.nekoChatSync ? window.nekoChatSync.describeError('chat_sync_writer_recovery_required')
+                    : text('writerRecoveryRequired'), 'warning');
+            } else {
+                window.showMessage(text('syncChoiceSaved'), 'success');
+            }
+        } catch (error) {
             // The card is already saved; an unreadable switch must preserve its previous consent.
-            window.showMessage(text('newSyncFailed'), 'warning');
+            window.showMessage(window.nekoChatSync ? window.nekoChatSync.describeError(error) : text('newSyncFailed'), 'warning');
         }
     }
 
@@ -188,7 +193,10 @@
                     var setupKey = role.characterSyncId + ':setup:' + role.syncSetupError;
                     if (!reviewed.has(setupKey)) {
                         reviewed.add(setupKey);
-                        window.showMessage(text('setupNeedsSave', {name: role.displayName}), 'warning');
+                        var setupMessage = text('setupNeedsSave', {name: role.displayName});
+                        var detail = window.nekoChatSync && window.nekoChatSync.describeError(role.syncSetupError);
+                        if (detail && detail !== text('errorUnknown')) setupMessage += '\n' + detail;
+                        window.showMessage(setupMessage, 'warning');
                     }
                 }
                 var profile = role.binding && role.binding.profile;

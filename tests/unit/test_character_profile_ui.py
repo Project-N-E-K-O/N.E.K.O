@@ -296,6 +296,27 @@ def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied():
     """)
 
 
+def test_card_save_explains_required_recovery_and_poll_explains_the_setup_failure():
+    """Saved consent must not look like a successful sync while the binding is blocked."""
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:error=>'reason:'+error};
+        response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,
+            binding:{writerRecoveryRequired:true}}]}:{};
+        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true,false);
+        assert.deepEqual(messages,[{text:'reason:chat_sync_writer_recovery_required',kind:'warning'}]);
+        assert.equal(calls.length,2);
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncSetupError:'chat_sync_account_mismatch'}]});
+        await window.nekoCharacterProfileSync.poll();
+        await window.nekoCharacterProfileSync.poll();
+        assert.deepEqual(messages[1],{text:'chatSync.setupNeedsSave\nreason:chat_sync_account_mismatch',kind:'warning'});
+        assert.equal(messages.length,2);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
 def test_card_save_before_choice_load_preserves_previous_consent_without_warning():
     """A pending status read is not a failed sync save or new consent."""
     run_script(r"""(async()=>{
@@ -304,6 +325,101 @@ def test_card_save_before_choice_load_preserves_previous_consent_without_warning
         assert.deepEqual(calls,[]);assert.deepEqual(messages,[]);assert.deepEqual(alerts,[]);
     })().catch(e=>{console.error(e);process.exitCode=1;});
     """)
+
+
+@pytest.mark.parametrize('code', ['chat_sync_account_mismatch', 'unrecognized_setup_error'])
+def test_setup_warning_identifies_the_role_and_unknown_errors_explain_resaving(code):
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.t=(key,values={})=>key+(values.name?':'+values.name:'');
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:code=>code==='chat_sync_account_mismatch'?'account mismatch':'chatSync.errorUnknown'};
+        response=()=>({characters:[{displayName:'First',characterSyncId:uid,syncSetupError:CODE},
+            {displayName:'Second',characterSyncId:'b'.repeat(32),syncSetupError:CODE}]});
+        await window.nekoCharacterProfileSync.poll();
+        assert.equal(messages.length,2);
+        assert(messages[0].text.includes('setupNeedsSave:First'));
+        assert(messages[1].text.includes('setupNeedsSave:Second'));
+        assert(!messages.some(item=>item.text.includes('errorUnknown')));
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CODE', json.dumps(code)))
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_card_save_rebuilt_switch_shows_the_choice_saved_by_the_same_click(enabled):
+    """The real form must not read old consent before its Save persists the switch."""
+    from playwright.sync_api import sync_playwright
+
+    source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding='utf-8')
+    start = source.index("    {\n        const row = document.createElement('div');")
+    switch_code = source[start:source.index('    const btnArea', start)]
+    save_code = source[source.index('async function saveCatgirlFromPanel('):
+                       source.index('async function ensureCanModifyCardsOutsideVoiceMode(')]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div id="editor"></div>')
+            page.evaluate("""({enabled, code}) => {
+                window.savedChoice = !enabled;
+                window.saveEvents = [];
+                window.t = key => key;
+                window.setInterval = () => 1;
+                window.showMessage = () => {};
+                window.fetch = async (path, init) => {
+                    if (path === '/api/chat-sync/status') {
+                        const snapshot = savedChoice;
+                        saveEvents.push(['readChoice', snapshot]);
+                        return {ok: true, json: async () => ({characters: [{displayName: 'Synthetic',
+                            characterSyncId: 'a'.repeat(32), syncEnabled: snapshot}]})};
+                    }
+                    if (path.endsWith('/sync-choice')) {
+                        savedChoice = JSON.parse(init.body).enabled;
+                        saveEvents.push(['saveChoice', savedChoice]);
+                        return {ok: true, json: async () => ({})};
+                    }
+                    if (path === '/api/characters/catgirl/Synthetic') {
+                        saveEvents.push(['saveCard']);
+                        return {ok: true, json: async () => ({success: true})};
+                    }
+                    throw new Error('Unexpected fixture API: ' + path);
+                };
+                window.ensureSafeExistingCharacterPathName = async () => true;
+                window.collectCharacterFields = () => ({data: {'档案名': 'Synthetic'}, fieldOrder: []});
+                window.attachCharacterFieldOrderPayload = () => {};
+                window.buildLocalCatgirlRawData = (_name, data) => data;
+                window.syncCharacterCardCache = () => {};
+                window.setLocalRawDataFieldOrder = () => {};
+                window.mergeFreshCatgirlRawDataWithLocal = (_fresh, local) => local;
+                window.loadCharacterData = async () => ({'猫娘': {Synthetic: {}}});
+                window.loadCharacterCards = async () => {};
+                window.buildCatgirlDetailForm = (name, _data, isNew, container) => {
+                    const form = document.createElement('form');
+                    form.innerHTML = '<input name="档案名" value="Synthetic" readonly>';
+                    container.replaceChildren(form);
+                    new Function('form', 'isNew', 'name', code)(form, isNew, name);
+                };
+            }""", {'enabled': enabled, 'code': switch_code})
+            page.add_script_tag(path=str(SCRIPT))
+            page.add_script_tag(content=save_code)
+            result = page.evaluate("""async enabled => {
+                buildCatgirlDetailForm('Synthetic', {}, false, document.getElementById('editor'));
+                const original = document.querySelector('form');
+                await original._chatSyncLoadPromise;
+                original.querySelector('[name="chat_sync_enabled"]').checked = enabled;
+                saveEvents.length = 0;
+                const saved = await saveCatgirlFromPanel(original, 'Synthetic', false);
+                const rebuilt = document.querySelector('form');
+                await rebuilt._chatSyncLoadPromise;
+                return {saved, persisted: savedChoice, checked: rebuilt.querySelector('[role="switch"]').checked,
+                    rebuilt: rebuilt !== original, events: saveEvents};
+            }""", enabled)
+            assert result['saved'] and result['rebuilt']
+            assert result['persisted'] == enabled
+            assert result['checked'] == enabled, result['events']
+        finally:
+            browser.close()
 
 
 def test_card_choice_uses_effective_pending_consent_while_binding_is_still_paused():
@@ -316,10 +432,10 @@ def test_card_choice_uses_effective_pending_consent_while_binding_is_still_pause
     """)
 
 
-def test_sync_navigation_copy_names_the_existing_more_settings_button_in_every_locale():
-    """Recovery instructions point to the actual localized button label."""
+def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_actions():
+    """Binding and history retries use the card switch, not the recovery-only panel."""
     for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
         locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding="utf-8"))['chatSync']
         for key in ('setupNeedsSave', 'initialHistoryFailed', 'profileNeedsBinding'):
-            assert locale['moreOptions'].casefold() in locale[key].casefold(), (language, key)
+            assert locale['moreOptions'].casefold() not in locale[key].casefold(), (language, key)
 

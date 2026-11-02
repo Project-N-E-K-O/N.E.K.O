@@ -51,7 +51,7 @@ FINALIZE_REASONS = frozenset({
 """Every reason a visit can end with once it started (design §3.6.8)."""
 
 ABORT_REASONS = frozenset({
-    "busy", "login_required", "banned", "quota_exceeded", "tier_not_entitled",
+    "busy", "login_required", "banned", "quota_exceeded", "concurrency_limit", "tier_not_entitled",
     "cross_region_unsupported", "invite_invalid", "invite_expired", "servers_unreachable",
 })
 """Endings before any peer was verified that §3.6.8 does not list (Servers / admission failures)."""
@@ -124,6 +124,7 @@ STATUS_FOR_REASON: dict[str, str] = {
     "login_required": "VISIT_LOGIN_REQUIRED",
     "banned": "VISIT_BANNED",
     "quota_exceeded": "VISIT_QUOTA_EXCEEDED",
+    "concurrency_limit": "VISIT_CONCURRENCY_LIMIT",
     "tier_not_entitled": "VISIT_TIER_NOT_ENTITLED",
     "cross_region_unsupported": "VISIT_CROSS_REGION_UNSUPPORTED",
     "invite_invalid": "VISIT_INVITE_INVALID",
