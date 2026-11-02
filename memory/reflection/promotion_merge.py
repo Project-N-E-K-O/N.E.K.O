@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 
-
+import asyncio
 
 
 from datetime import datetime
@@ -57,6 +57,20 @@ from ._shared import (
     logger,
 )
 from .similarity import ascore_against_queries
+
+
+def _fit_pool_lines(lines: list[str], max_tokens: int) -> list[str]:
+    """Best-ranked whole lines of the merge pool that fit ``max_tokens``.
+
+    A line that alone exceeds the budget is dropped wherever it ranks: first,
+    take_lines_within_token_budget would keep it past the budget; further
+    down, its prefix cut would stop there and hide every smaller line behind
+    it. Dropped rather than truncated, because merge_into rewrites its target
+    from the text shown in the pool and a cut-off copy would lose the rest.
+    """
+    from utils.tokenize import count_tokens, take_lines_within_token_budget
+    lines = [line for line in lines if count_tokens(line) <= max_tokens]
+    return take_lines_within_token_budget(lines, max_tokens)[0]
 
 
 def _detect_promotion_prompt_language(text: str) -> str:
@@ -398,19 +412,10 @@ class PromotionMergeMixin:
         # order would only ever show the oldest entries and hide the recent
         # near-duplicates that merge_into exists to catch.
         from config import PERSONA_MERGE_POOL_MAX_TOKENS
-        from utils.tokenize import count_tokens, take_lines_within_token_budget
-        # A row that alone exceeds the budget is dropped wherever it ranks:
-        # first, take_lines_within_token_budget would keep it past the budget;
-        # further down, its prefix cut would stop there and hide every
-        # smaller row behind it. Drop rather than truncate: merge_into
-        # rewrites its target from the text shown here, and a cut-off copy
-        # would lose the rest.
-        pool_lines = [
-            line for line in pool_lines
-            if count_tokens(line) <= PERSONA_MERGE_POOL_MAX_TOKENS
-        ]
-        pool_lines, _dropped = take_lines_within_token_budget(
-            pool_lines, PERSONA_MERGE_POOL_MAX_TOKENS,
+        # Counting tokens for a pool of thousands of rows would stall the
+        # event loop, so the fit runs on a worker thread.
+        pool_lines = await asyncio.to_thread(
+            _fit_pool_lines, pool_lines, PERSONA_MERGE_POOL_MAX_TOKENS,
         )
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
 
