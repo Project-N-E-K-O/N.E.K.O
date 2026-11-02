@@ -74,21 +74,21 @@ def _current_reference_audio_path(content_folder: str) -> str | None:
         # itself proof that this process created (and therefore owns) the file.
         # Imported and hand-edited manifests commonly point at user assets.
         return None
-    # manifest 里写的不一定是音频。手改或畸形的 manifest 指向同目录的 preview.png
-    # 这类资产时，下面那次 os.remove 就会把用户的工坊素材删掉 —— 扩展名不对就当它
-    # 不是我们的东西。
-    # 带目录分量的引用永远不是我们的：本模块只往内容目录**直接**写
-    # voice_sample_<hex>.<ext>。`assets/theme.mp3` 这种能过下面的 containment
-    # 校验，但删的是用户放在子目录里的素材。
+    # A manifest reference is not necessarily audio. A manually edited or malformed manifest may point to
+    # assets such as preview.png in the same directory; os.remove below would delete user Workshop material.
+    # An unexpected extension means the file is not ours.
+    # References containing directory components are never ours: this module writes only
+    # voice_sample_<hex>.<ext> directly into the content directory. assets/theme.mp3 passes
+    # containment checks below but would delete the user's material in a subdirectory.
     if os.path.basename(reference) != reference:
         logger.warning('voice_manifest 的 reference_audio 带目录分量，拒绝清理: %r', reference)
         return None
     if os.path.splitext(reference)[1].lower() not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
         logger.warning('voice_manifest 的 reference_audio 不是支持的音频格式，拒绝清理: %r', reference)
         return None
-    # ⚠️ manifest 的内容不可信 —— 它可能是订阅来的、手改过的，`reference_audio` 里
-    # 写个绝对路径或 `../../x` 就能让下面那次 os.remove 删到内容目录**外面**去。
-    # 删任何东西之前先证明它在这个目录里。
+    # ⚠️ Manifest content is untrusted: subscribed or manually edited reference_audio may contain
+    # an absolute path or ../../x, making os.remove below delete outside the content directory.
+    # Prove containment before deleting anything.
     try:
         return _assert_under_base(os.path.join(content_folder, reference), content_folder)
     except (PermissionError, ValueError, OSError):
@@ -118,15 +118,15 @@ def _replace_voice_reference(
     uploads, so there is nothing to roll back.
     """
     with claim_reference_pair(content_folder), voice_reference_lock(content_folder):
-        # 进来时这个目录里「属于我们」的音频，就是当前 manifest 指着的那一个 ——
-        # 这是**可证明**的所有权。按名字形状猜（voice_sample*、甚至
-        # voice_sample_<12 位 hex>）都还是概率论：内容目录是用户自己的目录，他放一个
-        # 同形状的文件进来就会被静默删掉。跟 file_utils 里 tmp 用所有权标记的理由一样。
+        # On entry, the only audio provably ours is the file referenced by the current manifest.
+        # This establishes ownership. Guessing from filename shape (voice_sample*, or even
+        # voice_sample_<12 hex digits>) is probabilistic: this is the user's directory, and a matching
+        # user file would be silently deleted. The rationale matches file_utils' temporary-file ownership markers.
         previous_audio = _current_reference_audio_path(content_folder)
 
-        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 到它**自己的**文件名。
-        #    这个名字不会是当前 manifest 指着的那个（handler 每次生成新 token），
-        #    所以这一步不覆盖、不删除任何在用的东西。
+        # 1) Write new audio to a same-directory temporary file, fsync, then os.replace to its own filename.
+        #    This name differs from the current manifest reference (the handler generates a fresh token),
+        #    so this step neither overwrites nor deletes anything in use.
         fd, temp_audio = tempfile.mkstemp(dir=content_folder, suffix='.tmp')
         try:
             with os.fdopen(fd, 'wb') as f:
@@ -135,30 +135,30 @@ def _replace_voice_reference(
                 os.fsync(f.fileno())
             os.replace(temp_audio, audio_path)
 
-            # 2) 唯一的提交点。atomic_write_json 是 tmp + os.replace，要么整份旧
-            #    manifest，要么整份新 manifest —— 这一步之前失败，盘上还是完完整整的
-            #    旧一对。
+            # 2) The sole commit point. atomic_write_json uses temporary file + os.replace: either the complete old
+            #    or complete new manifest. Failure before this step leaves the complete
+            #    old pair on disk.
             atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
         except BaseException:
             with suppress(OSError):
                 os.remove(temp_audio)
-            # 没提交成功就把刚落下的新音频也清掉：它没人引用，但 publish 是把整个
-            # 内容目录交给 SetItemContent 的，留着会让一次「报了失败」的上传照样被
-            # 发布出去。
+            # If commit fails, remove the newly written audio too: nothing references it, but publish hands the entire
+            # content directory to SetItemContent, so leaving it would publish an upload
+            # reported as failed.
             with suppress(OSError):
                 os.remove(audio_path)
             raise
 
-        # 3) 提交之后，上一份 manifest 指着的那个音频才失去引用，这时才能删。
-        #    换了扩展名（mp3 → wav）时它跟新文件不同名；理论上同名的话上面的
-        #    os.replace 已经顶掉了，这里跳过。删失败只是占点磁盘。
+        # 3) Only after commit does the previous manifest's audio become unreferenced and deletable.
+        #    An extension change (mp3 → wav) produces a distinct name; if names theoretically match,
+        #    os.replace above already replaced it, so skip here. Deletion failure merely consumes disk space.
         if previous_audio and os.path.normcase(os.path.abspath(previous_audio)) != os.path.normcase(os.path.abspath(audio_path)):
             try:
                 os.remove(previous_audio)
             except OSError as exc:
-                # 删不掉（杀软扫描、索引器、别的句柄占着）不影响这对引用可用 ——
-                # 但也别让它静默：那份被顶替的旧录音还留在内容目录里，publish 是把
-                # 整个目录交给 SetItemContent 的，会跟着发出去。打日志让它可查。
+                # Failure to delete (antivirus, indexer, or another open handle) does not break the reference pair,
+                # but must not be silent: the superseded recording remains in the content directory, and publish
+                # sends the whole directory to SetItemContent, including that recording. Log it for traceability.
                 logger.warning(
                     '被顶替的旧参考语音删除失败，仍留在内容目录里: %s (%s)',
                     previous_audio, exc,
@@ -232,9 +232,9 @@ async def upload_reference_audio(request: Request):
         if provider_hint not in WORKSHOP_REFERENCE_PROVIDER_HINTS:
             provider_hint = 'cosyvoice'
 
-        # 每次上传都用一个新的文件名：这样写新音频永远不会覆盖当前 manifest 指着的
-        # 那个文件，manifest 写才能成为唯一的提交点（见 _replace_voice_reference）。
-        # 消费侧一律从 manifest 的 reference_audio 取名字，不认死 voice_sample.<ext>。
+        # Every upload uses a fresh filename, so new audio never overwrites the current manifest's file
+        # and the manifest write remains the sole commit point (see _replace_voice_reference).
+        # All consumers read reference_audio from the manifest rather than assuming voice_sample.<ext>.
         reference_audio_name = f'voice_sample_{uuid.uuid4().hex[:12]}{file_ext}'
         manifest = _normalize_workshop_voice_manifest({
             'version': 1,
@@ -246,18 +246,18 @@ async def upload_reference_audio(request: Request):
             'provider_hint': provider_hint,
         }, default_prefix=prefix, default_display_name=display_name)
 
-        # 先把整个请求体读完，再一次性把「删旧 → 写音频 → 写 manifest」交给一个
-        # 线程。这样做不只是为了别在循环上写几 MB：
+        # Read the entire request body first, then submit the complete delete-old → write-audio → write-manifest
+        # operation to one thread. This does more than move several MB of writes off the event loop:
         #
-        # 这三步必须成对成套，而它们之间的任何一个 await 都是取消点 ——
-        # 客户端一断开，FastAPI 就取消 handler，CancelledError 是 BaseException，
-        # 下面那个 `except Exception` 接不住，也就没人回滚。改动前这里是
-        # 「删旧（同步）→ await file.read() → 写音频 → 写 manifest（同步）」，
-        # 取消落在那个 read 上就会留下「旧的删了、新的没写」。
+        # these steps must form one unit, and every intervening await is a cancellation point.
+        # On disconnect, FastAPI cancels the handler; CancelledError derives from BaseException,
+        # bypassing except Exception below and leaving nobody to roll back. Previously the order was
+        # synchronous old-file deletion → await file.read() → synchronous audio and manifest writes;
+        # cancellation during read left the old file deleted with no replacement written.
         #
-        # 收成一个 to_thread 单元之后，唯一的取消点落在任何写盘之前：线程一旦
-        # 启动，取消等待方并不会杀掉线程，三步照样跑完。中间态从此不可达 ——
-        # 比改动前更严格，不只是把新引入的那个窗口补回去。
+        # A single to_thread unit moves the sole cancellation point before any disk write: once the thread
+        # starts, cancelling its waiter does not kill it, so all three steps finish. The intermediate state
+        # is now unreachable, a stronger guarantee than merely closing the newly introduced window.
         audio_bytes = await file.read()
         await asyncio.to_thread(
             _replace_voice_reference,
@@ -310,9 +310,9 @@ async def remove_reference_audio(request: Request):
             }, status_code=403)
 
         if os.path.exists(content_folder) and os.path.isdir(content_folder):
-            # 也走同一把 per-folder 锁：上传的 swap 现在跑在 worker 上，删除要是
-            # 留在事件循环上做，就能插进「写音频」和「写 manifest」之间，留下一个
-            # 指不到文件的 manifest。
+            # Use the same per-folder lock: upload swaps now run on a worker. Deletion on the event loop
+            # could otherwise interleave between audio and manifest writes, leaving a manifest
+            # pointing to a nonexistent file.
             await asyncio.to_thread(_remove_voice_reference, content_folder)
 
         return JSONResponse({

@@ -367,9 +367,9 @@ def check_markdown_contents(results) -> None:
     assert "# Testbench Session Export" in md, md[:400]
     assert "## Conversation" in md, md[:400]
     # Evaluations block reuses judge_export.build_report_markdown body,
-    # which emits "## 按 schema 分组" and a "Gap 轨迹" sub-header for
-    # comparative results. 2026-04-22 Day 8 #4: markdown 全文中文化, 断言
-    # 跟着改到中文版标签.
+    # which emits "## 按 schema 分组" (group by schema) and a "Gap 轨迹" (Gap trace) sub-header for
+    # comparative results. 2026-04-22 Day 8 #4: translated all Markdown into Chinese; assertions
+    # follow the Chinese labels.
     assert "按 schema 分组" in md, (
         "P23: conversation_evaluations Markdown should include 按 schema 分组 "
         "block from judge_export.build_report_markdown"
@@ -544,9 +544,9 @@ def check_filename_sanitisation() -> None:
 def check_round_trip_import(client) -> None:
     """The ``full`` + ``json`` + ``include_memory`` envelope should be
     reducible to a ``persistence.import_from_payload`` payload with a
-    trivial adapter (extract ``payload`` → ``archive`` + keep tarball).
+    trivial adapter (extract ``payload`` -> ``archive`` + keep tarball).
     This protects the promise made in :mod:`session_export` module
-    docstring's "export -> import 的往返性" note.
+    docstring's export/import round-trip note.
     """
     from tests.testbench.pipeline import persistence as p
     r = client.post(

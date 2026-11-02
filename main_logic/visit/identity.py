@@ -93,15 +93,15 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = get_module_logger(__name__, "Main")
 
-# 票据整体长度上限：claims ≈560 B，base64 后 ≈750 + 签名 86；留足余量但挡住超大输入。
+# Overall ticket length limit: claims ≈560 B, ≈750 after base64, plus an 86-byte signature; leave headroom while blocking oversized input.
 _TICKET_MAX_CHARS = 4096
 _B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _ROLES = frozenset({"host", "guest"})
 _TRANSPORTS = frozenset({"trtc", "livekit"})
-# 开发键没有轮换窗口：not_before=0、not_after=2^53-1。
+# Development keys have no rotation window: not_before=0, not_after=2^53-1.
 _DEV_KEY_NOT_BEFORE = 0
 _DEV_KEY_NOT_AFTER = 2 ** 53 - 1
-# claims 字符串字段长度上限（§4.7 表；sub/vid/jti/char_tag 给宽一点，只防畸形输入）。
+# Maximum lengths for claims string fields (table §4.7; allow extra room for sub/vid/jti/char_tag, only to reject malformed input).
 _CLAIM_STR_MAX = {
     "kid": 16,
     "sub": 64,
@@ -119,7 +119,7 @@ FINALIZE_PEER_BLOCKED = "peer_blocked"
 """Finalize reason for a blocklist hit (the peer only sees a plain leave)."""
 
 
-# ── 异常层级 ───────────────────────────────────────────────────────────
+# ── Exception hierarchy ───────────────────────────────────────────────────
 
 
 class TicketRejected(Exception):
@@ -248,7 +248,7 @@ def b64url_decode(text: str) -> bytes:
         raise ValueError("invalid base64url") from exc
 
 
-# ── 公钥集合 ───────────────────────────────────────────────────────────
+# ── Public-key set ───────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -287,7 +287,7 @@ class FetchedPubkeys:
 
 
 def _require_int(value: Any, what: str) -> int:
-    # bool 是 int 子类：True 不能当 1 通过。
+    # bool is a subclass of int: True must not pass as 1.
     if type(value) is not int:
         raise ValueError(f"{what} must be an integer")
     return value
@@ -342,8 +342,8 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
     raw_revoked = payload.get("revoked")
     if not isinstance(raw_keys, list) or not isinstance(raw_revoked, list):
         raise ValueError("pubkeys response keys/revoked must be lists")
-    # 吊销名单不完整就等于不知道最新吊销状态：缺字段或有坏条目都按刷新失败处理，
-    # 否则一把已吊销的内置钥匙会继续放行到缓存过期
+    # An incomplete revocation list means the latest revocation state is unknown: missing fields or malformed entries both count as refresh failures,
+    # otherwise a revoked built-in key would continue to be accepted until the cache expires
     if not all(isinstance(k, str) and k for k in raw_revoked):
         raise ValueError("pubkeys response revoked entries must be non-empty kid strings")
     revoked = set(raw_revoked)
@@ -353,8 +353,8 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
         kid = item.get("kid") if isinstance(item, Mapping) else None
         if isinstance(kid, str) and kid:
             if kid in seen:
-                # 同一个 kid 出现两次：哪条生效取决于顺序，两条可能是不同的钥匙或窗口。
-                # 与「内置 / 拉取冲突」一样 fail closed：这个 kid 整体吊销
+                # The same kid appears twice: which entry takes effect depends on order, and the two may represent different keys or validity windows.
+                # As with a "built-in / fetched conflict", fail closed: revoke this kid entirely
                 logger.warning("visit pubkeys: duplicate fetched kid %r, revoking it", kid)
                 revoked.add(kid)
                 keys.pop(kid, None)
@@ -367,7 +367,7 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
             entry = _entry_from_mapping(kid, item, source="fetched")
         except ValueError as exc:
             logger.warning("visit pubkeys: skipping malformed fetched key %r: %s", kid, exc)
-            # 坏条目按吊销处理：只从拉取结果里跳过的话，内置表里同名的旧钥匙仍会被放行
+            # Treat malformed entries as revoked: merely skipping one in fetched results could still allow an old same-named key from the built-in table
             if isinstance(kid, str) and kid:
                 revoked.add(kid)
             continue
@@ -377,7 +377,7 @@ def parse_pubkeys_response(payload: Any, *, fetched_at: float) -> FetchedPubkeys
         not isinstance(ttl_raw, bool) and isinstance(ttl_raw, (int, float))
         and not (isinstance(ttl_raw, float) and math.isnan(ttl_raw)) and ttl_raw >= 0
     )
-    # 先截到上限再转 float：int 与 float 的比较、min 都不经 float 转换，10**400 这类超大整数不会溢出
+    # Clamp before converting to float: int/float comparison and min do not convert to float, so huge integers such as 10**400 cannot overflow
     ttl_s = float(min(ttl_raw, VISIT_PUBKEYS_CACHE_S)) if ttl_ok else float(VISIT_PUBKEYS_CACHE_S)
     return FetchedPubkeys(
         keys=keys, revoked=frozenset(revoked), fetched_at=float(fetched_at), ttl_s=ttl_s,
@@ -520,13 +520,13 @@ class PubkeySet:
             try:
                 dev_key = load_dev_public_key(NEKO_VISIT_DEV_KEYFILE)
             except (OSError, ValueError, TypeError, UnsupportedAlgorithm) as exc:
-                # 加密的 PKCS#8 PEM 在 password=None 时抛 TypeError：同样按「不可用」跳过，
-                # 不能让身份初始化整个失败
+                # Encrypted PKCS#8 PEM raises TypeError when password=None: skip it as "unavailable" as well,
+                # so identity initialization does not fail entirely
                 logger.warning("visit pubkeys: dev keyfile unusable: %s", type(exc).__name__)
         return cls.build(now=now, fetched=fetched, dev_public_key=dev_key)
 
 
-# ── jti 窗口 ───────────────────────────────────────────────────────────
+# ── jti window ───────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -608,8 +608,8 @@ def _split_ticket(ticket: Any) -> tuple[str, dict[str, Any], bytes]:
             claims_bytes.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys,
         )
     except (ValueError, UnicodeDecodeError, RecursionError) as exc:
-        # 深层嵌套（"[[[[…"）让 json.loads 抛 RecursionError：同样是一张坏票，
-        # 必须按 TicketRejected 走拒绝流程，不能冲出核验函数
+        # Deep nesting ("[[[[…") makes json.loads raise RecursionError: this is also a malformed ticket,
+        # so it must follow the TicketRejected rejection path, not escape the verification function
         raise MalformedTicket("undecodable segment") from exc
     if not isinstance(claims, dict):
         raise MalformedTicket("claims must be an object")
@@ -688,7 +688,7 @@ def verify_identity_ticket(
     """
     tol = VISIT_TICKET_CLOCK_TOLERANCE_S
 
-    # 1. 公钥表过期且刷新失败 → 不知道最新吊销名单，一律拒。
+    # 1. Public-key table is expired and refresh failed → latest revocation list is unknown; reject all.
     if pubkeys.is_stale_at(now):
         raise PubkeysStale()
 
@@ -697,11 +697,11 @@ def verify_identity_ticket(
     if not isinstance(kid, str) or not kid:
         raise MalformedTicket("kid missing")
 
-    # 2. 吊销先于查表：内置表命中也不放行。
+    # 2. Check revocation before lookup: a match in the built-in table is still rejected.
     if kid in pubkeys.revoked:
         raise RevokedKid()
 
-    # 3. 验签（签名覆盖第一段 base64url 文本的 ASCII 字节）。
+    # 3. Verify the signature (it covers the ASCII bytes of the first base64url text segment).
     entry = pubkeys.keys.get(kid)
     if entry is None:
         raise UnknownKid()
@@ -712,13 +712,13 @@ def verify_identity_ticket(
 
     claims = _claims_from_dict(raw)
 
-    # 4. 该 kid 的有效期：票必须在钥匙有效期内签出；钥匙下线后最多再认一张最长票的寿命。
+    # 4. Validity period for this kid: the ticket must be signed while the key is valid; after the key is retired, accept tickets for at most one maximum ticket lifetime.
     if not (entry.not_before <= claims.iat <= entry.not_after):
         raise KeyOutOfWindow("iat outside key window")
     if now > entry.not_after + VISIT_HOST_CREDENTIAL_TTL_S + tol:
         raise KeyOutOfWindow("key retired")
 
-    # 5. 固定 claims 与本房绑定。
+    # 5. Fixed claims and binding to this room.
     if claims.v != VISIT_TICKET_VERSION:
         raise ClaimMismatch("v")
     if claims.iss != VISIT_TICKET_ISS:
@@ -733,29 +733,29 @@ def verify_identity_ticket(
         raise ClaimMismatch("role")
     if claims.exp < claims.iat:
         raise TicketTimeInvalid("exp precedes iat")
-    # 寿命按角色封顶（guest 40 / host 50 min）：签发方即便给出超长 exp，也不能让
-    # 同一张票被反复用到协议承诺之外
+    # Cap lifetime by role (guest 40 / host 50 min): even if the issuer provides an oversized exp, it cannot let
+    # the same ticket be reused beyond the protocol's commitment
     if claims.exp - claims.iat > _ROLE_TICKET_TTL_S[claims.role]:
         raise TicketTimeInvalid("ticket lifetime exceeds the role limit")
     if not (claims.iat - tol <= now <= claims.exp + tol):
         raise TicketTimeInvalid()
 
-    # 6. vendor 盖章的发送者 id。
+    # 6. Sender ID signed by the vendor.
     if claims.vid != expect_vid:
         raise VidMismatch()
 
-    # 7. 本机黑名单（只在验签通过后才读）。读不出来时一律拒：当空表会放进被拉黑的人。
+    # 7. Local blocklist (read only after signature verification). Reject if it cannot be read: treating it as empty would admit blocked users.
     if not getattr(blocklist, "available", True):
         raise BlocklistUnavailable()
     try:
         blocked = blocklist.is_blocked(claims.sub)
     except _LimitsBlocklistUnavailable as exc:
-        # 黑名单类自己报不可用（例如没有 available 标志的实现）：同样是一次票据拒绝
+        # The blocklist may report itself unavailable (for example, an implementation without an available flag); that is also a ticket rejection
         raise BlocklistUnavailable() from exc
     if blocked:
         raise PeerBlocked()
 
-    # 8. jti：同房同 vid 才允许重放。
+    # 8. jti: replay is allowed only for the same room and vid.
     if not jti_window.check(claims.jti, visit_id=claims.visit_id, vid=claims.vid):
         raise JtiReplay()
     jti_window.record(claims.jti, visit_id=claims.visit_id, vid=claims.vid)

@@ -274,7 +274,7 @@ async def test_gemini_turn_drops_frames_lost_while_fitting_the_image_budget():
     owned = [True]
 
     async def _fit_and_lose_ownership(images, _budget):
-        # 压缩这一步是真实让出点：后继发声在这里拿走了视觉所有权。
+        # Compression genuinely yields here; the next utterance takes visual ownership.
         owned[0] = False
         return list(images), {
             "original_count": len(images),
@@ -298,9 +298,9 @@ async def test_gemini_turn_drops_frames_lost_while_fitting_the_image_budget():
 
     session.send_client_content.assert_awaited_once()
     content = session.send_client_content.await_args.kwargs["turns"][0]
-    # 帧被丢掉了……
+    # The frame was dropped...
     assert all(part.inline_data is None for part in content.parts)
-    # ……但用户那句话照送。
+    # ...but the user's utterance still sends.
     assert any(part.text == "看一下这张图" for part in content.parts)
     client._analyze_image_with_vision_model.assert_not_awaited()
     await client.close()
@@ -330,19 +330,19 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
     captured: list = []
 
     async def _shrink_and_lose_ownership(_fn, item_event, _payload):
-        # 重压这一步是真实让出点：后继发声在这里拿走了视觉所有权。
+        # Recompression genuinely yields here; the next utterance takes visual ownership.
         owned[0] = False
         return "shrunk"
 
     async def _fake_enqueue(**kwargs):
         event = kwargs["events_before_response"][0]
-        # 忠实模拟 arbiter：提交前会调 pre_commit。所有权是在重压那一步丢的，
-        # 早于 enqueue 的那次降级还持有，所以这条路要靠 pre_commit 兜住。
+        # Faithfully simulate the arbiter: call pre_commit before committing. Ownership was lost during recompression,
+        # after pre-enqueue degradation still retained it; pre_commit must cover this path.
         kwargs["pre_commit"](event)
         captured.append(event)
-        # 用已完成的 future 而不是 asyncio.sleep(0)：submit_multimodal_turn 只
-        # await ticket.sent，`done` 那个协程永远不会被等待，会留一条
-        # RuntimeWarning（warnings-as-errors 下直接失败）。
+        # Use a completed future rather than asyncio.sleep(0): submit_multimodal_turn awaits only
+        # ticket.sent, never the done coroutine, which would produce
+        # RuntimeWarning and fail under warnings-as-errors.
         loop = asyncio.get_running_loop()
         sent, done = loop.create_future(), loop.create_future()
         sent.set_result(None)
@@ -367,7 +367,7 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
     asyncio_to_thread = asyncio.to_thread
     asyncio.to_thread = _shrink_and_lose_ownership
     _real_limit = responses_module.OMNI_WS_FRAME_LIMIT_BYTES
-    # 把帧上限压到必然超限，逼它走重压那条路（那才是本用例要覆盖的让出点）。
+    # Set frame caps low enough to force recompression, the yield point this case must cover.
     responses_module.OMNI_WS_FRAME_LIMIT_BYTES = 8
     try:
         await client.prepare_external_voice_turn(turn_id="turn-ws")
@@ -385,9 +385,9 @@ async def test_openai_turn_drops_frames_lost_while_shrinking_the_item():
     assert owned[0] is False, "夹具没走到重压那一步"
     assert captured, "item 没被送进 arbiter"
     content = captured[0]["item"]["content"]
-    # 帧被摘掉了……
+    # Frames removed...
     assert all(part["type"] != "input_image" for part in content)
-    # ……但用户那句话照送。
+    # ...but the user's utterance still sends.
     assert any(part.get("text") == "看一下这张图" for part in content)
     await client.close()
 
@@ -432,13 +432,13 @@ async def test_lost_ownership_downgrades_before_the_oversize_check_fails_the_tur
     )
     client._ensure_response_arbiter = lambda: _arbiter
 
-    # 固定住"压不下去"这个前提：抛错的那条路要求 _try_shrink_image_payload
-    # 返回 None。不固定的话重压可能碰巧成功，用例就走不到要证伪的地方——
-    # 第一版正是这样，把降级去掉它也照过。
+    # Pin the unshrinkable precondition: the raising path requires _try_shrink_image_payload
+    # to return None. Otherwise recompression might succeed by chance, bypassing the intended
+    # falsification point, as in version one, which passed even without degradation.
     client._try_shrink_image_payload = lambda *_a: None
     _real_limit = responses_module.OMNI_WS_FRAME_LIMIT_BYTES
-    # 上限取在「带 3 张图必然超、摘掉图之后不超」之间，这样才测得到"先降级、
-    # 后判大小"这个顺序。
+    # Choose a limit exceeded with three images but not without images, exercising
+    # degradation-before-size-check ordering.
     responses_module.OMNI_WS_FRAME_LIMIT_BYTES = 3 * len(DUMMY_IMAGE_B64)
     try:
         await client.prepare_external_voice_turn(turn_id="turn-oversize")
@@ -535,8 +535,8 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     enqueue_kwargs: list = []
 
     async def _fake_enqueue(**kwargs):
-        # 模拟 arbiter：enqueue 返回之后、真正提交之前还有等待，后继回合就在
-        # 这段窗口里拿走了视觉所有权。
+        # Simulate arbiter waiting after enqueue and before commit; the next turn takes
+        # visual ownership within this window.
         enqueue_kwargs.append(kwargs)
         event = kwargs["events_before_response"][0]
         owned[0] = False
@@ -562,7 +562,7 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     client._ensure_response_arbiter = lambda: _arbiter
 
     await client.prepare_external_voice_turn(turn_id="turn-late")
-    # 前提自证：送进 arbiter 的那一刻仍然持有所有权（否则测的是上一条的窗口）。
+    # Prove ownership remains when entering the arbiter, or this tests the preceding window instead.
     assert owned[0] is True
     await client.submit_multimodal_turn(
         "看一下这张图",
@@ -576,9 +576,9 @@ async def test_openai_turn_drops_frames_lost_between_enqueue_and_dispatch():
     assert all(part["type"] != "input_image" for part in content)
     assert any(part.get("text") == "看一下这张图" for part in content)
 
-    # 还要证明**第三道**闸门接上了：ticket 自带的 event_sender 必须把同一个降级
-    # 函数带进 send_event 的临界区（那里等信号量，所有权同样可能翻转）。只验
-    # pre_commit 的话，这条接线断掉也发现不了。
+    # Also prove the **third** gate is wired: ticket.event_sender must pass the same degradation
+    # function into send_event's critical section, where semaphore waits may flip ownership.
+    # Checking only pre_commit cannot detect disconnected wiring there.
     sender = enqueue_kwargs[0].get("event_sender")
     assert sender is not None, "ticket 没带 event_sender，传输临界区那道闸门没接上"
     written: list = []
@@ -631,10 +631,10 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
     quarantine_waits = [0]
 
     async def _lose_ownership_on_the_submit_wait():
-        # 隔离等待会被调两次：prepare_external_voice_turn 一次，
-        # _submit_external_gemini_turn 头部一次。只在**第二次**丢所有权，
-        # 否则 submit_multimodal_turn 还没开始就已经失去，这条用例就退化成
-        # "复查放哪都能过"，钉不住它要钉的窗口。
+        # Quarantine wait runs twice: in prepare_external_voice_turn,
+        # then at _submit_external_gemini_turn entry. Lose ownership only on the **second**;
+        # otherwise it is gone before submit_multimodal_turn starts, and this case passes regardless
+        # of recheck placement, failing to pin its intended window.
         quarantine_waits[0] += 1
         if quarantine_waits[0] >= 2:
             owned[0] = False
@@ -642,18 +642,18 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
     client._await_gemini_external_quarantine = _lose_ownership_on_the_submit_wait
 
     await client.prepare_external_voice_turn(turn_id="turn-quarantine")
-    # 让 _submit_external_gemini_turn 头部走进隔离等待那条分支。
+    # Enter the quarantine-wait branch at _submit_external_gemini_turn entry.
     #
-    # ⚠️ 必须挂在 prepare **之后**。prepare 里的
-    # _start_gemini_external_submit_quarantine() 会为一个已存在的 token 起后台
-    # 隔离任务，那个任务一被调度就把 token settle 成 None，第二次隔离等待的分支
-    # 就再也进不去了。原来挂在 prepare 之前也能过，只是因为 submit 那条路上恰好
-    # 没有让出点让后台任务跑起来——那是巧合，不是判据：图片预算那一步现在无条件
-    # 走一次 asyncio.to_thread（把每张图归一到模型档位），多出的这个 await 就让
-    # 后台任务抢先跑完，用例随即翻车。挂在 prepare 之后，前提由用例自己保证，与
-    # 被测路径上有几个 await 无关。
+    # ⚠ Install **after prepare**. prepare's
+    # _start_gemini_external_submit_quarantine() launches background quarantine for an existing token;
+    # scheduling it settles the token to None, making the second quarantine-wait branch
+    # unreachable. Installing before prepare used to pass only because submit happened to contain
+    # no yield allowing background work to run, an accident rather than a criterion. Image budgeting now always
+    # uses asyncio.to_thread to normalize each image to model tier; that additional await lets
+    # background work finish first and breaks the test. Install after prepare to guarantee the precondition
+    # independently of awaits on the tested path.
     client._gemini_external_outcome_token = object()
-    # 前提自证：进入被测函数时仍然持有所有权。
+    # Prove ownership remains on entering the tested function.
     assert owned[0] is True
     await client.submit_multimodal_turn(
         "看一下这张图",
@@ -662,7 +662,7 @@ async def test_gemini_turn_drops_frames_lost_during_the_quarantine_wait():
         visual_still_owned=lambda: owned[0],
     )
 
-    # 前提自证：所有权确实是在**第二次**（submit 内部那次）等待里丢的。
+    # Prove ownership is lost on the **second**, internal-submit wait.
     assert quarantine_waits[0] >= 2
     assert owned[0] is False
     session.send_client_content.assert_awaited_once()
@@ -694,7 +694,7 @@ async def test_gemini_multimodal_turn_carries_the_sampled_span_in_one_content():
     kwargs = session.send_client_content.await_args.kwargs
     assert len(kwargs["turns"]) == 1
     parts = kwargs["turns"][0].parts
-    # Provider 侧独立兜底，多余的丢弃。
+    # Provider-side independent fallback discards extras.
     assert len(parts) == MAX_MULTIMODAL_TURN_IMAGES + 1
     assert all(part.inline_data is not None for part in parts[:-1])
     assert parts[-1].text == "看一下这张图"
@@ -1156,7 +1156,7 @@ async def test_proactive_nudge_still_speaks_while_raw_frames_are_fenced():
     assert delivered is True
     assert injected["text"] == "主动看看屏幕"
     assert not injected.get("events_before_text")
-    # 帧没被消费：栅栏解除之后它还能用。
+    # Frame unconsumed: reusable after the fence lifts.
     assert client._proactive_image_consumed is False
     await client.close()
 
@@ -1178,7 +1178,7 @@ async def test_live_gemini_external_turn_counts_as_an_active_response():
     client._gemini_external_outcome_token = object()
     assert client.is_active_response() is True
 
-    # 终结边缘落地后重新变空闲。
+    # Return idle after the terminal edge lands.
     client._gemini_external_outcome_token = None
     assert client.is_active_response() is False
     await client.close()
@@ -1212,14 +1212,14 @@ async def test_successive_gemini_external_turns_quarantine_the_live_predecessor(
         side_effect=await_quarantine
     )
 
-    # 上一轮还挂着（终结事件未到）。
+    # Previous round remains pending without its terminal event.
     stale_token = object()
     client._gemini_external_outcome_token = stale_token
 
     await client._submit_external_gemini_turn("第二句")
 
     assert order == ["start_quarantine", "await_quarantine", "send"]
-    # 新回合拿到的是自己的 token，不是被覆盖的旧的。
+    # New round gets its own token, not the overwritten old one.
     assert client._gemini_external_outcome_token is not None
     assert client._gemini_external_outcome_token is not stale_token
     await client.close()
@@ -1266,9 +1266,9 @@ async def test_cancelled_external_submit_keeps_its_token_and_arms_quarantine():
     with pytest.raises(asyncio.CancelledError):
         await submit
 
-    # 没有被当成"没送成"结算掉。
+    # Not settled as undelivered.
     assert client._gemini_external_outcome_token is token_in_flight
-    # 隔离已武装，且拿到的是这条 submit 与这张 token。
+    # Quarantine armed for this exact submit/token.
     assert client._gemini_external_quarantine_task is not None
     await asyncio.wait_for(
         asyncio.shield(client._gemini_external_quarantine_task), timeout=1
@@ -1337,7 +1337,7 @@ async def test_a_bare_turn_complete_still_settles_the_external_token():
     token = object()
     client._gemini_external_outcome_token = token
     client._gemini_cancelled_terminal_pending = False
-    # 无内容的终结：epoch 从未推进过。
+    # Empty terminal event: epoch never advanced.
     client._current_turn_epoch = 0
     client._turn_epoch = 0
     client._is_responding = True
@@ -1376,9 +1376,9 @@ async def test_late_continuation_terminal_cannot_settle_the_external_token():
     token = object()
     client._gemini_external_outcome_token = token
     client._gemini_external_token_epoch = 7
-    # 被取消的那一轮欠一个终结。
+    # The cancelled round owes one terminal event.
     client._gemini_cancelled_terminal_pending = True
-    # 它的迟到续帧已经把 epoch 推过了铸造刻度 —— 光靠 epoch 会误判。
+    # Its late continuation already advanced epoch past the minting point; epoch alone misclassifies it.
     client._current_turn_epoch = 9
     client._is_responding = True
 
@@ -1394,12 +1394,12 @@ async def test_late_continuation_terminal_cannot_settle_the_external_token():
         connection_generation=1,
     )
 
-    # 这条终结欠给旧那一轮，token 必须留着。
+    # This terminal event belongs to the old round; retain the token.
     assert client._gemini_external_outcome_token is token
-    # 欠账是一次性的：已被这条终结消费掉。
+    # Debt is single-use, consumed by this terminal event.
     assert client._gemini_cancelled_terminal_pending is False
 
-    # 外部回合自己的终结现在才结算得掉。
+    # Only now can the external round's own terminal event settle.
     client._is_responding = True
     await client._process_gemini_response(
         SimpleNamespace(server_content=terminal, tool_call=None),
@@ -1447,7 +1447,7 @@ async def test_a_genuine_new_turn_voids_a_stale_owed_terminal():
     client._gemini_cancelled_terminal_pending = True
     client._is_responding = False
     client._interrupted = False
-    # 用户在 AI 最后一帧之后发过声 → 必然是新 turn。
+    # User spoke after AI's final frame -> necessarily a new turn.
     client._user_recent_activity_time = 200.0
     client._ai_recent_activity_time = 100.0
 
@@ -1483,13 +1483,13 @@ async def test_external_submit_establishes_a_new_user_turn():
     client._start_gemini_external_submit_quarantine = MagicMock()
     client._await_gemini_external_quarantine = AsyncMock()
     client._gemini_external_outcome_token = None
-    # AI 刚说过话；用户活动时间戳停在更早。
+    # AI just spoke; user activity remains earlier.
     client._ai_recent_activity_time = time.time() - 10.0
     client._user_recent_activity_time = client._ai_recent_activity_time - 10.0
 
     await client._submit_external_gemini_turn("用户插话")
 
-    # 用户比 AI 更晚发声 → _is_new_turn 会为真，欠账才有机会被作废。
+    # Later user speech makes _is_new_turn true, allowing debt invalidation.
     assert client._user_recent_activity_time > client._ai_recent_activity_time
     await client.close()
 
@@ -1528,7 +1528,7 @@ async def test_one_event_with_both_terminal_flags_spends_the_debt_once():
         connection_generation=1,
     )
 
-    # 这一条事件只该抵掉一笔欠账，token 必须留着。
+    # This event cancels only one debt; retain the token.
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     await client.close()
@@ -1560,10 +1560,10 @@ async def test_late_content_from_the_cancelled_turn_keeps_the_debt():
     token = object()
     client._gemini_external_outcome_token = token
     client._gemini_cancelled_terminal_pending = True
-    # handle_interruption() 之后的状态：这一轮被叫停，不再 responding。
+    # State after handle_interruption(): this round stopped and no longer responds.
     client._is_responding = False
     client._interrupted = True
-    # 外部回合把用户活动刷到了 AI 最后一帧之后，且仍在 3s 窗口内。
+    # External turn refreshed user activity after AI's final frame, still within 3s.
     client._ai_recent_activity_time = time.time()
     client._user_recent_activity_time = client._ai_recent_activity_time + 0.1
 
@@ -1578,7 +1578,7 @@ async def test_late_content_from_the_cancelled_turn_keeps_the_debt():
         SimpleNamespace(server_content=late_content, tool_call=None),
         connection_generation=1,
     )
-    # 被取消那一轮的迟到内容不是「新回合开始」的证据。
+    # Late cancelled-round content does not prove a new turn began.
     assert client._gemini_cancelled_terminal_pending is True
 
     real_terminal = SimpleNamespace(
@@ -1592,7 +1592,7 @@ async def test_late_content_from_the_cancelled_turn_keeps_the_debt():
         SimpleNamespace(server_content=real_terminal, tool_call=None),
         connection_generation=1,
     )
-    # 那条终结属于被取消的旧回合，不能拿去结算新铸的 token。
+    # That terminal event belongs to the cancelled old turn, not the newly minted token.
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     await client.close()
@@ -1617,9 +1617,9 @@ async def test_voiding_the_debt_also_drops_its_deadline():
     client._gemini_cancelled_terminal_pending = True
     client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
     client._is_responding = False
-    # 外部 ASR 送的是文本，provider 不回 input_transcription，所以打断标志会一直
-    # 挂着 —— 用生产上的状态，别用 _interrupted=False 把判据绕过去。这里靠的是
-    # AI 静默超窗（_can_clear_interrupted 的第三个析取项）。
+    # External ASR sends text; providers return no input_transcription, leaving the interrupted flag
+    # set. Use production state, not _interrupted=False to bypass the criterion. This relies on
+    # AI silence exceeding the window (_can_clear_interrupted's third disjunct).
     client._interrupted = True
     client._gemini_user_transcript_after_interrupt = False
     client._user_recent_activity_time = 200.0
@@ -1671,7 +1671,7 @@ async def test_a_slow_handoff_restarts_the_debt_deadline_at_the_gemini_send():
         send_client_content=AsyncMock(side_effect=lambda **kw: sent.append(kw)),
     )
 
-    # 打断已经发生，但 ASR 交接 + 压图拖过了 TTL：期限已经到点。
+    # Interruption occurred, but ASR handoff + compression exceeded TTL: the deadline elapsed.
     client._gemini_cancelled_terminal_pending = True
     client._gemini_cancelled_terminal_awaiting_delivery = True
     client._gemini_cancelled_terminal_id = object()
@@ -1682,13 +1682,13 @@ async def test_a_slow_handoff_restarts_the_debt_deadline_at_the_gemini_send():
     assert sent, "the successor content must actually be sent"
     deadline = client._gemini_cancelled_terminal_deadline
     assert deadline is not None and deadline > time.monotonic()
-    # 只续一次：后面每次发送都续命的话，一笔没人抵掉的欠账会被无限延寿。
+    # Renew once only; renewing every subsequent send extends unconsumed debt forever.
     assert client._gemini_cancelled_terminal_awaiting_delivery is False
     client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
     await client._gemini_send_user_turn("another")
     assert client._gemini_cancelled_terminal_deadline < time.monotonic()
 
-    # 行为层：续期之后，被取消那一轮的终结仍然抵的是欠账，不碰后继的 token。
+    # Behavior: after renewal, cancelled-round terminal events still settle debt without touching successor tokens.
     client._gemini_cancelled_terminal_deadline = time.monotonic() + 60.0
     token = object()
     client._gemini_external_outcome_token = token
@@ -1734,7 +1734,7 @@ async def test_the_debt_does_not_expire_before_the_interrupt_is_delivered():
     token = object()
     client._gemini_external_outcome_token = token
     client._gemini_cancelled_terminal_pending = True
-    # 交接拖过了 TTL，而中断还没送达 —— 重打时间戳那一步还没轮到。
+    # Handoff exceeded TTL before interrupt delivery; timestamp refresh has not run yet.
     client._gemini_cancelled_terminal_deadline = time.monotonic() - 1.0
     client._gemini_cancelled_terminal_awaiting_delivery = True
     client._is_responding = True
@@ -1752,7 +1752,7 @@ async def test_the_debt_does_not_expire_before_the_interrupt_is_delivered():
         connection_generation=1,
     )
 
-    # 这条终结抵的是欠账，不能去结算后继的 token。
+    # This terminal event settles debt, not successor tokens.
     assert client._gemini_external_outcome_token is token
     assert client._gemini_cancelled_terminal_pending is False
     assert client._gemini_cancelled_terminal_awaiting_delivery is False
@@ -1775,7 +1775,7 @@ async def test_only_the_send_that_delivered_the_debt_restarts_its_clock():
     armed = {}
 
     async def _arm_midflight(**_kw):
-        # 这次发送在飞的时候，用户抢话武装了一笔**新**欠账。
+        # While this send is in flight, user interjection arms a **new** debt.
         client._gemini_cancelled_terminal_pending = True
         client._gemini_cancelled_terminal_awaiting_delivery = True
         client._gemini_cancelled_terminal_id = object()
@@ -1785,14 +1785,14 @@ async def test_only_the_send_that_delivered_the_debt_restarts_its_clock():
     client._gemini_session = SimpleNamespace(
         send_client_content=AsyncMock(side_effect=_arm_midflight),
     )
-    # 这次发送开始时没有任何欠账挂着。
+    # No debt existed when this send started.
     client._gemini_cancelled_terminal_pending = False
     client._gemini_cancelled_terminal_awaiting_delivery = False
     client._gemini_cancelled_terminal_id = None
 
     await client._gemini_send_user_turn("earlier turn")
 
-    # 那笔欠账不是这次发送送达的：它必须仍然在等自己的送达。
+    # This send did not deliver that debt; it must still await its own delivery.
     assert client._gemini_cancelled_terminal_id is armed["id"]
     assert client._gemini_cancelled_terminal_awaiting_delivery is True
     await client.close()
@@ -1837,7 +1837,7 @@ async def test_an_expired_debt_does_not_eat_a_legitimate_terminal():
         connection_generation=1,
     )
 
-    # 过期的欠账被花掉但不认账：这条终结照常结算当前回合。
+    # Expired debt is consumed without claiming the event, which settles the current turn normally.
     assert client._gemini_cancelled_terminal_pending is False
     assert client._gemini_cancelled_terminal_deadline is None
     assert client._gemini_external_outcome_token is None
@@ -1886,7 +1886,7 @@ def test_arming_the_cancellation_debt_always_sets_a_deadline():
     ]
     assert arming, "the arming site moved; update this guard"
     for index in arming:
-        # 窗口要盖住两条赋值以及它们各自的解释注释。
+        # The window covers both assignments and their explanatory comments.
         window = chr(10).join(source[index : index + 16])
         assert "self._gemini_cancelled_terminal_deadline = (" in window, (
             f"line {index + 1}: arming the debt must also set its deadline, "
@@ -1924,7 +1924,7 @@ async def test_non_terminal_content_does_not_spend_the_cancellation_debt():
     client._gemini_cancelled_terminal_pending = True
     client._is_responding = True
     client._interrupted = True
-    # 短静默且用户没再发声 → late continuation，不会被当成新回合（新回合会作废欠账）。
+    # Brief silence without more user speech -> late continuation, not a new turn that invalidates debt.
     client._user_recent_activity_time = 100.0
     client._ai_recent_activity_time = time.time()
 
@@ -1939,10 +1939,10 @@ async def test_non_terminal_content_does_not_spend_the_cancellation_debt():
         SimpleNamespace(server_content=late_content, tool_call=None),
         connection_generation=1,
     )
-    # 非终结事件不该动欠账。
+    # Nonterminal events must not affect debt.
     assert client._gemini_cancelled_terminal_pending is True
 
-    # 旧回合真正的终结到达：它才该抵掉欠账，并且不能结算新 token。
+    # The old turn's actual terminal event alone settles debt, without settling the new token.
     real_terminal = SimpleNamespace(
         model_turn=None,
         input_transcription=None,
@@ -1959,12 +1959,12 @@ async def test_non_terminal_content_does_not_spend_the_cancellation_debt():
     await client.close()
 
 # ---------------------------------------------------------------------------
-# 独立 ASR 多模态回合 -> plugin frames 总线（P8 第四个投递点）
+# Independent-ASR multimodal turn -> plugin frames bus (P8 fourth delivery point).
 # ---------------------------------------------------------------------------
 #
-# 每个用例都把 client.close() 放进 finally。这个文件的惯例是手动 close，于是
-# 断言一失败就漏掉一条活着的 realtime 会话——而漏下的会话会把**下一个**用例
-# 挂死，本来只是红的一轮变成永远跑不完的一轮。变异验证恰恰是用例会失败的场合。
+# Every case closes client.close() in finally. This file's manual-close convention meant
+# failed assertions leaked live realtime sessions, hanging the **next** test forever instead of merely
+# failing this one. Mutation verification specifically makes tests fail.
 
 
 def _capture_published_frames(monkeypatch) -> list[dict]:
@@ -2079,17 +2079,17 @@ async def test_delivered_multimodal_turn_copies_its_frames_onto_the_plugin_bus(
         ]
         assert len(wire_images) == 2, "前提没成立：这一轮本来就没送出两张图"
         await _wait_for_published(published, 2)
-        # 上总线的是**纯 base64**，不是 data URL：记录里另有 mime 字段，带前缀
-        # 等于让每个插件自己再剥一次。
+        # Bus payloads are **plain base64**, not data URLs: records have a separate mime field; prefixes
+        # would force every plugin to strip them again.
         assert [frame["image_base64"] for frame in published] == [
             url.split(",", 1)[1] for url in wire_images
         ]
         for frame in published:
             assert frame["mime"] == "image/jpeg"
             assert frame["turn_id"] == "turn-frames"
-            # 采集通道照抄 staging 记下的那个（screen / camera）。
+            # Preserve the capture source recorded by staging (screen / camera).
             assert frame["source"] == "screen"
-            # Realtime 客户端不知道自己属于哪个角色；转发那一侧允许缺省。
+            # Realtime clients do not know their character; forwarding may omit it.
             assert frame["lanlan_name"] is None
     finally:
         await client.close()
@@ -2118,8 +2118,8 @@ async def test_a_turn_that_lost_its_frames_publishes_nothing(monkeypatch):
         _real_resume = arbiter.resume_dispatch
 
         def _resume_and_lose_ownership():
-            # 派发闸抬起的那一刻翻转：enqueue 之前那次降级已经带着"还持有"跑完
-            # 了，所以摘图只可能发生在 arbiter 内部的 pre_commit 里。
+            # Flip when the dispatch gate opens: pre-enqueue degradation already ran with ownership retained,
+            # so only arbiter-internal pre_commit can remove the image.
             owned[0] = False
             _real_resume()
 
@@ -2135,13 +2135,13 @@ async def test_a_turn_that_lost_its_frames_publishes_nothing(monkeypatch):
 
         assert owned[0] is False, "夹具没走到派发那一步"
         content = sent[0]["item"]["content"]
-        # 帧被 pre_commit 摘掉了……
+        # pre_commit removed the frame...
         assert all(part["type"] != "input_image" for part in content), (
             "前提没成立：这一轮的图根本没被摘掉"
         )
-        # ……用户那句话照送……
+        # ...the user's utterance still sends...
         assert any(part.get("text") == "看一下这张图" for part in content)
-        # ……总线上一张也不该有。
+        # ...and no images reach the bus.
         await _assert_nothing_published(published)
     finally:
         await client.close()
@@ -2204,8 +2204,8 @@ async def test_the_bus_gets_the_bytes_the_transport_rewrote(monkeypatch):
         shrunk_b64 = DUMMY_IMAGE_B64[:40]
 
         async def _shrink_and_drop_on_send(event, **_kwargs):
-            # _shrink_multi_image_item 的形状：就地改写留下的那张，把压不进去
-            # 的最旧那张从 content 里删掉。
+            # _shrink_multi_image_item shape: rewrite the retained image in place and delete
+            # the oldest image that cannot fit from content.
             content = event["item"]["content"]
             images = [part for part in content if part["type"] == "input_image"]
             content.remove(images[0])
@@ -2290,12 +2290,12 @@ async def test_only_well_formed_image_parts_are_copied_and_keep_their_mime(
                         "type": "input_image",
                         "image_url": "data:image/png;base64," + DUMMY_IMAGE_B64,
                     },
-                    # 不是 data URL：这一层没有把它取回来的通道。
+                    # Not a data URL: this layer cannot retrieve it.
                     {
                         "type": "input_image",
                         "image_url": "https://example.invalid/x",
                     },
-                    # 空载荷。
+                    # Empty payload.
                     {"type": "input_image", "image_url": "data:image/jpeg;base64,"},
                     {"type": "input_text", "text": "看一下这张图"},
                 ]
@@ -2347,8 +2347,8 @@ async def test_a_publisher_failure_does_not_fail_the_delivered_turn(monkeypatch)
         )
 
         assert ticket is not None
-        # 失败发生在后台 task 里。把它跑完，证明异常被吞在那一层，而不是变成
-        # 一条 unretrieved task exception。
+        # Failure occurs inside a background task. Finish it to prove that layer swallows the exception,
+        # rather than producing an unretrieved task exception.
         for _ in range(20):
             await asyncio.sleep(0)
     finally:
@@ -2390,8 +2390,8 @@ async def test_a_stalled_frames_bus_does_not_hold_up_the_delivered_turn(
         client._analyze_image_with_vision_model = AsyncMock()
 
         await client.prepare_external_voice_turn(turn_id="turn-stalled-bus")
-        # 若 publish 还挂在返回路径上，这里会一路等到 wait_for 超时——
-        # 回归会红，而不是只是悄悄变慢。
+        # If publish still blocks the return path, this waits until wait_for times out,
+        # making regressions fail rather than merely slowing silently.
         ticket = await asyncio.wait_for(
             client.submit_multimodal_turn(
                 "看一下这张图",
@@ -2402,7 +2402,7 @@ async def test_a_stalled_frames_bus_does_not_hold_up_the_delivered_turn(
         )
 
         assert ticket is not None
-        # 前提：那条 publish 确实被排上了，而且确实卡在总线里。
+        # Precondition: publish really was scheduled and is blocked inside the bus.
         await asyncio.wait_for(entered.wait(), timeout=5)
     finally:
         released.set()
@@ -2446,14 +2446,14 @@ async def test_the_bus_record_is_read_at_delivery_not_after_the_turn(
             if part["type"] == "input_image"
         ]
         assert len(delivered) == 1, "前提没成立：这一轮本来就没送出图"
-        # 回合已经返回，publish 那个 task 还一次都没跑过——正是后继回合改写
-        # 这些结构的那个窗口。判据要立在这里，否则下面的改写根本没意义。
+        # The turn returned before publish ran once: precisely the window where successor turns mutate
+        # these structures. Establish the criterion here or subsequent mutation proves nothing.
         assert published == [], "publish 没被挪出回合，本用例的判据落空"
 
         for part in content:
             if part["type"] == "input_image":
                 part["image_url"] = "data:image/jpeg;base64,bmV4dC10dXJu"
-        # 采集通道也是活的会话状态：下一张 staged 帧就会改写它。
+        # Capture source is live session state too: the next staged frame overwrites it.
         client._latest_image_source = "camera"
 
         await _wait_for_published(published, 1)
@@ -2464,13 +2464,13 @@ async def test_the_bus_record_is_read_at_delivery_not_after_the_turn(
 
 
 # ---------------------------------------------------------------------------
-# 独立 ASR 多模态回合 -> plugin frames 总线：Gemini 那一半
+# Independent-ASR multimodal turn -> plugin frames bus: Gemini half.
 # ---------------------------------------------------------------------------
 #
-# WebSocket 那半边读的是发出去的 item；Gemini 这条路根本不构造 wire event，
-# 帧是原始 bytes 直接交给 SDK 的，所以判据只能落在"交给 SDK 的那个 tuple"上。
-# 这半边不是对称性洁癖：独立 ASR 会武装 raw-visual fence，stream_image 于是拒掉
-# 每一张环境帧，这一轮就是整个会话唯一的画面通道。
+# WebSocket inspects outgoing items, but Gemini constructs no wire event and gives raw bytes
+# directly to the SDK. Test the actual tuple handed to the SDK.
+# Symmetry matters: independent ASR arms raw-visual fences, making stream_image reject every
+# ambient frame; this turn is the session's only visual channel.
 
 
 def _gemini_sdk_frames(session) -> list[str]:
@@ -2517,7 +2517,7 @@ async def test_a_delivered_gemini_external_turn_copies_its_frames_onto_the_bus(
             if part.inline_data is not None
         )
         for frame in published:
-            # 标签必须与 SDK 真正收到的那个 mime 一致，不是各写各的字面量。
+            # Tags must match the mime actually received by the SDK, not independent literals.
             assert frame["mime"] == sdk_mime
             assert frame["turn_id"] == "turn-gemini-frames"
             assert frame["source"] == "screen"
@@ -2678,9 +2678,9 @@ async def test_a_cancelled_gemini_turn_publishes_nothing(monkeypatch):
         published = _capture_published_frames(monkeypatch)
 
         await client.prepare_external_voice_turn(turn_id="turn-gemini-cancel")
-        # 在自己的 task 里跑，与这个文件已有的取消用例同一写法：
-        # 隔离本体会 cancel() 那个 submit task，直接 await 的话被取消的
-        # 就是用例自己。
+        # Run in its own task, matching existing cancellation tests:
+        # quarantine cancels the submit task; directly awaiting it
+        # would cancel the test itself.
         submit = asyncio.create_task(
             client.submit_multimodal_turn(
                 "看一下这张图",
@@ -2730,7 +2730,7 @@ async def test_a_publisher_failure_does_not_fail_the_delivered_gemini_turn(
 
         assert result is None
         session.send_client_content.assert_awaited_once()
-        # 失败发生在后台 task 里，跟 WebSocket 那半边同一判据。
+        # Failure is in a background task, matching the WebSocket criterion.
         for _ in range(20):
             await asyncio.sleep(0)
     finally:
@@ -2791,14 +2791,14 @@ async def test_a_stalled_frames_bus_does_not_hold_up_the_gemini_turn(
 
 
 # ---------------------------------------------------------------------------
-# 回合内 await 期间的频道漂移
+# Source drift during intra-turn awaits.
 # ---------------------------------------------------------------------------
 #
-# 上面那条用例在 submit **返回之后**才改写 _latest_image_source，调度点读一次
-# 就够了。真正没被盖住的是 submit **内部**：裁剪、arbiter 排队、SDK send 都是
-# await，另一条通道在这期间暂存一帧就会覆写它。帧还是这一轮送出的那几张，
-# source 却成了会话后来切到的频道——而 source 正是插件用来区分「用户共享的
-# 画面」和「插件自己提供的媒体」的那个字段，标错比不标更糟。
+# The preceding case mutates _latest_image_source only **after submit returns**, covered by sampling once
+# when scheduling. The uncovered window is **inside submit**: trimming, arbiter queuing, and SDK send
+# all await; another source staging a frame overwrites it. Images still belong to this turn,
+# but source changes to the session's later channel. Plugins use source to distinguish user-shared
+# visuals from plugin-provided media, making wrong labels worse than absent labels.
 
 
 @pytest.mark.asyncio
@@ -2815,8 +2815,8 @@ async def test_ws_turn_keeps_its_channel_when_another_stages_during_the_send(
         client._latest_image_source = "screen"
         published = _capture_published_frames(monkeypatch)
 
-        # 摄像头在这一轮送出的**过程中**暂存了一帧。_transport 每暂存一帧就写
-        # 这个字段，所以这就是它在真实会话里被改写的样子。
+        # Camera stages a frame **during** this turn's send. _transport writes this field on every
+        # staged frame, reproducing real-session mutation.
         _inner = client.send_event
 
         async def _send_and_stage_another_channel(event, **kwargs):

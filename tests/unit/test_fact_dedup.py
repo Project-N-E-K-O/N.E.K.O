@@ -186,9 +186,9 @@ def test_detect_candidates_emits_pair_above_threshold():
 
 
 def test_detect_candidates_below_threshold_no_pair():
-    """Cosine < threshold ⇒ no pair. Keeps "主人喜欢猫" / "主人讨厌猫"
+    """Cosine < threshold implies no pair. Keeps \"主人喜欢猫\" / \"主人讨厌猫\"
     style polarity flips out of the queue (they ride opposite halves
-    of the embedding space ≈0.78 in practice)."""
+    of the embedding space ≈0.78 in practice)."""  # noqa: DOCSTRING_CJK
     a_vec = [1.0, 0.0, 0.0]
     b_vec = [0.0, 1.0, 0.0]
     facts = [
@@ -2106,7 +2106,7 @@ async def test_concurrent_loser_provenance_drift_aborts_trust_override(tmp_path)
     assert not (tmp_path / "Neko" / "facts_archive.json").exists()
 
 
-# ── ids-only queue（隐私收口：成员衍生原文不落 sidecar） ─────────────
+# -- IDs-only queue (privacy boundary: no member-derived raw text in sidecars). --
 
 
 def _read_queue_file_raw(tmp_path, name: str = "小天") -> str:
@@ -2142,7 +2142,7 @@ async def test_queue_file_on_disk_never_contains_fact_text(tmp_path):
 
     pairs = FactDedupResolver.detect_candidates([a, b])
     assert pairs, "sanity: cosine 应产生候选对"
-    # detect_candidates 的返回本身就不携带文本字段。
+    # detect_candidates returns no text fields itself.
     for p in pairs:
         assert "candidate_text" not in p
         assert "existing_text" not in p
@@ -2153,7 +2153,7 @@ async def test_queue_file_on_disk_never_contains_fact_text(tmp_path):
     assert "幸福路" not in raw
     assert "candidate_text" not in raw
     assert "existing_text" not in raw
-    # 域标识（非内容）允许在队列里：resolve 按域锁批要用。
+    # Domain identifiers (not content) are allowed: resolve needs them for domain-locked batches.
     assert "group_chat:qq:12345" in raw
 
 
@@ -2171,7 +2171,7 @@ async def test_legacy_plaintext_queue_scrubbed_by_resolve_even_on_llm_failure(tm
     cand = _fact("c1", "成员甲的敏感发言原文", embedding=[1.0, 0.0])
     existing = _fact("e1", "成员甲的另一句原文", embedding=[0.99, 0.05])
     await _seed_facts(fs, "小天", [cand, existing])
-    # 手写旧 schema 队列文件（绕过新 enqueue 的白名单）。
+    # Handwrite a legacy-schema queue file, bypassing the new enqueue whitelist.
     legacy_queue = [{
         "candidate_id": "c1", "existing_id": "e1",
         "candidate_text": "成员甲的敏感发言原文",
@@ -2192,7 +2192,7 @@ async def test_legacy_plaintext_queue_scrubbed_by_resolve_even_on_llm_failure(tm
     with patch("utils.llm_client.create_chat_llm", return_value=_BoomLLM()):
         resolved = await resolver.aresolve("小天")
     assert resolved == 0
-    # pair 仍在队列（LLM 失败按 attempts 兜底），但磁盘上已无明文。
+    # Pair remains queued (LLM failures use attempt limits), but plaintext is gone from disk.
     pending = await resolver.aload_pending("小天")
     assert len(pending) == 1
     raw = _read_queue_file_raw(tmp_path)
@@ -2221,7 +2221,7 @@ async def test_enqueue_persists_scrub_even_when_all_pairs_are_duplicates(tmp_pat
     qpath = os.path.join(str(tmp_path), "小天", "facts_pending_dedup.json")
     atomic_write_json(qpath, legacy_queue, indent=2, ensure_ascii=False)
 
-    # 唯一入队 pair 与队列现存条目重复 → appended == 0。
+    # The only enqueued pair duplicates an existing entry -> appended == 0.
     appended = await resolver.aenqueue_candidates("小天", [{
         "candidate_id": "c1", "existing_id": "e1",
         "entity": "master", "cosine": 0.9,
@@ -2245,7 +2245,7 @@ async def test_resolve_prompt_uses_current_authoritative_text(tmp_path):
         "candidate_id": "c1", "existing_id": "e1",
         "entity": "master", "cosine": 0.99,
     }])
-    # enqueue 之后、resolve 之前 fact 被改写。
+    # Rewrite the fact after enqueue and before resolve.
     facts = await fs.aload_facts("小天")
     next(f for f in facts if f["id"] == "c1")["text"] = "EDITED-当前权威文本"
     await fs.asave_facts("小天")

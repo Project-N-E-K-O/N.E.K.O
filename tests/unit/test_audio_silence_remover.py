@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-智能静音裁剪功能 — 单元测试
+Smart silence trimming — unit tests.
 
-覆盖范围:
-- _samples_to_float / _float_to_samples 互逆性
-- _rms_dbfs 计算正确性
-- detect_silence 多种静音分布场景
-- trim_silence 中心裁剪 + 无缝拼接
-- 取消任务 (CancelledError)
-- format_duration_mmss 格式化
-- 边界情况（全静音、无静音、单声道/多声道、多种位深度）
+Coverage:
+- _samples_to_float / _float_to_samples inversion
+- _rms_dbfs correctness
+- detect_silence across silence distributions
+- trim_silence center trimming + seamless joining
+- Task cancellation (CancelledError)
+- format_duration_mmss formatting
+- Edge cases (all/no silence, mono/multichannel, varying bit depths)
 
-目标覆盖率 ≥ 90%
+Target coverage ≥ 90%
 """
 
 import io
@@ -22,7 +22,7 @@ import numpy as np
 import os
 import sys
 
-# 确保项目根目录在 sys.path
+# Ensure project root in sys.path.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from utils.audio_silence_remover import (
@@ -40,7 +40,7 @@ from utils.audio_silence_remover import (
     RETAINED_SILENCE_MS,
 )
 
-# ==================== 辅助函数 ====================
+# ==================== Helpers ====================
 
 def _make_wav(
     samples: np.ndarray,
@@ -48,8 +48,8 @@ def _make_wav(
     sample_width: int = 2,
     channels: int = 1,
 ) -> io.BytesIO:
-    """从 float64 采样生成 WAV BytesIO (-1.0 ~ 1.0)"""
-    # 转 PCM
+    """Generate WAV BytesIO from float64 samples (-1.0 to 1.0)."""
+    # Convert to PCM.
     pcm = _float_to_samples(samples, sample_width)
     buf = io.BytesIO()
     with wave.open(buf, 'wb') as wf:
@@ -62,27 +62,27 @@ def _make_wav(
 
 
 def _generate_sine(freq: float, duration_s: float, sample_rate: int = 16000, amplitude: float = 0.5) -> np.ndarray:
-    """生成正弦波采样"""
+    """Generate sine-wave samples."""
     t = np.arange(int(sample_rate * duration_s)) / sample_rate
     return (amplitude * np.sin(2 * np.pi * freq * t)).astype(np.float64)
 
 
 def _generate_silence(duration_s: float, sample_rate: int = 16000) -> np.ndarray:
-    """生成纯静音"""
+    """Generate pure silence."""
     return np.zeros(int(sample_rate * duration_s), dtype=np.float64)
 
 
 def _generate_low_noise(duration_s: float, sample_rate: int = 16000, amplitude: float = 1e-4) -> np.ndarray:
-    """生成低噪声（远低于 -40 dBFS 阈值）"""
+    """Generate low noise, well below -40 dBFS threshold."""
     n = int(sample_rate * duration_s)
     rng = np.random.default_rng(42)
     return (rng.uniform(-1, 1, n) * amplitude).astype(np.float64)
 
 
-# ==================== 基础函数测试 ====================
+# ==================== Basic function tests ====================
 
 class TestSamplesToFloat:
-    """_samples_to_float / _float_to_samples 互逆性"""
+    """_samples_to_float / _float_to_samples are inverses."""
 
     def test_16bit_roundtrip(self):
         original = np.array([0.0, 0.5, -0.5, 0.99, -0.99], dtype=np.float64)
@@ -109,7 +109,7 @@ class TestSamplesToFloat:
         np.testing.assert_allclose(restored, original, atol=1 / 8388608)
 
     def test_clipping(self):
-        """超出范围的值应被裁剪"""
+        """Clamp out-of-range values."""
         original = np.array([1.5, -1.5], dtype=np.float64)
         pcm = _float_to_samples(original, sample_width=2)
         restored = _samples_to_float(pcm, sample_width=2)
@@ -123,23 +123,23 @@ class TestSamplesToFloat:
 
 
 class TestRmsDbfs:
-    """RMS dBFS 计算"""
+    """RMS dBFS calculation."""
 
     def test_full_scale_sine(self):
-        """满刻度正弦波 ≈ -3 dBFS"""
+        """Full-scale sine wave ≈ -3 dBFS."""
         t = np.arange(16000) / 16000.0
         sine = np.sin(2 * np.pi * 440 * t)
         dbfs = _rms_dbfs(sine)
         assert -4.0 < dbfs < -2.0  # -3.01 dBFS
 
     def test_silence(self):
-        """纯静音 → 非常低的 dBFS"""
+        """Pure silence → very low dBFS."""
         silence = np.zeros(1000)
         dbfs = _rms_dbfs(silence)
         assert dbfs <= -100.0
 
     def test_half_amplitude(self):
-        """半幅度正弦 ≈ -9 dBFS"""
+        """Half-amplitude sine ≈ -9 dBFS."""
         t = np.arange(16000) / 16000.0
         sine = 0.5 * np.sin(2 * np.pi * 440 * t)
         dbfs = _rms_dbfs(sine)
@@ -150,18 +150,18 @@ class TestRmsDbfs:
         assert dbfs == -100.0
 
     def test_low_noise_below_threshold(self):
-        """低噪声应该低于 -40 dBFS"""
+        """Low noise must be below -40 dBFS."""
         noise = _generate_low_noise(0.1, amplitude=5e-5)
         dbfs = _rms_dbfs(noise)
         assert dbfs < SILENCE_THRESHOLD_DBFS
 
 
-# ==================== detect_silence 测试 ====================
+# ==================== detect_silence tests ====================
 
 class TestDetectSilence:
 
     def test_no_silence(self):
-        """纯正弦波，无静音段"""
+        """Pure sine wave without silent segments."""
         sine = _generate_sine(440, 2.0)
         wav = _make_wav(sine)
         result = detect_silence(wav)
@@ -170,7 +170,7 @@ class TestDetectSilence:
         assert result.total_silence_ms == 0
 
     def test_all_silence(self):
-        """全静音"""
+        """All silence."""
         silence = _generate_silence(2.0)
         wav = _make_wav(silence)
         result = detect_silence(wav)
@@ -179,20 +179,20 @@ class TestDetectSilence:
         assert result.saving_percentage >= 90.0
 
     def test_leading_silence(self):
-        """开头 1s 静音 + 1s 正弦"""
+        """Leading 1s silence + 1s sine."""
         silence = _generate_silence(1.0)
         sine = _generate_sine(440, 1.0)
         audio = np.concatenate([silence, sine])
         wav = _make_wav(audio)
         result = detect_silence(wav)
         assert len(result.silence_segments) >= 1
-        # 第一段静音应该大约 1000ms
+        # First silence should be about 1000ms.
         first_seg = result.silence_segments[0]
         assert first_seg.start_ms == pytest.approx(0, abs=50)
         assert first_seg.duration_ms >= MIN_SILENCE_DURATION_MS
 
     def test_trailing_silence(self):
-        """1s 正弦 + 1s 静音"""
+        """1s sine + 1s silence."""
         sine = _generate_sine(440, 1.0)
         silence = _generate_silence(1.0)
         audio = np.concatenate([sine, silence])
@@ -203,7 +203,7 @@ class TestDetectSilence:
         assert last_seg.end_ms == pytest.approx(2000, abs=50)
 
     def test_middle_silence(self):
-        """正弦 + 1s 静音 + 正弦"""
+        """Sine + 1s silence + sine."""
         sine1 = _generate_sine(440, 1.0)
         silence = _generate_silence(1.0)
         sine2 = _generate_sine(880, 1.0)
@@ -211,25 +211,25 @@ class TestDetectSilence:
         wav = _make_wav(audio)
         result = detect_silence(wav)
         assert len(result.silence_segments) >= 1
-        assert result.total_silence_ms >= 800  # 大约 1000ms
+        assert result.total_silence_ms >= 800  # About 1000ms.
 
     def test_short_silence_not_detected(self):
-        """短于阈值 (150ms < 200ms) 的静音不应被检测"""
+        """Do not detect silence below threshold (150ms < 200ms)."""
         sine1 = _generate_sine(440, 1.0)
         short_silence = _generate_silence(0.15)
         sine2 = _generate_sine(880, 1.0)
         audio = np.concatenate([sine1, short_silence, sine2])
         wav = _make_wav(audio)
         result = detect_silence(wav)
-        # 150ms < 200ms 阈值，不应被检测
+        # 150ms < 200ms threshold, must not detect.
         assert len(result.silence_segments) == 0
 
     def test_multiple_silence_segments(self):
-        """多段静音"""
+        """Multiple silent segments."""
         parts = []
         for i in range(3):
             parts.append(_generate_sine(440 + i * 200, 0.5))
-            parts.append(_generate_silence(0.7))  # 700ms > 500ms 阈值
+            parts.append(_generate_silence(0.7))  # 700ms > 500ms threshold.
         parts.append(_generate_sine(1200, 0.5))
         audio = np.concatenate(parts)
         wav = _make_wav(audio)
@@ -237,7 +237,7 @@ class TestDetectSilence:
         assert len(result.silence_segments) == 3
 
     def test_low_noise_as_silence(self):
-        """低噪声 (< -40 dBFS) 也应被视为静音"""
+        """Low noise (< -40 dBFS) also counts as silence."""
         sine = _generate_sine(440, 1.0)
         noise = _generate_low_noise(1.0)
         audio = np.concatenate([sine, noise])
@@ -246,20 +246,20 @@ class TestDetectSilence:
         assert len(result.silence_segments) >= 1
 
     def test_cancel_detection(self):
-        """测试取消检测"""
+        """Test cancellation detection."""
         sine = _generate_sine(440, 5.0)
         wav = _make_wav(sine)
         call_count = [0]
 
         def cancel_fn():
             call_count[0] += 1
-            return call_count[0] > 10  # 在第 10 次检查后取消
+            return call_count[0] > 10  # Cancel after tenth check.
 
         with pytest.raises(CancelledError):
             detect_silence(wav, cancel_check=cancel_fn)
 
     def test_progress_callback(self):
-        """测试进度回调被调用"""
+        """Test progress callback invocation."""
         sine = _generate_sine(440, 2.0)
         wav = _make_wav(sine)
         progress_values = []
@@ -272,11 +272,11 @@ class TestDetectSilence:
         assert progress_values[-1] == 100
 
     def test_stereo_audio(self):
-        """立体声音频"""
+        """Stereo audio."""
         sine_l = _generate_sine(440, 1.0)
         sine_r = _generate_sine(880, 1.0)
         silence = _generate_silence(1.0)
-        # 立体声：左右声道交错
+        # Stereo: interleaved left/right channels.
         stereo_voice = np.column_stack([sine_l, sine_r]).flatten()
         stereo_silence = np.column_stack([silence, silence]).flatten()
         audio = np.concatenate([stereo_voice, stereo_silence])
@@ -286,7 +286,7 @@ class TestDetectSilence:
         assert len(result.silence_segments) >= 1
 
     def test_format_returned(self):
-        """检测结果包含音频格式信息"""
+        """Detection results include audio format information."""
         sine = _generate_sine(440, 1.0, sample_rate=44100)
         wav = _make_wav(sine, sample_rate=44100)
         result = detect_silence(wav)
@@ -301,7 +301,7 @@ class TestDetectSilence:
         audio = np.concatenate([sine, silence])
         wav = _make_wav(audio)
         result = detect_silence(wav)
-        # 新算法: 每段静音保留 RETAINED_SILENCE_MS，超出部分才被移除
+        # New algorithm retains RETAINED_SILENCE_MS per silence, removing excess only.
         expected_removable = sum(
             max(0, s.duration_ms - RETAINED_SILENCE_MS)
             for s in result.silence_segments
@@ -312,12 +312,12 @@ class TestDetectSilence:
         )
 
 
-# ==================== trim_silence 测试 ====================
+# ==================== trim_silence tests ====================
 
 class TestTrimSilence:
 
     def test_no_silence_segments(self):
-        """没有静音段时返回原始音频"""
+        """Return original audio when no silence exists."""
         sine = _generate_sine(440, 1.0)
         wav = _make_wav(sine)
         analysis = SilenceAnalysisResult(
@@ -331,26 +331,26 @@ class TestTrimSilence:
         )
         result = trim_silence(wav, analysis)
         assert result.removed_silence_ms == 0
-        assert result.md5  # 有 MD5 值
+        assert result.md5  # MD5 present.
 
     def test_basic_trim(self):
-        """基本裁剪：移除中间静音"""
+        """Basic trimming: remove middle silence."""
         sine1 = _generate_sine(440, 1.0)
         silence = _generate_silence(1.0)
         sine2 = _generate_sine(880, 1.0)
         audio = np.concatenate([sine1, silence, sine2])
         wav_orig = _make_wav(audio)
 
-        # 先分析
+        # Analyze first.
         analysis = detect_silence(io.BytesIO(wav_orig.getvalue()))
 
-        # 再裁剪
+        # Then trim.
         result = trim_silence(io.BytesIO(wav_orig.getvalue()), analysis)
         assert result.trimmed_duration_ms < result.original_duration_ms
         assert result.removed_silence_ms > 500
-        assert result.md5  # 有 MD5
+        assert result.md5  # MD5 present.
 
-        # 输出应该是有效的 WAV
+        # Output must be valid WAV.
         out_buf = io.BytesIO(result.audio_data)
         with wave.open(out_buf, 'rb') as wf:
             assert wf.getframerate() == 16000
@@ -358,7 +358,7 @@ class TestTrimSilence:
             assert wf.getnchannels() == 1
 
     def test_md5_consistency(self):
-        """相同输入产生相同 MD5"""
+        """Identical inputs produce identical MD5."""
         sine = _generate_sine(440, 1.0)
         silence = _generate_silence(1.0)
         audio = np.concatenate([sine, silence])
@@ -370,7 +370,7 @@ class TestTrimSilence:
         assert result1.md5 == result2.md5
 
     def test_md5_matches_content(self):
-        """MD5 与实际数据一致"""
+        """MD5 matches actual data."""
         sine = _generate_sine(440, 1.0)
         silence = _generate_silence(1.0)
         audio = np.concatenate([sine, silence])
@@ -382,7 +382,7 @@ class TestTrimSilence:
         assert result.md5 == actual_md5
 
     def test_output_params_match_input(self):
-        """输出音频参数与输入一致"""
+        """Output audio parameters match input."""
         sine = _generate_sine(440, 1.0, sample_rate=44100)
         silence = _generate_silence(1.0, sample_rate=44100)
         audio = np.concatenate([sine, silence])
@@ -395,16 +395,16 @@ class TestTrimSilence:
         assert result.channels == 1
 
     def test_all_silence_trim(self):
-        """全静音音频裁剪后保留约 200ms"""
+        """All-silent audio retains about 200ms after trimming."""
         silence = _generate_silence(2.0)
         wav = _make_wav(silence)
         analysis = detect_silence(io.BytesIO(wav.getvalue()))
         result = trim_silence(io.BytesIO(wav.getvalue()), analysis)
-        # 全静音裁剪后保留静音段首尾各 100ms，共约 200ms
+        # All-silent input retains 100ms at each end, about 200ms total.
         assert 150 < result.trimmed_duration_ms < 300
 
     def test_cancel_trim(self):
-        """取消裁剪任务"""
+        """Cancel trimming task."""
         parts = []
         for _ in range(20):
             parts.append(_generate_sine(440, 0.2))
@@ -423,7 +423,7 @@ class TestTrimSilence:
             trim_silence(io.BytesIO(wav.getvalue()), analysis, cancel_check=cancel_fn)
 
     def test_progress_callback(self):
-        """进度回调正确调用"""
+        """Invoke progress callbacks correctly."""
         sine1 = _generate_sine(440, 1.0)
         silence = _generate_silence(1.0)
         sine2 = _generate_sine(880, 1.0)
@@ -441,8 +441,8 @@ class TestTrimSilence:
         assert progress_values[-1] == 100
 
     def test_center_cut_no_clicks(self):
-        """中心裁剪不会导致爆音"""
-        # 创建两段频率不同的音频，中间有静音
+        """Center trimming causes no audio pops."""
+        # Create two different-frequency audio segments separated by silence.
         sine1 = _generate_sine(200, 0.5, amplitude=0.8)
         silence = _generate_silence(1.0)
         sine2 = _generate_sine(1000, 0.5, amplitude=0.8)
@@ -452,21 +452,21 @@ class TestTrimSilence:
         analysis = detect_silence(io.BytesIO(wav.getvalue()))
         result = trim_silence(io.BytesIO(wav.getvalue()), analysis)
 
-        # 解析输出音频
+        # Parse output audio.
         out_buf = io.BytesIO(result.audio_data)
         with wave.open(out_buf, 'rb') as wf:
             out_data = wf.readframes(wf.getnframes())
 
         out_samples = _samples_to_float(out_data, 2)
-        # 检查没有超出范围的值
+        # Check no out-of-range values.
         assert np.all(np.abs(out_samples) <= 1.0)
-        # 检查没有急剧变化（爆音检测）
+        # Check no abrupt changes (pop detection).
         diff = np.diff(out_samples)
-        # 差分不应有极端跳变
-        assert np.max(np.abs(diff)) < 0.5  # 合理范围
+        # Differences must not contain extreme jumps.
+        assert np.max(np.abs(diff)) < 0.5  # Reasonable range.
 
     def test_multiple_segments_trim(self):
-        """多段静音裁剪"""
+        """Trim multiple silent segments."""
         parts = []
         for i in range(5):
             parts.append(_generate_sine(300 + i * 100, 0.3))
@@ -479,12 +479,12 @@ class TestTrimSilence:
         assert len(analysis.silence_segments) == 5
 
         result = trim_silence(io.BytesIO(wav.getvalue()), analysis)
-        # 每段 600ms 静音裁剪至 200ms，移除 5×400ms = 2000ms
-        # 原始约 4.8s，裁剪后约 2.8s
+        # Trim each 600ms silence to 200ms, removing 5×400ms = 2000ms.
+        # Original ~4.8s, trimmed ~2.8s.
         assert result.trimmed_duration_ms < result.original_duration_ms * 0.7
 
 
-# ==================== format_duration_mmss 测试 ====================
+# ==================== format_duration_mmss tests ====================
 
 class TestFormatDuration:
 
@@ -510,42 +510,42 @@ class TestFormatDuration:
         assert format_duration_mmss(59999) == "00:59"
 
 
-# ==================== convert_to_wav_if_needed 测试 ====================
+# ==================== convert_to_wav_if_needed tests ====================
 
 class TestConvertToWav:
 
     def test_wav_passthrough(self):
-        """WAV 文件直接通过"""
+        """Pass WAV files through directly."""
         sine = _generate_sine(440, 0.5)
         wav = _make_wav(sine)
         result_buf, fmt = convert_to_wav_if_needed(wav, "test.wav")
         assert fmt == 'wav'
-        # 验证返回的是有效 WAV
+        # Verify returned WAV is valid.
         with wave.open(result_buf, 'rb') as wf:
             assert wf.getframerate() == 16000
 
     def test_invalid_wav(self):
-        """无效 WAV 文件应报错"""
+        """Invalid WAV files must error."""
         bad_buf = io.BytesIO(b"not a wav file")
         with pytest.raises(ValueError, match="无效"):
             convert_to_wav_if_needed(bad_buf, "test.wav")
 
     def test_unsupported_format_no_pydub(self):
-        """没有 pydub 时，非 WAV 格式应给出清晰错误"""
+        """Non-WAV without pydub gives clear error."""
         buf = io.BytesIO(b"fake mp3 data")
-        # 如果 pydub 不存在，应该抛出 ValueError
-        # 如果 pydub 存在但数据无效，也会报错
+        # Missing pydub raises ValueError.
+        # Available pydub with invalid data also errors.
         with pytest.raises((ValueError, Exception)):
             convert_to_wav_if_needed(buf, "test.mp3")
 
 
-# ==================== 端到端流程测试 ====================
+# ==================== End-to-end flow tests ====================
 
 class TestEndToEnd:
 
     def test_full_pipeline(self):
-        """完整流程：生成 → 分析 → 裁剪 → 验证"""
-        # 1. 生成测试音频：正弦 1s + 静音 1s + 正弦 1s + 静音 0.8s + 正弦 0.5s
+        """Complete flow: generate → analyze → trim → validate."""
+        # 1. Generate test audio: sine 1s + silence 1s + sine 1s + silence 0.8s + sine 0.5s.
         parts = [
             _generate_sine(440, 1.0),
             _generate_silence(1.0),
@@ -557,17 +557,17 @@ class TestEndToEnd:
         wav = _make_wav(audio)
         orig_data = wav.getvalue()
 
-        # 2. 分析
+        # 2. Analyze.
         analysis = detect_silence(io.BytesIO(orig_data))
         assert analysis.has_silence if hasattr(analysis, 'has_silence') else len(analysis.silence_segments) > 0
         assert analysis.saving_percentage > 0
 
-        # 3. 裁剪
+        # 3. Trim.
         result = trim_silence(io.BytesIO(orig_data), analysis)
         assert result.trimmed_duration_ms < result.original_duration_ms
         assert result.md5 == hashlib.md5(result.audio_data).hexdigest()
 
-        # 4. 验证输出格式
+        # 4. Validate output format.
         out_buf = io.BytesIO(result.audio_data)
         with wave.open(out_buf, 'rb') as wf:
             assert wf.getframerate() == 16000
@@ -575,7 +575,7 @@ class TestEndToEnd:
             assert wf.getnchannels() == 1
 
     def test_pipeline_with_different_sample_rates(self):
-        """不同采样率的测试"""
+        """Test different sample rates."""
         for sr in [8000, 22050, 44100, 48000]:
             sine = _generate_sine(440, 0.5, sample_rate=sr)
             silence = _generate_silence(0.7, sample_rate=sr)
@@ -590,7 +590,7 @@ class TestEndToEnd:
                 assert result.md5 == hashlib.md5(result.audio_data).hexdigest()
 
     def test_pipeline_preserves_bit_depth(self):
-        """不同位深度保持一致"""
+        """Preserve consistency across bit depths."""
         for sw in [1, 2, 3, 4]:
             sine = _generate_sine(440, 0.5)
             silence = _generate_silence(0.7)

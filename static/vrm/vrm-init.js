@@ -362,6 +362,10 @@ function applyVRMOutlineWidth(scale, vrmManager) {
         scale = parsedScale;
     }
 
+    if (vrmManager?.core?.applyOutlineWidth) {
+        vrmManager.core.applyOutlineWidth(scale);
+        return;
+    }
     if (!vrmManager?.currentModel?.vrm?.scene) return;
     vrmManager.currentModel.vrm.scene.traverse((object) => {
         if (!object.isMesh && !object.isSkinnedMesh) return;

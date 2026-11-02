@@ -1,7 +1,7 @@
-"""汇率查询 — Frankfurter API (免费, 无需 key)。
+"""Exchange-rate lookup — Frankfurter API (free, no key required).
 
 https://frankfurter.dev/v1/
-数据源: 欧洲央行 (ECB)，每个工作日更新。
+Data source: European Central Bank (ECB), updated each business day.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ async def convert(
     from_currency: str,
     to_currency: str,
 ) -> Optional[Dict[str, Any]]:
-    """汇率换算。返回 {from, to, amount, result, rate, date} 或 None。"""
+    """Convert currency. Return {from, to, amount, result, rate, date} or None."""
     fr = from_currency.upper().strip()
     to = to_currency.upper().strip()
     if not fr or not to:

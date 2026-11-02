@@ -257,13 +257,13 @@ async def generate_galgame_options(request: Request):
     if not isinstance(data, dict):
         return JSONResponse({"success": False, "error": "invalid_payload"}, status_code=400)
 
-    # Telemetry：galgame 是 feature 之一，counter 用于"哪些功能被实际触发 +
-    # 多频繁"。**不**带 lanlan_name（用户自定义角色名，PII + 高基数）。
+    # Telemetry: galgame is a feature; counters track which features actually trigger and
+    # how often. **Exclude** lanlan_name (user-defined character name: PII + high cardinality).
     try:
         from utils.instrument import counter as _instr_counter
         _instr_counter("feature_invoked", feature="galgame_options")
     except Exception:
-        # 埋点失败不能挡 galgame endpoint —— 静默继续，不打日志防刷屏。
+        # Telemetry failure must not block galgame endpoints; continue silently without log spam.
         pass
 
     messages = _coerce_messages(data.get('messages'))
@@ -286,11 +286,11 @@ async def generate_galgame_options(request: Request):
     master_name = (data.get('master_name') or master_name_current or '').strip() \
         or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
 
-    # 纵深防御：game route 接管会话期间（语音输入被改路由进游戏逻辑），
-    # React composer 的 galgame 面板并非当前活动界面，此时生成选项只会白白
-    # 烧掉 summary 档 token。前端已在聊天窗口隐藏（voice-only / proactive
-    # 路径）时跳过该请求；这里与 core.py 里 voice-proactive 的 _takeover_active
-    # 守卫对称，确保异常 / 老版本客户端也无法绕过空耗 token。
+    # Defense in depth: while the game route owns the session (voice input redirected to game logic),
+    # the React composer's galgame panel is not active, so generating options merely
+    # wastes summary-tier tokens. The frontend skips this request when the chat window is hidden (voice-only / proactive
+    # paths); mirror core.py's voice-proactive _takeover_active guard here,
+    # preventing broken / older clients from bypassing protection against wasted tokens.
     try:
         mgr = get_session_manager().get(lanlan_name)
     except Exception:

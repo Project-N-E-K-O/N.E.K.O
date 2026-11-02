@@ -7,15 +7,15 @@ Before this module, ``_atomic_write_bytes`` / ``_atomic_write_json`` were
 
 * ``pipeline/persistence.py``           (had fsync — P21.1 G1 fix)
 * ``routers/memory_router.py``           (NO fsync)
-* ``pipeline/memory_runner.py``          (NO fsync — comment even claimed "same convention as memory_router")
-* ``pipeline/script_runner.py``          (NO fsync — comment claimed "防掉电" but code didn't deliver)
+* ``pipeline/memory_runner.py``          (NO fsync — comment even claimed \"same convention as memory_router\")
+* ``pipeline/script_runner.py``          (NO fsync — comment claimed \"power-loss protection\" but code didn't deliver)
 * ``pipeline/scoring_schema.py``         (NO fsync)
 * ``pipeline/snapshot_store.py`` _spill  (NOT EVEN atomic — raw ``gzip.open + write``)
 
 P21.1's G1 fix only covered the persistence.py copy. The other 5 were
 silent ticking time bombs: a BSOD / power loss during a memory-editor
-save / snapshot cold spill / schema save could leave the file "present
-but zero bytes", which deserializes as empty and can silently destroy
+save / snapshot cold spill / schema save could leave the file \"present
+but zero bytes\", which deserializes as empty and can silently destroy
 user data.
 
 P24 §4.1.2 collapses all 6 sites into this one module.
@@ -33,7 +33,7 @@ All three follow the same contract:
 2. Write to ``<path>.tmp`` (same directory, same filesystem — guarantees
    ``os.replace`` is atomic at the POSIX / NTFS level)
 3. ``fh.flush() + os.fsync(fh.fileno())`` — forces kernel pagecache to
-   durable storage. This closes the "file exists but 0 bytes" crash
+   durable storage. This closes the \"file exists but 0 bytes\" crash
    window that NTFS / ext4-writeback leave open between ``write()``
    return and actual media flush.
 4. ``os.replace(tmp, path)`` — atomic rename, old file (if any) dropped

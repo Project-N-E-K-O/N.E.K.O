@@ -38,20 +38,20 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-# ★ 发版前修改：问卷收集服务器地址。为空则不上报。
-# 与 telemetry 不同端口（survey_server 默认 8100）。
+# ★ Set before release: survey collection-server URL. Empty means no reporting.
+# Uses a different port from telemetry (survey_server defaults to 8100).
 _SURVEY_SERVER_URL = "http://118.31.122.91:8100"
 
 if _SURVEY_SERVER_URL and not _SURVEY_SERVER_URL.startswith(("http://", "https://")):
     logger.warning("Survey client: invalid server URL scheme, disabling remote reporting")
     _SURVEY_SERVER_URL = ""
 
-# ★ 发版前修改：HMAC 签名密钥（与 survey_server/security.py 的 DEFAULT_HMAC_SECRET 一致）。
-# 与 telemetry 的密钥**故意不同**：两条上报通道互不背书。
+# ★ Set before release: HMAC signing key, matching DEFAULT_HMAC_SECRET in survey_server/security.py.
+# Intentionally use a **different** key from telemetry: the reporting channels do not vouch for each other.
 _SURVEY_HMAC_SECRET = "neko-survey-v1-7d2e9c4b8a1f60533e7a2b9c8d4f1e06"  # noqa: S105
 
-_SURVEY_TIMEOUT = 10  # 秒
-_SURVEY_GZIP_THRESHOLD = 1024  # >= 1KB 才 gzip（小 payload 不划算）
+_SURVEY_TIMEOUT = 10  # Seconds
+_SURVEY_GZIP_THRESHOLD = 1024  # gzip only at >= 1KB (not worthwhile for small payloads)
 
 
 def _compute_signature(payload_json: str, timestamp: float) -> str:
@@ -79,7 +79,7 @@ def is_reporting_enabled() -> bool:
         if _DO_NOT_TRACK:
             return False
     except Exception:
-        # 读不到开关时保守不上报。
+        # Conservatively avoid reporting if the switch cannot be read.
         return False
     return True
 
@@ -139,9 +139,9 @@ def report_survey(
         )
 
         device_id = _get_anonymous_device_id()
-        # distribution + 实时 Steam64 同源一次取出。survey 是 steam-only（下发口已拦），
-        # 这里附带 id 便于与 telemetry 的 device↔account 维度对齐；Steam 客户端没开
-        # 拿不到 id 时为空串，与 telemetry 的 "steam + 空 id" 语义一致。
+        # Fetch distribution + live Steam64 together from the same source. Surveys are Steam-only (enforced by delivery),
+        # and including the id aligns device↔account dimensions with telemetry; when Steam is not running
+        # and no id is available, use an empty string, matching telemetry's 'steam + empty id' semantics.
         distribution, steam_user_id = _get_telemetry_metadata()
         branch = "unknown"
         if config_dir is not None:
@@ -158,8 +158,8 @@ def report_survey(
             "locale": _get_telemetry_locale(),
             "branch": branch,
             "distribution": distribution,
-            # Steam64（缓存优先）。survey 是 steam-only，附带 id 便于与 telemetry
-            # 的 device↔account 维度对齐；非 steam 走不到这里（下发口已拦）。
+            # Steam64 (cache first). Surveys are Steam-only; include the id to align with telemetry's
+            # device↔account dimensions; non-Steam requests cannot reach here (delivery blocks them).
             "steam_user_id": steam_user_id or "",
             "action": action,
             "answers": answers,
@@ -169,8 +169,8 @@ def report_survey(
         ts = time.time()
         sig = _compute_signature(payload_json, ts)
 
-        # batch_id：device + survey_version + action 三元组。失败重传同一动作时
-        # 不变（server seen_batches 去重），submit/skip 之间不同（漏斗各记一条）。
+        # batch_id combines device + survey_version + action. Retries of the same failed action
+        # retain it (server seen_batches deduplication); submit and skip differ (one funnel record for each).
         batch_core = {"device_id": device_id, "survey_version": payload["survey_version"], "action": action}
         batch_id = hashlib.sha256(
             json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()

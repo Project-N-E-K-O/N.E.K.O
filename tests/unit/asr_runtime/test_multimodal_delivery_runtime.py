@@ -49,8 +49,8 @@ async def test_independent_multimodal_turn_samples_the_utterance_span() -> None:
     turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
 
     assert turn is not None
-    # 两帧都在本回合窗口内：开头那张不能因为"不是最新"被丢掉——用户开口时指的
-    # 东西就在那张上。source / request_id 仍然描述最新那张（回合的收尾身份）。
+    # Both frames are inside this turn's window: do not discard the first as outdated, since it shows what the user
+    # referred to at speech onset. source / request_id still describe the latest frame, the turn's closing identity.
     assert turn.images == ("first-frame", "latest-frame")
     assert turn.source == "camera"
     assert turn.request_id == "frame-2"
@@ -159,8 +159,8 @@ async def test_dispatch_hands_the_ownership_predicate_to_the_handoff() -> None:
     async def observe_predicate_inside_the_handoff(_turn, **kwargs):
         still_owned = kwargs["visual_still_owned"]
         seen["before"] = still_owned()
-        # 后继发声在交接进行中 prepare —— 谓词必须立刻反映出来，而不是停在
-        # 进入交接那一刻的快照。
+        # A successor utterance prepares during handoff; the predicate must reflect that immediately rather than retaining
+        # the snapshot from handoff entry.
         seen["record"].invalidated.set()
         seen["after"] = still_owned()
         return True
@@ -365,9 +365,9 @@ async def test_new_prepare_does_not_erase_a_preceding_turn_record() -> None:
     second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
     runtime._begin_core_multimodal_turn(second_id, second)
 
-    # 前一条的记录仍在，且仍是同一个对象 —— 身份自检因此不会误判。
+    # The previous record still exists as the same object, so identity self-checks do not misclassify it.
     assert runtime._core_multimodal_turns.get(first_id) is first_record
-    # 但它已被标记作废：图归新回合，旧 final 只是别被整句丢掉。
+    # It is marked invalid, however: the image belongs to the new turn, while the old final merely avoids whole-sentence loss.
     assert first_record.invalidated.is_set()
     assert runtime._core_multimodal_turns.get(second_id) is not None
 
@@ -385,9 +385,9 @@ async def test_retained_turn_records_are_bounded() -> None:
             f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
         )
 
-    # 记录本该由各自 dispatch 的 finally 移除；这个上限只是内存兜底。
+    # Each dispatch's finally should remove its own record; this limit only bounds memory as fallback.
     assert len(runtime._core_multimodal_turns) <= 8
-    # 留下的是最近的那些 —— 淘汰绝不能挑到最新那条（它才是当前在跑的）。
+    # Keep the most recent records; eviction must never select the latest, currently running one.
     kept = sorted(runtime._core_multimodal_turns)
     assert kept[-1].endswith("-229")
 
@@ -422,8 +422,8 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     runtime.session.get_multimodal_turn_delivery = MagicMock(
         return_value="direct_atomic"
     )
-    # 在**调用发生的那一刻**取一次所有权判据的值。它是个活闭包，事后再调时
-    # 这一轮早已结束、所有权已释放，所以只能在这里记。
+    # Read the ownership predicate exactly when the call occurs. It is a live closure; calling it afterward sees
+    # the finished turn's released ownership, so record it here.
     owned_at_call: list = []
 
     async def _record_ownership(*_args, **kwargs):
@@ -467,17 +467,17 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
         "look here",
         ("raw-frame",),
         turn_id=turn_id,
-        # 帧总线的频道标签，与这批帧一起冻结。会话侧读活状态会在裁剪 / arbiter
-        # 排队 / SDK send 那几段 await 里漂到后继发声的通道上。
+        # Freeze the frame-bus channel label with these frames. Reading live session state would drift to the successor
+        # utterance's channel during crop / arbiter-queue / SDK-send awaits.
         source="screen",
-        # Gemini 那条路在真正送出之前还有一段压缩 await，所有权判据必须跟着进去。
+        # Gemini awaits compression before actual sending; the ownership predicate must accompany it.
         visual_still_owned=ANY,
     )
-    # 传的是这一轮 record 自己的 source，不是某个字面量碰巧相等。
+    # Pass this turn record's own source, not an accidentally equal literal.
     assert runtime.session.submit_multimodal_turn.await_args.kwargs["source"] == (
         record.source if hasattr(record, "source") else "screen"
     )
-    # 穿进去的必须是活的判据，且在真正调用 provider 的那一刻仍持有所有权。
+    # Pass a live predicate, and retain ownership at the actual provider call.
     assert owned_at_call == [True]
     runtime.session.submit_external_voice_turn.assert_not_awaited()
     assert turn_id not in runtime._core_multimodal_turns
@@ -516,7 +516,7 @@ async def test_final_superseded_after_freeze_submits_text_without_frames() -> No
 
     async def accept_then_let_a_successor_start(*args, **kwargs):
         result = await accepted(*args, **kwargs)
-        # 冻结之后、提交之前：后继发声 prepare，视觉所有权交出去。
+        # After freezing but before submission: successor speech prepares and takes visual ownership.
         successor = VoiceTurnToken(
             ingress=runtime._capture_ingress_token(),
             turn_id=token.turn_id + 1,

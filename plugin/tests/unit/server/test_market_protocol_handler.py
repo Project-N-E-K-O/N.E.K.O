@@ -1,9 +1,9 @@
 from plugin.server import market_protocol_handler
-from plugin.server.routes import market_bridge
+from plugin.server.infrastructure import package_download
 
 
-def test_protocol_install_poll_timeout_covers_bridge_download_timeout() -> None:
-    assert market_protocol_handler._INSTALL_POLL_TIMEOUT_SECONDS > market_bridge._DOWNLOAD_TIMEOUT
+def test_protocol_install_poll_timeout_covers_a_stalled_download_read() -> None:
+    assert market_protocol_handler._INSTALL_POLL_TIMEOUT_SECONDS > package_download.REQUEST_TIMEOUT
 
 
 def test_protocol_install_requires_market_id_and_version(monkeypatch) -> None:

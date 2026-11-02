@@ -12,7 +12,7 @@ from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin, plugin_ent
 from .config_store import WechatConfigStore
 from .wechat_client import WechatClient
 
-# 滑动窗口上限：最近 20 轮（每轮 2 条 = user + assistant），防止单次活跃会话历史撑爆
+# Sliding-window cap: the most recent 20 turns (2 messages each: user + assistant), preventing an active session from overflowing history
 MAX_HISTORY_TURNS = 20
 MAX_HISTORY_MESSAGES = MAX_HISTORY_TURNS * 2
 
@@ -30,7 +30,7 @@ def build_open_ui_payload(*, plugin_id: str, available: bool, i18n=None) -> dict
 
 
 class LoginSession:
-    """微信扫码登录会话"""
+    """WeChat QR-code login session"""
 
     def __init__(self, qrcode: str, qrcode_img_content: str):
         self.qrcode = qrcode
@@ -552,7 +552,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
         return "\n".join(text_parts).strip()
 
     async def _generate_wechat_reply(self, user_id: str, message: str) -> str | None:
-        """生成微信回复。微信是主人专用通道，对话对象始终是主人。"""
+        """Generate a WeChat reply. WeChat is an owner-only channel, so the conversation partner is always the owner."""
         try:
             from config.prompts.prompts_sys import (
                 SESSION_INIT_PROMPT,
@@ -577,7 +577,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
             master_title = master_name if master_name else "主人"
             character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
 
-            # 角色卡额外字段
+            # Additional character-card fields
             current_character = catgirl_data.get(her_name, {})
             character_card_fields = {}
             for key, value in current_character.items():
@@ -587,17 +587,17 @@ class WechatIntegrationPlugin(NekoPluginBase):
                     if isinstance(value, (str, int, float, bool)) and value:
                         character_card_fields[key] = value
 
-            # 语言
-            # #2500 第 2 步：取全码再经 prompts_sys 归一。原先那次 format="short"
-            # 的短码化是顺手做的、不是有意的——它把 zh-TW 塌成 zh，繁中用户拿简体
-            # 模板。⚠️ 也不能拿全码裸查：简中的全码是 'zh-CN'，而这张表的简体键
-            # 是 'zh'。
+            # Language
+            # #2500 step 2: retrieve the full code, then normalize through prompts_sys. The old format="short"
+            # conversion was incidental, not intentional; it collapsed zh-TW to zh and gave traditional-Chinese users simplified
+            # templates. ⚠️ Raw full-code lookup is also wrong: simplified Chinese has full code 'zh-CN', while this table's key
+            # is 'zh'.
             short_language = normalize_sys_prompt_locale(get_global_language_full())
             init_prompt_template = SESSION_INIT_PROMPT.get(
                 short_language, SESSION_INIT_PROMPT["zh"],
             )
 
-            # 构建 system prompt
+            # Build the system prompt
             system_prompt_parts = [
                 init_prompt_template.format(name=her_name),
                 apply_role_placeholders(character_prompt, lanlan_name=her_name, master_name=master_title),
@@ -628,12 +628,12 @@ class WechatIntegrationPlugin(NekoPluginBase):
             )
             system_prompt = "\n".join(system_prompt_parts)
 
-            # 获取或创建会话历史
+            # Get or create conversation history
             now = time.time()
             self._cleanup_wechat_sessions(now)
             session = self._wechat_sessions.get(user_id)
             if session is None:
-                # 新建会话：加载记忆上下文
+                # New session: load memory context
                 memory_context = await self._fetch_memory_context(her_name)
                 session = {
                     "history": [],
@@ -649,14 +649,14 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 memory_context = None
             session["last_activity"] = now
 
-            # 构建 system prompt（含记忆上下文）
+            # Build the system prompt, including memory context
             final_system_prompt = system_prompt
             if memory_context:
                 final_system_prompt = system_prompt + "\n\n" + memory_context
 
-            # 构建完整消息列表: system + history (裁剪到窗口上限) + new_user_msg
+            # Build complete message list: system + history (trimmed to window cap) + new_user_msg
             messages = [{"role": "system", "content": final_system_prompt}]
-            # 防御性裁剪：仅取最近 MAX_HISTORY_MESSAGES 条
+            # Defensive trimming: take only the most recent MAX_HISTORY_MESSAGES messages
             recent_history = session["history"][-MAX_HISTORY_MESSAGES:]
             messages.extend(recent_history)
             messages.append({"role": "user", "content": message})
@@ -673,10 +673,10 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 response = await llm.ainvoke(messages)
                 reply = (getattr(response, "content", "") or "").strip()
                 if reply:
-                    # 保存到对话历史
+                    # Save to conversation history
                     session["history"].append({"role": "user", "content": message})
                     session["history"].append({"role": "assistant", "content": reply})
-                    # 滑动窗口裁剪：只保留最近 N 轮，防止历史无限增长撑爆 token
+                    # Trim the sliding window to the most recent N turns, preventing unbounded history from exhausting tokens
                     if len(session["history"]) > MAX_HISTORY_MESSAGES:
                         trimmed = len(session["history"]) - MAX_HISTORY_MESSAGES
                         del session["history"][:trimmed]
@@ -686,7 +686,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
                     self.logger.info(
                         f"[wechat_integration] LLM reply len={len(reply)} history_turns={len(session['history']) // 2}"
                     )
-                    # 缓存增量到 Memory Server
+                    # Cache the increment to Memory Server
                     await self._cache_memory_delta(her_name, [
                         {"role": "user", "content": message},
                         {"role": "assistant", "content": reply},
@@ -706,7 +706,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
             return None
 
     def _cleanup_wechat_sessions(self, now: float | None = None) -> None:
-        """清理超过 5 分钟无活动的微信会话，先结算记忆再删除"""
+        """Clean up WeChat sessions inactive for more than 5 minutes, finalizing memory before deletion"""
         if now is None:
             now = time.time()
         stale = [
@@ -729,7 +729,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
     # ------------------------------------------------ Memory Server helpers
     @staticmethod
     async def _fetch_memory_context(her_name: str) -> str | None:
-        """从 Memory Server 加载对话记忆"""
+        """Load conversation memory from Memory Server"""
         try:
             import httpx
             from config import MEMORY_SERVER_PORT
@@ -749,7 +749,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
 
     @staticmethod
     async def _cache_memory_delta(her_name: str, messages: list[dict[str, Any]]) -> None:
-        """缓存增量对话到 Memory Server"""
+        """Cache incremental conversation content to Memory Server"""
         try:
             import json
             import httpx
@@ -770,7 +770,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
 
     @staticmethod
     async def _settle_memory_session(her_name: str, reason: str) -> bool:
-        """结算已通过 ``/cache`` 持久化的会话，不重复写入对话消息。"""
+        """Finalize sessions already persisted through ``/cache`` without writing conversation messages again."""
         if not her_name:
             return False
         try:
@@ -814,13 +814,13 @@ class WechatIntegrationPlugin(NekoPluginBase):
             f"[wechat_integration] received msg from={from_user_id} text={text[:50]}"
         )
 
-        # 生成回复
+        # Generate a reply
         reply = await self._generate_wechat_reply(user_id=from_user_id, message=text)
         if not reply:
             self.logger.warning("[wechat_integration] no reply generated, skip send")
             return
 
-        # 发送回复
+        # Send the reply
         success = await self._send_text_message(from_user_id, reply)
         if not success:
             self.logger.warning("[wechat_integration] failed to send reply to WeChat")

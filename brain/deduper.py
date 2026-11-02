@@ -32,11 +32,11 @@ class TaskDeduper:
     """
 
     def __init__(self):
-        # (route, client) 收在**一个**元组里原子发布，不拆成两个属性——拆开的
-        # 两次赋值在并发刷新时会交错出「旧 client 配新 route 指纹」，之后每次
-        # 调用都把那个旧 client 误判为最新，钉死错误端点直到路由再次变化。
+        # Publish (route, client) atomically as **one** tuple, not two attributes. Separate
+        # assignments can interleave during concurrent refreshes, pairing an old client with a new route fingerprint; later
+        # calls then mistake that old client for the latest and stay pinned to the wrong endpoint until routing changes again.
         self._llm_cache = None
-        # 构造时先建一次，保持原有「启动即就绪」的行为；真正的权威判定在 _get_llm。
+        # Construct once initially to preserve startup readiness; _get_llm makes the authoritative decision.
         self._get_llm()
 
     def _get_llm(self):
@@ -117,14 +117,14 @@ class TaskDeduper:
 
         prompt = self._build_prompt(new_task, candidates)
 
-        # 路由复查 offload 出事件循环：_get_llm 内部走 get_model_api_config →
-        # get_core_config，是同步的 open()+json.load() 磁盘读——agent_server 的
-        # 事件循环被三个子系统共享，慢盘/杀软下同步读会卡住所有并发请求（与
-        # aget_core_config 必须 offload 同一条理由）。每次 judge 复查一次就够：
-        # 单次 judge 内部的重试没必要各自重读路由。
+        # Offload route rechecks from the event loop: _get_llm calls get_model_api_config →
+        # get_core_config, performing synchronous open()+json.load() disk reads. agent_server's
+        # event loop is shared by three subsystems, so slow disks/antivirus would block all concurrent requests
+        # (the same reason aget_core_config must offload). One recheck per judge is enough:
+        # retries within a single judge need not reread routing independently.
         llm = await asyncio.to_thread(self._get_llm)
 
-        # Retry策略：重试2次，间隔1秒、2秒
+        # Retry policy: two retries, after 1 second and 2 seconds
         max_retries = 3
         retry_delays = [1, 2]
 

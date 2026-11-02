@@ -248,7 +248,7 @@ def test_every_entry_write_site_sets_the_full_locale():
     [
         ({"user_language": "zh", "user_language_full": "zh-TW"}, "zh-TW"),
         ({"user_language": "zh", "user_language_full": "zh-CN"}, "zh-CN"),
-        # 老 entry（建于该字段存在之前）退回短码，而不是 None。
+        # Older entries (created before this field existed) fall back to the short code rather than None.
         ({"user_language": "zh"}, "zh"),
         ({"user_language": "zh", "user_language_full": None}, "zh"),
         ({}, ""),
@@ -275,7 +275,7 @@ def test_entry_prompt_locale_reaches_the_traditional_template():
     assert traditional == get_game_context_organizer_system_prompt("zh-TW")
     assert traditional != get_game_context_organizer_system_prompt("zh")
 
-    # 水印表照旧逐 locale 相同 —— 这是有意的，不是没翻。
+    # The watermark table remains identical across locales; this is intentional, not a missing translation.
     assert get_game_chat_event_user_prompt("zh-TW") == get_game_chat_event_user_prompt("zh")
 
 

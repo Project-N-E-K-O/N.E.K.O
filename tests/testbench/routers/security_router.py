@@ -11,7 +11,7 @@ Endpoints
 ---------
 
 * ``POST /api/security/prompt_injection/scan``
-    Body: ``{"text": "..."}`` OR ``{"fields": {"name": "text", ...}}``.
+    Body: ``{\"text\": \"...\"}`` OR ``{\"fields\": {\"name\": \"text\", ...}}``.
     Returns the detector's summary shape (``{count, by_category,
     by_severity, top_hits}`` for the single-text form; ``{fields:
     {name: summary}}`` for the multi-field form).
@@ -20,7 +20,7 @@ Design notes
 ------------
 * **No filtering / rejection**: the testbench deliberately allows
   adversarial content as input; see ``PLAN.md §13`` core principle
-  \u201c\u6c38\u4e0d\u8fc7\u6ee4\u7528\u6237\u5185\u5bb9\u201d. This
+  “never filter user content”. This
   endpoint only describes what's there.
 * **No session lock**: scanning is stateless; multiple concurrent calls
   are fine even mid-chat / mid-eval.

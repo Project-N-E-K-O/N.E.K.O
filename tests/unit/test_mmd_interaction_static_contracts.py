@@ -12,7 +12,7 @@ def test_mmd_pan_drag_snaps_on_all_platforms_before_saving_position():
     source = _mmd_source()
     pan_drag_section = source.split("if (!displaySwitched) {", 1)[1].split("// 鼠标离开", 1)[0]
 
-    # 桌宠窗口与网页端统一走 clampModelPosition(可见像素阈值)，不再按运行环境分叉。
+    # Both the desktop-pet window and web page use clampModelPosition with a visible-pixel threshold, without branching by environment.
     assert "if (isDesktopPetWindow) {" not in pan_drag_section
     assert "const snapped = await this._snapModelIntoScreen({ animate: true });" in pan_drag_section
     assert "if (!snapped) {" in pan_drag_section

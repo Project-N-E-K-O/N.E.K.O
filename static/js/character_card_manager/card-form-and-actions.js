@@ -2262,6 +2262,11 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 ? (window.t ? window.t('character.newCatgirlSuccess') : '新猫娘创建成功')
                 : (window.t ? window.t('character.saveSuccess') : '保存成功'), 'success');
         }
+        // Persist this click's consent before rebuilding the form: its switch
+        // immediately reads the saved choice and must not reload the old value.
+        if (window.nekoCharacterProfileSync) {
+            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName, syncEnabledAtSaveStart, isNew);
+        }
         if (isNew) {
             const catgirlName = savedCatgirlName;
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
@@ -2315,10 +2320,6 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         await loadCharacterCards();
         setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
         syncCharacterCardCache(savedCatgirlName, savedRawDataForCache);
-        // The same saved switch approves both new and edited cards; no second profile prompt.
-        if (window.nekoCharacterProfileSync) {
-            await window.nekoCharacterProfileSync.afterCardSave(savedCatgirlName, syncEnabledAtSaveStart, isNew);
-        }
         return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);

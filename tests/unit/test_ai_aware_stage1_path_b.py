@@ -1,30 +1,30 @@
 # -*- coding: utf-8 -*-
-"""AI-aware Stage-1 (path B) — 端到端不变量与 contract pin。
+"""AI-aware Stage-1 (path B): end-to-end invariants and contract pins.
 
-设计 background：path A 已有的 SignalLoop 只看 user msgs（PR #1346 之后
-ON-mode 唯一 fact 抽取路径），导致 AI 自我披露 + proactive 引入的屏幕/活动
-上下文 grounded fact 全失明。path B 在 A 循环里 piggyback 触发，跑 AI-aware
-Stage-1（含 user+ai 全消息 + known pool 提示），fact 标 source='ai_disclosure'
-不进 Stage-2 evidence loop。
+Background: path A's existing SignalLoop sees only user messages (the sole ON-mode
+fact-extraction route after PR #1346), missing AI self-disclosure and grounded
+screen/activity context introduced by proactive speech. Path B piggybacks on A's loop,
+running AI-aware Stage-1 over user+AI messages with known pools, labeling source='ai_disclosure'
+and excluding these facts from Stage-2 evidence loops.
 
-测试覆盖：
-1. ``_extract_role_tagged_messages_from_rows``：收 user + ai 双 type，
-   渲染 list[dict] 而非 list[str]
-2. ``_apersist_new_facts``：source 字段持久化 + ai_disclosure 写盘时
-   signal_processed=True（防卡池）
-3. ``_apersist_new_facts``：monotonic source upgrade（ai_disclosure
-   → user_observation 不可逆 + 重置 signal_processed=False 让 Stage-2
-   重新评估）
-4. ``aextract_facts_and_detect_signals``：unprocessed pool filter
-   ``source != 'ai_disclosure'`` 双重防御
-5. Path B trigger cadence：每 ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS``
-   次 A tick 触发一次
-6. Path B cold-start lookback：从 ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS
-   × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES`` 推算，不要新魔法常数
+Coverage:
+1. ``_extract_role_tagged_messages_from_rows`` accepts both user/AI types,
+   rendering list[dict], not list[str].
+2. ``_apersist_new_facts`` persists source and marks ai_disclosure
+   signal_processed=True, preventing blocked pools.
+3. ``_apersist_new_facts`` monotonic source upgrade: ai_disclosure
+   ->user_observation is irreversible, resetting signal_processed=False for Stage-2
+   reevaluation.
+4. ``aextract_facts_and_detect_signals`` unprocessed filters
+   ``source != 'ai_disclosure'`` as defense in depth.
+5. Path-B cadence: every ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS``
+   A ticks triggers once.
+6. Cold-start lookback derives from ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS
+   × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES``, without new magic constants.
 
-测不到的部分（留 manual / e2e）：
-- 实际 LLM 是否正确分配 source（依赖 prompt + 模型）
-- known_pool 是否真起到 do-not-repeat 效果（依赖 LLM 听话程度）
+Manual/e2e scope, not covered:
+- Actual LLM source attribution depends on prompts/models.
+- Known-pool do-not-repeat effectiveness depends on LLM compliance.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def _make_fact_store(*, facts=None, time_indexed=None):
 
 @pytest.mark.unit
 def test_extract_role_tagged_messages_keeps_user_and_ai():
-    """跟 _extract_user_messages_from_rows 形成对偶：path B 必须收 ai msg。"""
+    """Symmetric with _extract_user_messages_from_rows: path B must accept AI messages."""
     from app.memory_server import _extract_role_tagged_messages_from_rows
 
     rows = [
@@ -78,16 +78,16 @@ def test_extract_role_tagged_messages_keeps_user_and_ai():
     out = _extract_role_tagged_messages_from_rows(rows)
     assert len(out) == 3, f"应收 2 human + 1 ai = 3 条，实际 {len(out)}"
     types = [m['type'] for m in out]
-    assert types == ['human', 'ai', 'ai']  # system 被滤
+    assert types == ['human', 'ai', 'ai']  # Filter system messages.
     assert out[0]['data']['content'] == '主人说的话'
     assert out[1]['data']['content'] == '猫娘自己的话'
-    # content list 形态拼成单 str
+    # Join content lists into one string.
     assert out[2]['data']['content'] == 'part1 part2'
 
 
 @pytest.mark.unit
 def test_fact_extractors_ignore_numeric_theater_messages():
-    """小剧场里的虚构台词和玩家行动不能沉淀成现实人物事实。"""  # noqa: DOCSTRING_CJK
+    """Fictional theater dialogue/player actions must not become real-person facts."""  # noqa: DOCSTRING_CJK
     from app.memory_server import (
         _extract_role_tagged_messages_from_rows,
         _extract_user_messages_from_rows,
@@ -117,12 +117,12 @@ def test_fact_extractors_ignore_numeric_theater_messages():
 
 @pytest.mark.unit
 def test_extract_role_tagged_messages_skips_empty_content():
-    """空白 content 不该入 list，防 prompt 渲染出空行。"""
+    """Exclude blank content from lists, avoiding empty prompt lines."""
     from app.memory_server import _extract_role_tagged_messages_from_rows
 
     rows = [
         (datetime(2026, 5, 18, 10, 0, 0), 'sess1', json.dumps({
-            'type': 'human', 'data': {'content': '   '},  # 纯空白
+            'type': 'human', 'data': {'content': '   '},  # Whitespace only.
         })),
         (datetime(2026, 5, 18, 10, 0, 5), 'sess1', json.dumps({
             'type': 'human', 'data': {'content': '有内容'},
@@ -135,13 +135,13 @@ def test_extract_role_tagged_messages_skips_empty_content():
 
 @pytest.mark.unit
 def test_trim_to_user_msg_bracket_strips_leading_and_trailing_ai():
-    """Product thesis pin：path B 喂给 Stage-1 的消息必须先 trim 到
-    首条 user msg → 末条 user msg 之间（含两端）。首尾的 AI 残段是
-    "user 没印证 / 没回应过的廉价层"，不该入 fact。
+    """Product contract: trim path-B Stage-1 messages between the first
+    and final user messages, inclusive. Leading/trailing AI fragments
+    lack user corroboration/responses and must not become facts.
     """
     from app.memory_server import _trim_to_user_msg_bracket
 
-    # 典型 case：[ai, ai, human, ai, human, ai] → 留 [human, ai, human]
+    # Typical: [ai, ai, human, ai, human, ai] ->retain [human, ai, human].
     msgs = [
         {'type': 'ai', 'data': {'content': 'AI proactive 试探'}},
         {'type': 'ai', 'data': {'content': '还是 AI'}},
@@ -159,8 +159,8 @@ def test_trim_to_user_msg_bracket_strips_leading_and_trailing_ai():
 
 @pytest.mark.unit
 def test_trim_to_user_msg_bracket_all_ai_returns_empty():
-    """纯 AI-only 窗口（无 human msg）→ 完全 trim 空。
-    Caller 视作廉价层 skip。"""
+    """AI-only windows without human messages trim entirely empty.
+    Callers skip this uncorroborated layer."""
     from app.memory_server import _trim_to_user_msg_bracket
 
     msgs = [
@@ -172,7 +172,7 @@ def test_trim_to_user_msg_bracket_all_ai_returns_empty():
 
 @pytest.mark.unit
 def test_trim_to_user_msg_bracket_single_human_returns_self():
-    """只有一条 human msg → bracket 退化为单点。仍然合法（user 有发声）。"""
+    """One human message collapses brackets to a point, still valid because the user spoke."""
     from app.memory_server import _trim_to_user_msg_bracket
 
     msgs = [
@@ -188,7 +188,7 @@ def test_trim_to_user_msg_bracket_single_human_returns_self():
 
 @pytest.mark.unit
 def test_trim_to_user_msg_bracket_already_user_to_user_unchanged():
-    """首尾本就是 human msg → 不变。"""
+    """Human messages already at both ends remain unchanged."""
     from app.memory_server import _trim_to_user_msg_bracket
 
     msgs = [
@@ -203,11 +203,11 @@ def test_trim_to_user_msg_bracket_already_user_to_user_unchanged():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_trims_to_user_bracket_before_stage1():
-    """End-to-end pin：_run_path_b 喂给 aextract_facts_with_known_pool
-    的 messages 必须已经被 user-msg-bracket trim 过。
+    """End-to-end: _run_path_b must pass user-bracket-trimmed messages
+    into aextract_facts_with_known_pool.
 
-    构造窗口：前 2 条 AI + 中间 [user, ai, user] + 后 2 条 AI。
-    断言 Stage-1 收到的 messages 只有中间 3 条。
+    Window: two AI +middle [user, ai, user] +two AI.
+    Stage-1 must receive only the middle three.
     """
     from app import memory_server
 
@@ -253,7 +253,7 @@ async def test_path_b_trims_to_user_bracket_before_stage1():
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 验证 Stage-1 被调，且 messages 只含 bracket 内 3 条
+    # Verify Stage-1 receives only the three bracketed messages.
     fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
     sent_messages = fake_fact_store.aextract_facts_with_known_pool.await_args.args[1]
     assert len(sent_messages) == 3, (
@@ -264,10 +264,10 @@ async def test_path_b_trims_to_user_bracket_before_stage1():
         m.content if hasattr(m, 'content') else m.get('data', {}).get('content', '')
         for m in sent_messages
     ]
-    # 首尾必须是 user msg
+    # Both endpoints must be user messages.
     assert 'user 第一句' in contents[0]
     assert 'user 最后一句' in contents[2]
-    # 首尾 AI 残段必须被剥掉
+    # Strip leading/trailing AI fragments.
     full_text = '\n'.join(contents)
     assert 'AI 试探' not in full_text, (
         f"首部 AI 试探不该入 Stage-1（user 未印证），实际 content: {full_text!r}"
@@ -280,8 +280,8 @@ async def test_path_b_trims_to_user_bracket_before_stage1():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_no_user_msg_in_window_skips_extraction():
-    """End-to-end pin：窗口里完全无 user msg → bracket trim 后为空 →
-    path B 不调 Stage-1（廉价层 skip），cursor 仍照常推进避免反复扫同窗口。
+    """End-to-end: no user messages means empty bracket trimming;
+    path B skips Stage-1 but advances cursors to avoid repeatedly scanning the same window.
     """
     from app import memory_server
 
@@ -312,9 +312,9 @@ async def test_path_b_no_user_msg_in_window_skips_extraction():
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # Stage-1 不该被调
+    # Stage-1 must not run.
     fake_fact_store.aextract_facts_with_known_pool.assert_not_awaited()
-    # cursor 推到 last fetched row ts（避免下次反复扫同窗口）
+    # Advance cursor to last fetched row timestamp, avoiding repeated scans.
     assert state['last_b_check_ts'] == last_row_ts, (
         f"AI-only 窗口跳过后 cursor 应推到 last fetched ({last_row_ts})，"
         f"实际 {state['last_b_check_ts']}"
@@ -324,8 +324,8 @@ async def test_path_b_no_user_msg_in_window_skips_extraction():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_writes_source_field_default_user_observation():
-    """path A 调用方不传 default_source → 落盘 source='user_observation'，
-    signal_processed=False（正常进 Stage-2）。"""
+    """Path A omits default_source, persisting source='user_observation'
+    with signal_processed=False for normal Stage-2 processing."""
     fs = _make_fact_store()
     fs.aload_facts = AsyncMock(return_value=[])
     fs.asave_facts = AsyncMock(return_value=None)
@@ -346,8 +346,8 @@ async def test_apersist_writes_source_field_default_user_observation():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true():
-    """path B 调用方传 default_source='ai_disclosure' → 落盘 source 字段
-    一致，signal_processed=True（不进 Stage-2 evidence loop）。"""
+    """Path B passes default_source='ai_disclosure', persisting that source
+    with signal_processed=True, bypassing Stage-2 evidence loops."""
     fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
 
@@ -369,14 +369,14 @@ async def test_apersist_writes_source_ai_disclosure_with_signal_processed_true()
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_llm_source_field_overrides_default():
-    """LLM 显式输出的 source 字段优先于 default_source（trust LLM 的
-    per-fact 判断）。"""
+    """Explicit LLM source overrides default_source, trusting its
+    per-fact judgment."""
     fs = _make_fact_store()
     fs.asave_facts = AsyncMock(return_value=None)
 
-    # LLM 输出 source='user_observation'，但 caller 传 default='ai_disclosure'
-    # 模拟 LLM 判断"虽然在 ai_aware pass 里，但这条 fact 实际靠 user msg
-    # 印证的"——这种情况 LLM 标 user_observation 应该被尊重
+    # LLM returns source='user_observation', caller defaults to ai_disclosure.
+    # Simulate LLM recognizing user corroboration despite this being an ai_aware pass;
+    # respect its user_observation attribution.
     extracted = [
         {'text': '博士喜欢咖啡', 'importance': 7, 'entity': 'master',
          'source': 'user_observation'},
@@ -386,7 +386,7 @@ async def test_apersist_llm_source_field_overrides_default():
             '悠怡', extracted, default_source='ai_disclosure',
         )
     assert new_facts[0]['source'] == 'user_observation'
-    # 又因为 source 是 user_observation，signal_processed 应该 False
+    # user_observation also requires signal_processed=False.
     assert new_facts[0]['signal_processed'] is False
 
 
@@ -427,7 +427,7 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
             '悠怡', extracted, default_source='user_observation',
         )
 
-    # 不返新 fact（SHA-256 撞了 skip 写），但 in-place 升级了 existing
+    # No new fact returned (SHA-256 duplicate skips writes), but existing upgraded in place.
     assert new_facts == []
     assert existing_fact['source'] == 'user_observation', "user 印证后应升级"
     assert existing_fact['signal_processed'] is False, (
@@ -439,16 +439,16 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_monotonic_source_upgrade_within_same_batch():
-    """Regression (Codex P2 round-10 on PR #1408)：同一次 Stage-1 extracted
-    payload 里若同 text 出现两次（先 ai_disclosure 后 user_observation），
-    `hash_to_existing` 必须在第一次写入后同步更新——否则第二次命中
-    `content_hash in existing_hashes` 时 `hash_to_existing.get()` 返 None，
-    monotonic upgrade 路径被跳过，user_observation 升级被静默丢弃。
+    """Regression (Codex P2 round-10 on PR #1408): duplicate Stage-1 text in one
+    payload, ai_disclosure followed by user_observation, requires
+    `hash_to_existing` updates immediately after first writes; otherwise the second
+    `content_hash in existing_hashes` match finds `hash_to_existing.get()` None,
+    skipping monotonic upgrades and silently losing user_observation promotion.
     """
     fs = _make_fact_store()
     fs.asave_facts = AsyncMock()
 
-    # 模拟单次 Stage-1 payload 包含同 text 两条：先 ai_disclosure 后 user_observation
+    # One Stage-1 payload repeats text: ai_disclosure first, then user_observation.
     extracted = [
         {
             'text': '主人喜欢猫', 'importance': 7, 'entity': 'master',
@@ -464,7 +464,7 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
         '悠怡', extracted, default_source='ai_disclosure',
     )
 
-    # 落盘只有 1 条（dedup 生效），且 source 升级到 user_observation
+    # Persist only one deduplicated fact, upgraded to user_observation.
     persisted = fs._facts['悠怡']
     assert len(persisted) == 1, (
         f"同 text 两条应 dedup 成 1 条，实际 {len(persisted)} 条"
@@ -547,7 +547,7 @@ async def test_stale_cache_still_cannot_unset_signal_processed(tmp_path):
     }]
     fs.save_facts('悠怡')
 
-    # 模拟旧缓存：内存里这条还是「没处理过」，写盘时必须被磁盘的 True 顶回去。
+    # Stale memory cache says unprocessed; persisted True must win during writes.
     fs._facts['悠怡'][0]['signal_processed'] = False
     fs.save_facts('悠怡')
 
@@ -562,8 +562,8 @@ async def test_stale_cache_still_cannot_unset_signal_processed(tmp_path):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_no_downgrade_user_to_ai():
-    """反向：撞已有 user_observation fact + 新 fact source=ai_disclosure
-    → existing 不动（user 印证不可逆退回 ai_disclosure）。"""
+    """Reverse case: existing user_observation plus new source=ai_disclosure
+    leaves existing unchanged; user corroboration cannot regress to ai_disclosure."""
     import hashlib
 
     fs = _make_fact_store()
@@ -587,34 +587,34 @@ async def test_apersist_no_downgrade_user_to_ai():
             '悠怡', extracted, default_source='ai_disclosure',
         )
 
-    # 不能降级
+    # Never downgrade.
     assert existing_fact['source'] == 'user_observation'
-    # signal_processed 也不该被乱动
+    # Leave signal_processed unchanged too.
     assert existing_fact['signal_processed'] is True
-    # 没改任何东西 → 不该 save
+    # No changes means no save.
     fs.asave_facts.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_stage2_filters_out_ai_disclosure_facts():
-    """Stage-2 unprocessed pool 必须 filter ``source='ai_disclosure'``。
-    双重防御（写盘 signal_processed=True 是第一层；这是第二层）。"""
+    """Stage-2 unprocessed pools filter ``source='ai_disclosure'``.
+    Defense in depth: persisted signal_processed=True is first; this is second."""
     fs = _make_fact_store(facts={})
 
-    # 模拟 facts.json 三条 fact：一条 user_observation 未处理（应入 Stage-2 池），
-    # 一条 ai_disclosure 未处理（**不该**入池，即使 signal_processed=False bug），
-    # 一条无 source 字段未处理（老数据，default user_observation 视图，应入池）
+    # Three facts.json entries: unprocessed user_observation enters Stage-2;
+    # unprocessed ai_disclosure must not enter, even with signal_processed=False bugs;
+    # unprocessed legacy missing-source defaults to user_observation and enters.
     fake_facts = [
         {'id': 'a', 'source': 'user_observation', 'signal_processed': False,
          'importance': 8, 'created_at': '2026-05-18T10:00:00'},
         {'id': 'b', 'source': 'ai_disclosure', 'signal_processed': False,
          'importance': 7, 'created_at': '2026-05-18T10:00:01'},
-        {'id': 'c', 'signal_processed': False,  # 无 source 字段（老数据）
+        {'id': 'c', 'signal_processed': False,  # Legacy missing source.
          'importance': 6, 'created_at': '2026-05-18T10:00:02'},
     ]
 
-    fs._allm_extract_facts = AsyncMock(return_value=[])  # 不产生新 fact
+    fs._allm_extract_facts = AsyncMock(return_value=[])  # Generate no new facts.
     fs._apersist_new_facts = AsyncMock(return_value=[])
     fs.aload_facts = AsyncMock(return_value=fake_facts)
     fs._aload_signal_targets = AsyncMock(return_value=[
@@ -622,12 +622,12 @@ async def test_stage2_filters_out_ai_disclosure_facts():
     ])
     fs._allm_detect_signals = AsyncMock(return_value=[])  # signals=[] but ran
 
-    # _allm_detect_signals 被调用时传的 batch 就是过 filter 后的 unprocessed。
-    # 这里直接 await 不绑变量——测试只关心 mock call 参数，不关心三元 return
-    # （CodeQL 对 `_xxx` 前缀仍判 unused，故彻底不绑）。
+    # _allm_detect_signals receives the filtered unprocessed batch.
+    # Await without binding variables; test only mock arguments, not triple returns.
+    # CodeQL still treats `_xxx` prefixes unused, so bind nothing.
     await fs.aextract_facts_and_detect_signals('悠怡', messages=[])
 
-    # 验证 _allm_detect_signals 被调，且其 batch 参数里**没有** b（ai_disclosure）
+    # Verify _allm_detect_signals called without b (ai_disclosure) in its batch.
     fs._allm_detect_signals.assert_awaited_once()
     actual_batch = fs._allm_detect_signals.await_args.args[1]
     actual_ids = {f['id'] for f in actual_batch}
@@ -642,12 +642,12 @@ async def test_stage2_filters_out_ai_disclosure_facts():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_cold_start_lookback_derived_from_constants():
-    """B cold start 时 last_b 推算 = last_a_msg_ts - max(N_TICKS, N_TURNS)×IDLE_MIN，
-    不需要独立的 LOOKBACK_MINUTES config。
-    取 max 而不是单 N_TICKS 是为了 cover sparse turn 场景下 A 两 tick 跨度
-    >> IDLE_MIN 的情况——若只看 N_TICKS×IDLE_MIN，cold start last_b 会落在
-    A 真正处理过的范围之内，B 永久 skip 那段前的 AI-only msg（Codex P2
-    round-6 on PR #1408）。
+    """B cold-start last_b =last_a_msg_ts -max(N_TICKS,N_TURNS)×IDLE_MIN,
+    requiring no separate LOOKBACK_MINUTES config.
+    max covers sparse-turn cases where A tick separation
+    greatly exceeds IDLE_MIN. N_TICKS×IDLE_MIN alone places cold-start last_b
+    inside A's processed range, permanently skipping earlier AI-only messages (Codex P2
+    round-6 on PR #1408).
     """
     from app import memory_server
     from config import (
@@ -657,7 +657,7 @@ async def test_path_b_cold_start_lookback_derived_from_constants():
     )
 
     last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
-    state = {'last_a_msg_ts': last_a_msg_ts}  # 没有 last_b_check_ts
+    state = {'last_a_msg_ts': last_a_msg_ts}  # No last_b_check_ts.
 
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
@@ -669,7 +669,7 @@ async def test_path_b_cold_start_lookback_derived_from_constants():
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 验证 aretrieve_original_by_timeframe 被调，start_time 正好是
+    # Verify aretrieve_original_by_timeframe start_time equals exactly
     # last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MIN（cold-start lookback）
     fake_time_manager.aretrieve_original_by_timeframe.assert_awaited_once()
     call_kwargs = fake_time_manager.aretrieve_original_by_timeframe.await_args
@@ -696,14 +696,14 @@ async def test_path_b_cold_start_lookback_derived_from_constants():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_cold_start_uses_max_of_ticks_and_turns():
-    """Regression (Codex P2 round-6 on PR #1408)：cold-start lookback 必须
-    取 max(N_TICKS, N_TURNS) × IDLE_MIN，而不能只用 N_TICKS。否则在 sparse
-    turn 场景（turn-count gate 触发的 A tick 跨度 >> piggyback 估算）下，
-    cold start last_b 落在 A 真正处理范围之内 → B 永久 skip 那段前的
-    AI-only msg。
+    """Regression (Codex P2 round-6 on PR #1408): cold-start lookback must
+    use max(N_TICKS,N_TURNS) ×IDLE_MIN, never N_TICKS alone. Sparse
+    turn-count triggers may span far more than piggyback estimates,
+    placing cold-start last_b inside processed A ranges and permanently skipping preceding
+    AI-only messages.
 
-    用 N_TURNS 远大于 N_TICKS（默认 10 vs 3）来锁死这个语义：若实现只用
-    N_TICKS，本测试会失败。
+    N_TURNS much larger than N_TICKS (default 10 vs 3) pins this;
+    N_TICKS-only implementations fail.
     """
     from app import memory_server
     from config import (
@@ -712,7 +712,7 @@ async def test_path_b_cold_start_uses_max_of_ticks_and_turns():
         EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     )
 
-    # 仅在默认配置 N_TURNS > N_TICKS 时此 regression 才有意义
+    # Meaningful only when default N_TURNS>N_TICKS.
     assert EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS > EVIDENCE_AI_AWARE_EVERY_N_A_TICKS, (
         "本 test 依赖默认 N_TURNS > N_TICKS，否则 max 两者退化、测不出区别"
     )
@@ -727,7 +727,7 @@ async def test_path_b_cold_start_uses_max_of_ticks_and_turns():
         await memory_server._run_path_b('悠怡', state)
 
     start_time = fake_time_manager.aretrieve_original_by_timeframe.await_args.args[1]
-    # 关键：实际用的 lookback 必须 >= N_TURNS × IDLE_MIN（严格 > N_TICKS × IDLE_MIN）
+    # Actual lookback must be >=N_TURNS ×IDLE_MIN, strictly >N_TICKS ×IDLE_MIN.
     n_turns_lookback = timedelta(
         minutes=EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
     )
@@ -749,29 +749,29 @@ async def test_path_b_cold_start_uses_max_of_ticks_and_turns():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_skips_when_a_never_ran():
-    """A 还没成功处理过任何 batch（last_a_msg_ts is None）时 B 无源可看，
-    应直接返回不报错。"""
+    """Before A processes any batch (last_a_msg_ts is None), B has no source;
+    return without errors."""
     from app import memory_server
 
-    state = {}  # 完全空 state（cold launcher start）
+    state = {}  # Entirely empty state on cold launcher start.
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager):
         await memory_server._run_path_b('悠怡', state)
 
-    # 无 last_a_msg_ts → B 不该读 SQL
+    # Without last_a_msg_ts, B must not read SQL.
     fake_time_manager.aretrieve_original_by_timeframe.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_ts():
-    """无截断（rows 全部覆盖到 last_a_msg_ts）时 cursor = last fetched 恰好 =
-    last_a_msg_ts。语义上等价"推到 A 处理过的最晚点"。
+    """Untruncated rows reaching last_a_msg_ts make cursor=last fetched exactly
+    last_a_msg_ts, the latest point A processed.
 
-    （跟 test_path_b_truncated_window_... 形成对偶：那条覆盖截断情况，
-    cursor 推到 last fetched < last_a_msg_ts；这条覆盖无截断情况。）
+    Symmetric to test_path_b_truncated_window_...: that covers truncation,
+    with last fetched<last_a_msg_ts; this covers full windows.
     """
     from app import memory_server
 
@@ -782,7 +782,7 @@ async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_
     }
 
     fake_time_manager = MagicMock()
-    # 最后一行 ts 就是 last_a_msg_ts（无截断的正常情况）
+    # Final row ts equals last_a_msg_ts, normal untruncated case.
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
         (last_a_msg_ts - timedelta(minutes=5), 's', json.dumps({
             'type': 'human', 'data': {'content': '中间消息'},
@@ -799,7 +799,7 @@ async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 无截断时 last fetched == last_a_msg_ts，cursor 推到此值
+    # Untruncated last fetched==last_a_msg_ts; advance cursor there.
     assert state['last_b_check_ts'] == last_a_msg_ts, (
         f"无截断时 cursor (= last fetched) 应等于 last_a_msg_ts={last_a_msg_ts}，"
         f"实际 last_b_check_ts={state['last_b_check_ts']}"
@@ -809,16 +809,16 @@ async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_empty_rows_preserves_cursor_for_retry():
-    """Regression (Codex P1 round-5 on PR #1408)：
-    `aretrieve_original_by_timeframe` 在 SQL exception / engine init 失败 /
-    维护态都 swallow + 返 []，从 caller 端无法区分"真空窗口"vs"transient
-    读失败"。如果在 rows 空时把 cursor 推到 last_a_msg_ts，整段 [last_b,
-    last_a_msg_ts] 会在 SQL transient 失败下被永久 skip → path B 静默丢
-    fact。保守做法：rows 空时 cursor 不推，下次 trigger 重试同窗口。
+    """Regression (Codex P1 round-5 on PR #1408):
+    `aretrieve_original_by_timeframe` swallows SQL exceptions/engine-init failures/
+    maintenance and returns [], indistinguishable from genuinely empty windows.
+    Advancing empty-row cursors to last_a_msg_ts permanently skips [last_b,
+    last_a_msg_ts] after transient SQL failures, silently losing path-B
+    facts. Conservatively retain cursors for the next trigger to retry.
 
-    代价：真正的空窗口下次 B trigger 还会再 query 一次空（SQLite 空范围
-    scan 极快，常数代价）；A 推进 last_a_msg_ts 后窗口范围会增长但被
-    MAX_AI_AWARE_WINDOW_MSGS LIMIT 兜底。
+    Cost: truly empty windows query empty again next B trigger (SQLite empty-range
+    scans are extremely fast, constant overhead). A grows windows by advancing last_a_msg_ts,
+    bounded by MAX_AI_AWARE_WINDOW_MSGS LIMIT.
     """
     from app import memory_server
 
@@ -830,13 +830,13 @@ async def test_path_b_empty_rows_preserves_cursor_for_retry():
     }
 
     fake_time_manager = MagicMock()
-    # 模拟 SQL transient 失败（time_manager swallow 返 []，跟真空窗口同形态）
+    # Simulate transient SQL failures swallowed as [], indistinguishable from empty windows.
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager):
         await memory_server._run_path_b('悠怡', state)
 
-    # 关键契约：cursor 必须保持原值，下次 B trigger 重试该窗口
+    # Preserve cursor so the next B trigger retries the same window.
     assert state['last_b_check_ts'] == original_last_b, (
         f"rows 空时 cursor 必须保留原值 {original_last_b} (transient SQL 失败保护)，"
         f"实际推到 {state['last_b_check_ts']}"
@@ -846,9 +846,9 @@ async def test_path_b_empty_rows_preserves_cursor_for_retry():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_filters_known_pool_by_window_and_caps():
-    """已知池：只看 ``created_at >= last_b`` 下界（不设上界——见
+    """Known pools use only ``created_at >= last_b`` lower bounds, no upper bound; see
     `test_path_b_known_pool_includes_just_written_a_facts_despite_clock_skew`
-    的 clock-skew 契约），按 importance DESC，cap 到 MAX_KNOWN_POOL_FACTS。
+    for clock-skew contracts. Sort importance DESC, cap MAX_KNOWN_POOL_FACTS.
     """
     from app import memory_server
     from config import MAX_KNOWN_POOL_FACTS
@@ -860,16 +860,16 @@ async def test_path_b_filters_known_pool_by_window_and_caps():
         'last_b_check_ts': last_b,
     }
 
-    # 构造 35 条窗口内 fact（间隔 30s 把全部塞进 20-min 窗口）+ 20 条窗口外
+    # Build 35 in-window facts at 30s intervals within 20-min, plus 20 outside.
     in_window_facts = [
         {'id': f'in_{i}', 'text': f'fact in {i}',
          'importance': i % 10 + 1,
          'created_at': (last_b + timedelta(seconds=i * 30)).isoformat()}
-        for i in range(35)  # 35 条 in window > MAX_KNOWN_POOL_FACTS (30)
+        for i in range(35)  # 35 in-window entries >MAX_KNOWN_POOL_FACTS (30).
     ]
     out_window_facts = [
         {'id': f'out_{i}', 'text': f'fact out {i}',
-         'importance': 10,  # 高 importance 但不在窗口
+         'importance': 10,  # High importance, outside window.
          'created_at': (last_b - timedelta(hours=2 + i)).isoformat()}
         for i in range(20)
     ]
@@ -897,16 +897,16 @@ async def test_path_b_filters_known_pool_by_window_and_caps():
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 1. cap 生效（最多 MAX_KNOWN_POOL_FACTS = 30 条）
+    # 1. Cap enforced: MAX_KNOWN_POOL_FACTS=30 at most.
     assert len(captured_known_pool) == MAX_KNOWN_POOL_FACTS
 
-    # 2. 全部来自窗口内（id 都是 in_*）
+    # 2. All in-window, with in_* ids.
     for f in captured_known_pool:
         assert f['id'].startswith('in_'), (
             f"out-of-window fact 不该入池，命中: {f['id']}"
         )
 
-    # 3. 按 importance DESC（前几个 importance 最高）
+    # 3. importance DESC, highest first.
     importances = [f['importance'] for f in captured_known_pool]
     assert importances == sorted(importances, reverse=True), (
         f"已知池必须按 importance DESC 排，实际: {importances}"
@@ -916,10 +916,10 @@ async def test_path_b_filters_known_pool_by_window_and_caps():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_truncated_window_advances_cursor_to_last_fetched_row():
-    """Regression (Codex P1 PR #1408)：当窗口里消息数 > MAX_AI_AWARE_WINDOW_MSGS
-    时 SQL LIMIT 只取最早 N 行，cursor 必须推到**实际取到的最后一行 ts**，
-    不是 window 原本的 last_a_msg_ts。否则未取到的尾巴永久 skip → path B
-    对那段 burst 静默失明。
+    """Regression (Codex P1 PR #1408): windows exceeding MAX_AI_AWARE_WINDOW_MSGS
+    return earliest N SQL rows; cursor must advance to **the actual final fetched timestamp**,
+    never the original last_a_msg_ts. Otherwise unseen tails skip forever,
+    silently hiding that burst from path B.
     """
     from app import memory_server
 
@@ -930,8 +930,8 @@ async def test_path_b_truncated_window_advances_cursor_to_last_fetched_row():
         'last_b_check_ts': last_b,
     }
 
-    # 模拟 SQL 返回截断的 rows：只到 last_a_msg_ts - 10 min（实际窗口是
-    # 30 min，但 LIMIT 把 ts 最早的部分截到 10 min 处就停了）
+    # Truncated SQL rows reach only last_a_msg_ts -10 min; actual window is
+    # 30 min, but LIMIT stops the earliest-timestamp portion at 10 min.
     truncation_boundary = last_a_msg_ts - timedelta(minutes=10)
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
@@ -954,7 +954,7 @@ async def test_path_b_truncated_window_advances_cursor_to_last_fetched_row():
         f"cursor 必须推到 last fetched row ts ({truncation_boundary}), "
         f"不是 last_a_msg_ts ({last_a_msg_ts}). 实际: {state['last_b_check_ts']}"
     )
-    # 关键：下次 B trigger 必须能从这里继续 = 还没追上 last_a_msg_ts
+    # Next B trigger must continue here before reaching last_a_msg_ts.
     assert state['last_b_check_ts'] < last_a_msg_ts, (
         "truncated 窗口 + 未取尾巴 → cursor 不该追上 A，下次 B 继续处理"
     )
@@ -963,10 +963,10 @@ async def test_path_b_truncated_window_advances_cursor_to_last_fetched_row():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_known_pool_sort_tolerates_malformed_importance():
-    """Regression (Codex P2 PR #1408)：legacy / 手改 facts.json 里
-    'importance': "high" / None / list 等脏值不该让整个 path B sort 挂
-    （raw int(...) cast → ValueError → path B 对该角色永久哑火）。
-    用 safe_importance 兜底。
+    """Regression (Codex P2 PR #1408): dirty values in legacy / manually edited facts.json,
+    such as 'importance': \"high\" / None / list, must not crash the entire path B sort
+    (raw int(...) cast → ValueError → path B permanently silent for that character).
+    Fall back through safe_importance.
     """
     from app import memory_server
 
@@ -977,7 +977,7 @@ async def test_path_b_known_pool_sort_tolerates_malformed_importance():
         'last_b_check_ts': last_b,
     }
 
-    # 构造一批脏 importance（每种异常类型混入）
+    # Build mixed invalid importance values covering each malformed type.
     dirty_facts = [
         {'id': 'normal', 'text': 't', 'importance': 8,
          'created_at': (last_b + timedelta(minutes=1)).isoformat()},
@@ -987,7 +987,7 @@ async def test_path_b_known_pool_sort_tolerates_malformed_importance():
          'created_at': (last_b + timedelta(minutes=3)).isoformat()},
         {'id': 'list_imp', 'text': 't', 'importance': [1, 2, 3],  # ❌ TypeError
          'created_at': (last_b + timedelta(minutes=4)).isoformat()},
-        {'id': 'missing_imp', 'text': 't',  # 字段缺失
+        {'id': 'missing_imp', 'text': 't',  # Missing field.
          'created_at': (last_b + timedelta(minutes=5)).isoformat()},
     ]
 
@@ -1003,24 +1003,24 @@ async def test_path_b_known_pool_sort_tolerates_malformed_importance():
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
-        # 不该抛 ValueError / TypeError
+        # Never raise ValueError/TypeError.
         await memory_server._run_path_b('悠怡', state)
 
-    # 验证 aextract_facts_with_known_pool 被调（说明 sort 没挂）
+    # Verify aextract_facts_with_known_pool ran, proving sorting survived.
     fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
     captured_known_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
-    # 5 条脏 fact 全在窗口内，都应该进 pool（脏值不丢，只是排序 fallback）
+    # All five malformed facts are in-window and enter pools; bad values change sorting fallback, not inclusion.
     assert len(captured_known_pool) == 5
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_allm_extract_known_pool_returns_none_on_non_list_payload():
-    """Regression (Codex P1 round-9 on PR #1408)：
-    `_allm_extract_facts_with_known_pool` 收到非 list payload (如
-    `{"facts": [...]}`、纯 str、int 等) 必须返 None 等同 terminal failure，
-    不能折叠成 []——否则 `aextract_facts_with_known_pool` 会再继续返 []，
-    `_run_path_b` 把它当成"成功 0 抽"推 cursor，那段窗口永久 skip。
+    """Regression (Codex P1 round-9 on PR #1408):
+    `_allm_extract_facts_with_known_pool` must return None for non-list payloads (such as
+    `{\"facts\": [...]}`, plain str, int, etc.), treating them as terminal failure,
+    never collapsing them to []—otherwise `aextract_facts_with_known_pool` also returns [],
+    and `_run_path_b` treats that as \"successful extraction of 0 facts\", advances the cursor, and permanently skips that window.
     """
     from memory.facts import FactStore
     from unittest.mock import AsyncMock, MagicMock
@@ -1032,12 +1032,12 @@ async def test_allm_extract_known_pool_returns_none_on_non_list_payload():
     ))
     fs._format_conversation = MagicMock(return_value='对话占位')
 
-    # 各种 LLM 错形态 payload
+    # Malformed LLM payload shapes.
     for bad_payload in [
-        {'facts': [{'text': 'wrapped', 'importance': 5}]},  # 对象包一层
-        'random string output',                              # 纯字符串
-        42,                                                  # 数字
-        {},                                                  # 空对象
+        {'facts': [{'text': 'wrapped', 'importance': 5}]},  # Wrapped object.
+        'random string output',                              # Plain string.
+        42,                                                  # Number.
+        {},                                                  # Empty object.
         True,                                                # bool
     ]:
         fs._allm_call_with_retries = AsyncMock(return_value=bad_payload)
@@ -1051,34 +1051,34 @@ async def test_allm_extract_known_pool_returns_none_on_non_list_payload():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_aextract_facts_with_known_pool_propagates_none_from_bad_shape():
-    """End-to-end 配套：bad-shape payload → `_allm_extract_facts_with_known
-    _pool` 返 None → `aextract_facts_with_known_pool` 也返 None →
-    `_run_path_b` 保留 cursor 下次 trigger 重试。"""
+    """End-to-end companion: bad-shape payload → `_allm_extract_facts_with_known
+    _pool` returns None → `aextract_facts_with_known_pool` also returns None →
+    `_run_path_b` retains the cursor for a retry on the next trigger."""
     from memory.facts import FactStore
     from unittest.mock import AsyncMock, MagicMock
 
     fs = FactStore.__new__(FactStore)
-    # `_allm_extract_facts_with_known_pool` 直接 mock，验证 wrapper 透传 None
+    # Mock `_allm_extract_facts_with_known_pool` directly to verify wrappers forward None.
     fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=None)
-    fs._apersist_new_facts = AsyncMock(return_value=[])  # 不该被调
+    fs._apersist_new_facts = AsyncMock(return_value=[])  # Must not be called.
 
     out = await fs.aextract_facts_with_known_pool('lan', [], [])
     assert out is None, (
         f"_allm_extract_facts_with_known_pool 返 None 时 wrapper 必须透传 None，"
         f"实际返 {out!r}"
     )
-    # persist 不该被调（失败时 fact 不该落盘）
+    # Never persist facts on failure.
     fs._apersist_new_facts.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_stage1_terminal_failure_preserves_cursor():
-    """Regression (CodeRabbit + Codex P1 round-2 on PR #1408)：
-    ``aextract_facts_with_known_pool`` 返 None 表示 Stage-1 LLM 终态失败
-    （重试耗尽 / network / JSON parse 等），cursor 必须保留不推进。
-    若把 None 折叠成 [] 当成"成功 0 抽"，失败窗口会被永久 skip，那批
-    msg 的 AI-aware fact 永远抓不到。
+    """Regression (CodeRabbit + Codex P1 round-2 on PR #1408):
+    ``aextract_facts_with_known_pool`` returning None means terminal Stage-1 LLM failure
+    (exhausted retries / network / JSON parse, etc.); the cursor must stay unchanged.
+    Collapsing None to [] as \"successful extraction of 0 facts\" permanently skips the failed window,
+    so AI-aware facts from those messages can never be captured.
     """
     from app import memory_server
 
@@ -1100,14 +1100,14 @@ async def test_path_b_stage1_terminal_failure_preserves_cursor():
     ])
     fake_fact_store = MagicMock()
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
-    # Stage-1 LLM 终态失败 → 返 None（不是 []）
+    # Terminal Stage-1 failure returns None, not [].
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=None)
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 关键契约：失败时 cursor 必须保持原值，下次 B trigger 重试同窗口
+    # On failure preserve cursor; next B trigger retries the same window.
     assert state['last_b_check_ts'] == original_last_b, (
         f"Stage-1 失败时 cursor 必须保留原值 {original_last_b}，"
         f"实际推到 {state['last_b_check_ts']}"
@@ -1117,11 +1117,11 @@ async def test_path_b_stage1_terminal_failure_preserves_cursor():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_truncated_window_all_filtered_advances_to_last_fetched():
-    """Regression (Codex P2 round-2 on PR #1408)：
-    SQL LIMIT 截断 + 取到的 rows 全是 system msg / 空 content（被
-    ``_extract_role_tagged_messages_from_rows`` 过滤光）时，cursor 必须只
-    推到 last fetched row ts，不能跳到 last_a_msg_ts——否则截断后未取
-    到的尾巴里若有有效 human/ai msg 会被永久 skip。
+    """Regression (Codex P2 round-2 on PR #1408):
+    When SQL LIMIT truncates results and every fetched row is a system message / empty content
+    (all filtered out by ``_extract_role_tagged_messages_from_rows``), the cursor must advance only
+    to the last fetched row timestamp, never jump to last_a_msg_ts—otherwise valid human/ai messages
+    in the unfetched tail after truncation are permanently skipped.
     """
     from app import memory_server
 
@@ -1132,7 +1132,7 @@ async def test_path_b_truncated_window_all_filtered_advances_to_last_fetched():
         'last_b_check_ts': last_b,
     }
 
-    # 模拟 SQL 截断：返 2 行但都是 system msg，最后一行 ts < last_a_msg_ts
+    # Truncated SQL returns two system messages, final ts<last_a_msg_ts.
     truncation_boundary = last_a_msg_ts - timedelta(minutes=10)
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
@@ -1159,29 +1159,29 @@ async def test_path_b_truncated_window_all_filtered_advances_to_last_fetched():
     assert state['last_b_check_ts'] < last_a_msg_ts, (
         "截断尾巴未读到，下次 B 必须能继续覆盖"
     )
-    # 而且不该调 LLM（没消息可抽）
+    # No extractable messages, so never call LLM.
     fake_fact_store.aextract_facts_with_known_pool.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_known_pool_preserves_microsecond_precision_at_boundary():
-    """Regression (CodeRabbit on PR #1408)：known_pool 的 created_at 解析必
-    须保留微秒精度。先前 `datetime.fromisoformat(created_at_raw[:19])` 截
-    到秒会让"`created_at` 比 `last_b` 晚 0.x 秒"的 fact 被误判出窗口。
+    """Regression (CodeRabbit on PR #1408): parsing known_pool created_at must
+    retain microsecond precision. Previously, `datetime.fromisoformat(created_at_raw[:19])` truncated
+    to seconds, wrongly excluding facts whose `created_at` was 0.x seconds later than `last_b`.
     """
     from app import memory_server
 
-    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 10, 0)  # 整秒
-    # last_b 故意带微秒小数
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 10, 0)  # Whole seconds.
+    # last_b deliberately includes fractional microseconds.
     last_b = datetime(2026, 5, 18, 12, 0, 0, 500_000)  # T+0.5s
     state = {
         'last_a_msg_ts': last_a_msg_ts,
         'last_b_check_ts': last_b,
     }
 
-    # 关键 fact: created_at 比 last_b 晚 200ms（仍 >= last_b 应该进 pool）
-    # 若截秒，fact 会被解析成 T+0.000，比 last_b T+0.500 早 → 误排
+    # Fact created_at is 200ms after last_b; >=last_b must enter pools.
+    # Truncating seconds yields T+0.000 before last_b T+0.500, wrongly excluding it.
     on_boundary_fact = {
         'id': 'just_after_last_b',
         'text': 'created_at 比 last_b 晚 200ms',
@@ -1213,36 +1213,36 @@ async def test_path_b_known_pool_preserves_microsecond_precision_at_boundary():
 
 @pytest.mark.unit
 def test_coerce_db_ts_strips_tz_to_naive():
-    """Regression (Codex P2 round-8 on PR #1408)：`_coerce_db_ts` 必须把
-    TZ-aware datetime / "...+00:00" 字符串都归一化成 naive。
-    所有 cursor / 比较都按 naive 语义工作，aware 出来会让 last_b /
-    last_a_msg_ts 也 aware，跟 naive facts.json `created_at` 比较时
-    抛 TypeError 永久哑火 path B。
+    """Regression (Codex P2 round-8 on PR #1408): `_coerce_db_ts` must normalize
+    TZ-aware datetime / \"...+00:00\" strings to naive values.
+    All cursors / comparisons use naive semantics; aware results make last_b /
+    last_a_msg_ts aware too, and comparison with naive facts.json `created_at`
+    raises TypeError, permanently silencing path B.
     """
     from datetime import timezone
     from app.memory_server import _coerce_db_ts
 
-    # Case 1: TZ-aware datetime 对象输入
+    # Case 1: timezone-aware datetime input.
     aware_dt = datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
     out = _coerce_db_ts(aware_dt)
     assert out is not None and out.tzinfo is None, (
         f"TZ-aware datetime 输入必须返 naive，实际 tzinfo={out.tzinfo!r}"
     )
-    # 时钟值不变（口径上当 naive 处理）
+    # Wall-clock value unchanged, treated as naive.
     assert out == datetime(2026, 5, 18, 12, 0, 0)
 
-    # Case 2: ISO 字符串带 offset 输入
+    # Case 2: ISO string with offset.
     out = _coerce_db_ts('2026-05-18T12:00:00+00:00')
     assert out is not None and out.tzinfo is None, (
         f"TZ-aware ISO 字符串必须返 naive，实际 tzinfo={out.tzinfo!r}"
     )
 
-    # Case 3: naive ISO 字符串保持 naive（无回归）
+    # Case 3: naive ISO strings remain naive, without regression.
     out = _coerce_db_ts('2026-05-18T12:00:00.123456')
     assert out is not None and out.tzinfo is None
     assert out == datetime(2026, 5, 18, 12, 0, 0, 123456)
 
-    # Case 4: naive datetime 对象保持 naive
+    # Case 4: naive datetime objects remain naive.
     naive_dt = datetime(2026, 5, 18, 12, 0, 0)
     assert _coerce_db_ts(naive_dt) == naive_dt
 
@@ -1250,18 +1250,18 @@ def test_coerce_db_ts_strips_tz_to_naive():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_handles_tz_aware_db_rows_without_typeerror():
-    """End-to-end pin (Codex P2 round-8)：若 SQL row ts 是 TZ-aware，
-    `_coerce_db_ts` 归一化后 last_a_msg_ts / last_b 都是 naive，跟 naive
-    facts.json created_at 比较不抛 TypeError。
+    """End-to-end pin (Codex P2 round-8): if SQL row timestamps are TZ-aware,
+    `_coerce_db_ts` normalization makes last_a_msg_ts / last_b naive, so comparing them with naive
+    facts.json created_at does not raise TypeError.
     """
     from datetime import timezone
     from app import memory_server
 
-    # state.last_a_msg_ts 故意构造成 aware（模拟旧代码遗留 state）
+    # Deliberately aware state.last_a_msg_ts simulates legacy state.
     aware_anchor = datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
     state = {'last_a_msg_ts': aware_anchor}
 
-    # SQL row ts 也是 aware
+    # SQL timestamps are aware too.
     aware_row_ts = aware_anchor - timedelta(seconds=30)
     fake_time_manager = MagicMock()
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
@@ -1282,12 +1282,12 @@ async def test_path_b_handles_tz_aware_db_rows_without_typeerror():
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
-        # 不该抛 TypeError
+        # Never raise TypeError.
         await memory_server._run_path_b('悠怡', state)
 
-    # Stage-1 被调说明 cursor 比较 + known_pool 构建都没炸
+    # Stage-1 calls prove cursor comparison and known-pool assembly survived.
     fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
-    # 推进后的 cursor 必须是 naive（避免 state 里残留 aware 继续污染）
+    # Advanced cursors must be naive, preventing persistent aware-state contamination.
     assert state['last_b_check_ts'].tzinfo is None, (
         f"last_b_check_ts 必须是 naive，实际 tzinfo={state['last_b_check_ts'].tzinfo!r}"
     )
@@ -1296,10 +1296,10 @@ async def test_path_b_handles_tz_aware_db_rows_without_typeerror():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_known_pool_normalizes_tz_aware_created_at():
-    """Regression (Codex P1 round-7 on PR #1408)：facts.json 里若被 import/
-    migration 写入了 TZ-aware `created_at`（如 "...+00:00"），跟 naive 的
-    last_b 比较会抛 TypeError 让 _run_path_b 永久 fail → path B 对该角色
-    哑火。`_run_path_b` 必须把 aware 转 naive 再比较。
+    """Regression (Codex P1 round-7 on PR #1408): if import/
+    migration writes TZ-aware `created_at` (such as \"...+00:00\") into facts.json, comparison with naive
+    last_b raises TypeError and permanently fails _run_path_b → path B becomes silent for that
+    character. `_run_path_b` must convert aware values to naive before comparison.
     """
     from app import memory_server
     from datetime import timezone
@@ -1311,8 +1311,8 @@ async def test_path_b_known_pool_normalizes_tz_aware_created_at():
         'last_b_check_ts': last_b,
     }
 
-    # 三条 TZ-aware fact，在窗口内（utcnow 视角）。若实现不 normalize，
-    # `>= last_b` 立即抛 TypeError。
+    # Three aware facts within utcnow's window; without normalization,
+    # `>= last_b` raises TypeError immediately.
     tz_aware_facts = [
         {
             'id': f'imported_{i}',
@@ -1339,14 +1339,14 @@ async def test_path_b_known_pool_normalizes_tz_aware_created_at():
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
-        # 不该抛 TypeError
+        # Never raise TypeError.
         await memory_server._run_path_b('悠怡', state)
 
-    # Stage-1 被调（说明 created_at 比较没炸）
+    # Stage-1 called, proving created_at comparisons survived.
     fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
     captured_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
     pool_ids = {f['id'] for f in captured_pool}
-    # 3 条 TZ-aware fact（wall-clock 视角在窗口内）都应该进 pool
+    # All three aware facts within wall-clock windows enter pools.
     assert len(pool_ids) == 3, (
         f"TZ-aware fact 应该 normalize 后入 pool，实际 {len(pool_ids)}: {pool_ids}"
     )
@@ -1355,14 +1355,14 @@ async def test_path_b_known_pool_normalizes_tz_aware_created_at():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_skew():
-    """Regression (CodeRabbit on PR #1408)：A 的 idle/polling 延迟让"刚扫
-    完本 B 窗口"那批 A facts 的 created_at 普遍略晚于 last_a_msg_ts。known
-    _pool 不该用 ``created_at <= last_a_msg_ts`` 做上界过滤，否则最新一批
-    A facts 整批被排除 → B 容易和 A 重复抽同一窗口。
+    """Regression (CodeRabbit on PR #1408): A's idle/polling delay makes created_at for A facts from
+    the batch that just scanned this B window slightly later than last_a_msg_ts. known
+    _pool must not use ``created_at <= last_a_msg_ts`` as an upper bound, or the entire latest batch
+    of A facts is excluded → B can easily extract duplicate facts from the same window.
 
-    本测试构造：window=[last_b, last_a_msg_ts]，但 A 在 last_a_msg_ts +
-    30s 才写完那批 fact（created_at 比 last_a_msg_ts 晚），断言这些 fact
-    必须进 known_pool。
+    This test constructs window=[last_b, last_a_msg_ts], but A finishes writing those facts at last_a_msg_ts +
+    30s (created_at is later than last_a_msg_ts), and asserts that these facts
+    must enter known_pool.
     """
     from app import memory_server
 
@@ -1373,20 +1373,20 @@ async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_ske
         'last_b_check_ts': last_b,
     }
 
-    # 关键场景：A 写入延迟 → created_at 在 last_a_msg_ts 之后
+    # Key scenario: delayed A writes make created_at>last_a_msg_ts.
     a_written_after_msg_ts = [
         {'id': f'a_late_{i}', 'text': f'A 在 idle 后才写的 fact {i}',
          'importance': 8,
-         # 写入延迟 30s ~ 90s（普通 idle gate / LLM call 时长）
+         # Write delays 30s~90s, normal idle gates/LLM duration.
          'created_at': (last_a_msg_ts + timedelta(seconds=30 + i * 20)).isoformat()}
         for i in range(3)
     ]
-    # 对照组：窗口内正常时间写的 fact，必须也在
+    # Control: normally timed in-window facts must also remain.
     a_in_window = [
         {'id': 'a_in', 'text': '窗口内写的 A fact', 'importance': 7,
          'created_at': (last_b + timedelta(minutes=5)).isoformat()},
     ]
-    # 对照组：窗口前的 old fact，不该在（下界过滤）
+    # Control: old pre-window facts excluded by lower bounds.
     a_pre_window = [
         {'id': 'a_old', 'text': 'pre-window fact', 'importance': 10,
          'created_at': (last_b - timedelta(hours=1)).isoformat()},
@@ -1411,16 +1411,16 @@ async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_ske
     captured_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
     pool_ids = {f['id'] for f in captured_pool}
 
-    # 关键断言：A 写入延迟产生的 facts（created_at > last_a_msg_ts）必须在
+    # Delayed A facts with created_at>last_a_msg_ts must be present.
     for f in a_written_after_msg_ts:
         assert f['id'] in pool_ids, (
             f"A idle-delay fact {f['id']} (created_at > last_a_msg_ts) 被错误排除——"
             f"会让 known_pool 对最新一批 A 抽取失效，B 重复抽同窗口。"
             f"实际 pool ids: {pool_ids}"
         )
-    # 窗口内正常 fact 也在
+    # Normal in-window facts present too.
     assert 'a_in' in pool_ids
-    # 窗口前 old fact 仍被下界过滤掉
+    # Pre-window facts remain lower-bound filtered.
     assert 'a_old' not in pool_ids, (
         "下界 created_at >= last_b 必须保留，否则会拉入很多无关老 fact 挤掉 pool 名额"
     )
@@ -1429,15 +1429,15 @@ async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_ske
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_skipped_for_ai_only_window_no_user_msgs():
-    """Design pin：纯 proactive / AI-only 窗口（没 human msg）**故意**不
-    触发 path B。Path B 是 piggyback path A 的 trigger 跑（不独立调度），
-    user 没参与的窗口里 A 不抽 user_observation，B 也跟着不拣 AI 自我披露。
+    """Design pin: purely proactive / AI-only windows (without human messages) **deliberately** do not
+    trigger path B. Path B piggybacks on path A's trigger (no independent scheduling);
+    when the user does not participate, A extracts no user_observation and B likewise does not collect AI self-disclosures.
 
-    Product thesis："90% 没心没肺 + 10% 神明降临"——AI 自言自语 + user
-    不搭理的内容是廉价层，不该自动当 fact 沉淀污染 memory。
+    Product thesis: \"90% carefree + 10% divine intervention\"—AI monologue that the user
+    ignores is cheap content and must not automatically become facts that pollute memory.
 
-    源码扫描钉死：``if not user_msgs_text:`` 分支只 mark_done + return，
-    禁止在该分支调 _run_path_b / bump b_tick_counter。
+    Pin through source inspection: the ``if not user_msgs_text:`` branch only marks done and returns;
+    it must not call _run_path_b / bump b_tick_counter.
     """
     import inspect
     from app import memory_server
@@ -1446,7 +1446,7 @@ async def test_path_b_skipped_for_ai_only_window_no_user_msgs():
 
     user_check_idx = src.find("if not user_msgs_text:")
     assert user_check_idx > 0
-    # 截到下一个 return（该早 return 分支的边界）
+    # Stop at next return, delimiting this early-return branch.
     branch_end = src.find("return", user_check_idx)
     branch_src = src[user_check_idx:branch_end + len("return")]
 
@@ -1463,12 +1463,12 @@ async def test_path_b_skipped_for_ai_only_window_no_user_msgs():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_same_ts_cluster_overflow_advances_cursor_by_epsilon():
-    """Regression (Codex P2 round-3 on PR #1408)：
-    aretrieve_original_by_timeframe 用 inclusive BETWEEN，若窗口里
-    >= MAX_AI_AWARE_WINDOW_MSGS 行全在同一 ts（store_conversation 给一次
-    请求所有 row 同 ts，bulk import 等），cursor 推到 last_fetched_ts 后
-    下次 BETWEEN 仍把这批 row 全捞回来 → 无限循环。
-    检测：LIMIT 拉满 AND 所有 fetched row 同 ts → cursor +1μs 越过该 ts。
+    """Regression (Codex P2 round-3 on PR #1408):
+    aretrieve_original_by_timeframe uses inclusive BETWEEN. If a window contains
+    >= MAX_AI_AWARE_WINDOW_MSGS rows all at the same timestamp (store_conversation gives all rows
+    in one request the same timestamp, bulk imports, etc.), advancing the cursor to last_fetched_ts means
+    the next BETWEEN retrieves the same rows again → infinite loop.
+    Detect: LIMIT reached AND all fetched rows share one timestamp → add 1μs to the cursor to pass it.
     """
     from app import memory_server
     from config import MAX_AI_AWARE_WINDOW_MSGS
@@ -1480,8 +1480,8 @@ async def test_path_b_same_ts_cluster_overflow_advances_cursor_by_epsilon():
         'last_b_check_ts': last_b,
     }
 
-    # 构造 MAX_AI_AWARE_WINDOW_MSGS 行全在同一 ts T（远早于 last_a_msg_ts，
-    # 模拟 bulk import / 同 batch 写入）
+    # Build MAX_AI_AWARE_WINDOW_MSGS rows sharing ts T, far before last_a_msg_ts,
+    # simulating bulk imports/same-batch writes.
     cluster_ts = last_b + timedelta(minutes=2)
     same_ts_rows = [
         (cluster_ts, f'sess_{i}', json.dumps({
@@ -1502,13 +1502,13 @@ async def test_path_b_same_ts_cluster_overflow_advances_cursor_by_epsilon():
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 关键断言：cursor 严格 > cluster_ts，下次 BETWEEN 不会再捞同 ts 簇
+    # cursor strictly >cluster_ts so next BETWEEN never retrieves that same-ts cluster again.
     assert state['last_b_check_ts'] > cluster_ts, (
         f"同 ts 簇 LIMIT 截断时 cursor 必须 +1μs 越过该 ts ({cluster_ts})，"
         f"否则下次 BETWEEN inclusive 再捞同批 → 死循环。"
         f"实际 cursor: {state['last_b_check_ts']}"
     )
-    # 且只越过 1 微秒（不滥推到 last_a_msg_ts，否则中间正常的 ts 也被 skip）
+    # Advance only one microsecond, not last_a_msg_ts, preserving intervening timestamps.
     assert state['last_b_check_ts'] == cluster_ts + timedelta(microseconds=1), (
         f"epsilon 必须刚好 +1μs，实际推到 {state['last_b_check_ts']}"
     )
@@ -1520,8 +1520,8 @@ async def test_path_b_same_ts_cluster_overflow_advances_cursor_by_epsilon():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
-    """对偶 test：LIMIT 拉满但 rows 跨多个 ts 时，cursor 推到 last fetched 即可
-    （不该 +1μs 越过——否则会 skip 掉刚好在 last_fetched_ts 的 tail row）。
+    """Companion test: when LIMIT is reached but rows span multiple timestamps, advance the cursor to the last fetched timestamp
+    (do not add 1μs, which would skip tail rows exactly at last_fetched_ts).
     """
     from app import memory_server
     from config import MAX_AI_AWARE_WINDOW_MSGS
@@ -1533,7 +1533,7 @@ async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
         'last_b_check_ts': last_b,
     }
 
-    # MAX_AI_AWARE_WINDOW_MSGS 行，ts 均匀分布（不同 ts，模拟正常截断）
+    # MAX_AI_AWARE_WINDOW_MSGS evenly distributed timestamps simulate normal truncation.
     rows = [
         (last_b + timedelta(seconds=i), f'sess_{i}', json.dumps({
             'type': 'human', 'data': {'content': f'msg {i}'},
@@ -1552,7 +1552,7 @@ async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
-    # 不该 epsilon bump——cursor 必须恰好 = last fetched ts
+    # No epsilon bump: cursor equals last fetched ts exactly.
     assert state['last_b_check_ts'] == expected_last_ts, (
         f"diverse ts 截断时 cursor 应 = last fetched ({expected_last_ts}) "
         f"无 epsilon bump，实际: {state['last_b_check_ts']}"
@@ -1561,13 +1561,13 @@ async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
 
 @pytest.mark.unit
 def test_post_turn_signals_only_bumps_counter_for_user_turn():
-    """Design pin：``_signal_check_record_turn`` 只在 user 发声时 bump，
-    AI-only / proactive turn 故意不算——counter 是 user engagement 信号，
-    不是消息总数。Product thesis："90% 没心没肺 + 10% 神明降临"，没有
-    user 印证的内容是廉价层，不该触发 fact 抽取 batch。
+    """Design pin: ``_signal_check_record_turn`` bumps only when the user speaks;
+    AI-only / proactive turns deliberately do not count—the counter measures user engagement,
+    not total messages. Product thesis: \"90% carefree + 10% divine intervention\"; content without
+    user confirmation is cheap content and must not trigger a fact-extraction batch.
 
-    源码扫描钉死：``_signal_check_record_turn`` 调用必须被 ``if user_msgs:``
-    gate 包裹。
+    Pin through source inspection: calls to ``_signal_check_record_turn`` must be wrapped in an ``if user_msgs:``
+    gate.
     """
     import ast
     import inspect
@@ -1599,21 +1599,21 @@ def test_post_turn_signals_only_bumps_counter_for_user_turn():
 
 @pytest.mark.unit
 def test_b_tick_counter_threshold_constant_sane():
-    """N_A_TICKS 必须 >= 1（不能 0 否则每 A tick 都触发 B，退化成无 piggyback）。"""
+    """N_A_TICKS must be >= 1 (never 0, which triggers B every A tick and eliminates piggybacking)."""
     from config import (
         EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
         MAX_AI_AWARE_WINDOW_MSGS,
         MAX_KNOWN_POOL_FACTS,
     )
     assert EVIDENCE_AI_AWARE_EVERY_N_A_TICKS >= 1
-    assert MAX_AI_AWARE_WINDOW_MSGS >= 10  # 极端值防呆
+    assert MAX_AI_AWARE_WINDOW_MSGS >= 10  # Extreme-value safeguards.
     assert MAX_KNOWN_POOL_FACTS >= 1
 
 
 @pytest.mark.unit
 def test_signal_check_one_triggers_path_b_after_n_ticks():
-    """源码扫描：``_signal_check_one`` 必须在 A 成功跑完后 bump b_tick_counter
-    并在达 N 时调 ``_run_path_b``。"""
+    """Source inspection: ``_signal_check_one`` must bump b_tick_counter after A completes successfully
+    and call ``_run_path_b`` when it reaches N."""
     import inspect
     from app import memory_server
 
@@ -1644,7 +1644,7 @@ async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_con
     fs = _make_fact_store(facts={})
     fs._config_manager.memory_dir = str(tmp_path)
 
-    # 磁盘：另一个进程已经升级并被 Stage-2 消费过。
+    # Disk: another process already upgraded and Stage-2 consumed it.
     fs._facts['悠怡'] = [{
         'id': 'fact_shared',
         'text': '博士喜欢三文鱼',
@@ -1655,7 +1655,7 @@ async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_con
     }]
     fs.save_facts('悠怡')
 
-    # 本进程：旧缓存仍是 ai_disclosure，刚做完自己的升级并挂上纸条。
+    # This process's old ai_disclosure cache just upgraded and attached its marker.
     fs._facts['悠怡'] = [{
         'id': 'fact_shared',
         'text': '博士喜欢三文鱼',
@@ -1682,8 +1682,8 @@ async def test_unseal_marker_does_not_requeue_a_fact_another_process_already_con
     {'text': '缺 id 的 ai 披露', 'source': 'ai_disclosure', 'signal_processed': True},
     {'text': '缺 id 且已吸收', 'source': 'user_observation', 'absorbed': True},
     {'text': '缺 id 且已处理', 'source': 'user_observation', 'signal_processed': True},
-    # id 不是字符串：放进 set 会抛 TypeError: unhashable，同样逃不出内层
-    # 只接 JSON/OS 的 except，后果与缺 id 完全一样。
+    # Nonstrings cannot enter sets: unhashable TypeError bypasses inner
+    # JSON/OS-only exception handling just like missing ids.
     {'id': ['a', 'b'], 'text': 'id 是 list 的 ai 披露', 'source': 'ai_disclosure'},
     {'id': {'k': 'v'}, 'text': 'id 是 dict 且已处理', 'source': 'user_observation',
      'signal_processed': True},
@@ -1786,7 +1786,7 @@ async def test_hashable_legacy_ids_still_keep_their_monotonic_flags(tmp_path, le
     }]
     fs.save_facts('悠怡')
 
-    # 旧缓存把两个单调字段都退回去，存盘时必须被磁盘顶回来。
+    # Stale caches regress both monotonic fields; persisted values must win during save.
     fs._facts['悠怡'][0]['signal_processed'] = False
     fs._facts['悠怡'][0]['absorbed'] = False
     fs.save_facts('悠怡')

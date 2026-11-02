@@ -409,7 +409,7 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "button.setAttribute('aria-label', accessibleLabel);" in toggle_factory
     assert "button.setAttribute('aria-busy', 'true');" in toggle_factory
 
-    # 三个入口使用同一个非交互 action-row；行级开关与面板按钮互为兄弟。
+    # All three entry points share the same noninteractive action-row; row switches and panel buttons are siblings.
     render_start = source.index("window.renderFloatingMicList = async function")
     render_end = source.index("function updateMicListSelection()", render_start)
     render = source[render_start:render_end]

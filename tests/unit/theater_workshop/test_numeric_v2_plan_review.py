@@ -9,7 +9,7 @@ from .test_numeric_v2_generation import _quality_story_context, _generation_setu
 
 
 def ready_payload(plans):
-    # 测试显式模拟逐方案复核；生产中不能用这个默认肯定结果代替模型判断。
+    # Tests explicitly simulate per-plan model review; production must not substitute this default approval for model judgment.
     return {"conflicts": [], "checks": [{"issue_id": p["issue_id"], "status": "ready", "reason": "方案字段与保留要求相容", "missing_targets": []} for p in plans]}
 
 
@@ -65,7 +65,7 @@ def test_review_preserves_report_and_never_adds_missing_fields_or_reopens_blocke
     assert issue["repairable"] is (status == "ready")
     assert reviewed["repair_plan_version"] == 3
     if status != "ready":
-        # 重算字段权限不能把模型已拦截的方案重新打开。
+        # Recomputing field permissions must not reopen plans already blocked by the model.
         agent.call_llm = lambda *a, **kw: pytest.fail("被拦截方案不得调用修订")
         with pytest.raises(QualityAssessmentError, match="quality_node_not_repairable"):
             agent.optimize_node(story=story, setup=_generation_setup(), authoring=authoring, assessment=reviewed, node_id="mainline_01")
@@ -96,7 +96,7 @@ def test_scoring_reviews_all_eligible_plans_once_or_skips(has_plan):
 
 @pytest.mark.parametrize("case", ["valid", "unknown", "self", "duplicate", "reverse_duplicate", "one_id", "three_ids", "empty_reason", "missing", "legacy"])
 def test_conflict_pair_is_validated_once_and_blocks_both_plans_without_changing_local_opinions(case):
-    # 模型只声明一次真实冲突，程序对称投影到双方；局部ready不覆盖组合冲突，也不丢弃原理由。
+    # The model declares a real conflict once; the program projects it symmetrically onto both plans. Local readiness neither overrides combined conflicts nor loses original reasons.
     agent, story, authoring, context, report = fixture()
     second = deepcopy(report["issues"][0]);second["issue_id"] = "quality_issue_02"
     report["issues"].append(second);plans = report["issues"];payload = ready_payload(plans)
@@ -161,7 +161,7 @@ def test_provider_failure_has_plan_phase_and_does_not_publish_report():
 
 
 def test_plan_review_separates_original_accusation_from_repair_commands_without_hiding_report():
-    # 原生回复曾引用problem里的状态字段扩大修法；输入隔离只作用于方案复核，报告不删原意见。
+    # Native replies once cited state fields from problem to broaden repairs; input isolation affects only plan review, while reports retain original opinions.
     agent, _, _, context, report = fixture()
     issue = report["issues"][0]
     issue.update(source="facts", problem="背景提及女主状态、玩家状态和环境状态。",
@@ -191,7 +191,7 @@ def test_plan_review_separates_original_accusation_from_repair_commands_without_
 
 
 def test_three_eligible_plans_have_each_distinct_pair_once_and_ignore_manual_plan():
-    # 三条方案含非相邻组合；结构建议不进入本次可执行候选，也不伪造多一次模型调用。
+    # Three plans include nonadjacent combinations; structural suggestions are excluded from executable candidates without faking another model call.
     agent, _, _, context, report = fixture()
     for identity in ("quality_issue_02", "quality_issue_03", "manual"):
         row = deepcopy(report["issues"][0]);row["issue_id"] = identity

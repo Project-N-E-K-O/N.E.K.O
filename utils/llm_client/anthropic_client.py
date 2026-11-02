@@ -38,16 +38,16 @@ Anthropic: Any = None
 
 AsyncAnthropic: Any = None
 
-# Anthropic 要求工具轮里的 thinking / redacted_thinking block 原样回传（Sonnet 5.5 的
-# between_tools 也会在工具调用之间以 thinking block 返回进度说明）。调用方保存的是
-# OpenAI 形状的历史，放不下这些 block，所以这里按 tool_use id 记住原始 assistant
-# 内容，回传当前工具轮时原样换回去。两条限制都是为了不撞 preserved-thinking 的前缀
-# 校验（block 只在 system / tools / 之前的消息不变时有效，新账号默认 400）：
-#   - 只回放最后一条真实 user 消息之后的工具轮（更早的轮次文档允许省略）；
-#   - 只在本次请求的 system + tools + 该轮之前的全部消息与产生该 block 时完全一致
-#     时回放（例如工具轮封顶后去掉 tools 强制收尾、或调用方改写了更早的历史，就不
-#     回放）。
-# 不满足时退回旧行为：不带 thinking block。
+# Anthropic requires thinking / redacted_thinking blocks in a tool turn to be returned unchanged (Sonnet 5.5's
+# between_tools also returns progress notes as thinking blocks between tool calls). The caller stores
+# history in OpenAI format, which cannot hold these blocks, so keep the original assistant
+# content keyed by tool_use id and restore it unchanged when returning the current tool turn. Both constraints prevent conflicts with preserved-thinking prefix
+# validation (a block is valid only while system / tools / earlier messages remain unchanged; new accounts default to 400):
+#   - Replay only tool turns after the last real user message (the API allows earlier turns to be omitted);
+#   - Replay only when this request's system + tools + all messages before that turn exactly match the values used to create the block
+#     (for example, do not replay if tools were removed to force a final response at the tool-turn limit, or if the caller rewrote earlier history).
+#
+# If these conditions are not met, use the old behavior: omit thinking blocks.
 _TOOL_TURN_REPLAY_MAX = 1024
 _tool_turn_replay: "OrderedDict[str, tuple[str, list[dict]]]" = OrderedDict()
 _tool_turn_replay_lock = threading.Lock()
@@ -61,7 +61,7 @@ _REPLAY_BLOCK_FIELDS = {
 
 def _replay_context_key(payload: dict[str, Any], prior_messages: Any) -> str:
     """Digest of everything a thinking block is bound to: system, tools and earlier messages."""
-    # 只存摘要：历史里可能有 base64 截图，原样当 key 存进缓存会占满内存。
+    # Store only a digest: history may contain base64 screenshots, and keeping them verbatim as cache keys would exhaust memory.
     raw = _json.dumps(
         {"system": payload.get("system"), "tools": payload.get("tools"), "messages": prior_messages},
         sort_keys=True,
@@ -146,7 +146,7 @@ def _replay_tool_turn(blocks: Any, context_key: str) -> list[dict] | None:
     with _tool_turn_replay_lock:
         entry = _tool_turn_replay.get(str(ids[0]))
         if entry is not None:
-            # 命中即刷新：进行中的工具轮不会被别的会话挤出缓存。
+            # Refresh on a cache hit so another session cannot evict an active tool turn.
             for tool_use_id in ids:
                 if tool_use_id in _tool_turn_replay:
                     _tool_turn_replay.move_to_end(tool_use_id)
@@ -155,9 +155,9 @@ def _replay_tool_turn(blocks: Any, context_key: str) -> list[dict] | None:
     cached_key, cached = entry
     if cached_key != context_key:
         return None
-    # 工具调用（id / name / input）必须与当前历史一致，否则换回去的是过期参数，
-    # 会和后面的 tool_result 对不上。文本不比：调用方会清洗 assistant 文本，原样
-    # 回放模型实际写的内容反而更准。
+    # Tool calls (id / name / input) must match the current history; otherwise the restored parameters would be stale
+    # and would not match the following tool_result. Ignore text: the caller sanitizes assistant text, and replaying
+    # exactly what the model produced is more accurate.
     def _calls(content: list) -> list:
         return [
             (b.get("id"), b.get("name"), b.get("input"))
@@ -174,8 +174,8 @@ def _apply_tool_turn_replay(payload: dict[str, Any]) -> None:
     messages = payload.get("messages")
     if not isinstance(messages, list):
         return
-    # 带 tool_result 的 user 消息是工具轮的延续（工具结果里的图片会作为相邻 user
-    # 消息并进来，所以不能要求整条都是 tool_result）。
+    # A user message containing tool_result continues the tool turn (images in tool results are merged into adjacent user
+    # messages, so the whole message need not consist only of tool_result).
     last_user_index = -1
     for index, msg in enumerate(messages):
         if msg.get("role") != "user":
@@ -803,9 +803,9 @@ class ChatAnthropic:
             client_kw["base_url"] = self.base_url
         if _timeout is not None:
             client_kw["timeout"] = _timeout
-        # 注入 neko/<版本号> User-Agent 覆盖 SDK 自带 UA（AsyncAnthropic/Python x.y.z），
-        # 防止自定义 API 端点的 Cloudflare "Manage AI bots" 规则拦截。调用方若已在
-        # default_headers 里显式指定 UA（如 Kimi Code 的 claude-code/0.1.0）则不覆盖。
+        # Set the neko/<version> User-Agent to override the SDK's built-in UA (AsyncAnthropic/Python x.y.z),
+        # preventing Cloudflare "Manage AI bots" rules from blocking custom API endpoints. Do not override a UA already
+        # explicitly set in default_headers by the caller (for example, Kimi Code's claude-code/0.1.0).
         from utils.http_client import ensure_user_agent
         client_kw["default_headers"] = ensure_user_agent(default_headers)
 
@@ -970,8 +970,8 @@ class ChatAnthropic:
         replay_context_key = _replay_context_key(payload, payload.get("messages"))
         stream = self._aclient.messages.stream(**payload)
         usage_dict: dict[str, Any] = {}
-        # 按 index 累积本轮的完整 content；含 thinking + tool_use 时在 message_delta
-        # （所有 content block 已结束）处记下来供回传，消费方读到结束信号就停也不丢。
+        # Accumulate the complete content for this turn by index; when it contains thinking + tool_use, save it at message_delta
+        # (after all content blocks have ended) for replay, so consumers that stop at the end signal do not lose it.
         replay_blocks: dict[int, dict] = {}
         replay_json: dict[int, str] = {}
         replay_ok = True
@@ -1086,7 +1086,7 @@ class ChatAnthropic:
         Each entry carries ``id`` and, when the endpoint reports one, ``name``.
         """
         models: list[dict[str, str]] = []
-        # Anthropic 单页上限 1000；SDK 的 async for 会自动翻页，limit 只决定每页大小。
+        # Anthropic limits each page to 1000; the SDK's async for paginates automatically, and limit only controls page size.
         async for item in self._aclient.models.list(limit=max(1, min(limit, 1000))):
             models.append({
                 "id": str(getattr(item, "id", "") or ""),

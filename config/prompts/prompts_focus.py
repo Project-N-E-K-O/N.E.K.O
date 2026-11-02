@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Lexical signal tables for Focus mode ("凝神").
+"""Lexical signal tables for Focus mode (\"focused cognition\").
 
-Focus is the signal-triggered, user-invisible "thinking-on" turn that
-delivers the product thesis's 10% "神明降临" moment (see
+Focus is the signal-triggered, user-invisible \"thinking-on\" turn that
+delivers the product thesis's 10% \"divine presence\" moment (see
 ``docs/design/focus-truename-mode.md``). One of its cheapest Layer-1
 signals is a substring scan of the user's message for **emotional
 vulnerability** cues — fatigue, loneliness, feeling overwhelmed, the urge
@@ -32,12 +32,12 @@ sentence is not.
 
 Distinct from ``prompts_directives.NEGATIVE_KEYWORDS_I18N``
 --------------------------------------------------------
-That table is the *avoidance / annoyance* family ("别说了 / 换话题 /
-stop talking about") — it means "the user wants to end THIS topic" and
+That table is the *avoidance / annoyance* family (\"别说了 / 换话题 /
+stop talking about\") — it means \"the user wants to end THIS topic\" and
 feeds the ban-list / disputation path. It must NOT pull the companion
 into Focus: a user changing the subject does not want gravity, they want
 to move on. The vulnerability family below is the opposite — it means
-"the user just opened a door"; that is exactly when she should think
+\"the user just opened a door\"; that is exactly when she should think
 harder. The two tables overlap only at the edges (心烦 / 受不了 / 撑不住),
 which is acceptable: those genuinely warrant gentler attention either way.
 
@@ -62,80 +62,80 @@ from __future__ import annotations
 
 # Emotional-vulnerability cues. Graded: ``scan_vulnerability_keywords``
 # returns the count of distinct matched phrases so the scorer can read a
-# rough intensity (one weary "累" vs. a pile-up of "撑不住 / 一个人 / 没意思").
+# rough intensity (one weary "累" ('tired') vs. a pile-up of "撑不住 / 一个人 / 没意思" ('cannot cope / alone / meaningless')).
 FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
     "zh": frozenset(
         [
-            # 疲惫 / 透支
+            # Fatigue / exhaustion
             "好累", "太累", "累死", "累了", "好疲惫", "疲惫", "撑不住", "扛不住",
             "撑不下去", "撑不住了", "顶不住", "精疲力尽", "身心俱疲", "好疲倦",
-            # 低落 / 难受 / 痛苦
+            # Low mood / discomfort / pain
             "难受", "好难受", "不开心", "很难过", "好难过", "难过", "想哭",
             "好想哭", "伤心", "好伤心", "痛苦", "好痛苦", "心痛", "心好痛",
             "心碎", "压抑", "好压抑", "憋屈", "心塞", "心累", "好心累", "难熬",
             "煎熬", "提不起劲", "没动力", "心里堵", "心里难受", "情绪低落",
             "好低落", "低落", "丧了", "好丧", "丧丧的", "emo了", "好emo", "emo中",
-            # 愤怒 / 烦躁
+            # Anger / irritability
             "好烦", "烦死", "烦死了", "好烦躁", "烦躁", "心烦", "生气", "好生气",
             "气死", "气死了", "气炸", "火大", "好火大", "暴躁", "抓狂", "受够了",
             "忍不了", "忍无可忍", "恼火",
-            # 孤独 / 无依
+            # Loneliness / lack of support
             "一个人", "好孤独", "孤独", "没人懂", "没人理解", "孤单", "好孤单",
             "没人陪", "没人在乎", "好寂寞", "寂寞",
-            # 倦怠 / 空洞
+            # Burnout / emptiness
             "没意思", "好无聊", "没劲", "提不起兴趣", "什么都不想", "好空虚",
             "空虚", "好迷茫", "迷茫", "麻木",
-            # 压力 / 焦虑
+            # Stress / anxiety
             "压力好大", "压力太大", "好大压力", "好焦虑", "焦虑", "好慌", "心慌",
             "喘不过气", "透不过气", "好委屈", "委屈",
-            # 绝望 / 自我怀疑
+            # Despair / self-doubt
             "好绝望", "绝望", "坚持不下去", "不想努力了", "想放弃", "快崩溃",
             "要崩溃", "崩溃", "没希望", "好无助", "无助", "活不下去", "撑不住了",
-            # 求安慰 / 渴望被安抚
+            # Seeking comfort / wanting reassurance
             "安慰",
-            # 脏话 / 情绪爆粗（只收真带攻击性/愤怒宣泄的；卧槽/我擦/特么/该死/放屁
-            # 这类已口头禅化的轻感叹不收，含台湾常用语，zh 共享 zh-CN/zh-TW）。
-            # 不收 "tmd"（撞 tmdb 影视库）/"垃圾"（撞 垃圾桶/垃圾分类）等高频中性子串。
+            # Profanity/emotional swearing: include genuine aggression/angry venting, excluding casual interjections like 卧槽/我擦/特么/该死/放屁
+            # that have become habitual mild exclamations. Includes Taiwanese usage; zh serves zh-CN/zh-TW.
+            # Exclude frequent neutral substrings such as "tmd" (matching tmdb) / "垃圾" (matching 垃圾桶/垃圾分类, trash bins/sorting).
             "草泥马", "操你", "妈的", "他妈的", "傻逼", "煞笔", "二逼", "傻屌",
             "滚蛋", "滚开", "去死", "狗屁", "靠北", "靠杯", "干你娘", "幹你娘",
             "机掰", "機掰",
         ]
     ),
-    # 繁体是独立一块，不是同一份词表的另一种写法：scan_vulnerability_keywords
-    # 拿它们跟**用户实际打出来的字**做子串匹配，与界面语言无关。繁中使用者写
-    # 「好累 / 難受 / 想哭」时，只有繁体写法在表里才数得到 —— 简体那一份对他
-    # 一条都匹配不上。两块逐条对应（含两种写法相同的条目），改一侧时另一侧该
-    # 改什么一目了然；匹配按短语去重，重复条目不会重复计数。
+    # Traditional Chinese is an independent block, not alternate spelling of one vocabulary: scan_vulnerability_keywords
+    # matches substrings against **actual user input**, independently of UI language. Traditional users writing
+    # '好累 / 難受 / 想哭' ('tired / uncomfortable / want to cry') need traditional forms in the table; simplified entries
+    # cannot match them. Both blocks correspond entry by entry, including identical spellings, making required parallel changes
+    # clear. Deduplicate matching by phrase so repeated entries never count twice.
     "zh-TW": frozenset(
         [
-            # 疲憊 / 透支
+            # Fatigue / exhaustion
             "好累", "太累", "累死", "累了", "好疲憊", "疲憊", "撐不住", "扛不住",
             "撐不下去", "撐不住了", "頂不住", "精疲力盡", "身心俱疲", "好疲倦",
-            # 低落 / 難受 / 痛苦
+            # Low mood / discomfort / pain
             "難受", "好難受", "不開心", "很難過", "好難過", "難過", "想哭",
             "好想哭", "傷心", "好傷心", "痛苦", "好痛苦", "心痛", "心好痛",
             "心碎", "壓抑", "好壓抑", "憋屈", "心塞", "心累", "好心累", "難熬",
             "煎熬", "提不起勁", "沒動力", "心裡堵", "心裡難受", "情緒低落",
             "好低落", "低落", "喪了", "好喪", "喪喪的", "emo了", "好emo", "emo中",
-            # 憤怒 / 煩躁
+            # Anger / irritability
             "好煩", "煩死", "煩死了", "好煩躁", "煩躁", "心煩", "生氣", "好生氣",
             "氣死", "氣死了", "氣炸", "火大", "好火大", "暴躁", "抓狂", "受夠了",
             "忍不了", "忍無可忍", "惱火",
-            # 孤獨 / 無依
+            # Loneliness / lack of support
             "一個人", "好孤獨", "孤獨", "沒人懂", "沒人理解", "孤單", "好孤單",
             "沒人陪", "沒人在乎", "好寂寞", "寂寞",
-            # 倦怠 / 空洞
+            # Burnout / emptiness
             "沒意思", "好無聊", "沒勁", "提不起興趣", "什麼都不想", "好空虛",
             "空虛", "好迷茫", "迷茫", "麻木",
-            # 壓力 / 焦慮
+            # Stress / anxiety
             "壓力好大", "壓力太大", "好大壓力", "好焦慮", "焦慮", "好慌", "心慌",
             "喘不過氣", "透不過氣", "好委屈", "委屈",
-            # 絕望 / 自我懷疑
+            # Despair / self-doubt
             "好絕望", "絕望", "堅持不下去", "不想努力了", "想放棄", "快崩潰",
             "要崩潰", "崩潰", "沒希望", "好無助", "無助", "活不下去", "撐不住了",
-            # 求安慰 / 渴望被安撫
+            # Seeking comfort / wanting reassurance
             "安慰",
-            # 髒話 / 情緒爆粗，收词标准同 zh 那一块
+            # Profanity/emotional swearing, using the same inclusion criteria as zh
             "草泥馬", "操你", "媽的", "他媽的", "傻逼", "煞筆", "二逼", "傻屌",
             "滾蛋", "滾開", "去死", "狗屁", "靠北", "靠杯", "干你娘", "幹你娘",
             "机掰", "機掰",
@@ -187,34 +187,34 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
     ),
     "ja": frozenset(
         [
-            # 疲労
+            # Fatigue
             "疲れた", "疲れすぎ", "しんどい", "もう限界", "限界かも", "へとへと",
             "くたくた", "つらい", "つらすぎ", "もう無理", "やってられない",
             "もうへとへと", "気力がない", "ぐったり",
-            # 落ち込み
+            # Low mood
             "悲しい", "悲しすぎ", "泣きたい", "泣きそう", "落ち込", "やる気が出ない",
             "気分が沈", "元気が出ない", "しんどすぎ", "へこんでる", "気分が重い",
-            # 孤独
+            # Loneliness
             "一人ぼっち", "ひとりぼっち", "寂しい", "さびしい", "誰もわかって",
             "孤独", "独りぼっち", "誰も分かって", "話す相手がいない",
-            # 空虚 / 倦怠
+            # Emptiness / burnout
             "つまらない", "むなしい", "虚しい", "退屈", "何もしたくない",
             "迷ってる", "何もする気が", "心が空っぽ", "どうでもいい",
-            # 圧力 / 不安
+            # Pressure / anxiety
             "プレッシャー", "不安", "焦ってる", "焦って", "息が詰まる",
             "押しつぶされそう", "パニック", "気が休まらない",
-            # 絶望
+            # Despair
             "もうダメ", "崩れそう", "諦めたい", "頑張れない", "もう頑張れない",
             "立ち直れない", "どうしようもない", "消えてしまいたい",
-            # 怒り / イライラ
+            # Anger / irritation
             "ムカつく", "イライラ", "腹立つ", "腹が立つ", "うざい", "ウザい",
             "もう嫌", "うんざり", "キレそう", "イラつく", "ムカムカ", "頭にくる",
-            # 痛み
+            # Pain
             "胸が痛い", "心が痛い", "苦しい", "苦しすぎ", "せつない", "胸が苦しい",
-            # 慰めてほしい
+            # Wanting comfort
             "慰めて",
-            # 暴言 / 悪態（攻撃性のある罵倒のみ。馬鹿/あほ/きもい のような日常的な
-            # 軽口は外す。"くそ" は くそったれ 等を部分一致で内包）
+            # Abuse/swearing: include only aggressive insults, excluding everyday teasing like 馬鹿/あほ/きもい
+            # ('fool/idiot/gross'). "くそ" already includes くそったれ through substring matching
             "くそ", "クソ", "畜生", "ちくしょう", "ふざけんな", "ふざけるな",
             "死ね", "くたばれ",
         ]
@@ -379,7 +379,7 @@ FOCUS_VULNERABILITY_KEYWORDS_I18N: dict[str, frozenset[str]] = {
 }
 
 
-# Explicit topic-switch openers. A clear subject change ("对了… / 话说回来 /
+# Explicit topic-switch openers. A clear subject change ("对了… / 话说回来 /" — 'by the way / back to the topic /'
 # by the way / ところで") ends the current emotional episode, so Focus
 # exits immediately regardless of score (the user has moved on). Matched
 # at the START of the message only — a marker buried mid-sentence is far
@@ -392,8 +392,8 @@ FOCUS_TOPIC_SWITCH_MARKERS_I18N: dict[str, frozenset[str]] = {
         ["对了", "话说", "话说回来", "另外", "顺便", "顺便问", "换个话题",
          "说起来", "对了对了", "诶对了", "突然想到", "顺便说"]
     ),
-    # 同上：匹配的是用户打出来的字，繁体写法不在表里就一个都命中不了。
-    # `欸` 是台湾这个语气词的常用字，不是 `诶` 的机械转换。
+    # As above, match actual user input; missing traditional forms cannot match any traditional spelling.
+    # `欸` is the usual Taiwanese spelling of this particle, not a mechanical conversion of `诶`.
     "zh-TW": frozenset(
         ["對了", "話說", "話說回來", "另外", "順便", "順便問", "換個話題",
          "說起來", "對了對了", "欸對了", "突然想到", "順便說"]
@@ -451,7 +451,7 @@ def scan_vulnerability_keywords(message: str) -> int:
             if kwl in lower:
                 matched.add(kwl)
     # De-nest: a single cue often matches both a base phrase and an
-    # intensified form that contains it (e.g. "好难受" matches both "难受"
+    # intensified form that contains it (e.g. "好难受" ('so uncomfortable') matches both "难受"
     # and "好难受"; "so lonely" matches "lonely" and "so lonely"). Counting
     # both lets one cue saturate FOCUS_KEYWORD_SATURATION, so drop any
     # matched phrase that is a substring of another matched phrase — keep

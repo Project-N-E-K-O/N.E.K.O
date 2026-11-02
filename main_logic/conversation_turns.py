@@ -23,9 +23,9 @@ def _privacy_mode_active() -> bool:
 
 
 def normalize_turn_language(language: str | None = None) -> str:
-    # ⚠️ 兜底必须取 full。format='full' 只能保住已有的字形，救不回已经丢掉的：
-    # get_global_language() 返回短码，繁中在这里之前就成了 zh，format='full'
-    # 再把它扩成 zh-CN（issue #2500）。显式传进来的 language 照旧优先。
+    # Fallback must request full codes. format='full' preserves script already present but cannot restore lost script:
+    # get_global_language() returns short codes, reducing Traditional Chinese to zh before this point;
+    # format='full' then expands it to zh-CN (issue #2500). Explicit language still takes precedence.
     try:
         from utils.language_utils import get_global_language_full, normalize_language_code
         source = language if language else get_global_language_full()

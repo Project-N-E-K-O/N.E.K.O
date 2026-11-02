@@ -70,9 +70,9 @@ def test_list_plugin_log_files_for_tail_excludes_error_log_even_when_newer(tmp_p
 
 @pytest.mark.plugin_unit
 def test_list_plugin_log_files_for_tail_includes_rotated_regular_logs(tmp_path) -> None:
-    """RotatingFileHandler 触发轮转后只剩 ``.log.1`` / ``.log.2026-04-21`` 这种
-    后缀的文件。如果 helper 的 glob 只匹配 ``*.log``，目录里只剩轮转后的常规
-    日志时会返回空，让 tail / WebSocket 误报 "无日志"。
+    """After RotatingFileHandler rotates, only files with suffixes such as ``.log.1`` / ``.log.2026-04-21`` remain.
+    If the helper glob matches only ``*.log``, a directory containing only rotated regular
+    logs returns empty, causing tail / WebSocket to incorrectly report 'no logs'.
     """
     daily = tmp_path / "N.E.K.O_Plugin_demo_20260421.log"
     daily.write_text("today\n", encoding="utf-8")

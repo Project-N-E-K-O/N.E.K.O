@@ -56,21 +56,21 @@ def _cleanup_task_registry() -> List[Dict[str, Any]]:
     global _task_registry_last_cleanup
     now = time.time()
     timed_out: List[Dict[str, Any]] = []
-    if now - _task_registry_last_cleanup < 60:  # 最多每 60 秒清理一次
+    if now - _task_registry_last_cleanup < 60:  # Clean up at most once every 60 seconds.
         return timed_out
     _task_registry_last_cleanup = now
     to_remove = []
     for tid, info in _shared.Modules.task_registry.items():
         st = info.get("status")
 
-        # 检查 deferred 任务是否超时（防止绑定失败导致任务永远卡在 running）
+        # Check deferred tasks for timeouts (a failed binding must not leave them running forever).
         if st == "running" and info.get("deferred_timeout"):
             if now > info.get("deferred_timeout", float('inf')):
                 logger.warning("[TaskRegistry] Deferred task %s timed out, marking as failed", tid)
                 info["status"] = "failed"
                 info["end_time"] = _now_iso()
                 info["error"] = "Deferred task timeout (callback not received)"
-                # 收集超时任务，需要通知前端
+                # Collect timed-out tasks that need frontend notification.
                 timed_out.append({
                     "id": tid,
                     "status": "failed",
@@ -93,14 +93,14 @@ def _cleanup_task_registry() -> List[Dict[str, Any]]:
                 if age > TASK_REGISTRY_CLEANUP_TTL:
                     to_remove.append(tid)
             except Exception:
-                to_remove.append(tid)  # 解析失败的旧条目直接清理
+                to_remove.append(tid)  # Remove old entries that cannot be parsed.
         else:
-            # 没有 end_time 的终态任务，用 start_time 估算
+            # Estimate from start_time for terminal tasks without end_time.
             start_str = info.get("start_time", "")
             try:
                 start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
                 age = (datetime.now(timezone.utc) - start_dt).total_seconds()
-                if age > TASK_REGISTRY_CLEANUP_TTL * 2:  # 宽松一点
+                if age > TASK_REGISTRY_CLEANUP_TTL * 2:  # Allow some tolerance.
                     to_remove.append(tid)
             except Exception:
                 pass

@@ -1,21 +1,21 @@
 """Session save / load / import / export (P21).
 
-PLAN §P21 约定: 人工命名的 session 存档, 让测试床从 "临时沙盒" 变成
-"可交付的持久资产". 本模块只负责纯序列化 (Session ↔ SessionArchive ↔
-disk files), **不持有 asyncio.Lock / FastAPI / session_store 引用** —
-router 层 (``session_router``) 负责加锁 + 调度 + HTTP 映射; 本模块做的事
-逐项都是同步 I/O, 可以在任何上下文里复用 (包括 P22 autosave 和 P23
-export).
+PLAN section P21 specifies manually named session archives, turning the testbench from temporary sandboxes
+into deliverable persistent assets. This module handles pure serialization (Session <-> SessionArchive <->
+disk files), with no asyncio.Lock / FastAPI / session_store references.
+Routers (``session_router``) own locking, scheduling, and HTTP mapping; every operation here
+uses synchronous I/O and is reusable from any context, including P22 autosave and P23
+export.
 
-存档布局
---------
+Archive layout
+--------------
 
-一份 "存档" = **两个伴生文件** 放在 ``DATA_DIR/saved_sessions/``:
+An archive consists of two companion files under ``DATA_DIR/saved_sessions/``:
 
-    <name>.json            (UTF-8 JSON; 见下方 schema)
-    <name>.memory.tar.gz   (gzip tar; sandbox ``_app_docs/`` 下所有文件)
+    <name>.json            (UTF-8 JSON; schema below)
+    <name>.memory.tar.gz   (gzip tar of all sandbox ``_app_docs/`` files)
 
-``<name>.json`` 的顶层 schema (``schema_version=1``):
+Top-level ``<name>.json`` schema (``schema_version=1``):
 
 .. code-block:: json
 
@@ -31,7 +31,7 @@ export).
             "created_at": "ISO",
             "messages": [...],
             "persona": {...},
-            "model_config": {...},    # api_key 已脱敏
+            "model_config": {...},    # api_key redacted
             "stage_state": {...},
             "eval_results": [...],
             "clock": {...}
@@ -39,45 +39,45 @@ export).
         "snapshots": {
             "hot": [ Snapshot.to_json_dict() ... ],
             "cold_meta": [ {id, label, trigger, ...} ... ]
-            // cold 的 payload 本身在 tar.gz 内部的
-            // ``.snapshots/<id>.json.gz`` 文件里
+            // Cold payloads themselves live inside tar.gz
+            // in ``.snapshots/<id>.json.gz`` files.
         }
     }
 
-**为什么把 memory 放到单独的 tar.gz 而不是塞进 JSON**:
+**Why memory lives in a separate tar.gz rather than JSON**:
 
-(a) Memory 可能含二进制 (SQLite ``time_indexed.db`` / FTS5 index / 图片
-    附件等), base64 到 JSON 里把体积 ×1.33 且不可 stream.
-(b) `tarfile + gzip` 是 stdlib, 不引入第三方依赖.
-(c) P18 冷存快照 ``.snapshots/<id>.json.gz`` 已经是独立文件, 和 memory
-    一起打包恰好是 "整个 sandbox app_docs 目录照搬".
+(a) Memory may contain binary data (SQLite ``time_indexed.db`` / FTS5 indexes / image
+    attachments); JSON base64 multiplies size by 1.33 and cannot stream.
+(b) `tarfile + gzip` is standard-library functionality without third-party dependencies.
+(c) P18 cold snapshots ``.snapshots/<id>.json.gz`` are already separate files; packaging with memory
+    simply copies the whole sandbox app_docs directory.
 
-**Load 的还原顺序** (见 :func:`apply_to_session`):
+**Load restoration order** (see :func:`apply_to_session`):
 
-1. 调用方负责拿 ``session_operation(LOADING)`` 锁 + 对当前 session 建
-   pre_load_backup JSON (落在 autosave dir).
-2. 调用方负责 ``_dispose_all_sqlalchemy_caches()`` + ``gc.collect`` 释
-   放老会话的 SQLite 句柄 (F4).
-3. 调用方销毁旧 session (``store.destroy(purge_sandbox=True)``).
-4. 调用方 ``store.create(name=archive.session.name)`` 开新会话, 走完
-   ``sandbox.apply()`` + 初始 ``snapshot_store``.
-5. **本模块** 的 :func:`restore_memory_tarball` 把 tar.gz 解到 sandbox
-   ``_app_docs`` 下 (覆盖 create 创建的空骨架).
-6. **本模块** 的 :func:`apply_to_session` 把 archive 内的 messages /
+1. Callers acquire ``session_operation(LOADING)`` and create current-session
+   pre_load_backup JSON in the autosave directory.
+2. Callers run ``_dispose_all_sqlalchemy_caches()`` + ``gc.collect`` to release
+   old-session SQLite handles (F4).
+3. Callers destroy the old session with ``store.destroy(purge_sandbox=True)``.
+4. Callers create a session through ``store.create(name=archive.session.name)``, completing
+   sandbox.apply() and initial snapshot_store setup.
+5. This module's :func:`restore_memory_tarball` extracts tar.gz into sandbox
+   ``_app_docs``, replacing the empty skeleton from create.
+6. This module's :func:`apply_to_session` restores archived messages /
    persona / model_config / stage / clock / eval_results / snapshot
-   timeline 灌回新 session.
-7. 调用方 (UI) 收到新 session describe 后 ``window.location.reload()``
-   让前端彻底重载 (§3A B13 "状态彻底替换类操作默认走 reload").
+   timeline into the new session.
+7. UI callers receive the new session description and ``window.location.reload()``
+   to fully reload the frontend (section 3A B13: complete state replacement defaults to reload).
 
-API key 脱敏
-------------
+API key redaction
+-----------------
 
-默认 ``redact_api_keys=True``. 对 ``session.model_config`` 里每个 group
-(chat/simuser/judge/memory), 把 ``api_key`` 替换成 sentinel 值
-:data:`REDACTED_SECRET`. Load 回来时保持 sentinel (不会把 sentinel 当真 key
-发请求), UI 会在 Settings → Models 提示用户重新填. 如果用户确定要明文存
-(临时排障归档给自己看), 调用方传 ``redact_api_keys=False`` — 前端 Save
-对话框会 **默认勾选 "脱敏"** + 额外二次确认才允许取消.
+Default ``redact_api_keys=True`` replaces api_key in every session.model_config group
+(chat/simuser/judge/memory) with the sentinel
+:data:`REDACTED_SECRET`. Loading preserves the sentinel without treating it as a real key
+for requests; UI Settings -> Models asks for replacement keys. For explicitly requested plaintext
+archives used in personal troubleshooting, callers pass ``redact_api_keys=False``; frontend Save
+dialogs default redaction on and require secondary confirmation before disabling it.
 """
 from __future__ import annotations
 

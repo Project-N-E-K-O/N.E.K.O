@@ -1,4 +1,4 @@
-"""MCP 响应序列化器。"""
+"""MCP response serializer."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from plugin.sdk.adapter.gateway_models import (
 
 class MCPResponseSerializer:
     """
-    MCP 响应序列化器。
+    MCP response serializer.
     
-    将 Gateway 响应转换为 MCP JSON-RPC 格式。
+    Convert Gateway responses to MCP JSON-RPC format.
     """
 
     async def build_success_response(
@@ -24,9 +24,9 @@ class MCPResponseSerializer:
         latency_ms: float,
     ) -> Result[GatewayResponse, TransportError]:
         """
-        构造成功响应。
+        Build a successful response.
         
-        MCP 成功响应格式：
+        MCP success-response format:
         {
             "jsonrpc": "2.0",
             "id": <request_id>,
@@ -36,7 +36,7 @@ class MCPResponseSerializer:
             }
         }
         """
-        # 将结果包装为 MCP content 格式
+        # Wrap the result in MCP content format.
         mcp_result = self._wrap_result(result)
         
         return Ok(
@@ -60,9 +60,9 @@ class MCPResponseSerializer:
         latency_ms: float,
     ) -> Result[GatewayResponse, TransportError]:
         """
-        构造错误响应。
+        Build an error response.
         
-        MCP 错误响应格式：
+        MCP error-response format:
         {
             "jsonrpc": "2.0",
             "id": <request_id>,
@@ -73,7 +73,7 @@ class MCPResponseSerializer:
             }
         }
         """
-        # 映射错误码到 JSON-RPC 错误码
+        # Map error codes to JSON-RPC codes.
         jsonrpc_code = self._map_error_code(error.code)
         
         mcp_error = GatewayError(
@@ -103,9 +103,9 @@ class MCPResponseSerializer:
 
     def _wrap_result(self, result: object) -> dict[str, object]:
         """
-        将结果包装为 MCP content 格式。
+        Wrap a result in MCP content format.
         
-        MCP tool 结果格式：
+        MCP tool-result format:
         {
             "content": [
                 {"type": "text", "text": "..."}
@@ -114,16 +114,16 @@ class MCPResponseSerializer:
         }
         """
         if isinstance(result, dict):
-            # 如果已经是 MCP 格式，直接返回
+            # Return directly if already MCP-formatted.
             if "content" in result and isinstance(result.get("content"), list):
                 return result
             
-            # 检查是否是 NEKO ok/fail 格式
+            # Check for NEKO ok/fail format.
             if "success" in result and "data" in result:
                 inner_data = result.get("data")
                 if isinstance(inner_data, dict) and "content" in inner_data:
                     return inner_data
-                # 将 data 转为文本
+                # Convert data to text.
                 import json
                 text = json.dumps(inner_data, ensure_ascii=False, indent=2)
                 return {
@@ -131,7 +131,7 @@ class MCPResponseSerializer:
                     "isError": not result.get("success", True),
                 }
             
-            # 普通字典，转为 JSON 文本
+            # Convert ordinary dicts to JSON text.
             import json
             text = json.dumps(result, ensure_ascii=False, indent=2)
             return {
@@ -153,7 +153,7 @@ class MCPResponseSerializer:
                 "isError": False,
             }
         
-        # 其他类型，转为字符串
+        # Convert other types to strings.
         return {
             "content": [{"type": "text", "text": str(result)}],
             "isError": False,
@@ -161,9 +161,9 @@ class MCPResponseSerializer:
 
     def _map_error_code(self, code: str) -> int:
         """
-        映射 Gateway 错误码到 JSON-RPC 错误码。
+        Map Gateway error codes to JSON-RPC codes.
         
-        JSON-RPC 标准错误码：
+        Standard JSON-RPC error codes:
         - -32700: Parse error
         - -32600: Invalid Request
         - -32601: Method not found

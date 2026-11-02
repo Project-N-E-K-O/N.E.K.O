@@ -10,10 +10,10 @@ r7 broke the monolithic "one wire panel = last LLM call" contract into
   event sources). Memory / judge / simuser wires do **not** surface
   here anymore.
 * **Memory sub-pages** — each op ([recent.compress] / [facts.extract]
-  / [reflect] / [persona.resolve_corrections]) grows a [预览 prompt]
+ / [reflect] / [persona.resolve_corrections]) grows a [prompt preview]
   button next to its Dry-run button, backed by
   ``POST /api/memory/prompt_preview/{op}``.
-* **Evaluation / Run page** — [预览 prompt] next to [运行评分], backed
+* **Evaluation / Run page** — [prompt preview] next to [run evaluation], powered
   by ``POST /api/judge/run_prompt_preview``.
 * **Simulated user** — wires are ``NOSTAMP(wire_tracker)``; never show
   up anywhere.

@@ -776,6 +776,32 @@ function getLive2DPeekVerticalCorrection(bounds, viewport) {
     return 0;
 }
 
+// 头部内边距有 36/48px 下限。模型缩到比这个下限还小时，整个人会被推进屏幕，
+// 贴边后外接矩形和接触边之间会留下空隙。只在模型完全位于接触边内侧时补一次平移。
+const LIVE2D_PEEK_EDGE_FLUSH_EPSILON_PX = 1;
+
+function getLive2DPeekEdgeFlushShift(bounds, viewport, anchor) {
+    if (!bounds || !viewport || !anchor) return { x: 0, y: 0 };
+    let x = 0;
+    let y = 0;
+    if (anchor.side === 'left') {
+        const gap = bounds.left - viewport.left;
+        if (gap > LIVE2D_PEEK_EDGE_FLUSH_EPSILON_PX) x = viewport.left - bounds.left;
+    } else if (anchor.side === 'right') {
+        const gap = viewport.right - bounds.right;
+        if (gap > LIVE2D_PEEK_EDGE_FLUSH_EPSILON_PX) x = viewport.right - bounds.right;
+    }
+    if (anchor.verticalEdge === 'top') {
+        const gap = bounds.top - viewport.top;
+        if (gap > LIVE2D_PEEK_EDGE_FLUSH_EPSILON_PX) y = viewport.top - bounds.top;
+    } else if (anchor.verticalEdge === 'bottom') {
+        const gap = viewport.bottom - bounds.bottom;
+        if (gap > LIVE2D_PEEK_EDGE_FLUSH_EPSILON_PX) y = viewport.bottom - bounds.bottom;
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return { x: 0, y: 0 };
+    return { x, y };
+}
+
 function getLive2DPeekPlacement(model, bounds, manager = null, anchor = null) {
     if (!model || !bounds || !anchor) return null;
     const viewport = anchor.workArea || getLive2DPeekTriggerViewport(
@@ -946,6 +972,18 @@ function getLive2DPeekPlacement(model, bounds, manager = null, anchor = null) {
         model.rotation = targetRotation;
         if (model.scale) model.scale.x = targetScaleX;
         targetBounds = getLive2DPeekBounds(model);
+        const flushShift = getLive2DPeekEdgeFlushShift(
+            getLive2DModelGeometryBounds(manager, model) || targetBounds,
+            viewport,
+            anchor
+        );
+        if (targetBounds && (flushShift.x !== 0 || flushShift.y !== 0)) {
+            offsetX += flushShift.x;
+            offsetY += flushShift.y;
+            model.x = baseX + offsetX;
+            model.y = baseY + offsetY;
+            targetBounds = getLive2DPeekBounds(model);
+        }
     } catch (_) {
         targetBounds = null;
     } finally {

@@ -66,11 +66,11 @@ def pytest_runtest_call(item):
     """
     outcome = yield
     drifted = _drifted()
-    # 先无条件还原：直接赋值（不走 monkeypatch）的假时钟没人替它撤销，用例失败
-    # 时若跟着早退，它会活到后面每一条用例里——正是这个模块声称要挡的那种泄漏。
+    # Always restore first: nobody undoes a fake clock assigned directly rather than via monkeypatch. If a failed test
+    # returns early here, that clock leaks into every subsequent case, exactly the leak this module claims to prevent.
     for name in drifted:
         setattr(time, name, _REAL[name])
-    if drifted and outcome.excinfo is None:  # 用例本身已失败时不盖掉原因
+    if drifted and outcome.excinfo is None:  # Do not mask the original reason when the test has already failed.
         pytest.fail(
             f"{item.nodeid} 把 stdlib time 的 {drifted} 换掉了——这是全进程生效的，"
             "任何后台线程都会读到假时钟；若假时钟有状态（迭代器/计数器），别人调一次"

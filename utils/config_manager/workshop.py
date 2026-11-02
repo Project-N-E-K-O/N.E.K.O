@@ -32,14 +32,14 @@ from utils.file_utils import (
 
 from ._shared import logger
 
-# 守护上面那把「last-good 缓存微锁」的懒创建，见 _last_good_workshop_config_lock。
+# Protects the lazy creation of the "last-good cache micro-lock" above; see _last_good_workshop_config_lock.
 _LAST_GOOD_LOCK_GUARD = threading.Lock()
 
-# 读侧回落「还算瞬时」的上限。读侧重试预算约 155ms，os.replace 的窗口是个位数毫秒；
-# 取 5 秒是它的几十倍，撑过这个时长的 ACCESS_DENIED 就不是那条竞态了。
+# Upper bound for considering a read-side fallback "transient." Read retries take about 155ms and the os.replace window is only a few milliseconds;
+# 5 seconds is many times longer, so ACCESS_DENIED lasting that long is not the same race.
 _WORKSHOP_CONFIG_FALLBACK_GRACE_S = 5.0
 
-# Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
+# Workshop configuration constants — workshop_dir will be accessed through self when ConfigManager is instantiated
 
 
 class WorkshopMixin:
@@ -64,7 +64,7 @@ class WorkshopMixin:
             return None
 
         try:
-            # 与 workshop_utils 保持一致：相对路径按用户目录解析
+            # Match workshop_utils: resolve relative paths against the user directory
             if not os.path.isabs(path_str):
                 path_str = os.path.join(os.path.expanduser('~'), path_str)
             return os.path.normpath(path_str)
@@ -146,8 +146,8 @@ class WorkshopMixin:
         lock = getattr(self, "_last_good_lock_obj", None)
         if lock is not None:
             return lock
-        # 懒创建本身也要串行：两个线程同时进来会各造一把锁、各自守着不同的东西，
-        # 那这把锁就等于不存在。用模块级 guard 做双检。
+        # Lazy creation itself must be serialized: if two threads enter together, they can each create a different lock and guard different things,
+        # making the lock effectively nonexistent. Use a module-level guard for double-checking.
         with _LAST_GOOD_LOCK_GUARD:
             lock = getattr(self, "_last_good_lock_obj", None)
             if lock is None:
@@ -186,8 +186,8 @@ class WorkshopMixin:
                 logger.warning("加载workshop配置失败，沿用上一次成功读到的配置: %s", exc)
                 return
             if escalated or now - since < _WORKSHOP_CONFIG_FALLBACK_GRACE_S:
-                # 这个端点会被反复调用（get_workshop_path 之类）。持续故障下每次都打
-                # 一条 warning 会把日志刷爆，反而埋掉下面那条真正要人看的 ERROR。
+                # This endpoint is called repeatedly (for example, get_workshop_path). Under sustained failure, logging
+                # one warning every time would flood logs and bury the ERROR below that actually needs attention.
                 logger.debug("workshop 配置仍读不出来，继续沿用 last-good: %s", exc)
                 return
             self._workshop_config_fallback_escalated = True
@@ -209,12 +209,12 @@ class WorkshopMixin:
         if not isinstance(config, dict):
             return
         snapshot = dict(config)
-        # 读成功就把「回落连续时长」清零 —— 即使下面因为代数不符不采纳这份快照，
-        # 文件本身是读得到的，那就不是持续故障。
+        # A successful read resets the "continuous fallback duration" — even if the snapshot is rejected below due to a generation mismatch,
+        # the file itself was readable, so this is not a persistent failure.
         self._clear_workshop_config_fallback_streak()
-        # 比较和赋值必须是一个原子步：中间被抢占的话，一次 save 可以在这两步之间
-        # 把代数推上去并写好新缓存，然后这条旧读再把它盖回去。这把锁只圈住两行内存
-        # 操作、不含任何 I/O，所以拿它不会有「持锁跨 fsync」那类问题。
+        # Comparison and assignment must be atomic: if interrupted between them, a save could advance the generation and write a new cache,
+        # then this stale read would overwrite it. This lock covers only two in-memory
+        # operations and no I/O, so it does not have the kind of "lock held across fsync" problem.
         with self._last_good_workshop_config_lock:
             if getattr(self, "_workshop_config_generation", 0) != generation:
                 return
@@ -273,19 +273,19 @@ class WorkshopMixin:
         if rebased_config is config:
             return config
 
-        # ⚠️ 在事件循环上就**不写**，直接把改好的结果返回给调用方。
-        # get_workshop_path() 走的就是这条读路径，而 voice_refs / publish 的 async
-        # handler 在循环上裸调它 —— 去抢一把 worker 可能正持着（跨 fsync）的锁，就是
-        # 把整条循环挂在那儿。自愈只是把盘上的路径修正过来，晚一点写没有任何损失：
-        # 下一次跑在 worker 线程上的读（GET /config 走 to_thread、POST 事务、启动期
-        # 的 persist）就会落地。这一趟的调用方拿到的路径已经是对的。
+        # ⚠️ On the event loop, do **not write**; return the corrected result directly to the caller.
+        # get_workshop_path() uses this read path, and async voice_refs / publish
+        # handlers call it directly on the loop — waiting for a lock a worker may hold across fsync would
+        # hang the entire loop. Self-healing only corrects the path on disk; writing later loses nothing:
+        # the next read running on a worker thread (GET /config via to_thread, POST transaction, startup
+        # persistence) will commit it. This caller already receives the correct path.
         if running_on_event_loop():
             logger.debug("在事件循环上，跳过 workshop 配置路径自愈的落盘，留给下一次线程内读取")
             return rebased_config
 
-        # 只有这里需要锁。锁内**重读一次**再决定：调用方那份快照是在锁外读的，直接
-        # 写回去就可能把并发事务刚提交的配置整份盖掉（正是 POST /config 与
-        # GET /config 之间那个竞态）。重读之后没得可改就什么都不做。
+        # Only this path needs a lock. **Reread inside the lock** before deciding: the caller's snapshot was read outside the lock, so writing it directly
+        # could overwrite a full config just committed by a concurrent transaction (the race between POST /config and
+        # GET /config). If the reread needs no change, do nothing.
         try:
             with self._workshop_config_lock:
                 fresh = self._read_workshop_config_file()
@@ -314,32 +314,32 @@ class WorkshopMixin:
             dict: workshop config data
         """
         config_path = self.get_workshop_config_path()
-        # 读之前先记下代数。这次读是在锁外做的，可能在一次 save 之前就开始了却在它
-        # 之后才回来 —— 那样把结果写进 last-known-good 就是拿旧快照盖掉新配置。
+        # Record the generation before reading. This read happens outside the lock; it may start before a save and return
+        # afterward — writing it into last-known-good would overwrite the newer config with a stale snapshot.
         generation = getattr(self, "_workshop_config_generation", 0)
         try:
             if os.path.exists(config_path):
-                # ⚠️ 这条读路径**不许拿 _workshop_config_lock**。get_workshop_path()
-                # 走的就是这里，而 voice_refs / publish 等 async handler 在事件循环上
-                # 裸调 get_workshop_path()。让它去抢一把 worker 可能正持着（跨 fsync、
-                # 甚至跨网络盘 makedirs）的锁，就等于把整条循环挂在那儿 —— 同一个锁
-                # 传导陷阱在这个 PR 里已经踩过两次。自愈写的串行化由
-                # _rebase_workshop_config_after_storage_migration 自己在锁内完成。
-                # ⚠️ 容忍 os.replace 的读：落盘现在跑在 worker 上，Windows 上并发
-                # open() 会撞到 replace 中间吃 PermissionError。下面那个 except 会把
-                # 它当成「配置读不出来」而退回默认配置 —— 于是 upload / publish 拿着
-                # 默认的工坊根目录去干活，而用户的配置明明好好的。
+                # ⚠️ This read path must **not acquire _workshop_config_lock**. get_workshop_path()
+                # uses it, and async handlers such as voice_refs / publish call get_workshop_path() directly on the event loop.
+                # Waiting for a lock a worker may hold across fsync (or even network-drive makedirs) would hang the entire loop — this same lock-
+                # propagation trap has already occurred twice in this PR. Serialization of the self-healing write is handled
+                # by _rebase_workshop_config_after_storage_migration inside its own lock.
+                #
+                # ⚠️ Reads must tolerate os.replace: persistence now runs on a worker, and on Windows concurrent
+                # open() may hit PermissionError during replace. The except below would treat that as "config unreadable"
+                # and return defaults — then upload / publish would use the default workshop root even though the user's config is fine.
+                # If config does not exist, return the default directly to avoid implicit file writes during read-only queries.
                 config = read_json_tolerating_replace(config_path)
                 config = self._rebase_workshop_config_after_storage_migration(config)
                 logger.debug(f"成功加载workshop配置: {config}")
                 self._remember_good_workshop_config(config, generation)
                 return config
             else:
-                # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
                 #
-                # ⚠️ 事件循环上不拿这把锁。首次 POST /config 正在创建这个文件时，
-                # 目标一直不存在、而 worker 持着锁在写 —— 循环上的 get_workshop_path()
-                # 就会卡在这儿。这条分支本来就只是「读不到就给默认值」，不需要互斥。
+                #
+                # ⚠️ Do not acquire this lock on the event loop. During the first POST /config, the file is being created;
+                # the target remains absent while the worker holds the lock and writes, so get_workshop_path() on the event loop
+                # would hang here. This branch only needs to "return the default if unreadable," so no mutual exclusion is needed.
                 if running_on_event_loop():
                     if os.path.exists(config_path):
                         config = read_json_tolerating_replace(config_path)
@@ -363,29 +363,29 @@ class WorkshopMixin:
                     logger.debug(f"workshop配置不存在，返回默认配置: {default_config}")
                     return default_config
         except Exception as e:
-            # ⚠️ 先看有没有「上一次成功读到的」。落盘现在跑在 worker 上，Windows 上
-            # 事件循环里的一次读可能正撞在 os.replace 中间；而循环上不许退避重试
-            # （见 read_json_tolerating_replace），于是这里会收到一个瞬时的
-            # PermissionError。直接退回默认配置的话，upload / publish 就拿着默认的
-            # 工坊根目录去干活，而用户的配置明明好好的 —— 静默换根目录比报错糟得多。
-            # ⚠️ 只对「瞬时 busy」回落。缓存一旦建立就把**所有**读失败都盖掉的话，
-            # JSON 被改坏这类真故障就永远不会暴露，upload / publish 会一直对着旧根
-            # 目录干活。判据同写入侧：OS 给的 winerror，不是消息猜测。
-            # ⚠️ 但 winerror 5（ACCESS_DENIED）本身是**二义**的：os.replace 的瞬时
-            # 窗口和「权限被永久收走」给的是同一个码，光看码分不开。所以再叠一层按
-            # **持续时长**的判据 —— 见 _note_workshop_config_fallback。
+            # ⚠️ First check whether there is a "last successfully read" value. Persistence now runs on a worker, and a read on the Windows
+            # event loop may land during os.replace; the loop must not retry with backoff
+            # (see read_json_tolerating_replace), so this can surface as a transient
+            # PermissionError. Returning defaults directly would make upload / publish use the default
+            # workshop root even though the user's config is fine — silently changing roots is worse than an error.
+            # ⚠️ Fall back only for "transient busy" errors. If an established cache masked **all** read failures,
+            # genuine faults such as malformed JSON would never surface, and upload / publish would keep using the old root.
+            # Use the same criterion as writes: the OS winerror, not a guess based on the message.
+            # ⚠️ But winerror 5 (ACCESS_DENIED) is itself **ambiguous**: both the transient os.replace
+            # window and permanently revoked permissions use the same code, so the code alone cannot distinguish them. Add another gate based on
+            # **duration** — see _note_workshop_config_fallback.
             busy_code = getattr(e, "winerror", None) in _REPLACE_BUSY_WINERRORS
             last_good = getattr(self, "_last_good_workshop_config", None)
             if busy_code and last_good is not None:
-                # 日志分级整个交给它：首次 warning，宽限期内 debug，撑过宽限期 ERROR
-                # 一次，之后回落到 debug。这个端点被反复调用，每次一条 warning 会把
-                # 真正要人看的那条埋掉。
+                # Delegate log levels to it: warning on first occurrence, debug during the grace period, one ERROR after
+                # the grace period, then debug again. This endpoint is called repeatedly; a warning each time would bury
+                # the message that actually needs attention.
                 self._note_workshop_config_fallback(e)
                 return dict(last_good)
             error_msg = f"加载workshop配置失败: {e}"
             logger.error(error_msg)
             print(error_msg)
-            # 使用默认配置
+            # Use default configuration
             return {
                 "default_workshop_folder": str(self.workshop_dir),
                 "auto_create_folder": True
@@ -404,15 +404,15 @@ class WorkshopMixin:
 
             assert_cloudsave_writable(self, operation="save", target="workshop_config.json")
 
-            # 确保配置目录存在
+            # Ensure the configuration directory exists
             self.ensure_config_directory()
             
-            # 保存配置
+            # Save configuration
             atomic_write_json(config_path, config_data, indent=4, ensure_ascii=False)
 
-            # 写成功之后同步 last-known-good。只在读成功时更新的话，POST /config
-            # 存下新配置后缓存里还是它进来时读到的旧值 —— 之后一次瞬时读失败就会
-            # 回落到**改动之前**的配置，比回落到默认值更难查。
+            # Synchronize last-known-good after a successful write. If it were updated only after reads, POST /config
+            # would persist new config while the cache retained the old value it read on entry — a later transient read failure would
+            # fall back to the config **before the change**, which is harder to diagnose than falling back to defaults.
             if isinstance(config_data, dict):
                 snapshot = dict(config_data)
                 with self._last_good_workshop_config_lock:
@@ -449,9 +449,9 @@ class WorkshopMixin:
         if not workshop_path or not os.path.isdir(workshop_path):
             return
         try:
-            # 读—改—写整段持锁：不然启动期这次持久化可以「用户保存配置之前读、之后
-            # 写」，用自己那份陈旧快照把用户刚提交的目录设置整份盖掉。锁是 RLock，
-            # 所以里面的 load_workshop_config 再取一次不会自死锁。
+            # Hold the lock for the full read-modify-write: otherwise startup persistence could "read before the user saves config, write after"
+            # and overwrite the directory settings the user just submitted with its stale snapshot. The lock is an RLock,
+            # so calling load_workshop_config inside it does not deadlock.
             with self._workshop_config_lock:
                 config = self.load_workshop_config()
                 config["user_workshop_folder"] = workshop_path

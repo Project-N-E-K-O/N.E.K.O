@@ -313,6 +313,9 @@ jobs:
             EMBEDDING_MODEL_REPO=${{ env.EMBEDDING_MODEL_REPO }}
             EMBEDDING_MODEL_REVISION=${{ env.EMBEDDING_MODEL_REVISION }}
             EMBEDDING_MODEL_PROFILE_ID=${{ env.EMBEDDING_MODEL_PROFILE_ID }}
+            # 镜像身份：容器内 entrypoint 会打印，排障时用来确认版本。
+            NEKO_BUILD_VERSION=${{ needs.calculate-version.outputs.image_version }}
+            NEKO_BUILD_REVISION=${{ github.sha }}
           tags: ${{ steps.meta_ghcr.outputs.tags || steps.meta_both.outputs.tags }}
           labels: ${{ steps.meta_ghcr.outputs.labels || steps.meta_both.outputs.labels }}
           cache-from: type=gha
@@ -464,6 +467,9 @@ jobs:
             EMBEDDING_MODEL_REPO=${{ env.EMBEDDING_MODEL_REPO }}
             EMBEDDING_MODEL_REVISION=${{ env.EMBEDDING_MODEL_REVISION }}
             EMBEDDING_MODEL_PROFILE_ID=${{ env.EMBEDDING_MODEL_PROFILE_ID }}
+            # 镜像身份：容器内 entrypoint 会打印，排障时用来确认版本。
+            NEKO_BUILD_VERSION=${{ needs.calculate-version.outputs.image_version }}
+            NEKO_BUILD_REVISION=${{ github.sha }}
           tags: ${{ steps.meta_ghcr.outputs.tags || steps.meta_both.outputs.tags }}
           labels: ${{ steps.meta_ghcr.outputs.labels || steps.meta_both.outputs.labels }}
           cache-from: type=gha

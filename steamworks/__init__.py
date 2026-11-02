@@ -22,25 +22,25 @@ from steamworks.methods 	import STEAMWORKS_METHODS
 
 
 def _get_app_root():
-    """获取应用程序根目录（与 config_manager 保持一致）
+    """Get the application root directory, consistent with config_manager.
     
-    处理 PyInstaller 打包情况：
-    - 单文件模式：使用 sys._MEIPASS（临时解压目录）
-    - 多文件模式：使用 sys.executable 所在目录
-    - 脚本运行：固定使用项目根目录（基于 __file__），避免 IDE / 外部 cwd
-      导致加载到错误位置的本地库、动态库或 steam_appid.txt
+    Handle PyInstaller packaging:
+    - Single-file mode: use sys._MEIPASS (temporary extraction directory).
+    - Directory mode: use the directory containing sys.executable.
+    - Script execution: fix the project root using __file__, avoiding an IDE/external cwd
+      that would load native/dynamic libraries or steam_appid.txt from the wrong location.
     """
     if getattr(sys, 'frozen', False):
-        # 打包后运行
+        # Packaged execution.
         if hasattr(sys, '_MEIPASS'):
-            # PyInstaller 单文件模式：DLL 在 _MEIPASS 同级的根目录
-            # 但在单文件模式下，DLL 实际应该放在解压目录中
+            # PyInstaller single-file mode: the DLL is in the root directory alongside _MEIPASS.
+            # In single-file mode, however, the DLL should actually be in the extraction directory.
             return sys._MEIPASS
         else:
-            # PyInstaller 多文件模式：DLL 应该在 exe 同目录
+            # PyInstaller directory mode: the DLL belongs beside the executable.
             return os.path.dirname(sys.executable)
     else:
-        # 脚本运行：固定使用项目根目录，避免 IDE / 外部 cwd 导致加载到错误位置的本地库
+        # Script execution: fix the project root to avoid loading a native library from the wrong IDE/external cwd.
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -123,7 +123,7 @@ class STEAMWORKS(object):
     """
         Primary STEAMWORKS class used for fundamental handling of the STEAMWORKS API
     """
-    _arch = Arch.x64  # 直接使用64位架构，避免导入问题
+    _arch = Arch.x64  # Use 64-bit architecture directly to avoid import issues.
     _native_supported_platforms = ['linux', 'linux2', 'darwin', 'win32']
 
     def __init__(self, supported_platforms: list = []) -> None:
@@ -149,13 +149,13 @@ class STEAMWORKS(object):
         if platform not in STEAMWORKS._native_supported_platforms:
             raise UnsupportedPlatformException(f'"{platform}" is not being supported')
 
-        # 获取应用程序根目录（与 config_manager 逻辑保持一致）
+        # Get the application root directory, consistent with config_manager.
         app_root = _get_app_root()
         
         library_file_name = ''
         if platform in ['linux', 'linux2']:
             library_file_name = 'SteamworksPy.so'
-            # 优先从应用根目录加载
+            # Prefer loading from the application root.
             libsteam_path = os.path.join(app_root, 'libsteam_api.so')
             if os.path.isfile(libsteam_path):
                 self._steam_api_cdll = CDLL(
@@ -180,7 +180,7 @@ class STEAMWORKS(object):
             # This case is theoretically unreachable
             raise UnsupportedPlatformException(f'"{platform}" is not being supported')
 
-        # 按优先级查找库文件：应用根目录 > 模块目录
+        # Search library files in priority order: application root > module directory.
         if os.path.isfile(os.path.join(app_root, library_file_name)):
             library_path = os.path.join(app_root, library_file_name)
         elif os.path.isfile(os.path.join(os.path.dirname(__file__), library_file_name)):
@@ -188,7 +188,7 @@ class STEAMWORKS(object):
         else:
             raise MissingSteamworksLibraryException(f'Missing library {library_file_name}')
 
-        # 从应用根目录查找 steam_appid.txt
+        # Look for steam_appid.txt in the application root.
         app_id_file = os.path.join(app_root, 'steam_appid.txt')
         if not os.path.isfile(app_id_file):
             raise FileNotFoundError(f'steam_appid.txt missing from {app_root}')

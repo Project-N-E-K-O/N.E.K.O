@@ -411,9 +411,9 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
     runtime._asr_route_mode = "independent"
     now = time.monotonic()
 
-    # 不可信的 onset。取**未来**时刻这一侧：那是真正危险的方向 —— 拿它去裁，
-    # 每一帧都「早于开口」，整个缓冲会被清空。（过去那一侧的残值只会裁掉比它
-    # 更早的帧，多数情况下是空操作，判别不出这条守卫。）
+    # Untrusted onset: choose the future side, the genuinely dangerous direction. Cropping against it
+    # treats every frame as preceding speech and empties the whole buffer. (A residual timestamp in the past only crops frames older than
+    # it, usually a no-op that cannot distinguish this guard.)
     runtime._asr_runtime._asr_turn_onset_at = now + 30.0
 
     for i in range(3):
@@ -424,7 +424,7 @@ async def test_a_stale_onset_does_not_evict_the_prerecord_buffer() -> None:
             captured_at=now - 1.0 + i * 0.2,
         )
 
-    # onset 不可信 → 不裁，三张都留着（若采信，三张会被全部清掉）。
+    # Untrusted onset -> do not crop; retain all three frames (trusting it would clear all three).
     assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
         "frame-0",
         "frame-1",

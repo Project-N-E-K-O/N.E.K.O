@@ -170,16 +170,16 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
     legacy_import = import_legacy_runtime_root_if_needed(config_manager)
     root_state, recovered_stale_mode = _recover_stale_write_blocking_mode(config_manager, root_state)
 
-    # 下面这串编辑 + 末尾的 save_root_state 是一次读—改—写，必须整段进锁。
+    # The following edits plus the final save_root_state form one read-modify-write transaction; lock the entire sequence.
     #
-    # 锁从这里才开始，故意不往上包：import_legacy_runtime_root_if_needed 可能整目录
-    # 拷贝，_recover_stale_write_blocking_mode 会去拿跨进程的 cloud apply 锁——把
-    # root_state 锁包在它外面会让锁序变成 root_state → cloud_apply，跟
-    # cloud_apply_fence 的方向相反。全仓统一 cloud_apply_lock → root_state_transaction。
+    # Start locking only here, intentionally excluding earlier work: import_legacy_runtime_root_if_needed may copy an entire directory,
+    # and _recover_stale_write_blocking_mode acquires the cross-process cloud-apply lock. Wrapping it in
+    # root_state would create lock order root_state → cloud_apply, opposite to
+    # cloud_apply_fence. Use cloud_apply_lock → root_state_transaction consistently across the repository.
     with root_state_transaction():
-        # 锁内重读：上面 load_root_state 那次到这里之间，storage_location 的变更路由
-        # （现在跑在工作线程上）可能已经提交过一轮，拿旧 pre-image 编辑再存回去会把
-        # 那一轮整份盖掉。
+        # Reread under lock: since load_root_state above, the storage_location change route
+        # (now running on a worker thread) may have committed an update; editing and saving the old pre-image would
+        # overwrite that entire update.
         latest_state = config_manager.load_root_state()
         if isinstance(latest_state, dict):
             root_state = latest_state

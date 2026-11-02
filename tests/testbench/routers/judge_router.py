@@ -92,8 +92,8 @@ from tests.testbench.pipeline.judge_runner import (
 # import had failed (transitively, e.g. memory loader ImportError),
 # Python tried to resolve the local `PreviewNotReady` → UnboundLocalError
 # "cannot access local variable 'PreviewNotReady' where it is not
-# associated with a value" — which surfaced to the user as "整批运行失败"
-# when F6 `match_main_chat` was checked. 2026-04-22 Day 8 手测 fix.
+# associated with a value" — which surfaced to the user as "整批运行失败" (the entire batch failed)
+# when F6 `match_main_chat` was checked. 2026-04-22: manually tested fix on day 8.
 # Use the full `tests.testbench.pipeline.*` path (not short `pipeline.*`)
 # so smoke tests work; `pipeline` short path only resolves under
 # `run_testbench.py`'s sys.path shim.
@@ -249,12 +249,12 @@ def _save_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def schemas_save(body: _SchemaSaveRequest) -> dict[str, Any]:
     """Create or overwrite a user schema.
 
-    - 422 SchemaInvalid (detail 含 ``errors`` 清单) — 字段校验失败.
-    - 200 ``{schema, overriding_builtin, path}`` — 写盘成功.
+    - 422 SchemaInvalid (detail includes an ``errors`` list) — field validation failed.
+    - 200 ``{schema, overriding_builtin, path}`` — written to disk successfully.
 
-    等价于 ``PUT /api/judge/schemas/{body.id}``. 提供 POST 变体是为了
-    新建流程前端不必先知道 id (虽然我们确实要求 body.id 存在 — schema 的
-    "id = 文件名" 契约决定的).
+    Equivalent to ``PUT /api/judge/schemas/{body.id}``. The POST variant lets the frontend
+    create a schema without knowing the id first (although body.id is still required, per the schema's
+    \"id = filename\" contract).
     """
     return _save_payload(body.model_dump(exclude_unset=False))
 
@@ -283,7 +283,7 @@ def schemas_save_put(
 def schemas_delete(schema_id: str) -> dict[str, Any]:
     """Delete a user schema. Builtin schemas are protected by the pipeline.
 
-    - 404 SchemaNotFound — user 目录没有这个 id (builtin 本来就不能删).
+    - 404 SchemaNotFound — this id does not exist in the user directory (built-ins cannot be deleted).
     - 200 ``{deleted_id, resurfaces_builtin}``.
     """
     try:
@@ -473,8 +473,8 @@ class _JudgeRunRequest(BaseModel):
     persist: bool = True
     # P24 §15.2 C / F6 — when ``True``, the judger prompt pulls the
     # same ``persona_system`` block that ``build_prompt_bundle`` sends
-    # to the main chat model. Useful for reproducibility ("是不是因为
-    # 评委看到了和对话模型不同的 system?"), especially when diagnosing
+    # to the main chat model. Useful for reproducibility ("whether the judge saw a different system prompt
+    # from the conversation model"), especially when diagnosing
     # prompt-injection suspicions. Default ``False`` preserves the
     # historical behavior (evaluator sees only the scoring schema's
     # own ``prompt_template`` without main-chat persona).
@@ -500,7 +500,7 @@ def _visible_session_messages(session) -> list[dict[str, Any]]:
     is a **second** "session.messages → LLM" path (the judger reads
     history + conversation + the target assistant turn into its prompt
     template), so the same filter has to apply here too — otherwise a
-    ``[测试事件] 测试用户触发了一次 Agent 回调事件`` line shows up as a
+    ``[测试事件] 测试用户触发了一次 Agent 回调事件`` means the line appears
     fake "system" turn inside ``history`` / ``conversation`` and the
     judger LLM scores against polluted context (GH AI-review issue
     #5/#9 family — same chokepoint coverage gap, third instance).
@@ -509,7 +509,7 @@ def _visible_session_messages(session) -> list[dict[str, Any]]:
     directly should route through this helper so the read-side filter
     stays symmetric with the single ``_append_external_event_banner``
     write site (L33 single-writer / L36 §7.25 fifth-layer defense).
-    """
+    """  # noqa: DOCSTRING_CJK
     return [
         m for m in (getattr(session, "messages", None) or [])
         if (m or {}).get("source") != SOURCE_EXTERNAL_EVENT_BANNER
@@ -1073,7 +1073,7 @@ async def judge_run(body: _JudgeRunRequest) -> dict[str, Any]:
 async def judge_run_prompt_preview(body: _JudgeRunRequest) -> dict[str, Any]:
     """Show the wire ``/run`` **would** send to each judger, without calling LLM.
 
-    P25 r7 — used by the Evaluation/Run page's [预览 prompt] button next
+    P25 r7 — used by the Evaluation/Run page's [prompt preview] button next
     to the run bar. Mirrors the first half of ``judge_run``: validate
     inputs, load schema, build per-target ``JudgeInputs``, then for each
     call ``build_judge_prompt_preview(judger, inp)`` to produce a wire.

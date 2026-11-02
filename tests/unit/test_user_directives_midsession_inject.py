@@ -81,9 +81,9 @@ async def test_injects_when_a_directive_was_just_recorded(monkeypatch):
     kwargs = mgr.append_context.await_args.kwargs
     assert "加班" in kwargs["text"]
     assert kwargs["audience"] == "model"
-    # when_ready：会话还没建好时排队，不丢。
+    # Queue when the session is not ready yet; do not lose the request.
     assert kwargs["timing"] == "when_ready"
-    # request_id 让 append_context 的去重生效（同一组 term 只注入一次）
+    # request_id enables append_context deduplication (inject each set of terms only once)
     assert kwargs.get("request_id")
 
 
@@ -146,10 +146,10 @@ def test_directive_source_is_not_registered_for_bare_prime():
 @pytest.mark.asyncio
 async def test_repeat_of_the_same_directive_reuses_one_request_id(monkeypatch):
     """Saying the same thing twice must not append two identical blocks."""
-    # E 那半按 hit_count 递增 TTL，整个设计就预期用户会重复说同一条；而
-    # ``record`` 的刷新分支同样会置待注入标记。不给稳定 request_id 的话，
-    # 每次都原样再追加一份到 next-session 缓存，下个会话开头会连着看到同一段
-    # 禁令块好几遍。
+    # The E side extends TTL by hit_count, and the whole design expects users to repeat the same item; the
+    # ``record`` refresh branch also marks it for injection. Without a stable request_id,
+    # each repeat would append another identical copy to the next-session cache, so the next session would see the same
+    # directive block several times in a row.
     _install(monkeypatch, pending=True)
     mgr = _Manager()
 
@@ -164,8 +164,8 @@ async def test_repeat_of_the_same_directive_reuses_one_request_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_new_term_gets_a_different_request_id(monkeypatch):
     """Adding a term must produce a fresh id, or the update is silently deduped."""
-    # 对照组：没有这条，"request_id 写死成常量"也能让上面那条通过——而那会
-    # 让用户后来说的每一条新禁令都被当成重复、永远进不了当前会话。
+    # Control case: without this, "request_id hard-coded as a constant" would also pass the test above — but then
+    # every new directive the user adds later would be treated as a duplicate and never reach the current session.
     stub = _install(
         monkeypatch, pending=True, block="\n\n[...]\n- 加班", terms=("加班",),
     )
@@ -184,10 +184,10 @@ async def test_a_new_term_gets_a_different_request_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_distinct_term_sets_never_collide_on_a_separator(monkeypatch):
     """Two different term sets must not share a request id via separator ambiguity."""
-    # ⚠️ `_normalize_term` 只做 strip + 长度校验，term 里什么字符都可能有。
-    # 指纹若拿分隔符 join，`["aa | bb", "cc"]` 与 `["aa", "bb | cc"]` 会得到
-    # 同一个串 → 同一个 request_id → 后一组禁令被 append_context 当成重复
-    # 跳过、本会话不生效（coderabbit）。JSON 序列化天然无歧义。
+    # ⚠️ `_normalize_term` only strips whitespace and checks length; a term can contain any characters.
+    # If the fingerprint joins with a separator, `["aa | bb", "cc"]` and `["aa", "bb | cc"]` produce
+    # the same string → same request_id → append_context treats the latter set of directives as a duplicate
+    # and skips it, so it has no effect in this session (coderabbit). JSON serialization is unambiguous by construction.
     stub = _install(
         monkeypatch, pending=True, block="\n\n[...]\n- aa | bb\n- cc",
         terms=("aa | bb", "cc"),
@@ -209,10 +209,10 @@ async def test_distinct_term_sets_never_collide_on_a_separator(monkeypatch):
 @pytest.mark.asyncio
 async def test_request_id_is_independent_of_display_order(monkeypatch):
     """⚠️ Reordering the same term set must NOT produce a new request id."""
-    # 渲染块里的 term 按 ``last_seen_at`` 降序排，于是「重复说**较旧**的那一条」
-    # 会把它顶到最前 —— 集合没变、字节变了。指纹若取渲染块，这里就会得到新 id、
-    # 又追加一份完整拷贝；而这恰恰是延长 TTL 的常规路径（E 那半的整个设计就预期
-    # 用户重复说），等于去重在最该生效的场景下被绕过（codex P2）。
+    # Terms in the rendered block are sorted by ``last_seen_at`` descending, so "repeat the **older** item"
+    # moves it to the front — the set is unchanged, but the bytes differ. If the fingerprint uses the rendered block, this creates a new ID
+    # and appends another full copy; this is exactly the normal TTL extension path (the E side is designed for
+    # users to repeat items), so deduplication would be bypassed precisely where it matters most (codex P2).
     stub = _install(
         monkeypatch, pending=True,
         block="\n\n[...]\n- 加班\n- 股票", terms=("加班", "股票"),
@@ -221,7 +221,7 @@ async def test_request_id_is_independent_of_display_order(monkeypatch):
     await mgr._inject_pending_user_directives()
     first = mgr.append_context.await_args.kwargs["request_id"]
 
-    # 用户又说了一遍"别再提股票" → 股票 last_seen 更新 → 排到最前，集合没变
+    # User repeats "别再提股票" → the stock term's last_seen is updated → it moves to the front; the set is unchanged
     stub.render_prompt_block.return_value = "\n\n[...]\n- 股票\n- 加班"
     stub.get_active_terms.return_value = ["股票", "加班"]
     await mgr._inject_pending_user_directives()
@@ -247,8 +247,8 @@ async def test_no_pending_flag_means_no_injection(monkeypatch):
 @pytest.mark.asyncio
 async def test_injects_full_active_list_not_just_the_new_term(monkeypatch):
     """Injects the FULL active list — the same block _build_initial_prompt uses."""
-    # 只注入增量的话，模型在本会话里看到的禁令集合会取决于"哪几条恰好是这一
-    # 轮说的"，跟会话重建后看到的集合不一致。
+    # If only the delta is injected, the directives the model sees in this session depend on "which ones happened to be said this
+    # turn," making them inconsistent with the set seen after a session rebuild.
     stub = _install(
         monkeypatch, pending=True, block="\n\n[...]\n- 加班\n- 股票\n- 前任",
     )
@@ -290,7 +290,7 @@ async def test_append_failure_is_swallowed(monkeypatch):
     mgr = _Manager()
     mgr.append_context = AsyncMock(side_effect=RuntimeError("session gone"))
 
-    await mgr._inject_pending_user_directives()  # 不抛
+    await mgr._inject_pending_user_directives()  # Do not raise
 
 
 @pytest.mark.asyncio
@@ -303,7 +303,7 @@ async def test_memory_unavailable_is_swallowed(monkeypatch):
     )
     mgr = _Manager()
 
-    await mgr._inject_pending_user_directives()  # 不抛
+    await mgr._inject_pending_user_directives()  # Do not raise
     mgr.append_context.assert_not_awaited()
 
 
@@ -314,21 +314,21 @@ def test_worst_case_block_fits_the_registered_token_budget():
     limits (term length, active count) and measures it, because "the numbers
     look fine" has never been evidence that the payload fits.
     """
-    # 越线的后果不是"少几条"：request_id 按**完整** term 集合算，截断后的重试
-    # 要么被去重、要么原样再追加同一份截断载荷，被截掉的禁令永远进不去。
+    # The consequence of exceeding the limit is not "a few missing items": request_id is based on the **complete** term set; a retry after truncation
+    # would either be deduplicated or append the same truncated payload again, so the omitted directives could never be added.
     from config import USER_DIRECTIVE_MAX_ACTIVE
     from config.prompts.prompts_directives import render_directives_block
     from main_logic.core._shared import _CONTEXT_APPEND_SOURCE_MAX_TOKENS
     from utils.tokenize import count_tokens
 
-    # 走已 import 的模块对象取常量，别再 ``from memory.user_directives import``
-    # ——同一模块既 ``import`` 又 ``import from`` 会被 code-quality 扫出来。
+    # Read constants from the already imported module object; do not use ``from memory.user_directives import``
+    # — importing the same module both with ``import`` and ``import from`` is flagged by code-quality checks.
     _TERM_MAX_LEN = user_directives_module._TERM_MAX_LEN
 
     budget = _CONTEXT_APPEND_SOURCE_MAX_TOKENS.get("user_directives")
     assert budget, "user_directives 必须登记自己的预算，别落到 1000 默认值"
 
-    # 已知 token 密度最高的一类：日文假名。用满两个硬上限。
+    # Japanese kana are known to have the highest token density; use both hard limits fully.
     dense_term = "ぬ" * _TERM_MAX_LEN
     worst = render_directives_block(
         [dense_term] * USER_DIRECTIVE_MAX_ACTIVE, "ja",
@@ -342,7 +342,7 @@ def test_worst_case_block_fits_the_registered_token_budget():
     )
 
 
-# ── 调用点守卫 ────────────────────────────────────────────────────────
+# ── Call-site guard ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -354,9 +354,9 @@ def test_worst_case_block_fits_the_registered_token_budget():
 )
 def test_both_utterance_entry_points_await_the_injection(module_path, method_name):
     """Both utterance entry points must be wired, text and voice alike."""
-    # ⚠️ helper 单测全绿也证明不了它被调用过。这条按 AST 确认两个入口里都
-    # 存在 ``await self._inject_pending_user_directives()``。对偶性守卫：
-    # 只接一条的话另一条会红——语音用户否则拿不到这个修复。
+    # ⚠️ Passing the helper unit tests does not prove it was called. This checks the AST to confirm that both entry points
+    # contain ``await self._inject_pending_user_directives()``. This symmetry guard
+    # fails if only one entry point is wired, which would leave voice users without the fix.
     module = __import__(module_path, fromlist=["_"])
     source = inspect.getsource(module)
     tree = ast.parse(source)

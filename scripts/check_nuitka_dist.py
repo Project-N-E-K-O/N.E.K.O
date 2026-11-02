@@ -48,19 +48,19 @@ import tomllib
 from pathlib import Path
 
 
-# 关键资产清单：dist 根目录下**必须**存在的相对路径。第二项是文件名表，
-# None 表示"目录非空即可"，否则是"必须包含至少一个该模式文件"。
+# Critical asset manifest: relative paths that **must** exist under the dist root. The second item is a filename pattern list;
+# None means "the directory only needs to be non-empty"; otherwise it must contain at least one file matching the pattern.
 _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
-    ("projectneko_server.exe", None),  # 主入口 exe（platform 在 macOS/Linux 上要重命名）
+    ("projectneko_server.exe", None),  # Main entry-point executable (platform must be renamed on macOS/Linux)
     ("config", "core_config.json"),
     ("config", "characters.json"),
     ("config", "api_providers.json"),
-    # changelog/.md 与 survey/.json 是纯数据，--include-package=config 只编 .py 不带；
-    # 守 dist 里确有它们，否则 /api/changelog、/api/survey（Steam-only）打包后读空。
+    # changelog/.md and survey/.json are data files; --include-package=config bundles only .py files and omits them;
+    # verify they exist in dist or /api/changelog and /api/survey (Steam-only) will read nothing after packaging.
     ("config/changelog", None),
     ("config/surveys", None),
-    # 本地化角色种子目录 config/characters/<locale>.json（PR #1282）。--include-package=config
-    # 只编 .py 不带；守该目录里至少有一份 locale json，否则非默认语言用户的角色种子回退错语言。
+    # Localized character seed directory config/characters/<locale>.json (PR #1282). --include-package=config
+    # bundles only .py files and omits this directory; verify at least one locale JSON is present or character seeds fall back to the wrong language for non-default users.
     ("config/characters", "*.json"),
     ("static", None),
     # Vendored MMD libraries must ship with their upstream license notices.
@@ -69,14 +69,14 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/libs", "THIRD_PARTY_NOTICES.md"),
     ("static/libs/licenses", "THREE-MMD-LICENSE.txt"),
     ("static/libs/licenses", "BABYLON-MMD-LICENSE.txt"),
-    # 串门传输页按 transport 懒加载的 vendor SDK（固定版本、随包分发、不从 CDN 拉）及其许可证。
+    # Vendor SDKs for the peer-to-peer transfer page are loaded lazily by transport (pinned versions, bundled with the app, never fetched from a CDN) along with their licenses.
     ("static/libs", "trtc.js"),
     ("static/libs", "livekit-client.umd.js"),
     ("static/libs/licenses", "TRTC.LICENSE"),
     ("static/libs/licenses", "LIVEKIT.LICENSE"),
-    # 内置 Live2D 模型：源码打包在 assets/<name>.tar.gz，build_frontend 解到 static/<name>/。
-    # 默认角色用 yui-lolita，加载失败的兜底与教程也指向它；yui-origin 仍随包发。
-    # 只查 model3.json 挡不住半截解包——moc3 与纹理是加载硬依赖，一并断言。
+    # Built-in Live2D models: source archives are assets/<name>.tar.gz, and build_frontend extracts them to static/<name>/.
+    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin is bundled too.
+    # Checking only model3.json does not catch a partial extraction — moc3 and textures are required for loading, so assert all of them.
     ("static/yui-lolita", "yui-lolita.model3.json"),
     ("static/yui-lolita", "yui-lolita.moc3"),
     ("static/yui-lolita/yui-lolita.4096", "texture_00.png"),
@@ -86,21 +86,21 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),
-    # React 聊天窗构建产物（gitignore 目录）；漏建则 index.html/chat.html 的聊天面板 404。
-    # css 由 sync-css.mjs 另行生成，与 iife.js 可各自缺失，须分别断言。
+    # React chat-window build artifacts (in a gitignored directory); if missing, chat panels in index.html/chat.html return 404.
+    # CSS is generated separately by sync-css.mjs and can be missing independently of iife.js, so assert both.
     ("static/react/neko-chat", "neko-chat-window.iife.js"),
     ("static/react/neko-chat", "neko-chat-window.css"),
     ("templates", None),
     ("assets", None),
     ("data/browser_use_prompts", None),
-    # 离线模型资产：prepare_*.py 脚本在 Nuitka 前下载，权重不入库，冻结包无运行时下载路径；
-    # 漏打则本地端点检测/说话人识别/向量记忆静默降级。CI 另有逐文件深检（Verify bundled
-    # offline assets），此处兜住"目录/权重缺失"这类静默漂移。embedding 须查到具体文件：
-    # 下载中断会留下只有空 profile 子目录的 data/embedding_models，目录非空判据挡不住。
-    # 只查 int8：CI 备的是 --variant both，本地 Steam 包只装 int8（fp32 权重 810MB，
-    # 压缩后仍给成品加 ~370MB，为极少数 CPU 才走的 fallback 不划算）。这里是两边
-    # 共用的闸，所以只能要求两边都保证的那一份；CI 侧的 fp32 由 build-desktop.yml
-    # 的 "Verify bundled offline assets" 步骤单独硬校验。
+    # Offline model assets: prepare_*.py scripts download these before Nuitka; weights are not checked in, and frozen builds have no runtime download path;
+    # if omitted, local endpoint detection, speaker recognition, and vector memory silently degrade. CI also checks every file ("Verify bundled
+    # offline assets"); this check catches silent drift such as a missing directory or weights. For embeddings, assert the actual file:
+    # an interrupted download can leave only an empty profile subdirectory in data/embedding_models, which passes the non-empty-directory check.
+    # Check only int8: CI prepares --variant both, while local Steam builds include int8 only (fp32 weights are 810MB,
+    # adding ~370MB to the final compressed package, which is not worthwhile for a fallback used by very few CPUs). This is a
+    # shared gate, so require only the asset both environments guarantee; CI separately enforces fp32 in the build-desktop.yml
+    # "Verify bundled offline assets" step.
     ("data/embedding_models/local-text-retrieval-v1", "tokenizer.json"),
     ("data/embedding_models/local-text-retrieval-v1/onnx", "model_quantized.onnx"),
     ("data/embedding_models/local-text-retrieval-v1/onnx", "model_quantized.onnx_data"),
@@ -113,12 +113,12 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("Cryptodome/Cipher", "_raw_aes.*"),
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
-    # 应用内 OpenClaw 引导文档 + 图片，agent_router 经 /api/agent/openclaw/guide/* 提供；纯数据目录。
+    # In-app OpenClaw guide and images, served by agent_router through /api/agent/openclaw/guide/*; data-only directory.
     ("docs/zh-CN/guide", None),
 )
 
-# 内置插件目录里每一个子目录都必须有 plugin.toml；用来抓 ``plugin/plugins``
-# 整体被 ``--include-data-dir`` 包了空壳的情况。
+# Every subdirectory in the bundled plugins directory must contain plugin.toml; catches cases where the entire ``plugin/plugins``
+# directory is included via ``--include-data-dir`` as an empty shell.
 _PLUGIN_TOML_REQUIRED_PARENT = "plugin/plugins"
 
 # These plugins are distributed exclusively through the plugin marketplace.
@@ -149,7 +149,7 @@ def _plugin_manifest_id(manifest_path: Path) -> str | None:
 def _check_asset(dist_root: Path, rel: str, must_contain: str | None) -> str | None:
     p = dist_root / rel
     if rel.endswith(".exe") or rel.endswith(".bin"):
-        # 平台差异：Windows 是 .exe，Linux/macOS 没有后缀。允许 fallback。
+        # Platform-specific: .exe on Windows, no extension on Linux/macOS. Allow a fallback.
         if not p.exists():
             stem = p.with_suffix("")
             if stem.exists():
@@ -177,7 +177,7 @@ def _check_asset(dist_root: Path, rel: str, must_contain: str | None) -> str | N
 def _check_plugin_tomls(dist_root: Path) -> list[str]:
     plugins_dir = dist_root / _PLUGIN_TOML_REQUIRED_PARENT
     if not plugins_dir.is_dir():
-        # 上面 _check_asset 已经会报；不重复。
+        # _check_asset above already reports this; do not duplicate the check.
         return []
     issues: list[str] = []
     plugin_subdirs = [p for p in plugins_dir.iterdir() if p.is_dir()]

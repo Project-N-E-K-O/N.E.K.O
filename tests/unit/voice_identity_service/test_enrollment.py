@@ -134,6 +134,32 @@ async def test_silero_validator_rejects_insufficient_real_speech() -> None:
     await validator.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_windows, accepted", [(0, False), (9, False), (10, True), (25, True)])
+async def test_microphone_policy_accepts_a_short_utterance_but_enrollment_stays_strict(active_windows, accepted):
+    probabilities = [0.9] * active_windows + [0.1] * (93 - active_windows)
+    trial = SileroEnrollmentSpeechValidator(vad=_FakeSileroVad(probabilities), minimum_speech_windows=10)
+    formal = SileroEnrollmentSpeechValidator(vad=_FakeSileroVad(probabilities))
+    try:
+        assert await trial.load() and await formal.load()
+        if accepted:
+            assert (await trial.validate_pcm16(_pcm(3_000))).active_window_count == active_windows
+        else:
+            with pytest.raises(EnrollmentAudioError, match="no_speech_detected"):
+                await trial.validate_pcm16(_pcm(3_000))
+        with pytest.raises(EnrollmentAudioError, match="no_speech_detected"):
+            await formal.validate_pcm16(_pcm(3_000))
+    finally:
+        await trial.close()
+        await formal.close()
+
+
+@pytest.mark.parametrize("minimum", [0, -1, True, 1.5, 48])
+def test_invalid_speech_policy_is_rejected_before_constructing_the_runtime(minimum):
+    with pytest.raises(ValueError, match="minimum speech"):
+        SileroEnrollmentSpeechValidator(minimum_speech_windows=minimum)
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("amplitude", [16, 128, 2_000])

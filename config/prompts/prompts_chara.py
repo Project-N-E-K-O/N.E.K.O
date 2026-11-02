@@ -26,7 +26,7 @@ Supported languages: zh / zh-TW / en / ja / ko / ru / es / pt
 from config.prompts._locale import normalize_prompt_locale
 
 # ============================================================================
-# 语言本地化片段
+# Language-localization fragments
 # ============================================================================
 
 _L10N = {
@@ -97,7 +97,7 @@ _L10N = {
 }
 
 # ============================================================================
-# 模板（英文主体，{_xxx} 占位符由本地化片段替换）
+# Template (English body, with {_xxx} placeholders replaced by localized fragments)
 # ============================================================================
 
 _LANLAN_PROMPT_TEMPLATE = '''
@@ -126,7 +126,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 '''
 
 # ============================================================================
-# 内部工具函数
+# Internal helpers
 # ============================================================================
 
 def _normalize_lang(lang: str) -> str:
@@ -151,9 +151,9 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
     same canonical form as the current default:
     - Removed lines (e.g. old ``- Skills:``): dropped from ``<Characteristics>``.
     - Added lines (e.g. new ``- Memory Integrity:``): dropped from ``<Context Awareness>``.
-    - In-place wording edits (e.g. 无需客气 → 无需客套): rewritten via
+    - In-place wording edits (e.g. 无需客气 → 无需客套, both meaning no need for formality): rewritten via
       ``legacy_text_replacements`` so old wording canonicalizes to current wording.
-    """
+    """  # noqa: DOCSTRING_CJK
     allowed_characteristic_prefixes = (
         "- Identity:",
         "- Relationship:",
@@ -171,10 +171,10 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
     # _LANLAN_PROMPT_TEMPLATE is edited in place (not added/removed as a whole line),
     # add an entry here so users with the previously-shipped default still match.
     legacy_text_replacements = (
-        # zh / zh-TW Relationship: 客气 → 客套
+        # zh / zh-TW Relationship: 客气 → 客套 (wording change for polite/formal behavior)
         ("无需客气", "无需客套"),
         ("無需客氣", "無需客套"),
-        # ja Relationship: 遠慮 → 他人行儀
+        # ja Relationship: 遠慮 → 他人行儀 (wording change from restraint to formality)
         ("遠慮は不要", "他人行儀は不要"),
         # en char_setting (used in <IMPORTANT> via {_char_setting})
         ('"character setting"', '"settings/character setting"'),
@@ -254,16 +254,16 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
 
 
 # ============================================================================
-# 预构建所有语言版本（用于 is_default_prompt 比对）
+# Prebuild all language versions for is_default_prompt comparison
 # ============================================================================
 _ALL_DEFAULTS = {lang: _build_lanlan_prompt(lang) for lang in _L10N}
 _ALL_DEFAULTS_STRIPPED = {_normalize_default_prompt_text(v) for v in _ALL_DEFAULTS.values()}
 
-# 向后兼容：lanlan_prompt 始终为中文版本，供 DEFAULT_LANLAN_TEMPLATE 等静态常量使用
+# Backward compatibility: lanlan_prompt always contains the Chinese version for static constants such as DEFAULT_LANLAN_TEMPLATE
 lanlan_prompt = _ALL_DEFAULTS['zh']
 
 # ============================================================================
-# 公开 API
+# Public API
 # ============================================================================
 
 def get_lanlan_prompt(lang: str | None = None) -> str:

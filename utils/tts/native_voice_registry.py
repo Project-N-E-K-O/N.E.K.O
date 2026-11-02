@@ -342,7 +342,7 @@ def resolve_native_voice_for_routing(
 
 def is_free_preset_voice_id(voice_id: str | None) -> bool:
     """Whether voice_id belongs to the free_voices list of api_providers.json."""
-    from utils.api_config_loader import get_free_voices  # 延迟导入避免循环
+    from utils.api_config_loader import get_free_voices  # Defer the import to avoid a cycle
 
     voice = (voice_id or "").strip()
     if not voice:
@@ -393,9 +393,9 @@ def _read_tts_native_provider_for_ui(cm: "ConfigManager") -> str | None:
     if _gptsovits_tts_overrides_native_tts_for_ui(cm, core_config):
         return None
 
-    # MiMo（assistApi=mimo / TTS_PROVIDER=mimo）不再走这里：它是 hosted provider，
-    # 预制目录由 tts_provider_registry 的 preset_catalog 提供，/voices 与校验改查
-    # 注册表（见设计文档 §4，MiMo 归 hosted）。此处只认仍属 native 的 TTS_PROVIDER。
+    # MiMo (assistApi=mimo / TTS_PROVIDER=mimo) no longer uses this path: it is a hosted provider,
+    # with presets from tts_provider_registry.preset_catalog; /voices and validation now query
+    # the registry (see design §4: MiMo is hosted). Recognize only native TTS_PROVIDER values here.
     tts_provider = str(
         core_config.get('TTS_PROVIDER') or core_config.get('ttsProvider') or ''
     ).strip().lower()
@@ -498,8 +498,8 @@ def get_native_tts_worker(
     """
     if not core_api_type:
         return None
-    # host 重映射：海外免费（free + *.lanlan.app）的 yui/Gemini 音色走 free_intl
-    # worker（Gemini 代理），否则 provider key == core_api_type。
+    # Host remapping: overseas free (free + *.lanlan.app) yui/Gemini voices use the free_intl
+    # worker (Gemini proxy); otherwise provider key == core_api_type.
     provider_key = _effective_native_provider_key(core_api_type, _read_realtime_base_url(cm))
     provider = _PROVIDERS.get(provider_key)
     if provider is None or not provider.is_voice(voice_id):

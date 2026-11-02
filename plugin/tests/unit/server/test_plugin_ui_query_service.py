@@ -1343,7 +1343,7 @@ class _BrokenContextHost:
 
 
 def test_surface_action_dispatches_even_when_context_provider_failed(tmp_path, monkeypatch) -> None:
-    """provider 挂了不该让面板上每个按钮都变成 500——授权只看 actions 白名单。"""
+    """A failed provider must not turn every panel button into a 500; authorization uses only the actions allowlist."""
     monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", lambda *_args: 10.0)
     host = _BrokenContextHost()
     restore = _install_demo_plugin(tmp_path, host, permissions=["action:call"])
@@ -1365,7 +1365,7 @@ def test_surface_action_dispatches_even_when_context_provider_failed(tmp_path, m
 
 
 def test_surface_context_reports_provider_failure_as_warning(tmp_path) -> None:
-    """provider 的失败原因不能因为不再抛异常就从渲染路径上消失。"""
+    """The provider failure reason must remain in the rendering path even when no exception is raised."""
     restore = _install_demo_plugin(tmp_path, _BrokenContextHost(), permissions=["state:read", "action:call"])
     try:
         context = asyncio.run(

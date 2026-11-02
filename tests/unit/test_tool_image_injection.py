@@ -475,13 +475,13 @@ def test_releasing_one_stream_scope_leaves_a_sibling_image_available():
 
 
 # ---------------------------------------------------------------------------
-# 图像轮必须活过外层重试阶梯
+# Image turns must survive the outer retry ladder.
 # ---------------------------------------------------------------------------
 #
-# 释放原本在 ``_astream_visible_with_tools`` 自己的 finally 里。一次可重试的
-# 失败之后，历史里 assistant 的 tool_calls 和 tool 结果都还在、唯独像素被换成
-# 了文字占位符——而外层重试用的正是同一份历史。重试成功的那一轮，模型会当作
-# 自己已经看过那张图并据此回答。这是一类静默的错误回答，不是性能问题。
+# Release originally happened in _astream_visible_with_tools's own finally. After a retryable
+# failure, assistant tool_calls and tool results remained in history while pixels were replaced
+# with text placeholders, yet outer retries reused that history. On a successful retry the model
+# answered as though it had already seen the image, a silent incorrect-answer bug rather than a performance issue.
 
 
 class _RetryClient(_Client):
@@ -522,8 +522,8 @@ class _RetryClient(_Client):
                         finish_reason="tool_calls",
                     )
                     return
-                # 第二轮：带着图的那次请求。把当时历史里的图像部分记下来，
-                # 断言用得上——「循环跑到过带图的请求」是前提，不是结论。
+                # Second round: the image-bearing request. Record its history's image portion for assertions;
+                # reaching an image-bearing request is a precondition, not the conclusion.
                 outer.saw_images_in_request = bool(_image_parts(_messages))
                 yield LLMStreamChunk(content="看到了")
 
@@ -542,8 +542,8 @@ class _RetryClient(_Client):
         return None
 
     def _publish_pending_tool_frames(self, pending, *, turn_id=None):
-        # 记下排空时看到的那份列表对象本身，用来分辨「用了调用方的」还是
-        # 「自己又建了一份」；然后按真实实现的语义排空。
+        # Record the actual list object seen during draining to distinguish the caller's list
+        # from a newly constructed copy; then drain according to actual implementation semantics.
         self.drained_lists.append(pending)
         if pending:
             self.drained.extend(pending)

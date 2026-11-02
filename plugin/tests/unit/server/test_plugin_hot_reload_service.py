@@ -25,9 +25,9 @@ class _FakeLifecycleService:
     ) -> dict[str, object]:
         self.reload_kwargs.append({"only_if_running": only_if_running})
         if self._use_real_lock:
-            # 模拟真实 reload_plugin：它带 @serialized_plugin_operation，内部
-            # 要抢操作锁。没有这一步，watcher 的 bounded_operation_wait 预算
-            # 无从生效，busy 永远抛不出来。
+            # Simulate real reload_plugin, decorated with @serialized_plugin_operation and acquiring
+            # the operation lock internally. Without this, the watcher's bounded_operation_wait budget
+            # cannot take effect and busy is never raised.
             async with plugin_operation_lock.hold():
                 self.reload_calls.append(plugin_id)
         else:
@@ -107,7 +107,7 @@ async def test_change_triggers_reload_after_debounce(
 
     assert service.start() is True
     try:
-        # 基线建立：首轮扫描只记录签名，不触发 reload。
+        # Establish the baseline: the first scan records signatures without triggering reload.
         assert await _wait_for(lambda: bool(service._signatures))
         assert lifecycle.reload_calls == []
 
@@ -115,7 +115,7 @@ async def test_change_triggers_reload_after_debounce(
             "VALUE = 2  # changed\n", encoding="utf-8"
         )
         assert await _wait_for(lambda: lifecycle.reload_calls == ["demo"])
-        # watcher 必须带 only_if_running=True 调用：锁内复查依赖它。
+        # The watcher must pass only_if_running=True, required by the locked recheck.
         assert lifecycle.reload_kwargs == [{"only_if_running": True}]
     finally:
         await _stop(service)
@@ -200,9 +200,9 @@ async def test_stopped_plugin_is_not_started_by_change(
 async def test_reload_only_if_running_leaves_a_stopped_plugin_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """锁内复查（评审 #3）：watcher 锁外检查之后、拿到锁之前用户停掉了
-    插件时，reload_plugin(only_if_running=True) 不得把它拉起并持久化自启
-    意图——那正是三语文档承诺"不会发生"的事。"""
+    """Locked recheck (review #3): if the user stops a plugin after the watcher's unlocked
+    check but before lock acquisition, reload_plugin(only_if_running=True) must not restart it or persist
+    autostart intent, exactly as the trilingual documentation promises."""
     from plugin.server.application.plugins import lifecycle_service as lifecycle_module
     from plugin.server.application.plugins.lifecycle_service import (
         PluginLifecycleService,
@@ -231,8 +231,8 @@ async def test_reload_only_if_running_leaves_a_stopped_plugin_down(
     assert started == []
     assert result["skipped"] is True
 
-    # 手动按钮（默认路径）不受影响：停着的插件照样被 reload 拉起，且带用户
-    # 意图（待批准记录要被清掉，见 test_plugin_install_autostart_gate）。
+    # Manual buttons retain default behavior: reload starts stopped plugins with user intent,
+    # clearing pending approval (see test_plugin_install_autostart_gate).
     result = await service.reload_plugin("hot-reload-stopped-probe")
     assert started == [
         {
@@ -245,9 +245,9 @@ async def test_reload_only_if_running_leaves_a_stopped_plugin_down(
 async def test_start_and_host_registration_are_rejected_while_shutting_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """关停门闩（评审 #2）：置位后 start_plugin 快速失败；入口检查通过之后
-    才置闩的窗口由注册临界区里的复查封死——被 asyncio.shield 保护的
-    in-flight reload 不能再注册出没人停止的孤儿 host。"""
+    """Shutdown latch (review #2): once set, start_plugin fails fast; a registration-critical-section
+    recheck closes the window where the latch is set after entry checks, preventing asyncio.shield-protected
+    in-flight reloads from registering orphan hosts nobody stops."""
     from plugin.core.state import state
     from plugin.server.application.plugins import lifecycle_service as lifecycle_module
     from plugin.server.application.plugins.lifecycle_service import (
@@ -273,14 +273,14 @@ async def test_start_and_host_registration_are_rejected_while_shutting_down(
 async def test_busy_reload_is_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """真锁场景：用户操作持锁时，watcher 在防抖预算内拿到 busy 并顺延，
-    锁释放后由后续 tick 自动重试成功（参照 test_development_plugins 的
-    bounded_operation_wait 写法，但走完整 watcher 循环）。"""
+    """Real-lock case: while a user operation holds the lock, the watcher receives busy within its debounce budget
+    and defers, then retries automatically on later ticks after release (following test_development_plugins'
+    bounded_operation_wait pattern but exercising the full watcher loop)."""
     lifecycle = _FakeLifecycleService(use_real_lock=True)
     service = _make_service(tmp_path, lifecycle, monkeypatch)
     source_dir = tmp_path / "demo"
 
-    # 主测试任务先持锁，模拟另一个正在进行的插件操作。
+    # The main test task holds the lock first to simulate another ongoing plugin operation.
     release = asyncio.Event()
     entered = asyncio.Event()
 
@@ -297,9 +297,9 @@ async def test_busy_reload_is_retried(
         (source_dir / "__init__.py").write_text(
             "VALUE = 5  # changed\n", encoding="utf-8"
         )
-        # 防抖截止先到（第一次尝试开始），随后 pending 被推回未来——这是
-        # "真的走到过 PluginOperationBusy"的证据：无界等锁的旧实现会让
-        # deadline 停在过去不动。
+        # The debounce deadline first expires, starting the first attempt; pending then moves into the future, proving
+        # PluginOperationBusy was actually reached. The old unbounded-lock implementation leaves
+        # the deadline in the past.
         assert await _wait_for(
             lambda: service._pending.get("demo", float("inf")) <= time.monotonic()
         )
@@ -311,13 +311,13 @@ async def test_busy_reload_is_retried(
 
         release.set()
         await asyncio.wait_for(holder, 3)
-        # 顺延的那一轮由 watcher 自己重试成功，不需要外部再推一次。
+        # The watcher retries the deferred round successfully without another external trigger.
         assert await _wait_for(lambda: lifecycle.reload_calls == ["demo"])
     finally:
         release.set()
         try:
             await asyncio.wait_for(holder, 1)
-        except asyncio.TimeoutError:  # pragma: no cover - 已完成的快路径
+        except asyncio.TimeoutError:  # pragma: no cover - Already-completed fast path.
             pass
         await _stop(service)
 
@@ -326,7 +326,7 @@ async def test_stop_is_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = _make_service(tmp_path, _FakeLifecycleService(), monkeypatch)
-    await _stop(service)  # 未启动也能停
+    await _stop(service)  # Stopping before startup is allowed.
     assert service.start() is True
     await _stop(service)
     await _stop(service)
@@ -398,8 +398,8 @@ async def test_stop_timeout_keeps_task_reference(
         async def reload_plugin(
             self, plugin_id: str, *, only_if_running: bool = False
         ) -> dict[str, object]:
-            # 模拟真实路径里被操作锁屏蔽取消的 in-flight reload：cancel
-            # 打不断它（吞掉后继续等 release），只有 release 置位才返回。
+            # Simulate an in-flight reload shielded from cancellation by the operation lock: cancel
+            # cannot stop it; it swallows cancellation and keeps waiting until release is set.
             self.started.set()
             while not release.is_set():
                 try:
@@ -417,8 +417,8 @@ async def test_stop_timeout_keeps_task_reference(
         (source_dir / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
         assert await _wait_for(lambda: hang.started.is_set())
 
-        # 超时停不掉：必须保留 task 引用，否则下面的 start() 看不到存活中的
-        # watcher 而另起一个，两个 watcher 会并发写 _signatures。
+        # If timeout cannot stop it, retain the task reference; otherwise start() misses the live
+        # watcher and creates another, letting both write _signatures concurrently.
         await service.stop(timeout=0.01)
         assert service.is_running is True
 
@@ -463,7 +463,7 @@ async def test_failed_event_carries_reason(
     finally:
         await _stop(service)
     failed = next(e for e in events if e["type"] == "plugin_hot_reload_failed")
-    # reason 让前端不用去日志里对时间戳就能区分失败类型。
+    # reason lets the frontend distinguish failure types without matching log timestamps.
     assert failed["reason"] == "PLUGIN_START_FAILED"
 
 
@@ -478,7 +478,7 @@ async def test_restart_rebaselines_without_spurious_reload(
     assert await _wait_for(lambda: bool(service._signatures))
     await _stop(service)
 
-    # 停机窗口内的变更：重启后只重建基线，不应触发 reload。
+    # Changes while stopped: restarting establishes a baseline only, without reload.
     (source_dir / "__init__.py").write_text(
         "VALUE = 6  # changed while down\n", encoding="utf-8"
     )

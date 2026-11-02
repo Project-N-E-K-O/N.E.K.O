@@ -65,10 +65,10 @@ from .char_info import (
 )
 from .game_context import (
     _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT,
-    # 被 ``_run_soccer_passive_guard_ai`` 用着，但拆 runtime.py 上帝文件（#2270）时
-    # 漏在了这条 import 外面。端点那层的 ``except Exception`` 把 NameError 吞成
-    # ``{"ok": false, "reason": "exception"}``，所以 soccer 被动守卫一直静默退化成
-    # observe_more，没人看见。
+    # Used by _run_soccer_passive_guard_ai, but omitted from this import
+    # when splitting the runtime.py god file (#2270). The endpoint's except Exception
+    # swallowed NameError into {"ok": false, "reason": "exception"}, silently degrading
+    # the soccer passive guard to observe_more with no visible error.
     _build_game_context_prompt_payload,
     _game_context_recent_dialogues,
 )
@@ -818,7 +818,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
                 if reason:
                     control["reason"] = reason[:120]
 
-    # 优先支持规范格式：最后一行单独输出 JSON 控制指令。
+    # Prefer the canonical format: JSON control instructions alone on the final line.
     if len(lines) > 1 and lines[-1].strip().startswith('{') and lines[-1].strip().endswith('}'):
         try:
             parsed = _json.loads(lines[-1].strip())
@@ -828,7 +828,7 @@ def _parse_control_instructions(reply: str, game_type: str = "soccer") -> Dict[s
         except _json.JSONDecodeError:
             pass
 
-    # 容错：有些模型会把 JSON 粘在台词同一行末尾，也要剥离，避免显示到气泡里。
+    # Tolerate models appending JSON to the dialogue line; strip it to prevent display in bubbles.
     if not json_control_seen:
         json_start = text.rfind('{')
         json_end = text.rfind('}')
@@ -1270,7 +1270,7 @@ async def _run_game_chat(
                 history_state = _find_game_route_state_for_session(game_type, session_id, lanlan_name)
                 _reset_game_session_text_history_for_turn(entry, history_state)
 
-            # 清空上一次的回复
+            # Clear the previous reply.
             reply_chunks.clear()
 
             if game_type == "soccer" and isinstance(event, dict):
@@ -1299,7 +1299,7 @@ async def _run_game_chat(
                         event["mode"] = "duel"
                         event["angerPressureCap"] = anger_pressure_cap
 
-            # 格式化事件为文本发送给 LLM
+            # Format events as text for the LLM.
             import json as _json
             llm_visible_event = _build_game_llm_visible_event(game_type, event)
             if isinstance(llm_visible_event, dict):
@@ -1520,11 +1520,11 @@ def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str)
 async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -> Dict[str, Any]:
     route_state = _find_game_route_state_for_session("soccer", str(data.get("session_id") or ""), lanlan_name)
     char_info = _get_game_route_summary_llm_info(lanlan_name)
-    # 全码：短码会把 zh-TW 塌成 zh，让 soccer prompt 的繁体模板变成够不到的死数据
-    # （#2500 第 2 步）。``_resolve_game_prompt_locale`` 是 ``_absorb_request_language``
-    # 那条优先级链的全码孪生——显式请求语言 > 显式 mgr 偏好 > render-only
-    # 请求语言 > 非显式 mgr.user_language > 全局缓存，并且只有显式请求语言
-    # 会回写 mgr.user_language。
+    # Full locale code: short codes collapse zh-TW to zh, making the soccer Traditional Chinese template unreachable
+    # (#2500 step 2). _resolve_game_prompt_locale is the full-code twin of
+    # _absorb_request_language's priority chain: explicit request > explicit manager preference > render-only
+    # request language > nonexplicit mgr.user_language > global cache. Only explicit request language
+    # is written back to mgr.user_language.
     language = _resolve_game_prompt_locale(lanlan_name, data) or char_info.get("user_language_full")
     stage = data.get("stage")
     prompt_type = str(data.get("promptType") or "surrender").strip()
@@ -1593,7 +1593,7 @@ async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -
     return normalized
 
 
-# ── 路由端点 ───────────────────────────────────────────────────────
+# ── Route endpoints ──────────────────────────────────────────────────
 
 def _record_game_chat_result(
     state: dict | None,
@@ -1935,8 +1935,8 @@ async def game_route_start(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    # route/start 是有效的新路由入口；解析 prompt locale 时会同步请求中的
-    # 显式偏好，并按 session explicit > render fallback 选择本局模板语言。
+    # route/start is a valid new-route entry; resolving prompt locale synchronizes the request's
+    # explicit preference and chooses this game's language via session explicit > render fallback.
     # Pure read here: this request can still be retired as a stale generation
     # (tombstone -> ended_before_start) or lose the supersede race, and
     # writing the session language before that decision lets a delayed start
@@ -1949,11 +1949,11 @@ async def game_route_start(game_type: str, request: Request):
     session_id = str(data.get("session_id") or "default")
     route_instance_ids = _sdk_route_instance_ids(data)
     route_instance_id = route_instance_ids[0] if route_instance_ids else ""
-    # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
-    # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
+    # Allow only one active game route per character at a time: before starting, end all other active
+    # routes (old same-game sessions, different game_type, and future cross-game coexistence). Otherwise
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
-    # 这些不带 game_type 的查询会拿到 dict 迭代顺序里"先出现"的那个 route，导致
-    # 文本/语音输入归属不确定。
+    # queries without game_type return whichever route appears first in dict iteration order,
+    # making text/voice input ownership nondeterministic.
     #
     # B1: serialize the supersede + activation block under the per-(lanlan,
     # game_type) route lock so heartbeat-sweep finalize and /route/end
@@ -2154,19 +2154,19 @@ async def game_route_start(game_type: str, request: Request):
         ):
             return False
         return True
-    # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
-    # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
-    # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
-    # 还原。注意：要在 supersede + activate 锁外推送，避免阻塞锁；soccer
-    # pregame 上下文构建可能耗几秒，那段期间前端已经看到游戏窗口在加载，
-    # 越早收缩越平滑——所以放在 pregame build 之前。
+    # Push WS to coordinate frontend windows: collapse chat.html (its internal collapse-button state and
+    # position at workspace bottom-left) and hide pet (live2d/vrm/mmd) containers. This is only a UX event,
+    # not part of game-route state decisions; frontend restores on game_window_state_change=closed.
+    # Push outside the supersede + activate lock to avoid blocking it. Soccer pregame
+    # context building can take seconds while the game window already shows loading;
+    # collapsing earlier is smoother, so push before pregame build.
     #
-    # 锁外 stale-opened 防护（codex P1）：start 释放锁后到 push 之间，并发的
-    # /route/end 或新 /route/start supersede 可能已把 state.game_route_active
-    # 翻 false 并推过 closed。如果不 recheck，stale opened 会在 closed 后 land，
-    # 让前端 UI 卡死收缩态再无 closed 抵消。recheck state 自身的 active 标志 +
-    # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
-    # supersede 替换为新 state）。
+    # Outside-lock stale-opened guard (Codex P1): between releasing start's lock and pushing, a concurrent
+    # /route/end or superseding /route/start may already set state.game_route_active
+    # false and push closed. Without rechecking, stale opened lands after closed,
+    # leaving the UI permanently collapsed with no later closed to cancel it. Recheck the state's active flag and
+    # session_id together (the same (lanlan,game_type) dictionary key may already hold a new state
+    # from a superseding round).
     mgr_for_ws = get_session_manager().get(lanlan_name)
     if state.get("game_route_active") is True and route_start_is_current():
         await _push_game_window_state_change(
@@ -3904,7 +3904,7 @@ async def _route_external_transcript_to_game(
             "inputText": text,
             "hasUserSpeech": kind == "user-voice",
             "hasUserText": kind == "user-text",
-            # 玩家输入和 NEKO 对该输入的直接回应共用这个游戏记忆开关。
+            # Player input and NEKO's direct response share this game-memory switch.
             memory_player_camel_key: memory_enabled,
             memory_player_snake_key: memory_enabled,
             "gameMemoryEnabled": memory_enabled,
@@ -3960,7 +3960,7 @@ async def _route_external_transcript_to_game(
             "itemCount": 1,
             "hasUserSpeech": kind == "user-voice",
             "hasUserText": kind == "user-text",
-            # 同上：玩家交互开关同时覆盖用户输入镜像和 NEKO 直接回复。
+            # Likewise: the player-interaction switch covers both mirrored user input and NEKO's direct reply.
             memory_player_camel_key: memory_enabled,
             memory_player_snake_key: memory_enabled,
             "gameMemoryEnabled": memory_enabled,
@@ -4297,10 +4297,10 @@ async def game_realtime_context(game_type: str, request: Request):
     if not (getattr(mgr, "is_active", False) and isinstance(session, OmniRealtimeClient)):
         return {"ok": False, "reason": "no_active_realtime_session", "lanlan_name": lanlan_name}
 
-    # 直接把 data 传进去，让请求体里的 i18n_language 走第一层优先级（兼带回写
-    # mgr.user_language），与其他 soccer 端点的 _absorb_request_language 调用同形。
-    # 取全码而非短码：下游 get_compact_realtime_context_texts 走 minigame 的
-    # locale 表，短码会把繁体塌成 zh（issue #2500 第 2 步）。
+    # Pass data directly so body i18n_language takes first priority (and writes back
+    # mgr.user_language), matching other soccer endpoints' _absorb_request_language calls.
+    # Resolve full rather than short code: downstream get_compact_realtime_context_texts uses minigame's
+    # locale table, where short codes collapse Traditional Chinese to zh (issue #2500 step 2).
     language = _resolve_game_prompt_locale(lanlan_name, data)
     text = _compact_realtime_context_text(game_type, data, language)
     session_id = route_session_id
@@ -4741,9 +4741,9 @@ async def game_quick_lines(game_type: str, request: Request):
         except Exception:
             current_name = ""
         requested_name = _resolve_lanlan_name(data.get("lanlan_name") or current_name)
-        # quick-lines 是 soccer 流程里第一个 LLM 端点：显式偏好可同步到 session，
-        # render-only 兜底则只选择本次模板，避免首批台词落到旧缓存语言。统一使用
-        # 全码解析，确保 soccer 与 badminton 都保留 zh-TW 等区域变体。
+        # quick-lines is the first LLM endpoint in the soccer flow: explicit preference can synchronize to session,
+        # while render-only fallback selects only this template, preventing the first dialogue batch from using stale cached language.
+        # Resolve full codes consistently so soccer and badminton preserve regional variants such as zh-TW.
         language = _resolve_game_prompt_locale(requested_name, data=data)
         char_info = _get_character_info(requested_name)
         fallback_language = language
@@ -4946,7 +4946,7 @@ async def game_character(game_type: str, request: Request = None):
         )
         neko_data = characters.get('猫娘', {}).get(current_name, {})
 
-        # 获取 _reserved.avatar 配置
+        # Get _reserved.avatar configuration.
         reserved = neko_data.get('_reserved', {})
         avatar = reserved.get('avatar', {}) if isinstance(reserved, dict) else {}
         if not isinstance(avatar, dict):
@@ -4957,7 +4957,7 @@ async def game_character(game_type: str, request: Request = None):
         model_type = neko_data.get('model_type') or model_type
         live3d_sub_type = neko_data.get('live3d_sub_type') or live3d_sub_type
 
-        # 提取各类型模型路径
+        # Extract each model type's path.
         live2d_path = ''
         mmd_path = ''
         vrm_path = ''
@@ -4976,8 +4976,8 @@ async def game_character(game_type: str, request: Request = None):
             # The canonical resolver owns legacy aliases and fallback policy,
             # including malformed/missing reserved Live2D subobjects.
             if isinstance(neko_data, dict):
-                # Live2D 可能来自 static、用户导入目录、CFA 回退目录或工坊。
-                # 主Live2D保留规范默认模型；其他主型的备用不能冒用全局默认角色。
+                # Live2D may come from static, user imports, CFA fallback directories, or Workshop.
+                # Main Live2D keeps the canonical default model; backups for other main types must not impersonate the global default character.
                 from ..characters_router import get_current_live2d_model
 
                 try:
@@ -5041,7 +5041,7 @@ async def game_character(game_type: str, request: Request = None):
         return {"error": str(e)}
 
 
-# ── 后台清理 ───────────────────────────────────────────────────────
+# ── Background cleanup ───────────────────────────────────────────────
 
 async def cleanup_expired_sessions():
     """Clean up expired game sessions. Can be registered as a background task by the startup event."""

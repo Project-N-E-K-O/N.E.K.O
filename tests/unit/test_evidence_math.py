@@ -2,10 +2,10 @@
 """
 Unit tests for memory.evidence pure functions.
 
-Covers memory-evidence-rfc §8 success criteria S1, S1b, S2, S3, S18:
+Covers memory-evidence-rfc section 8 success criteria S1, S1b, S2, S3, S18:
 - read-time decay math (independent rein/disp clocks)
 - derived status tier mapping
-- maybe_mark_sub_zero累计 / 防抖 / protected 豁免
+- maybe_mark_sub_zero accumulation / debouncing / protected exemptions
 """
 from __future__ import annotations
 
@@ -199,7 +199,7 @@ def test_sub_zero_counter_increments_once_per_day_and_does_not_reset(fixed_now):
     assert maybe_mark_sub_zero(entry, fixed_now) is True
     assert entry['sub_zero_days'] == 1
 
-    # Same day — double increment防抖
+    # Same day: debounce double increments.
     assert maybe_mark_sub_zero(entry, fixed_now) is False
     assert entry['sub_zero_days'] == 1
 
@@ -211,7 +211,7 @@ def test_sub_zero_counter_increments_once_per_day_and_does_not_reset(fixed_now):
 
 
 def test_sub_zero_counter_does_not_reset_when_score_goes_positive(fixed_now):
-    """'归档更积极' — sub_zero_days stays even if score recovers to >= 0."""
+    """More aggressive archiving: sub_zero_days remains even if the score recovers to >= 0."""
     from memory.evidence import maybe_mark_sub_zero
     entry = {
         'reinforcement': 0.0, 'disputation': 2.0,

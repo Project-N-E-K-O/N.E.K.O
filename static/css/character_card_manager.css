@@ -1,4 +1,5 @@
 @import url('base.css');
+@import url('chat_sync.css');
 
 *,
 *::before,
@@ -7010,6 +7011,10 @@ margin-top: 10px;
     background: linear-gradient(135deg, #6f8fbf, #8aaad9);
 }
 
+.card-meta-origin-badge.origin-molili {
+    background: linear-gradient(135deg, #9b6fd8, #b28ae6);
+}
+
 .card-meta-placeholder {
     text-align: center;
     color: #aaa;
@@ -8728,18 +8733,3 @@ margin-top: 10px;
 @media (prefers-reduced-motion: reduce) {
     .character-chat-sync-track, .character-chat-sync-track::after { transition: none; }
 }
-
-/* Recovery/history controls are reached from the existing character editor. */
-#chat-sync-dialog {
-    max-width: min(520px, calc(100vw - 48px));
-    max-height: 85vh;
-    overflow: auto;
-    border: 1px solid #aab5c8;
-    border-radius: 12px;
-    padding: 20px;
-}
-#chat-sync-dialog [hidden] { display: none !important; }
-#chat-sync-dialog summary { cursor: pointer; padding: 12px 0; }
-#chat-sync-dialog button { margin: 6px; padding: 6px 10px; }
-#chat-sync-dialog label { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; }
-#chat-sync-dialog input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; }

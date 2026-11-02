@@ -93,8 +93,20 @@ backup/
 *.mov
 *.mkv
 
-# Documentation (optional)
-docs/
+# Documentation：**不排除**。
+#
+# 运行时要读 docs/ 下的两棵子树：
+#   main_routers/agent_router.py          → docs/zh-CN/guide/openclaw_guide.md（含各语言版本）
+#   main_routers/voice_identity_router.py → docs/development/voice-readiness.md
+# 被排除时不会报错，只会静默退回代码里的短桩文案（日志留一条 warning），
+# entrypoint 里对 /app/docs 的属主修复也会变成空操作。
+#
+# 之前试过「排除 docs/ 再用 !docs/*/guide 放回来」——**不可靠**：Docker 的构建上下文
+# 遍历器在目录被排除后，只有当例外模式以该目录为字面前缀时才会继续下潜
+# （moby archive walker），docs/*/guide 并不以 docs/zh-CN/ 为前缀，于是那两棵子树
+# 根本没进镜像。
+# 整个 docs/ 只有 9.3MB，占镜像约 0.6% —— 用体积换一个"确定能进镜像"，
+# 比赌例外规则划算得多。
 README*.md
 LICENSE
 CHANGELOG.md

@@ -142,8 +142,8 @@ def local_visit_gate(request: Request, payload: dict | None = None) -> JSONRespo
 
 
 def _clean_uid(value: Any) -> str | None:
-    # 首尾带空白（含全空白）的不收：黑名单会先 strip 再用，同一个人在清除与拉黑两边成了两个 id，
-    # 全空白的还会在 strip 后变成空串、让拉黑抛 500
+    # Reject leading or trailing whitespace (including all-whitespace values): the blocklist strips first,
+    # so the same person would otherwise have different IDs for forgetting and blocking; all-whitespace becomes empty after strip and makes blocking return 500
     if (
         isinstance(value, str) and value and value == value.strip()
         and len(value) <= _UID_MAX_LEN and value.isprintable()
@@ -153,14 +153,14 @@ def _clean_uid(value: Any) -> str | None:
 
 
 def _finite_ts(value: Any) -> float | int | None:
-    # 名册是非严格读：NaN / Infinity / 超出浮点范围的超大整数之类的坏时间戳序列化不了，
-    # 会让整张列表 500，按坏值回 None（与名册严格读同一个判定）
+    # The roster is read permissively: invalid timestamps such as NaN / Infinity / enormous integers outside the float range cannot be serialized,
+    # causing the whole list to return 500. Treat invalid values as None (same decision as strict roster reads)
     return value if is_finite_number(value) else None
 
 
 def _display(value: Any) -> str:
-    # 名册是非严格读：display_name 里的孤立代理字符（如 U+D800）json.load 读得进来，
-    # 到 JSONResponse 编码 UTF-8 时才抛错，整张列表 500。去掉控制 / 代理字符再回给前端
+    # The roster is read permissively: json.load accepts a lone surrogate (such as U+D800) in display_name,
+    # but UTF-8 encoding in JSONResponse then fails and makes the entire list return 500. Remove control / surrogate characters before returning it to the frontend
     return strip_control_chars(str(value or ""))
 
 
@@ -203,7 +203,7 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
         blocklist = None
 
     def is_blocked(peer_uid: str) -> bool:
-        # 交给 Blocklist 自己归一化（strip + 小写）：名册里的 peer_uid 原样保存
+        # Let Blocklist normalize values itself (strip + lowercase); preserve peer_uid in the roster as-is
         if blocklist is None or not blocklist.available:
             return False
         try:
@@ -219,13 +219,13 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
         if not isinstance(entry, dict):
             continue
         raw_pairs = entry.get("pairs")
-        # 名册是非严格读：一条坏了的 pairs（不是列表）只当作空，不能让整张列表 500
+        # The roster is read permissively: treat a malformed pairs value (not a list) as empty so the whole list does not return 500
         pairs = [p for p in raw_pairs if isinstance(p, str)] if isinstance(raw_pairs, list) else []
         chars = entry.get("chars") if isinstance(entry.get("chars"), dict) else {}
         try:
             person = participant_subject(derive_person_id(own_uid, peer_uid))
         except ValueError:
-            # 名册里坏了的对端 id（空串等）：跳过这一条，不让整张列表 500
+            # Invalid peer ID in the roster (such as an empty string): skip this entry so the whole list does not return 500
             continue
         subjects = [person]
         valid_pairs = []
@@ -233,12 +233,12 @@ async def list_memory_peers(request: Request, catgirl: str = ""):
             try:
                 subjects.append(group_chat_subject(pair))
             except ValueError:
-                # 空串 / 控制字符之类构不成 subject 的 pair id：跳过这一个，不让整张列表 500
+                # Pair IDs that cannot form a subject, such as empty strings / control characters: skip this one so the whole list does not return 500
                 continue
             valid_pairs.append(pair)
         char_rows = []
         for char_id, info in sorted(chars.items()):
-            # 名册里单只猫的记录坏了（不是对象）只影响装饰信息，不能让整个列表 500
+            # A malformed record for one cat in the roster (not an object) affects only decoration data, not the entire list
             info = info if isinstance(info, dict) else {}
             for pair_id in valid_pairs:
                 try:
@@ -283,12 +283,12 @@ async def _nothing_to_forget(
     as "maybe something", so the regular forget path decides.
     """
     roster = PeerRoster(config_dir, own_uid=own_uid)
-    # 严格探一遍这个账号的名册结构：读不出 / 某个人的条目坏了都不能当作「没有这个人」
+    # Strictly validate this account's roster structure: unreadable data or a malformed person's entry must not be treated as "person not found"
     await roster.peers_of_char(own_char)
     if peer_uid in await roster.list_peers(strict=True):
         return False
     if await memory_bridge.forget_in_progress(config_dir, own_char_uid, peer_uid, own_uid=own_uid):
-        # 上一次清除已删掉名册条目、后续步骤还没做完：重试要接着把它跑完，不能回「没什么可清」
+        # A previous forget removed the roster entry but later steps did not finish: retry must complete them, not return "nothing to clear"
         return False
     try:
         visits = await VisitSpool.find_visits_for_pairs(
@@ -321,8 +321,8 @@ async def forget_memory_peer(request: Request):
     peer_uid = _clean_uid(payload.get("peer_uid"))
     if not isinstance(catgirl, str) or not catgirl or peer_uid is None:
         return _error(400, "invalid_request")
-    # 与拉黑同一口径按小写认人：名册与对子 / 个人 id 的推导都区分大小写，传大写变体时会找不到
-    # 这个人、转而去擦一个新推出来的无关 subject，还报「已清除」
+    # Match people case-insensitively, like the blocklist (lowercase): roster entries and derived pair / person IDs are case-sensitive, so an uppercase variant would fail to find
+    # the person and instead clear an unrelated newly derived subject while reporting "cleared"
     peer_uid = peer_uid.lower()
     own_uid = await _hooks.own_visit_uid()
     if not own_uid:
@@ -330,8 +330,8 @@ async def forget_memory_peer(request: Request):
     if _hooks.is_visit_active(catgirl):
         return _error(409, "visit_active")
     try:
-        # 与清除全部同一道严格检查：读不出 / 条目坏了时常规加载会静默换成默认或滤掉它，
-        # 下面就会回一个看似永久的 404，这次清除既没落盘也不提示重试
+        # Apply the same strict check as forget-all: a normal load silently falls back to the default or filters malformed entries,
+        # which would return an apparently permanent 404 below; this forget would neither be persisted nor signal a retry
         await local_chars.ensure_characters_readable()
     except local_chars.CharactersUnreadable as exc:
         logger.error("visit forget: character config unreadable: %s", exc)
@@ -343,8 +343,8 @@ async def forget_memory_peer(request: Request):
     try:
         if await _nothing_to_forget(config_dir, own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
                                     peer_uid=peer_uid):
-            # 从没和这个角色串过门（或 uid 拼错）：不写哨兵、不开日志、不发 scoped_forget。
-            # 否则 memory_server 不可用时，一份对应「不存在的人」的哨兵会挡住这个角色开场
+            # Never chatted with this character (or the uid is wrong): write no sentinel, log nothing, and send no scoped_forget.
+            # Otherwise, when memory_server is unavailable, a sentinel for a nonexistent person could block this character at startup
             return JSONResponse({"ok": True, "forgotten": 0})
         outcome = await forget_person(
             config_dir, own_uid=own_uid, own_char=catgirl, own_char_uid=char_uid,
@@ -355,8 +355,8 @@ async def forget_memory_peer(request: Request):
     except VisitActive:
         return _error(409, "visit_active")
     except CharacterUnresolved:
-        # 拿到守卫时按 uid 解析不出名字：刚被删除与角色配置一时读不出分不清，
-        # 回可重试的 503（真删了的话，重试时入口就会回 404）
+        # If the uid cannot be resolved to a name while holding the guard, the character may have just been deleted or its config may be temporarily unreadable;
+        # return retryable 503 (if truly deleted, retrying the request will return 404 at the entry point)
         return _error(503, "forget_failed", retry=True)
     except RevocationLogUnreadable as exc:
         return _unreadable_record_refusal("forget", exc)
@@ -364,7 +364,7 @@ async def forget_memory_peer(request: Request):
         logger.error("visit forget failed before execution: %r", exc)
         return _error(503, "forget_failed", retry=True)
     if not outcome.done:
-        # 撤销日志已落盘，启动补录与重试会补完剩余步骤
+        # The revocation log is persisted; startup reconciliation and retries will complete the remaining steps
         return _error(503, "forget_pending", retry=True)
     return JSONResponse({"ok": True, "forgotten": outcome.forgotten})
 
@@ -383,7 +383,7 @@ async def forget_all_memory(request: Request):
     if not own_uid:
         return _error(409, "VISIT_LOGIN_REQUIRED")
     try:
-        # 读不出时常规加载会静默换成默认角色：清除全部不能把默认角色当成完整范围报成功
+        # A normal load silently falls back to the default character when data is unreadable: forget-all must not report success using the default as its full scope
         await local_chars.ensure_characters_readable()
     except local_chars.CharactersUnreadable as exc:
         logger.error("visit forget_all: character config unreadable: %s", exc)
@@ -456,8 +456,8 @@ async def block_contact(request: Request):
     blocked = payload.get("blocked")
     if peer_uid is None or not isinstance(blocked, bool):
         return _error(400, "invalid_request")
-    # 与黑名单同一口径（大小写不敏感，按小写记）：名册查显示名、结束在飞串门都用规范形，
-    # 否则传大写变体时黑名单记上了、在飞的那场却按原值找不到、结束不了
+    # Match the blocklist behavior (case-insensitive, stored lowercase): use canonical form for roster lookup and ending active peer sessions,
+    # otherwise an uppercase variant would be added to the blocklist while the active session remains unfindable and cannot be ended
     peer_uid = peer_uid.lower()
     config_dir = _hooks.config_dir()
     try:
@@ -474,8 +474,8 @@ async def block_contact(request: Request):
     except BlocklistUnavailable:
         return _error(503, "blocklist_unavailable", retry=True)
     if blocked and _hooks.on_blocked is not None:
-        # 在飞串门中拉黑对端 → 立即结束这场。屏蔽已经落盘：结束失败只记日志并如实告知，
-        # 不能回 500 让前端以为没屏蔽（重试只会得到 changed=false）
+        # Blocking a peer during an active peer session ends it immediately. The block is already persisted: log an end failure and report it accurately,
+        # rather than returning 500 and making the frontend think the block failed (a retry would only return changed=false)
         try:
             await _hooks.on_blocked(peer_uid)
         except Exception as exc:  # noqa: BLE001

@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import pytest
 
-# 顶层 import 是纯 Python 加载(重依赖都在函数内 lazy import),importorskip
-# 兜底罕见的打包剥离场景。
+# Top-level imports load only pure Python (heavy dependencies are lazily imported inside functions); importorskip
+# covers rare cases where packaging strips modules.
 embeddings = pytest.importorskip("memory.embeddings")
 
 _E5_2666 = "Intel(R) Xeon(R) CPU E5-2666 v3 @ 2.90GHz"
@@ -112,10 +112,10 @@ def test_blocklisted_cpu_disables_service_at_construction(monkeypatch):
     svc = embeddings.EmbeddingService(
         model_dir="/nonexistent",
         enabled=True,
-        ram_gb=32.0,            # 足够高,排除 LOW_RAM 干扰
-        has_vnni=False,         # 注入检测结果,构造时不跑真 CPUID
+        ram_gb=32.0,            # High enough to rule out LOW_RAM interference
+        has_vnni=False,         # Inject detection results so construction does not execute real CPUID
         vnni_absence_confirmed=True,
-        has_avx2=True,          # 否则 auto 会因无 SIMD 路径 disable,混淆 reason
+        has_avx2=True,          # Otherwise auto would disable itself without a SIMD path, obscuring the reason
         avx2_absence_confirmed=True,
     )
     assert svc.is_disabled() is True

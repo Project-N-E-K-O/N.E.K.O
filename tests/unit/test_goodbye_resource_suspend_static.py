@@ -147,8 +147,8 @@ def test_goodbye_resource_suspend_pauses_only_active_render_loops_and_restores_o
     get_manager = _js_function_block(source, "getModelManagerByType")
 
     assert "if (type === 'live2d')" in is_rendering
-    # 空闲低频 tick 模式（round-2）下 ticker.started/rAF id 为"停"的假象，
-    # isModelRenderingActive 必须把 _idleTickMode 也算作在渲染
+    # In idle low-frequency tick mode (round 2), ticker.started/rAF ID falsely suggest rendering is stopped;
+    # isModelRenderingActive must also treat _idleTickMode as active rendering.
     assert "ticker.started !== false || manager._idleTickMode" in is_rendering
     assert "if (type === 'vrm')" in is_rendering
     assert "manager._animationFrameId || manager._idleTickMode" in is_rendering

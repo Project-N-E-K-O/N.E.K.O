@@ -143,19 +143,19 @@ __all__ = [
 
 Side = Literal["host", "guest"]
 
-# ── 暂停原因（§3.5.4：30 s 投递计时只在「传输已连接且对端在房」期间走）──
-PAUSE_TRANSPORT = "transport"            # 泛指本侧传输不可用（默认值）
-PAUSE_SELF_RECONNECT = "self_reconnect"  # 本侧 SDK 重连（state{reconnecting}，25 s 窗口）
-PAUSE_PAGE_RELOAD = "page_reload"        # transport WS 断（页面重载宽限 20 s）
-PAUSE_PEER_ABSENT = "peer_absent"        # 对端尚未入房（host 等客）
-PAUSE_PEER_AWAY = "peer_away"            # 对端暂定离开、处在 35 s 重入宽限
+# ── Pause reasons (§3.5.4: 30s delivery clock runs only while connected with peer in room) ──
+PAUSE_TRANSPORT = "transport"            # General local transport unavailability (default).
+PAUSE_SELF_RECONNECT = "self_reconnect"  # Local SDK reconnect (state{reconnecting}, 25s window).
+PAUSE_PAGE_RELOAD = "page_reload"        # Transport WS disconnected (20s page-reload grace).
+PAUSE_PEER_ABSENT = "peer_absent"        # Peer not yet joined (host awaiting guest).
+PAUSE_PEER_AWAY = "peer_away"            # Peer provisionally left, within 35s reentry grace.
 
-# ── 本模块私有常量（visit_settings 里没有的细节）──────────────────────
-_LEAVE_UNSENT_CAP_FACTOR = 2   # leave 入队后最多等 2×VISIT_LEAVE_GAP_GRACE_S 发出
-_LEAVE_RESEND_INTERVAL_S = 1.0   # leave 发出后每 1 s 重传 leave 与未确认项（§4.2 leave）
-_QUEUE_MAX_ITEMS = 200           # 出站队列条数上限，超出先作废可丢类（§4.3 send 同值）
-_COALESCED_TYPES = frozenset({"ack", "hb", "state"})   # 队列里只留最新一条（下一条覆盖）
-_LOSSY_PAUSABLE = frozenset({"line_delta", "typing", "stats"})  # tx_backpressure 时暂停入队
+# ── Module-private constants (details absent from visit_settings) ─────────
+_LEAVE_UNSENT_CAP_FACTOR = 2   # Wait at most 2×VISIT_LEAVE_GAP_GRACE_S for queued leave to send.
+_LEAVE_RESEND_INTERVAL_S = 1.0   # After leave sends, retransmit leave/unacknowledged items every second (§4.2 leave).
+_QUEUE_MAX_ITEMS = 200           # Outgoing queue cap; invalidate droppable types first on excess (§4.3 send same value).
+_COALESCED_TYPES = frozenset({"ack", "hb", "state"})   # Keep newest queue item only; next replaces it.
+_LOSSY_PAUSABLE = frozenset({"line_delta", "typing", "stats"})  # Pause enqueue under tx_backpressure.
 _DELTA_FIRST_FIELDS = ("sp", "ad", "rt", "wu")
 _U32_MAX = 2 ** 32 - 1
 
@@ -236,23 +236,23 @@ class _Item:
     ln: Optional[str] = None
     last_release: float = 0.0
     final_piece: bool = False
-    # 必达项
+    # Guaranteed-delivery item.
     emitted: int = 0
     first_active: Optional[float] = None
     next_due: float = 0.0
     acked: bool = False
-    unsent_first: bool = False  # 首发没写出去（write_failed）：下一次发出仍算首发
-    written: bool = False       # 传输确认至少写出去过一次（written）：之后迟到的写失败不再回滚
+    unsent_first: bool = False  # Initial write failed: next send still counts as initial.
+    written: bool = False       # Transport confirmed at least one write; later stale failures never roll back.
 
 
 @dataclass
 class _Line:
-    next_i: int = 0                    # 已实际发出的片数 = 下一片的 i
+    next_i: int = 0                    # Actual emitted chunk count = next chunk's i.
     last_emit: Optional[float] = None
-    header: Optional[dict] = None      # i==0 的附加字段 sp/ad/rt/wu
-    queued: int = 0                    # 队列里尚未发出的片数
-    closed: bool = False               # 本行 text 已入队：冻结（不再合并 / 作废 / 收新片）
-    dropped: bool = False              # 积压 >10 s 作废后本行后续 delta 一律丢弃
+    header: Optional[dict] = None      # Additional i==0 fields sp/ad/rt/wu.
+    queued: int = 0                    # Unsent queued chunks.
+    closed: bool = False               # This line's text queued: frozen, no merging/invalidation/new chunks.
+    dropped: bool = False              # Backlog >10s invalidates line; discard every later delta for it.
 
 
 class VisitOutbox:
@@ -310,20 +310,20 @@ class VisitOutbox:
         self._pending_max = int(pending_max_bytes)
 
         now = float(clock())
-        # 容量小于单条消息时按常规令牌桶它永远攒不够——按容量封顶扣（§4.1 字节桶说明）
+        # Capacity smaller than one message never fills a normal token bucket sufficiently; cap charge at capacity (§4.1 byte bucket).
         self._bytes = TokenBucket.full(data_bps, data_burst_bytes, now, cap_cost=True)
         self._msgs = TokenBucket.full(msg_per_s, msg_burst, now, cap_cost=True)
 
         self._next_seq = 1
-        self._queue: deque[_Item] = deque()            # 尚未首发的条目（FIFO）
-        self._unacked: OrderedDict[int, _Item] = OrderedDict()   # 必达项，按 seq 有序
-        self._urgent: deque[int] = deque()             # 立即重发（leave / 恢复 / 重载）
-        self._oneshot: deque[_Item] = deque()          # 已确认的 hello 按需重发（不追踪）
+        self._queue: deque[_Item] = deque()            # Items awaiting first send (FIFO).
+        self._unacked: OrderedDict[int, _Item] = OrderedDict()   # Guaranteed items ordered by seq.
+        self._urgent: deque[int] = deque()             # Immediate resend (leave / resume / reload).
+        self._oneshot: deque[_Item] = deque()          # Acked hello resent on demand, untracked.
         self._lines: dict[str, _Line] = {}
         self._hello: Optional[_Item] = None
         self._backpressure = False
 
-        # 运行时间（暂停时不走）
+        # Running time, stopped while paused.
         self._pause_reasons: set[str] = set() if peer_present else {PAUSE_PEER_ABSENT}
         self._active_base = 0.0
         self._active_since: Optional[float] = None if self._pause_reasons else now
@@ -345,7 +345,7 @@ class VisitOutbox:
         self._reserved_bytes = 0
 
     # ------------------------------------------------------------------
-    # 查询
+    # Queries.
 
     @property
     def last_seq(self) -> int:
@@ -409,7 +409,7 @@ class VisitOutbox:
         if is_reliable(str(payload.get("t"))):
             payload.setdefault("seq", _U32_MAX)
             if payload.get("t") == "leave":
-                # schema 要求 last_seq == seq - 1；seq 已按 u32 最大值估，last_seq 位数相同，仍是上界
+                # Schema requires last_seq == seq - 1; seq estimated at u32 maximum, same-digit last_seq retains upper bound.
                 payload.setdefault("last_seq", payload["seq"] - 1)
             if payload.get("t") == "text":
                 payload["i_done"] = VISIT_LINE_DELTA_MAX_I
@@ -457,7 +457,7 @@ class VisitOutbox:
         return copy.deepcopy(self._hello.payload) if self._hello is not None else None
 
     # ------------------------------------------------------------------
-    # 暂停 / 恢复
+    # Pause / resume.
 
     def pause(self, now: Optional[float] = None, reason: str = PAUSE_TRANSPORT) -> None:
         """Add a pause reason; the delivery timer and all transmission stop.
@@ -519,13 +519,13 @@ class VisitOutbox:
             if item.emitted and item.seq not in self._urgent:
                 self._urgent.appendleft(item.seq)
             return True
-        # 暂停 / 令牌不足时连续多次重连只留一份：重复的带票帧会占满限速桶、拖住必达消息
+        # Repeated reconnects while paused/token-starved retain one copy; ticket frames would fill rate buckets and block guaranteed messages.
         if not any(queued is item for queued in self._oneshot):
             self._oneshot.append(item)
         return True
 
     # ------------------------------------------------------------------
-    # 入队
+    # Enqueue.
 
     def _now(self, now: Optional[float]) -> float:
         return float(self._clock()) if now is None else float(now)
@@ -565,10 +565,10 @@ class VisitOutbox:
         if not isinstance(msg, Mapping):
             raise ValueError("message must be a mapping")
         t = msg.get("t")
-        cmd = cmd_of(t)  # 未知类型 → ValueError
+        cmd = cmd_of(t)  # Unknown type → ValueError.
         if self._closed:
-            # 已关闭：泵已停、文件已删。可丢的直接丢；必达的与 leave 之后一样报错（调用方都按「没入队」处理），
-            # 不分配一个既发不出、也不在文件里的 seq
+            # Closed: pump stopped, file deleted. Drop droppable items; guaranteed items error as after leave (callers treat as not enqueued),
+            # never allocate seq impossible to send or persist.
             if is_reliable(t):
                 raise ValueError("reliable message after close")
             return 0
@@ -617,7 +617,7 @@ class VisitOutbox:
         self._queue.append(item)
         self._unacked[seq] = item
         if t == "hello":
-            # 票据不得落盘：hello 只留在内存里用于重传（§3.5.4）
+            # Tickets never persist: hello stays memory-only for retransmission (§3.5.4).
             self._hello = item
         else:
             self._persist(item)
@@ -631,8 +631,8 @@ class VisitOutbox:
         if not isinstance(ln, str) or not isinstance(txt, str):
             raise ValueError("line_delta requires str ln and txt")
         if self._backpressure:
-            # tx_backpressure：本行剩余 delta 一律作废（i 按实际发出分配，中途丢一片
-            # 而后续照发会让接收端看不出缺口；正文由 text 兜底）
+            # tx_backpressure invalidates all remaining line deltas (i allocated on actual send; losing a middle chunk
+            # but continuing hides gaps from receivers; final text covers body).
             self._lines.setdefault(ln, _Line()).dropped = True
             self.dropped_lossy += 1
             return
@@ -649,8 +649,8 @@ class VisitOutbox:
                 return
             header = line.header
         base = {"t": "line_delta", "v": msg.get("v", 1), "ln": ln, "lp": msg.get("lp"), "txt": txt}
-        # 先校验一次（i 取 0、带首片字段），坏数据在入队时就报错而不是在 due() 里；
-        # 校验通过才登记这一行，被拒的首片不会留下坏的头部字段让修正后的重试一直失败
+        # Validate first using i=0 and first-chunk fields, rejecting corrupt data at enqueue rather than due();
+        # register only after success, so rejected first chunks leave no bad header poisoning corrected retries.
         encode_msg({**base, "i": 0, **(header or {})})
         if line is None:
             line = self._lines[ln] = _Line(header=header)
@@ -659,13 +659,13 @@ class VisitOutbox:
         if (prev is not None and not final_piece and not prev.final_piece
                 and now - prev.last_release < self._interval_s
                 and line_delta_can_merge(prev.payload["txt"], txt)):
-            # 同行两片开播间隔 <250 ms 且前一片尚未发出 → 合并成一片（占一个 i）
+            # Same-line starts <250ms apart with previous chunk unsent → merge into one i.
             prev.payload["txt"] = prev.payload["txt"] + txt
             prev.last_release = now
             return
         if line.next_i + line.queued >= VISIT_LINE_DELTA_MAX_I:
-            # 一行最多放出 255 片（i 取 0..254），i_done 才落在 schema 的 ≤255 内；
-            # 之后的内容只进 text{final}
+            # At most 255 emitted chunks per line (i=0..254), keeping i_done ≤255 as schema requires;
+            # subsequent content enters text{final} only.
             self.dropped_lossy += 1
             return
         line.queued += 1
@@ -692,8 +692,8 @@ class VisitOutbox:
 
     def _droppable(self, item: _Item) -> bool:
         if item.t == "line_delta":
-            # 已收口的行同样可以作废积压的字幕片：本行 text 的 i_done 在它首次
-            # 真正发出时才按已发出片数定（见 due()），作废不会让 i_done 失真
+            # Finalized lines can invalidate queued subtitle chunks too: text i_done uses actual emitted count
+            # at first true send (due()), so invalidation preserves correctness.
             return str(item.ln) in self._lines
         return item.cmd == cmd_of("typing")
 
@@ -703,7 +703,7 @@ class VisitOutbox:
         if item.t == "line_delta":
             line = self._lines[str(item.ln)]
             line.queued -= 1
-            # 积压作废：本行剩余 delta 全部作废（正文由 text 兜底），之后的新片也不再收
+            # Backlog invalidation: discard all remaining line deltas, rejecting later chunks; final text covers body.
             line.dropped = True
             for other in [x for x in self._queue if x.t == "line_delta" and x.ln == item.ln]:
                 self._queue.remove(other)
@@ -711,7 +711,7 @@ class VisitOutbox:
                 self.dropped_lossy += 1
 
     # ------------------------------------------------------------------
-    # ack / leave / 排空
+    # ack / leave / drain.
 
     def on_ack(self, seq: Any, now: Optional[float] = None) -> list[tuple[int, str]]:
         """Apply a cumulative peer ``ack{seq}``; return the ``(seq, t)`` pairs it released.
@@ -732,7 +732,7 @@ class VisitOutbox:
                 break
             pending = self._unacked[s]
             if not pending.emitted or not pending.written:
-                # 还没发出去（或放出过、但一次都没写出去）的项不可能被对端收到：越界 ack 不能把它当已确认
+                # Never-emitted or never-successfully-written items cannot reach peer; out-of-range acks cannot acknowledge them.
                 self.ack_beyond_sent += 1
                 break
             item = self._unacked.pop(s)
@@ -748,7 +748,7 @@ class VisitOutbox:
     def _start_leave(self, item: _Item, now: float) -> None:
         self._leave_seq = item.seq
         self._leave_started = now
-        # 发 leave 的同时把此前所有已发出未确认项立即重排到队首重发一次（不按退避）
+        # Sending leave immediately moves all prior emitted unacknowledged items to queue front for one resend, ignoring backoff.
         for seq, other in self._unacked.items():
             if seq != item.seq and other.emitted and seq not in self._urgent:
                 self._urgent.append(seq)
@@ -781,10 +781,10 @@ class VisitOutbox:
         if self._leave_acked:
             return True
         if self._leave_sent_at is not None:
-            # 宽限从 leave 第一次真正写出去时起算：它按 FIFO 排在此前已入队的必达消息之后，
-            # 接收方的补齐窗口也就不会在那些消息发出之前开始
+            # Grace starts at leave's first successful write; FIFO places it after prior guaranteed messages,
+            # so receiver gap-filling window starts only after those messages send.
             return now - self._leave_sent_at >= self._leave_grace_s
-        # 兜底：入队后 2×宽限仍没发出去（对端不在、桶一直满），不再等
+        # Fallback: still unsent 2×grace after enqueue (peer absent/bucket full), stop waiting.
         return now - self._leave_started >= _LEAVE_UNSENT_CAP_FACTOR * self._leave_grace_s
 
     def begin_drain(self, now: Optional[float] = None) -> float:
@@ -808,7 +808,7 @@ class VisitOutbox:
         return self._now(now) >= self._drain_deadline
 
     # ------------------------------------------------------------------
-    # 出站
+    # Outgoing.
 
     def _fits(self, item: _Item) -> bool:
         return self._bytes.fits(item.nbytes) and self._msgs.fits(item.pieces)
@@ -853,11 +853,11 @@ class VisitOutbox:
             return
         item = self._unacked.get(frame.seq)
         if item is None or item.acked or item.written:
-            # 已经写出去过（例如顶掉旧连接的新连接补发成功了）：旧连接迟到的失败不回滚、也不再多催一次重发
+            # Already written (e.g. replacement connection resent successfully): stale old-connection failure neither rolls back nor requests extra resend.
             return
         now = self._now(now)
         if item.emitted:
-            # 一次都没写出去（首发与之后的补发都失败）：都不算发过
+            # Never written (initial and all retransmissions failed): no send counts.
             item.unsent_first = True
             item.first_active = None
             if item.seq == self._leave_seq:
@@ -875,9 +875,9 @@ class VisitOutbox:
         first = item.emitted == 0 or was_unsent
         item.unsent_first = False
         if was_unsent:
-            item.emitted = 0  # 那次没写出去的不算：重试间隔从第一档起
+            item.emitted = 0  # Failed write does not count; retry interval starts from first tier.
         if first:
-            # leave 的宽限不在这里起算：放出不等于写出去（写可能卡住、失败），由 written() 按第一次写成功起算
+            # Leave grace starts elsewhere: emitted is not written (may block/fail); written() starts at first success.
             item.first_active = self.active_time(now)
         item.emitted += 1
         if self._leave_started is not None:
@@ -933,7 +933,7 @@ class VisitOutbox:
             return []
         out: list[OutboundFrame] = []
 
-        # ① 立即重发：已确认 hello 的按需重发 + leave / 恢复 / 重载重排的未确认项
+        # ① Immediate resend: on-demand acknowledged hello + leave/resume/reload-requeued unacknowledged items.
         while self._oneshot:
             item = self._oneshot[0]
             if not self._fits(item):
@@ -953,10 +953,10 @@ class VisitOutbox:
             first = self._transmitted(item, now)
             out.append(self._frame(item, retransmit=not first))
 
-        # ②③ 平时：到期重传在前（outbox 到期项排在队首）、首发在后。leave 入队后
-        # 反过来：此前已入队的首发与 leave 本身先发出去——leave 模式下已发项每 1 s
-        # 重传一次，若仍排在首发前面，几条大 text 的重传就能把桶吃满、leave 永远
-        # 轮不到（宽限从 leave 真正发出起算，见 leave_done）。
+        # ②③ Normally due retransmissions first (outbox front), initial sends second. After leave enqueues,
+        # reverse: prior initial sends and leave first. Leave mode retransmits every second;
+        # retransmitting large text first could exhaust buckets and starve leave forever
+        # (grace starts only when leave actually sends; see leave_done).
         if self._leave_started is None:
             if self._release_retransmits(now, out):
                 self._release_first_sends(now, out)
@@ -967,8 +967,8 @@ class VisitOutbox:
 
     def _release_retransmits(self, now: float, out: list[OutboundFrame]) -> bool:
         """Release retransmissions whose backoff expired; False when the buckets ran dry."""
-        # ② 到期重传（outbox 到期项排在队首）；按到期先后（同时到期按 seq）——
-        # 只按 seq 排的话，桶长期偏紧时低 seq 每次都先到期、高 seq 会被饿死
+        # ② Due retransmissions at outbox front, ordered by due time, seq on ties;
+        # seq-only ordering starves high seq under tight buckets as low seq repeatedly comes due first.
         due_items = sorted((x for x in self._unacked.values() if x.emitted and x.next_due <= now),
                            key=lambda x: (x.next_due, x.seq))
         for item in due_items:
@@ -981,7 +981,7 @@ class VisitOutbox:
 
     def _release_first_sends(self, now: float, out: list[OutboundFrame]) -> bool:
         """Release first sends in FIFO order; False when the buckets ran dry."""
-        # ③ 首发（FIFO）
+        # ③ Initial sends (FIFO).
         self._maintain_backlog(now)
         blocked_lines: set[str] = set()
         reliable_blocked = False
@@ -1009,7 +1009,7 @@ class VisitOutbox:
                     continue
                 self._prepare_delta(item, line)
             if not self._fits(item):
-                # 桶满：排队不丢，后面的也不插队（免得小消息把大 text 饿死）
+                # Bucket full: queue, never drop or allow overtaking, avoiding small messages starving large text.
                 stop = True
                 remaining.append(item)
                 continue
@@ -1021,7 +1021,7 @@ class VisitOutbox:
                 line.last_emit = now
             elif item.seq:
                 if item.t == "text" and item.emitted == 0:
-                    # 同行 delta 都排在 text 之前（FIFO），此刻它们要么已发出、要么已作废
+                    # Same-line deltas precede text FIFO, so all emitted or invalidated now.
                     item.payload["i_done"] = self._lines[str(item.ln)].next_i
                 self._transmitted(item, now)
             out.append(self._frame(item, retransmit=False))
@@ -1046,7 +1046,7 @@ class VisitOutbox:
             age = now - item.enq_at
             if age > self._drop_s and self._droppable(item):
                 self._drop(item)
-        # 积压 >3 s：同行相邻 delta 继续合并到编码后 ≤900 B（末片不合并、已收口的行不动）
+        # Backlog >3s: keep merging adjacent same-line deltas to encoded ≤900B (exclude final chunk/finalized lines).
         merged: deque[_Item] = deque()
         for item in self._queue:
             prev = merged[-1] if merged else None
@@ -1063,7 +1063,7 @@ class VisitOutbox:
         self._queue = merged
 
     # ------------------------------------------------------------------
-    # 落盘（单写线程，按调用顺序）
+    # Persistence: single writer thread, call order.
 
     def _persist(self, item: _Item) -> None:
         if item.t == "hello" or item.seq == 0:
@@ -1072,7 +1072,7 @@ class VisitOutbox:
                           ensure_ascii=False, separators=(",", ":")) + "\n"
         data = line.encode("utf-8")
         if self._closed:
-            # 已关闭：文件已删 / 将删，写线程已停，不能为迟到的一条重新建出带正文的文件
+            # Closed: file deleted/pending deletion, writer stopped; late items must not recreate content files.
             return
         if self._executor is None:
             self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -1107,7 +1107,7 @@ class VisitOutbox:
         if fut is not None:
             try:
                 await asyncio.wrap_future(fut)
-            except Exception:  # 已在回调里记过
+            except Exception:  # Already logged in callback.
                 pass
 
     def _unlink_sync(self) -> bool:
@@ -1161,7 +1161,7 @@ async def purge_outbox_files(spool_dir: Union[str, Path]) -> list[Path]:
     base = Path(spool_dir)
 
     def run() -> list[Path]:
-        # 文件名识别与 spool 共用一套（_scan：visit id + 已知后缀），改后缀集合时不会漏删
+        # Share filename recognition with spool (_scan: visit ID + known suffixes), avoiding deletion omissions after suffix changes.
         deleted: list[Path] = []
         for _visit_id, suffix, path, st in _scan(base):
             if suffix != OUTBOX_SUFFIX or not stat.S_ISREG(st.st_mode):
@@ -1172,7 +1172,7 @@ async def purge_outbox_files(spool_dir: Union[str, Path]) -> list[Path]:
             except FileNotFoundError:
                 continue
             except OSError as exc:
-                # 删不掉的一个留到下次启动，其余照常清
+                # Undeletable file waits for next startup; clean others normally.
                 logger.warning("visit outbox: could not delete %s (%s)", path.name, exc)
         return deleted
 
@@ -1180,7 +1180,7 @@ async def purge_outbox_files(spool_dir: Union[str, Path]) -> list[Path]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 接收侧
+# Receiving side.
 
 
 @dataclass
@@ -1248,7 +1248,7 @@ class InboxSequencer:
         self._coalesce_s = float(ack_coalesce_ms) / 1000.0
         self._contiguous = 0
         self._buffer: dict[int, dict] = {}
-        self._placeholders: set[int] = set()   # 已提前交付 / 去重的 seq：按序轮到时 no-op 消费
+        self._placeholders: set[int] = set()   # Already delivered early/deduplicated seq: consume as no-op when its ordered turn arrives.
         self._lns: OrderedDict[str, None] = OrderedDict()
         self._pending_leave_last: Optional[int] = None
         self._ack_pending = False
@@ -1300,7 +1300,7 @@ class InboxSequencer:
         if not sequenced:
             if (self._prefix is not None and t in ("line_delta", "line_abort")
                     and not str(m.get("ln")).startswith(self._prefix)):
-                # 不经序号的行事件同样要绑定发送方：否则对端能用本侧的 ln 覆盖 / 掐断本侧字幕
+                # Unsequenced line events also bind sender, or peer could overwrite/cut local subtitles using local ln.
                 self.prefix_rejected += 1
                 res.rejected = True
                 return res
@@ -1321,7 +1321,7 @@ class InboxSequencer:
         if t == "text":
             ln = str(m.get("ln"))
             if ln in self._lns:
-                # 同一行换了 seq 再来：按序消费这个 seq，但不重复处理
+                # Same line with new seq: consume sequence in order, without reprocessing.
                 self.duplicates += 1
                 res.duplicate = True
                 self._placeholders.add(seq)
@@ -1330,13 +1330,13 @@ class InboxSequencer:
             self._remember_ln(ln)
 
         if t == "wrap_up" and m.get("ph") == "speaking":
-            # 唯一提前投递的必达消息：不等缺口，按序轮到时 no-op
+            # Only guaranteed message delivered early: skip gap waiting, no-op at ordered turn.
             self._placeholders.add(seq)
             res.early = m
             if self._on_early is not None:
                 self._on_early(m, now)
         elif t == "leave":
-            # leave 不进重排：立即交给上层判缺口（最多等 VISIT_LEAVE_GAP_GRACE_S）
+            # leave bypasses reordering: pass immediately upward for gap judgment, waiting at most VISIT_LEAVE_GAP_GRACE_S.
             self._placeholders.add(seq)
             res.leave = m
             last = m.get("last_seq")

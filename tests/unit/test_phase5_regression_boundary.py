@@ -1,8 +1,8 @@
 """
-Phase 5 — 回归与边界验证：静态契约测试
+Phase 5 — Regression and boundary validation: static contract tests
 
-验证核心约束：本功能只做"加自动触发条件 + 换表现"，不改写老链路。
-依据：implementation-flow.md Phase 5 重点验证 1-6 + design.md 6.2 不应改坏 1-6。
+Verify core constraints: this feature adds automatic triggers and changes presentation without rewriting existing paths.
+Sources: implementation-flow.md Phase 5 checks 1–6 + design.md 6.2 regression protections 1–6.
 """
 
 from pathlib import Path
@@ -22,11 +22,11 @@ def _read(path: Path) -> str:
     return read_path_or_parts(path)
 
 
-# ── 5.1 手动 goodbye 链路未被改写 ──────────────────────────
+# ── 5.1 Manual goodbye path remains unchanged ──────────────────────────
 
 
 def test_app_buttons_preserve_goodbye_backend_silence_contract():
-    """请她离开链路必须把猫态静默同步给后端。"""
+    """The ask-to-leave path must silently synchronize cat state to the backend."""
     source = _read(APP_BUTTONS_PATH)
 
     assert "window.isNekoGoodbyeModeActive()" in source
@@ -58,7 +58,7 @@ def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
     assert "start_session" not in source
 
 
-# ── 5.2 auto-goodbye 不直接执行离开副作用 ──────────
+# ── 5.2 Auto-goodbye does not directly perform departure side effects ──────────
 
 
 def test_auto_goodbye_only_syncs_silence_without_running_goodbye_side_effects():
@@ -76,7 +76,7 @@ def test_auto_goodbye_only_syncs_silence_without_running_goodbye_side_effects():
     assert "resetSessionButton.addEventListener" not in source
 
 
-# ── 5.3 return-ball 回来仍走 handleReturnClick ─────────────
+# ── 5.3 Returning via return-ball still uses handleReturnClick ─────────────
 
 
 def test_avatar_return_button_dispatches_prefix_return_click_not_start_session():
@@ -88,7 +88,7 @@ def test_avatar_return_button_dispatches_prefix_return_click_not_start_session()
     assert "start_session" not in source
 
 
-# ── 5.4 start_session 不被误触发 ──────────────────────────
+# ── 5.4 start_session is not accidentally triggered ──────────────────────────
 
 
 def test_no_new_code_references_start_session_or_return_session_button():
@@ -105,7 +105,7 @@ def test_no_new_code_references_start_session_or_return_session_button():
         )
 
 
-# ── 5.5 queued/running 任务阻断 auto-goodbye ──────────────
+# ── 5.5 queued/running tasks block auto-goodbye ──────────────
 
 
 def test_has_blocking_active_work_treats_queued_and_running_as_blockers():
@@ -119,7 +119,7 @@ def test_has_blocking_active_work_treats_queued_and_running_as_blockers():
 
 
 def test_try_auto_goodbye_has_autoGoodbyeTriggered_guard():
-    """防止 goodbye manager 没设上 _goodbyeClicked 时重复派发事件。"""
+    """Prevent duplicate dispatch when goodbye manager has not set _goodbyeClicked."""
     source = _read(APP_AUTO_GOODBYE_PATH)
 
     assert "state.autoGoodbyeTriggered" in source
@@ -128,7 +128,7 @@ def test_try_auto_goodbye_has_autoGoodbyeTriggered_guard():
     )
 
 
-# ── 5.6 deferred reminder (保持 running) 被正确阻断 ──────
+# ── 5.6 Deferred reminders (remaining running) are correctly blocked ──────
 
 
 def test_deferred_reminder_running_state_is_blocked_without_exemption():
@@ -146,7 +146,7 @@ def test_deferred_reminder_running_state_is_blocked_without_exemption():
     assert 'case"reminder"' not in compact_source
 
 
-# ── design.md 6.2: 不应改坏 ───────────────────────────────
+# ── design.md 6.2: behavior that must not regress ───────────────────────────────
 
 
 def test_old_chat_container_not_referenced_in_new_code():

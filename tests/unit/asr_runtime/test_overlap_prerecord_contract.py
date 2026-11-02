@@ -27,7 +27,7 @@ async def test_prerecord_validation_task_is_attached_to_the_onset_record() -> No
     task = asyncio.create_task(pending_validation())
     await asyncio.sleep(0)
 
-    # record 还没建出来：这一步在旧实现里等于永久丢弃这个任务。
+    # The record does not exist yet: the old implementation permanently discarded this task here.
     assert runtime._track_independent_visual_validation_task(
         task,
         captured_at=onset + 0.01,
@@ -86,7 +86,7 @@ async def test_prerecord_frame_buffer_is_bounded() -> None:
         )
 
     assert len(runtime._prerecord_visual_frames) <= 8
-    # 超限时丢的是"最冗余"的内点，**不是队头** —— 队头正是这段发声的开头。
+    # On overflow, drop the most redundant interior point, never the head: the head marks speech onset.
     kept = [frame.image_b64 for frame in runtime._prerecord_visual_frames]
     assert kept[0] == "prerecord-0"
     assert kept[-1] == "prerecord-39"
@@ -106,7 +106,7 @@ async def test_prerecord_buffer_trims_in_capture_order_not_arrival_order() -> No
     onset = time.monotonic()
     runtime._asr_turn_onset_at = onset
 
-    # 落地顺序把两端交替喂进来：0, 19, 1, 18, 2, 17, ...
+    # Feed alternating endpoints in arrival order: 0, 19, 1, 18, 2, 17, ...
     capture_order = [i if i % 2 == 0 else 19 - i for i in range(20)]
     for generation, index in enumerate(capture_order):
         runtime._stage_independent_visual_frame(
@@ -118,7 +118,7 @@ async def test_prerecord_buffer_trims_in_capture_order_not_arrival_order() -> No
 
     kept = [frame.image_b64 for frame in runtime._prerecord_visual_frames]
     assert len(kept) <= 8
-    # 时间上的首尾必须活着，而不是"最先/最后落地的那两帧"。
+    # Preserve chronological endpoints, rather than the first/last frames to arrive.
     assert kept[0] == "f0"
     assert kept[-1] == f"f{max(capture_order)}"
     captured = [frame.captured_at for frame in runtime._prerecord_visual_frames]
@@ -154,7 +154,7 @@ async def test_prerecord_task_stash_keeps_the_earliest_validation() -> None:
     stash = runtime._prerecord_visual_validations
     assert len(stash) <= 8
     kept = sorted(stash.values())
-    # 时间上的首尾都必须活着 —— 淘汰只能发生在中间。
+    # Both chronological endpoints must survive; eviction is allowed only in the middle.
     assert kept[0] == onset
     assert kept[-1] == onset + 0.001 * 29
 
@@ -225,7 +225,7 @@ async def test_invalidated_record_does_not_hand_over_its_frames() -> None:
         f"asr-{second.ingress.session_epoch}-{second.turn_id}", second
     )
 
-    # 记录还在（话要留住），但视觉所有权已经交给后继回合 —— 走纯文本提交。
+    # Keep the speech record, but visual ownership has moved to the successor turn: submit text only.
     assert runtime._core_multimodal_turns.get(first_id) is record
     assert runtime._snapshot_core_multimodal_turn(first_id, "first") is None
 
@@ -250,7 +250,7 @@ async def test_prerecord_stash_still_arms_while_older_records_are_retained() -> 
         captured_at=onset,
     )
 
-    # 当前这一轮还没建起来，这帧必须被暂存下来等它。
+    # The current turn does not exist yet; buffer this frame until it does.
     assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
         "between-turns-frame"
     ]
@@ -271,7 +271,7 @@ async def test_idle_frames_do_not_consume_the_prerecord_budget() -> None:
     runtime._asr_route_mode = "independent"
     now = time.monotonic()
 
-    # 共享着但没人说话：闲置帧铺满缓冲。
+    # Sharing with no speech: idle frames fill the buffer.
     runtime._asr_runtime._asr_turn_onset_at = None
     for i in range(_MAX_PRERECORD_VISUAL_VALIDATIONS):
         assert runtime._stage_independent_visual_frame(
@@ -282,7 +282,7 @@ async def test_idle_frames_do_not_consume_the_prerecord_budget() -> None:
         )
     assert len(runtime._prerecord_visual_frames) == _MAX_PRERECORD_VISUAL_VALIDATIONS
 
-    # 用户开口。确认到注册之间又拍了三张。
+    # User starts speaking; three more frames arrive between confirmation and registration.
     onset = now - 2.0
     runtime._asr_runtime._asr_turn_onset_at = onset
     for i in range(3):
@@ -294,5 +294,5 @@ async def test_idle_frames_do_not_consume_the_prerecord_budget() -> None:
         )
 
     kept = [f.image_b64 for f in runtime._prerecord_visual_frames]
-    # 开口之前的一张都不占名额了，这一轮自己的三张全在。
+    # Pre-speech frames consume no slots; all three frames from this turn remain.
     assert kept == ["speech-0", "speech-1", "speech-2"]

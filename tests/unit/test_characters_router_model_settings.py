@@ -440,9 +440,9 @@ async def test_switching_live3d_subtypes_preserves_inactive_model_config(
 
 @pytest.mark.asyncio
 async def test_vrm_save_omitting_animation_preserves_saved_animation(monkeypatch):
-    # 不带 vrm_animation 字段的保存不得动到已存的单动作。
-    # 这是前端动作下拉恢复机制（restore -> 下拉显示已存动作 -> 保存回传原值）依赖的契约：
-    # 若契约破坏，无关保存会静默清空已存动作。
+    # Saving without vrm_animation must not alter an existing single action.
+    # The frontend dropdown restoration contract depends on this: restore -> show saved action -> save original value.
+    # Breaking it would silently clear the saved action during unrelated saves.
     response, body, saved = await _call_update(
         monkeypatch,
         {
@@ -459,7 +459,7 @@ async def test_vrm_save_omitting_animation_preserves_saved_animation(monkeypatch
 
 @pytest.mark.asyncio
 async def test_vrm_save_empty_animation_clears_saved_animation(monkeypatch):
-    # 只有显式传 vrm_animation='' 才清空，对应用户主动选择"无动作"(_no_motion_)。
+    # Clear only with explicit vrm_animation='', matching the user's no-action choice (_no_motion_).
     response, body, saved = await _call_update(
         monkeypatch,
         {
@@ -614,8 +614,8 @@ def test_flatten_catgirl_for_response_preserves_numeric_field_creation_order():
 
 
 def test_sync_catgirl_field_order_honors_top_level_payload():
-    # 工坊上传卡的顺序存在顶层 _field_order（上传时 _reserved 被剥离）；列表/读取入口调 _sync
-    # 时不传 payload，必须认这个顶层字段，否则退回 JSON key 枚举顺序让数字 key 被提前。
+    # Uploaded workshop cards store order in top-level _field_order (_reserved is stripped on upload). List/read entry points call _sync
+    # without payload; honor the top-level field or JSON enumeration moves numeric keys first.
     catgirl = {
         '1': '数字字段',
         '喵喵喵': '文字字段',

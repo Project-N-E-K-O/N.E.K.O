@@ -1,51 +1,51 @@
 """Simulated User (SimUser) — P11.
 
-扮演"与目标 AI 对话的真实用户", 由独立 LLM 实例生成**一条下一轮要说的**
-user 消息. 本期产物**只做草稿生成**: 结果直接返回给前端, 由测试人员编辑
-后再点 Send 走正常 `/api/chat/send` 管线. 不触碰 ``session.messages``,
-不消耗虚拟时钟 pending, 不调用记忆合成.
+An independent LLM impersonates the real user talking to the target AI and generates **one next-turn**
+user message. This iteration **only generates drafts**: return the result directly to the frontend for testers to edit
+and Send through the normal `/api/chat/send` pipeline. Do not touch ``session.messages``,
+consume pending virtual-clock time, or invoke memory synthesis.
 
-设计要点
---------
-* **LLM 分组独立**: 用会话 ``simuser`` 组的 :class:`ModelGroupConfig`
-  (见 ``model_config.py``). 三层 API key 回退 / Lanlan 免费端旁路
-  与 chat/memory 组一致, 只需 ``resolve_group_config(session, "simuser")``.
-* **角色翻转**: SimUser 自己扮演"用户", 历史里 ``role=user`` 的句子是
-  它**自己**说过的 (对 SimUser LLM 来说即 assistant), 历史里
-  ``role=assistant`` 的句子是**对方** (目标 AI) 说给 SimUser 听的
-  (对 SimUser LLM 来说即 user). 不翻转则 LLM 会把"已经是我自己说过
-  的话"当成对方发言, 容易陷入自答自问. 注入的 ``role=system`` 消息
-  是给目标 AI 的测试指令, SimUser 不应直接看到 (但可以简要摘录塞到
-  system prompt 的最后段, 让它知道场景变化). 本期选"全部跳过",
-  若后续测试发现 SimUser 不知语境再回头做摘录.
-* **不自动推进时钟**: 生成调用前后都不动
-      ``session.clock`` / ``session.clock.consume_pending``. 真正的推进
-      发生在用户编辑完后点 Send 的 ``/api/chat/send`` 里.
-    * **Gemini 严格模式兼容垫片**: Vertex AI Gemini 拒绝 ``contents`` 为空
-      (仅 system 不够), 也拒绝末尾是 ``model`` (=assistant) 的上下文. 所以
-      在 ``wire_messages`` 组装完后, 只要没有非-system 消息或末尾不是
-      ``user``, 就自动追加一条 ``role=user`` 的 nudge 显式要求生成下一句.
-      OpenAI / Anthropic / Lanlan 等不受影响 (对它们 nudge 只是冗余强调).
-* **错误语义与 memory_runner 对齐**: 引入 :class:`SimUserError`, 携带
-  稳定的机器码 (``NoActiveSession`` / ``SimuserModelNotConfigured`` /
-  ``SimuserApiKeyMissing`` / ``LlmFailed`` / ``EmptyResponse``) + 中文
-  用户态文案 + 建议 HTTP 状态码. 与 chat_runner 的 ChatConfigError
-  不重合 (那个硬编码 "chat" 组前缀, 这里要 "simuser" 前缀的文案).
-* **生成输出的"干净度"**: prompt 里显式禁止 SimUser 返回 role 前缀
-  ("我:" / "用户:" / "User:")、引号包裹、旁白/动作描写. 拿回来后
-  再用 :func:`_postprocess_draft` 做一层兜底清洗 (去首尾引号 / 去
-  ``我:``/``用户:`` 前缀) 以防模型不听话. 这点在"挑剔"风格里尤其重要
-  因为挑剔用户 LLM 常自带演员腔.
+Design notes
+------------
+* **Independent LLM group**: use the session's ``simuser`` :class:`ModelGroupConfig`
+  (see ``model_config.py``). Three-level API-key fallback / Lanlan free-endpoint bypass
+  follow chat/memory groups; simply call ``resolve_group_config(session, "simuser")``.
+* **Role reversal**: SimUser impersonates the user, so historical ``role=user`` messages
+  are its **own** words (assistant to the SimUser LLM), while historical
+  ``role=assistant`` messages are what the **other party** (target AI) said to SimUser
+  (user to the SimUser LLM). Without reversal the LLM mistakes its own previous words
+  for the other party's and easily starts answering itself. Injected ``role=system`` messages
+  are test instructions for the target AI and should not be directly visible to SimUser (though
+  brief excerpts could be appended to the system prompt to explain scenario changes). This iteration skips all;
+  revisit excerpts if later tests show SimUser lacks context.
+* **No automatic clock advancement**: leave
+      ``session.clock`` / ``session.clock.consume_pending`` untouched before and after generation. Actual advancement
+      occurs in ``/api/chat/send`` when the user finishes editing and clicks Send.
+    * **Gemini strict-mode compatibility shim**: Vertex AI Gemini rejects empty ``contents``
+      (system alone is insufficient) and context ending in ``model`` (=assistant). Thus,
+      after assembling ``wire_messages``, append an explicit next-message generation nudge
+      with ``role=user`` whenever there are no non-system messages or the last role is not ``user``.
+      OpenAI / Anthropic / Lanlan are unaffected (the nudge merely adds redundant emphasis).
+* **Error semantics match memory_runner**: :class:`SimUserError` carries
+  stable machine codes (``NoActiveSession`` / ``SimuserModelNotConfigured`` /
+  ``SimuserApiKeyMissing`` / ``LlmFailed`` / ``EmptyResponse``), Chinese
+  user-facing wording, and a suggested HTTP status. This differs from chat_runner's ChatConfigError,
+  whose wording hardcodes the "chat" group prefix rather than the required "simuser" prefix.
+* **Clean generated output**: the prompt explicitly forbids role prefixes
+  ("我:" / "用户:" / "User:"), surrounding quotes, narration, and action descriptions. After receiving output,
+  :func:`_postprocess_draft` provides fallback cleanup (strip outer quotes /
+  ``我:``/``用户:`` prefixes) in case the model ignores instructions. This especially matters for the picky style,
+  whose user LLM often adopts an actor's voice.
 
-待扩展 (P12-P13)
-----------------
-* ``P13`` (双 AI 自动对话) 会复用 :func:`generate_simuser_message` 在
-  循环里跑, 每轮生成完立刻落盘 + 调 ``/chat/send``. 届时把"是否推进
-  时钟"作为参数暴露出来即可, 生成这一步本身的无副作用语义不用改.
-* 目前 ``style`` 是闭集预设; P14 Stage Coach 引入"按阶段切换风格"
-  时再考虑把风格做成 schema 驱动 (``{id, label, prompt_text}``), 现
-  在提前过度设计反而会让 UI 复杂.
-"""
+Future extensions (P12-P13)
+--------------------------
+* ``P13`` (automatic dual-AI dialogue) will reuse :func:`generate_simuser_message` in
+  a loop, persisting each generated turn immediately and invoking ``/chat/send``. Expose clock advancement
+  as a parameter then; generation itself can retain its side-effect-free semantics.
+* ``style`` is currently a closed preset set; when P14 Stage Coach introduces switching styles
+  by stage, consider schema-driven styles (``{id, label, prompt_text}``). Premature
+  design now would only complicate the UI.
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import time
@@ -94,9 +94,9 @@ class SimUserError(RuntimeError):
 
 # ── style presets ──────────────────────────────────────────────────
 
-#: 闭集预设. 追加新 key 时记得同步 i18n.js `chat.composer.simuser.style.*`.
-#: 预设描述用**自述第二人称**直接写进 system prompt, 以"你 …"开头,
-#: 便于 LLM 把它理解为行为指令.
+#: Closed preset set. Synchronize i18n.js `chat.composer.simuser.style.*` when adding keys.
+#: Preset descriptions enter the system prompt directly as second-person self-instructions beginning with "你 …" (you ...),
+#: helping the LLM interpret them as behavioral instructions.
 STYLE_PRESETS: Final[dict[str, str]] = {
     "friendly": (
         "你是个友好热情的用户: 回应积极, 愿意分享自己的想法, 说话自然口语化,"
@@ -122,11 +122,11 @@ STYLE_PRESETS: Final[dict[str, str]] = {
 
 DEFAULT_STYLE: Final[str] = "friendly"
 
-MAX_HISTORY_MESSAGES: Final[int] = 40  # 翻转/切片后喂给 SimUser LLM 的上限.
+MAX_HISTORY_MESSAGES: Final[int] = 40  # Maximum messages fed to the SimUser LLM after role reversal and slicing.
 
-#: 允许调用者透传的最大历史长度 — 防止极端会话一次灌几千条进 prompt.
-#: 翻转后按倒序取最末 ``MAX_HISTORY_MESSAGES`` 条, 再恢复升序.
-#: 40 条 ≈ 20 个来回, 已经够 SimUser 建立上下文, 再多基本只浪费 token.
+#: Maximum history callers may pass through, preventing extreme sessions from flooding the prompt with thousands of messages.
+#: After role reversal, take the last ``MAX_HISTORY_MESSAGES`` in reverse order, then restore ascending order.
+#: 40 messages are about 20 exchanges, enough context for SimUser; additional messages mostly waste tokens.
 
 
 # ── draft result ───────────────────────────────────────────────────
@@ -167,10 +167,10 @@ def _resolve_simuser_cfg(session: Session) -> ModelGroupConfig:
     try:
         return resolve_group_config(session, "simuser")
     except ChatConfigError as exc:
-        # ChatConfigError.code 对所有组统一用 ``ChatModelNotConfigured`` /
-        # ``ChatApiKeyMissing``, 前端早已在 `chat` 错误上用这些 code 布文案.
-        # SimUser 这侧重新包一层: 错误码加 ``Simuser`` 前缀好让前端区分 toast,
-        # 但保留原 message (文案里已经带 "simuser 组" 提示, 不需要再改).
+        # ChatConfigError.code uses ``ChatModelNotConfigured`` / ``ChatApiKeyMissing`` uniformly across groups;
+        # the frontend already uses these codes to select wording for `chat` errors.
+        # Wrap again on the SimUser side: prefix error codes with ``Simuser`` so the frontend can distinguish toasts,
+        # while retaining the original message (already mentioning "simuser 组", the simuser group).
         code_map = {
             "ChatModelNotConfigured": "SimuserModelNotConfigured",
             "ChatApiKeyMissing": "SimuserApiKeyMissing",
@@ -198,18 +198,18 @@ def _flip_history(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
        **every** read site filters by the same field) is what keeps
        this safe across future banner kinds with different roles. (GH
        AI-review issue, 2nd batch #6.)
-    2. ``role=user``      → ``assistant`` (SimUser 自己之前说过的话).
-    3. ``role=assistant`` → ``user``      (目标 AI 说给 SimUser 的话).
-    4. ``role=system``    → 丢弃 (注入给目标 AI 的测试指令, SimUser 不该看).
+    2. ``role=user``      → ``assistant`` (SimUser's own earlier words).
+    3. ``role=assistant`` → ``user``      (the target AI's words to SimUser).
+    4. ``role=system``    → drop (test instructions injected for the target AI, hidden from SimUser).
 
-    空 content 的条目 (例如只收到 ``{event:'user'}`` 但后续 LLM 发送失败
-    导致的 placeholder) 也被丢弃 — 它们对 SimUser 没有实质上下文,
-    保留反而容易让 LLM 误判"之前我/对方其实没说话"然后产出离奇开头.
+    Entries with empty content (for example, a placeholder after receiving only ``{event:'user'}``
+    when the subsequent LLM send fails) are dropped too: they add no substantive context for SimUser,
+    and retaining them can make the LLM assume either party previously said nothing and produce bizarre openings.
 
     Returns
     -------
     list[dict[str, str]]
-        OpenAI ChatCompletion 风格 ``[{role, content}, ...]``.
+        OpenAI ChatCompletion-style ``[{role, content}, ...]``.
     """
     flipped: list[dict[str, str]] = []
     for m in messages:
@@ -260,20 +260,20 @@ def _build_system_prompt(
 ) -> str:
     """Assemble the SimUser system prompt.
 
-    * character_name / master_name 从 ``session.persona`` 取, 都可能为空 —
-      空时换成"对方"/"你"的泛称, 避免 LLM 把字面串 ``{LANLAN_NAME}`` 当真.
-    * 风格文本走闭集 + (可选) 自定义 ``user_persona_prompt`` 追加.
-    * ``extra_hint`` 是单次有效的临时提示, 只在本次生成时追加到 prompt
-      尾部, 不持久化到 session. 典型场景: 测试人员想要"试试让 SimUser
-      问一个敏感话题", 填一下这个 hint 就行.
-    * ``first_turn=True`` 时追加"开场语"提示, 否则按上下文回应.
+    * Read character_name / master_name from ``session.persona``; either may be empty.
+      Substitute generic other-party/you references when empty, avoiding literal ``{LANLAN_NAME}`` interpretation.
+    * Use closed-set style text plus optional custom ``user_persona_prompt``.
+    * ``extra_hint`` is temporary guidance for this generation only, appended to the prompt
+      without persisting to the session. For example, testers can use this hint to ask SimUser
+      to raise a sensitive topic.
+    * Append opening-line guidance when ``first_turn=True``; otherwise respond to context.
     """
     persona = session.persona or {}
     character_name = (persona.get("character_name") or "").strip()
     master_name = (persona.get("master_name") or "").strip()
 
     target_alias = character_name or "对方"
-    self_alias = master_name or "\u4f60"  # 你
+    self_alias = master_name or "\u4f60"  # You
 
     style_desc = STYLE_PRESETS.get(style_key, STYLE_PRESETS[DEFAULT_STYLE])
 
@@ -330,8 +330,8 @@ def _build_system_prompt(
     return "\n".join(lines)
 
 
-# 最多裁掉的首部前缀模式 — 都是模型爱写、又完全不该进 session.messages
-# 的"角色标签腔". 顺序敏感: 先长后短, 先带冒号后不带冒号.
+# Leading prefix patterns to strip: role-label phrasing models often emit that must never enter session.messages.
+# Order matters: longer before shorter, with-colon before without-colon.
 _PREFIX_PATTERNS: Final[tuple[str, ...]] = (
     "用户:", "用户：",
     "User:", "user:",
@@ -369,9 +369,9 @@ def _postprocess_draft(raw: str, *, preserve_role_prefix: bool = False) -> tuple
     Returns:
       ``(cleaned, warnings)``. ``warnings`` is non-empty when the
       cleaner modified the string, so the composer UI can toast
-      "SimUser LLM 不守规矩, 我们兜了底" and the tester can inspect
+      "The SimUser LLM ignored instructions; fallback cleanup was applied" and the tester can inspect
       the raw version in the preview drawer if they care.
-    """
+    """  # noqa: DOCSTRING_CJK
     warnings: list[str] = []
     s = (raw or "").strip()
     if not s:
@@ -380,7 +380,7 @@ def _postprocess_draft(raw: str, *, preserve_role_prefix: bool = False) -> tuple
     stripped_any = False
     if not preserve_role_prefix:
         changed = True
-        # 允许 "用户: 我:"这种多重叠加, 循环去掉.
+        # Allow stacked prefixes such as "用户: 我:" (user: me:); remove them iteratively.
         while changed:
             changed = False
             for prefix in _PREFIX_PATTERNS:
@@ -390,7 +390,7 @@ def _postprocess_draft(raw: str, *, preserve_role_prefix: bool = False) -> tuple
                     stripped_any = True
                     break
 
-    # 去首尾成对引号. 仅当首尾都是同一种引号时.
+    # Remove paired surrounding quotes only when both ends use the same quote type.
     quote_pairs = (('"', '"'), ("'", "'"), ("\u201c", "\u201d"), ("\u300c", "\u300d"))
     for left, right in quote_pairs:
         if len(s) >= 2 and s.startswith(left) and s.endswith(right):
@@ -422,28 +422,28 @@ async def generate_simuser_message(
     Parameters
     ----------
     session
-        活跃会话; 必须已由 router 通过 ``_require_session`` 校验存在.
+        Active session; the router must already have checked existence through ``_require_session``.
     style
-        风格 key, 见 :data:`STYLE_PRESETS`. ``None`` / 未知值都会 fallback
-        到 ``friendly`` 并加一条 warning.
+        Style key; see :data:`STYLE_PRESETS`. ``None`` / unknown values fall back
+        to ``friendly`` with a warning.
     user_persona_prompt
-        可选自定义人设; 追加到 system prompt 的 "额外人设/背景" 段.
+        Optional custom persona appended to the system prompt's additional persona/background section.
     extra_hint
-        单次临时指示; 只在本次生成内生效, 不写回任何持久状态.
+        Temporary instructions for this generation only, never written to persistent state.
 
-    副作用 — **无**:
-        * 不读写 ``session.messages``;
-        * 不消耗 / 不修改 ``session.clock.pending_*``;
-        * 不调用任何记忆 manager;
-        * 只写 JSONL 日志 (``simuser.generate.begin`` / ``.end`` / ``.error``).
+    Side effects — **none**:
+        * Do not read or write ``session.messages``;
+        * Do not consume or modify ``session.clock.pending_*``;
+        * Do not invoke any memory manager;
+        * Only write JSONL logs (``simuser.generate.begin`` / ``.end`` / ``.error``).
 
-    Wire stamping (P25 r7 语义分区, 2026-04-23):
-        SimUser 只是"对话来源", 不是被考察/测试的对象. 它的 wire 对测
-        试人员无价值 (测试人员的关注点始终在目标 AI 那侧), 反而会把
-        Chat 页的 Preview Panel 污染成"看不到真正在测的那条". 故这条
-        LLM 调用**不 stamp** ``session.last_llm_wire`` — 目标 AI 那侧
-        (``chat.send`` / ``auto_dialog_target``) 的 stamp 独立生效, Chat
-        页 Preview 恒显示"对话 AI 看到的东西".
+    Wire stamping (P25 r7 semantic partitioning, 2026-04-23):
+        SimUser is only the conversation source, not the subject being evaluated or tested. Its wire adds no
+        value for testers (whose focus always remains on the target AI), and instead pollutes the
+        Chat page Preview Panel so the actual evaluated call is hidden. Therefore this
+        LLM call **does not stamp** ``session.last_llm_wire``; stamps on the target AI side
+        (``chat.send`` / ``auto_dialog_target``) remain independent, and the Chat
+        page Preview always shows what the conversation AI sees.
     """
     warnings: list[str] = []
 
@@ -471,13 +471,13 @@ async def generate_simuser_message(
     ]
     wire_messages.extend(flipped_history)
 
-    # Gemini (Vertex AI) 兼容垫片: 若 wire 除 system 外没有任何 non-system 消
-    # 息 (首轮) 或翻转后末尾是 assistant (原会话最后一句是真实用户说的,
-    # 翻转为 SimUser 自己的发言, 所以末尾为 assistant), Gemini 会报
-    # "Model input cannot be empty" / 连续同角色非法. OpenAI / Anthropic
-    # 等宽松实现不受影响 — 这条 nudge 对它们只是"再强调一次当前任务"的冗
-    # 余上下文, 无害. 用 user 角色承载, 因为 SimUser LLM 下一步要输出的
-    # 是 assistant (即扮演用户的那条输出), Gemini 需要最后一个上下文是 user.
+    # Gemini (Vertex AI) compatibility shim: when wire has no non-system messages besides system
+    # (first turn), or ends in assistant after reversal (the real user's last message becomes SimUser's own
+    # assistant message), Gemini reports
+    # "Model input cannot be empty" / invalid consecutive same-role messages. Permissive OpenAI / Anthropic
+    # implementations are unaffected: this nudge is harmless redundant context reinforcing the current
+    # task. Use the user role because the SimUser LLM must next emit assistant
+    # (the output impersonating the user), and Gemini requires user as the last context role.
     need_nudge = (
         not flipped_history
         or flipped_history[-1].get("role") != ROLE_USER
@@ -495,7 +495,7 @@ async def generate_simuser_message(
             )
         wire_messages.append({"role": ROLE_USER, "content": nudge_content})
 
-    # 完整 wire + 模型配置先落 JSONL, 便于复现 (对齐 chat_runner 约定).
+    # Persist the complete wire and model configuration to JSONL first for reproducibility, following chat_runner conventions.
     session.logger.log_sync(
         "simuser.generate.begin",
         payload={
@@ -531,10 +531,10 @@ async def generate_simuser_message(
             max_retries=1,
             streaming=False,
         )
-        # NOSTAMP(wire_tracker): SimUser 是"对话来源", 不是被考察对象 —
-        # 它的 wire 对测试人员无价值, stamp 进 session.last_llm_wire 会让
-        # Chat 页 Preview Panel 看到"不是对话 AI 真实收到的 prompt", 严
-        # 重 mislead 测试人员. 故 simuser 的 LLM 调用不进入 stamp 机制.
+        # NOSTAMP(wire_tracker): SimUser is the conversation source, not the subject under evaluation;
+        # its wire is irrelevant to testers. Stamping it into session.last_llm_wire would cause
+        # the Chat page Preview Panel to show a prompt other than what the conversation AI actually received,
+        # seriously misleading testers. Therefore SimUser LLM calls bypass stamping.
         resp = await client.ainvoke(wire_messages)
         content_raw = resp.content or ""
         token_usage = (resp.response_metadata or {}).get("token_usage") or None
@@ -583,8 +583,8 @@ async def generate_simuser_message(
     )
 
     if not cleaned:
-        # "SimUser 故意沉默"是合法输出, 但对产品体验上大概率是 LLM 摆烂.
-        # 不抛错 (保留"沉默"语义), 仅追加警告让 UI 展示.
+        # Deliberate SimUser silence is valid output, but usually indicates the LLM shirking its task from a product perspective.
+        # Do not throw (preserve silence semantics); append only a warning for the UI.
         warnings.append(
             "SimUser LLM 返回了空字符串 (可能在按风格扮演\u300c沉默\u300d,"
             " 也可能是模型卡住了). 若需要真实回复, 换个风格或再点一次生成."
@@ -603,9 +603,9 @@ async def generate_simuser_message(
 def list_style_presets() -> list[dict[str, str]]:
     """Return ``[{id, prompt}]`` for UI introspection / Settings pages.
 
-    保持独立函数而非直接暴露 ``STYLE_PRESETS`` dict, 以便未来追加 label /
-    描述字段时, 端点返回形状不用破坏 (加字段即可). 前端 i18n 负责中文
-    label, 这里只吐 prompt 文本做透明展示.
+    Keep this as an independent function rather than directly exposing ``STYLE_PRESETS``, allowing future label /
+    description fields without breaking the endpoint's return shape (simply add fields). Frontend i18n provides Chinese
+    labels; expose only prompt text here for transparency.
     """
     return [
         {"id": key, "prompt": STYLE_PRESETS[key]}

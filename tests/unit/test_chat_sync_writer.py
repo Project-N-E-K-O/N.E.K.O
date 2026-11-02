@@ -378,6 +378,310 @@ async def test_cloud_recovery_checks_copied_ack_and_requires_fresh_history_and_d
     await runtime.close()
 
 
+async def recovery_budget_runtime(tmp_path, on_check, *, count=7):
+    """Exercise recovery with real SQLite witnesses and a synthetic authenticated HTTP service."""
+    from contextlib import nullcontext
+    import httpx
+    from services.chat_sync.runtime import DesktopChatSyncRuntime
+    from services.chat_sync.source import ChatOriginalSource, recover_sources
+    from services.chat_sync.ledger import ChatDomain, ChatOriginal
+    owner, uid = '12345678-1234-4234-8234-123456789abc', 'a' * 32
+    session = {'logged_in': True, 'snapshot': {'access_token': 'synthetic', 'base_url': 'https://community.project-neko.cn'}}
+    checks, clock = [], [1_000_000]
+
+    async def resolve():
+        return session
+
+    async def service(request):
+        # Advance only this test clock; production admission/backpressure stays active.
+        clock[0] += 10_000
+        path = request.url.path
+        body = json.loads(request.content) if request.content else None
+        if path == '/v1/chat-sync/identity':
+            return httpx.Response(200, json={'ownerId': owner})
+        if path.endswith('/bindings'):
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid,
+                                           'deviceId': body['deviceId'], 'bindingId': 'b' * 32})
+        if path.endswith('/recovery/deletions'):
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'through': count,
+                                           'cursor': count, 'hasMore': False, 'deletedMessageIds': []})
+        if path.endswith('/recovery/check'):
+            checks.append(body['records'])
+            reply = await on_check(body['records'], runtime, session, len(checks))
+            if isinstance(reply, httpx.Response):
+                return reply
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, 'cursor': count,
+                'results': [{'messageId': row['messageId'], 'state': 'received'} for row in body['records']], **(reply or {})})
+        if path == '/prototype/chat-sync/characters':
+            return httpx.Response(200, json={'characters': [{'characterSyncId': uid, 'displayName': 'Cloud Neko'}]})
+        if path.endswith('/' + uid):
+            return httpx.Response(200, json={'ownerId': owner, 'characterSyncId': uid, **body})
+        raise AssertionError('Recovery must not send originals or copied deletion tasks')
+
+    runtime = DesktopChatSyncRuntime(tmp_path / 'runtime', resolve, witness_path=tmp_path / 'device' / 'writer.json',
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(service)), session_commit_guard=lambda _: nullcontext(),
+        clock=lambda: clock[0], uniform=lambda *_: 0)
+    await runtime.configure('https://sync.test')
+    await runtime.enable(uid, 'Local Neko')
+    source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+    identities = [f'{seq:032x}' for seq in range(1, count + 1)]
+    for identity in identities:
+        source.commit(owner, uid, identity, ChatOriginal('user', 'synthetic recovery ' + identity))
+    await recover_sources(runtime)
+    runtime.writer.path.write_text('{broken')
+    return runtime, ChatDomain(owner, uid), identities, checks
+
+
+@pytest.mark.asyncio
+async def test_recovery_body_budget_splits_exact_prefix_and_retains_the_smaller_limit(tmp_path):
+    """Every accepted sub-batch is exact; a 413 never advances recovery or resets the learned size."""
+    import httpx
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(records, _runtime, _session, _index):
+        return httpx.Response(413) if len(records) > 3 else None
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check)
+    try:
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert [[row['messageId'] for row in request] for request in checks] == [identities, identities[:3], identities[3:6], identities[6:]]
+        assert {json.loads(raw)['messageId'] for raw in runtime.ledger.visible_originals(domain)} == set(identities)
+        assert pending_candidates(runtime, domain) == [] and not role_pending(runtime, domain.character_uid)
+        assert result['history']['count'] == 0 and result['deletions']['count'] == 0
+        assert runtime.ledger.stats(domain)['pendingOriginals'] == 0 and runtime.ledger.cursor(domain) == 0
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [OSError, sqlite3.OperationalError, ValueError])
+async def test_recovery_returns_confirmable_deletions_when_archive_is_unavailable(tmp_path, failure):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    from services.chat_sync.source import ChatOriginalSource
+    runtime, domain, identities, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    try:
+        await runtime.delete(domain.character_uid, identities)
+        runtime.chat_history_provider = AsyncMock(side_effect=failure('private archive detail'))
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert result['history'] is None and result['historyError'] == 'chat_sync_unavailable'
+        assert result['deletions']['count'] == 1
+        assert result['deletions']['localName'] == 'Local Neko'
+        assert result['deletions']['cloudName'] == 'Cloud Neko'
+        assert not role_pending(runtime, domain.character_uid)
+        assert runtime.ledger.pending_deletions(domain) == []
+        source = ChatOriginalSource(runtime.state.path.parent / 'sources.sqlite3')
+        assert source.task(domain.character_uid) is None
+        await runtime.approve_recovery_deletions(domain.character_uid, result['deletions']['taskId'])
+        assert runtime.ledger.pending_deletions(domain)[0].message_ids == tuple(identities)
+        assert source.approved_tasks(domain.character_uid) == []
+        runtime.chat_history_provider = AsyncMock(return_value=[])
+        assert (await runtime.preview_history(domain.character_uid, 'Local Neko'))['status'] == 'preview'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('boundary', ['session', 'binding', 'writer'])
+async def test_partial_recovery_cannot_return_stale_authority_after_archive_failure(tmp_path, boundary):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    async def history(uid):
+        if boundary == 'session':
+            runtime.session_presence_provider = AsyncMock(return_value='changed-session')
+        elif boundary == 'binding':
+            await runtime.pause(uid)
+        else:
+            raise WriterQuarantined()
+        raise OSError('private archive detail')
+    runtime.chat_history_provider = history
+    try:
+        expected = {'session': 'chat_sync_session_changed', 'binding': 'chat_sync_binding_changed',
+                    'writer': 'chat_sync_writer_recovery_required'}[boundary]
+        with pytest.raises(ValueError, match=expected):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert role_pending(runtime, domain.character_uid)
+        assert runtime.ledger.pending_deletions(domain) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage,failure', [('prepare', ValueError), ('prepare', OSError),
+                                         ('prepare', sqlite3.OperationalError), ('metadata', ValueError)])
+async def test_failed_recovery_history_preview_keeps_role_recoverable_and_exact_deletion_retry(tmp_path, monkeypatch, stage, failure):
+    from unittest.mock import AsyncMock, Mock
+    from services.chat_sync.recovery import role_pending
+    from services.chat_sync.source import ChatOriginalSource
+    runtime, domain, identities, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    attribute = 'prepare_history' if stage == 'prepare' else 'metadata'
+    original = getattr(ChatOriginalSource, attribute)
+    fault = Mock(side_effect=failure('chat_sync_history_changed'))
+    monkeypatch.setattr(ChatOriginalSource, attribute, staticmethod(fault) if stage == 'metadata' else fault)
+    try:
+        await runtime.delete(domain.character_uid, identities)
+        expected = WriterQuarantined if failure is OSError else failure
+        message = 'chat_sync_writer_recovery_required' if failure is OSError else 'chat_sync_history_changed'
+        with pytest.raises(expected, match=message):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
+            assert conn.execute('SELECT status FROM source_recovery_roles WHERE uid=?', (domain.character_uid,)).fetchone()[0] == 'pending'
+            assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
+            assert conn.execute('SELECT message_id FROM source_recovery_delete_ids').fetchall() == [(identities[0],)]
+        monkeypatch.setattr(ChatOriginalSource, attribute, staticmethod(original) if stage == 'metadata' else original)
+        binding, = (await runtime.status())['bindings']
+        assert binding['writerRecoveryRequired']
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert result['deletions']['count'] == 1 and not role_pending(runtime, domain.character_uid)
+        assert runtime.ledger.pending_deletions(domain) == []
+        await runtime.approve_recovery_deletions(domain.character_uid, result['deletions']['taskId'])
+        assert runtime.ledger.pending_deletions(domain)[0].message_ids == tuple(identities)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_session_change_after_history_preview_keeps_recovery_entry_available(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    from services.chat_sync.source import ChatOriginalSource
+    runtime, domain, identities, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    original, presence = ChatOriginalSource.prepare_history, runtime.session_presence_provider
+    def prepare(*args, **kwargs):
+        task = original(*args, **kwargs)
+        runtime.session_presence_provider = AsyncMock(return_value='changed-session')
+        return task
+    monkeypatch.setattr(ChatOriginalSource, 'prepare_history', prepare)
+    try:
+        await runtime.delete(domain.character_uid, identities)
+        with pytest.raises(ValueError, match='chat_sync_session_changed'):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert role_pending(runtime, domain.character_uid)
+        with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
+            assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM source_history_tasks WHERE status='approved'").fetchone()[0] == 0
+        runtime.session_presence_provider = presence
+        monkeypatch.setattr(ChatOriginalSource, 'prepare_history', original)
+        assert (await runtime.status())['bindings'][0]['writerRecoveryRequired']
+        result = await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert result['deletions']['count'] == 1
+        assert runtime.ledger.pending_deletions(domain) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('directory_failure', ['missing', 'unavailable'])
+async def test_recovery_confirms_cloud_target_before_releasing_role_gate(tmp_path, monkeypatch, directory_failure):
+    from unittest.mock import AsyncMock
+    from services.chat_sync.recovery import role_pending
+    runtime, domain, _, _ = await recovery_budget_runtime(tmp_path, AsyncMock(return_value=None), count=1)
+    directory = AsyncMock(return_value={'characters': []}, side_effect=(
+        ValueError('chat_sync_unavailable') if directory_failure == 'unavailable' else None))
+    monkeypatch.setattr('services.chat_sync.profile_sync.read_character_directory', directory)
+    try:
+        expected = 'chat_sync_character_not_found' if directory_failure == 'missing' else 'chat_sync_unavailable'
+        with pytest.raises(ValueError, match=expected):
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert role_pending(runtime, domain.character_uid)
+        assert runtime.ledger.pending_deletions(domain) == []
+        with sqlite3.connect(runtime.state.path.parent / 'sources.sqlite3') as conn:
+            assert conn.execute('SELECT count(*) FROM source_recovery_delete_tasks').fetchone()[0] == 0
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_body_budget_stops_at_a_rejected_singleton_without_finishing(tmp_path):
+    """A single-record rejection is terminal; unchecked records cannot become delivery evidence."""
+    import httpx
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(_records, _runtime, _session, _index):
+        return httpx.Response(413)
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check, count=3)
+    try:
+        with pytest.raises(ChatSyncServiceError) as error:
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert error.value.status_code == 413 and [len(request) for request in checks] == [3, 1]
+        assert {row['record_id'] for row in pending_candidates(runtime, domain)} == set(identities)
+        assert role_pending(runtime, domain.character_uid) and runtime.ledger.visible_originals(domain) == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', [401, 403, 409, 422, 429, 'network', 'incomplete', 'reordered', 'owner', 'session', 'binding'])
+async def test_recovery_body_budget_retains_exact_partial_progress_when_a_later_sub_batch_fails(tmp_path, fault):
+    """Splitting must not turn auth, integrity, lifecycle or connection faults into acknowledgements."""
+    import httpx
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(records, runtime, session, index):
+        if index == 1:
+            return httpx.Response(413)
+        if index == 2:
+            return None
+        if isinstance(fault, int):
+            return httpx.Response(fault, headers={'Retry-After': '600'} if fault == 429 else {})
+        if fault == 'network':
+            raise httpx.ConnectError('synthetic connection interruption')
+        if fault == 'session':
+            session['snapshot']['access_token'] = 'synthetic-changed'
+        elif fault == 'binding':
+            runtime.state.pause('a' * 32)
+        elif fault == 'owner':
+            return {'ownerId': '12345678-1234-4234-8234-123456789abd'}
+        elif fault in ('incomplete', 'reordered'):
+            selected = records[:1] if fault == 'incomplete' else list(reversed(records))
+            return {'results': [{'messageId': row['messageId'], 'state': 'received'} for row in selected]}
+        return None
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check)
+    try:
+        with pytest.raises(ValueError) as error:
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        if isinstance(fault, int):
+            assert isinstance(error.value, ChatSyncServiceError) and error.value.status_code == fault
+        assert [len(request) for request in checks] == [7, 3, 3]
+        assert {json.loads(raw)['messageId'] for raw in runtime.ledger.visible_originals(domain)} == set(identities[:3])
+        assert {row['record_id'] for row in pending_candidates(runtime, domain)} == set(identities[3:])
+        assert role_pending(runtime, domain.character_uid)
+        if fault == 429:
+            assert not runtime.scheduler.origin_ready()
+            with pytest.raises(ValueError, match='chat_sync_retry_later'):
+                await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+            assert len(checks) == 3
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [400, 401, 403, 409, 422, 429, 500])
+async def test_recovery_body_budget_does_not_split_other_http_errors(tmp_path, status):
+    """Only a multi-record 413 authorizes another smaller request."""
+    import httpx
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from services.chat_sync.recovery import pending_candidates, role_pending
+
+    async def on_check(_records, _runtime, _session, _index):
+        return httpx.Response(status)
+
+    runtime, domain, identities, checks = await recovery_budget_runtime(tmp_path, on_check, count=3)
+    try:
+        with pytest.raises(ChatSyncServiceError) as error:
+            await runtime.recover_writer_role(domain.character_uid, 'Local Neko')
+        assert error.value.status_code == status and [len(request) for request in checks] == [3]
+        assert {row['record_id'] for row in pending_candidates(runtime, domain)} == set(identities)
+        assert role_pending(runtime, domain.character_uid) and runtime.ledger.visible_originals(domain) == []
+    finally:
+        await runtime.close()
+
+
 def _process_save(directory, witness, identity, crash):
     import os
     writer = ChatSyncWriter(Path(directory), Path(witness))

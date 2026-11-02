@@ -30,10 +30,10 @@ from config import TASK_DETAIL_MAX_TOKENS, TASK_TRACKER_INJECT_DETAIL_MAX_CHARS
 from utils.tokenize import truncate_to_tokens as _tt
 
 # ---------------------------------------------------------------------------
-#  Agent Task Tracker — 维护独立的任务分发/回调执行记录，供 analyzer 去重
+#  Agent Task Tracker — maintains independent dispatch/callback execution records for analyzer deduplication
 # ---------------------------------------------------------------------------
 from config import AGENT_TASK_TRACKER_MAX_RECORDS as TASK_TRACKER_MAX_RECORDS
-TASK_TRACKER_TTL: float = 600.0     # 记录保留时长（秒）
+TASK_TRACKER_TTL: float = 600.0     # Record retention (seconds)
 
 
 class AgentTaskTracker:
@@ -114,8 +114,8 @@ class AgentTaskTracker:
             "kind": kind,
             "method": method,
             "desc": desc,
-            # detail 注入到 callback prompt 里给 LLM —— 用 token 限额（同
-            # "tool/task result detail" 200-token group），而不是 char-slice
+            # Detail is injected into callback prompts for the LLM; enforce a token budget (the same
+            # "tool/task result detail" 200-token group), rather than character slicing
             "detail": _tt(detail, TASK_DETAIL_MAX_TOKENS) if detail else "",
             "task_id": task_id,
             "trigger_user_fingerprint": trigger_user_fingerprint,
@@ -156,14 +156,14 @@ class AgentTaskTracker:
         if not records:
             return messages
 
-        # 清理过期记录
+        # Remove expired records
         now = time.time()
         records[:] = [r for r in records if now - r["ts"] < TASK_TRACKER_TTL]
         if not records:
             return messages
 
-        # 尝试根据消息中的时间戳做交错插入
-        # 消息可能带有 timestamp 字段；如果没有，则按顺序排列
+        # Try interleaving based on message timestamps
+        # Messages may carry timestamp; without it, retain sequence order
         msg_with_ts: list[tuple[float, dict]] = []
         for i, m in enumerate(messages):
             ts = 0.0
@@ -175,18 +175,18 @@ class AgentTaskTracker:
                     except (TypeError, ValueError):
                         ts = 0.0
             if ts == 0.0:
-                # 没有时间戳的消息按原序号分配一个递增伪时间
+                # Assign monotonically increasing pseudo-times by original index to messages without timestamps
                 ts = float(i)
             msg_with_ts.append((ts, m))
 
-        # 构建 record 文本行（合并为单条 system 消息，避免挤占对话窗口）
+        # Build record text lines, merging into one system message to avoid consuming the conversation window
         def _sanitize(text: str, limit: int = TASK_DETAIL_MAX_TOKENS) -> str:
             """Strip newlines and cap length to prevent injection."""
             return str(text or "").replace("\r", "").replace("\n", " ")[:limit]
 
-        # 被取消的任务整体（含其 assigned 记录）对 analyzer 不可见——其触发的
-        # user turn 已在 redact 阶段从 messages 副本里移除；若再在此回放
-        # [ASSIGNED]/[CANCELLED] 文本，反而会把已 redact 的请求重新拉回视野。
+        # Hide cancelled tasks entirely from analyzer, including assigned records: their triggering
+        # user turn was already removed from the messages copy during redaction; replaying
+        # [ASSIGNED]/[CANCELLED] text here would bring the redacted request back into view.
         cancelled_task_ids = {
             r.get("task_id")
             for r in records
@@ -223,7 +223,7 @@ class AgentTaskTracker:
         )
         summary_msg = (latest_ts, {"role": "system", "content": summary_text})
 
-        # 插入单条汇总消息而非多条，防止挤占 _format_messages 的 10 条窗口
+        # Insert one summary message rather than many to avoid consuming _format_messages' 10-message window
         has_real_ts = any(t > 1e9 for t, _ in msg_with_ts)  # epoch timestamp > 1e9
         if has_real_ts:
             merged = sorted(msg_with_ts + [summary_msg], key=lambda x: x[0])
@@ -235,10 +235,10 @@ class AgentTaskTracker:
     def _trim(self, records: list) -> None:
         if len(records) <= TASK_TRACKER_MAX_RECORDS:
             return
-        # cancelled record 还在 TTL 内 = redact 信号源；纯 tail-window 裁剪
-        # 会在繁忙 session（短时间内大量 assigned/completed）把它们挤掉，
-        # 让 analyzer 重新看到本该被 redact 的 user turn。优先保护未过期
-        # 的 cancelled record。剩余配额留给最新的非 cancel record。
+        # Unexpired cancelled records are redaction signals; simple tail-window trimming
+        # can evict them in busy sessions with many assigned/completed records in a short time,
+        # exposing user turns that should remain redacted. Prioritize protecting unexpired
+        # cancelled records, then allocate remaining capacity to the latest non-cancel records.
         now = time.time()
 
         def _is_live_cancel(r: dict) -> bool:
@@ -249,18 +249,18 @@ class AgentTaskTracker:
 
         live_cancelled = [r for r in records if _is_live_cancel(r)]
         if len(live_cancelled) >= TASK_TRACKER_MAX_RECORDS:
-            # 极端情况：cancel 自己就超过 cap，按最新优先丢更早的 cancel。
+            # Extreme case: cancellations alone exceed cap; keep the newest and drop earlier cancellations.
             keep_ids = {id(r) for r in live_cancelled[-TASK_TRACKER_MAX_RECORDS:]}
         else:
             slots_left = TASK_TRACKER_MAX_RECORDS - len(live_cancelled)
             others = [r for r in records if not _is_live_cancel(r)]
             keep_ids = {id(r) for r in live_cancelled}
             keep_ids.update(id(r) for r in others[-slots_left:])
-        # 保持原插入序（records 是 append-only，所以原序即时间序）。
+        # Preserve insertion order (records is append-only, so original order is chronological).
         records[:] = [r for r in records if id(r) in keep_ids]
 
 
-# 全局任务跟踪器实例
+# Global task-tracker instance
 _task_tracker = AgentTaskTracker()
 
 
@@ -528,11 +528,11 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
             redacted.append(m)
             continue
         if drop_until_next_user:
-            # 只吞掉被取消任务产出的 assistant/tool 段；夹在中间的 system
-            # 消息（session callback、context 注入等）跟取消请求无关，保留。
+            # Remove only assistant/tool segments produced by cancelled tasks; intervening system
+            # messages (session callbacks, context injections, etc.) are unrelated to the cancelled request and remain.
             if isinstance(m, dict) and m.get("role") in {"assistant", "tool"}:
-                # 主动搭话轮：那条被分析的主动台词（最后一条 assistant）必须留下，
-                # 否则下游 _format_messages 取不到主动意图、白白消耗一个预算名额。
+                # Proactive turns: retain the proactive sentence being analyzed (the final assistant message),
+                # or downstream _format_messages loses the proactive intent and wastes a budget slot.
                 if idx == keep_assistant_idx:
                     redacted.append(m)
                 continue

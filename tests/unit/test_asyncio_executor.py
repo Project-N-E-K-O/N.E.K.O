@@ -65,7 +65,7 @@ async def test_thread_wait_interrupted_by_a_foreign_exception_still_raises_the_c
     def shield(awaitable):
         calls.append(awaitable)
         if len(calls) == 2:
-            # 等线程期间被外部异常打断（比如关停时的 GeneratorExit）：线程此刻还没写完
+            # An external exception interrupts the wait (e.g. GeneratorExit during shutdown): the thread has not finished writing yet.
             raise _Interrupt()
         return real_shield(awaitable)
 
@@ -78,7 +78,7 @@ async def test_thread_wait_interrupted_by_a_foreign_exception_still_raises_the_c
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         task.cancel()
-        # 原来的取消照样往外抛，不被「线程还没结束」时取结果的 InvalidStateError 盖掉
+        # Propagate the original cancellation, without masking it with InvalidStateError from reading an unfinished thread's result.
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:

@@ -32,12 +32,15 @@ ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "design" / "visit-infrastructure.md"
 WS = ROOT / "static" / "app" / "app-websocket.js"
 CHAT = ROOT / "static" / "app" / "app-react-chat-window" / "visit-chat.js"
+DISPLAY_RELAY = ROOT / "static" / "visit" / "display-relay.js"
 PERSONA = ROOT / "static" / "app" / "visit-persona-panel.js"
 ADAPTER = ROOT / "static" / "app" / "app-chat-adapter.js"
 SUBMIT = ROOT / "static" / "app" / "app-react-chat-window" / "message-bundle-actions-and-prompts.js"
 SCHEMA = ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 BLOCK_VIEW = ROOT / "frontend" / "react-neko-chat" / "src" / "MessageBlockView.tsx"
 INDEX_CSS = ROOT / "static" / "css" / "index.css"
+PERSONA_WINDOW_CSS = ROOT / "static" / "css" / "visit_persona_window.css"
+PERSONA_TEMPLATE = ROOT / "templates" / "visit_persona.html"
 TEMPLATES = (ROOT / "templates" / "index.html", ROOT / "templates" / "chat.html")
 LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
@@ -91,7 +94,8 @@ def test_onopen_sends_visit_bind_with_the_csrf_token():
     assert "_sendVisitBind(_thisSocket)" in onopen
     bind = _function_body(source, "_sendVisitBind")
     assert "action: 'visit_bind'" in bind and "csrf_token: token" in bind
-    # token 与本机 HTTP 变更端点同一个来源；nekoLocalMutationSecurity 对外只有 getMutationHeaders / refreshToken
+    assert "window.nekoDesktopRuntime" in bind and "desktop_run_id: desktopRunId" in bind
+    # Token uses the same source as local HTTP mutation endpoints; nekoLocalMutationSecurity exposes only getMutationHeaders / refreshToken
     token = _function_body(source, "_visitCsrfToken")
     assert "security.getMutationHeaders()" in token and "security.refreshToken()" in token
     assert "getToken" not in token
@@ -112,7 +116,7 @@ def test_chat_surface_handles_every_state_change_action_of_the_design():
     body = _function_body(_read(CHAT), "onStateChange")
     cases = set(re.findall(r"case '([a-z_]+)':", body))
     assert cases == _design_state_actions()
-    # invite_ready 是邀请码送到 host 前端的唯一途径
+    # invite_ready is the only path delivering invite codes to the host frontend
     assert "visit.inviteCode = frame.invite_code" in body
 
 
@@ -151,14 +155,37 @@ def test_chat_window_skips_the_iframe_but_still_renders_lines():
     bridge = block.index("nekoVisitParentBridge.onStateChange")
     guard = block.rfind("_isVisitChatFollowerWindow()", 0, bridge)
     assert guard != -1 and "!_isVisitChatFollowerWindow()" in block
-    # 台词交给聊天面不看窗口
+    # Route dialogue to the chat surface regardless of window
     handle = block.index("nekoVisitChat.handleFrame(response)")
     assert "_isVisitChatFollowerWindow" not in block[block.index("if (window.nekoVisitChat"):handle]
     follower = _function_body(source, "_isVisitChatFollowerWindow")
     assert "__NEKO_MULTI_WINDOW__ === true" in follower and "chat(?:_full)?" in follower
 
 
-# ── 纯文本台词（§3.6.6，两层）──────────────────────────────────────
+def test_chat_window_relays_visit_lifecycle_to_the_pet_window():
+    chat = _read(CHAT)
+    state = _function_body(chat, "onStateChange")
+    assert "window.nekoRelayVisitStateToDisplay(frame)" in state
+    snapshot = _function_body(chat, "applyState")
+    assert "relayStateSnapshotToDisplay(state, snapshotVisit)" in snapshot
+
+    relay = _read(DISPLAY_RELAY)
+    assert "new BroadcastChannel(CHANNEL_NAME)" in relay
+    assert "neko_visit_display_v1" in relay
+    assert "bridge.onStateChange(frame)" in relay
+    # The transport bridge needs lifecycle metadata, not the host's invite code.
+    assert "'action', 'side', 'visit_id'" in relay
+    assert "invite_code" not in relay
+
+    index = _read(ROOT / "templates" / "index.html")
+    chat_template = _read(ROOT / "templates" / "chat.html")
+    assert index.index("/static/visit/parent-bridge.js") < index.index("/static/visit/display-relay.js")
+    assert chat_template.index("/static/visit/display-relay.js") < chat_template.index(
+        "/static/app/app-react-chat-window/visit-chat.js"
+    )
+
+
+# ── Plain-text dialogue (§3.6.6, two layers) ──────────────────────────────────────
 
 
 def test_schema_declares_plain_text():
@@ -183,7 +210,7 @@ def test_adapter_and_local_bubble_mark_visit_lines_plain_text():
     render = _function_body(adapter, "renderVisitLine")
     assert "plain_text: true" in render
     role = _function_body(adapter, "visitLineRole")
-    # 对端（访客猫娘 / 对方家里人）一律 role 'tool'
+    # Peers (visiting catgirl / the other household's human) always use role 'tool'
     assert "if (!speaker || speaker.self !== true) return 'tool';" in role
     assert set(re.findall(r"'(user|assistant|system|tool|[a-z]+)'", role)) <= {"tool", "user", "assistant", "human"}
     chat = _read(CHAT)
@@ -196,7 +223,7 @@ def test_index_css_has_the_tool_rules():
     assert re.search(r"\.avatar-tool\s*\{", css)
 
 
-# ── 加载与禁用能力 ───────────────────────────────────────────────
+# ── Loading and disabling capabilities ───────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda p: p.name)
@@ -205,7 +232,7 @@ def test_both_templates_load_the_chat_surface_before_the_host_api(template):
     chat = html.index("/static/app/app-react-chat-window/visit-chat.js")
     persona = html.index("/static/app/visit-persona-panel.js")
     host_api = html.index("/static/app/app-react-chat-window/resize-drag-and-api.js")
-    # resize-drag-and-api.js 最后删掉 __appReactChatWindowParts：必须排在它前面
+    # resize-drag-and-api.js deletes __appReactChatWindowParts at its end; this must precede it
     assert chat < host_api and persona > 0
 
 
@@ -223,7 +250,7 @@ def test_composer_submit_goes_through_the_visit_gate_first():
     assert gate < submit.index("window.appButtons.sendTextPayload(detail.text")
 
 
-# ── 确认框不出现技术数字；端点字面量 ─────────────────────────────────
+# ── Confirmation dialogs contain no technical numbers; endpoint literals ─────────────────────────────────
 
 
 def test_confirm_dialogs_show_no_technical_numbers():
@@ -255,12 +282,34 @@ def test_join_previews_first_and_never_joins_after_a_failed_preview():
     preview = _function_body(chat, "previewThenConfirm")
     assert "'/api/visit/invites/' + encodeURIComponent(inviteCode) + '/preview'" in preview
     assert "/join" not in preview
-    # 预览失败分支先 return，不弹框
+    # The preview-failure branch returns first without opening a dialog
     fail = preview.index("if (preview.status !== 200")
     assert preview.index("return null;", fail) < preview.index("openDialog(")
     join = _function_body(chat, "joinWithCode")
     assert join.index("previewThenConfirm(inviteCode, catgirl)") < join.index("'/join'")
     assert "if (!data) return null;" in join
+
+
+def test_invite_recovers_an_existing_room_before_creating_and_polls_after_creation():
+    chat = _read(CHAT)
+    url = _function_body(chat, "currentHostRoomUrl")
+    assert "'/api/visit/rooms/current?catgirl=' + encodeURIComponent(catgirl)" in url
+    start = _function_body(chat, "startInvite")
+    assert start.index("currentHostRoomUrl(catgirl)") < start.index("'/api/visit/rooms'")
+    assert "current.status !== 404" in start
+    assert "scheduleInviteRecovery(catgirl" in start
+    recovery = _function_body(chat, "scheduleInviteRecovery")
+    assert "api('GET', currentHostRoomUrl(catgirl))" in recovery
+
+
+def test_invite_creation_fails_immediately_when_start_does_not_succeed():
+    chat = _read(CHAT)
+    start = _function_body(chat, "startInvite")
+    switched = "return { ok: false, error: t('visit.error.characterSwitched'"
+    assert switched in start
+    for function_name in ("createInviteCode", "createDirectInvitation"):
+        body = _function_body(chat, function_name)
+        assert "if (!started || started.ok !== true)" in body
 
 
 def test_persona_409_opens_the_panel_before_any_retry():
@@ -300,10 +349,12 @@ def test_persona_panel_endpoints_and_review_flag():
 def test_no_visit_url_has_a_trailing_slash_before_the_query():
     for path in (CHAT, PERSONA):
         for url in re.findall(r"'(/api/visit/[^']*)'", _read(path)):
-            assert not url.endswith("/") or url in ("/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/"), url
+            assert not url.endswith("/") or url in (
+                "/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/", "/api/visit/direct/"
+            ), url
 
 
-# ── 8 语 ─────────────────────────────────────────────────────────
+# ── Eight languages ─────────────────────────────────────────────────────────
 
 
 def _flatten(prefix: str, node) -> set[str]:
@@ -369,7 +420,7 @@ def test_persona_panel_escape_and_failed_first_generation():
 def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
     source = _read(WS)
     status = _function_body(source, "_showVisitStatus")
-    # 只认 bind 自己被拒（后端带 reason:bind_refused），按收到这条状态的那条连接重试
+    # Recognize only rejection of bind itself (backend reason:bind_refused), and retry using the connection that received this status
     assert "code === 'VISIT_E_UNAUTHORIZED' && details && details.reason === 'bind_refused'" in status
     assert "_retryVisitBindAfterRefusal(socket || S.socket)" in status
     assert "_showVisitStatus(statusCode, statusDetails || {}, _thisSocket);" in source
@@ -379,14 +430,14 @@ def test_refused_bind_refreshes_the_token_and_retries_once_per_socket():
 
 
 def test_visit_line_render_carries_the_lamport_sort_key():
-    # visit-chat 按 (lp, side_rank) 算好的排序键要随消息交给宿主，否则台词仍按到达先后排
+    # Pass visit-chat's (lp, side_rank) sorting key to the host with each message, or dialogue still sorts by arrival order
     render = _function_body(_read(ADAPTER), "renderVisitLine")
     assert "patch.sortKey = spec.sortKey" in render
     assert "sortKey: entry.rendered ? undefined : lineSortKey(entry)" in _function_body(_read(CHAT), "renderLine")
 
 
 def test_galgame_choices_are_hidden_while_the_visit_owns_the_composer():
-    # GalGame 选项是给普通聊天生成的：串门接管输入框时点了会被当成串门台词发给客人
+    # GalGame choices are generated for normal chat; clicking during visit ownership sends them to the guest as visit dialogue
     props = _function_body(_read(ROOT / "static" / "app" / "app-react-chat-window" / "geometry-and-messages.js"), "buildRenderProps")
     assert "var visitOwnsComposer = typeof I.isVisitChatActive === 'function' && I.isVisitChatActive();" in props
     assert "galgameOptions: !visitOwnsComposer &&" in props
@@ -399,12 +450,12 @@ def test_refused_ordinary_submission_is_closed_by_request_id():
     body = _function_body(buttons, "markTextSubmissionRefused")
     assert "updateMessage(record.messageId, { status: 'failed' })" in body
     assert "window._lastSubmittedRequestId === id" in body and "S.pendingTextTurnSubmitAt = 0;" in body
-    # 「回复在途」按开轮的那句认，不依赖 _lastSubmittedRequestId（头像拖放不写它）
+    # Identify in-flight replies by the sentence that started the turn, not _lastSubmittedRequestId (avatar drops do not write it)
     assert "if (lastTurnRequestId === id) {" in body
 
 
 def test_choice_prompts_are_hidden_while_the_visit_owns_the_composer():
-    # 渲染层与命中区都经 getRevealedChoicePrompt 取选项：串门接管输入框期间它返回 null
+    # Both rendering and hit areas fetch choices through getRevealedChoicePrompt, which returns null while visits own the input
     reveal = _function_body(_read(SUBMIT), "getRevealedChoicePrompt")
     assert "if (typeof I.isVisitChatActive === 'function' && I.isVisitChatActive()) return null;" in reveal
 
@@ -415,6 +466,84 @@ def test_persona_panel_refreshes_compact_hit_geometry_on_open_and_close():
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in source
 
 
+def test_persona_panel_refreshes_compact_hit_geometry_after_async_content_changes():
+    source = _read(PERSONA)
+    for name in ("setNotice", "setButtons", "renderPrivate"):
+        assert "refreshCompactGeometry();" in _function_body(source, name), name
+
+
+def test_visit_dialog_owns_compact_input_until_it_closes():
+    source = _read(CHAT)
+    body = _function_body(source, "openDialog")
+    assert "var releaseInteractive = acquireForceInteractiveLease();" in body
+    close = body[body.index("close: function (value)"):body.index("setLines: function (lines)")]
+    assert "releaseInteractive();" in close
+    lease = _function_body(source, "acquireForceInteractiveLease")
+    assert "window.__nekoAcquireForceInteractiveLease" in lease
+    assert "window.__nekoForceInteractiveLeaseState" in lease
+    assert "state.count += 1;" in lease and "state.count = Math.max(0, state.count - 1);" in lease
+    assert "if (state.count === 0)" in lease
+
+    css = _read(INDEX_CSS)
+    overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)
+    dialog = re.search(r"\.visit-dialog\s*\{([^}]*)\}", css, re.S)
+    assert overlay and "background: transparent" in overlay.group(1)
+    assert overlay and "pointer-events: none" in overlay.group(1)
+    assert dialog and "pointer-events: auto" in dialog.group(1)
+    assert dialog and "-webkit-app-region: no-drag" in dialog.group(1)
+
+
+def test_persona_panel_keeps_actions_outside_its_scrollable_body():
+    source = _read(PERSONA)
+    assert "? 'visit-persona-content'" in source
+    assert "? 'visit-persona-actions'" in source
+    assert "? 'visit-persona-editor'" in source
+    assert "var header = el('div', 'modal-header');" in source
+    assert "btnClass = 'visit-persona-action';" in source
+    assert "body.appendChild(privateBox);" in source
+    assert source.index("dialog.appendChild(body);") < source.index("dialog.appendChild(actions);")
+
+    css = _read(PERSONA_WINDOW_CSS)
+    root = re.search(r"#visit-persona-window-root\s*\{([^}]*)\}", css, re.S)
+    actions = re.search(r"\.visit-persona-actions\s*\{([^}]*)\}", css, re.S)
+    assert root and "overflow-y: auto" in root.group(1)
+    assert "#visit-persona-window-root::-webkit-scrollbar" in css
+    assert "width: 8px" in css and "rgba(64, 197, 241, 0.55)" in css
+    assert actions and "flex: 0 0 auto" in actions.group(1)
+    assert actions and "position: sticky" in actions.group(1) and "bottom: 0" in actions.group(1)
+
+
+def test_persona_hides_private_card_sections_in_both_modes_and_standalone_close():
+    source = _read(PERSONA)
+    assert "return standalone ? [] : [closeButton()];" in _function_body(source, "passiveButtons")
+    private = _function_body(source, "renderPrivate")
+    assert "data.private_sections" not in private
+    assert "visit-persona-private-list" not in private
+    assert "data.sections_outdated === true" in private
+    assert "data.scan_complete === false" in private
+
+
+def test_persona_panel_owns_compact_input_and_has_no_dim_backdrop():
+    source = _read(PERSONA)
+    assert "modal-overlay visit-persona-overlay" in source
+    assert "modal-dialog visit-persona" in source
+    assert "modal-input visit-persona-text" in source
+    assert "modal-btn-primary" in source and "modal-btn-secondary" in source
+    assert "standalone ? function () {} : acquireForceInteractiveLease();" in source
+    assert "if (!standalone)" in source
+    assert "releaseInteractive();" in _function_body(source, "close")
+    lease = _function_body(source, "acquireForceInteractiveLease")
+    assert "window.__nekoAcquireForceInteractiveLease" in lease
+    assert "window.__nekoForceInteractiveLeaseState" in lease
+
+    css = _read(INDEX_CSS)
+    overlay = re.search(r"\.modal-overlay\.visit-persona-overlay\s*\{([^}]*)\}", css, re.S)
+    dialog = re.search(r"\.visit-persona-overlay \.visit-persona\s*\{([^}]*)\}", css, re.S)
+    assert overlay and "background: transparent" in overlay.group(1)
+    assert overlay and "pointer-events: none" in overlay.group(1)
+    assert dialog and "pointer-events: auto" in dialog.group(1)
+
+
 def test_visit_lines_do_not_toast_text_chatting():
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
     assert """                    if (!isVisitLine) {
@@ -422,21 +551,45 @@ def test_visit_lines_do_not_toast_text_chatting():
 
 
 def test_persona_panel_is_reused_only_for_the_same_character():
-    # 别的窗口换了角色：旧角色面板的确认不能放行新角色的串门
+    # Another window switched characters: confirmation in the old character's panel must not admit a visit for the new character
     source = _read(PERSONA)
     assert "if (openPanel.catgirl === catgirl) return openPanel.result;" in source
     assert "openPanel.close(false);" in source
     assert "panel.close = close;" in source
 
 
+def test_persona_panel_displays_the_real_character_name_instead_of_the_placeholder():
+    source = _read(PERSONA)
+    render = _function_body(source, "renderPersonaText")
+    assert "value.split('{LANLAN_NAME}').join(catgirl)" in render
+    assert "loadedText = renderPersonaText(data.text, catgirl);" in source
+
+
+def test_persona_preview_opens_as_a_standalone_neko_tool_window():
+    source = _read(PERSONA)
+    template = _read(PERSONA_TEMPLATE)
+    css = _read(PERSONA_WINDOW_CSS)
+    assert "window.open('/visit_persona?' + params.toString()" in source
+    assert "window.buildCenteredPopupFeatures(820, 720)" in source
+    assert "type: 'neko:visit-persona-result'" in source
+    assert "window.__NEKO_VISIT_PERSONA_STANDALONE__ === true" in source
+    assert "return openStandaloneVisitPersonaPreview(catgirl, options);" in source
+    assert "visit-persona-page-surface" in source
+    assert "data-compact-geometry-owner" in source and "if (!standalone)" in source
+    assert "/static/common_dialogs.js" not in template
+    assert "/static/css/index.css" not in template
+    assert "modal-overlay" not in css and "modal-dialog" not in css
+    assert "-webkit-app-region: no-drag !important" in css
+
+
 def test_refused_ordinary_submission_releases_an_ack_only_text_session():
-    # 普通提交顺带发了开会话请求、串门只回 ack：被拒后撤回「文本会话已开」
+    # A normal submission also requests session startup, while visits return only ack; undo 'text session started' on rejection
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
     assert "startedTextSessionHere = true;" in buttons
     assert "!isVisitLine, startedTextSessionHere);" in buttons
     body = _function_body(buttons, "markTextSubmissionRefused")
     assert "if (record.startedSession && lastSessionStartRequestId === id && S.isTextSessionActive === true) {" in body
-    # 当前会话已归后来的那句时不撤
+    # Do not undo if a later sentence now owns the current session
     assert "if (startedSession === true) lastSessionStartRequestId = String(requestId);" in buttons
     assert "S.isTextSessionActive = false;" in body
 

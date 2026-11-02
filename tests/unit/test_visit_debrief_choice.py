@@ -186,7 +186,7 @@ async def fire(env):
     await task
 
 
-# ── 写入前预览 ────────────────────────────────────────────────────────────
+# ── Preview before writing ────────────────────────────────────────────────────────────
 
 
 async def test_diary_generates_a_preview_and_writes_nothing(env):
@@ -200,7 +200,7 @@ async def test_diary_generates_a_preview_and_writes_nothing(env):
     blocks = env.host.block(debrief.preview_request_id(vid(1)))[0]
     assert [b["text"] for b in blocks if b.get("plain_text")] == [body["preview"]["diary"], *body["preview"]["facts"]]
     assert "preview" in env.host.phases()
-    # 推送没到发起页时，页面用应答里同一份块补上屏
+    # If the initiating page misses the push, display the identical block from the response
     frame = body["chat_blocks"]
     assert frame["type"] == "chat_blocks" and frame["request_id"] == debrief.preview_request_id(vid(1))
     assert frame["blocks"] == blocks
@@ -311,7 +311,7 @@ async def test_no_facts_still_writes_the_diary(env):
     assert state["debrief_writes"]["facts"] is True and state["debrief_writes"]["facts_written"] == 0
 
 
-# ── 失败分类与退避 ────────────────────────────────────────────────────────
+# ── Failure classification and backoff ────────────────────────────────────────────────────────
 
 
 TRANSIENT = [
@@ -354,10 +354,10 @@ async def test_backoff_caps_at_one_hour_and_finishes(env):
     await fire(env)
     state = await state_of(env=env)
     assert state["debrief_choice"] == "diary" and state["debrief_pending"] is None
-    # 后台补完：没有发起页，单独发一条「已记成日记」
+    # Background completion lacks an initiating page; separately announce diary recording
     assert env.host.block(f"visit-debrief-done:{vid(1)}")
     assert debrief.pending_commit_retries() == {}
-    # facts 一步只发过一次，之后都只补 /cache
+    # Send facts only once; subsequent attempts backfill only /cache
     assert env.memory.steps().count("facts") == 1
 
 
@@ -371,7 +371,7 @@ async def test_resume_waits_for_the_persisted_next_at(env):
     env.clock.now = 1500.0
     env.memory.script["cache"] = [(503, {})]
     await fire(env)
-    # 计数接着第 4 次失败算：等 3600 s
+    # Count from failure 4: wait 3600 s
     assert (await state_of(env=env))["debrief_retry"] == {"attempts": 4, "next_at": 5100.0}
 
 
@@ -489,7 +489,7 @@ async def test_a_crash_while_in_flight_reads_as_maybe_written(env):
     assert frame["unconfirmed"]["cache"] is True
 
 
-# ── 失败态的重试 / 放弃 ──────────────────────────────────────────────────
+# ── Retry/discard from failure state ──────────────────────────────────────────────────
 
 
 async def failed(env, seq_failures=1):
@@ -506,7 +506,7 @@ async def test_retry_from_the_failure_block_needs_the_current_seq(env):
     env.memory.script["cache"] = [(422, {})]
     status, body = await choose("confirm", seq=1)
     assert status == 502 and (await state_of(env=env))["debrief_commit_error"]["seq"] == 2
-    # 只补未完成那一步：facts 不重发
+    # Backfill only incomplete steps; do not resend facts
     assert env.memory.steps() == ["facts", "cache", "cache"]
     assert await choose("abandon", seq=1) == (409, {"error": "stale_failure", "seq": 2})
     assert (await choose("confirm", seq=2))[0] == 200
@@ -557,7 +557,7 @@ async def test_choices_once_committing_or_final(env):
     assert await choose("diary") == (409, busy)
     assert await choose("forget") == (409, busy)
     assert await choose("abandon", seq=1) == (409, {"error": "not_failed"})
-    # 「写入」仍可手动立即试一次
+    # A manual Write can still attempt immediately
     assert (await choose("confirm"))[0] == 200
     for choice in ("diary", "confirm", "forget"):
         assert await choose(choice) == (409, {"error": "already_chosen", "choice": "diary", "completed": True})
@@ -588,7 +588,7 @@ async def test_other_account_or_memory_off_is_unknown(env):
     assert env.llm.prompts == []
 
 
-# ── 重放 / 语言 / 契约 ───────────────────────────────────────────────────
+# ── Replay / language / contracts ───────────────────────────────────────────────────
 
 
 async def test_generating_state_owes_the_chips_not_a_new_generation(env):
@@ -612,7 +612,7 @@ async def test_ack_counts_only_for_the_block_the_state_owes(env):
     for rid in (debrief.chips_request_id(vid(1)), debrief.preview_request_id(vid(1))):
         await display_socket.handle_chip_ack(socket, "A", {"visit_id": vid(1), "request_id": rid})
     assert display_socket._delivered(socket) == {debrief.preview_request_id(vid(1))}
-    # ack 不清待投递标记：刷新 / 新窗口照样重放
+    # ack retains pending-delivery markers, allowing replay on refresh/new windows
     assert (await state_of(env=env))["debrief_chip_pending"] is True
 
 
@@ -679,7 +679,7 @@ def test_payload_parsing():
     assert parse({**ok, "choice": "later"})[4] == "invalid_choice"
     assert parse({**ok, "choice": "confirm", "seq": True})[4] == "invalid_seq"
     assert parse({**ok, "choice": "confirm", "seq": 0})[4] == "invalid_seq"
-    # 发起页的角色名必填：不带 / 空 / 非字符串 / 过长都拒
+    # Initiating-page character name is required; reject absent/empty/non-string/oversized values
     for bad in (None, "", 7, "x" * 129, "A" + chr(10) + "B"):
         assert parse({**ok, "choice": "diary", "lanlan_name": bad})[4] == "invalid_lanlan_name"
     assert parse({"visit_id": vid(1), "choice": "diary"})[4] == "invalid_lanlan_name"
@@ -700,7 +700,7 @@ async def test_the_endpoint_works_with_the_release_switch_off(env, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         resp = await client.post("/api/visit/debrief/choice", headers=headers,
                                  json={"visit_id": vid(1), "choice": "diary", "lanlan_name": "B"})
-        # 别的角色的页面发来的：当作不存在
+        # Requests from another character's page appear nonexistent
         assert resp.status_code == 404
         resp = await client.post("/api/visit/debrief/choice", headers=headers,
                                  json={"visit_id": vid(1), "choice": "diary", "lanlan_name": "A"})
@@ -721,7 +721,7 @@ async def test_the_retry_backoff_constant_is_the_owner_schedule():
     assert tuple(VISIT_DEBRIEF_COMMIT_BACKOFF_S) == (30, 120, 600, 3600)
 
 
-# ── 评审第 1 轮 ──────────────────────────────────────────────────────────
+# ── Review round 1 ──────────────────────────────────────────────────────────
 
 
 async def test_an_account_switch_during_generation_hides_the_preview(env):
@@ -734,7 +734,7 @@ async def test_an_account_switch_during_generation_hides_the_preview(env):
     env.llm = switch
     assert await choose("diary") == (404, {"error": "unknown_or_expired"})
     assert env.host.blocks == [] and env.host.frames == []
-    # 预览已落盘：原账号回来 bind 时重放
+    # Preview persisted: replay when the original account returns and binds
     assert (await state_of(env=env))["debrief_choice"] == "preview:diary"
 
 
@@ -789,7 +789,7 @@ async def test_stopping_cancels_a_retry_that_is_already_running(env):
     assert debrief.pending_commit_retries() == {}
 
 
-# ── 评审第 2 轮 ──────────────────────────────────────────────────────────
+# ── Review round 2 ──────────────────────────────────────────────────────────
 
 
 async def test_a_locally_failed_retry_is_armed_again(env, monkeypatch):
@@ -856,14 +856,14 @@ async def test_bind_replay_rechecks_the_account_after_waiting_for_the_lock(env, 
             break
         await asyncio.sleep(0.01)
     assert lock._waiters, "the replay must be waiting for the visit lock"
-    # 等锁期间换了账号
+    # Account changed while waiting for the lock
     env.account = OWN_B
     lock.release()
     await replay
     assert socket.sent == []
 
 
-# ── 评审第 5 轮 ──────────────────────────────────────────────────────────
+# ── Review round 5 ──────────────────────────────────────────────────────────
 
 
 async def test_startup_resume_keeps_a_newer_retry(env):
@@ -874,7 +874,7 @@ async def test_startup_resume_keeps_a_newer_retry(env):
     await choose("confirm")
     assert await armed(env) == 30
     spool = VisitSpool(env.tmp, vid(1))
-    # 补录拿着进入 committing 之前的旧快照（没有 debrief_retry）：不能用它把 30 s 后的定时换成立即重试
+    # Recovery holds a pre-committing snapshot without debrief_retry; it must not replace the 30 s timer with immediate retry
     await debrief.resume_diary_commit(spool, {**stale, "debrief_choice": "committing:diary"})
     await asyncio.sleep(0)
     assert len(env.sleeps) == 1 and env.memory.steps().count("cache") == 1
@@ -886,7 +886,7 @@ async def test_startup_replay_shows_the_current_choice(env):
     env.host.blocks.clear()
     lock = debrief._visit_lock(vid(1))
     await lock.acquire()
-    # 另一页的选择正持锁：补录的推送排在它后面，按它之后的 state 投递
+    # Another page's choice holds the lock: recovery pushes wait and use the state after that choice
     task = asyncio.ensure_future(debrief.show_owed(env.host, vid(1), own_char="A", lang="zh"))
     for _ in range(50):
         await asyncio.sleep(0.01)
@@ -896,7 +896,7 @@ async def test_startup_replay_shows_the_current_choice(env):
     assert env.host.blocks == []
 
 
-# ── 评审第 6 轮 ──────────────────────────────────────────────────────────
+# ── Review round 6 ──────────────────────────────────────────────────────────
 
 
 async def test_a_manual_retry_that_fails_locally_keeps_a_retry_armed(env, monkeypatch):
@@ -917,7 +917,7 @@ async def test_a_manual_retry_that_fails_locally_keeps_a_retry_armed(env, monkey
         if len(env.sleeps) > before:
             break
         await asyncio.sleep(0)
-    # 原来的 30 s 定时已被这次手动「写入」撤掉；本地失败后补排的是新的一个
+    # Manual Write cancelled the original 30 s timer; local failure schedules a new timer
     assert len(env.sleeps) == before + 1 and env.sleeps[-1][0] == debrief._LOCAL_FAILURE_RETRY_S
     assert list(debrief.pending_commit_retries()) == [vid(1)]
 
@@ -954,7 +954,7 @@ async def test_both_writes_run_with_the_character_lifecycle_held(env, monkeypatc
     assert seen == [("facts", True), ("cache", True)]
 
 
-# ── 评审第 8 轮 ──────────────────────────────────────────────────────────
+# ── Review round 8 ──────────────────────────────────────────────────────────
 
 
 async def test_a_cached_preview_is_not_returned_to_another_account(env, monkeypatch):
@@ -963,14 +963,14 @@ async def test_a_cached_preview_is_not_returned_to_another_account(env, monkeypa
     from main_logic.visit import local_chars
 
     async def resolve_then_switch(uid):
-        env.account = OWN_B  # 解析角色名的这段 await 里换了账号
+        env.account = OWN_B  # Account switches during character-name resolution await
         return "A"
 
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve_then_switch)
     assert await choose("diary") == (404, {"error": "unknown_or_expired"})
 
 
-# ── wehos 自动评审第 1 轮 ────────────────────────────────────────────────
+# ── wehos automatic review round 1 ────────────────────────────────────────────────
 
 
 async def test_startup_replay_adds_the_interrupted_notice_to_chips_only(env, monkeypatch):
@@ -991,7 +991,7 @@ async def test_startup_replay_adds_the_interrupted_notice_to_chips_only(env, mon
     assert await debrief.render_chips(vid(1), own_char="A", status="interrupted") is True
     assert host.statuses == ["VISIT_INTERRUPTED_LAST_TIME"]
     assert await debrief.render_chips(vid(2), own_char="A", status="interrupted") is True
-    # 预览块不带「意外中断」
+    # Preview blocks contain no 'unexpected interruption' notice
     assert host.statuses == ["VISIT_INTERRUPTED_LAST_TIME"]
 
 
@@ -1012,7 +1012,7 @@ async def test_a_stopped_background_does_not_get_a_new_retry_from_a_failed_click
     await armed(env)
 
     async def stop_then_fail(*_a, **_k):
-        debrief.cancel_commit_timers()  # 关机 / 启动回滚恰好在这次提交途中
+        debrief.cancel_commit_timers()  # Shutdown/startup rollback occurs during this commit
         raise OSError("state.json locked")
 
     monkeypatch.setattr(debrief, "_commit_held", stop_then_fail)
@@ -1021,7 +1021,7 @@ async def test_a_stopped_background_does_not_get_a_new_retry_from_a_failed_click
     assert debrief.pending_commit_retries() == {}
 
 
-# ── wehos 自动评审第 2 轮 ────────────────────────────────────────────────
+# ── wehos automatic review round 2 ────────────────────────────────────────────────
 
 
 async def test_a_stop_while_entering_committing_is_honoured(env, monkeypatch):
@@ -1034,7 +1034,7 @@ async def test_a_stop_while_entering_committing_is_honoured(env, monkeypatch):
 
     async def send_and_stop(state, frame):
         if frame.get("phase") == "committing":
-            debrief.cancel_commit_timers()  # 关机恰好落在推「写入中」这一帧的 await 里
+            debrief.cancel_commit_timers()  # Shutdown occurs during the await pushing the Writing frame
         return await real_send(state, frame)
 
     async def fail(*_a, **_k):
@@ -1056,7 +1056,7 @@ async def test_a_lost_transcript_greys_the_open_chips(env):
 
 
 async def test_startup_replay_follows_a_rename_made_meanwhile(env):
-    # 补录拿到旧名字 "A" 之后角色改了名：不把这一场的块推给现在叫 "A" 的页面
+    # Character renamed after recovery read old name "A"; do not push this session's blocks to the page now named "A"
     from main_logic.visit import local_chars
 
     await visit(env)
@@ -1073,11 +1073,11 @@ async def test_startup_replay_follows_a_rename_made_meanwhile(env):
 
 
 
-# ── Codex 第 13 轮 ───────────────────────────────────────────────────────
+# ── Codex round 13 ───────────────────────────────────────────────────────
 
 
 async def test_a_rename_during_generation_sends_the_preview_to_the_renamed_character(env, monkeypatch):
-    # 生成期间角色改名、旧名字被另一只猫占用：预览按 uid 推给改名后的角色，不推给占了旧名字的那只
+    # During generation, character renames and another cat takes the old name; route preview by uid to the renamed character, not the old-name occupant
     from main_logic.visit import local_chars
     from main_routers.visit_router import host_port
 
@@ -1096,18 +1096,18 @@ async def test_a_rename_during_generation_sends_the_preview_to_the_renamed_chara
 
     env.llm = generate_then_rename
     await visit(env)
-    # 发起请求的是旧名字的页面：预览不回给它（Codex 第 20 轮），按 uid 推给改名后的角色
+    # Request originates from the old-name page: do not return preview there (Codex round 20); push by uid to the renamed character
     assert await choose("diary") == (404, {"error": "unknown_or_expired"})
     assert (await state_of(env=env))["debrief_choice"] == "preview:diary"
     assert hosts["A"].blocks == [] and hosts["A"].frames == []
     assert hosts["A2"].block(debrief.preview_request_id(vid(1)))
 
 
-# ── Codex 第 14 轮 ───────────────────────────────────────────────────────
+# ── Codex round 14 ───────────────────────────────────────────────────────
 
 
 async def test_a_person_forget_during_generation_is_not_overwritten(env):
-    # 生成日记期间「清除这个人」把这场作废成 forget：生成完不能把这个人的日记与事实重新落盘
+    # During diary generation, Clear this person invalidates the session as forget; completion must not restore that person's diary/facts
     async def generate_while_forgotten(prompt):
         await VisitSpool(env.tmp, vid(1)).mark_forget()
         return GOOD_REPLY
@@ -1127,7 +1127,7 @@ async def test_a_forget_racing_the_confirm_is_kept(env, monkeypatch):
 
     async def forget_first(self, expected, **changes):
         if changes.get("debrief_choice") == "committing:diary":
-            await self.mark_forget()  # 作废步骤抢在「写入」的状态转移之前
+            await self.mark_forget()  # Invalidation precedes the Writing state transition
         return await real(self, expected, **changes)
 
     monkeypatch.setattr(VisitSpool, "update_state_if", forget_first)
@@ -1142,20 +1142,20 @@ async def test_a_due_retry_superseded_by_a_manual_attempt_stands_down(env):
     await choose("confirm")
     assert await armed(env) == 30
     lock = debrief._visit_lock(vid(1))
-    await lock.acquire()  # 一次手动「写入」正持锁
+    await lock.acquire()  # A manual Write currently holds the lock
     timer = list(debrief.pending_commit_retries().values())[-1]
-    env.sleeps[-1][1].set()  # 到点的定时摘掉自己，排在锁外等
+    env.sleeps[-1][1].set()  # Expired timer unregisters itself and waits outside the lock
     for _ in range(50):
         if lock._waiters:
             break
         await asyncio.sleep(0.01)
     assert lock._waiters
-    # 那次手动尝试暂时失败：持久化了更新的排期并排了自己的新定时
+    # The manual attempt temporarily fails, persists an updated schedule, and creates its own new timer
     await VisitSpool(env.tmp, vid(1)).update_state(debrief_retry={"attempts": 2, "next_at": 1120.0})
     debrief.schedule_commit_retry(vid(1), 1120.0)
     lock.release()
     await timer
-    # 旧定时作废：不再立刻发请求
+    # Old timer invalidated: do not immediately send requests
     assert env.memory.steps().count("cache") == 1
     assert (await state_of(env=env))["debrief_retry"] == {"attempts": 2, "next_at": 1120.0}
 
@@ -1167,7 +1167,7 @@ async def test_an_account_switch_while_resolving_the_name_blocks_the_push(env, m
     state = await state_of(env=env)
 
     async def resolve_then_switch(uid):
-        env.account = OWN_B  # 解析名字（读角色配置）的这段 await 里换了账号
+        env.account = OWN_B  # Account changes during name-resolution await reading character configuration
         return "A"
 
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve_then_switch)
@@ -1212,17 +1212,17 @@ async def test_bind_replay_rechecks_the_character_after_waiting_for_the_lock(env
             break
         await asyncio.sleep(0.01)
     assert lock._waiters
-    names["now"] = "A2"  # 等锁期间改了名，"A" 这个名字已归别的猫
+    names["now"] = "A2"  # Rename while waiting for the lock leaves "A" owned by another cat
     lock.release()
     await replay
     assert socket.sent == []
 
 
-# ── 自动评审第 9 轮 / Codex 第 16 轮 ─────────────────────────────────────
+# ── Automatic review round 9 / Codex round 16 ─────────────────────────────────────
 
 
 async def test_a_late_ask_later_does_not_reject_the_first_click(env, monkeypatch):
-    # 收尾的 mark_debrief_pending（None → ask_later）晚于芯片落盘：用户已经点了「记成日记」也照常生成
+    # Final mark_debrief_pending (None → ask_later) follows chip persistence; generation still proceeds if the user already chose Record diary
     await visit(env, debrief_choice=None)
     real = VisitSpool.update_state_if
 
@@ -1254,7 +1254,7 @@ async def test_startup_notice_follows_the_locked_state(env, monkeypatch):
             break
         await asyncio.sleep(0.01)
     assert lock._waiters
-    # 另一页在这期间点了「记成日记」、预览已落盘：投递的是预览块，「意外中断」不能跟着出
+    # Another page chose Record diary and preview persisted meanwhile: deliver preview only, without unexpected-interruption notice
     await VisitSpool(env.tmp, vid(1)).update_state(
         debrief_choice="preview:diary", debrief_pending={"diary": "d", "facts": []})
     lock.release()
@@ -1265,7 +1265,7 @@ async def test_startup_notice_follows_the_locked_state(env, monkeypatch):
 
 
 async def test_a_failed_generation_still_replays_the_chips_on_reconnect(env):
-    # 收尾时 mark_debrief_pending 没写成（标记为 false），生成又失败：重连后芯片照样重放
+    # Final mark_debrief_pending failed (false marker), then generation failed too; reconnect must still replay the chip
     env.llm.replies = [TimeoutError()]
     await visit(env, debrief_choice=None, debrief_chip_pending=False)
     assert (await choose("diary"))[0] == 503
@@ -1273,7 +1273,7 @@ async def test_a_failed_generation_still_replays_the_chips_on_reconnect(env):
     assert state["debrief_choice"] == "generating:diary" and state["debrief_chip_pending"] is True
 
 
-# ── Codex 第 18 轮 ───────────────────────────────────────────────────────
+# ── Codex round 18 ───────────────────────────────────────────────────────
 
 
 def _lifecycle_held() -> bool:
@@ -1311,7 +1311,7 @@ async def test_choice_pushes_hold_the_character_lifecycle(env, watched):
     await preview(env)
     pushes = [held for kind, held in watched if kind == "push"]
     assert pushes and all(pushes)
-    # 每次推送前的账号核对也在按住期间做：核完到推出去之间改不了名
+    # Account checks before each push also occur while holding the guard; renaming cannot occur between validation and delivery
     assert all(watched[i - 1] == ("account", True) for i, (kind, _) in enumerate(watched) if kind == "push")
     assert not _lifecycle_held()
 
@@ -1360,13 +1360,13 @@ async def test_a_push_is_skipped_when_the_lifecycle_cannot_be_held(env, monkeypa
     assert env.host.blocks == [] and env.host.frames == []
 
 
-# ── Codex 第 19 轮 ───────────────────────────────────────────────────────
+# ── Codex round 19 ───────────────────────────────────────────────────────
 
 
 async def test_no_push_goes_out_while_an_account_change_is_in_progress(env, monkeypatch):
     await visit(env)
     state = await state_of(env=env)
-    monkeypatch.setattr(runtime, "_account_changes", 1)  # 登出 / 切号进行中
+    monkeypatch.setattr(runtime, "_account_changes", 1)  # Logout/account switching in progress
 
     class Socket:
         def __init__(self):
@@ -1393,7 +1393,7 @@ async def test_an_account_change_waits_for_a_push_that_already_checked_the_accou
     render = env.host.render_chat_blocks
 
     async def slow_render(blocks, **kw):
-        writing.set()  # 账号已核过，正在写
+        writing.set()  # Account validated; writing in progress
         await release.wait()
         return await render(blocks, **kw)
 
@@ -1410,7 +1410,7 @@ async def test_an_account_change_waits_for_a_push_that_already_checked_the_accou
     change = asyncio.ensure_future(switch())
     for _ in range(20):
         await asyncio.sleep(0)
-    # 推送写完之前不改会话
+    # Do not switch sessions until the push write finishes
     assert not switched.is_set()
     release.set()
     assert await push is True
@@ -1418,7 +1418,7 @@ async def test_an_account_change_waits_for_a_push_that_already_checked_the_accou
     assert switched.is_set() and not runtime._account_bound_pushes
 
 
-# ── 自动评审第 14 轮（可选建议） ─────────────────────────────────────────
+# ── Automatic review round 14 (optional suggestion) ─────────────────────────────────────────
 
 
 async def test_a_written_diary_is_reported_even_when_the_follow_up_steps_fail(env, monkeypatch):
@@ -1434,7 +1434,7 @@ async def test_a_written_diary_is_reported_even_when_the_follow_up_steps_fail(en
 
     async def own_uid():
         if written["cache"]:
-            raise OSError("session file unreadable")  # 写成之后读不出登录态
+            raise OSError("session file unreadable")  # Login state becomes unreadable after successful writing
         return env.account
 
     async def cleanup_fails(self):
@@ -1447,7 +1447,7 @@ async def test_a_written_diary_is_reported_even_when_the_follow_up_steps_fail(en
     state = await state_of(env=env)
     assert state["debrief_choice"] == "diary"
     assert debrief.pending_commit_retries() == {}
-    # 后台补完那条「已记下」块同样尽力而为
+    # Background completion's Recorded block is also best-effort
     assert await debrief._render(state, [{"type": "status", "text": "x"}], "visit-debrief-done:x") is False
 
 
@@ -1466,7 +1466,7 @@ async def test_a_manual_confirm_while_committing_resets_the_backoff(env):
     assert await armed(env) == VISIT_DEBRIEF_COMMIT_BACKOFF_S[0]
 
 
-# ── Codex 第 20 轮 ───────────────────────────────────────────────────────
+# ── Codex round 20 ───────────────────────────────────────────────────────
 
 
 async def test_a_cached_preview_is_not_returned_after_a_rename(env, monkeypatch):
@@ -1478,13 +1478,13 @@ async def test_a_cached_preview_is_not_returned_after_a_rename(env, monkeypatch)
 
     async def resolve(uid):
         calls["n"] += 1
-        return "A" if calls["n"] == 1 else "A2"  # 进锁时还叫 A，回给页面前已改名
+        return "A" if calls["n"] == 1 else "A2"  # Named A upon lock entry, but renamed before returning to the page
 
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
     assert await choose("diary") == (404, {"error": "unknown_or_expired"})
 
 
-# ── 自动评审第 15 轮（可选建议） ─────────────────────────────────────────
+# ── Automatic review round 15 (optional suggestion) ─────────────────────────────────────────
 
 
 async def test_a_lost_transcript_still_greys_the_chips_when_cleanup_fails(env, monkeypatch):
@@ -1504,7 +1504,7 @@ async def test_an_account_change_that_stops_waiting_for_a_push_says_so(env, monk
     warnings = []
     monkeypatch.setattr(runtime.logger, "warning", lambda msg, *args: warnings.append(msg % args))
     monkeypatch.setattr(runtime, "_ACCOUNT_BOUND_PUSH_MAX_S", 0.01)
-    # 一次超过时限还没结束的推送（比如吞掉了取消）：切号等满之后放行，并留一行日志
+    # A push exceeds its deadline, perhaps swallowing cancellation: account switching proceeds after its bounded wait and logs once
     stuck = asyncio.get_running_loop().create_future()
     runtime._account_bound_pushes.add(stuck)
     try:
@@ -1515,7 +1515,7 @@ async def test_an_account_change_that_stops_waiting_for_a_push_says_so(env, monk
     assert any("1 debrief pushes still in flight" in w for w in warnings)
 
 
-# ── Codex 第 21 轮 / CodeRabbit（9eafd6b） ───────────────────────────────
+# ── Codex round 21 / CodeRabbit (9eafd6b) ───────────────────────────────
 
 
 @pytest.mark.parametrize("choice", ["diary", "forget", "confirm"])
@@ -1526,7 +1526,7 @@ async def test_a_stale_page_of_the_old_name_cannot_act_on_the_visit(env, monkeyp
     if choice == "confirm":
         await preview(env)
     before = await state_of(env=env)
-    names = {"now": "A2"}  # 改了名；"A" 这个名字可能已归另一只猫，那一页上还残留着这一场的块
+    names = {"now": "A2"}  # Renamed; another cat may own "A", whose page still shows this session's blocks
 
     async def resolve(uid):
         return names["now"] if uid == CHAR_UID_A else None
@@ -1536,7 +1536,7 @@ async def test_a_stale_page_of_the_old_name_cannot_act_on_the_visit(env, monkeyp
     assert await debrief._choose(vid(1), choice, None, "A") == (404, {"error": "unknown_or_expired"})
     assert await state_of(env=env) == before
     assert env.memory.calls == [] and len(env.host.frames) == frames
-    # 它现在的页面照常能选
+    # The character's current page can still choose normally
     assert (await debrief._choose(vid(1), choice, None, "A2"))[0] == 200
 
 
@@ -1552,7 +1552,7 @@ async def test_a_stuck_push_is_cut_off_at_the_account_hold_limit(env, monkeypatc
     state = await state_of(env=env)
 
     async def stuck():
-        await asyncio.Event().wait()  # 读登录态卡住
+        await asyncio.Event().wait()  # Login-state reading stalls
 
     monkeypatch.setattr(accounts, "own_visit_uid", stuck)
 
@@ -1571,14 +1571,14 @@ async def test_a_stuck_push_is_cut_off_at_the_account_hold_limit(env, monkeypatc
     ), 5)
     assert results == [False, False]
     assert await asyncio.wait_for(debrief.show_owed(env.host, vid(1), own_char="A", lang="zh"), 5) is False
-    # 重放这一场被截断：接着试下一场（True），这场留给下次 bind
+    # This session's replay is interrupted: continue to the next (True), leaving this one for the next bind
     assert await asyncio.wait_for(display_socket._replay_one(socket, "A", vid(1), OWN_A, set(), "zh"), 5) is True
     assert env.host.blocks == [] and env.host.frames == [] and socket.sent == []
     assert not runtime._account_bound_pushes
 
 
 async def test_after_a_rename_the_new_page_gets_the_replayed_block_and_can_choose(env, monkeypatch):
-    # 改名后旧页面的块点不动（上一条），合法路径不受影响：新名字的页面 bind 时按 uid 拿到重放的块，并完成选择
+    # Old-page blocks cannot be clicked after rename, but legitimate flow remains: bind under the new name replays by uid and completes the choice
     from main_logic.visit import local_chars
 
     await visit(env)
@@ -1610,7 +1610,7 @@ async def test_after_a_rename_the_new_page_gets_the_replayed_block_and_can_choos
 
 
 async def test_an_account_change_with_a_short_timeout_still_outwaits_a_push(env, monkeypatch):
-    # 调用方给切号传了比推送时限还短的 timeout：等推送这一段仍至少等满推送时限
+    # Account-switch caller supplies timeout shorter than the push deadline; still allow at least the full push deadline when awaiting pushes
     monkeypatch.setattr(runtime, "_ACCOUNT_BOUND_PUSH_MAX_S", 0.2)
     switched = asyncio.Event()
     release = asyncio.Event()
@@ -1618,7 +1618,7 @@ async def test_an_account_change_with_a_short_timeout_still_outwaits_a_push(env,
     async def push():
         async with runtime.hold_account_for_push() as allowed:
             assert allowed
-            await asyncio.wait_for(release.wait(), 0.1)  # 0.1 s 后写完，比切号传的 0.01 s 长
+            await asyncio.wait_for(release.wait(), 0.1)  # Finish writing after 0.1 s, exceeding the supplied 0.01 s account-switch timeout
 
     async def switch():
         async with runtime.account_change(timeout=0.01):
@@ -1632,16 +1632,16 @@ async def test_an_account_change_with_a_short_timeout_still_outwaits_a_push(env,
     with pytest.raises(TimeoutError):
         await pushing
     await asyncio.wait_for(change, 5)
-    # 切号放行（改凭证）时，推送已经结束
+    # Push has finished before account switching may update credentials
     assert order == [("switched", True)]
     assert switched.is_set() and not runtime._account_bound_pushes
 
 
-# ── Codex 第 22 轮 ───────────────────────────────────────────────────────
+# ── Codex round 22 ───────────────────────────────────────────────────────
 
 
 async def test_a_void_during_the_preview_push_greys_the_block_and_returns_no_preview(env, monkeypatch):
-    # 推预览的那段 await 里「清除这个人」（不拿 per-visit 锁）把这场作废成 forget
+    # During preview-push await, Clear this person invalidates the session as forget without taking its per-visit lock
     from main_logic.visit.debrief_writers import write_forget
 
     await visit(env)
@@ -1663,7 +1663,7 @@ async def test_a_void_during_the_preview_push_greys_the_block_and_returns_no_pre
 
 
 async def test_a_void_while_checking_the_caller_still_keeps_the_preview_out(env, monkeypatch):
-    # 作废落在「核角色与账号」的那段 await 里（推送已经结束）：照样不回预览正文
+    # Invalidation during character/account verification await after the push still prevents returning preview text
     from main_logic.visit.debrief_writers import write_forget
 
     await visit(env)
@@ -1692,7 +1692,7 @@ async def test_an_unreadable_state_after_the_push_returns_no_preview(env, monkey
 
     async def read_then_fail(self):
         if pushed["preview"]:
-            raise OSError("state.json locked")  # 推完预览之后的重读读不出
+            raise OSError("state.json locked")  # Rereading after preview delivery fails
         return await real(self)
 
     env.host.render_chat_blocks = mark_preview
@@ -1701,11 +1701,11 @@ async def test_an_unreadable_state_after_the_push_returns_no_preview(env, monkey
     assert (status, body) == (503, {"retry": True})
 
 
-# ── Codex 第 24 轮 ───────────────────────────────────────────────────────
+# ── Codex round 24 ───────────────────────────────────────────────────────
 
 
 async def test_the_final_state_read_runs_with_the_caller_pinned(env, monkeypatch):
-    # 核完调用方到最后重读选择之间：角色生命周期与登录账号都按住，改名 / 切号插不进来
+    # Hold character lifecycle and login account from caller validation through final-choice reread, excluding rename/account-switch races
     await visit(env)
     real = VisitSpool.read_state
     pushed = {"preview": False}
@@ -1736,7 +1736,7 @@ async def test_no_preview_is_returned_while_an_account_change_is_in_progress(env
     async def send_then_start_switch(state, frame):
         shown = await real_send(state, frame)
         if frame.get("phase") == "preview":
-            monkeypatch.setattr(runtime, "_account_changes", 1)  # 推完预览，切号开始
+            monkeypatch.setattr(runtime, "_account_changes", 1)  # Account switching starts after preview delivery
         return shown
 
     monkeypatch.setattr(debrief, "_send", send_then_start_switch)
@@ -1745,7 +1745,7 @@ async def test_no_preview_is_returned_while_an_account_change_is_in_progress(env
 
 
 async def test_a_void_while_reusing_the_preview_returns_no_preview(env, monkeypatch):
-    # 复用已落盘预览时，作废落在核调用方的那段 await 里：同样不回正文
+    # Reusing persisted preview: invalidation during caller-verification await still prevents returning text
     from main_logic.visit.debrief_writers import write_forget
 
     await visit(env)
@@ -1762,7 +1762,7 @@ async def test_a_void_while_reusing_the_preview_returns_no_preview(env, monkeypa
     assert status == 409 and body["choice"] == "forget" and "preview" not in body
 
 
-# ── Codex 第 27 轮 ───────────────────────────────────────────────────────
+# ── Codex round 27 ───────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -1810,7 +1810,7 @@ async def test_bind_replay_rereads_the_state_before_delivering(env, void_on_iden
     assert [f for f in socket.sent if f.get("type") == "chat_blocks"] == []
 
 
-# ── 协调会话：写后复查（作废落在写帧之后） ───────────────────────────────
+# ── Coordinated sessions: post-write recheck, invalidated after frame write ───────────────────────────────
 
 
 async def test_startup_replay_greys_a_preview_voided_after_it_was_written(env):
@@ -1826,7 +1826,7 @@ async def test_startup_replay_greys_a_preview_voided_after_it_was_written(env):
     async def render_then_void(blocks, **kw):
         shown = await render(blocks, **kw)
         order.append(("block", kw["request_id"]))
-        await write_forget(VisitSpool(env.tmp, vid(1)))  # 帧已写出，复查之前作废
+        await write_forget(VisitSpool(env.tmp, vid(1)))  # Frame written, then invalidated before recheck
         return shown
 
     async def record_frame(payload):
@@ -1855,7 +1855,7 @@ async def test_bind_replay_greys_a_preview_voided_after_it_was_written(env):
             frame = json.loads(payload)
             self.sent.append(frame)
             if frame.get("type") == "chat_blocks":
-                await write_forget(VisitSpool(env.tmp, vid(1)))  # 块已写出，复查之前作废
+                await write_forget(VisitSpool(env.tmp, vid(1)))  # Block written, then invalidated before recheck
 
     socket = Socket()
     await display_socket._replay_one(socket, "A", vid(1), OWN_A, set(), "zh")

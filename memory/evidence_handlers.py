@@ -49,11 +49,11 @@ _EVIDENCE_SNAPSHOT_KEYS = (
     'reinforcement', 'disputation',
     'rein_last_signal_at', 'disp_last_signal_at',
     'sub_zero_days',
-    # 防抖字段（archive sweep 写入）：与 sub_zero_days 一对，必须随其
-    # 一起 replay，否则重放后 view 同一天可能再被 +1（破坏防抖语义）。
+    # Debounce fields written by archive sweep pair with sub_zero_days and must be
+    # replayed together, or the view may increment again on the same day after replay.
     'sub_zero_last_increment_date',
-    # user_fact combo counter (RFC §3.1.8) — 必须走 event log 的 replay
-    # 路径才能让重放后 view 的 combo 状态一致
+    # user_fact combo counter (RFC section 3.1.8) must follow event-log replay
+    # so the view's combo state remains consistent after reconstruction.
     'user_fact_reinforce_count',
 )
 # Reflection-side evidence events also carry promote throttle counters

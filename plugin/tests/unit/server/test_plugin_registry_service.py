@@ -39,7 +39,7 @@ def _write_packaged_metadata_fixture(plugin_dir: Path, *, entry_ids: list[str]) 
             }
             for entry_id in entry_ids
         ],
-        # v3 一定会写这三张表，缺哪张都算包坏了。
+        # v3 always writes these three tables; any missing table means a broken package.
         "handlers": {},
         "entry_methods": {},
         "entries_config_sha256": packaged_metadata.entries_config_digest({}, {}),
@@ -85,8 +85,8 @@ def _write_plugin_fixture(tmp_path: Path, plugin_id: str) -> Path:
         ),
         encoding="utf-8",
     )
-    # 打包过的插件带着自己的元数据，宿主刷新时读的就是它。夹具不写这份文件的话，
-    # 注册表里本来就看不到任何入口——刷新不再 import 插件去问。
+    # Packaged plugins carry their own metadata, which the host reads during refresh. Without this fixture file,
+    # the registry cannot see any entries; refresh no longer imports plugins to query them.
     _write_packaged_metadata_fixture(plugin_dir, entry_ids=["ping"])
     return root
 
@@ -472,10 +472,10 @@ async def test_refresh_registry_marks_syntax_error_plugin_failed_without_abortin
             healthy = dict(module.state.plugins["healthy_plugin"])
             broken = dict(module.state.plugins["broken_plugin"])
 
-        # 刷新不再 import 插件，所以语法错误在刷新阶段是看不出来的：坏插件照常
-        # 出现在注册表里，直到有人真的启动它才会失败。这是不 import 的直接代价。
-        # 这条测试现在守的是它**仍然在列表里**——"发现不了坏插件"和"把坏插件从
-        # 列表里漏掉"是两回事，后者用户会以为插件凭空消失了。
+        # Refresh no longer imports plugins, so syntax errors cannot be detected at that stage: a broken plugin still
+        # appears in the registry and fails only when actually started. This directly follows from avoiding imports.
+        # This test now ensures it **remains listed**: failing to detect a broken plugin differs from omitting it
+        # from the list, which makes users think it vanished.
         assert healthy.get("runtime_load_state") != "failed"
         assert broken.get("runtime_load_state") != "failed", (
             "刷新阶段判定了插件代码坏没坏，说明它又去 import 插件了"

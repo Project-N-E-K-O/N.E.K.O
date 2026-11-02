@@ -20,15 +20,15 @@ import pytest
 # ---------------------------------------------------------------------------
 
 MAGIC_PAIRS = [
-    # ⚠️ /clear 的触发词不在这里：它不可逆地清掉上游会话上下文，判据又还是自由文本
-    # 子串，所以刻意保持简体。见 test_clear_triggers_stay_simplified_only。
-    # 台湾用「搜尋」，所以这一条不是「搜索」的字形转换。
+    # ⚠️ /clear trigger phrases are absent here: they irreversibly clear upstream conversation context and still use free-text
+    # substring matching, so deliberately remain simplified Chinese. See test_clear_triggers_stay_simplified_only.
+    # Taiwan uses 「搜尋」, so this is not a character-form conversion of 「搜索」.
     ("停止搜索", "停止搜尋"),
     ("取消这个任务", "取消這個任務"),
     ("停下来", "停下來"),
     ("没问题", "沒問題"),
-    # approve 的子串支已改成整子句白名单，繁体随之补齐——整子句判据下补繁体不再
-    # 放大暴露面。见 test_whole_clause_whitelist_kills_free_text_misfires。
+    # approve's substring branch now uses a whole-clause whitelist, with traditional forms added; whole-clause matching no longer
+    # broadens exposure when adding traditional forms. See test_whole_clause_whitelist_kills_free_text_misfires.
     ("去执行", "去執行"),
     ("去执行吧", "去執行吧"),
     ("删吧", "刪吧"),
@@ -89,7 +89,7 @@ def test_clear_triggers_stay_simplified_only(text):
     Traditional users can still reach it by typing the literal magic word
     ``/clear`` (whole-string match in ``normalize_magic_command``).
 
-    ⚠️ Do NOT lean on "the LLM classifier still runs after a None" — that is not
+    ⚠️ Do NOT lean on \"the LLM classifier still runs after a None\" — that is not
     unconditional. See test_a_rule_miss_can_skip_the_llm_classifier_entirely.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
@@ -124,7 +124,7 @@ def test_a_rule_miss_can_skip_the_llm_classifier_entirely():
     executor = object.__new__(DirectTaskExecutor)
     executor.plugin_list = []
     signal = executor._deterministic_action_signal
-    # 表内 → 刹车豁免；表外 → 不豁免（低 external_intent 时整轮被跳过）
+    # In the table → brake exemption; outside it → no exemption (the whole turn is skipped when external_intent is low)
     assert signal("停下来", openclaw_enabled=True, user_plugin_enabled=False) is True
     assert OpenClawAdapter.rule_magic_command("我准了假") is None
     assert signal("我准了假", openclaw_enabled=True, user_plugin_enabled=False) is False
@@ -143,8 +143,8 @@ def test_question_about_a_command_no_longer_triggers_it(text):
 
     The clause is 這個遊戲要怎麼重新開始 — not a whitelist entry — so it no
     longer dispatches. This IS a Simplified behaviour change, and a deliberate
-    one: the prior test docstring called it out as "narrowing it is a separate,
-    script-neutral change", which is exactly what this is.
+    one: the prior test docstring called it out as \"narrowing it is a separate,
+    script-neutral change\", which is exactly what this is.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
@@ -214,7 +214,7 @@ def test_whole_clause_whitelist_kills_free_text_misfires(text):
     They are ordinary sentences a user really types; the trigger word just
     happens to appear inside one.
 
-    A "reject when a negator precedes the trigger" guard was tried first and an
+    A \"reject when a negator precedes the trigger\" guard was tried first and an
     adversarial pass broke it on 196 inputs: negation to the *right* of the
     trigger (「去執行？我不要」), the anchor landing on an unrelated substring
     (「这标准了不起，但不要去执行」 anchors on 「准了」), and questions
@@ -253,9 +253,9 @@ def test_approve_whitelist_content_is_pinned():
         "去执行", "去执行吧", "去執行", "去執行吧",
         "没问题去执行", "沒問題去執行",
     })
-    # ⚠️ 第三张表也要钉。它单独出现永远不授权，但它决定了「应答 + 动作」这一整类
-    # 说法认不认——往里加词同样是扩大 approve 的命中面，必须让评审在同一个 commit 里
-    # 说清楚。漏掉它的那一轮，`對` 缺失活了整整一个 PR。
+    # ⚠️ Pin the third table too. It never authorizes alone, but determines whether the entire "acknowledgment + action"
+    # pattern is recognized—adding words likewise broadens approve matching, and the reviewer must receive an explanation in the same commit.
+    # When it was omitted, missing `對` survived an entire PR.
     assert _APPROVE_COMPANIONS == frozenset({
         "好", "好的", "好吧", "行", "行了", "可以", "嗯",
         "对", "對", "没错", "沒錯", "没意见", "沒意見",
@@ -265,8 +265,8 @@ def test_approve_whitelist_content_is_pinned():
         w for w in (_APPROVE_ACTIONS | _APPROVE_AFFIRMATIONS) if len(w) < 2
     )
     assert not single_chars, f"单字条目会让任意祈使句落到批准上：{single_chars}"
-    # 应答表里有单字（好 / 行 / 对 / 嗯）是有意的——它们单独一句永远是 None，
-    # 只能陪同动作子句出现。这条断言把「单字仅限应答表」钉住。
+    # Single characters (好 / 行 / 对 / 嗯) in the acknowledgment table are intentional—they always yield None alone,
+    # and can appear only alongside an action clause. This assertion pins "single characters only in the acknowledgment table".
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert all(
@@ -278,17 +278,17 @@ def test_approve_whitelist_content_is_pinned():
 @pytest.mark.parametrize(
     "text",
     [
-        # 裸应答只认整条子句原样：剥首尾都不行，否则主动搭话轮里猫娘自己的口癖
-        # 「没问题喵~」就会自批准。这些在改造前全是 None，必须保持。
+        # Bare acknowledgments match only the exact full clause: even trimming either end is forbidden, or the catgirl's own stock phrase
+        # 「没问题喵~」during proactive conversation would approve itself. These all yielded None before the refactor and must remain so.
         "没问题喵~", "没问题喵！", "沒問題喔", "同意~", "我同意喵", "没问题啦",
         "沒問題囉", "同意啦", "不如同意", "那就同意", "马上同意", "同意了",
-        # 单字派生曾把这些变成批准 —— 它们是**新的删除请求**，不是批准
+        # Single-character derivation once turned these into approvals—they are **new deletion requests**, not approvals
         "帮我删了", "帮我删一下", "删一下", "删啦", "删", "准", "刪", "準",
         "幫我刪了", "请删了", "那就删了吧", "删了吧", "快删了", "准一下", "删喵",
     ],
 )
 def test_approve_never_widens_beyond_the_pre_change_behaviour(text):
-    """⚠️ 收口改动扩大高风险命令的命中面是本末倒置。
+    """⚠️ A hardening change that broadens high-risk command matching defeats its purpose.
 
     Every input here returned None before the change. The clause normalizer made
     them approvals in an intermediate revision — via the table closure (删吧 -> 删)
@@ -299,33 +299,33 @@ def test_approve_never_widens_beyond_the_pre_change_behaviour(text):
     assert OpenClawAdapter.rule_magic_command(text) is None, text
 
 
-# 这三张白名单里出现过的**全部**简繁异体字，闭集。opencc 不是本仓库依赖（只在
-# scripts/gen_activity_fold_map.py 里用 `uv run --with` 临时装），所以 importorskip
-# 会让这条守卫在 CI 上永远跳过——等于没写。改成闭集自带：新加的字形没进这张表时，
-# 下面的双向折叠会折不出对侧形态，断言直接报出缺哪条。
+# **All** simplified/traditional variant characters appearing in these three whitelists, as a closed set. opencc is not a repository dependency (only
+# temporarily installed using `uv run --with` in scripts/gen_activity_fold_map.py), so importorskip
+# would always skip this guard in CI—effectively no test. Use a self-contained closed set: if a new form is missing from this table,
+# bidirectional folding below cannot produce its counterpart and the assertion directly identifies the missing entry.
 _T2S = {
     "沒": "没", "問": "问", "題": "题", "刪": "删", "準": "准", "執": "执",
     "別": "别", "來": "来", "這": "这", "個": "个", "務": "务", "尋": "寻",
     "說": "说", "開": "开", "話": "话", "點": "点", "換": "换",
     "對": "对", "錯": "错", "見": "见", "許": "许",
 }
-# 白名单里简繁同形的字，单列。用途和 _FUNCTION_NEUTRAL_CHARS 一样：**发现表外字形**。
-# 折叠表折不出对侧时 _fold 返回词条本身，而词条本身当然在表里 —— 于是一个用了表外字
-# 的单侧词条会静默通过。`對` 就是这么漏进来的：它不在 _T2S 里，所以 `对` 折不出 `對`，
-# 守卫查不出 _APPROVE_COMPANIONS 少了繁体侧。
+# Characters identical in simplified and traditional whitelist entries, listed separately. Like _FUNCTION_NEUTRAL_CHARS, this **detects unlisted forms**.
+# When the fold table cannot produce a counterpart, _fold returns the entry itself, which is naturally present in the table—so a one-sided entry
+# using an unlisted character silently passes. `對` escaped this way: absent from _T2S, `对` could not fold into `對`,
+# and the guard failed to detect that _APPROVE_COMPANIONS lacked the traditional side.
 _CLAUSE_NEUTRAL_CHARS = set(
     "下了以任停允去取可同吧嗯好始快意我批找搜新查止消的算索聊行重"
 )
 _S2T = {simplified: traditional for traditional, simplified in _T2S.items()}
-# ⚠️ 台湾用「搜尋」不用「搜索」——这是**词汇**差异，不是字形转换，折叠折不出来。
-# 只有这两组，单独豁免；别把豁免集当垃圾桶，每加一条都要说明为什么不是字形对。
+# ⚠️ Taiwan uses 「搜尋」 rather than 「搜索」—a **vocabulary** difference, not a character-form conversion, so folding cannot derive it.
+# Exempt only these two pairs separately; do not use the exemption set as a dumping ground. Explain why each addition is not a character-form pair.
 _LEXICAL_NOT_A_FOLD = frozenset({
     "停止搜索", "停止搜尋", "取消这个搜索", "取消這個搜尋",
-    # ⚠️ 准 是**一简对多繁**：許可義的繁体就写作「准」（批准 / 准許 / 不准），
-    # 「準」是準確義。所以 `批准` 两侧同形，机械折叠折出来的 `批準` 不是词，不能收
-    # 进白名单去凑对称——收了等于给 approve 白加一个词条。
-    # （表里同时有 `准了`/`準了` 是另一回事：那是把用户可能打错的写法一起认了，
-    #   属于放宽召回，不是对称性要求。）
+    # ⚠️ 准 maps from **one simplified to multiple traditional forms**: the permission sense remains 「准」 (批准 / 准許 / 不准),
+    # while 「準」 means accuracy. Thus `批准` is identical on both sides; mechanically folded `批準` is not a word and must not enter
+    # the whitelist just to manufacture symmetry—that would add an unnecessary approve entry.
+    # (The table containing both `准了`/`準了` is different: it also recognizes a possible user typo,
+    #   broadening recall rather than satisfying a symmetry requirement.)
     "批准",
 })
 
@@ -350,17 +350,17 @@ def test_clause_whitelists_are_script_symmetric():
         return "".join(table.get(char, char) for char in text)
 
     tables = (
-        # ⚠️ approve 的判据是**三**张表。少列一张不会让任何断言变红，而 approve 的命中
-        # 面照样变宽——`對` 就是这么漏了一整轮：companions 一张守卫都没盖到。
+        # ⚠️ approve uses **three** tables. Omitting one does not fail any assertion, yet still broadens approve matching
+        # —`對` slipped through an entire round this way: no guard covered companions.
         ("approve_actions", _APPROVE_ACTIONS),
         ("approve_affirmations", _APPROVE_AFFIRMATIONS),
         ("approve_companions", _APPROVE_COMPANIONS),
         ("stop", _STOP_CLAUSES),
     )
 
-    # ⚠️ 表外字形必须报错，否则这条守卫在它身上是空转的：_fold 折不出对侧时返回词条
-    # 本身，而词条本身当然在表里 → 静默通过。补完 companions 还不够，`對` 当时也不在
-    # _T2S 里，两个漏洞叠在一起才让它活下来。
+    # ⚠️ Unlisted character forms must fail, or this guard does nothing for them: when _fold cannot derive a counterpart, it returns the entry
+    # itself, which is naturally in the table → silent pass. Fixing companions alone is insufficient: `對` was also absent from
+    # _T2S then, and the two gaps together let it survive.
     unknown = {
         char
         for _, entries in tables
@@ -404,13 +404,13 @@ def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
     assert OpenClawAdapter.rule_magic_command("同意，去执行") == "/daemon approve"
     # stop / new: the TRAILING clause decides — a whitelist phrase sitting in a
     # non-final clause is narration, not an imperative, and must not dispatch.
-    # ⚠️ 这四条是「末子句」和「任意子句」判据的唯一区分点：换成 any(...) 时只有它们会红。
+    # ⚠️ These four cases alone distinguish "last clause" from "any clause": only they fail if changed to any(...).
     assert OpenClawAdapter.rule_magic_command("我还没同意，停止搜索") == "/stop"
     assert OpenClawAdapter.rule_magic_command("我不同意这个方案，取消这个任务") == "/stop"
     assert OpenClawAdapter.rule_magic_command("停下来，这是我当时唯一的念头") is None
     assert OpenClawAdapter.rule_magic_command("停下來，這是我當時唯一的念頭") is None
-    # ⚠️ `/new` 已从自由文本路径摘除，这里不再有它的对照；末子句判据仍由上面
-    # 那两条 /stop 钉住（换成 any(...) 时「停下来，这是我当时唯一的念头」会红）。
+    # ⚠️ `/new` was removed from the free-text path, so it has no counterpart here; the last-clause rule remains pinned by the two
+    # /stop cases above (changing to any(...) fails 「停下来，这是我当时唯一的念头」).
     assert OpenClawAdapter.rule_magic_command("換個話題，他總是這麼逃避") is None
     assert OpenClawAdapter.rule_magic_command("别找了，他说，然后转身走了") is None
     assert OpenClawAdapter.rule_magic_command("重新开始，说起来简单做起来难") is None
@@ -423,28 +423,28 @@ def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
         ("请停下来", "/stop"), ("請停下來", "/stop"),
         ("帮我停下来", "/stop"), ("幫我停下來", "/stop"),
         ("那你去执行吧", "/daemon approve"),
-        # ⚠️ 第二人称的复数/敬称写法要**整词**排在单字 `你` 前面，否则 `你们停下来`
-        # 被 `你` 吃掉首字、剩下 `们停下来`。这条和 `那么`/`快点` 是同一个坑。
+        # ⚠️ Plural/honorific second-person forms must appear as **whole words** before single-character `你`, or `你们停下来`
+        # loses its first character to `你`, leaving `们停下来`. This is the same pitfall as `那么`/`快点`.
         ("你们停下来", "/stop"), ("你們停下來", "/stop"),
         ("您去执行吧", "/daemon approve"), ("你们去执行吧", "/daemon approve"),
-        # ⚠️ 多字前缀必须整词剥。`那` 排在 `那么` 前面时正则会吃掉首字、留下一个
-        # `么` 粘在后面（子句变成「么停下来」），整条判据失效。`快`/`快点` 同理。
+        # ⚠️ Strip multi-character prefixes as whole words. Placing `那` before `那么` makes the regex consume the first character and leave
+        # `么` attached (producing clause 「么停下来」), breaking the entire rule. The same applies to `快`/`快点`.
         ("那么停下来吧", "/stop"), ("快点停下来", "/stop"), ("快點停下來", "/stop"),
         ("快点去执行", "/daemon approve"),
-        # 祈使副词：中文祈使句最常见的修饰，闭集缺了它们等于这套口令只认「裸命令」
+        # Imperative adverbs: the most common Chinese imperative modifiers; omitting them from the closed set restricts these commands to bare imperatives
         ("赶紧停下来", "/stop"), ("馬上取消這個任務", "/stop"),
         ("立刻停止搜尋", "/stop"), ("现在别找了", "/stop"),
         ("能不能停下来", "/stop"), ("拜託停下來", "/stop"), ("我想取消这个任务", "/stop"),
-        # ⚠️ `要不要` 必须排在 `要不` 前面，否则被咬成 `要停下来`——这是这套表
-        # 第五次栽在「多字词排在它的首字/前缀后面」上（那么·快点·我想·你们·要不要）。
+        # ⚠️ `要不要` must precede `要不`, or it is consumed into `要停下来`—the fifth time these tables have stumbled over
+        # "a multi-character word placed after its first character/prefix" (那么·快点·我想·你们·要不要).
         ("要不要停下来？", "/stop"), ("要不要停下來", "/stop"),
         ("马上去执行", "/daemon approve"),
         # trailing particles stripped
         ("停下来吧", "/stop"), ("停下來吧", "/stop"),
-        # 征询/疑问尾：「…好吗 / …行不行」是最常见的礼貌祈使口吻
+        # Consultation/question tails: 「…好吗 / …行不行」 are the most common polite imperative forms
         ("停下来好吗", "/stop"), ("停下來好嗎", "/stop"),
         ("停下来行不行", "/stop"), ("停下来好不好", "/stop"),
-        # ⚠️ 语气词也是简繁两侧的东西：只收繁体「囉」会让同一句话繁体命中简体不命中
+        # ⚠️ Particles also have simplified and traditional sides: accepting only traditional 「囉」 matches a sentence in traditional but not simplified form
         ("停下來囉", "/stop"), ("停下来啰", "/stop"), ("停下来咯", "/stop"),
         ("停下來咯", "/stop"), ("停下来喽", "/stop"),
         # ...but stripping must not resurrect a misfire
@@ -462,49 +462,49 @@ def test_clause_normalization_strips_only_function_words(text, expected):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # ⚠️ 中文里最常见的授权说法是「应答子句 + 命令子句」，改造前靠子串命中。
-        # `没错，去执行` 尤其要保住——它正是本文件论证「黑名单会误伤」时点名的例子，
-        # 白名单方案曾把它一起误伤，注释和行为对不上。
+        # ⚠️ The most common Chinese authorization pattern is "acknowledgment clause + command clause"; before the refactor it used substring matching.
+        # Preserve `没错，去执行` especially—it is the example explicitly cited in this file's argument that blacklists reject valid inputs,
+        # yet the whitelist approach also rejected it, contradicting the comment's stated behavior.
         ("没错，去执行", "/daemon approve"), ("沒錯，去執行", "/daemon approve"),
         ("没意见，去执行", "/daemon approve"), ("好的，去执行", "/daemon approve"),
         ("行，去执行", "/daemon approve"), ("可以，去执行", "/daemon approve"),
         ("嗯，去执行", "/daemon approve"), ("对，去执行", "/daemon approve"),
         ("批准，去执行", "/daemon approve"), ("可以，删吧", "/daemon approve"),
         ("好的，去执行吧", "/daemon approve"),
-        # 不带分隔符的写法走中性首部表
+        # Forms without separators use the neutral-prefix table
         ("好的去执行", "/daemon approve"), ("可以去执行", "/daemon approve"),
         ("同意去执行", "/daemon approve"), ("批准去执行", "/daemon approve"),
         ("允许去执行", "/daemon approve"), ("没错去执行", "/daemon approve"),
-        # ⚠️ 但应答词**不能单独授权**：这些在改造前都是 None（旧的整句精确匹配表
-        # 只有那四条），当成授权就是扩大批准面。
+        # ⚠️ Acknowledgment words **cannot authorize alone**: these all yielded None before the refactor (the old exact whole-sentence table
+        # contained only those four entries); treating them as authorization broadens approval matching.
         ("好的", None), ("可以", None), ("行", None), ("嗯", None), ("对", None),
         ("批准", None), ("好的，好的", None), ("好的喵~", None),
-        # ⚠️ 应答子句剥两端装饰是安全的（它单独出现永远不算授权），而这些形态在旧
-        # 实现里靠子串命中，逐字原样匹配会丢。裸应答不能这么放宽——对比
-        # test_a_question_never_approves 里的 `没问题喵~`。
+        # ⚠️ Trimming decorations from acknowledgment clauses is safe (they never authorize alone), and these forms matched substrings in the old
+        # implementation, so exact character-for-character matching would lose them. Bare acknowledgments cannot be relaxed this way—compare
+        # `没问题喵~` in test_a_question_never_approves.
         ("好的喵~，去执行", "/daemon approve"), ("OK，去执行", "/daemon approve"),
         ("okay，去执行", "/daemon approve"),
-        # ⚠️ 否定符号也能落在**应答**子句上：`可以❌，去執行` 里的 ❌ 否定的是那句
-        # 应答。所以应答子句的装饰表也用严格那张——👌 和 ❌ 在这一层分不出来，
-        # 只能整类不剥。代价：`好的👌，去执行` 相对旧实现丢了。
+        # ⚠️ Negation symbols can also decorate the **acknowledgment** clause: ❌ in `可以❌，去執行` negates that
+        # acknowledgment. Its decoration table therefore also uses the strict set—👌 and ❌ cannot be distinguished at this layer,
+        # so strip neither category. Cost: `好的👌，去执行` is lost relative to the old implementation.
         ("可以❌，去執行", None), ("可以❌，去执行", None), ("好的🚫，去执行", None),
         ("好的👌，去执行", None), ("请❌，去执行", None),
-        # 拉丁前缀的大小写写法是开集，靠整体小写候选覆盖而不是枚举
+        # Latin-prefix capitalization forms are an open set; lowercase the entire candidate instead of enumerating them
         ("oK去执行", "/daemon approve"), ("oKaY去执行", "/daemon approve"),
         ("Okay去执行", "/daemon approve"),
-        # 中英混排且不带分隔符的写法走中性首部表
+        # Mixed Chinese/English forms without separators use the neutral-prefix table
         ("OK去执行", "/daemon approve"), ("ok去执行", "/daemon approve"),
-        # ⚠️ 中性首部词**独立成句**时也算应答子句：`请，去执行` 在旧实现里靠子串
-        # 命中，而同样的词贴着写（`请去执行`）一直是通的。判据一致：剥掉它不改变
-        # 「谁被授权做什么」，那么它单独成句同样不改变。
+        # ⚠️ Neutral prefixes also count as acknowledgment clauses **when standalone**: `请，去执行` matched substrings in the old
+        # implementation, while the same word attached directly (`请去执行`) has always worked. Apply one rule: if removing it does not change
+        # "who is authorized to do what", standing alone does not change that either.
         ("请，去执行", "/daemon approve"), ("麻烦，去执行", "/daemon approve"),
         ("拜託，去執行", "/daemon approve"), ("那，去执行", "/daemon approve"),
         ("你，去执行", "/daemon approve"), ("马上，去执行", "/daemon approve"),
-        # 但礼貌词单独出现仍不算授权
+        # Polite words alone still do not authorize
         ("请", None), ("麻烦", None), ("那", None), ("请，麻烦", None),
         ("okay去执行", "/daemon approve"),
         ("好的喵~", None),
-        # ⚠️ 单字应答**不做前缀剥离**：`对方去执行` 不是授权
+        # ⚠️ Single-character acknowledgments **are not stripped as prefixes**: `对方去执行` is not authorization
         ("对方去执行", None), ("好人去执行", None),
     ],
 )
@@ -517,45 +517,45 @@ def test_an_affirmative_clause_needs_a_real_command_beside_it(text, expected):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # ⚠️ 子句两端的装饰性字符：省略号、破折号、引号、括号、emoji。它们既不在
-        # _CLAUSE_SPLIT 也不是语气词，整条就落不到白名单上——而中文聊天里这是最常见
-        # 的收尾方式之一。用「非词字符」的补集来剥，不去枚举符号（符号是开集）。
+        # ⚠️ Decorations at clause ends: ellipses, em dashes, quotes, brackets, emoji. They are neither in
+        # _CLAUSE_SPLIT nor particles, preventing the whole clause from matching the whitelist—yet these are among the most common
+        # endings in Chinese chat. Strip using the complement of "word characters" rather than enumerating symbols (an open set).
         ("去执行…", "/daemon approve"), ("去执行……", "/daemon approve"),
         ("去执行~", "/daemon approve"), ("去执行！", "/daemon approve"),
         ("去执行。", "/daemon approve"),
-        # ⚠️ 句尾同样能带否定：`去執行❌` 也是「别执行」。「哪些符号带否定语义」
-        # 是开集（❌✖✗🚫⛔🙅🆖……），黑名单堵不完——所以 approve 的句尾装饰改成
-        # 一张**明确无语义**的标点闭集，emoji 一律不剥。代价：`去执行👌` 相对旧
-        # 实现丢了（👌 和 ❌ 在这一层区分不了），记账在此。
+        # ⚠️ Sentence endings can also negate: `去執行❌` means "do not execute" too. Symbols with negation semantics
+        # form an open set (❌✖✗🚫⛔🙅🆖…), so a blacklist cannot cover them all—approve's trailing decorations therefore use
+        # a closed punctuation set **explicitly without semantics**; never strip emoji. Cost: `去执行👌` is lost relative to the old
+        # implementation (👌 and ❌ cannot be distinguished at this layer), recorded here.
         ("去執行❌", None), ("去执行❌", None), ("去執行🚫", None),
         ("去执行✖", None), ("删吧❌", None), ("准了❌", None),
         ("去执行👌", None),
         ("停下来…", "/stop"), ("停下來……", "/stop"), ("停下來——", "/stop"),
         ("別找了…", "/stop"), ("「停下來」", "/stop"), ("“停下来”", "/stop"),
-        # 剥完装饰仍要过白名单——装饰不是万能钥匙
+        # The whitelist still applies after stripping decorations—decoration is no master key
         ("雨停下来了…", None), ("我准了假👌", None), ("比賽即將重新開始……", None),
-        # ⚠️ 中文省略号是**句中分隔符**，不只是句尾装饰
+        # ⚠️ Chinese ellipses are **in-sentence separators**, not just trailing decorations
         ("同意……去执行", "/daemon approve"), ("同意⋯⋯去执行", "/daemon approve"),
-        # 破折号同理，也是句中分隔符
+        # Em dashes likewise separate within a sentence
         ("同意——去执行", "/daemon approve"), ("同意—去执行", "/daemon approve"),
         ("停下來——別找了", "/stop"),
         ("停下來……別找了", "/stop"),
-        # ⚠️⚠️ approve **只剥句尾装饰**：句首那一格是语义位。`❌去執行` 是「别执行」，
-        # `「去執行」` 是在**提及**这个词而不是下令。一律当装饰剥掉就全变成了授权。
+        # ⚠️⚠️ approve **strips trailing decorations only**: the leading position carries semantics. `❌去執行` means "do not execute",
+        # and `「去執行」` **mentions** the phrase rather than commanding it. Stripping all of these as decorations would turn them into authorizations.
         ("❌去執行", None), ("❌去执行", None), ("🚫去執行🚫", None),
         ("🚫去执行", None), ("「去執行」", None), ("「去执行」", None),
         ("『去执行』", None), ("（去执行）", None),
-        # /stop 与 /new 后果小，两端照剥
-        ("「停下來」", "/stop"), ("『別找了』", "/stop"), # ⚠️ 空白也是分隔符，会把语气词切成独立末子句；末子句判据要往回跳过它们
-        ("停下来 吧", "/stop"), ("停下來 👍", "/stop"), # ⚠️ 剥这段尾巴要试**所有**匹配的词尾并取最长：`_TAIL_TOKENS` 里 `了` 排在
-        # `好了` 前面，只取第一个匹配会把 `好了` 剥成 `好`，于是这段尾巴不被认成
-        # 「纯语气词」、反倒被当成命令子句。和 _clause_hits 里那个坑是同一个。
+        # /stop and /new have minor consequences; continue trimming both ends
+        ("「停下來」", "/stop"), ("『別找了』", "/stop"), # ⚠️ Whitespace also separates clauses, making particles standalone final clauses; the last-clause rule must skip back past them
+        ("停下来 吧", "/stop"), ("停下來 👍", "/stop"), # ⚠️ To strip this tail, try **all** matching suffixes and take the longest: in `_TAIL_TOKENS`, `了` precedes
+        # `好了`; taking only the first match strips `好了` to `好`, so this tail is not recognized as
+        # "pure particles" and is treated as a command clause instead. This is the same pitfall as in _clause_hits.
         ("停下来 好了", "/stop"), ("別找了 好了", "/stop"),
-        # 礼貌收尾也是纯语气：`谢谢` 不该被当成命令子句
+        # Polite endings are also pure particles: `谢谢` must not be treated as a command clause
         ("停下来谢谢", "/stop"), ("停下來，謝謝", "/stop"), ("别找了 谢谢", "/stop"), ("停下来多谢", "/stop"),
         ("别找了 吧", "/stop"),
-        # ⚠️ 但**不给 approve 用**：那样 `同意 吧` 会变成裸应答被批准（旧实现是 None）。
-        # 代价是 `去执行 吧` 也丢了，二选一，选了 fail-closed 那边。
+        # ⚠️ **Do not use this for approve**: it would approve `同意 吧` as a bare acknowledgment (the old implementation returned None).
+        # The cost is also losing `去执行 吧`; between the two, choose fail-closed.
         ("同意 吧", None), ("去执行 吧", None),
     ],
 )
@@ -566,7 +566,7 @@ def test_decorative_characters_do_not_hide_a_command(text, expected):
 
 
 def test_peeling_is_bounded_for_pathological_input():
-    """⚠️ 分类器跑在用户输入路径上，剥词的候选集必须有硬上界。
+    """⚠️ The classifier runs on the user-input path; word-stripping candidates must have a hard upper bound.
 
     Every peel step pushes another prefix of the clause, so the candidate count
     grows with the run of trailing particles and each one costs a slice — a 20k
@@ -575,42 +575,42 @@ def test_peeling_is_bounded_for_pathological_input():
     from brain.openclaw_adapter import OpenClawAdapter
     from tests.wall_clock import fastest_run
 
-    # ⚠️ 两处界都按**行为**断言：可观察后果是确定的，不依赖机器快慢。
-    # _command_clause 的界：超长尾巴剥不完 → 不跳过它 → 返回 None。放在所有长输入
-    # 之前，界丢了这里立刻红，不用先跑 60k 那两条（无界时是分钟级）。
-    # （早先我按耗时写过一版并据此宣称「无界版也不慢」，那是拿**改剥词逻辑之前**的
-    # 数字说话。现在每步都多一次整串正则，无界版实测连 120k 那一档都跑不完，
-    # 界是必需的。）
+    # ⚠️ Assert both bounds through **behavior**: observable outcomes are deterministic and independent of machine speed.
+    # _command_clause's bound: an excessively long tail cannot be fully stripped → do not skip it → return None. Place this before all long inputs
+    # so removing the bound fails immediately, without first running the two 60k cases (minutes without a bound).
+    # (I previously wrote a timing-based version and claimed "the unbounded version is not slow", using measurements from **before changing the word-stripping logic**.
+    # Each step now adds a full-string regex; in actual tests the unbounded version cannot even finish the 120k case,
+    # so the bound is necessary.)
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 5) == "/stop"
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 200) is None
 
     def _peel(text):
-        # ⚠️ 结果断言放在计时的调用里：每条长输入只跑一遍就同时验了行为和耗时。
-        # _clause_hits 的界：无界时 2000 个 ``吧`` 以上就能一路剥回表内的 ``去执行`` /
-        # ``停下来``，返回 /daemon approve、/stop（变异验证过）；20k 那两条排在最前，
-        # 界丢了第一次调用就红。
+        # ⚠️ Assert results inside the timed call: each long input runs once to check both behavior and elapsed time.
+        # _clause_hits's bound: without a bound, over 2000 ``吧`` particles can be stripped all the way back to whitelisted ``去执行`` /
+        # ``停下来``, returning /daemon approve or /stop (mutation-verified); put the two 20k cases first,
+        # so removing the bound fails on the first call.
         assert OpenClawAdapter.rule_magic_command(text) is None, text[:8]
 
-    # 耗时是兜底，取多次里最快的一次（见 tests/wall_clock.py）。
-    # ⚠️ 原先是四条长输入**合计**单次采样对一秒，而本机不加负载就要 0.4–0.9 秒
-    #（``随便说说 `` 那条自己在 0.2–0.6 秒之间抖），xdist 下一次调度抢占就误红。
-    # 现在两道线：每条 < 1 秒守「单条消息不卡住事件循环」；四条最快值之和 < 2 秒，
-    # 挡住「每条都退到 0.9 秒」这种单条线拦不住的部分回退（合计 3.6 秒）。之和本机约
-    # 0.4 秒；原来那道「合计单次采样 < 1 秒」在 CI（含 Windows）上平时是过的，
-    # 取最快值再放到 2 秒，余量不止两倍。界整个丢了的时候 20k 那两条本机要 5–11 秒。
+    # Timing is a fallback; use the fastest of multiple runs (see tests/wall_clock.py).
+    # ⚠️ Previously, one sample of all four long inputs **combined** was compared with one second, but this machine needs 0.4–0.9 seconds without load
+    # (the ``随便说说 `` case alone varies from 0.2–0.6 seconds), so one scheduling preemption under xdist caused a false failure.
+    # Two thresholds now: each case < 1 second ensures "one message does not stall the event loop"; the sum of the four fastest times < 2 seconds
+    # catches partial regressions where every case falls to 0.9 seconds, which individual thresholds miss (3.6 seconds total). The local sum is about
+    # 0.4 seconds; the old "combined single sample < 1 second" usually passed CI (including Windows),
+    # so taking the fastest times and relaxing to 2 seconds provides over twice the margin. Removing the bound makes the two 20k cases take 5–11 seconds locally.
     texts = (
-        "去执行" + "吧" * 20000,  # 走 _clause_hits 的剥词
+        "去执行" + "吧" * 20000,  # Exercise word stripping in _clause_hits
         "停下来" + "啊呀" * 10000,
-        # ⚠️ 也要走 _command_clause 的剥词：空格把语气词切成独立末子句之后，往回跳过
-        # 它们的那段循环是**另一处**剥词，界得单独加（变异验证抓出来的）。
+        # ⚠️ Also exercise word stripping in _command_clause: once spaces split particles into standalone final clauses, the loop skipping backward past
+        # them is **another** word-stripping site requiring its own bound (caught by mutation testing).
         "停下来 " + "吧" * 60000,
         "随便说说 " + "啊" * 60000,
     )
-    # ⚠️ 提前结束的线是**合计预算的均摊份额**（2 秒 / 4 条 = 0.5 秒），不是单条的 1 秒：
-    # 用 1 秒的话，一次被抢占到 0.9 秒的采样就会被当成「最快值」记下，四条这样的
-    # 偏高值一加就超过 2 秒，合计线在没有回退时误红（Greptile P1）。按份额停，只要
-    # 四条都提前结束，之和必然 < 2 秒；落在 0.5–1 秒的那条会继续重试拿更快的样本。
-    # 本机单条 0.05–0.35 秒，不加负载时仍然一次就停。
+    # ⚠️ The early-stop threshold is **the per-case share of the total budget** (2 seconds / 4 cases = 0.5 seconds), not the individual 1 second:
+    # with 1 second, a sample preempted to 0.9 seconds is recorded as the "fastest", and four such
+    # inflated samples exceed 2 seconds, falsely failing the aggregate threshold without a regression (Greptile P1). Stop at the share: if
+    # all four stop early, their sum must be < 2 seconds; a case taking 0.5–1 seconds keeps retrying for a faster sample.
+    # Individual local cases take 0.05–0.35 seconds and still stop after one run without load.
     total = 0.0
     for text in texts:
         elapsed = fastest_run(
@@ -624,12 +624,12 @@ def test_peeling_is_bounded_for_pathological_input():
 @pytest.mark.parametrize(
     "text",
     [
-        # ⚠️ 表内条目**被语气词截短后的残形**不是有效命令，改造前也是 None
-        # （旧表里只有完整的「别找了」「算了别查了」）。
-        # 一旦查表改成「把表闭包到归一化形态」而不是「把查询归一化后去比对」，这些
-        # 残形会全部命中——那正是单字「删 / 准」混进 approve 表的同一个错误。
+        # ⚠️ Whitelisted entries' **fragments left by particle stripping** are not valid commands; they also returned None before the refactor
+        # (the old table contained only the full 「别找了」「算了别查了」).
+        # If lookup changes from "normalize the query then compare" to "close the table under normalized forms", all these
+        # fragments match—the same mistake that inserted single-character 「删 / 准」 into the approve table.
         "别找", "別找", "算了别查", "算了別查",
-        # 单字动词同理——它们曾因表闭包进过 approve 表
+        # The same applies to single-character verbs—they once entered the approve table through table closure
         "删", "刪", "准", "準", "删了吧", "删一下",
     ],
 )
@@ -642,17 +642,17 @@ def test_truncated_table_entries_are_not_commands(text):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # ⚠️ 语气词必须**逐个剥、每剥一个查一次表**。一次性把词尾整串吃掉会连表内
-        # 条目自带的那个字一起吃掉：`别找了吧` 的 `了吧` 被整串剥成 `别找`，而表里
-        # 的条目是 `别找了`——一句再自然不过的话就停不掉任务了。
+        # ⚠️ Strip particles **one at a time, checking the table after each**. Consuming the entire suffix at once also consumes the character belonging
+        # to the whitelisted entry itself: stripping all of `了吧` from `别找了吧` yields `别找`, while the table
+        # contains `别找了`—a perfectly natural request would then fail to stop the task.
         ("别找了吧", "/stop"), ("別找了吧", "/stop"),
         ("算了别查了吧", "/stop"), ("算了別查了吧", "/stop"),
         ("快别找了吧", "/stop"), ("别找了啊", "/stop"), ("別找了囉", "/stop"),
         ("准了吧", "/daemon approve"), ("準了吧", "/daemon approve"),
-        # ⚠️ 每一步要对**所有**能匹配的词尾各试一次，不能只试正则挑中的那一个。
-        # 多选支从左优先：`停下来行吗` 里 `行吗` 会先命中、把它剥成 `停下来行`，
-        # 再也剥不出 `停下来`。换词表顺序解决不了，`行吗` 本身必须收。
-        # （approve 侧不能拿来测这个——疑问式对批准是一票否决，见
+        # ⚠️ At every step, try **all** matching suffixes, not just the one selected by the regex.
+        # Alternatives take priority from the left: `行吗` matches first in `停下来行吗`, stripping it to `停下来行`,
+        # from which `停下来` can no longer be derived. Reordering the word list cannot fix this; `行吗` itself must be included.
+        # (The approve side cannot test this—interrogatives unconditionally veto approval; see
         # test_a_question_never_approves。）
         ("停下来行吗", "/stop"), ("停下來行嗎", "/stop"), ("停下来吗", "/stop"), ("停下來嗎", "/stop"), ],
 )
@@ -665,11 +665,11 @@ def test_particles_are_peeled_one_at_a_time(text, expected):
 @pytest.mark.parametrize(
     ("clause", "table_name"),
     [
-        # ⚠️ 这条**直接测查表层**，不经 rule_magic_command。
-        # 「多选支从左优先咬掉内容字」这个 bug 只在**以「行」结尾的表内条目**上发作
-        # （`去执行吗` 被 `行吗` 咬成 `去执`），而那些形式现在被疑问否决先拦掉了——
-        # 从 rule_magic_command 那一层再也观察不到，变异测试会误判成等价变异。
-        # 判据和否决是两层，分开钉，否则哪天否决被调整，剥词的 bug 会静默复活。
+        # ⚠️ This **tests the lookup layer directly**, bypassing rule_magic_command.
+        # The "left-priority alternative consumes a content character" bug affects only **whitelisted entries ending in 「行」**
+        # (`行吗` consumes `去执行吗` into `去执`), and these forms are now blocked by the interrogative veto first—
+        # invisible from rule_magic_command, so mutation testing would incorrectly classify the mutation as equivalent.
+        # Matching and vetoing are separate layers; pin both separately, or adjusting the veto someday silently revives the stripping bug.
         ("去执行吗", "_APPROVE_ACTIONS"), ("去執行嗎", "_APPROVE_ACTIONS"),
         ("去执行行不行", "_APPROVE_ACTIONS"), ("去執行好不好", "_APPROVE_ACTIONS"),
         ("停下来行吗", "_STOP_CLAUSES"), ("停下來行嗎", "_STOP_CLAUSES"),
@@ -692,34 +692,34 @@ def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
 @pytest.mark.parametrize(
     "text",
     [
-        # 标点
+        # Punctuation
         "去執行？", "去执行？", "刪吧？", "删吧？", "准了？", "準了？", "去執行?",
         "没问题，去执行？", "沒問題，去執行？", "同意？", "我同意？",
-        # ⚠️ 光认标点不够：归一化会把疑问语气整个抹掉。句末语气词……
+        # ⚠️ Recognizing punctuation alone is insufficient: normalization erases interrogative mood entirely. Sentence-final particles…
         "去執行嗎", "去执行吗", "刪吧嗎", "删吧吗", "準了嗎", "准了吗",
-        # ……正反问 / 选择问（首部或句中），剥完同样落在表内的动作短语上
+        # …affirmative-negative / alternative questions (at the start or inside) also strip down to whitelisted action phrases
         "能不能去執行", "能不能去执行", "可不可以去執行", "可不可以去执行",
         "去執行行不行", "去执行好不好", "要不要去执行", "是不是该去执行",
         "是否可以去执行", "去执行怎么样", "去執行怎麼樣",
-        # ⚠️ 试探/提议型首部词同理——归一化把它们剥掉之后，一句「要不就去执行？」
-        # 的**提议**就变成了授权。这些也全是首部虚词表新放行出来的暴露面。
+        # ⚠️ Tentative/proposal prefixes behave the same: after normalization strips them, the **proposal** 「要不就去执行？」
+        # becomes authorization. These are all newly exposed cases admitted by the prefix-function-word table.
         "要不去執行", "要不去执行", "要不去执行吧", "要不然去執行",
         "不如去執行", "不如去执行", "不如刪吧", "不如删吧", "不如準了",
         "還是去執行", "还是去执行", "还是去执行吧", "乾脆去執行", "干脆去执行",
-        # ⚠️ 第一人称意图前缀：它们改变的是**谁打算做**，不是加强祈使语气。
-        # 「我想去執行」是在陈述自己的打算，不是授权别人去做。
+        # ⚠️ First-person intent prefixes change **who intends to act**, rather than intensifying an imperative.
+        # 「我想去執行」 states one's own intention; it does not authorize someone else to act.
         "我想去執行", "我想去执行", "我要去執行", "我要去执行", "想去执行",
         "我想删吧", "我要準了",
-        # ⚠️ 光挡 `我想`/`我要` 不够，**裸的第一人称主语**同理：「我去執行」是用户在说
-        # 自己要去做，不是授权 agent 去做。第二人称留着——`你去执行吧` 恰恰是授权。
+        # ⚠️ Blocking `我想`/`我要` alone is insufficient; **bare first-person subjects** behave likewise: 「我去執行」 says the user
+        # will act, rather than authorizing the agent. Retain second person—`你去执行吧` precisely expresses authorization.
         "我去執行", "我去执行", "我删吧", "我刪吧", "我准了",
         "咱去执行", "我们去执行吧", "我們去執行吧", "咱们去执行",
-        # ⚠️ 体标记 `了`：`去執行了` 是在报告「已经执行了」，是陈述不是授权。
+        # ⚠️ Aspect marker `了`: `去執行了` reports "already executed", a statement rather than authorization.
         "去執行了", "去执行了", "去執行了喔", "删吧了", "去执行了吧",
     ],
 )
 def test_a_question_never_approves(text):
-    """⚠️ 问句和提议都不是授权。
+    """⚠️ Neither questions nor proposals are authorization.
 
     Normalization erases the mood entirely and everything lands on a whitelisted
     action phrase: 去執行嗎 loses its 嗎, 能不能去執行 loses its 能不能, 要不去執行
@@ -735,9 +735,9 @@ def test_a_question_never_approves(text):
     assert OpenClawAdapter.rule_magic_command(text) is None, text
 
 
-# 四张虚词表里出现过的简繁异体字，闭集。中性字形（简繁同形）单列，用于**发现表外
-# 字形**——这是上一版守卫的盲区：折不出对侧形态时 _fold 返回词条本身，而词条本身当然
-# 在表里，于是新加一个用了表外字的单侧词条会静默通过。
+# Simplified/traditional variant characters in the four function-word tables, as a closed set. List identical forms separately to **detect unlisted
+# forms**—the previous guard's blind spot: when folding cannot derive the counterpart, _fold returns the entry itself, which naturally
+# belongs to the table, so a new one-sided entry using an unlisted character silently passes.
 _FUNCTION_T2S = {
     "錯": "错", "見": "见", "許": "许", "麼": "么", "點": "点", "這": "这",
     "幫": "帮", "給": "给", "煩": "烦", "託": "托", "勞": "劳", "駕": "驾",
@@ -754,7 +754,7 @@ _FUNCTION_NEUTRAL_CHARS = set(
 
 
 def test_function_word_tables_are_pinned():
-    """⚠️ 等值钉死四张虚词表——这是**唯一**能挡住「新加一类前缀」的守卫。
+    """⚠️ Pin the four function-word tables by equality—the **only** guard against adding a new prefix category.
 
     The per-category assertions below only catch tokens someone already thought
     of: they check that known hedges live in the soft tables. A brand-new hedge
@@ -810,7 +810,7 @@ def test_function_word_tables_are_pinned():
 
 
 def test_function_word_tables_are_script_symmetric():
-    """⚠️ 虚词表也是简繁两侧的东西，不只子句白名单。
+    """⚠️ Function-word tables also need simplified/traditional coverage, just like clause whitelists.
 
     The file's whole thesis is that these tables hit the characters a user
     actually types, so both scripts must be collected in the same pass — yet
@@ -867,12 +867,12 @@ def test_function_word_tables_are_script_symmetric():
 
 
 def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
-    """⚠️ 结构性守卫：approve 的窄表**不得**包含试探/意图前缀。
+    """⚠️ Structural guard: approve's narrow table **must not** contain tentative/intent prefixes.
 
     Three rounds of Codex P1 landed on the same shape — a wide strip set plus a
     veto list that kept missing a category (punctuation, then bare interrogative
-    particles, then tentative proposals, then first-person intent). "Which prefix
-    turns an imperative into a non-authorization" is an open set; a blacklist
+    particles, then tentative proposals, then first-person intent). \"Which prefix
+    turns an imperative into a non-authorization\" is an open set; a blacklist
     cannot close it. The fix was two whitelists, and this test pins that they
     stay separated: widening approve now means editing the narrow table, which is
     a visible, reviewable act.
@@ -892,30 +892,30 @@ def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
     assert not (narrow_lead & soft_lead), "宽首部词漏进了 approve 的窄首部表"
     assert not (narrow_tail & soft_tail), "宽词尾漏进了 approve 的窄词尾表"
 
-    # ⚠️ 入表判据只有一条：**剥掉它会不会把授权变成非授权**。下面按类逐一钉住，
-    # 因为这一系列 Codex P1 全是「又发现一类漏在中性表里」——问句、试探提议、
-    # 第一人称意图、裸第一人称主语、体标记，一轮一类。
+    # ⚠️ One criterion alone determines inclusion: **does stripping it change authorization into non-authorization**? Pin each category below,
+    # because every Codex P1 in this series found "another category mistakenly in the neutral table"—questions, tentative proposals,
+    # first-person intent, bare first-person subjects, aspect markers; one category per round.
     for token in (
-        # 试探提议：是在抛方案，不是批准
+        # Tentative proposal: offering an option, not approving
         "要不", "不如", "还是", "還是", "干脆", "乾脆", "能不能", "可不可以",
-        # 第一人称意图：陈述自己的打算
+        # First-person intent: stating one's own plans
         "我想", "我要", "想",
-        # 裸第一人称主语：宣告自己动手，不是授权 agent
+        # Bare first-person subject: announcing one's own action, not authorizing the agent
         "我", "咱", "我们", "我們", "咱们", "咱們",
     ):
         assert token in soft_lead, f"{token} 不在 soft 首部表里"
         assert token not in narrow_lead, f"{token} 混进了 approve 的窄首部表"
     for token in (
-        # 疑问尾：问句不是授权
+        # Interrogative tail: a question is not authorization
         "吗", "嗎", "呢", "好不好", "行不行", "可以吗", "怎么样",
-        # 体标记：`去執行了` 是在报告已发生，不是授权
+        # Aspect marker: `去執行了` reports a past event, not authorization
         "了",
     ):
         assert token in soft_tail, f"{token} 不在 soft 词尾表里"
         assert token not in narrow_tail, f"{token} 混进了 approve 的窄词尾表"
 
-    # 反向：第二人称主语必须留在中性表——`你去执行吧` 正是指向 agent 的授权。
-    # 复数/敬称写法一并要有，否则单字 `你` 会把 `你们` 咬断。
+    # Conversely, second-person subjects must stay in the neutral table—`你去执行吧` authorizes the agent directly.
+    # Include plural/honorific forms too, or single-character `你` will split `你们`.
     for token in ("你", "妳", "你们", "你們", "您", "您们", "您們"):
         assert token in narrow_lead, f"{token} 是第二人称，不该被挪走"
 
@@ -923,8 +923,8 @@ def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # ⚠️ 冒号也是子句边界。`同意：去执行` 在改造前靠子串命中，不切冒号的话整条
-        # 落不到任何白名单条目上（Codex P2）。
+        # ⚠️ Colons are clause boundaries too. `同意：去执行` matched substrings before the refactor; without splitting on colons, the entire input
+        # matches no whitelist entry (Codex P2).
         ("同意：去执行", "/daemon approve"), ("沒問題:去執行", "/daemon approve"),
         ("没问题：去执行", "/daemon approve"), ("同意:删吧", "/daemon approve"),
         ("先说明一下：停下来", "/stop"), ],
@@ -946,7 +946,7 @@ def test_decisive_adverbs_still_approve(text):
     馬上 / 趕緊 / 立刻 / 現在 / 盡快 / 直接 / 那就 / 先 intensify an imperative
     rather than propose one; every Simplified spelling here approves on main, so
     rejecting them would be pure recall loss with no safety gain. The line is
-    "tentative proposal vs. emphasised command", not "has an adverb".
+    \"tentative proposal vs. emphasised command\", not \"has an adverb\".
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
@@ -956,14 +956,14 @@ def test_decisive_adverbs_still_approve(text):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # ⚠️ 问号否决**只作用于 approve**：对 /stop 和 /new 而言，
-        # 「停下来好吗？」是完全正常的礼貌祈使，不能一并毙掉。
+        # ⚠️ The question-mark veto **applies only to approve**: for /stop and /new,
+        # 「停下来好吗？」 is a perfectly normal polite imperative and must not be rejected along with approvals.
         ("停下来好吗？", "/stop"), ("停下來好嗎？", "/stop"),
         ("能不能停下来？", "/stop"),
-        # 无标点的疑问式同理——「能不能停下来」是最常见的礼貌祈使之一
+        # The same applies to questions without punctuation—「能不能停下来」 is among the most common polite imperatives
         ("能不能停下来", "/stop"), ("可不可以停下來", "/stop"),
         ("停下来吗", "/stop"), ("停下来行不行", "/stop"),
-        # 试探/提议型对 /stop 和 /new 同样是完全正常的祈使
+        # Tentative/proposal forms are likewise perfectly normal imperatives for /stop and /new
         ("要不停下来", "/stop"), ("不如停下來", "/stop"), ("還是停下來吧", "/stop"),
         ("乾脆停下來", "/stop"),
     ],
@@ -1032,9 +1032,9 @@ def test_stop_triggers_containing_a_negator_are_untouched(text):
     [
         ("我还没同意，停止搜索", "/stop"),
         ("我還沒同意，停止搜尋", "/stop"),
-        # 繁体那条不在这里：/clear 的触发词刻意保持简体（见
-        # test_destructive_command_triggers_stay_simplified_only），所以
-        # 「我不同意，清空聊天記錄」本来就该是 None，不是被否定短语压掉的。
+        # The traditional case is absent here: /clear triggers deliberately stay simplified (see
+        # test_destructive_command_triggers_stay_simplified_only), so
+        # 「我不同意，清空聊天記錄」 should already return None; a negation phrase is not what blocks it.
     ],
 )
 def test_negation_does_not_suppress_the_other_commands(text, expected):
@@ -1121,8 +1121,8 @@ def test_routing_tables_are_module_level_so_they_can_be_asserted():
 
     for name in ROUTING_TABLES:
         table = getattr(music_crawlers, name)
-        # 只要求「可迭代且非空」——这几张表只做成员查找，将来改成 tuple/frozenset
-        # 是自然的优化，钉死 list 会无谓地红（CodeRabbit nitpick）。
+        # Require only "iterable and nonempty"—these tables only perform membership lookups, so changing to tuple/frozenset later
+        # is a natural optimization; requiring list would cause needless failures (CodeRabbit nitpick).
         assert isinstance(table, (list, tuple, set, frozenset)), name
         assert table, f"{name}: 表为空"
 
@@ -1138,10 +1138,10 @@ def test_routing_tables_are_module_level_so_they_can_be_asserted():
     ],
 )
 def test_new_and_clear_are_unreachable_from_free_text(text):
-    """⚠️ `/new` 与 `/clear` 只认字面命令，自由文本一律不触发。
+    """⚠️ `/new` and `/clear` recognize only literal commands; free text never triggers them.
 
     Three measured facts multiplied: the highest misfire rate (6 of 14 pure-chat
-    "change topic" phrasings fired, and all six meant the *chat* topic), no local
+    \"change topic\" phrasings fired, and all six meant the *chat* topic), no local
     state to gate on at all, and an irreversible effect — ``/new`` overwrites the
     one pointer to the upstream session in place, after which a later ``/stop``
     lands on the new session and cannot reach the job still running in the old.
@@ -1157,12 +1157,12 @@ def test_new_and_clear_are_unreachable_from_free_text(text):
         ("/new", "/new"), ("/clear", "/clear"),
         ("/stop", "/stop"), ("/daemon approve", "/daemon approve"),
         ("/approve", "/daemon approve"),
-        # ⚠️ 不带斜杠的裸词已不再是命令，见
+        # ⚠️ Bare words without a slash are no longer commands; see
         # test_a_typed_command_rejects_bare_words_and_anything_extra。
     ],
 )
 def test_the_literal_commands_all_still_resolve(text, expected):
-    """摘掉的是自由文本推断，不是命令本身——四条字面命令必须原样可用。"""  # noqa: DOCSTRING_CJK
+    """Remove free-text inference while keeping the commands themselves—all four literal commands must remain usable unchanged."""  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) == expected, text
@@ -1180,7 +1180,7 @@ def test_the_literal_commands_all_still_resolve(text, expected):
     ],
 )
 def test_stop_phrasings_are_split_into_two_tiers(text, tier):
-    """⚠️ 分档是纯函数：状态在 agent_server，brain 不能伸手去拿。
+    """⚠️ Tiering is a pure function: state lives in agent_server, and brain must not reach into it.
 
     The ambiguous tier is the set of imperatives that are word-for-word identical
     when addressed to the character instead of the agent, so the dispatcher asks
@@ -1193,7 +1193,7 @@ def test_stop_phrasings_are_split_into_two_tiers(text, tier):
 
 
 def test_the_two_stop_tiers_are_disjoint_and_cover_the_table():
-    """两档必须是对整张表的划分：既不重叠，也不能漏。"""  # noqa: DOCSTRING_CJK
+    """The two tiers must partition the entire table: neither overlapping nor omitting entries."""  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import (
         _STOP_ADDRESSED,
         _STOP_AMBIGUOUS,
@@ -1212,10 +1212,10 @@ def test_the_two_stop_tiers_are_disjoint_and_cover_the_table():
     ],
 )
 def test_a_typed_command_never_depends_on_the_llm(text, expected):
-    """⚠️⚠️ 打出来的命令必须**保证**到达，不能让小模型有否决权。
+    """⚠️⚠️ Typed commands must be **guaranteed** delivery; the small model cannot have veto power.
 
     ``classify_magic_intent`` used to await the LLM leg unconditionally, and any
-    dict it returned — including "not a command" — was final, so the rule layer
+    dict it returned — including \"not a command\" — was final, so the rule layer
     never got a say. A model having an off moment silently swallowed a typed
     ``/stop`` while the upstream job kept running.
 
@@ -1247,7 +1247,7 @@ def test_a_typed_command_never_depends_on_the_llm(text, expected):
 
 @pytest.mark.parametrize("text", ["换个话题", "忘了刚才的事", "重新开始", "清除聊天记录"])
 def test_the_free_text_veto_still_holds_when_the_llm_misbehaves(text):
-    """提示词管不住模型：LLM 硬返回 /new 也要被毙掉。"""  # noqa: DOCSTRING_CJK
+    """Prompts cannot constrain the model: even an LLM response insisting on /new must be vetoed."""  # noqa: DOCSTRING_CJK
     import asyncio
 
     from brain.openclaw_adapter import OpenClawAdapter
@@ -1264,8 +1264,8 @@ def test_the_free_text_veto_still_holds_when_the_llm_misbehaves(text):
     finally:
         OpenClawAdapter._classify_magic_intent_with_llm = original
 
-    # ⚠️ 否决之后会**回落规则层**，所以 source 是 "rule" 而不是 veto 常量——
-    # 关键断言是命令确实没出去，而不是它从哪一层出去的。
+    # ⚠️ After vetoing, execution **falls back to the rule layer**, so source is "rule" rather than the veto constant—
+    # the key assertion is that no command was dispatched, rather than which layer dispatched it.
     assert result.get("command") is None, text
 
 
@@ -1274,12 +1274,12 @@ def test_the_free_text_veto_still_holds_when_the_llm_misbehaves(text):
     [
         ("/stop", "/stop"), ("/new", "/new"), ("/clear", "/clear"),
         ("/daemon approve", "/daemon approve"), ("/approve", "/daemon approve"),
-        # 大小写与首尾空白不算「后缀」
+        # Case and surrounding whitespace do not count as a "suffix"
         ("/STOP", "/stop"), (" /stop ", "/stop"), ("/Daemon Approve", "/daemon approve"),
     ],
 )
 def test_a_typed_command_must_be_slash_prefixed_and_bare(text, expected):
-    """⚠️ 用户打出来的 magic command：必须 `/` 开头，且整条输入就是那个命令。"""  # noqa: DOCSTRING_CJK
+    """⚠️ A user-typed magic command must start with `/`, and the entire input must be that command."""  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.parse_typed_magic_command(text) == expected, text
@@ -1288,16 +1288,16 @@ def test_a_typed_command_must_be_slash_prefixed_and_bare(text, expected):
 @pytest.mark.parametrize(
     "text",
     [
-        # 不带斜杠的裸词 —— 它们是普通英文单词
+        # Bare words without a slash—they are ordinary English words
         "stop", "new", "clear", "approve", "daemon approve", "Stop", "CLEAR",
-        # 带了别的东西就不是「裸的」
+        # Adding anything else makes it no longer "bare"
         "/stop now", "/stop 一下", "/stopp", "/stop!", "/stop.", "请 /stop",
         "stop/", "/ stop", "//stop", "/openclaw stop", "/qwenpaw stop",
         "帮我 /stop", "/daemon approve please",
     ],
 )
 def test_a_typed_command_rejects_bare_words_and_anything_extra(text):
-    """⚠️ 8 个 locale 里残留的 9 条误命中全部来自不带斜杠的 `Stop` / `Clear` 按钮标签。
+    """⚠️ All 9 remaining false matches across 8 locales come from slashless `Stop` / `Clear` button labels.
 
     Accepting the slashless words meant an English UI string — or an English chat
     line — counted as a *typed* command, which also handed it the explicit
@@ -1310,7 +1310,7 @@ def test_a_typed_command_rejects_bare_words_and_anything_extra(text):
 
 
 def test_no_ui_string_in_any_locale_is_a_magic_command():
-    """⚠️ 8 个 locale 的全部文案：一条命令意图都没有，命中数必须是 0。"""  # noqa: DOCSTRING_CJK
+    """⚠️ All copy across 8 locales has zero command intent; the match count must be 0."""  # noqa: DOCSTRING_CJK
     import io
     import json
     from pathlib import Path
@@ -1328,9 +1328,9 @@ def test_no_ui_string_in_any_locale_is_a_magic_command():
                 _walk(value, out)
 
     strings: list[str] = []
-    # ⚠️ 用 __file__ 锚定，别用相对路径：`cd tests && pytest ...` 时 glob 会是空的，
-    # 断言变成「语料没加载到」的伪失败。同文件的
-    # test_no_magic_command_fires_on_the_projects_own_ui_copy 已经是这个写法。
+    # ⚠️ Anchor with __file__, not relative paths: `cd tests && pytest ...` would otherwise yield an empty glob,
+    # producing a false failure that the corpus was not loaded. In this file,
+    # test_no_magic_command_fires_on_the_projects_own_ui_copy already follows this pattern.
     locales_dir = Path(__file__).resolve().parents[2] / "static" / "locales"
     for path in sorted(locales_dir.glob("*.json")):
         with io.open(path, encoding="utf-8") as handle:
@@ -1344,17 +1344,17 @@ def test_no_ui_string_in_any_locale_is_a_magic_command():
 @pytest.mark.parametrize(
     ("text", "tier"),
     [
-        # 明确档在前、模糊收尾在后 —— 整句仍算「明确」
+        # An explicit-tier clause first and an ambiguous closing clause last—the whole sentence remains "explicit"
         ("取消这个任务，停下来", "addressed"),
         ("停止搜索，别找了", "addressed"),
         ("算了别查了，停下来吧", "addressed"),
         ("取消這個搜尋，停下來", "addressed"),
-        # 只有模糊说法
+        # Ambiguous phrasing only
         ("停下来", "ambiguous"), ("别找了，停下来", "ambiguous"),
     ],
 )
 def test_an_addressed_phrase_anywhere_makes_the_whole_utterance_addressed(text, tier):
-    """⚠️ 明确档扫**所有**子句，模糊档只看末子句。
+    """⚠️ Scan **all** clauses for the explicit tier, but only the last clause for the ambiguous tier.
 
     ``取消这个任务，停下来`` puts the unambiguous cancel first and a colloquial
     closer last; tiering on the trailing clause alone called it ambiguous, so in
@@ -1372,17 +1372,17 @@ def test_an_addressed_phrase_anywhere_makes_the_whole_utterance_addressed(text, 
 
 @pytest.mark.parametrize("text", ["我说了停止搜索，然后他就走了", "他让我取消这个任务，我没理"])
 def test_a_narrated_addressed_phrase_never_becomes_a_command(text):
-    """分档扫全句不会把叙述变成命令——分类器那层先按末子句判据否掉了。"""  # noqa: DOCSTRING_CJK
+    """Scanning the whole sentence for tiering cannot turn narration into commands—the classifier already vetoes them using the last-clause rule."""  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
 
 
 def test_every_typed_command_key_starts_with_a_slash():
-    """⚠️ `parse_typed_magic_command` 里那句 `startswith("/")` 是**冗余**的防御。
+    """⚠️ `startswith(\"/\")` in `parse_typed_magic_command` is a **redundant** defensive check.
 
     Mutation testing flagged it as equivalent: every key in the table already
-    starts with "/", so a slashless word misses the lookup anyway. Rather than
+    starts with \"/\", so a slashless word misses the lookup anyway. Rather than
     contrive a test around a redundant guard, pin the premise that makes it
     redundant — if someone ever adds a slashless alias, this turns red and they
     have to decide deliberately.
@@ -1398,18 +1398,18 @@ def test_every_typed_command_key_starts_with_a_slash():
 @pytest.mark.parametrize(
     "text",
     [
-        # 模糊词在**非末**子句，末子句不是命令 → 整句不该被分成模糊档
+        # An ambiguous phrase in a **nonfinal** clause, with no command in the last → do not classify the whole sentence as ambiguous
         "别找了，我自己来", "停下来，这是我当时唯一的念头", "快停下来，他喊道",
         "別找了，我自己來",
     ],
 )
 def test_the_ambiguous_tier_only_reads_the_trailing_clause(text):
-    """⚠️ 明确档扫全句、模糊档只看末子句——这个不对称是有意的。
+    """⚠️ The explicit tier scans the whole sentence, while the ambiguous tier reads only the final clause—this asymmetry is deliberate.
 
     Scanning every clause for the ambiguous tier would label a narrated 停下来 as
-    "ambiguous" instead of None. Under the rule path that costs nothing (the
+    \"ambiguous\" instead of None. Under the rule path that costs nothing (the
     classifier already returned None), but on the LLM path it silently flips such
-    an utterance from "no corroboration needed" to "needs corroboration" — a
+    an utterance from \"no corroboration needed\" to \"needs corroboration\" — a
     behaviour change nobody asked for, and one no dispatch test would notice.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
@@ -1422,10 +1422,10 @@ def test_the_ambiguous_tier_only_reads_the_trailing_clause(text):
     [("取消这个任务", "/stop"), ("停止搜索", "/stop"), ("同意，去执行", "/daemon approve")],
 )
 def test_a_vetoed_llm_command_falls_back_to_the_rules(text, expected):
-    """⚠️ 否决破坏性命令，不该连合法的取消一起丢。
+    """⚠️ Vetoing destructive commands must not discard valid cancellation requests too.
 
     When the LLM ignores its prompt and answers ``/new`` for 取消这个任务, vetoing
-    that is right — but finalizing the veto as "not magic" throws away a command
+    that is right — but finalizing the veto as \"not magic\" throws away a command
     the zero-LLM rules can identify perfectly well. Veto, then fall through.
     """  # noqa: DOCSTRING_CJK
     import asyncio

@@ -2,16 +2,27 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import time
-import uuid
-from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Sequence, TypeVar, Union
+from contextlib import suppress
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Coroutine,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+)
 
-from plugin.settings import resolve_message_plane_rpc_endpoint
-from .types import BusList, BusOp, BusRecord, GetNode
-
-from plugin.core.message_plane_transport import MessagePlaneRpcClient as _MessagePlaneRpcClient
+from plugin.core.message_plane_transport import (
+    MessagePlaneRpcClient as _MessagePlaneRpcClient,
+)
 from plugin.core.message_plane_transport import format_rpc_error
+from plugin.settings import resolve_message_plane_rpc_endpoint
+
+from .types import BusList, BusOp, BusRecord, GetNode
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -45,21 +56,21 @@ def _ensure_rpc(ctx: "PluginContext") -> _MessagePlaneRpcClient:
     """
     endpoint = resolve_message_plane_rpc_endpoint()
     rpc = getattr(ctx, "_mp_rpc_client", None)
-    # 只重建**这里自己造的**客户端。调用方注入的那个不许碰：进程内的端到端
-    # 测试就是这么把 ctx 接到一个临时端口上的，按环境值去比较会把它换成默认
-    # 端点，而那个端口上没人监听——整套测试直接挂死（我第一版就是这样）。
-    # 这和 plane_bridge 那边不在 start() 里重读环境是同一条理由。
+    # Rebuild only clients created here. Do not touch injected clients: in-process end-to-end
+    # tests connect ctx to a temporary port this way. Comparing against environment values would
+    # replace it with the default endpoint, where nobody listens, hanging the entire test suite (as my first version did).
+    # This is the same rationale as plane_bridge not rereading environment in start().
     if (
         rpc is not None
         and getattr(rpc, "_neko_endpoint_autoresolved", False)
         and getattr(rpc, "_endpoint", None) != endpoint
     ):
-        # 端点变了：旧客户端的 socket 已经连在老地址上，留着它只会一直超时。
+        # Endpoint changed: old client sockets remain connected to the old address and would only keep timing out.
         #
-        # 只是丢引用，没有 close() 可调——_MessagePlaneRpcClient 不提供关闭接口，
-        # 它的 socket 随对象一起被 pyzmq 在终结时关掉。写一个 try: rpc.close()
-        # 在这里会是纯装饰：那个方法不存在，异常会被吞掉，看着像清理其实没有。
-        # 端点变动是罕见事件（plane 重启换端口），到 GC 之前的短暂滞留可以接受。
+        # Drop the reference only; no close() exists. _MessagePlaneRpcClient exposes no close interface;
+        # pyzmq closes its socket during object finalization. A try: rpc.close() here
+        # would be decorative: the method does not exist, its exception is swallowed, and no actual cleanup occurs.
+        # Endpoint changes are rare (plane restarts on another port); brief retention until GC is acceptable.
         rpc = None
     if rpc is None:
         rpc = _MessagePlaneRpcClient(
@@ -67,7 +78,7 @@ def _ensure_rpc(ctx: "PluginContext") -> _MessagePlaneRpcClient:
             endpoint=endpoint,
         )
         with suppress(Exception):
-            # 打上"我造的"标记，下次端点变了才敢换掉它。
+            # Mark it as locally created so a future endpoint change may replace it.
             rpc._neko_endpoint_autoresolved = True
         try:
             ctx._mp_rpc_client = rpc
@@ -261,81 +272,23 @@ class BusDeletableClientBase(BusRpcClientBase):
     _del_type: str
     _id_field: str
 
-    def _prepare_delete(self, record_id: str, timeout: float) -> tuple[str, Dict[str, Any]]:
-        self._enforce("delete")
-        if getattr(self.ctx, "_plugin_comm_queue", None) is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin "
-                f"{getattr(self.ctx, 'plugin_id', 'unknown')}. "
-                "This method can only be called from within a plugin process."
-            )
-        rid = str(record_id).strip() if record_id is not None else ""
-        if not rid:
+    def _delete_payload(self, record_id: str) -> dict:
+        if not isinstance(record_id, str) or not record_id.strip():
             raise ValueError(f"{self._id_field} is required")
-        req_id = str(uuid.uuid4())
-        request = {
-            "type": self._del_type,
-            "from_plugin": getattr(self.ctx, "plugin_id", ""),
-            "request_id": req_id,
-            self._id_field: rid,
-            "timeout": float(timeout),
-        }
-        return req_id, request
-
-    def _try_zmq_delete(self, request: dict, timeout: float) -> Optional[dict]:
-        """Try ZMQ path. Returns response dict, None (no zmq), or raises on ZMQ failure."""
-        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
-        if zmq_client is None:
-            return None
-        try:
-            resp = zmq_client.request(request, timeout=float(timeout))
-            if isinstance(resp, dict):
-                return resp
-        except Exception as exc:
-            raise TimeoutError(
-                f"{self._del_type} over ZeroMQ timed out or failed after {timeout}s: {exc}"
-            ) from exc
-        raise TimeoutError(f"{self._del_type} over ZeroMQ timed out or failed after {timeout}s")
-
-    def _check_delete_response(self, response: Any) -> bool:
-        if response is None:
-            raise TimeoutError(f"{self._del_type} timed out")
-        if not isinstance(response, dict):
-            raise RuntimeError(f"Invalid {self._del_type} response")
-        if response.get("error"):
-            raise RuntimeError(str(response["error"]))
-        result = response.get("result")
-        return bool(result.get("deleted")) if isinstance(result, dict) else False
+        return {self._id_field: record_id.strip()}
 
     def delete(self, record_id: str, timeout: float = 5.0) -> Union[bool, Coroutine[Any, Any, bool]]:
         if _is_in_event_loop():
-            return self.delete_async(record_id=record_id, timeout=timeout)
-        from plugin.core.state import state
-        req_id, request = self._prepare_delete(record_id, timeout)
-        resp = self._try_zmq_delete(request, timeout)
-        if resp is None:
-            try:
-                self.ctx._plugin_comm_queue.put(request, timeout=timeout)
-            except Exception as e:
-                raise RuntimeError(f"Failed to send {self._del_type}: {e}") from e
-            resp = state.wait_for_plugin_response(req_id, timeout)
-        return self._check_delete_response(resp)
+            return self.delete_async(record_id, timeout)
+        result = self.ctx._send_request_and_wait(
+            method_name=f"{self._policy_prefix}.delete", request_type=self._del_type,
+            request_data=self._delete_payload(record_id), timeout=timeout, wrap_result=False,
+        )
+        return bool(result.get("deleted")) if isinstance(result, dict) else False
 
     async def delete_async(self, record_id: str, timeout: float = 5.0) -> bool:
-        from plugin.core.state import state
-        req_id, request = self._prepare_delete(record_id, timeout)
-        resp = self._try_zmq_delete(request, timeout)
-        if resp is None:
-            try:
-                self.ctx._plugin_comm_queue.put(request, timeout=timeout)
-            except Exception as e:
-                raise RuntimeError(f"Failed to send {self._del_type}: {e}") from e
-            loop = asyncio.get_running_loop()
-            start = loop.time()
-            resp = None
-            while loop.time() - start < timeout:
-                resp = state.get_plugin_response(req_id)
-                if resp is not None:
-                    break
-                await asyncio.sleep(0.01)
-        return self._check_delete_response(resp)
+        result = await self.ctx._send_request_and_wait_async(
+            method_name=f"{self._policy_prefix}.delete", request_type=self._del_type,
+            request_data=self._delete_payload(record_id), timeout=timeout, wrap_result=False,
+        )
+        return bool(result.get("deleted")) if isinstance(result, dict) else False

@@ -10,8 +10,8 @@ from importlib import import_module as _import_module
 
 from . import base as _base
 from . import decorators as _decorators
-# 避免 `from . import llm_tool as _llm_tool` 在 importlib.reload 时被外部 `llm_tool` 函数名
-# 遮蔽（第一次加载后本模块的 `llm_tool` 属性变成函数，导致下次 `from . import llm_tool` 拿回函数而非子模块）喵
+# Prevent `from . import llm_tool as _llm_tool` from being shadowed by the exported `llm_tool` function during importlib.reload
+# (after the first load, this module's `llm_tool` attribute is a function, so the next `from . import llm_tool` returns it instead of the submodule), meow
 _llm_tool = _sys.modules.get("plugin.sdk.plugin.llm_tool") or _import_module("plugin.sdk.plugin.llm_tool")
 from . import activity as _activity
 from . import runtime as _runtime

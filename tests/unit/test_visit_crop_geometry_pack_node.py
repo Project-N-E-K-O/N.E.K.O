@@ -20,15 +20,15 @@ def test_dims_and_profile_for_both_framings():
     )
     assert (out["upper"]["cropW"], out["upper"]["cropH"], out["upper"]["packW"], out["upper"]["packH"]) == (320, 448, 320, 896)
     assert (out["full"]["cropW"], out["full"]["cropH"], out["full"]["packW"], out["full"]["packH"]) == (256, 560, 256, 1120)
-    assert out["pu"] == {"width": 320, "height": 896, "frameRate": 30, "bitrate": 560}
-    assert out["pf"] == {"width": 256, "height": 1120, "frameRate": 15, "bitrate": 560}
+    assert out["pu"] == {"width": 320, "height": 896, "frameRate": 30, "bitrate": 528}
+    assert out["pf"] == {"width": 256, "height": 1120, "frameRate": 15, "bitrate": 528}
     sd = VISIT_TIERS["sd600"]
     assert (out["geo"]["upper"]["w"], out["geo"]["upper"]["h"]) == sd["crop_upper"]
     assert (out["geo"]["full"]["w"], out["geo"]["full"]["h"]) == sd["crop_full"]
     assert {k: [tuple(s) for s in v] for k, v in out["ladder"].items()} == {k: list(v) for k, v in VISIT_CONGESTION_LADDER.items()}
     assert out["un1"]["splitY"] == 448 and abs(out["un1"]["aspect"] - 320 / 448) < 1e-9
     assert out["un2"]["splitY"] == 560 and abs(out["un2"]["aspect"] - 256 / 560) < 1e-9
-    # libwebrtc 自行降分辨率后照样按 videoHeight/2 推导
+    # Still derive from videoHeight/2 after libwebrtc reduces the resolution itself.
     assert out["un3"]["splitY"] == 336
 
 
@@ -97,7 +97,7 @@ def test_out_of_source_crop_is_clipped_not_painted_white():
         """
     )
     assert out["inside"] == {"sx": 100, "sy": 100, "sw": 320, "sh": 448, "dx": 0, "dy": 0, "dw": 320, "dh": 448}
-    # 右半越界：只画左半，目标宽度同比例缩成一半
+    # Right half out of bounds: draw only the left half and halve the target width proportionally.
     assert out["right"] == {"sx": 900, "sy": 0, "sw": 100, "sh": 400, "dx": 0, "dy": 0, "dw": 160, "dh": 640}
     assert out["outside"] is None
 

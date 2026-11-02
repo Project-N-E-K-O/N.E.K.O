@@ -21,7 +21,7 @@ def test_character_card_manager_load(mock_page: Page, running_server: str):
     print(f"Navigating to {url}")
     mock_page.goto(url)
     
-    # Wait for title (支持中英文标题)
+    # Wait for title (supports Chinese and English titles)
     expect(mock_page).to_have_title(re.compile("角色卡管理|Character Card Manager"))
     
     # Wait for character list container

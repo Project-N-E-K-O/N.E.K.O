@@ -26,26 +26,26 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-# 关闭哨兵：core.py 通过 request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
-# 通知 worker 退出主循环。不能复用 (None, None)，因为它已被用作"本轮 utterance
-# 结束、flush/commit 缓冲区"的信号（见 _non_bistream_tts_main_loop、step/qwen
-# worker 的 sid is None 分支）。两种语义必须分开。
+# Shutdown sentinel: core.py signals the worker to exit its main loop via request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
+# Do not reuse (None, None), which already means "this utterance ended; flush/commit the buffer" (see _non_bistream_tts_main_loop and the step/qwen
+# worker sid is None branch). These two meanings must remain distinct.
+#
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
-# 本轮 speech 的音频流已关闭：worker → core 的内部哨兵，core 再翻成下行的
-# {"type": "audio_done", "speech_id": ...}。与 ("__ready__", bool) /
-# ("__error__", msg) 同为 len==2 的 tuple，由 main_logic/core/tts_runtime.py
-# 的 tts_response_handler 消费。
+# The current speech's audio stream is closed: an internal sentinel from worker → core, which core converts into the downstream
+# {"type": "audio_done", "speech_id": ...}. Like ("__ready__", bool) /
+# ("__error__", msg), this is a tuple of len==2 consumed by
+# tts_response_handler in main_logic/core/tts_runtime.py.
 TTS_AUDIO_DONE_SENTINEL = "__audio_done__"
 
-# 软 flush 哨兵：core 通过 request_queue.put((TTS_SOFT_FLUSH_SENTINEL, speech_id))
-# 告诉 worker「这一轮的文本停了一会儿，先把手上攒着的合成出来」。它不是收尾：
-# 不发 audio_done、不动 core 的 done 记账，之后同一 speech_id 还可能继续来文本，
-# worker 要能接着说。只发给 TTS_PROVIDER_REGISTRY 里 soft_flush=True 的 provider——
-# 不认识它的 worker 会把陌生 sid 当成新一轮，所以 core 侧按能力位过滤，不广播。
-# 背景：realtime 语音 + 自定义 TTS 时，core 只在 provider 的 response.done 才发
-# (None, None)，而某些 provider（lanlan.app 的 Gemini 代理）要把自己那份没人用的
-# 音频推完才发 done，尾句因此被 CosyVoice 一直扣着，落到用户下一轮才出声。
+# Soft-flush sentinel: core sends request_queue.put((TTS_SOFT_FLUSH_SENTINEL, speech_id))
+# to tell the worker "text for this turn has paused; synthesize what is buffered first." This is not finalization:
+# do not send audio_done or change core's done bookkeeping; more text may arrive later under the same speech_id,
+# and the worker must continue speaking. Send it only to providers marked soft_flush=True in TTS_PROVIDER_REGISTRY —
+# an unaware worker treats an unfamiliar sid as a new turn, so core filters by capability instead of broadcasting.
+# Background: with realtime speech + custom TTS, core sends this only when the provider's response.done arrives
+# (None, None), while some providers (such as lanlan.app's Gemini proxy) wait until their own unused
+# audio finishes before sending done, leaving the final sentence stuck in CosyVoice until the user's next turn.
 TTS_SOFT_FLUSH_SENTINEL = "__soft_flush__"
 
 
@@ -96,13 +96,13 @@ class AudioDoneEmitter:
         try:
             self._response_queue.put((TTS_AUDIO_DONE_SENTINEL, speech_id))
         except Exception:
-            # 漏发是可接受的降级（前端有 give-up 计时器兜底），不能让它打断收尾路径。
+            # Missing it is an acceptable fallback (the frontend has a give-up timer); do not interrupt the finalization path.
             logger.debug("audio_done 哨兵投递失败 speech_id=%s", speech_id)
 
 # Stable diagnostic code for user-configured endpoints. Never attach the raw
 # exception because SDK/network errors may echo API keys, signed queries, or text.
-# 用户自填端点的异常可能回显密钥、签名 query 或原文；后端日志只记录稳定错误码、
-# provider 和阶段，详细原始异常不得进入 logger。
+# Exceptions from user-configured endpoints may echo keys, signed query parameters, or raw content; backend logs record only stable error codes,
+# provider, and stage. Never send the detailed raw exception to a logger.
 CONFIGURED_TTS_FAILURE_CODE = "TTS_CONFIGURED_API_FAILURE"
 
 
@@ -115,7 +115,7 @@ def configured_tts_unavailable_worker(
     """Report a configured-provider setup failure through the normal ready channel."""
     # Keep the failed provider as the active owner until core observes readiness;
     # this prevents legacy clone fallthrough from reusing its voice ID or API key.
-    # 配置解析失败也要先归属原 provider，再由统一监管层清空音色和凭证后回退。
+    # Attribute config-parsing failures to the original provider first, then let the shared supervisor clear voice and credentials before fallback.
     _ = request_queue
     response_queue.put(("__ready__", False))
 
@@ -150,21 +150,21 @@ def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
     if src_rate == dst_rate:
         return audio_int16.tobytes()
     
-    # 转换为 float32 进行高质量重采样
+    # Convert to float32 for high-quality resampling
     audio_float = audio_int16.astype(np.float32) / 32768.0
     
     if resampler is not None:
-        # 使用流式重采样器（维护 chunk 边界状态）
+        # Use a streaming resampler (preserves chunk-boundary state)
         resampled_float = resampler.resample_chunk(audio_float, last=last)
     else:
-        # 无状态重采样（不推荐用于流式音频）
+        # Stateless resampling (not recommended for streaming audio)
         resampled_float = soxr.resample(audio_float, src_rate, dst_rate, quality='HQ')
     
-    # 转回 int16
+    # Convert back to int16
     resampled_int16 = (resampled_float * 32768.0).clip(-32768, 32767).astype(np.int16)
     return resampled_int16.tobytes()
 
-# 48kHz / 16-bit / mono PCM（所有 worker 重采样后的统一输出格式）每秒字节数。
+# Bytes per second for 48kHz / 16-bit / mono PCM (the common output format after every worker resamples)
 _TTS_OUTPUT_BYTES_PER_SECOND = 48000 * 2
 
 class AudioJitterBuffer:
@@ -211,7 +211,7 @@ class AudioJitterBuffer:
         if not self.started:
             if len(self.buffer) < self._initial_buffer_bytes:
                 return
-            self._flush()  # 越过 head-start，放行并标记 started
+            self._flush()  # Pass the head-start threshold and mark the stream as started
             return
         if len(self.buffer) >= self._steady_buffer_bytes:
             self._flush()
@@ -226,8 +226,8 @@ class AudioJitterBuffer:
             return
         self._response_queue.put(bytes(self.buffer))
         self.buffer.clear()
-        # 放行即视为本轮已开播：短句不足 initial 阈值靠终结 flush 首次放行时，
-        # 后续若有上游晚到的 stray delta 走 steady 而非重新 head-start 再被 reset 丢弃。
+        # Passing the gate means this turn has started: if a short sentence is first released by the terminal flush because it is below the initial threshold,
+        # any later stray upstream delta should use steady-state handling instead of restarting head-start and being discarded by reset.
         self.started = True
 
 def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
@@ -282,10 +282,10 @@ def classify_server_close(exc, *, extra_refusal_codes=()):
     """
     received = getattr(exc, "rcvd", None)
     if received is None:
-        # 没有收到关闭帧 = 链路层断的，或对端没发帧。不是拒绝。
+        # No close frame received = transport was interrupted or the peer sent no frame. It is not a rejection.
         return None
     if getattr(exc, "rcvd_then_sent", None) is False:
-        # 我们先关的（sid 轮换、interrupt、shutdown），这条只是回执。
+        # We closed first (sid rotation, interrupt, shutdown); this is only an acknowledgment.
         return None
     code = getattr(received, "code", None)
     refusal_codes = set(SERVER_CLOSE_REFUSAL_CODES) | set(extra_refusal_codes)
@@ -351,7 +351,7 @@ def _ws_is_open(ws_conn) -> bool:
         return getattr(ws_conn, "state", None) is _WsState.OPEN
     return not getattr(ws_conn, "closed", True)
 
-# ─── 非流式输入 TTS 公共基础设施 ───────────────────────────────────────────
+# ─── Shared infrastructure for non-streaming TTS input ─────────────────────────
 
 class SentenceBuffer:
     """Text sentence buffer — mimics GPT-SoVITS v3 TextBuffer's punctuation-based sentence splitting.
@@ -362,7 +362,7 @@ class SentenceBuffer:
     """
 
     _SENTENCE_END_RE = re.compile(r'[。！？；…\.\!\?\;]+')
-    _MIN_CHARS = 2  # 避免过短片段（如孤立标点）单独合成
+    _MIN_CHARS = 2  # Avoid synthesizing very short fragments (such as a standalone punctuation mark)
 
     def __init__(self):
         self._buf = ""
@@ -420,7 +420,7 @@ class _AudioQueueProxy:
             seq, gen_id, slot_put_fn = self._task_map[task]
             slot_put_fn(seq, gen_id, item)
         else:
-            # 非 synth 上下文（setup / 错误处理），直接转发
+            # Outside synth context (setup / error handling), forward directly
             self._real_queue.put(item)
 
     def _register(self, task, seq: int, gen_id: int, slot_put_fn) -> None:
@@ -483,30 +483,30 @@ async def _non_bistream_tts_main_loop(
     sentence_buf = SentenceBuffer()
     current_speech_id = None
 
-    # ── 代理检测 ──
+    # ── Proxy detection ──
     is_proxy = isinstance(response_queue, _AudioQueueProxy)
     real_queue = response_queue._real_queue if is_proxy else response_queue
     proxy: _AudioQueueProxy | None = response_queue if is_proxy else None
 
-    # 非代理模式退化为串行（向后兼容）
+    # Fall back to serial execution outside proxy mode (backward compatibility)
     if not is_proxy:
         max_concurrent = 1
 
-    # ── 并行合成 + 顺序投递基础设施 ──
+    # ── Infrastructure for parallel synthesis and ordered delivery ──
 
-    _next_seq: int = 0                                  # 下一个分配的序号
+    _next_seq: int = 0                                  # Next sequence number to allocate
     _slot_buffers: dict[int, list] = {}                 # seq_id → [chunk, ...]
-    _slot_done: dict[int, asyncio.Event] = {}           # seq_id → 合成完成事件
-    _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → 有新数据通知
+    _slot_done: dict[int, asyncio.Event] = {}           # seq_id → synthesis-completion event
+    _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → notification of new data
     _tasks: dict[int, asyncio.Task] = {}                # seq_id → synth task
     _sentence_enqueued_at: dict[int, float] = {}        # seq_id → enqueue monotonic time
     _slot_sentences: dict[int, tuple[str, str]] = {}    # seq_id → (speech_id, sentence)
     _sem = asyncio.Semaphore(max_concurrent)
-    _drain_seq: int = 0                                 # drain 当前正在投递的序号
+    _drain_seq: int = 0                                 # Sequence number currently being drained
     _drain_task: asyncio.Task | None = None
-    _generation_id: int = 0                             # 每次 cancel 递增
-    # 本轮音频流关闭信号。必须绑真实队列：drain 已经把所有 chunk 投到 real_queue，
-    # 走 proxy 会被路由进（此刻已释放的）slot 缓冲。
+    _generation_id: int = 0                             # Increment on every cancel
+    # Current audio-stream-closed signal. Must use the real queue: drain has already sent all chunks to real_queue,
+    # and routing through the proxy would put them into a slot buffer that has already been released.
     audio_done = AudioDoneEmitter(real_queue)
 
     def _trace_sentence(event: str, seq: int, sid: str, text: str, **extra) -> None:
@@ -569,7 +569,7 @@ async def _non_bistream_tts_main_loop(
                 if gen_id == _generation_id:
                     if safe_error_provider:
                         # Do not pass the raw exception or sentence into traces.
-                        # 配置型 API 的追踪与队列都只能使用脱敏错误载荷。
+                        # Tracing and queues for configuration-based APIs may contain only redacted error payloads.
                         safe_error = configured_tts_failure_payload(
                             safe_error_provider, "synthesis"
                         )
@@ -609,14 +609,14 @@ async def _non_bistream_tts_main_loop(
             new_data_evt = _slot_new_data.get(seq)
 
             if buf is None or done_evt is None or new_data_evt is None:
-                # 当前序号的 slot 还没分配，让出控制权
+                # Slot for the current sequence has not been allocated yet; yield control
                 await asyncio.sleep(0.01)
                 continue
 
             cursor = 0
             had_error = False
             while gen_id == _generation_id:
-                # 转发已有的 chunk
+                # Forward existing chunks
                 while cursor < len(buf):
                     item = buf[cursor]
                     cursor += 1
@@ -630,7 +630,7 @@ async def _non_bistream_tts_main_loop(
                         real_queue.put(item)
 
                 if done_evt.is_set():
-                    # 该句子合成完毕，转发剩余 chunk 后推进到下一句
+                    # Sentence synthesis completed; forward remaining chunks, then advance to the next sentence
                     while cursor < len(buf):
                         item = buf[cursor]
                         cursor += 1
@@ -649,7 +649,7 @@ async def _non_bistream_tts_main_loop(
                     _drain_seq = seq + 1
                     break
 
-                # 等待新数据或完成信号
+                # Wait for new data or completion signal
                 new_data_evt.clear()
                 if cursor < len(buf) or done_evt.is_set():
                     continue
@@ -682,7 +682,7 @@ async def _non_bistream_tts_main_loop(
         tasks = list(_tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        for _ in range(200):  # 最多等 2 秒
+        for _ in range(200):  # Wait at most 2 seconds
             if not _slot_buffers:
                 return True
             await asyncio.sleep(0.01)
@@ -690,8 +690,8 @@ async def _non_bistream_tts_main_loop(
 
     async def _cancel_all() -> None:
         nonlocal _drain_task, _next_seq, _drain_seq, _generation_id
-        _generation_id += 1  # 使所有 in-flight 的 synth 和 drain 立即失效
-        audio_done.reset()  # 新轮次 / 打断：重置 audio_done 去重标记
+        _generation_id += 1  # Immediately invalidate all in-flight synth and drain tasks
+        audio_done.reset()  # New turn / interruption: reset the audio_done deduplication marker
 
         for task in list(_tasks.values()):
             if not task.done():
@@ -722,7 +722,7 @@ async def _non_bistream_tts_main_loop(
         if proxy is not None:
             proxy._clear()
 
-    # ── 主循环 ──
+    # ── Main loop ──
     loop = asyncio.get_running_loop()
 
     while True:
@@ -753,14 +753,14 @@ async def _non_bistream_tts_main_loop(
             remaining = sentence_buf.flush()
             if remaining and current_speech_id is not None:
                 _enqueue_sentence(remaining, current_speech_id)
-            # 先捕获本轮 sid：_drain_remaining 会让出，期间不能依赖循环变量。
+            # Capture this turn's sid first: _drain_remaining yields control, so do not rely on the loop variable during it.
             finished_speech_id = current_speech_id
             drained = await _drain_remaining()
             if drained:
                 audio_done.emit(finished_speech_id)
             else:
-                # 抽干撞上 2 秒硬上限，音频可能还没产完，此时发 audio_done 就是早发。
-                # 宁可漏发（前端 give-up 计时器兜底）也不能让前端提前收尾。
+                # If draining hits the 2-second hard limit, audio may not be fully produced yet; sending audio_done now would be premature.
+                # Prefer a missed event (the frontend give-up timer is a fallback) over letting the frontend finalize early.
                 logger.warning(
                     "%s 抽干超时，跳过 audio_done speech_id=%s", label, finished_speech_id
                 )

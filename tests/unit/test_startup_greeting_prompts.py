@@ -248,8 +248,8 @@ def test_time_hints_no_longer_directly_instruct_offline_activity_inference():
     assert "had a long day" not in en_hints
 
 
-# 有辨识度的时段必须保留特征和搭话方向：只留否定式禁令会把凌晨三点和下午三点
-# 的开场拉平，反而加剧 #2613 抱怨的雷同。上午/下午本来就没有特征，维持精简。
+# Distinctive time periods must retain their traits and conversational direction: purely negative prohibitions would flatten
+# 3am and 3pm openings, worsening the similarity reported in #2613. Morning/afternoon have no traits; keep them concise.
 DISTINCTIVE_PERIODS = ("late_night", "early_morning", "noon", "evening", "night")
 FEATURELESS_PERIODS = ("morning", "afternoon")
 
@@ -290,8 +290,8 @@ def test_featureless_periods_stay_minimal(lang):
         assert len(_TIME_OF_DAY_HINTS[period][lang]) <= 24
 
 
-# 每种语言里「用户是否醒着/睡着」的词根。这些只允许出现在禁令段——素材段一旦
-# 提到，就等于一边把「你还醒着」当开场素材、一边禁止断言同一件事。
+# Per-language roots describing whether the user is awake/asleep. Allow these only in prohibitions; mentioning them in
+# source material would both suggest you are still awake as an opening and prohibit asserting the same thing.
 _SLEEP_STATE_TERMS = {
     "zh": ("醒", "睡"),
     "zh-TW": ("醒", "睡"),
@@ -303,7 +303,7 @@ _SLEEP_STATE_TERMS = {
     "pt": ("acordad", "acord", "dorm"),
 }
 
-# 素材段与禁令段的分界，逐语言。
+# Per-language boundaries between source material and prohibitions.
 _LATE_NIGHT_PROHIBITION_MARKERS = {
     "zh": "但不要断言",
     "zh-TW": "但不要斷言",

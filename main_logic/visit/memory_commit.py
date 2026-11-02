@@ -103,7 +103,7 @@ SummaryLLM = Callable[[str], Awaitable[str]]
 """One-shot LLM call: prompt in, text out (no session, no history)."""
 
 
-# ── 每对一把锁 ────────────────────────────────────────────────────────
+# -- One lock per pair --
 
 _PEER_LOCKS: "weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock]" = weakref.WeakValueDictionary()
 
@@ -124,7 +124,7 @@ def peer_lock(own_char_uid: str, peer_uid: str) -> asyncio.Lock:
     return lock
 
 
-# ── 选句与切批（纯函数）──────────────────────────────────────────────
+# -- Sentence selection and batching: pure functions --
 
 
 def line_order_key(line: Mapping[str, Any]) -> tuple[int, int]:
@@ -146,7 +146,7 @@ def select_digest_lines(
     cats = [line for line in ordered if line["from"] in _CAT_SPEAKERS]
     humans = [line for line in ordered if line["from"] not in _CAT_SPEAKERS]
     if len(cats) > limit:
-        # 协议上猫娘行一场 ≤80，超出只能是坏数据：仍守总量，取最新的
+        # Protocol permits at most 80 catgirl lines per visit; excess means corrupt data. Still bound total count and keep the latest.
         cats = cats[-limit:]
     room = max(0, limit - len(cats))
     kept_humans = humans[-room:] if room else []
@@ -174,7 +174,7 @@ def plan_digest_batches(
 
 def _batch_fingerprint(batch: Sequence[Mapping[str, Any]]) -> str:
     """Short digest of which lines a batch holds and what they say (``lp``, ``side``, speaker, text)."""
-    # 正文也算进去：开轮后某行被改了内容，续跑就不能沿用旧计划、拿旧键发出不同的内容
+    # Include body text: if lines change after round creation, resumed work cannot reuse old plans/keys for different content.
     identity = [[line["lp"], line["side"], line["from"], line.get("text")] for line in batch]
     return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
 
@@ -184,7 +184,7 @@ def digest_key(visit_id: str, run: int, part: str, batch: int) -> str:
     return f"visit-digest:{visit_id}:{run}:{part}:{batch}"
 
 
-# ── 串门区 digest ────────────────────────────────────────────────────
+# -- Visit-region digest --
 
 
 @dataclass
@@ -244,15 +244,15 @@ async def _peer_displays(
     human_label = get_visit_speaker_header("peer_human", lang).strip("[] ")
     short = derive_short_code(state["peer_uid"])
     roster = PeerRoster(config_dir, own_uid=state["own_uid"])
-    # 显示名只是装饰：名册条目结构坏了也退回通用标签，不能让 segments digest 失败
+    # Display names are decorative; malformed roster entries fall back to generic labels rather than failing segment digests.
     peer = await roster.get_peer(state["peer_uid"])
     entry = await roster.get_char_entry(state["peer_uid"], own_char)
     chars = entry.get("chars") if isinstance(entry, dict) else None
     cat_info = chars.get(state["peer_char_id"]) if isinstance(chars, dict) else None
     peer = peer if isinstance(peer, dict) else {}
     cat_info = cat_info if isinstance(cat_info, dict) else {}
-    # 对端自报的名字冒充本地角色 / 家人 / 己方或对端的说话人标签时换成通用标签：否则对端的话会以
-    # 本地角色（或「你」「你的家里人」）的名义进 speaker_label 与 display_name，抽出的事实归属就错了
+    # Replace peer-reported names impersonating local characters/family/side speaker labels with generic labels; otherwise peer speech enters
+    # speaker_label/display_name as local characters, you, or your family, corrupting extracted fact attribution.
     protected = _protected_display_names(own_char, lang, family_names, local_char_names)
     cat = neutralize_display_name(cat_info.get("display_name"), protected_names=protected,
                                   generic_label=cat_label, short_code=short)
@@ -305,7 +305,7 @@ async def commit_visit_region(
     if not is_digestable(state):
         return CommitResult(ok=True, skipped="memory_off")
     if state["finalized"] is None:
-        # finalize 之前一律不提交：串门区只在收口（或崩溃补录）时整理一次
+        # Never submit before finalize; organize visit regions once at finalization or crash backfill.
         return CommitResult(ok=False, skipped="not_finalized")
     if state["peer_uid"] is None:
         return CommitResult(ok=True, skipped="peer_forgotten")
@@ -319,8 +319,8 @@ async def commit_visit_region(
                                         local_char_names=local_char_names)
 
     if shutdown:
-        # 关机预算按整次提交算：等锁（可能有摘要的 LLM 调用正持着它）与先后几个批次
-        # 共用同一个 VISIT_SHUTDOWN_BUDGET_S，超时就把剩下的留给补录
+        # One shutdown budget covers the entire commit: lock waiting, possibly behind an LLM summary call, and successive batches
+        # share VISIT_SHUTDOWN_BUDGET_S, leaving remaining work for backfill on timeout.
         try:
             result = await asyncio.wait_for(locked(), VISIT_SHUTDOWN_BUDGET_S)
         except asyncio.TimeoutError:
@@ -343,7 +343,7 @@ async def _commit_locked(
     family_names: Iterable[str] = (),
     local_char_names: Iterable[str] = (),
 ) -> CommitResult:
-    # 锁内重读：等锁期间「清除这个人」可能已抹掉对端身份
+    # Reread under lock: clearing this person may erase peer identity while waiting.
     state = await spool.read_state()
     if state is None:
         return CommitResult(ok=True, skipped="no_state")
@@ -353,8 +353,8 @@ async def _commit_locked(
         return CommitResult(ok=True, skipped="peer_forgotten")
     if await memory_bridge.forget_in_progress(spool.config_dir, state["own_char_uid"], state["peer_uid"],
                                               own_uid=state["own_uid"]):
-        # 清除做到一半（memory_server 不可用时日志留着待重放）：此时开轮会带上已加过的清除代数，
-        # 服务端不会挡，已清掉的记忆就被写回。等清除完成（对端身份随之抹掉）再说
+        # A partially completed clear, journaled for replay while memory_server is unavailable, already incremented the clear generation;
+        # starting now bypasses server rejection and rewrites cleared memories. Wait for clear completion and peer-identity erasure.
         return CommitResult(ok=False, skipped="forget_in_progress")
     name = await resolve_char_name(state["own_char_uid"])
     if not name:
@@ -363,9 +363,9 @@ async def _commit_locked(
     header = contents.header
     if header is None:
         if not contents.dropped_lines:
-            # 记忆开着、收口后转录文件不存在或是空的：一句都没有，以后也不会有。写「已放弃」终态，
-            # 否则每次启动都把它当没做完重来一遍、按容量也回收不掉（收口与补录都走到这里）。
-            # 头行坏了 / 属于别的场次（dropped_lines > 0）不算：那是损坏，不是没说话
+            # Memory enabled but finalized transcript missing/empty means no speech now or ever; persist abandoned terminal state,
+            # or every startup retries forever and capacity reclamation cannot remove it. Both finalization/backfill reach here.
+            # Invalid/wrong-visit headers with dropped_lines > 0 indicate corruption, not absence of speech.
             await spool.mark_no_transcript(now=time.time() if now is None else float(now))
         return CommitResult(ok=True, skipped="no_transcript")
     if not _header_matches_state(header, state):
@@ -383,20 +383,20 @@ async def _commit_locked(
         fresh = [line for line in contents.lines if line["lp"] > previous]
         if not fresh:
             if not runs and not contents.lines and not contents.dropped_lines:
-                # 只有头行、一句都没有（追加全失败，或开了头就收口）：与上面没有转录文件同一个终态
+                # Header-only transcripts after all appends failed or immediate closure use the same terminal state as missing transcripts.
                 await spool.mark_no_transcript(now=time.time() if now is None else float(now))
             return CommitResult(ok=True, skipped="nothing_new")
         run = len(runs)
         through = max(line["lp"] for line in fresh)
     run_lines = [line for line in contents.lines if previous < line["lp"] <= through]
-    # 续跑按开轮时记下的切批参数切：升级改了句数上限 / 每批句数，批号与幂等键仍对得上
+    # Resume with original batching parameters; upgraded total/per-batch limits must not change batch IDs or idempotency keys.
     plan = dict(record.get("plan") or {}) if resume else {}
     max_lines = int(plan.get("max_lines", VISIT_DIGEST_MAX_LINES))
     batch_size = int(plan.get("batch_size", SCOPED_HISTORY_BATCH_MAX_MESSAGES))
     if batch_size > SCOPED_HISTORY_BATCH_MAX_MESSAGES:
-        # 开轮时的每批句数比当前的上行上限大（升级把这个协议上限调低了）：按原计划续跑
-        # 发不出去，换新键重切又会与已登记的批次与服务端记录冲突。不抛错卡住每次启动，
-        # 记诊断、留着这一轮（7 天按龄回收）
+        # Original per-batch count exceeds the current uplink cap after upgrade: the old plan cannot be sent,
+        # but rebatching under new keys conflicts with registered batches/server records. Avoid blocking every startup with exceptions;
+        # record diagnostics and retain this round for age-based reclamation after 7 days.
         memory_bridge.diag("digest_plan_exceeds_wire_limit", visit_id=spool.visit_id, run=run,
                            batch_size=batch_size, limit=SCOPED_HISTORY_BATCH_MAX_MESSAGES)
         return CommitResult(ok=False, skipped="plan_exceeds_wire_limit", run=run)
@@ -411,34 +411,34 @@ async def _commit_locked(
         recorded = record.get("membership")
         if (
             len(record["group"]) != len(group_batches) or len(record["segments"]) != len(segment_batches)
-            # 批数相同、边界却挪了（开轮后某行读不出被丢弃）：已确认的批次就会漏掉挪进来的句子，
-            # 待发的批次也会拿别的句子用旧键重发。逐批核对开轮时的成员指纹
+            # Equal batch counts with shifted boundaries, e.g. unreadable discarded lines, make acknowledged batches miss newly included sentences
+            # and pending batches reuse keys for other sentences. Verify each batch's original membership fingerprint.
             or (recorded is not None and recorded != membership)
         ):
-            # 切批只由 through_lp 与句序决定；对不上说明转录被改动过，不能拿别的句子用旧键重发。
-            # 这是终态：转录里那几行不会自己恢复，重试也不会成功。把这一轮记成放弃并推进水位
-            # （region_settled 按已结清），转录按正常流程释放，不再每次启动重读、重记诊断空转 7 天
+            # Batching depends only on through_lp and line order; mismatches imply transcript edits, forbidding reuse of old keys for different sentences.
+            # Terminal failure: missing transcript rows do not repair themselves and retries cannot succeed. Abandon this round and advance the watermark,
+            # treating region_settled as settled; release transcripts normally instead of rereading/relogging on every startup for 7 days.
             memory_bridge.diag("digest_batches_mismatch", visit_id=spool.visit_id, run=run)
             record["abandoned"] = "batches_mismatch"
             await spool.update_state(digest_writes=runs, digested_through_lp=through, digest_runs=run + 1)
             return CommitResult(ok=True, skipped="batches_mismatch", run=run, dropped_lines=dropped)
-        # 续跑原样使用开轮时定格的请求渲染：language、group 的说话人前缀、segments 的显示名都进
-        # 服务端的请求指纹，现算的话跨版本（支持语言表 / 标签模板 / 名册显示名变了）同键不同体会被永久 422。
-        # 没有这些字段的旧计划按当前规则现算（与开轮时同一套算法；只有这些字段加入之前开的轮会走到）
+        # Resume with frozen original request rendering: language, group speaker prefixes, and segment display names enter
+        # server fingerprints. Recomputing after language/label/roster changes yields permanent 422 for same-key/different-body requests.
+        # Legacy plans without these fields recompute using current rules, the same algorithm used when those prefield rounds started.
         language = plan["language"] if "language" in plan else _wire_language(lang)
         headers = plan.get("headers")
         if headers is None:
             headers = memory_bridge.group_speaker_headers(selected, lang)
         displays = plan.get("displays")
         if language is not None and not is_supported_language_code(language):
-            # 开轮时发出了这个语言码、当前版本已不支持：客户端会把它丢掉，请求体对不上必 422。
-            # 与切批上限变小同一处理：记诊断、留着这一轮（7 天按龄回收）
+            # Original language code no longer supported: the client drops it, making the mismatched request body inevitably 422.
+            # Handle like reduced batching caps: log diagnostics and retain the round for 7-day age reclamation.
             memory_bridge.diag("digest_plan_language_unsupported", visit_id=spool.visit_id, run=run)
             return CommitResult(ok=False, skipped="plan_language_unsupported", run=run)
     else:
         try:
-            # 开轮前先把本地清除代数抬到服务端墓碑的当前值：云存档恢复 / 换机后本地从 0 重计，
-            # 低于已有墓碑的整轮写入会被服务端静默丢弃
+            # Before opening a round, raise local clear generation to the server tombstone's current value; after cloud restore/device changes local counts restart at 0,
+            # and the server silently discards whole rounds older than its tombstone.
             await memory_bridge.sync_forget_epochs(name, subjects, config_dir=spool.config_dir, client=client)
             epochs = await ForgetEpochs(spool.config_dir).get(subjects)
         except ForgetEpochsUnsynced as exc:
@@ -464,12 +464,12 @@ async def _commit_locked(
             "group": {str(b): False for b in range(len(group_batches))},
             "segments": {str(b): False for b in range(len(segment_batches))},
             "epochs": epochs,
-            # 开轮时定格切批参数与实际要发出的请求渲染，续跑原样使用
+            # Freeze batching parameters and actual request rendering at round creation; reuse unchanged on resume.
             "plan": plan,
             "membership": membership,
         }
         runs[str(run)] = record
-        # 先落盘本轮 through_lp / requested_at / 全部批号 / 清除代数，再发第一个请求：重试沿用它们
+        # Persist through_lp / requested_at / every batch ID / clear generation before the first request; retries reuse them.
         await spool.update_state(digest_writes=runs)
         if dropped:
             memory_bridge.diag("digest_lines_capped", visit_id=spool.visit_id, dropped=dropped)
@@ -493,7 +493,7 @@ async def _commit_locked(
         record["group"][str(b)] = True
         await spool.update_state(digest_writes=runs)
     if segment_batches and displays is None:
-        # 旧计划没有定格显示名：按当前名册现算
+        # Legacy plans lack frozen display names; compute from the current roster.
         cat_display, human_display = await _peer_displays(spool.config_dir, state, name, lang, family_names,
                                                           local_char_names)
         displays = {"peer_cat": cat_display, "peer_human": human_display}
@@ -514,7 +514,7 @@ async def _commit_locked(
             return CommitResult(ok=False, requests=requests, run=run, dropped_lines=dropped)
         record["segments"][str(b)] = True
         await spool.update_state(digest_writes=runs)
-    # 这一轮全部批次都确认：推进水位（与批次表同一次原子写）
+    # All batches acknowledged: advance watermark in the same atomic write as the batch table.
     await spool.update_state(
         digest_writes=runs, digested_through_lp=through, digest_runs=run + 1,
     )
@@ -534,7 +534,7 @@ def _epochs_for(epochs: Mapping[str, int], subjects: Iterable[Mapping[str, str]]
     return out
 
 
-# ── 上次串门摘要 ──────────────────────────────────────────────────────
+# -- Previous-visit summary --
 
 _SUMMARY_TASKS: dict[str, "asyncio.Future[Any]"] = {}
 
@@ -586,16 +586,16 @@ async def last_summary_handoff(
 
     pair_id = derive_pair_id(own_uid, peer_uid)
     try:
-        # 宽松查找：读不出的场次跳过，只返回能确认属于这一对的；一场无关的坏文件不能
-        # 让这一对的所有上一场都不等
+        # Permissive lookup: skip unreadable visits and return only confirmed matches for this pair; unrelated corruption must not
+        # eliminate waiting for all previous visits of this pair.
         visit_ids = await VisitSpool.find_visits_for_pairs(config_dir, own_char_uid, [pair_id], strict=False)
-    except Exception as exc:  # noqa: BLE001 - 扫描失败只是少等，不挡开场
+    except Exception as exc:  # noqa: BLE001 - Scan failures shorten waiting without blocking opening.
         logger.warning("visit last-summary handoff: cannot scan spools: %s", exc)
         visit_ids = []
     waits: list[asyncio.Future[Any]] = []
     for visit_id in visit_ids:
         if visit_id == opening_visit_id:
-            # 正要开场的这一场自己：可能还没登记成在飞，不能被当成崩溃场次标 crash
+            # The visit currently opening may not yet register as in flight; never misclassify it as crashed.
             continue
         running = _SUMMARY_TASKS.get(visit_id)
         if running is not None:
@@ -605,8 +605,8 @@ async def last_summary_handoff(
             continue
         spool = VisitSpool(config_dir, visit_id)
         if is_spool_open(spool.jsonl_path):
-            # 与补录同一口径：本进程里这场的 writer 还开着（已从 is_live 注销、追加写与收口还在排队），
-            # 此时标 crash 会拿半截转录生成摘要，随后真正的收口被覆盖或拒绝
+            # Match backfill: if this process still has its writer open after is_live unregisters while appends/finalization queue,
+            # marking crash would summarize partial transcripts and overwrite/reject real finalization later.
             continue
         try:
             state = await spool.read_state()
@@ -617,11 +617,11 @@ async def last_summary_handoff(
         if state["finalized"] is None:
             if is_live is None:
                 continue
-            # 已确认不在飞、却没收口：上次崩溃、补录还没跑到它。先照补录的口径标成 crash
-            # （芯片由补录照常补弹），摘要的收口闸才放行——它不会对在飞场次的半截转录生成
+            # Confirmed inactive but unfinalized visits crashed before backfill reached them. Mark crash as backfill does,
+            # leaving chip restoration to backfill, then allow summary finalization gates; never summarize half an active transcript.
             try:
                 await spool.update_state(finalized="crash")
-            except Exception as exc:  # noqa: BLE001 - 标不上就不替它生成，等补录
+            except Exception as exc:  # noqa: BLE001 - If marking fails, defer generation to backfill.
                 logger.warning("visit last-summary handoff: cannot mark %s crashed: %r", visit_id, exc)
                 continue
         waits.append(track_last_summary(visit_id, start_summary(spool)))
@@ -654,13 +654,13 @@ def record_block_within_budget(lines: Sequence[Mapping[str, Any]], lang: str | N
         if len(chosen) <= 1:
             if not chosen:
                 return block
-            # 只剩最新一句、它本身就超过预算：截短这一句，不把超长输入整句送进 LLM
-            # （否则每次都超时、每次启动都重试）
+            # Only the latest sentence remains and exceeds budget: truncate it instead of sending oversized text whole,
+            # which would repeatedly time out and retry each startup.
             line = chosen[0]
             text = line.get("text") or ""
             room = max(count_tokens(text) - excess - 8, 1)
             return build_visit_record_block([(line["from"], truncate_to_tokens(text, room))], lang)
-        # 数据块分隔符与说话人分组的开销不在逐句预算里：按超出量收紧后重取，仍从最新一句往前整句取
+        # Data-block delimiters/speaker groups add overhead beyond per-sentence budgets; tighten by the excess and reselect whole sentences newest first.
         allowance -= excess + 8
 
 
@@ -675,7 +675,7 @@ async def _retired(config_dir: Path, own_char_uid: str) -> bool:
 
 
 async def _mark_summary_done(spool: VisitSpool, own_char_uid: str) -> bool:
-    # 写 last_summary_done 之前确认这场没被退役：state.json 已删或角色在退役标记里 → 不写、不重建
+    # Before last_summary_done, ensure the visit was not retired: missing state.json or retired-character markers prohibit writing/recreation.
     if await _retired(spool.config_dir, own_char_uid):
         return False
     try:
@@ -718,12 +718,12 @@ async def commit_last_summary(
     if state is None or state["last_summary_done"]:
         return True
     if state["finalized"] is None:
-        # 与 commit_visit_region 同一道闸：在飞场次的转录还是半截，现在生成并记 done，
-        # 收口时就不会再生成，下一场开场带的是截断的摘要
+        # Share commit_visit_region's gate: active transcripts are incomplete; generating and marking done now prevents
+        # regeneration on finalization and gives the next visit a truncated summary.
         return False
     if not is_digestable(state) or state["peer_uid"] is None or state["pair_id"] is None:
         if await _mark_summary_done(spool, state["own_char_uid"]):
-            # 「清除这个人」后补完的摘要也可能让这场刚好结清：与正常路径同一处回收转录
+            # A post-clear summary may settle this visit; reclaim transcripts at the normal shared point.
             await spool.delete_if_settled()
         return True
     lock = peer_lock(state["own_char_uid"], state["peer_uid"])
@@ -748,13 +748,13 @@ async def _summary_locked(
         return True
     own_char_uid = state["own_char_uid"]
     if state["peer_uid"] is None or state["pair_id"] is None:
-        # 等锁期间「清除这个人」已抹掉对端身份：不存
+        # Clearing this person erased peer identity while waiting for the lock: do not save.
         await _mark_summary_done(spool, own_char_uid)
         return True
     if await memory_bridge.forget_in_progress(spool.config_dir, own_char_uid, state["peer_uid"],
                                               own_uid=state["own_uid"]):
-        # 清除未完成：现在写进名册的摘要会在 remove_char 之前出现、之后被一并删掉，
-        # 但若 remove_char 已做完，就会把条目里的摘要写回。等清除结束再处理
+        # Clear incomplete: summaries written before remove_char would later disappear, but if remove_char already
+        # ran, writing recreates the entry's summary. Wait for clear completion.
         return False
     contents = await spool.read_back()
     lines = [line for line in contents.lines if str(line.get("text") or "").strip()]
@@ -762,36 +762,36 @@ async def _summary_locked(
         await _mark_summary_done(spool, own_char_uid)
         return True
     if not _header_matches_state(contents.header, state):
-        # 转录头行与 state 指的不是同一场（同账号同对端、别的本地角色……）：不能把这份转录的
-        # 摘要存到 state 那个角色名下
+        # Transcript headers and state identify different visits, possibly another local character for the same account/peer;
+        # never save that transcript's summary under state's character.
         memory_bridge.diag("summary_header_mismatch", visit_id=spool.visit_id)
         return False
     lang = contents.header.get("lang")
     own_char = await resolve_char_name(own_char_uid)
     if not own_char:
-        # 角色已删：不写名册、也不写 state.json（退役流程会删掉这场）
+        # Character deleted: write neither roster nor state.json; retirement removes this visit.
         return True
     if roster is None:
         roster = PeerRoster(spool.config_dir, own_uid=state["own_uid"])
     elif roster.own_uid != state["own_uid"]:
         raise ValueError("roster belongs to another community account than this visit")
     try:
-        # 调 LLM 之前先按写入时的同一套严格规则读这条名册条目：名册坏着时写入必然抛
-        # RosterCorruptError，先付费调用再写失败的话，每次启动都会为每个保留中的场次重复计费
+        # Before paying for LLM generation, read the roster entry with the same strict write rules: corrupt rosters necessarily raise
+        # RosterCorruptError on write, so generating first would repeatedly bill every retained visit on each startup.
         entry = await roster.get_char_entry(state["peer_uid"], own_char, strict=True)
     except RosterCorruptError as exc:
         memory_bridge.diag("summary_roster_unreadable", visit_id=spool.visit_id, error=str(exc))
         return False
     pairs = entry.get("pairs") if entry is not None else None
     if not isinstance(pairs, list) or state["pair_id"] not in pairs:
-        # set_last_summary 只写进已有、且 pairs 含这一对的条目（已完成的清除不能被迟到的摘要撤销）：
-        # 现在就写不进去，生成也是白花钱，与写入返回 False 时一样只记 done
+        # set_last_summary writes only existing entries whose pairs include this pair, preventing late summaries undoing clears;
+        # if unwritable now, generation wastes money. Mark done only, as with False write returns.
         await _mark_summary_done(spool, own_char_uid)
         return True
     existing = entry.get("last_summary")
     if isinstance(existing, dict) and existing.get("visit_id") == spool.visit_id:
-        # 上次已把这场的摘要写进名册、只差记 done 就被杀：不再调一次 LLM（会重复计费，
-        # 同 ended_at 还会把已提交的摘要换成另一版），只补记 done
+        # A previous attempt wrote the roster summary but died before done; avoid another billed LLM call,
+        # which would replace the committed summary at the same ended_at, and merely record done.
         await _mark_summary_done(spool, own_char_uid)
         return True
     block = await asyncio.to_thread(
@@ -800,7 +800,7 @@ async def _summary_locked(
     prompt = build_visit_last_summary_prompt(own_char, block, lang)
     try:
         raw = await asyncio.wait_for(llm(prompt), VISIT_LLM_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001 - 任何失败都只是这次没生成，补录重试
+    except Exception as exc:  # noqa: BLE001 - Any failure skips this generation; backfill retries.
         logger.warning("visit last summary generation failed for %s: %r", spool.visit_id, exc)
         return False
     text = strip_emotion_tags(str(raw or ""))
@@ -809,14 +809,14 @@ async def _summary_locked(
     text = (await asyncio.to_thread(truncate_to_tokens, text, VISIT_LAST_SUMMARY_MAX_TOKENS)).strip()
     peer_texts = [str(line["text"]) for line in lines if line["from"] in _PEER_SPEAKERS]
     try:
-        # 全转录逐字扫描：对端行可能很多，放到工作线程，不卡事件循环
+        # Scan all transcript text in workers because peer lines may be numerous; do not block the loop.
         await asyncio.to_thread(assert_no_peer_ngram, text, peer_texts, n=VISIT_PEER_NGRAM_N)
     except PeerNgramHit:
         memory_bridge.diag("last_summary_peer_ngram", visit_id=spool.visit_id)
         text = ""
     if text:
-        # 按规范顺序的最后一行取时间：墙钟中途被校正时取最大值会拿到某个跳到未来的时间戳，
-        # 名册按它排序，之后的场次就再也盖不掉这份旧摘要
+        # Use the final canonically ordered line's timestamp, not the maximum: clock correction can leave a future timestamp,
+        # which roster ordering would keep above every later visit's summary forever.
         ended_at = float(max(contents.lines, key=line_order_key)["ts"])
         await roster.set_last_summary(
             state["peer_uid"], own_char, visit_id=spool.visit_id, ended_at=ended_at,

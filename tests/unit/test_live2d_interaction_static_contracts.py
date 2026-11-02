@@ -27,7 +27,7 @@ def _js_block(source: str, marker: str) -> str:
 def test_live2d_drag_snap_keeps_visible_area_threshold_on_all_platforms():
     source = _live2d_source()
 
-    # 桌宠窗口不再单独走 margin 回弹，与网页端统一用可见面积阈值。
+    # Pet windows now use the same visible-area threshold as web mode rather than separate margin rebound.
     assert "const isDesktopPetWindow = Boolean(" not in source
     assert "const visibleWidth = Math.max(0, visibleRight - visibleLeft);" in source
     assert "const visibleHeight = Math.max(0, visibleBottom - visibleTop);" in source

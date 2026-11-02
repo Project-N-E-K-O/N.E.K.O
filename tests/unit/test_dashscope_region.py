@@ -1,4 +1,4 @@
-"""DashScope 地域 URL 归一化回归测试。"""
+"""DashScope regional URL normalization regression tests."""
 
 import socket
 from types import SimpleNamespace
@@ -10,7 +10,7 @@ from utils.dashscope_region import (
 
 
 def test_configure_dashscope_sdk_urls_resets_empty_base_to_default():
-    """空 base_url 不能保留上一次的国际地域全局状态。"""
+    """An empty base_url must not retain the previous international-region global state."""
     dashscope_module = SimpleNamespace(
         base_websocket_api_url="wss://dashscope-us.aliyuncs.com/api-ws/v1/inference",
         base_http_api_url="https://dashscope-us.aliyuncs.com/api/v1",

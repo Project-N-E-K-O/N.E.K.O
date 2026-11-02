@@ -1,13 +1,13 @@
 """
 MCP Adapter Plugin
 
-MCP (Model Context Protocol) Router - 连接 MCP servers 并将其 tools 暴露为 NEKO entries。
+MCP (Model Context Protocol) Router - connects MCP servers and exposes their tools as NEKO entries.
 
-功能：
-1. 管理多个 MCP server 连接
-2. 自动发现 MCP server 的 tools
-3. 将 tools 动态注册为 NEKO entries
-4. 提供统一的工具调用接口
+Features:
+1. Manage connections to multiple MCP servers
+2. Automatically discover MCP server tools
+3. Dynamically register tools as NEKO entries
+4. Provide a unified tool invocation interface
 """
 import asyncio
 import json
@@ -43,26 +43,26 @@ from plugin.plugins.mcp_adapter.invoker import MCPPluginInvoker
 from plugin.plugins.mcp_adapter.chat_schema import portable_chat_schema
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 
-# 聊天注入（LLM tool）路径经由 POST /runs 产生运行记录，再轮询到终态后取回结果。
-# 这些常量约束该转发链路的超时预算：LLM tool 的注册超时 = MCP tool 超时 + 转发余量，
-# 并受 main_server /api/tools/register 的 300s 上限约束。
+# The chat-injection (LLM tool) path creates run records through POST /runs, then polls for terminal results.
+# These constants constrain the forwarding timeout budget: LLM tool registration timeout = MCP tool timeout + forwarding margin,
+# bounded by main_server /api/tools/register's 300s maximum.
 _LLM_TOOL_TIMEOUT_SLACK_S = 15.0
 _LLM_TOOL_TIMEOUT_CAP_S = 300.0
 _RUN_POLL_INTERVAL_S = 0.5
 _RUN_TERMINAL_STATUSES = frozenset(("succeeded", "failed", "canceled", "timeout"))
-# 跨插件 LLM tool 名查重缓存 TTL；序号去重的上限（防极端场景无界循环）
+# Cross-plugin LLM tool-name duplicate-check cache TTL; numeric suffix deduplication limit (prevents unbounded loops in extreme cases).
 _FOREIGN_NAME_CACHE_TTL_S = 5.0
 _LLM_TOOL_NAME_MAX_SUFFIX = 100
-# 注册后确认远端生效的轮询窗口（register_llm_tool 只是把注册排队到 host）
+# Polling window to confirm remote registration (register_llm_tool only queues registration to the host).
 _REMOTE_CONFIRM_TIMEOUT_S = 5.0
 _REMOTE_CONFIRM_INTERVAL_S = 0.2
 
 
 class _MCPInternalTransport:
     """
-    内部直调 transport。
+    Internal direct-call transport.
 
-    gateway_invoke 走 handle_envelope 直调，不依赖 recv/send 轮询。
+    gateway_invoke calls handle_envelope directly without recv/send polling.
     """
 
     protocol_name = "mcp_internal"
@@ -82,7 +82,7 @@ class _MCPInternalTransport:
 
 @dataclass
 class MCPServerConfig:
-    """MCP Server 配置"""
+    """MCP Server configuration"""
     name: str
     transport: str  # "stdio" | "sse" | "streamable-http"
     command: Optional[str] = None
@@ -95,7 +95,7 @@ class MCPServerConfig:
 
 @dataclass
 class MCPTool:
-    """MCP Tool 信息"""
+    """MCP Tool information"""
     name: str
     description: str
     input_schema: Dict[str, object]
@@ -104,7 +104,7 @@ class MCPTool:
 
 @dataclass
 class MCPServerConnection:
-    """MCP Server 连接状态"""
+    """MCP Server connection status"""
     config: MCPServerConfig
     process: Optional[subprocess.Popen] = None
     reader: Optional[asyncio.StreamReader] = None
@@ -133,7 +133,7 @@ class McpPanelState(BaseModel):
 
 
 class MCPClient:
-    """MCP Client - 管理与 MCP Server 的通信"""
+    """MCP Client - manages communication with MCP Server"""
     
     def __init__(self, config: MCPServerConfig, logger=None):
         self.config = config
@@ -148,7 +148,7 @@ class MCPClient:
         self._read_task: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._shutdown = False
-        # 重连配置
+        # Reconnection configuration.
         self._reconnect_attempts = 0
         self._on_disconnect_callback: Optional[Callable] = None
         self._content_error_pattern = re.compile(r"<error>\s*(.*?)\s*</error>", re.IGNORECASE | re.DOTALL)
@@ -340,7 +340,7 @@ class MCPClient:
         return matched_payload
     
     async def connect(self, timeout: float = 30.0) -> bool:
-        """连接到 MCP Server"""
+        """Connect to MCP Server"""
         if self.config.transport == "stdio":
             return await self._connect_stdio(timeout)
         elif self.config.transport == "sse":
@@ -353,16 +353,16 @@ class MCPClient:
             return False
     
     async def _connect_stdio(self, timeout: float) -> bool:
-        """通过 stdio 连接到 MCP Server"""
+        """Connect to MCP Server over stdio"""
         try:
             if not self.config.command:
                 raise ValueError("Command is required for stdio transport")
             
-            # 准备环境变量
+            # Prepare environment variables.
             env = os.environ.copy()
             env.update(self.config.env)
             
-            # 启动进程
+            # Start the process.
             cmd = [self.config.command] + self.config.args
             if self.logger:
                 self.logger.info(f"Starting MCP server '{self.config.name}': {' '.join(cmd)}")
@@ -378,12 +378,12 @@ class MCPClient:
             self.reader = self.process.stdout
             self.writer = self.process.stdin
             
-            # 启动读取任务
+            # Start the reader task.
             self._read_task = asyncio.create_task(self._read_loop())
-            # 启动 stderr 读取任务（避免缓冲区满导致阻塞）
+            # Start stderr reading to avoid blocking when its buffer fills.
             self._stderr_task = asyncio.create_task(self._read_stderr())
             
-            # 发送 initialize 请求
+            # Send the initialize request.
             result = await asyncio.wait_for(
                 self._send_request("initialize", {
                     "protocolVersion": "2024-11-05",
@@ -399,10 +399,10 @@ class MCPClient:
             if result.get("error"):
                 raise Exception(f"Initialize failed: {result['error']}")
             
-            # 发送 initialized 通知
+            # Send the initialized notification.
             await self._send_notification("notifications/initialized", {})
             
-            # 获取 tools 列表
+            # Fetch the tools list.
             tools_result = await asyncio.wait_for(
                 self._send_request("tools/list", {}),
                 timeout=timeout
@@ -411,7 +411,7 @@ class MCPClient:
             if tools_result.get("error"):
                 raise Exception(f"Failed to list tools: {tools_result['error']}")
             
-            # 解析 tools
+            # Parse tools.
             self.tools = []
             result_obj = tools_result.get("result")
             tools_list: list[object] = []
@@ -449,7 +449,7 @@ class MCPClient:
             return False
     
     async def _connect_http(self, timeout: float) -> bool:
-        """通过 HTTP/SSE 连接到 MCP Server"""
+        """Connect to MCP Server over HTTP/SSE"""
         try:
             if not self.config.url:
                 raise ValueError("URL is required for HTTP/SSE transport")
@@ -460,12 +460,12 @@ class MCPClient:
             if self.logger:
                 self.logger.info(f"Connecting to MCP server '{self.config.name}' via HTTP: {url}")
             
-            # 创建 HTTP session
+            # Create the HTTP session.
             self._http_session = aiohttp.ClientSession(
                 **aiohttp_session_kwargs_for_url(url)
             )
             
-            # 发送 initialize 请求
+            # Send the initialize request.
             init_payload = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -480,7 +480,7 @@ class MCPClient:
                 }
             }
             
-            # MCP Streamable HTTP 需要 Accept 头
+            # MCP Streamable HTTP requires the Accept header.
             headers = {
                 **self.config.headers,
                 "Accept": "application/json, text/event-stream",
@@ -496,7 +496,7 @@ class MCPClient:
                 if resp.status != 200:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
                 init_result = await self._read_http_response_payload(resp, expected_id=1)
-                # 保存 session ID（如果服务器返回）
+                # Save the session ID if returned by the server.
                 session_id = resp.headers.get("mcp-session-id")
                 if session_id:
                     self._http_session_id = session_id
@@ -505,7 +505,7 @@ class MCPClient:
             if "error" in init_result:
                 raise ValueError(f"Initialize failed: {init_result['error']}")
             
-            # 发送 initialized 通知
+            # Send the initialized notification.
             notif_payload = {
                 "jsonrpc": "2.0",
                 "method": "notifications/initialized"
@@ -514,7 +514,7 @@ class MCPClient:
                 if resp.status >= 400:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
             
-            # 获取 tools 列表
+            # Fetch the tools list.
             tools_payload = {
                 "jsonrpc": "2.0",
                 "id": 2,
@@ -534,7 +534,7 @@ class MCPClient:
             if "error" in tools_result:
                 raise ValueError(f"Failed to list tools: {tools_result['error']}")
             
-            # 解析 tools
+            # Parse tools.
             self.tools = []
             result_obj = tools_result.get("result")
             tools_list: list[object] = []
@@ -572,7 +572,7 @@ class MCPClient:
             return False
 
     async def _connect_sse(self, timeout: float) -> bool:
-        """通过 legacy HTTP+SSE 连接到 MCP Server。"""
+        """Connect to MCP Server over legacy HTTP+SSE."""
         try:
             if not self.config.url:
                 raise ValueError("URL is required for SSE transport")
@@ -670,11 +670,11 @@ class MCPClient:
             return False
     
     def set_disconnect_callback(self, callback: Callable) -> None:
-        """设置断开连接时的回调"""
+        """Set the disconnect callback"""
         self._on_disconnect_callback = callback
     
     async def disconnect(self):
-        """断开连接"""
+        """Disconnect"""
         self._shutdown = True
         self.connected = False
 
@@ -724,7 +724,7 @@ class MCPClient:
         self.reader = None
         self.tools = []
         
-        # 关闭 HTTP session
+        # Close the HTTP session.
         sse_response = getattr(self, "_sse_response", None)
         if sse_response is not None:
             try:
@@ -738,14 +738,14 @@ class MCPClient:
             await self._http_session.close()
             self._http_session = None
         
-        # 取消所有待处理的请求
+        # Cancel all pending requests.
         for future in self._pending_requests.values():
             if not future.done():
                 future.set_exception(Exception("Connection closed"))
         self._pending_requests.clear()
     
     async def call_tool(self, tool_name: str, arguments: Dict[str, object], timeout: float = 60.0) -> Dict[str, object]:
-        """调用 MCP tool"""
+        """Invoke an MCP tool"""
         if not self.connected:
             return {"error": "Not connected"}
         
@@ -801,10 +801,10 @@ class MCPClient:
         *,
         timeout: float = 60.0,
     ) -> Dict[str, object]:
-        """通过 HTTP 发送 JSON-RPC 请求"""
+        """Send a JSON-RPC request over HTTP"""
         import aiohttp
         
-        # 每次请求都创建新的 session，避免事件循环问题
+        # Create a fresh session per request to avoid event-loop issues.
         async with aiohttp.ClientSession(
             **aiohttp_session_kwargs_for_url(self.config.url or "")
         ) as session:
@@ -866,7 +866,7 @@ class MCPClient:
         *,
         timeout: float = 60.0,
     ) -> Dict[str, object]:
-        """执行实际的 HTTP 请求"""
+        """Perform the actual HTTP request"""
         import aiohttp
         
         self._request_id += 1
@@ -888,7 +888,7 @@ class MCPClient:
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         }
-        # 添加 session ID（如果有）
+        # Add the session ID if present.
         if hasattr(self, '_http_session_id') and self._http_session_id:
             headers["mcp-session-id"] = self._http_session_id
         
@@ -914,14 +914,14 @@ class MCPClient:
         *,
         timeout: float = 60.0,
     ) -> Dict[str, object]:
-        """发送 JSON-RPC 请求"""
-        # HTTP 传输
+        """Send a JSON-RPC request"""
+        # HTTP transport.
         if self.config.transport == "streamable-http":
             return await self._send_http_request(method, params, timeout=timeout)
         if self.config.transport == "sse":
             return await self._send_sse_request(method, params, timeout=timeout)
         
-        # stdio 传输
+        # stdio transport.
         if not self.writer:
             raise Exception("Not connected")
         
@@ -935,23 +935,23 @@ class MCPClient:
             "params": params,
         }
         
-        # 创建 Future 等待响应
+        # Create a Future to await the response.
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_requests[request_id] = future
         
         try:
-            # 发送消息
+            # Send the message.
             data = json.dumps(message) + "\n"
             self.writer.write(data.encode())
             await self.writer.drain()
             
-            # 等待响应
+            # Await the response.
             return await future
         finally:
             self._pending_requests.pop(request_id, None)
     
     async def _send_notification(self, method: str, params: Dict[str, object]):
-        """发送 JSON-RPC 通知（无响应）"""
+        """Send a JSON-RPC notification (no response)"""
         if self.config.transport == "sse":
             import aiohttp
 
@@ -988,7 +988,7 @@ class MCPClient:
         await self.writer.drain()
     
     async def _read_stderr(self):
-        """读取 stderr 输出（避免缓冲区满导致进程阻塞）"""
+        """Read stderr output to prevent a full buffer from blocking the process"""
         try:
             if not self.process or not self.process.stderr:
                 return
@@ -998,9 +998,9 @@ class MCPClient:
                 if not line:
                     break
                 
-                # 记录 stderr 输出 — 上游 MCP 进程的 stderr 可能含敏感数据，不写 logger。
-                # decode 用 errors="replace" 防止单行非 UTF-8 字节让整个 stderr
-                # 协程崩掉、子进程的 stderr buffer 后续被堵死。
+                # Record stderr output: upstream MCP stderr may contain sensitive data, so do not use logger.
+                # Decode with errors="replace" so one non-UTF-8 line cannot crash the entire stderr
+                # coroutine and subsequently block the subprocess's stderr buffer.
                 stderr_text = line.decode("utf-8", errors="replace").strip()
                 if stderr_text and self.logger:
                     self.logger.debug(f"MCP server '{self.config.name}' stderr (len={len(stderr_text)})")
@@ -1012,17 +1012,17 @@ class MCPClient:
                 self.logger.debug(f"Error reading stderr: {e}")
     
     async def _read_loop(self):
-        """读取响应循环"""
+        """Response-reading loop"""
         try:
             while self.reader and not self._shutdown:
                 line = await self.reader.readline()
                 if not line:
-                    # 连接断开
+                    # Connection closed.
                     if not self._shutdown and self.connected:
                         self.connected = False
                         if self.logger:
                             self.logger.warning(f"MCP server '{self.config.name}' connection lost")
-                        # 触发断开回调
+                        # Trigger the disconnect callback.
                         if self._on_disconnect_callback:
                             asyncio.create_task(self._on_disconnect_callback(self.config.name))
                     break
@@ -1038,7 +1038,7 @@ class MCPClient:
         except Exception as e:
             if self.logger:
                 self.logger.exception(f"Error in read loop: {e}")
-            # 连接异常断开
+            # Connection closed unexpectedly.
             if not self._shutdown and self.connected:
                 self.connected = False
                 if self._on_disconnect_callback:
@@ -1099,11 +1099,11 @@ class MCPClient:
                 asyncio.create_task(self._on_disconnect_callback(self.config.name))
     
     async def _handle_message(self, message: Dict[str, object]):
-        """处理收到的消息"""
+        """Handle an incoming message"""
         request_id = message.get("id")
         
         if request_id is not None:
-            # 这是一个响应
+            # This is a response.
             req_id_int = int(request_id) if isinstance(request_id, (int, float, str)) else 0
             future = self._pending_requests.get(req_id_int)
             if future and not future.done():
@@ -1112,7 +1112,7 @@ class MCPClient:
                 else:
                     future.set_result({"result": message.get("result")})
         else:
-            # 这是一个通知
+            # This is a notification.
             method = message.get("method")
             if self.logger:
                 self.logger.debug(f"Received notification: {method}")
@@ -1121,13 +1121,13 @@ class MCPClient:
 @neko_plugin
 class MCPAdapterPlugin(NekoAdapterPlugin):
     """
-    MCP Adapter Plugin - 真正的 Adapter 类型插件
+    MCP Adapter Plugin - a genuine Adapter-type plugin
     
-    使用 Gateway Core 架构：
-    - MCPRouteEngine: 路由决策
-    - MCPPluginInvoker: 插件调用
-    - MCPRequestNormalizer: 请求规范化
-    - MCPResponseSerializer: 响应序列化
+    Uses the Gateway Core architecture:
+    - MCPRouteEngine: routing decisions
+    - MCPPluginInvoker: plugin invocation
+    - MCPRequestNormalizer: request normalization
+    - MCPResponseSerializer: response serialization
     """
     
     __freezable__ = ["_server_states"]
@@ -1141,24 +1141,24 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._pending_auto_connect: Dict[str, tuple[Dict[str, object], float]] = {}
         self._reconnect_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown = False
-        # 重连配置缓存
+        # Cached reconnection configuration.
         self._auto_reconnect = True
         self._reconnect_interval = 5
         self._max_reconnect_attempts = 3
         self._tool_timeout = 60.0
         self._servers_config: Dict[str, Dict[str, object]] = {}
-        # 已注入聊天上下文的 MCP tools：tool_id -> {"llm_name", "server_name", "tool_name"}
+        # MCP tools injected into chat context: tool_id -> {"llm_name", "server_name", "tool_name"}
         self._chat_tools: Dict[str, Dict[str, str]] = {}
-        # 本地已注册、待远端确认的聊天注入（同结构）；确认后转入 _chat_tools
+        # Locally registered chat injections awaiting remote confirmation (same structure); move to _chat_tools after confirmation.
         self._pending_chat_tools: Dict[str, Dict[str, str]] = {}
-        # 串行化 chat 注入的注册/注销与 set_chat_injection 的"持久化+应用"，
-        # 防止并发 toggle 交错（映射覆盖、注册途中被清理）
+        # Serialize chat-injection registration/removal and set_chat_injection's persistence + application,
+        # preventing concurrent toggles from interleaving (mapping overwrites or cleanup during registration).
         self._chat_tools_lock = asyncio.Lock()
         self._servers_config_lock = asyncio.Lock()
-        # 跨插件 LLM tool 名查重缓存：(fetched_at, foreign_names)
+        # Cross-plugin LLM tool-name duplicate-check cache: (fetched_at, foreign_names).
         self._foreign_llm_names_cache: Optional[tuple[float, frozenset]] = None
         
-        # Gateway Core 组件
+        # Gateway Core components.
         self._route_engine: Optional[MCPRouteEngine] = None
         self._invoker: Optional[MCPPluginInvoker] = None
         self._normalizer: Optional[MCPRequestNormalizer] = None
@@ -1214,27 +1214,27 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @lifecycle(id="startup")
     async def on_startup(self):
-        """插件启动时连接所有配置的 MCP servers"""
+        """Connect all configured MCP servers on plugin startup"""
         self.ctx.logger.info("MCP Adapter starting...")
         
-        # 初始化 Adapter 基类
+        # Initialize the Adapter base class.
         await self.adapter_startup()
         
-        # 加载配置
+        # Load configuration.
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
         adapter_config = config.get("mcp_adapter", {})
         
         connect_timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
         
-        # 缓存重连配置
+        # Cache reconnection configuration.
         self._auto_reconnect = self._coerce_bool(adapter_config.get("auto_reconnect", True), True)
         self._reconnect_interval = self._coerce_int(adapter_config.get("reconnect_interval", 5), 5, minimum=0)
         self._max_reconnect_attempts = self._coerce_int(adapter_config.get("max_reconnect_attempts", 3), 3, minimum=0)
         self._tool_timeout = self._coerce_timeout(adapter_config.get("tool_timeout", 60), 60.0)
         self._servers_config = servers_config
         
-        # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
+        # Initialize Gateway Core components first, before server connections, because _register_mcp_tools depends on them.
         self._init_gateway_core()
         
         # Schedule enabled servers in the background. Startup must stay responsive
@@ -1271,13 +1271,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         server_name: str,
         tool_name: str,
     ) -> bool:
-        """Gateway Core 工具注册回调 - 注册为动态 entry，并按配置注入聊天上下文。"""
-        # 创建工具处理器
+        """Gateway Core tool registration callback - register a dynamic entry and inject into chat context as configured."""
+        # Create the tool handler.
         async def tool_handler(**kwargs: object) -> Dict[str, object]:
-            # 移除 NEKO 注入的参数
+            # Remove parameters injected by NEKO.
             arguments = {k: v for k, v in kwargs.items() if not k.startswith("_")}
 
-            # 获取对应的 client
+            # Get the corresponding client.
             target_client = self._clients.get(server_name)
             if not target_client:
                 return Err(SdkError(f"Server '{server_name}' not connected"))
@@ -1296,7 +1296,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 message=str(payload.get("summary") or ""),
             )
 
-        # 注册为动态 entry
+        # Register as a dynamic entry.
         registered = self.register_dynamic_entry(
             entry_id=tool_id,
             handler=tool_handler,
@@ -1308,10 +1308,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             llm_result_fields=["summary"],
         )
 
-        # 按该 server 的配置注入聊天上下文（LLM tool）：只做本地登记（进
-        # pending），远端确认由 _register_mcp_tools 在整批注册完后统一做。
-        # 注入失败只记日志，不影响动态 entry 本身——原调用路径（POST /runs）
-        # 依然可用。
+        # Inject into chat context (LLM tool) per server configuration: register only locally
+        # as pending; _register_mcp_tools confirms remotely after registering the entire batch.
+        # Injection failures only log and do not affect the dynamic entry itself: the original POST /runs
+        # invocation path remains available.
         if registered and self._is_chat_injection_enabled(server_name):
             async with self._chat_tools_lock:
                 await self._register_chat_tool_local_locked(
@@ -1325,22 +1325,22 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return registered
 
     async def _on_tool_unregister(self, tool_id: str) -> bool:
-        """Gateway Core 工具注销回调 - 注销动态 entry 与聊天注入。"""
+        """Gateway Core tool unregistration callback - remove the dynamic entry and chat injection."""
         async with self._chat_tools_lock:
             await self._unregister_chat_tool_locked(tool_id)
         return self.unregister_dynamic_entry(tool_id)
 
     # ------------------------------------------------------------------
-    # 聊天上下文注入（LLM tool）
+    # Chat-context injection (LLM tool).
     # ------------------------------------------------------------------
     #
-    # 通过插件 SDK 的 register_llm_tool / unregister_llm_tool（见
-    # plugin/sdk/plugin/base.py）把 MCP tool 动态注入/移出聊天上下文：
-    # SDK 侧登记为保留 id（__llm_tool__{name}）的动态 entry，并经
-    # LLM_TOOL_REGISTER IPC → main_server /api/tools/register 注册为
-    # 模型可调用工具。聊天 LLM 调用时走 /api/llm-tools/callback 回到
-    # 本插件的 handler，handler 再转发到 POST /runs 复用原调用路径，
-    # 使调用进入插件管理 UI 的"运行记录"。
+    # Use the plugin SDK's register_llm_tool / unregister_llm_tool (see
+    # plugin/sdk/plugin/base.py) to dynamically inject/remove MCP tools in chat context:
+    # the SDK registers a dynamic entry with reserved ID __llm_tool__{name}, then
+    # LLM_TOOL_REGISTER IPC -> main_server /api/tools/register registers it as
+    # a model-callable tool. Chat LLM calls return through /api/llm-tools/callback to
+    # this plugin's handler, which forwards to POST /runs to reuse the original invocation path,
+    # placing calls in the plugin management UI's run history.
 
     def _is_chat_injection_enabled(self, server_name: str) -> bool:
         cfg = self._servers_config.get(server_name)
@@ -1349,21 +1349,21 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return self._coerce_bool(cfg.get("inject_to_chat", False), False)
 
     def _chat_tool_timeout(self) -> float:
-        """聊天注入工具的总预算（秒）：MCP 超时 + 转发余量，受 main_server
-        ``/api/tools/register`` 的 300s 上限约束。注册超时、轮询期限、run 侧
-        entry_timeout 全部从这一个预算推导，保证工具超预算时 run 看门狗先于
-        聊天端轮询期限取消，不会出现"聊天已报超时、run 后来又 succeeded"。"""
+        """Total chat-injected tool budget (seconds): MCP timeout + forwarding margin, bounded by main_server's
+        ``/api/tools/register`` 300s maximum. Registration timeout, polling deadline, and run-side
+        entry_timeout all derive from this budget, ensuring the run watchdog cancels before the
+        chat polling deadline, rather than chat timing out before the run later succeeds."""
         return min(self._tool_timeout + _LLM_TOOL_TIMEOUT_SLACK_S, _LLM_TOOL_TIMEOUT_CAP_S)
 
     async def _fetch_foreign_llm_tool_names(self) -> frozenset:
-        """查询 main_server 上其它 source 已占用的 LLM tool 名。
+        """Query LLM tool names occupied by other sources on main_server.
 
-        main_server 的 tool registry 以名字为全局键、replace 语义注册，跨插件
-        重名会把对方的工具挤掉（模型调用被重定向）。``/api/tools/register``
-        现已在服务端拒绝跨 source 覆盖（权威防线），这里的前置查重只是
-        尽力而为的快失败优化：避免为注定被拒的名字排队注册，并提前用序号
-        避让。查询失败时 fail-open 返回空集，不阻塞注入。带短 TTL 缓存，
-        避免同一批 tool 注册重复打接口。
+        main_server's tool registry uses names as global keys with replacement semantics; cross-plugin
+        duplicates would evict others' tools and redirect model calls. ``/api/tools/register``
+        now rejects cross-source overwrites on the server (the authoritative defense); this preliminary check
+        is merely best-effort fail-fast optimization, avoiding queued registrations for doomed names and selecting numeric
+        suffixes early. Query failure returns an empty set (fail-open) without blocking injection. A short TTL cache
+        avoids repeated interface calls within one tool-registration batch.
         """
         from config import MAIN_SERVER_PORT
 
@@ -1405,12 +1405,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return frozen
 
     def _alloc_llm_tool_name(self, tool_id: str, taken: frozenset = frozenset()) -> Optional[str]:
-        """把 MCP tool_id 映射为合法且唯一的 LLM tool 名。
+        """Map an MCP tool_id to a valid, unique LLM tool name.
 
-        聊天 provider 要求 tool 名匹配 ``[A-Za-z0-9_\\-]{1,64}``；server/tool
-        名可能含非 ASCII 字符，统一折叠为 "_"。``taken`` 是跨插件查重得到
-        的已占用名（与本插件已注册名一起参与去重），冲突时追加运行期序号。
-        序号耗尽仍冲突时返回 None，由调用方跳过注入。
+        Chat providers require names matching ``[A-Za-z0-9_\\-]{1,64}``; server/tool
+        names may contain non-ASCII characters, all folded to "_". ``taken`` contains names occupied
+        across plugins (deduplicated with this plugin's registered names); append runtime numeric suffixes on conflict.
+        Return None if suffixes are exhausted and conflicts remain, letting the caller skip injection.
         """
         base = re.sub(r"[^A-Za-z0-9_\-]+", "_", tool_id).strip("_-")
         if not base:
@@ -1426,15 +1426,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return candidate
 
     async def _confirm_pending_chat_tools_locked(self, server_name: str) -> int:
-        """批量确认某 server 的 pending 聊天注入是否已在 main_server 生效。
+        """Confirm a server's pending chat injections have taken effect on main_server in one batch.
 
-        ``register_llm_tool`` 只是把注册排队到 host（异步、失败仅由 host 记
-        日志），main_server 不可用或名字被跨 source 守卫拒绝都发生在这条路
-        上，因此本地登记（pending）后必须确认。整批共享一个截止时间——工具
-        数量不会放大连接停顿（最坏也只有一个窗口）；确认通过的移入
-        ``_chat_tools``，未确认的回滚本地注册。以 (name,
-        source=plugin:{self}) 同时匹配为准——名字存在但归属其它 source 时
-        永远匹配不上。需持有 ``_chat_tools_lock``。
+        ``register_llm_tool`` merely queues registration to the host asynchronously; only the host logs failures.
+        main_server unavailability and cross-source name rejection both occur on this path,
+        so local pending registration requires confirmation. The batch shares one deadline, preventing tool
+        count from multiplying connection stalls (at most one window). Confirmed entries move to
+        ``_chat_tools``; unconfirmed local registrations roll back. Match both (name,
+        source=plugin:{self}); a name belonging to another source can never
+        match. Requires ``_chat_tools_lock``.
         """
         pending_ids = [
             tid for tid, info in self._pending_chat_tools.items()
@@ -1490,7 +1490,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 pass
 
         if not self._is_chat_injection_enabled(server_name):
-            # 确认期间配置被翻转（如并发的 disable 已持久化 false）：全部回滚
+            # Configuration flipped during confirmation (e.g. concurrent disable persisted false): roll everything back.
             for tid in pending_ids:
                 info = self._pending_chat_tools.pop(tid, None)
                 if info:
@@ -1527,11 +1527,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         description: str,
         schema: Optional[Dict[str, object]],
     ) -> bool:
-        """把单个 MCP tool 本地登记为聊天注入（进 pending，待批量确认）。
+        """Locally register one MCP tool for chat injection (pending batch confirmation).
 
-        需持有 ``_chat_tools_lock``。远端确认由
-        ``_confirm_pending_chat_tools_locked`` 批量完成——注册路径（连接回调、
-        开关启用）不应在此处逐工具等待确认，否则工具数量会放大停顿。
+        Requires ``_chat_tools_lock``. Remote confirmation is batched by
+        ``_confirm_pending_chat_tools_locked``. Registration paths (connection callbacks,
+        enabling the toggle) must not await each tool's confirmation here, which would multiply stalls by tool count.
         """
         if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
             return True
@@ -1570,14 +1570,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return True
 
     async def _remote_unregister_llm_tool(self, llm_name: str) -> str:
-        """直接同步调 main_server 注销 LLM tool。
+        """Synchronously call main_server directly to unregister an LLM tool.
 
-        返回 "removed"（已移除或本就不存在）/ "refused"（名字归属其它
-        source，服务端拒绝删除——说明我们的注册从未生效）/ "failed"（远端
-        暂时不可达）。SDK 的 ``unregister_llm_tool`` 只保证本地清理，远端
-        注销是异步且失败仅由 host 记日志的，插件无法观察到结果；带
-        ``expected_source`` 让服务端校验现属 source，跨 source 场景下绝不
-        误删别的插件占用的同名工具。
+        Return "removed" (removed or already absent), "refused" (name owned by another
+        source, so the server refused deletion and our registration never took effect), or "failed" (remote
+        temporarily unreachable). SDK ``unregister_llm_tool`` guarantees only local cleanup; remote
+        removal is asynchronous, failures are logged only by the host, and the plugin cannot observe results. Include
+        ``expected_source`` for server-side ownership verification, never accidentally deleting a same-named
+        tool owned by another plugin across sources.
         """
         from config import MAIN_SERVER_PORT
 
@@ -1602,8 +1602,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return "failed"
         if not isinstance(body, dict):
             return "removed"
-        # failed_roles 优先于 refused_roles 判定：partial failure（部分 role
-        # 仍挂着我们的工具）比"名字整体归属别人"更需要保留映射重试
+        # Evaluate failed_roles before refused_roles: partial failure (some roles still carrying
+        # our tools) needs mapping retention for retry more than a name entirely owned by someone else.
         if body.get("failed_roles"):
             return "failed"
         if body.get("refused_roles"):
@@ -1611,13 +1611,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return "removed"
 
     async def _unregister_chat_tool_locked(self, tool_id: str) -> str:
-        """注销单个聊天注入。返回 "removed" / "absent" / "refused" / "failed"。
+        """Remove one chat injection. Return "removed" / "absent" / "refused" / "failed".
 
-        需持有 ``_chat_tools_lock``。pending（未确认）的映射走 SDK 注销（远端
-        注销由 host 异步完成且带 source 校验）；confirmed 的映射先同步确认
-        远端移除。"refused" 表示该名在 main_server 上归属其它 source——本地
-        映射与本地注册一并作废，但不触碰别人的工具；"failed" 表示远端暂时
-        不可达——保留映射供重试。
+        Requires ``_chat_tools_lock``. Pending unconfirmed mappings use SDK unregistration (the host
+        removes remotely asynchronously with source verification); confirmed mappings synchronously confirm
+        remote removal first. "refused" means another source owns the name on main_server: invalidate local
+        mappings and registration without touching others' tools. "failed" means the remote is temporarily
+        unreachable; retain mappings for retry.
         """
         pending = self._pending_chat_tools.get(tool_id)
         info = pending if pending is not None else self._chat_tools.get(tool_id)
@@ -1630,8 +1630,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return "absent"
         remote = await self._remote_unregister_llm_tool(llm_name)
         if remote == "failed":
-            # 远端未确认移除时保留映射（可在下次切换开关/断开时重试），
-            # 避免"面板显示已停用但 main_server 还挂着死回调工具"的僵尸态。
+            # Retain mappings until remote removal is confirmed, allowing retry on the next toggle/disconnect;
+            # avoid a zombie state where the panel shows disabled but main_server retains dead callback tools.
             self.ctx.logger.warning(
                 f"Remote unregister not confirmed for chat tool '{llm_name}' "
                 f"(MCP tool '{tool_id}'); keeping mapping for retry"
@@ -1646,9 +1646,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 f"Local cleanup after remote unregister failed for MCP tool '{tool_id}': {exc}"
             )
         if remote == "refused":
-            # 名字归属已翻转到其它 source（如 main_server 重启后被占名）：
-            # 上面的 SDK 注销只会移除我们自己的本地注册，远端拒绝即止，
-            # 不会触碰别人的工具；映射作废，下次启用会换名注册。
+            # Name ownership flipped to another source (e.g. claimed after main_server restarted):
+            # SDK unregistration above removes only our local registration and stops on remote refusal,
+            # never touching others' tools. Invalidate the mapping; next enable registers under a new name.
             self.ctx.logger.info(
                 f"Chat tool '{llm_name}' is owned by another source on main_server; "
                 f"dropping local registration for MCP tool '{tool_id}'"
@@ -1660,7 +1660,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return "removed"
 
     def _build_chat_tool_handler(self, *, tool_id: str, server_name: str, tool_name: str) -> Callable[..., Any]:
-        """构造聊天注入工具的处理器：转发到 POST /runs 以产生运行记录。"""
+        """Build a chat-injected tool handler forwarding to POST /runs to produce run records."""
 
         async def handler(**kwargs: object) -> Dict[str, object]:
             arguments = {k: v for k, v in kwargs.items() if not k.startswith("_")}
@@ -1681,8 +1681,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "error": error_msg,
                 }
             payload = outcome.get("data")
-            # _build_mcp_tool_payload 恒返回 dict（至少含 "result"），payload 为
-            # None 只可能是 export 读不回——显式报错让模型可重试，而不是静默空结果
+            # _build_mcp_tool_payload always returns dict (at least "result"); a None payload
+            # means export could not be read. Report an explicit error for model retry rather than a silent empty result.
             if payload is None:
                 error_msg = "Tool call succeeded but the run result could not be read back"
                 return {
@@ -1704,10 +1704,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return handler
 
     def _resolve_plugin_server_origin(self) -> str:
-        """解析 user_plugin_server 的 loopback origin。
+        """Resolve user_plugin_server's loopback origin.
 
-        端口启动时可能因冲突改绑，env 变量保存实际端口；解析顺序与
-        llm_tool_registry / music_pusher 一致。
+        Startup may rebind a conflicting port; the environment variable stores the actual port. Resolution order
+        matches llm_tool_registry / music_pusher.
         """
         from config import USER_PLUGIN_SERVER_PORT
 
@@ -1720,12 +1720,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
 
     @staticmethod
     def _phase_timeout_within(deadline: float, *, cap: float = 10.0) -> httpx.Timeout:
-        """按剩余预算构造 httpx 阶段超时。
+        """Build httpx phase timeouts from the remaining budget.
 
-        httpx.Timeout 的 connect/read/write/pool 是独立阶段限制而非整个请求的
-        总时长，任一阶段超过剩余预算都会让请求跨过 deadline、推迟
-        ``_cancel_run_best_effort``。这里把每个阶段都封顶到剩余预算；请求整体
-        的硬墙由调用方的 ``asyncio.timeout_at(deadline)`` 兜底。
+        httpx.Timeout connect/read/write/pool values limit individual phases, not total request
+        duration. Any phase exceeding the remaining budget would cross the deadline and delay
+        ``_cancel_run_best_effort``. Cap every phase at the remaining budget; the caller's
+        ``asyncio.timeout_at(deadline)`` enforces the hard limit for the complete request.
         """
         remaining = deadline - asyncio.get_running_loop().time()
         return httpx.Timeout(
@@ -1741,17 +1741,17 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         tool_name: str,
         arguments: Dict[str, object],
     ) -> Dict[str, object]:
-        """经由 POST /runs 执行聊天注入的 MCP tool 调用。
+        """Execute a chat-injected MCP tool call through POST /runs.
 
-        与原调用路径（brain task_executor → POST /runs）完全同构，因此本次
-        调用会以 plugin_id=mcp_adapter、entry_id=mcp_{server}_{tool} 进入插件
-        管理界面的"运行记录"。返回 {"status", "success", "data", "error"}。
+        This mirrors the original invocation path (brain task_executor -> POST /runs), so
+        the call appears with plugin_id=mcp_adapter, entry_id=mcp_{server}_{tool} in the plugin
+        management UI's run history. Return {"status", "success", "data", "error"}.
         """
         base = self._resolve_plugin_server_origin()
         timeout_s = self._chat_tool_timeout()
-        # 创建请求与轮询共享同一个绝对截止时间：创建请求可消耗全部剩余预算
-        #（不再被固定 10s 上限挤占轮询窗口），保证处理总时长不超过注册给
-        # main_server 的超时，聊天端不会先于我们拿到干净的超时错误。
+        # Creation and polling share one absolute deadline: creation may consume the entire remaining budget
+        # (no fixed 10s ceiling squeezing the polling window), keeping total processing within the timeout
+        # registered with main_server, so chat does not time out before our clean timeout error.
         deadline = asyncio.get_running_loop().time() + timeout_s
         run_args = dict(arguments) if isinstance(arguments, dict) else {}
         # Preserve the configured MCP execution window with forwarding slack.
@@ -1765,9 +1765,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 trust_env=False,
             ) as client:
                 try:
-                    # 硬截止墙：httpx 的阶段超时封顶剩余预算后仍可能被服务器
-                    # 慢速滴流拖过 deadline，这里保证任何请求都不会延迟超时
-                    # 结论与取消动作。
+                    # Hard deadline: even with httpx phase timeouts capped at remaining budget, a server's
+                    # slow trickle can cross the deadline. Ensure no request delays the timeout
+                    # decision and cancellation here.
                     async with asyncio.timeout_at(deadline):
                         create_resp = await client.post(
                             f"{base}/runs",
@@ -1800,10 +1800,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         while True:
                             remaining = deadline - asyncio.get_running_loop().time()
                             if remaining <= 0:
-                                # 放弃前尽力取消 run：否则上层重试可能与仍在执行
-                                # 的 run 叠加，造成有副作用的 MCP tool 重复执行。
-                                # run 看门狗（entry_timeout）通常已先取消，这里
-                                # 是创建耗时挤占守卫窗口时的兜底。
+                                # Best-effort cancel the run before giving up; otherwise an upstream retry may overlap
+                                # the still-running run and duplicate execution of MCP tools with side effects.
+                                # The run watchdog (entry_timeout) usually already canceled it; this is a fallback
+                                # when creation time consumes the guard window.
                                 await self._cancel_run_best_effort(base, run_id, tool_name)
                                 return {
                                     "status": "timeout",
@@ -1846,15 +1846,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         )
                         if export_resp.status_code != 200:
                             return {"status": status, "success": True, "data": None, "error": None}
-                        # run 已成功，export 解析失败只降级为空数据，不反报失败
+                        # The run succeeded; export parse failure only degrades to empty data and must not report failure.
                         try:
                             payload = self._extract_chat_tool_payload(export_resp.json())
                         except ValueError:
                             payload = None
                         return {"status": status, "success": True, "data": payload, "error": None}
                 except TimeoutError:
-                    # 硬截止墙触发（某次请求跨过 deadline）：有 run_id 时在截止
-                    # 后尽力取消，防止 run 在我们放弃后仍继续执行。
+                    # Hard deadline triggered (a request crossed it): with a run_id, attempt cancellation
+                    # after the deadline to prevent continued execution after we give up.
                     await self._cancel_run_best_effort(base, run_id, tool_name)
                     return {
                         "status": "timeout",
@@ -1872,7 +1872,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             }
 
     async def _cancel_run_best_effort(self, base: str, run_id: Optional[str], tool_name: str) -> None:
-        """轮询放弃前尽力取消 run（best-effort，吞掉一切传输错误）。"""
+        """Best-effort cancel the run before polling gives up, swallowing all transport errors."""
         if not run_id:
             return
         try:
@@ -1890,13 +1890,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
 
     @staticmethod
     def _extract_chat_tool_payload(export_json: object) -> object:
-        """从 run 的 export 响应中取出 trigger_response 的业务数据。
+        """Extract trigger_response business data from the run export response.
 
-        export 响应形如 ``{"items": [ExportItem, ...], "next_after": ...}``；
-        trigger_response 条目的 json（序列化别名，兼容 json_data 键）是
-        host.trigger 返回的 finish 信封（ok()/finish() 形状），其 ``data``
-        字段就是 ``_build_mcp_tool_payload`` 的业务 payload。trigger_response
-        不在时回退到第一个含 json 的条目。
+        The export response is ``{"items": [ExportItem, ...], "next_after": ...}``;
+        a trigger_response item's json (serialization alias, also accepting json_data) is
+        the finish envelope returned by host.trigger (ok()/finish() shape). Its ``data``
+        field is the business payload for ``_build_mcp_tool_payload``. If trigger_response
+        is absent, fall back to the first item containing json.
         """
         if not isinstance(export_json, dict):
             return None
@@ -1923,8 +1923,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return fallback
     
     def _init_gateway_core(self) -> None:
-        """初始化 Gateway Core 组件。"""
-        # 路由引擎（带回调，用于通知前端动态 entry 变化）
+        """Initialize Gateway Core components."""
+        # Routing engine with a callback notifying the frontend of dynamic-entry changes.
         self._route_engine = MCPRouteEngine(
             mcp_clients=self._clients,
             logger=self.ctx.logger,  # type: ignore[arg-type]
@@ -1933,25 +1933,25 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         )
         self._route_engine.rebuild_tool_index()
         
-        # 请求规范化器
+        # Request normalizer.
         self._normalizer = MCPRequestNormalizer()
         
-        # 响应序列化器
+        # Response serializer.
         self._serializer = MCPResponseSerializer()
         
-        # 插件调用器
+        # Plugin invoker.
         self._invoker = MCPPluginInvoker(
             mcp_clients=self._clients,
             plugin_call_fn=self._call_neko_plugin,
             logger=self.ctx.logger,  # type: ignore[arg-type]
         )
 
-        # 策略引擎
+        # Policy engine.
         self._policy = DefaultPolicyEngine()
 
-        # 统一 Gateway Core 编排器（P0 收敛）
+        # Unified Gateway Core orchestrator (P0 convergence).
         self._gateway_core = AdapterGatewayCore(
-            transport=_MCPInternalTransport(),  # gateway_invoke 走 handle_envelope，不依赖 transport 轮询
+            transport=_MCPInternalTransport(),  # gateway_invoke uses handle_envelope without relying on transport polling.
             normalizer=self._normalizer,
             policy=self._policy,
             router=self._route_engine,
@@ -1969,18 +1969,18 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         timeout_s: float = 30.0,
     ) -> object:
         """
-        调用 NEKO 插件 entry。
+        Invoke a NEKO plugin entry.
         
-        这是 MCPPluginInvoker 的回调函数。
-        返回协程，由调用方 await。
+        Callback for MCPPluginInvoker.
+        Return a coroutine for the caller to await.
         """
-        # 使用 PluginContext 的能力调用其他插件
-        # 注意：trigger_plugin_event 会自动检测环境，在事件循环中返回协程
+        # Use PluginContext capabilities to call other plugins.
+        # Note: trigger_plugin_event automatically detects the environment and returns a coroutine inside an event loop.
         return self.ctx.trigger_plugin_event(
             target_plugin_id=plugin_id,
             event_type="adapter_call",
             event_id=entry_id,
-            params=dict(params),  # 转换为 Dict[str, Any]
+            params=dict(params),  # Convert to Dict[str, Any].
             timeout=float(timeout_s),
         )
 
@@ -2187,14 +2187,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     async def _register_mcp_tools(self, server_name: str, client: MCPClient) -> None:
         """
-        使用 Gateway Core 注册 MCP tools。
+        Register MCP tools through Gateway Core.
 
-        通过 MCPRouteEngine.register_server_tools 方法：
-        1. 更新路由引擎的工具索引
-        2. 触发回调注册为动态 entry（出现在前端管理面板），开启注入的
-           server 会在回调里登记本地 LLM tool（进 pending）
-        3. 批量确认 pending 的远端生效（一次共享截止时间，工具数量不放大
-           连接停顿），未确认的回滚
+        Via MCPRouteEngine.register_server_tools:
+        1. Update the routing engine's tool index
+        2. Trigger callbacks to register dynamic entries (visible in the frontend management panel); injection-enabled
+           servers register local LLM tools as pending in the callback
+        3. Batch-confirm remote pending registrations with one shared deadline, preventing tool count from multiplying
+           connection stalls; roll back unconfirmed registrations
         """
         if self._route_engine:
             await self._route_engine.register_server_tools(server_name, client)
@@ -2219,11 +2219,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     async def _unregister_mcp_tools(self, server_name: str) -> None:
         """
-        使用 Gateway Core 注销 MCP tools。
+        Unregister MCP tools through Gateway Core.
         
-        通过 MCPRouteEngine.unregister_server_tools 方法：
-        1. 从路由引擎移除工具索引
-        2. 触发回调注销动态 entry
+        Via MCPRouteEngine.unregister_server_tools:
+        1. Remove the routing engine's tool index
+        2. Trigger callbacks to unregister dynamic entries
         """
         if self._route_engine:
             await self._route_engine.unregister_server_tools(server_name)
@@ -2270,7 +2270,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     @lifecycle(id="shutdown")
     async def on_shutdown(self):
-        """插件关闭时断开所有连接"""
+        """Disconnect all connections on plugin shutdown"""
         self.ctx.logger.info("MCP Adapter shutting down...")
         self._shutdown = True
 
@@ -2280,12 +2280,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             task.cancel()
         self._connect_tasks.clear()
 
-        # 取消所有重连任务
+        # Cancel all reconnection tasks.
         for task in self._reconnect_tasks.values():
             task.cancel()
         self._reconnect_tasks.clear()
         
-        # 断开所有连接
+        # Disconnect all connections.
         for server_name, client in list(self._clients.items()):
             try:
                 await client.disconnect()
@@ -2299,38 +2299,38 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._gateway_core = None
         self._policy = None
 
-        # 清理 Adapter 基类
+        # Clean up the Adapter base class.
         await self.adapter_shutdown()
     
     async def _on_server_disconnect(self, server_name: str) -> None:
-        """服务器断开连接时的回调（用于自动重连）"""
+        """Server disconnect callback for automatic reconnection"""
         if self._shutdown:
             return
         
         self.ctx.logger.warning(f"MCP server '{server_name}' disconnected")
         
-        # 更新状态
+        # Update status.
         self._server_states[server_name] = {
             **self._server_states.get(server_name, {}),
             "connected": False,
             "error": "Connection lost",
         }
         
-        # 注销 MCP tools
+        # Unregister MCP tools.
         await self._unregister_mcp_tools(server_name)
         
-        # 从 clients 中移除
+        # Remove from clients.
         if server_name in self._clients:
             del self._clients[server_name]
         
-        # 如果启用了自动重连，启动重连任务
+        # Start a reconnection task if automatic reconnection is enabled.
         if self._auto_reconnect and server_name not in self._reconnect_tasks:
             self._reconnect_tasks[server_name] = asyncio.create_task(
                 self._reconnect_server(server_name)
             )
     
     async def _reconnect_server(self, server_name: str) -> None:
-        """尝试重连服务器"""
+        """Attempt to reconnect a server"""
         try:
             server_cfg = self._servers_config.get(server_name)
             if not server_cfg:
@@ -2345,19 +2345,19 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     f"(attempt {attempts}/{self._max_reconnect_attempts})"
                 )
                 
-                # 更新状态
+                # Update status.
                 self._server_states[server_name] = {
                     **self._server_states.get(server_name, {}),
                     "reconnect_attempts": attempts,
                 }
                 
-                # 等待重连间隔
+                # Wait for the reconnection interval.
                 await asyncio.sleep(self._reconnect_interval)
                 
                 if self._shutdown:
                     break
                 
-                # 尝试重连
+                # Attempt reconnection.
                 config = await self.config.dump()
                 adapter_config = config.get("mcp_adapter", {})
                 timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
@@ -2385,14 +2385,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         server_cfg: Dict[str, object],
         timeout: float = 30.0
     ) -> bool:
-        """连接到单个 MCP server"""
+        """Connect to one MCP server"""
         client: MCPClient | None = None
         try:
             if server_name not in self._servers_config:
                 self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
                 return False
             timeout = self._coerce_timeout(timeout, 30.0)
-            # 提取配置字段并进行类型转换
+            # Extract configuration fields and convert their types.
             transport_raw = server_cfg.get("transport", "stdio")
             transport = str(transport_raw) if transport_raw else "stdio"
             
@@ -2426,7 +2426,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             
             client = MCPClient(config, logger=self.ctx.logger)
             
-            # 设置断开回调（用于自动重连）
+            # Set the disconnect callback for automatic reconnection.
             client.set_disconnect_callback(self._on_server_disconnect)
             
             if await client.connect(timeout=timeout):
@@ -2435,9 +2435,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     self.ctx.logger.info(f"Discarded connection for removed MCP server '{server_name}'")
                     return False
                 self._clients[server_name] = client
-                client._reconnect_attempts = 0  # 重置重连计数
+                client._reconnect_attempts = 0  # Reset the reconnection counter.
                 
-                # 使用 Gateway Core 注册 tools
+                # Register tools through Gateway Core.
                 try:
                     await self._register_mcp_tools(server_name, client)
                 except Exception:
@@ -2445,7 +2445,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     await client.disconnect()
                     raise
                 
-                # 更新状态
+                # Update status.
                 self._server_states[server_name] = {
                     "connected": True,
                     "tools_count": len(client.tools),
@@ -2485,11 +2485,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         llm_result_fields=["total"],
     )
     async def list_servers(self, **_):
-        """列出所有 MCP servers"""
+        """List all MCP servers"""
         servers = []
         seen_names = set()
         
-        # 已连接的服务器
+        # Connected servers.
         for server_name, client in self._clients.items():
             seen_names.add(server_name)
             servers.append({
@@ -2507,14 +2507,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 ],
             })
         
-        # 有状态但未连接的服务器
+        # Servers with status but no connection.
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
         
         for server_name, state in self._server_states.items():
             if server_name not in seen_names:
                 seen_names.add(server_name)
-                # 从配置中获取 transport 信息
+                # Get transport information from configuration.
                 transport = "unknown"
                 if server_name in servers_config:
                     cfg = servers_config[server_name]
@@ -2528,7 +2528,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "inject_to_chat": self._is_chat_injection_enabled(server_name),
                 })
         
-        # 配置中存在但从未尝试连接的服务器
+        # Configured servers with no connection attempt yet.
         self.ctx.logger.debug(f"list_servers: config has {len(servers_config)} servers: {list(servers_config.keys())}")
         for server_name, server_cfg in servers_config.items():
             if server_name not in seen_names:
@@ -2563,11 +2563,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         }
     )
     async def connect_server(self, server_name: str, **_):
-        """连接到指定的 MCP server"""
+        """Connect to the specified MCP server"""
         if server_name in self._clients:
             return Err(SdkError(f"Server '{server_name}' is already connected"))
         
-        # 从配置中获取 server 配置
+        # Get server configuration.
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
         
@@ -2601,20 +2601,20 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         }
     )
     async def disconnect_server(self, server_name: str, **_):
-        """断开与指定 MCP server 的连接"""
+        """Disconnect from the specified MCP server"""
         if server_name not in self._clients:
             return Err(SdkError(f"Server '{server_name}' is not connected"))
 
         self._cancel_reconnect_task(server_name)
         
-        # 注销 MCP tools
+        # Unregister MCP tools.
         await self._unregister_mcp_tools(server_name)
         
-        # 断开连接
+        # Disconnect.
         client = self._clients.pop(server_name)
         await client.disconnect()
         
-        # 更新状态
+        # Update status.
         self._server_states[server_name] = {
             "connected": False,
             "disconnected_manually": True,
@@ -2644,13 +2644,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         }
     )
     async def set_chat_injection(self, server_name: str, inject_to_chat: bool, **_):
-        """配置单个 MCP server 是否把 tools 注入聊天上下文"""
+        """Configure whether one MCP server injects tools into chat context"""
         async with self._servers_config_lock:
             inject_flag = self._coerce_bool(inject_to_chat, False)
-            # 整个"持久化 + 应用"过程持锁串行：并发 enable/disable 交错会让
-            # 注册互相覆盖映射、或让 disable 在 enable 注册途中清掉它的结果。
-            # config.dump 也在锁内——回滚时重新 dump 新鲜配置再持久化，避免
-            # 并发的 add_server 被 stale dump 的删除语义误清。
+            # Hold the lock throughout persistence + application: concurrent enable/disable interleaving could
+            # overwrite registration mappings or let disable remove results while enable is registering.
+            # config.dump also stays under the lock. Rollback dumps fresh configuration before persisting, preventing
+            # stale dump deletion semantics from accidentally removing concurrent add_server changes.
             async with self._chat_tools_lock:
                 config = await self.config.dump()
                 servers_config = config.get("mcp_servers", {})
@@ -2730,9 +2730,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         ))
 
                 if not inject_flag and failed_tool_ids:
-                    # 禁用清理未完成（远端暂时不可达等）：回滚标志让面板如实反映
-                    # "仍然启用"，失败工具的映射保留供下次重试。回滚用新鲜 dump，
-                    # 避免锁外并发 add/remove 的配置被 stale 删除语义误清。
+                    # Disable cleanup incomplete (e.g. remote temporarily unreachable): roll back the flag so the panel truthfully
+                    # shows still enabled, retaining failed tools' mappings for retry. Rollback uses a fresh dump,
+                    # preventing stale deletion semantics from erasing concurrent unlocked add/remove changes.
                     if previous_flag != inject_flag:
                         fresh_config = await self.config.dump()
                         fresh_servers = fresh_config.get("mcp_servers", {})
@@ -2832,19 +2832,19 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         auto_connect: bool = True,
         **_
     ):
-        """添加新的 MCP server 配置"""
+        """Add new MCP server configuration"""
         async with self._servers_config_lock:
-            # 检查是否已存在
+            # Check whether it already exists.
             config = await self.config.dump()
             servers_config = config.get("mcp_servers", {})
 
-            # 验证配置
+            # Validate configuration.
             if transport == "stdio" and not command:
                 return Err(SdkError("Command is required for stdio transport"))
             if transport in ("sse", "streamable-http") and not url:
                 return Err(SdkError("URL is required for sse/http transport"))
 
-            # 构建配置
+            # Build configuration.
             server_cfg = self._normalize_server_config_payload(
                 transport=transport,
                 command=command,
@@ -2876,7 +2876,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     })
                 return Err(SdkError(f"Server '{name}' already exists with different config"))
         
-            # 保存到配置
+            # Save to configuration.
             servers_config[name] = server_cfg
             self.ctx.logger.info(f"Saving mcp_servers config: {list(servers_config.keys())}")
             try:
@@ -2888,11 +2888,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 )
                 return Err(SdkError(f"Failed to save server config: {exc}"))
         
-            # 缓存配置
+            # Cache configuration.
             self._servers_config = servers_config
             self.ctx.logger.info(f"Server '{name}' added to config")
         
-            # 如果需要自动连接
+            # If automatic connection is required.
             if auto_connect and enabled:
                 adapter_config = config.get("mcp_adapter", {})
                 timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
@@ -2924,7 +2924,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         }
     )
     async def remove_servers(self, server_names: List[str], **_):
-        """批量移除 MCP server 配置"""
+        """Remove MCP server configurations in a batch"""
         async with self._servers_config_lock:
             config = await self.config.dump()
             servers_config = config.get("mcp_servers", {})
@@ -2954,10 +2954,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     client = self._clients.pop(name)
                     await client.disconnect()
 
-                # 从配置中移除
+                # Remove from configuration.
                 del servers_config[name]
             
-                # 清理状态
+                # Clean up status.
                 if name in self._server_states:
                     del self._server_states[name]
             
@@ -3011,7 +3011,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         arguments: Optional[Dict[str, object]] = None,
         **_
     ):
-        """调用 MCP tool"""
+        """Invoke an MCP tool"""
         if server_name not in self._clients:
             return Err(SdkError(f"Server '{server_name}' is not connected"))
         
@@ -3041,7 +3041,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         llm_result_fields=["total"],
     )
     async def list_tools(self, server_name: Optional[str] = None, **_):
-        """列出所有 MCP tools"""
+        """List all MCP tools"""
         tools = []
         
         for name, client in self._clients.items():
@@ -3096,15 +3096,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         **_
     ):
         """
-        通过 Gateway Core 调用 MCP tool 或 NEKO 插件。
+        Invoke an MCP tool or NEKO plugin through Gateway Core.
         
-        这是新架构的统一入口，使用 Gateway Core 组件处理请求。
+        Unified entry point for the new architecture, using Gateway Core components to process requests.
         """
         import uuid
         if self._gateway_core is None:
             return Err(SdkError("Gateway Core components not initialized"))
         
-        # 构造 ExternalRequest
+        # Construct ExternalRequest.
         request_id = str(uuid.uuid4())
         try:
             payload: dict[str, object] = {

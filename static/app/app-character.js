@@ -1709,6 +1709,16 @@
                             isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768)
                         });
                         throwIfStale();
+
+                        // 角色切换后的触摸配置刷新钩子：切角色后 manager.touchSet
+                        // 还是上一个角色的快照，且原生 HitArea 未接线；强制重拉
+                        // 并接线，与 handleModelReload / live2d-init 的钩子一致。
+                        if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+                            window.nekoRefreshLive2DTouchSet({ forceRefetch: true, allowLive2DReload: true, lanlanName: newCatgirl }).catch(function (touchSetError) {
+                                console.warn('[猫娘切换] 刷新触摸配置失败:', touchSetError)
+                            })
+                        }
+
                         resetAvatarLockForCharacterSwitch('live2d');
 
                         if (window.LanLan1) {
@@ -1751,6 +1761,14 @@
                                     isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768)
                                 });
                                 throwIfStale();
+
+                                // 兜底路径同样接触摸配置刷新钩子：逻辑与主路径一致。
+                                if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+                                    window.nekoRefreshLive2DTouchSet({ forceRefetch: true, allowLive2DReload: true, lanlanName: newCatgirl }).catch(function (touchSetError) {
+                                        console.warn('[猫娘切换] 刷新触摸配置失败:', touchSetError)
+                                    })
+                                }
+
                                 resetAvatarLockForCharacterSwitch('live2d');
                                 if (window.LanLan1) {
                                     window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();

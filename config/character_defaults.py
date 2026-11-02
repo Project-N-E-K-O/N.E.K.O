@@ -39,15 +39,15 @@ DEFAULT_MASTER_TEMPLATE = {
     "昵称": "哥哥",
 }
 
-# 默认 Live2D 模型名（不带后缀的目录/文件 stem）。
-# DEFAULT_LANLAN_TEMPLATE.live2d.model_path 与 main_routers/characters_router.py
-# 里"未设置 Live2D 模型时的回退"逻辑共享这个常量，避免两处漂移。新增/替换默认
-# 模型只需要改这一处。
+# Default Live2D model name (directory/file stem without extension).
+# DEFAULT_LANLAN_TEMPLATE.live2d.model_path and the 'no Live2D model configured' fallback in main_routers/characters_router.py
+# share this constant to prevent drift. Adding/replacing the default
+# model requires changing only this location.
 DEFAULT_LIVE2D_MODEL_NAME = "yui-lolita"
 DEFAULT_LIVE2D_MODEL_PATH = f"{DEFAULT_LIVE2D_MODEL_NAME}/{DEFAULT_LIVE2D_MODEL_NAME}.model3.json"
 
-# 随包发的内置 Live2D 模型（assets/<name>.tar.gz → static/<name>/）。角色卡导出/
-# 创意工坊上传要靠这个集合识别"这不是用户自己导入的模型，不用打进包里"。
+# Bundled built-in Live2D models (assets/<name>.tar.gz → static/<name>/). Character-card export/
+# Workshop uploads use this set to recognize models that are not user imports and need not be packaged.
 BUILTIN_LIVE2D_MODEL_NAMES = ("yui-lolita", "yui-origin")
 
 DEFAULT_LANLAN_TEMPLATE = {
@@ -82,16 +82,16 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 _DEFAULT_VRM_LIGHTING_MUTABLE = {
-    # 与前端 vrm-core.js defaultLighting 保持一致
-    "ambient": 0.83,  # HemisphereLight 强度
-    "main": 1.91,     # 主光源强度
-    "fill": 0.0,      # 补光强度（简化模式下禁用）
-    "rim": 0.0,       # 轮廓光强度（简化模式下禁用，MToon 内建处理）
-    "top": 0.0,       # 顶光强度（简化模式下禁用）
-    "bottom": 0.0,    # 底光强度（简化模式下禁用）
-    "exposure": 1.1,  # 曝光值
-    "toneMapping": 7, # 色调映射类型 (7 = NeutralToneMapping)
-    "outlineWidthScale": 1.0, # 描边粗细倍率
+    # Keep synchronized with frontend vrm-core.js defaultLighting
+    "ambient": 0.83,  # HemisphereLight intensity
+    "main": 1.91,     # Key-light intensity
+    "fill": 0.0,      # Fill-light intensity (disabled in simplified mode)
+    "rim": 0.0,       # Rim-light intensity (disabled in simplified mode; handled internally by MToon)
+    "top": 0.0,       # Top-light intensity (disabled in simplified mode)
+    "bottom": 0.0,    # Bottom-light intensity (disabled in simplified mode)
+    "exposure": 1.1,  # Exposure
+    "toneMapping": 7, # Tone-mapping type (7 = NeutralToneMapping)
+    "outlineWidthScale": 1.0, # Outline-width multiplier
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -114,7 +114,7 @@ def get_default_vrm_lighting() -> dict[str, float]:
     return dict(DEFAULT_VRM_LIGHTING)
 
 
-# ─── MMD 默认设置 ───
+# ─── MMD defaults ───
 _DEFAULT_MMD_LIGHTING_MUTABLE = {
     "ambientIntensity": 3.0,
     "ambientColor": "#aaaaaa",
@@ -187,7 +187,7 @@ DEFAULT_CHARACTERS_CONFIG = {
 }
 
 
-# 内容值翻译映射（仅翻译值，键名保持中文不变，因为系统内部依赖这些键名）
+# Content-value translation maps (translate values only; retain Chinese keys because internal code depends on them)
 _VALUE_TRANSLATIONS = {
     'en': {
         '哥哥': 'Brother',
@@ -225,7 +225,7 @@ _VALUE_TRANSLATIONS = {
         '女': 'Feminino',
         'T酱, 小T': 'T-chan, Pequena T',
     },
-    # zh 和 zh-CN 使用原始中文值（不需要翻译）
+    # zh and zh-CN use original Chinese values without translation
 }
 
 
@@ -244,7 +244,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
     Returns:
         Localized copy of DEFAULT_CHARACTERS_CONFIG
     """
-    # 获取语言代码
+    # Get the language code
     if language is None:
         try:
             # Forwarded via config._runtime → utils.language_utils
@@ -258,16 +258,16 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             logger.warning(f"获取 Steam 语言失败: {e}，使用默认中文")
             language = 'zh-CN'
 
-    # 获取翻译映射
+    # Get the translation map
     value_trans = _VALUE_TRANSLATIONS.get(language)
 
-    # 尝试根据前缀匹配
+    # Try prefix matching
     if value_trans is None:
         lang_lower = language.lower()
         if lang_lower.startswith('zh'):
             if 'tw' in lang_lower:
                 value_trans = _VALUE_TRANSLATIONS.get('zh-TW')
-            # 简体中文不需要翻译
+            # Simplified Chinese requires no translation
         elif lang_lower.startswith('ja'):
             value_trans = _VALUE_TRANSLATIONS.get('ja')
         elif lang_lower.startswith('en'):
@@ -279,7 +279,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
         elif lang_lower.startswith('pt'):
             value_trans = _VALUE_TRANSLATIONS.get('pt')
 
-    # 如果不需要翻译显示字段（简体中文/韩语等），仍需本地化 system_prompt
+    # Even when display fields need no translation (simplified Chinese/Korean, etc.), localize system_prompt
     if value_trans is None:
         result = deepcopy(DEFAULT_CHARACTERS_CONFIG)
         for char_config in result.get('猫娘', {}).values():
@@ -294,17 +294,17 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             return value_trans.get(val, val)
         return val
 
-    # 构建本地化配置（键名保持不变，只翻译值）
+    # Build localized configuration (retain keys, translate only values)
     result = {}
 
-    # 本地化主人模板
+    # Localize the owner template
     master = deepcopy(DEFAULT_MASTER_TEMPLATE)
     localized_master = {}
     for key, value in master.items():
         localized_master[key] = translate_value(value)
     result['主人'] = localized_master
 
-    # 本地化猫娘模板
+    # Localize the catgirl template
     catgirl_data = deepcopy(DEFAULT_LANLAN_TEMPLATE)
     localized_catgirl = {}
     for char_name, char_config in catgirl_data.items():

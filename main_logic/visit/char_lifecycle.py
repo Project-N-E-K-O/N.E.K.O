@@ -104,8 +104,8 @@ class RenamePendingElsewhere(RuntimeError):
 
 
 def _may_exist(path: Path) -> bool:
-    # 只有「确实不存在」才算没有；stat 不了（权限、被占用）不能当成没有，否则改名 / 删除
-    # 不写标记，这份数据权限恢复后也没人迁移 / 退役它
+    # Only definite absence counts as missing; failed stat from permissions/contention must not suppress rename/deletion
+    # markers, or nobody migrates/retires this data when permissions recover
     try:
         os.stat(path)
     except (FileNotFoundError, NotADirectoryError):
@@ -124,9 +124,9 @@ def _has_visit_files_sync(config_dir: Path, character_uid: str | None) -> bool:
             if any(True for _ in entries):
                 return True
     except (FileNotFoundError, NotADirectoryError):
-        pass  # 没有 spool 目录：没有场次，接着看人设
+        pass  # No spool directory means no sessions; continue checking personas
     except OSError:
-        # 列不出来不能当「没有串门数据」：照常写标记，由迁移 / 退役步骤自己报错保留它
+        # Failed listing does not mean no visit data: record markers normally, letting migration/retirement report failures and retain them
         return True
     return bool(character_uid) and _may_exist(config_dir / VISIT_PERSONA_DIRNAME / f"{character_uid}.json")
 
@@ -140,7 +140,7 @@ async def has_visit_data(config_dir: str | Path, character_uid: str | None = Non
     return await asyncio.to_thread(_has_visit_files_sync, Path(config_dir), character_uid)
 
 
-# ── 改名 ──────────────────────────────────────────────────────────────
+# ── Renaming ──────────────────────────────────────────────────────────────
 
 ALL_NAMES = None
 """Result of :func:`reconcile_rename`: every name-dependent step must wait."""
@@ -178,43 +178,43 @@ async def reconcile_rename(
         logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
         return ALL_NAMES
     if expected is not None and marker != expected:
-        # 调用方是按另一份标记拿的守卫：这次读到的标记属于别的角色，不能拿着错的守卫去迁
+        # Caller acquired a guard from another marker; this read belongs to a different character, so do not migrate with the wrong guard
         return MARKER_CHANGED
     if marker is None:
         return frozenset()
     old = marker.get("old") if isinstance(marker, dict) else None
     new = marker.get("new") if isinstance(marker, dict) else None
     if not isinstance(old, str) or not old or not isinstance(new, str) or not new:
-        # 格式坏了的标记已没有可对账的信息，留着只会永久挡住补录与清除：记诊断后清掉
+        # Malformed markers contain no reconcilable information and permanently block recovery/clearing; diagnose, then remove
         memory_bridge.diag("pending_rename_malformed")
         logger.error("visit recovery: malformed pending_rename %r dropped", marker)
         return frozenset() if await clear_roster_marker(config_dir, PENDING_RENAME, marker) else ALL_NAMES
-    # rename_char 按机器上的角色名改写全部账号分区，与 own_uid 无关
+    # rename_char rewrites all account partitions by local character names, independently of own_uid
     roster = PeerRoster(config_dir, own_uid="pending-rename")
     uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
     if uid is not None and uid_of is not None:
-        # 有 uid 就按它现在叫什么定方向：新旧两个名字同时存在（旧名被新建角色占用）也分得清
+        # When uid exists, use its current name to determine direction, even if both names exist because another character occupies the old one
         current = {name for name, value in uid_of.items() if value == uid}
-        # 另一个名字被别的角色占着（旧名被新建角色复用）：名册条目只按名字存，迁移会把
-        # 两个角色的记录混到一起。分不开就不迁，留着标记、只挡这两个名字
-        # 云快照导入把名字交给了本机原来没有的角色（handed_over）：导入那一刻这个名字下的条目
-        # 都还是这个角色的，新角色不能继承，照常迁走
+        # Another character occupies the alternate name after reuse; name-only roster entries would mix
+        # both characters' records. If inseparable, do not migrate; retain the marker and block only these names
+        # A cloud import handed the name to a previously absent character (handed_over); at import, its existing entries
+        # still belonged to this character, so migrate normally instead of letting the new character inherit them
         handed = _handed_over_names(marker)
         held = rename_marker_names(marker) or (old, new)
         if {name for name, value in uid_of.items() if value == uid} & {old, new} and marker.get("migrated") is not True:
-            # 角色还停在这笔改名本身的两个名字上：chained 里的名字是一次回滚了的云快照导入记下的
-            # （或它又改回来了），不再算它的，也不拿来判断复用。已经开始迁过（migrated）就不行：
-            # 条目可能已挪进某个 chained 名字，得一起迁回来
+            # Character remains under one of this rename's two names: chained names came from a rolled-back cloud import,
+            # or it renamed back. They no longer belong to it and do not indicate reuse, unless migration began (migrated):
+            # some entries may already occupy chained names and must migrate back too
             held = (old, new)
         elif len(current) == 1 and marker.get("migrated") is not True and next(iter(current)) in held[2:]:
-            # 同理，角色还停在一个 chained 中间名字上：之后追加的名字来自回滚了的导入，不再算它的
+            # Similarly, a character still under an intermediate chained name excludes later names added by rolled-back imports
             held = held[:held.index(next(iter(current))) + 1]
         reused = any(name in uid_of and uid_of[name] != uid and name not in handed for name in held)
         forward = new in current and not reused
         backward = old in current and not forward and not reused
         deleted = not current
-        # 这个角色又被改到别的名字（云快照导入带来的改名，标记位被这笔占着、没能另记，名字记在
-        # chained 里）：标记涉及的每个名字下的条目都还是它的，一起迁到它现在的名字
+        # Character renamed again through cloud import while this marker occupied the slot, preventing a separate marker; names were recorded
+        # in chained. Entries under every marked name still belong to it; migrate all to its current name
         moved = len(current) == 1 and not current & {old, new} and not reused
     else:
         held = (old, new)
@@ -222,14 +222,14 @@ async def reconcile_rename(
         backward = old in names and new not in names
         deleted = old not in names and new not in names
         moved = False
-    # 云快照导入记下的改名：迁移只在启动对账里做，导入回滚时什么都没迁过。不能按普通改名
-    # 反向改写——新名下是本机另一个角色（导入要删它、但跟着一起回滚了）的真实数据
-    # 已经开始迁过（migrated）的就不再是「什么都没迁过」：导入肯定已提交，之后又改回旧名要照常反向迁回
+    # Cloud-import renames migrate only during startup reconciliation, so rollback means nothing moved. Do not reverse them as ordinary renames:
+    # the new name holds real data of another local character whose planned deletion also rolled back
+    # Once migrated, this is no longer untouched: import committed, and subsequent return to the old name requires normal reverse migration
     migrated = marker.get("migrated") is True
     from_cloudsave = marker.get("source") == CLOUDSAVE_SOURCE and not migrated
     undo = undo_moves and not from_cloudsave
     if from_cloudsave and uid is not None and uid_of is not None and old in current and not forward:
-        # 导入回滚了（这个角色还叫旧名）：什么都没迁过，新名被别的角色占着也无所谓，直接撤标记
+        # Import rolled back, leaving the old name: nothing migrated, so remove markers even if another character occupies the new name
         backward = True
     target = new if forward else next(iter(current)) if moved else old if backward and undo else None
     if target is not None:
@@ -238,47 +238,47 @@ async def reconcile_rename(
         except RosterCorruptError as exc:
             logger.error("visit recovery: roster unreadable, rename not reconciled: %s", exc)
             return ALL_NAMES
-        # 按名字清名册那一步已做完的退役项（roster_done）不再碰这个名字：剩下的按 uid 的步骤
-        # 补不完也不影响迁进来的条目，不能让改名跟着一直等
+        # Retirement entries with roster_done no longer touch that name; remaining uid-based steps
+        # cannot affect incoming entries, so must not keep renames waiting indefinitely
         if isinstance(retiring, list) and any(
                 (_item_fields(item) or ("", None))[0] == target and item.get("roster_done") is not True
                 for item in retiring):
-            # 目标名字下还有已删除角色的残留没退役完：先迁进去，之后按名字退役会连这个角色的条目一起删。
-            # 留着标记等退役补完（启动恢复先补退役、再对账）
+            # Target still has unretired residue from a deleted character; migrating now lets later name-based retirement delete these entries too.
+            # Retain markers until retirement completes; startup recovery finishes retirements before reconciliation
             logger.warning("visit recovery: pending_rename %r -> %r waits for the retirement of %r", old, new, target)
-            # 目标名可能是第三个名字（不在 held 里）：一起报出去，名字占用才认得出这是「在等退役」而不是歧义
+            # Target may be a third name outside held; report it too so name-occupancy checks recognize retirement waits rather than ambiguity
             return frozenset(held) | {target}
     if (forward or moved) and not migrated and (from_cloudsave or len(held) > 2):
-        # 迁移是几次各自独立的写入：中途失败时标记还在、条目已经挪了一部分。先记下「已开始迁」，
-        # 之后角色再被改回旧名时按普通改名反向迁回（含 chained 名字），不能当成导入回滚直接撤标记
+        # Migration comprises independent writes; partial failures retain markers after moving some entries. Record migration started first,
+        # so later returns to old names reverse normally, including chained names, rather than removing markers as if import rolled back untouched
         started = {**marker, "migrated": True}
         if not await replace_roster_marker(config_dir, PENDING_RENAME, marker, started):
             logger.warning("visit recovery: pending_rename %r -> %r changed before migrating, deferred", old, new)
             return ALL_NAMES
         marker = started
     if forward or moved:
-        # 标记涉及的每个名字（含 chained 记下的中间名字）下的条目都迁到它现在的名字
+        # Migrate entries under every marked name, including chained intermediates, to its current name
         for name in held:
             if name != target:
                 await roster.rename_char(name, target)
                 await VisitSpool.rename_own_char(config_dir, name, target)
     elif backward and not undo:
-        # 事务自己收尾：迁移只在提交之后做，回滚时什么都没动过。不能反向改写——新名下
-        # 若有已删除角色的残留数据，会被错挂到这个角色名下
+        # Transaction finalizes itself: migration occurs only after commit, leaving rollback untouched. Do not reverse migration,
+        # which could wrongly attach deleted-character residue under the new name to this character
         pass
     elif backward:
-        # 改名没生效：把已经改写成新名的场次改回旧名（迁过一部分的 chained 名字一起）
+        # Rename did not apply: restore sessions rewritten under the new name to the old name, including partially migrated chained names
         for name in held:
             if name != old:
                 await VisitSpool.rename_own_char(config_dir, name, old)
                 await roster.rename_char(name, old)
     elif deleted:
-        # 两个名字都不在：这个角色已被删除，它的名册条目与场次由删除的退役步骤按 uid
-        # 处理。标记不再有可对账的对象，留着只会永远挡住清除与逐场补录
+        # Neither name exists: character deleted, with roster/sessions handled by deletion retirement by uid.
+        # Nothing remains to reconcile, and retaining markers only permanently blocks clearing/per-session recovery
         logger.warning("visit recovery: pending_rename %r -> %r names a deleted character, dropped", old, new)
     else:
         logger.warning("visit recovery: pending_rename %r -> %r is ambiguous, kept", old, new)
-        # 标记涉及的每个名字（含 chained）都还挂着：覆盖下载其中任一个都要答「请先删除其中一个」
+        # Every marked name, including chained, remains occupied; overwrite downloads for any must request deletion of one character first
         return frozenset(held)
     return frozenset() if await clear_roster_marker(config_dir, PENDING_RENAME, marker) else ALL_NAMES
 
@@ -360,13 +360,13 @@ async def reconcile_renames(
                 continue
             break
         if marker in seen:
-            # 一圈都试过了：剩下的都还挂着，最早卡住的那笔留在位置上
+            # A full cycle was attempted; all remaining entries are blocked, keeping the earliest blocked entry at the head
             break
         seen.append(marker)
         held = set(rename_marker_names(marker) or ())
         if held & (pending | waiting):
-            # 跟前面一笔还挂着的改名共用名字（比如链式改名 B -> C 之后的 A -> B）：先迁它会把
-            # 两个角色的条目混到一起，排在那笔后面等它
+            # Sharing names with an earlier pending rename (such as A -> B after B -> C) means migrating first would mix
+            # both characters' entries; queue behind it and wait
             waiting |= held
         else:
             unsettled = await run()
@@ -377,7 +377,7 @@ async def reconcile_renames(
             pending |= unsettled
             if pending_groups is not None:
                 pending_groups.append(unsettled)
-        # 这笔还挂着（永久歧义 / 在等退役）：挪到队尾，让队列里其它角色的改名照常对账
+        # Still pending due to permanent ambiguity/retirement: move to queue tail so other characters reconcile normally
         if await rotate_roster_marker(config_dir, PENDING_RENAME, PENDING_RENAME_QUEUE, marker) is None:
             break
     return frozenset(pending)
@@ -411,21 +411,21 @@ async def begin_rename(
     config_dir = Path(config_dir)
     if not await has_visit_data(config_dir):
         return None
-    # 旧名是云快照刚交给这个角色的、原来那个角色的改名还没对完账：迁移会把人家的条目一起带走
+    # Cloud import just handed the old name to this character while the original owner's rename remains unreconciled; migration would steal its entries
 
     async def current() -> tuple[set[str], dict[str, str] | None]:
         return names, uid_of
 
     if await _settle_handed_over(config_dir, old, character_uid, current):
-        # 交出旧名的那笔改名永久歧义：改名会把原角色留在旧名下的条目一起迁走，只能等歧义解开
-        # （删除这个角色可以照常进行，见 begin_retire）
+        # Rename handing over the old name is permanently ambiguous; migrating would take the original character's remaining entries, so await resolution
+        # Character deletion remains available; see begin_retire
         raise RenamePendingElsewhere("another character's rename still owns this name's visit data")
-    # 这个角色自己还有一笔排在队里的改名（云快照导入记下的）：位置那笔对得完不代表它也对完了。
-    # 先把整个队列对一遍；它还挂着就拒绝这次改名，否则那笔只记着旧的两个名字，新名字没人占着
+    # This character has another queued cloud-import rename; reconciling the head does not complete that entry.
+    # Reconcile the whole queue first; if still pending, reject this rename, or the old two-name marker fails to reserve the new name
     if await _own_rename_pending(config_dir, old, character_uid, queued_only=True):
         try:
             await reconcile_renames(config_dir, names, uid_of)
-        except Exception as exc:  # noqa: BLE001 - 对不完账就拒绝这次改名，标记留给启动对账
+        except Exception as exc:  # noqa: BLE001 - reject rename on incomplete reconciliation and leave markers for startup recovery
             logger.warning("visit rename: queued rename of %r not reconciled: %r", old, exc)
             raise RenamePendingElsewhere("this character's queued rename is still being migrated") from exc
         if await _own_rename_pending(config_dir, old, character_uid, queued_only=False):
@@ -439,10 +439,10 @@ async def begin_rename(
             return marker
         if attempt:
             break
-        # 上一次改名的迁移没做完（失败 / 崩溃）：标记只有一个位置，先按现在的配置把它对完账
+        # Previous rename migration failed/crashed; one marker slot exists, so reconcile it with current configuration first
         try:
             unsettled = await reconcile_rename(config_dir, names, uid_of)
-        except Exception as exc:  # noqa: BLE001 - 对不完账就拒绝这次改名，标记留给启动对账
+        except Exception as exc:  # noqa: BLE001 - reject rename on incomplete reconciliation; retain markers for startup recovery
             logger.warning("visit rename: earlier pending_rename not reconciled: %r", exc)
             break
         if unsettled != frozenset():
@@ -460,16 +460,16 @@ async def settle_rename(config_dir: str | Path, marker: Mapping[str, Any], load_
     try:
         names, uid_of = await load_names()
         result = await reconcile_rename(Path(config_dir), names, uid_of, expected=dict(marker), undo_moves=False)
-    except Exception as exc:  # noqa: BLE001 - 迁移失败不影响已提交的改名，标记留给启动对账
+    except Exception as exc:  # noqa: BLE001 - migration failure does not undo committed rename; retain markers for startup recovery
         logger.warning("visit rename: visit data not migrated yet, startup recovery retries: %r", exc)
         return False
     if result is MARKER_CHANGED:
-        # 标记已被别的流程（启动对账）处理掉：它按同一套规则迁移过了
+        # Another flow such as startup reconciliation already handled the marker under the same migration rules
         return True
     return result == frozenset()
 
 
-# ── 删除退役 ──────────────────────────────────────────────────────────
+# ── Deletion retirement ──────────────────────────────────────────────────────────
 
 
 def retire_item(name: str, character_uid: str | None) -> dict:
@@ -501,17 +501,17 @@ async def _settle_own_rename(
     try:
         names, uid_of = await load_names()
         unsettled = await reconcile_renames(config_dir, names, uid_of)
-    except Exception as exc:  # noqa: BLE001 - 对不完账就拒绝这次删除，标记留给启动对账
+    except Exception as exc:  # noqa: BLE001 - reject deletion on incomplete reconciliation; retain markers for startup recovery
         raise RenamePendingElsewhere("this character's rename is still being migrated") from exc
     if unsettled is ALL_NAMES:
         raise RenamePendingElsewhere("this character's rename is still being migrated")
     if unsettled:
-        # 另一个名字已被别的角色占用：两边的条目分不开了，删掉这个角色不会让情况更糟；
-        # 它的 uid 一消失，下次对账就按「已删除」清掉标记
+        # Another character occupies the alternate name, leaving inseparable entries; deleting this character does not worsen that,
+        # and disappearance of its uid lets the next reconciliation clear the marker as deleted
         logger.warning("visit retire: ambiguous pending_rename of %r left as is, delete goes ahead", name)
-    # 对账后仍挂着的这个角色的改名（在等某个名字的退役、或排在一笔永久歧义的改名后面）：
-    # 另一个名字没被别的角色占着，就随角色一起退役，之后这笔改名按「已删除」清掉。
-    # 被别的角色占着的名字（真正的歧义）条目分不开，照旧不动
+    # This character's rename remains pending after reconciliation, awaiting retirement or queued behind permanent ambiguity:
+    # retire alternate names unoccupied by other characters along with it, then clear its rename as deleted.
+    # Truly ambiguous names occupied by other characters remain untouched because entries are inseparable
     held = set(names) - {name}
     marker, queued = await read_roster_markers(config_dir, PENDING_RENAME, PENDING_RENAME_QUEUE)
     return tuple(dict.fromkeys(
@@ -540,15 +540,15 @@ async def begin_retire(
     others: tuple[str, ...] = ()
     keep_entries = False
     if load_names is not None:
-        # 名字是云快照刚交给这个角色的、原来那个角色的改名还没对完账：按名字退役会删掉人家的条目
+        # Cloud import just handed this name to the character while the original owner's rename is pending; name-based retirement would delete the original owner's entries
         keep_entries = await _settle_handed_over(config_dir, name, character_uid, load_names)
         others = await _settle_own_rename(config_dir, name, character_uid, load_names)
     for other in others:
         await add_roster_marker_item(config_dir, PENDING_RETIRE, retire_item(other, character_uid))
     item = retire_item(name, character_uid)
     if keep_entries:
-        # 那笔改名永久歧义：照常删除，但不按名字清名册（记成已做完），名下条目留给原角色；
-        # 名字仍被那笔改名占着，新角色继承不到
+        # That rename is permanently ambiguous: delete normally but mark roster cleanup complete without executing it, leaving entries for the original character;
+        # the pending rename still reserves this name, preventing new-character inheritance
         item = {**item, "roster_done": True}
     await add_roster_marker_item(config_dir, PENDING_RETIRE, item)
     return item
@@ -569,9 +569,9 @@ async def _retire(config_dir: Path, name: str, uid: str | None, names: set[str],
     """Run every retirement step; return the failures and whether the roster step is done."""
     failures: list[BaseException] = []
     try:
-        # 头行不带 own_char_uid 的旧场次按名字认：只在没有同名新角色时
+        # Legacy sessions lacking own_char_uid in their header use names only when no new same-named character exists
         await VisitSpool.retire_char(config_dir, uid or "", legacy_name=None if name in names else name)
-    except Exception as exc:  # noqa: BLE001 - 各步互不连累，最后统一报
+    except Exception as exc:  # noqa: BLE001 - keep steps independent and report errors together afterward
         failures.append(exc)
     roster_ok = roster_done
     if not roster_done:
@@ -584,7 +584,7 @@ async def _retire(config_dir: Path, name: str, uid: str | None, names: set[str],
         try:
             await retire_persona(uid)
         except ValueError:
-            # 不是合法 uid：不可能有对应的人设文件
+            # Invalid uid: no corresponding persona file can exist
             pass
         except Exception as exc:  # noqa: BLE001
             failures.append(exc)
@@ -619,11 +619,11 @@ async def settle_retire(
         roster_done = item.get("roster_done") is True
         failures, roster_ok = await _retire(config_dir, name, uid, names, retire_persona, roster_done=roster_done)
         if failures:
-            # 角色不回滚：标记保留，启动对账补完
+            # Do not roll back character changes; retain markers for startup reconciliation
             logger.warning("visit retire: visit data of a deleted character not fully retired: %r", failures[0])
             if roster_ok and not roster_done:
-                # 按名字清名册这一步已做完：记下来，之后重试不再按名字清——这个名字之后可能
-                # 归了新角色（云快照导入不经过名字占用判定），它写下的条目不能被反复清掉
+                # Name-based roster cleanup completed: record this so retries never clear by name again, since the name may later
+                # belong to a new character through cloud import bypassing occupancy checks; preserve its new entries
                 await replace_roster_marker(config_dir, PENDING_RETIRE, dict(item), {**item, "roster_done": True})
             return False
     await remove_roster_marker_item(config_dir, PENDING_RETIRE, dict(item))
@@ -655,8 +655,8 @@ async def replay_retires(
     clean = True
     for item in marker:
         async with (config_lock() if config_lock is not None else contextlib.nullcontext()):
-            # 锁内重读标记：等锁期间这一项可能已被别处处理掉、同名新角色也已建好，
-            # 拿着旧快照再退役会删掉新角色的名册条目
+            # Reread markers under lock: while waiting, another flow may have retired this entry and created a new same-named character;
+            # retiring from an old snapshot would delete that new character's roster
             try:
                 current = await read_roster_marker(config_dir, PENDING_RETIRE)
             except RosterCorruptError:
@@ -664,13 +664,13 @@ async def replay_retires(
                 continue
             if not isinstance(current, list) or item not in current:
                 continue
-            # 锁内重读配置：等锁期间删除事务可能刚提交 / 刚回滚
+            # Reread configuration under lock; deletion may just have committed or rolled back while waiting
             names, uid_of = await load_names()
             try:
                 clean = await settle_retire(config_dir, item, names=names, uid_of=uid_of,
                                             retire_persona=retire_persona) and clean
             except (OSError, RosterCorruptError) as exc:
-                # 一项写不进去（记 roster_done / 撤标记时磁盘出错）不能中断整轮重放：这一项留着下次再补
+                # One failed write (roster_done/marker removal disk error) must not abort all replay; leave it for the next attempt
                 logger.error("visit recovery: retirement of %r not settled: %r", item, exc)
                 clean = False
     return clean
@@ -693,8 +693,8 @@ async def name_marker_state(config_dir: str | Path, name: str) -> str:
     until the file is readable again.
     """
     try:
-        # 一次读出三个标记：分开读可能拼出从未存在过的状态（读完位置后恢复刚好把队首挪进位置、
-        # 再读队列已空），把排队中的名字误判成空闲
+        # Read all three markers together: separate reads can synthesize nonexistent state, such as recovery moving queue head into the slot after the slot read,
+        # then reading an empty queue and mistaking its reserved name for free
         retiring, renaming, queued = await read_roster_markers(
             config_dir, PENDING_RETIRE, PENDING_RENAME, PENDING_RENAME_QUEUE)
         queued = _queued_renames(queued)
@@ -715,7 +715,7 @@ async def names_retiring(config_dir: str | Path, names: Iterable[str]) -> bool:
         retiring = await read_roster_marker(config_dir, PENDING_RETIRE)
     except RosterCorruptError:
         return True
-    # 按名字清名册那一步已做完的退役项（roster_done）不再挡改名迁移，这里同样不算
+    # roster_done retirement entries no longer block rename migration, so exclude them here too
     return isinstance(retiring, list) and any(
         (_item_fields(item) or ("", None))[0] in wanted and item.get("roster_done") is not True
         for item in retiring)
@@ -764,14 +764,14 @@ async def _settle_handed_over(
     try:
         names, uid_of = await load_names()
         unsettled = await reconcile_renames(config_dir, names, uid_of, pending_groups=groups)
-    except Exception as exc:  # noqa: BLE001 - 对不完账就拒绝，标记留给启动对账
+    except Exception as exc:  # noqa: BLE001 - reject on incomplete reconciliation; retain markers for startup recovery
         logger.warning("visit lifecycle: rename handing %r over not reconciled: %r", name, exc)
         raise RenamePendingElsewhere("another character's rename still owns this name's visit data") from exc
     if not await _handed_over_pending(config_dir, name, character_uid):
         return False
     held = next((group for group in groups if name in group), None) if isinstance(unsettled, frozenset) else None
     if held is not None and not await names_retiring(config_dir, held):
-        # 交出名字的那笔改名永久歧义：等也等不到。照旧挡住只会让接手的角色永远删不掉
+        # The rename handing over this name is permanently ambiguous and cannot finish; blocking would make the receiving character permanently undeletable
         logger.warning("visit lifecycle: rename handing %r over is ambiguous; its entries stay under the name", name)
         return True
     raise RenamePendingElsewhere("another character's rename still owns this name's visit data")
@@ -804,8 +804,8 @@ async def handover_blocks_visit(
     blocks nothing, like every other name check.
     """
     try:
-        # 返回 True 是歧义：同样拦。占着另一个名字的角色被删后歧义就解开，对账会把这个名字下的条目
-        # （包括这期间接手的角色串门写下的）全部迁给原角色
+        # True means ambiguity and still blocks: deleting the other-name occupant resolves it, and reconciliation migrates every entry under this name,
+        # including visits written by its interim occupant, back to the original character
         return await _settle_handed_over(Path(config_dir), name, character_uid, load_names)
     except RenamePendingElsewhere:
         return True
@@ -858,7 +858,7 @@ def record_removed_characters_sync(
         slot, queued = read_roster_markers_sync(config_dir, PENDING_RENAME, PENDING_RENAME_QUEUE)
         rename_markers = [slot, *_queued_renames(queued)]
     except RosterCorruptError:
-        rename_markers = []  # 名册读不出：写标记那一步同样会失败，由回调方记日志
+        rename_markers = []  # Unreadable roster also prevents marker writing; let the caller log the failure
     added = 0
     entries = [(entry, True) for entry in removed] + [(entry, False) for entry in replaced]
     for entry, own_name in entries:
@@ -867,7 +867,7 @@ def record_removed_characters_sync(
             continue
         name, uid = fields
         if not own_name and uid is None:
-            continue  # 没有 uid 就认不出它的改名标记
+            continue  # Without uid, its rename marker cannot be identified
         names = list(dict.fromkeys(([name] if own_name else []) + [
             other for marker in rename_markers for other in _rename_names_of(marker, name, uid)
             if other != name and other not in kept
@@ -904,20 +904,20 @@ def record_renamed_characters_sync(config_dir: str | Path, renamed: Iterable[Map
         marker = {"old": old, "new": new, "uid": uid, "source": CLOUDSAVE_SOURCE}
         handed = _handed_over_names(entry)
         if handed:
-            # 链式改名：旧名接着归了本机另一个角色（它的改名排在后面），对账时不算被复用
+            # Chained renaming: old name immediately passes to another local character whose rename is queued later; reconciliation must not count that as reuse
             marker["handed_over"] = sorted(handed)
         ok, existing = set_roster_marker_sync(config_dir, PENDING_RENAME, marker)
         if ok:
             written += 1
         elif isinstance(existing, dict) and existing.get("uid") == uid:
-            # 这个角色自己的上一笔改名还没对完账：对账见它到了第三个名字，会把两个旧名下的条目一起迁过去。
-            # 新名字记进标记（chained），对账前同样算占用：否则覆盖下载这个名字会换掉角色的 uid，
-            # 对账就按「已删除」清掉标记，两个旧名下的条目没人认领
+            # This character's preceding rename remains unreconciled; reaching a third name makes reconciliation migrate entries under both older names there.
+            # Record the new name in chained and reserve it before reconciliation, or overwrite downloads replace its uid,
+            # making reconciliation treat it as deleted and orphan entries under both older names
             chained = list(existing.get("chained")) if isinstance(existing.get("chained"), list) else []
             value = dict(existing)
             if new not in chained and new not in (existing.get("old"), existing.get("new")):
                 value["chained"] = [*chained, new]
-            # 这一笔若记了 handed_over（链式改名里旧名接着归了下一个本机角色），一并带进已有标记
+            # Carry handed_over into existing markers too, when chained rename passes the old name to the next local character
             handed = _handed_over_names(existing) | _handed_over_names(marker)
             if handed:
                 value["handed_over"] = sorted(handed)
@@ -926,7 +926,7 @@ def record_renamed_characters_sync(config_dir: str | Path, renamed: Iterable[Map
             logger.info("visit rename: cloudsave renamed %r to %r on top of pending %r; recovery chains it",
                         old, new, existing)
         else:
-            # 标记只有一个位置：排进队列，启动对账在这一笔清掉之后依次处理（同一次导入改了几个角色）
+            # One marker slot exists: enqueue remaining renames for sequential startup reconciliation after this entry clears, supporting multi-character imports
             written += bool(add_roster_marker_item_sync(config_dir, PENDING_RENAME_QUEUE, marker))
             logger.info("visit rename: cloudsave renamed %r to %r queued behind pending %r", old, new, existing)
     return written
@@ -965,11 +965,11 @@ def record_handed_over_names_sync(
         if held is None:
             continue
         marker_uid = marker.get("uid") if isinstance(marker.get("uid"), str) and marker.get("uid") else None
-        # 被删角色的改名交给它的退役；没有 uid 的标记按名字认它是不是被删的那个
+        # Deleted characters' renames belong to their retirement; uid-less markers identify deleted characters by name
         if (marker_uid in gone_uids) if marker_uid else bool(gone_names & set(held)):
             continue
         handed = _handed_over_names(marker)
-        # 导入前这个名字归本机另一个角色：条目早和它的混在一起，不能整个迁走
+        # This name belonged to another local character before import; entries are already mixed and cannot all migrate away
         adding = [name for name in held
                   if name in fresh and name not in handed and fresh[name] in (None, marker_uid)]
         if not adding:

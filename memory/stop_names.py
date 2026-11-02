@@ -44,18 +44,18 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
-# Comma / 中文逗号 / 顿号 / 分号 / 空白都视为昵称字段分隔符。
+# Nickname separators include ASCII/Chinese commas, enumeration commas, semicolons, and whitespace.
 _NICKNAME_SPLIT_RE = re.compile(r"[,，;；、\s]+")
 
-# 纯拉丁/数字字母的别名（"Tony"、"al"、"T-酱" 也算，只要不含 CJK / 其他脚本）。
-# 这类别名走 word-boundary 替换，避免 ``Al`` 把 ``Algorithm`` 截掉一截。
+# Latin/alphanumeric aliases ("Tony", "al", "T-酱" too, provided they contain no CJK / other scripts).
+# Use word-boundary replacement for these aliases so Al cannot cut into Algorithm.
 _LATIN_ALIAS_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
-# 别名最短长度。Codex PR-971 P2: 单字符 alias（``T`` / ``天``）做全文 substring
-# replace 会把所有命中字符抹掉——``今天天气好`` + stop=``天`` 会留下
-# ``今  气好``，``_extract_keywords`` 抽到的 n-gram 只剩 ``气好`` 一个，悄无声
-# 息地把 BM25/记忆召回的 recall 砍光。漏掉一个真单字别名是次要损失，比起
-# 把每条 fact 都腌一遍完全可接受。
+# Minimum alias length. Codex PR-971 P2: whole-text substring replacement of single-character aliases
+# (T / 天) removes every occurrence: 今天天气好 with stop=天 leaves
+# 今  气好, reducing _extract_keywords n-grams to just 气好 and silently
+# destroying BM25/memory recall. Missing one actual single-character alias is a minor loss,
+# acceptable compared with damaging every fact.
 _MIN_STOP_NAME_LEN = 2
 
 
@@ -73,7 +73,7 @@ def split_nickname_aliases(raw) -> list[str]:
     """Split a ``昵称`` field (comma/space-separated) into individual aliases.
 
     Empty / whitespace tokens are dropped. Always returns a list (never None).
-    """
+    """  # noqa: DOCSTRING_CJK
     if not raw:
         return []
     return [s.strip() for s in _NICKNAME_SPLIT_RE.split(str(raw)) if s.strip()]

@@ -18,22 +18,22 @@ from __future__ import annotations
 from memory.startup_greeting_history import StartupGreetingRecord
 
 
-# 开屏问候的去重分两级：
-#   · 召回窗（3 天）——所有已提交的开场都会作为「不要雷同」的参考进入 prompt，
-#     记忆话题也在这个窗口内不复用。
-#   · 强约束窗（1 天）——窗内的开场额外要求「不得复述或近义改写」，开场角度
-#     也在这一层轮换，保证同一天内说法明显不同。
-# 两级都只统计真正送达用户的文本（见 memory.startup_greeting_history）。
+# Startup-greeting deduplication has two levels:
+#   · Recall window (3 days): all submitted openings enter the prompt as avoid-similarity references;
+#     memory topics are also not reused during this window.
+#   · Strict window (1 day): additionally forbid repeating or paraphrasing openings; rotate opening angles
+#     here too, ensuring clearly different wording within one day.
+# Both count only text actually delivered to the user (see memory.startup_greeting_history).
 _STARTUP_GREETING_RECALL_SECONDS = 3 * 24 * 60 * 60
 _STARTUP_GREETING_STRICT_SECONDS = 24 * 60 * 60
 _STARTUP_GREETING_BURST_SECONDS = 30 * 60
-# 触发的硬门槛：对话空闲不足这么久就完全不触发（trigger_greeting 的 gap gate）。
-# 这才是两次已提交问候之间的真实下界——burst 闸的 30 分钟在用户于上次问候之后
-# 说过话时会被豁免，所以任何「三天内最多攒多少条」的容量推算都必须用这个值，
-# 不能用 burst 窗。见 memory.startup_greeting_history._MAX_RECORDS。
+# Hard trigger threshold: no greeting before the conversation is idle this long (trigger_greeting gap gate).
+# This is the true lower bound between submitted greetings: the burst gate's 30 minutes is waived if
+# the user spoke after the previous greeting. Any capacity estimate for maximum records over three days
+# must use this value, not the burst window. See memory.startup_greeting_history._MAX_RECORDS.
 _STARTUP_GREETING_MIN_GAP_SECONDS = 15 * 60
-# prompt 里每层最多列多少条。召回窗满载时可达上百条（30 分钟 burst 闸下每天
-# 最多 48 条），全塞会把开屏 prompt 撑爆，所以两层都按条数封顶。
+# Maximum prompt entries per level. Full recall may contain hundreds (up to 48 daily with the 30-minute
+# burst gate); including all would overflow the startup prompt, so cap both levels by count.
 _STARTUP_GREETING_STRICT_SAMPLES = 6
 _STARTUP_GREETING_EARLIER_SAMPLES = 6
 _STARTUP_GREETING_VARIANT_MEMORY = "memory_followup"

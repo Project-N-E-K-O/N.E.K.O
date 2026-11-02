@@ -7,9 +7,9 @@ from typing import Any, Mapping
 
 from .runtime_rules import SCORING_RUNTIME_RULES
 
-# 事实阶段只检查可引用的冲突；正常作者稿允许没有问题，不靠凑建议数量判断完整性。
-# 先解释实际框架，再检查原文冲突；不让目标/路线字段被误读为另一套运行状态机。
-# 初检按时点比较后只提交已确认冲突；精简重复提醒，同时把必填修订字段写进输出示例。
+# The fact stage checks only citable conflicts; valid author drafts may have none, without suggestion-count quotas.
+# Explain the actual framework before inspecting source conflicts so targets/routes are not mistaken for a separate runtime state machine.
+# Initial review compares timing and submits confirmed conflicts only; remove duplicate reminders and include required revision fields in examples.
 FACT_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n" + """你核对互动剧本的事实一致性，不评价文学、不补剧情。输入是作者规划，不是已发生的游戏日志。只报告原文能确认的互斥事实或行动越权，不能把缺少重述、推测或写法偏好写成错误。
 
 按以下顺序阅读，每个节点都检查：
@@ -26,28 +26,28 @@ FACT_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n" + """你核对互动剧本的�
 """
 
 
-# 同次初检显式对照开场与演完后的画面，避免模型把作者快照解释成通常的入场姿态。
-# 对照只复用原字段ref/text，不新增事实、输出协议或模型阶段；重复状态合并为同一问题。
+# Explicitly compare opening and post-performance views in the same initial review so author snapshots are not read as usual entrance poses.
+# Reuse only existing ref/text fields: add no facts, output protocol, or model stage; merge repeated state issues.
 OPENING_STATE_COMPARISON_RULE = (
     "优先核对opening_end_state_comparisons：declared_picture_after_performance是作者声明的开场全部动作演完后的画面，不是动作之前的初始姿态。"
     "将opening_performance演完，再与此画面对照；已改变的状态不能仍写成变化之前，不能以“先如此、后改变也合理”放过这个同一时点的冲突。"
     "只对明确互斥的结果报错；最后又恢复、计划未实施、不同对象及相容位置均可成立。"
     "same_moment_context里重复的同一错误状态也应同步修正，与状态字段合为一条问题。"
-    # 证据编号和修订路径是两套既有定位合同；长稿不能把字段路径误填进ref列表。
+    # Evidence IDs and revision paths are separate existing location contracts; long drafts must not put field paths in ref lists.
     "evidence_refs只填写对应原文对象的ref值（例如E12、E34），不能填写字段路径；"
     "repair_targets的field则填写节点内字段路径，不能填写证据编号。这两种定位不可混用。"
 )
 
 
-# 稳定ID和定位目录用于连接节点；给它们编号会让模型用名称代替行动正文凑足两份证据。
-# source_ids仍可核对引用关系，owner/output_field等真实权限值仍可用于ownership证据。
+# Stable IDs and location indexes connect nodes; numbering them encourages model names to substitute for action evidence.
+# source_ids still verify references; actual owner/output_field permission values remain valid ownership evidence.
 _LOCATOR_FIELDS = {"id", "target_node_id", "source_node_id", "entry_from", "destination_ids", "text_repair_fields"}
 
 
 def build_fact_sources(context: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
     """Number citable string leaves; retain location metadata verbatim without treating it as conflict evidence."""
-    # 保留完整投影和原路径，只把主线放在结局前、开场状态放在目标与出口前，减少跨时点误读。
-    # 未知字段仍原样保留，支线按已有作者顺序处理，不猜测图的实际游玩顺序或目标是否完成。
+    # Preserve complete projections and original paths; place main routes before endings and opening state before targets/exits to reduce timing confusion.
+    # Preserve unknown fields and author branch order; do not infer actual graph play order or target completion.
     def ordered(value, keys):
         return {key: value[key] for key in (*keys, *value) if key in value}
     context = ordered(deepcopy(dict(context)), ("author_intent", "background", "characters", "metrics", "key_props", "mainline", "branches", "endings"))
@@ -120,7 +120,7 @@ def validate_fact_review(context: Mapping[str, Any], payload: Any, node_ids: set
                 raise ValueError("invalid_fact_description")
             evidence = raw.get("evidence")
             if evidence_sources is not None:
-                # 原生调用只接受本次输入的编号；恢复后继续逐字校验，不信任模型自填引文。
+                # Native calls accept only current-input IDs; after recovery, still verify quotations verbatim rather than trusting model-filled citations.
                 refs = raw.get("evidence_refs")
                 if ("evidence" in raw or not isinstance(refs, list) or len(refs) < 2
                         or any(not isinstance(ref, str) or ref not in evidence_sources for ref in refs)):
@@ -137,7 +137,7 @@ def validate_fact_review(context: Mapping[str, Any], payload: Any, node_ids: set
                     raise ValueError("invalid_fact_quote")
                 value = _resolve_pointer(context, path)
                 citation = {"path": path, "quote": quote}
-                # 数组父路径只允许唯一原文匹配；保留原路径，不改写引文或静默选择歧义项。
+                # Array-parent paths require unique verbatim matches; preserve original paths without rewriting quotes or silently choosing ambiguous items.
                 if isinstance(value, list):
                     matches = [i for i, text in enumerate(value) if isinstance(text, str) and quote in text]
                     if len(matches) != 1:
@@ -149,13 +149,13 @@ def validate_fact_review(context: Mapping[str, Any], payload: Any, node_ids: set
                 citations.append(citation)
             if len({x["path"] for x in citations}) < 2:
                 raise ValueError("duplicate_fact_evidence")
-            # 与既有节点建议共用列表，使用独立ID/来源；所有事实问题及证据均保留。
+            # Share the existing node-suggestion list but use independent IDs/sources; retain all factual issues and evidence.
             issues.append({
                 "issue_id": f"fact_issue_{index:02d}", "source": "facts",
                 "category": raw["category"], "dimension": "plot", "severity": raw["severity"],
                 "target_node_ids": list(dict.fromkeys(targets)), **fields,
                 "preserve": deepcopy(preserve), "evidence": citations,
-                # 修改字段由评分编排对照实际节点权限核验，不能仅信模型的text标签。
+                # Scoring orchestration validates modified fields against actual node permissions, not merely model text labels.
                 "repair_targets": deepcopy(raw.get("repair_targets")),
                 "repair_scope": raw["repair_scope"], "repairable": raw["repair_scope"] == "text",
             })

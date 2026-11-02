@@ -13,6 +13,9 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useReplyTailPresentation } from './useReplyTailPresentation';
+import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
+import ScreenObservationExposure from './ScreenObservationExposure';
+import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import AvatarToolItemManager, {
   type AvatarToolEditorResultMessage,
   type AvatarToolManagerAnchorRect,
@@ -937,10 +940,7 @@ function CompactChatApp({
   galgameToggleButtonAriaLabel,
   galgameLoadingLabel = i18n('chat.galgameLoading', 'Generating options...'),
   theaterPresentation = { active: false, phase: 'inactive' } as TheaterPresentation,
-  // Retained for host API compatibility; the compact-only surface no longer
-  // renders the per-message action menu, so this handler is currently unused
-  // (the `_` prefix opts it out of unused-var lint).
-  onMessageAction: _onMessageAction,
+  onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
   onComposerRemoveAttachment,
@@ -1020,6 +1020,8 @@ function CompactChatApp({
     lastForwardedScreenX?: number;
     lastForwardedScreenY?: number;
     captureTarget: Element | null;
+    // 同一次按下冒泡到外层时 nativeEvent 相同；任务栏松手丢失 pointerup 后的新按下是另一个事件。
+    nativeEvent?: Event;
   } | null>(null);
   const compactToolOriginDocumentCleanupRef = useRef<(() => void) | null>(null);
   // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
@@ -1035,6 +1037,7 @@ function CompactChatApp({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
+  const compactVisitLayerRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
@@ -1446,13 +1449,13 @@ function CompactChatApp({
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
     : null;
-  // 串门工具条与选项共用这一层的定位与命中区，但不把聊天面切到 options 态（不挡最小化以外的任何状态）
+  // 串门工具条使用独立 Portal，不能改变 Galgame 选项原本的上下布局。
   const visitBarVisible = isCompactSurface
     && !catLocalTextOnly
     && !theaterActive
     && !!visitBar
     && (!!visitBar.badge || visitBar.actions.length > 0);
-  const compactChoiceLayerOpen = isCompactSurface && (compactSurfaceChoicesVisible || visitBarVisible);
+  const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
     () => messages.filter(isCompactExportMessageSelectable),
@@ -2700,41 +2703,63 @@ function CompactChatApp({
       const desktopLayoutSurfaceRect = getDesktopLayoutSurfaceRect(desktopLayout);
       const surfaceRect = desktopLayoutSurfaceRect ?? shellRect;
       syncChoiceLayerSurfaceVars(surfaceRect, nextLayerNode);
-      if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
-        setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
-        return;
-      }
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const desktopSpace = getDesktopPlacementSpace(surfaceRect);
       const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - surfaceRect.bottom);
       const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, surfaceRect.top);
-      const requiredSpace = layerHeight + gap;
-      const nextPlacement = availableBelow >= requiredSpace
+      const visitLayerNode = compactVisitLayerRef.current;
+      const measuredVisitReserve = visitBarVisible && visitLayerNode
+        ? Math.ceil(Math.max(visitLayerNode.getBoundingClientRect().height, visitLayerNode.scrollHeight)) + 22
+        : 0;
+      const cssVisitReserve = Number.parseFloat(window.getComputedStyle(document.documentElement)
+        .getPropertyValue('--compact-visit-layer-reserved-block-size')) || 0;
+      const visitReserve = visitBarVisible ? Math.max(measuredVisitReserve, cssVisitReserve) : 0;
+      const requiredBelow = layerHeight + gap;
+      const requiredAbove = layerHeight + gap + visitReserve;
+      const setAvailableBlockSize = (placement: 'above' | 'below') => {
+        const available = placement === 'above'
+          ? availableAbove - gap - visitReserve
+          : availableBelow - gap;
+        nextLayerNode.style.setProperty('--compact-choice-available-block-size', `${Math.max(0, Math.floor(available))}px`);
+      };
+      if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
+        setAvailableBlockSize(desktopForcedPlacement);
+        setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
+        return;
+      }
+      const nextPlacement: 'above' | 'below' = availableBelow >= requiredBelow
         ? 'below'
-        : availableAbove >= requiredSpace
+        : availableAbove >= requiredAbove
           ? 'above'
-          : availableBelow >= availableAbove
+          : availableBelow - gap >= availableAbove - gap - visitReserve
             ? 'below'
             : 'above';
       setCompactChoiceLayerPlacement((current) => {
-        if (current === nextPlacement) return current;
+        let placement = nextPlacement;
+        if (current === nextPlacement) {
+          setAvailableBlockSize(current);
+          return current;
+        }
         if (
           current === 'above'
           && nextPlacement === 'below'
-          && availableBelow < requiredSpace + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
+          && availableAbove >= requiredAbove
+          && availableBelow < requiredBelow + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
         ) {
-          return current;
+          placement = current;
         }
         if (
           current === 'below'
           && nextPlacement === 'above'
-          && availableAbove < requiredSpace + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
+          && availableBelow >= requiredBelow
+          && availableAbove < requiredAbove + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
         ) {
-          return current;
+          placement = current;
         }
-        return nextPlacement;
+        setAvailableBlockSize(placement);
+        return placement;
       });
     };
 
@@ -2777,6 +2802,8 @@ function CompactChatApp({
       });
       observer.observe(shellNode);
       observer.observe(layerNode);
+      const visitLayerNode = compactVisitLayerRef.current;
+      if (visitBarVisible && visitLayerNode) observer.observe(visitLayerNode);
     }
 
     return () => {
@@ -2790,7 +2817,7 @@ function CompactChatApp({
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
     };
-  }, [compactChoiceLayerOpen, galgameOptions.length, galgameOptionsLoading, isCompactSurface, choicePrompt]);
+  }, [compactChoiceLayerOpen, galgameOptions.length, galgameOptionsLoading, isCompactSurface, choicePrompt, visitBarVisible]);
 
   const requestCompactChatState = useCallback((nextState: CompactChatState) => {
     if (!isCompactSurface) return;
@@ -2800,6 +2827,38 @@ function CompactChatApp({
     }
     onCompactChatStateChange?.(nextState);
   }, [compactTextEntryLocked, isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
+
+  useEffect(() => {
+    if (!isCompactSurface || !visitBarVisible) return;
+
+    const layerNode = compactVisitLayerRef.current;
+    if (!layerNode) return;
+
+    // 坐标直接继承 documentElement 上与聊天框相同的实时 CSS 变量。
+    // 不再把位置复制到 Portal 的内联变量并延迟到下一帧，否则连续拖拽时会明显落后。
+    const syncVisitLayerReservedBlockSize = () => {
+      const nextLayerNode = compactVisitLayerRef.current;
+      if (!nextLayerNode) return;
+      const visitLayerHeight = Math.max(nextLayerNode.getBoundingClientRect().height, nextLayerNode.scrollHeight);
+      document.documentElement.style.setProperty(
+        '--compact-visit-layer-reserved-block-size',
+        `${Math.ceil(visitLayerHeight) + 22}px`,
+      );
+    };
+
+    syncVisitLayerReservedBlockSize();
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(syncVisitLayerReservedBlockSize);
+      observer.observe(layerNode);
+    }
+
+    return () => {
+      observer?.disconnect();
+      document.documentElement.style.removeProperty('--compact-visit-layer-reserved-block-size');
+    };
+  }, [isCompactSurface, visitBarVisible]);
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
@@ -4211,9 +4270,11 @@ function CompactChatApp({
     const eventTarget = event.target instanceof Element ? event.target : null;
     if (eventTarget?.closest('textarea, input, [contenteditable]:not([contenteditable="false"])')) return;
     const existing = compactToolOriginDragRef.current;
-    if (existing && existing.pointerId === event.pointerId) return;
+    // 毛线球和外壳都会收到同一次按下。任务栏上松手时 pointerup 到不了窗口，
+    // 鼠标 pointerId 仍是上一次的，必须把新的按下当成新拖动，否则第一下会被吞掉。
+    if (existing && existing.pointerId === event.pointerId && existing.nativeEvent === event.nativeEvent) return;
     if (existing) {
-      cancelCompactToolOriginDrag('replaced');
+      cancelCompactToolOriginDrag(existing.pointerId === event.pointerId ? 'lost-pointerup' : 'replaced');
     } else {
       clearCompactToolOriginDocumentListeners();
     }
@@ -4235,6 +4296,7 @@ function CompactChatApp({
       startScreenY: event.screenY,
       moved: false,
       captureTarget,
+      nativeEvent: event.nativeEvent,
     };
     const pointerId = event.pointerId;
     const handleDocumentPointerMove = (nativeEvent: PointerEvent) => {
@@ -4609,6 +4671,7 @@ function CompactChatApp({
     }, 0);
   }, [collapseCompactInputIfEmpty]);
 
+  const windowBlurCollapseTimerRef = useRef(0);
   const scheduleForcedCompactInputCollapse = useCallback(() => {
     window.setTimeout(() => {
       collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
@@ -4625,6 +4688,7 @@ function CompactChatApp({
         !!compactInputShellRef.current?.contains(target)
         || !!compactInputToolFanRef.current?.contains(target)
         || !!compactChoiceLayerRef.current?.contains(target)
+        || !!compactVisitLayerRef.current?.contains(target)
         || (
           target instanceof Element
           && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle, .click-guide-layer, .click-guide-choice')
@@ -4644,18 +4708,32 @@ function CompactChatApp({
 
     const handleWindowBlur = () => {
       if (document.querySelector('.click-guide-layer.click-guide-native')) return;
-      scheduleForcedCompactInputCollapse();
+      if (windowBlurCollapseTimerRef.current) {
+        window.clearTimeout(windowBlurCollapseTimerRef.current);
+      }
+      // Next tick, not a grace period. Leaving the app reports hasFocus false.
+      // Moving into a history-card iframe blurs this window while the document
+      // still has focus, and that must not fold the input.
+      windowBlurCollapseTimerRef.current = window.setTimeout(() => {
+        windowBlurCollapseTimerRef.current = 0;
+        if (document.hasFocus()) return;
+        collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
+      }, 0);
     };
 
     window.addEventListener('blur', handleWindowBlur);
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown, true);
     return () => {
+      if (windowBlurCollapseTimerRef.current) {
+        window.clearTimeout(windowBlurCollapseTimerRef.current);
+        windowBlurCollapseTimerRef.current = 0;
+      }
       window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
+  }, [collapseCompactInputIfEmpty, effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
@@ -5165,6 +5243,38 @@ function CompactChatApp({
     syncCompactInputToolWheelPointerHover();
   }, [syncCompactInputToolWheelPointerHover]);
 
+  useEffect(() => {
+    if (!isCompactSurface || composerHidden) return undefined;
+    const handleHoverMove = (event: PointerEvent | MouseEvent) => {
+      if (compactToolOriginDragRef.current || !compactInputToolFanOpenRef.current) return;
+      if ('pointerType' in event && event.pointerType && event.pointerType !== 'mouse') return;
+      // 触屏抬手后 Chromium 会补发没有 pointerType 的 mousemove，坐标仍在刚点过的按钮上。
+      const touchCompatMouse = !('pointerType' in event)
+        && Boolean((event as MouseEvent & {
+          sourceCapabilities?: { firesTouchEvents?: boolean };
+        }).sourceCapabilities?.firesTouchEvents);
+      if (touchCompatMouse) return;
+      recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
+      syncCompactInputToolWheelPointerHover({
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    };
+    // 触摸输入层盖住轮盘时，未按下的移动常常只以 mousemove 进页面，而且打不中
+    // pointer-events:none 的轮盘节点。气泡只认几何悬停，所以在 window 上补记。
+    window.addEventListener('pointermove', handleHoverMove, true);
+    window.addEventListener('mousemove', handleHoverMove, true);
+    return () => {
+      window.removeEventListener('pointermove', handleHoverMove, true);
+      window.removeEventListener('mousemove', handleHoverMove, true);
+    };
+  }, [
+    composerHidden,
+    isCompactSurface,
+    recordCompactInputToolWheelPointerPosition,
+    syncCompactInputToolWheelPointerHover,
+  ]);
+
   const forwardCompactToolWheelBackgroundClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || event.button !== 0) return;
     const eventTarget = event.target instanceof Element ? event.target : null;
@@ -5336,7 +5446,14 @@ function CompactChatApp({
         handleCompactInputToolHoverEnter(event);
       }}
       onPointerLeave={(event) => {
-        clearCompactInputToolWheelPointerHover();
+        if (event.pointerType === 'mouse') {
+          // 鼠标命中测试离开轮盘时，指针可能仍停在视觉按钮上。按坐标重算，避免气泡被清掉。
+          recordCompactInputToolWheelPointerPosition(event.clientX, event.clientY);
+          syncCompactInputToolWheelPointerHover({ clientX: event.clientX, clientY: event.clientY });
+        } else {
+          // 触屏抬手的 pointerleave 坐标仍落在刚点过的按钮上，按坐标重算会把气泡挂住。
+          clearCompactInputToolWheelPointerHover();
+        }
         handleCompactInputToolHoverLeave(event);
       }}
       onFocus={() => {
@@ -5748,29 +5865,6 @@ function CompactChatApp({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
     >
-      {visitBarVisible && visitBar ? (
-        <div
-          className={`composer-visit-bar is-${visitBar.tone ?? 'idle'}`}
-          role="toolbar"
-          aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
-        >
-          {visitBar.badge ? <span className="composer-visit-bar-badge">{visitBar.badge}</span> : null}
-          {visitBar.detail ? <span className="composer-visit-bar-detail">{visitBar.detail}</span> : null}
-          {visitBar.actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className={`composer-visit-bar-action is-${action.variant ?? 'secondary'}`}
-              disabled={action.disabled}
-              aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
-              data-visit-bar-action={action.id}
-              onClick={() => onVisitBarAction?.(action.id)}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
       {galgameStyleOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameStyleOptionsVisible ? ' is-open' : ''}`}
@@ -5841,12 +5935,23 @@ function CompactChatApp({
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
           data-choice-source={choicePrompt.source}
         >
-          <div
+          {choicePrompt.source === 'mini_game_invite' ? (
+            <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="bubble"
+              disabled={composerDisabled || !compactChoiceLayerOpen} onSelect={(option) => {
+                if (submittingRef.current) return;
+                submittingRef.current = true;
+                try {
+                  restoreCompactExportHistoryToBottomForOutgoingMessage();
+                  onChoiceSelect?.(option, 'mini_game_invite');
+                  requestCompactChatState('default');
+                } finally {
+                  requestAnimationFrame(() => { submittingRef.current = false; });
+                }
+              }} />
+          ) : <div
             className="composer-galgame-options composer-choice-options"
             role="group"
-            aria-label={choicePrompt.source === 'mini_game_invite'
-              ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : choicePrompt.source === 'new_user_icebreaker'
+            aria-label={choicePrompt.source === 'new_user_icebreaker'
                 ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
                 : galgameToggleButtonLabel}
           >
@@ -5877,13 +5982,49 @@ function CompactChatApp({
                 </span>
               </button>
             ))}
-          </div>
+          </div>}
         </div>
       ) : null}
     </div>
   );
   const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
+    : null;
+  const visitLayerNode = visitBarVisible && visitBar ? (
+    <div
+      className="composer-visit-layer compact-chat-visit-anchor"
+      ref={compactVisitLayerRef}
+      data-compact-geometry-item="visit"
+      data-compact-geometry-owner="surface"
+      data-compact-no-drag="true"
+      data-visit-layer-open="true"
+      data-chat-surface-mode={chatSurfaceMode}
+    >
+      <div
+        className={`composer-visit-bar is-${visitBar.tone ?? 'idle'}`}
+        role="toolbar"
+        aria-label={i18n('chat.visitBarAriaLabel', 'Visit')}
+      >
+        {visitBar.badge ? <span className="composer-visit-bar-badge">{visitBar.badge}</span> : null}
+        {visitBar.detail ? <span className="composer-visit-bar-detail">{visitBar.detail}</span> : null}
+        {visitBar.actions.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            className={`composer-visit-bar-action is-${action.variant ?? 'secondary'}`}
+            disabled={action.disabled}
+            aria-pressed={typeof action.pressed === 'boolean' ? action.pressed : undefined}
+            data-visit-bar-action={action.id}
+            onClick={() => onVisitBarAction?.(action.id)}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : null;
+  const compactVisitLayerNode = isCompactSurface && !catLocalTextOnly && visitLayerNode
+    ? (typeof document !== 'undefined' ? createPortal(visitLayerNode, document.body) : visitLayerNode)
     : null;
   const theaterHistoryMessages = useMemo<ChatMessage[]>(() => (
     (theaterPresentation.history ?? []).map((entry, index) => ({
@@ -5936,6 +6077,7 @@ function CompactChatApp({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
+      onAction={onMessageAction}
       historyResizeActive={compactHistoryResizeActive}
       historyResizeContentLocked={compactHistoryResizeContentLocked}
       onHistoryResizePointerDown={handleCompactHistoryResizePointerDown}
@@ -6036,9 +6178,13 @@ function CompactChatApp({
       ) : null}
       <div className="chat-focus-overlay" aria-hidden="true" />
       {compactExportHistoryNode}
+      {chatSurfaceMode === 'compact' && !compactExportHistoryMounted && !theaterActive && !catLocalTextOnly ? (
+        <CompactMusicRecommendationPrompt messages={messages} onAction={onMessageAction} />
+      ) : null}
       {compactHistoryVisibilityHandleNode}
       {compactMusicPlayerMountNode}
       {compactChoiceLayerNode}
+      {compactVisitLayerNode}
       <AvatarToolItemManager
         open={isCompactSurface && !catLocalTextOnly && avatarToolManagerOpen}
         activeToolIds={activeAvatarToolIds}
@@ -6378,6 +6524,10 @@ function CompactChatApp({
                           >
                             {compactPreviewDisplayContent}
                           </span>
+                          {compactMessagePreview?.isAssistant && !compactSuppressAssistantFallback && compactPreviewDisplayText ? (
+                            <ScreenObservationExposure messages={messages} turnId={compactMessagePreview.turnId}
+                              onAction={onMessageAction} />
+                          ) : null}
                         </button>
                         {compactInputToolToggleButton}
                       </>

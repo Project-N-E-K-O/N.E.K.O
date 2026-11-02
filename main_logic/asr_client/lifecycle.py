@@ -74,7 +74,7 @@ class VoiceLifecycleEvent(Enum):
     RETRY = "retry"
     RETRIES_EXHAUSTED = "retries_exhausted"
     TURN_SEALED = "turn_sealed"
-    # 兼容旧调用方；新代码应使用 TURN_SEALED，明确区分语义端点和 provider final。
+    # Support old callers; new code should use TURN_SEALED to distinguish semantic endpoints from provider finals.
     TURN_ENDPOINTED = "turn_endpointed"
     PROVIDER_FINAL = "provider_final"
     PREWARM_EXPIRED = "prewarm_expired"
@@ -474,8 +474,8 @@ class VoiceInputLifecycleController:
         ):
             return AudioDecision(AudioDisposition.BLOCK)
 
-        # 已 seal 的旧轮次绝不能再接收麦克风音频。DRAINING 期间到达的
-        # PCM 只进入下一轮的有界内存缓冲，等待旧 final 后再启动新 turn。
+        # A sealed old turn must never receive more microphone audio. PCM arriving during DRAINING
+        # enters only the next turn's bounded memory buffer; start the new turn after the old final arrives.
         if self._state is VoiceLifecycleState.DRAINING:
             dropped = self._pending_turn.append(
                 pcm16,

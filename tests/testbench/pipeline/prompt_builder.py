@@ -5,7 +5,7 @@ the Testbench UI:
 
 * ``structured`` — a dict of named sections (``session_init`` /
   ``character_prompt`` / ``persona_header`` / ``persona_content`` / ...)
-  meant for the human-oriented "Structured" view in the Prompt Preview
+  meant for the human-oriented \"Structured\" view in the Prompt Preview
   panel. Never sent to the model.
 * ``system_prompt`` — the flat concatenation of the structured sections,
   i.e. the actual system message string that lands in ``wire_messages[0]``.
@@ -18,8 +18,8 @@ the Testbench UI:
   session persona's ``system_prompt`` field or defaulted via
   :func:`config.prompts.prompts_chara.get_lanlan_prompt`.
 * ``warnings`` — soft messages the UI can surface as info/warn chips
-  (e.g. "character_name 未填", "memory_dir 不存在", "stored_system_prompt
-  被识别为默认模板").
+  (e.g. \"character_name missing\", \"memory_dir absent\", \"stored_system_prompt
+  recognized as the default template\").
 
 Design notes
 ------------
@@ -36,7 +36,7 @@ uses ``datetime.now()``. We do the same **but**:
   re-implementing the memory context assembly locally (see
   :func:`_build_memory_context_structured_with_clock`) so the session's
   :class:`~tests.testbench.virtual_clock.VirtualClock` drives both
-  ``inner_thoughts_dynamic`` and the "distance to last conversation" gap.
+  ``inner_thoughts_dynamic`` and the \"distance to last conversation\" gap.
 * ``name_mapping`` is built from ``session.persona.master_name`` rather
   than from ``characters.json`` — persona edits take effect in Preview
   without requiring an Import. The upstream memory managers do read
@@ -89,17 +89,17 @@ class PromptBundle:
     """Everything the UI needs to display a Prompt Preview.
 
     ``structured`` / ``system_prompt`` / ``wire_messages`` are the three
-    views described in PLAN §技术点 3. ``metadata`` and ``warnings`` are
+    views described in PLAN §Technical point 3. ``metadata`` and ``warnings`` are
     Testbench-specific UX affordances.
 
-    Prompt-preview contract extension (P25 Day 2 polish r4, §7.25 第五次):
-    ``wire_messages`` 是 **"下次 /chat/send 会发给 LLM 的预测 wire"** —
-    从 ``session.messages`` 反推. 这对 ``/send`` 是准确的 (user 入 wire 前
-    已 append 进 session.messages), 但对 external event / auto-dialog 的
-    ephemeral instruction 路径**不准确** — instruction 只在 wire 末尾活
-    一瞬间, 不入 session.messages. ``last_llm_wire`` 补的就是"上一次真正
-    被发出去的 wire 及其元数据", 由 ``pipeline.wire_tracker`` 在每个 LLM
-    调用点前 stamp.
+    Prompt-preview contract extension (P25 Day 2 polish r4, §7.25 fifth iteration):
+    ``wire_messages`` is **the predicted wire sent to the LLM by the next /chat/send**,
+    derived from ``session.messages``. Accurate for ``/send`` (user already appended
+    to session.messages before entering wire), but **inaccurate** for external-event / auto-dialog
+    ephemeral instructions, which exist only briefly at wire's end,
+    never in session.messages. ``last_llm_wire`` supplies the last actual
+    wire sent and its metadata, stamped by ``pipeline.wire_tracker`` before every LLM
+    call site.
     """
 
     session_id: str
@@ -110,8 +110,8 @@ class PromptBundle:
     metadata: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
     # Optional — filled by build_prompt_bundle from session.last_llm_wire
-    # right before return. None = 本会话还没调过 LLM (或会话 reload 后
-    # runtime-only 字段被清空).
+    # right before return. None = this session has not called an LLM yet (or runtime-only fields were cleared
+    # after session reload).
     last_llm_wire: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -132,8 +132,8 @@ class PreviewNotReady(Exception):
     """Raised when the session state cannot yield a meaningful preview.
 
     Routers translate this to a 409 with a ``code`` matching the error
-    kind so the UI can render a targeted empty-state (e.g. "先去 Setup →
-    Persona 填写 character_name" vs "先新建会话").
+    kind so the UI can render a targeted empty state (e.g. 'Go to Setup →
+    Persona and fill character_name first' versus 'Create a session first').
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -353,7 +353,7 @@ def _build_memory_context_structured_with_clock(
             # `append_message` chokepoint guards new writes, but loaded
             # archives or snapshot rewinds to older states can hand us
             # a "now" earlier than the last message — a negative gap
-            # shouldn't trigger the "你好久没见我了" (long-silence)
+            # should not trigger '你好久没见我了' (long-silence: 'you have not seen me for a long time')
             # prompt. Treat as "just happened".
             gap = now - last_time
             gap_seconds = max(0.0, gap.total_seconds())
@@ -467,10 +467,10 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
 
     name_mapping = _build_name_mapping(master_name)
 
-    # ── 构造记忆管理器 ──
-    # 每次 preview 都构造新实例以避免跨会话泄露. 上游的各 manager __init__
-    # 轻量, 只在第一次 getter 调用时懒加载磁盘文件, 所以这里不会触发昂贵 IO.
-    # 失败时降级到空 context — preview 永远不应该因为角色第一次装配就崩溃.
+    # ── Construct memory managers ──
+    # Construct fresh instances per preview to avoid cross-session leakage. Upstream manager constructors
+    # are lightweight, lazily reading disk only on first getter, so no expensive IO occurs here.
+    # On failure degrade to empty context; preview must never crash on initial character assembly.
     try:
         recent_history_manager = CompressedRecentHistoryManager()
     except Exception as exc:
@@ -547,49 +547,49 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
     memory_flat = _flatten_memory_components(memory_components)
     system_prompt = session_init + lanlan_prompt + memory_flat + closing
 
-    # wire_messages = [system] + 每条 session.messages (OpenAI {role, content} 对).
-    # session.messages 由 P09 引入 (chat_runner + /chat/messages CRUD), 采用
-    # tests.testbench.chat_messages.make_message 规范化的 dict 结构: role ∈
-    # {user, assistant, system} 已与 OpenAI 直通, 无需翻译. 多模态 content
-    # (list[dict]) 会原样保留 — 上游 ChatOpenAI._normalize_messages 能接受.
+    # wire_messages = [system] + every session.messages entry (OpenAI {role, content} pairs).
+    # P09 introduced session.messages (chat_runner + /chat/messages CRUD), using
+    # normalized dicts from tests.testbench.chat_messages.make_message: role ∈
+    # {user, assistant, system} maps directly to OpenAI without translation. Multimodal content
+    # (list[dict]) remains unchanged; upstream ChatOpenAI._normalize_messages accepts it.
     #
-    # wire 层契约 (L36 §7.25 第四次同族证据 / PROGRESS 2026-04-19 Gemini
-    # nudge 教训 / AGENT_NOTES §4.16 #32):
-    #   主程序 ``main_logic/omni_offline_client.py`` 的 SystemMessage 只出
-    #   现在 ``_conversation_history[0]`` (初始化阶段 position 0), 运行期
-    #   所有输入路径 (``send_text_message`` / ``create_response`` /
-    #   ``prompt_ephemeral``) 统一以 ``HumanMessage`` (role=user) 追加.
-    #   换言之 — **主程序运行期不存在 role=system 的 wire 消息**. testbench
-    #   composer 却有个 "Role=User/System" 下拉 + [发送] 按钮组合, 让 tester
-    #   可以往 session.messages 里 append 一条 role=system. 若原样透传进
-    #   wire, Vertex AI Gemini 会挂:
-    #     (a) 空 session 只有 tester 发的一条 system → wire 变
-    #         [system_prompt, system(user-input)]. Gemini ``contents`` 字段
-    #         为空 (它把 system 单独塞进 systemInstruction), 直接 400
+    # Wire contract (L36 §7.25 fourth related evidence / PROGRESS 2026-04-19 Gemini
+    # nudge lessons / AGENT_NOTES §4.16 #32):
+    #   Main program ``main_logic/omni_offline_client.py`` has SystemMessage only
+    #   at ``_conversation_history[0]`` (initialization position 0). During runtime,
+    #   all input paths (``send_text_message`` / ``create_response`` /
+    #   ``prompt_ephemeral``) append ``HumanMessage`` (role=user).
+    #   Thus **the main program has no runtime role=system wire messages**. Testbench
+    #   composer has a 'Role=User/System' dropdown + Send button, allowing testers
+    #   to append role=system to session.messages. Passing it unchanged into
+    #   wire breaks Vertex AI Gemini:
+    #     (a) Empty session with only one tester system message → wire becomes
+    #         [system_prompt, system(user-input)]. Gemini's ``contents`` field
+    #         is empty (system messages go separately into systemInstruction), returning 400 directly.
     #         ``INVALID_ARGUMENT: Model input cannot be empty``.
-    #     (b) 有历史, 末尾被 tester 追一条 system → Gemini 对 "wire 末尾/
-    #         中间有 system" shape 过敏, **偶返空字符串 + 200**. 空 reply
-    #         被 ``chat_runner`` append 到 session.messages, 下一轮 wire
-    #         里就有 "上一轮 user 输入 + 空 assistant + 新 user", LLM 基于
-    #         上一轮输入生成本应属于上一轮的 reply — tester 观察到 "再次
-    #         触发才拿到上次的 reply" (stale reply bug).
-    # OpenAI / Claude / Lanlan 兼容端对"wire 中间 system"更宽容, 不会挂,
-    # 但也不会像主程序语义那样"把 system 当初始化指令"处理 — 它们只是作
-    # 为一条上下文消息混在对话里. 因此所有 provider 上, 运行期 role=system
-    # 的**实际执行语义**与主程序初始化态 SystemMessage 并**不等价**.
+    #     (b) Existing history with tester-appended system at the end → Gemini is sensitive to
+    #         system messages in the middle/end of wire and **sometimes returns empty text + 200**. chat_runner
+    #         appends that empty reply to session.messages; next round's wire
+    #         contains previous user input + empty assistant + new user, making the LLM
+    #         answer the previous input with the previous turn's intended reply; testers observe
+    #         the prior reply only after triggering again (stale reply bug).
+    # OpenAI / Claude / Lanlan-compatible endpoints tolerate middle-of-wire system messages without crashing,
+    # but do not treat them as initialization instructions like the main program;
+    # they become context messages mixed into conversation. Thus across all providers, runtime role=system
+    # has **different execution semantics** from the main program's initialization SystemMessage.
     #
-    # 修复策略 (chokepoint — 单点守护, 和 simulated_user 的 nudge 范式一致):
-    #   1. session.messages 里所有 role=system 消息, 在 wire 层**重写为
-    #      role=user + 内容前缀 `[system note] `**. 这样 session.messages
-    #      本身诚实保留 tester 的原始 role (preview / 审计可见), 但 wire
-    #      永远不会出现 "运行期 system" 这个 provider 过敏 shape.
-    #   2. 若重写 + 过滤后末尾不是 user (极端情况下, 比如最后一条是 assistant
-    #      待续), 不强加 nudge — ``chat_runner`` 自己有"只跑 LLM 模式"校
-    #      验, 会抛 ValueError 让路由层翻译友好错误. 真正的空 session +
-    #      合法 role=user 发送由上游保证末尾 user, 这里是被动防御不是主动
-    #      塑形.
-    #   3. 首条 wire (即 ``{role: 'system', content: system_prompt}``) 是
-    #      主程序语义下唯一合法的 system — 不参与重写, 因为它对应主程序
+    # Fix strategy (single guard point, matching simulated_user's nudge pattern):
+    #   1. Rewrite every role=system session.messages entry at the wire layer as
+    #      **role=user + content prefix `[system note] `**. session.messages itself
+    #      preserves the tester's original role honestly for preview / audit, while wire
+    #      never includes the provider-sensitive runtime-system shape.
+    #   2. If rewriting + filtering leaves a non-user final message (extreme cases such as pending assistant
+    #      continuation), do not force a nudge; ``chat_runner`` already validates its LLM-only mode
+    #      and raises ValueError for the router to turn into a friendly error. For a truly empty session +
+    #      valid role=user send, upstream guarantees a final user message; this is defensive handling,
+    #      not active reshaping.
+    #   3. The first wire message (``{role: 'system', content: system_prompt}``) is
+    #      the only valid system message under main-program semantics; do not rewrite it because it corresponds to the main program
     #      ``_conversation_history[0]``.
     wire_messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -627,7 +627,7 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
         else:
             wire_messages.append({"role": role, "content": content})
 
-    # ── 字符数 / 估算 token ──
+    # ── Character counts / estimated tokens ──
     structured_for_ui = {
         "session_init": session_init,
         "character_prompt": lanlan_prompt,
@@ -687,7 +687,7 @@ def build_prompt_bundle(session: Session) -> PromptBundle:
     except Exception as exc:  # noqa: BLE001 - best-effort cleanup
         warnings.append(f"TimeIndexedMemory.cleanup 失败: {exc}")
 
-    # Fold in "上次真实 wire" snapshot. Read through wire_tracker so the
+    # Fold in the 'last actual wire' snapshot. Read through wire_tracker so the
     # defensive deep-copy sits at the module boundary — preview JSON can
     # be mutated freely without leaking back into session.last_llm_wire.
     # Import lazily: wire_tracker is a small sibling module with no deps,

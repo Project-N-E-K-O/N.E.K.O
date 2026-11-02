@@ -1,4 +1,4 @@
-"""逐小时预报 router（未来 48 小时）。"""
+"""Hourly-forecast router (next 48 hours)."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _HOURLY_VARS = (
 
 
 class HourlyForecastRouter(PluginRouter):
-    """hourly_forecast entry：未来 48 小时逐小时天气。"""
+    """hourly_forecast entry: hourly weather for the next 48 hours."""
 
     def __init__(self):
         super().__init__(name="hourly_forecast")
@@ -92,7 +92,7 @@ class HourlyForecastRouter(PluginRouter):
                 "uv_index": _safe_idx(hourly, "uv_index", i),
             })
 
-        # 生成摘要：温度范围 + 降水时段
+        # Generate a summary: temperature range and precipitation periods
         temps = [h["temp"] for h in result_hours if h["temp"] is not None]
         rain_hours = [
             h["time"] for h in result_hours
@@ -106,7 +106,7 @@ class HourlyForecastRouter(PluginRouter):
                 low=min(temps), high=max(temps), count=len(result_hours),
             ))
         if rain_hours:
-            # 只显示前几个降水时段
+            # Show only the first few precipitation periods
             shown = rain_hours[:4]
             suffix = f" (+{len(rain_hours) - 4})" if len(rain_hours) > 4 else ""
             parts.append(i18n.t(
@@ -118,7 +118,7 @@ class HourlyForecastRouter(PluginRouter):
 
         summary = " | ".join(parts)
 
-        # 推送逐小时预报卡片到聊天框
+        # Push an hourly-forecast card to the chat window
         hour_lines = []
         for h in result_hours[:8]:
             t_str = h["time"].split("T")[1][:5] if "T" in h["time"] else h["time"]

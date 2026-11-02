@@ -1,15 +1,15 @@
 """
-Claude 伙伴陪伴插件 (Claude Companion)
+Claude Companion plugin
 
-监测 Claude Code 的工作活动，当检测到重要操作（编辑文件、运行命令、完成任务等）时，
-自动将活动摘要发送给 NEKO 伙伴，让她温暖地陪伴和鼓励正在开发的用户。
+Monitors Claude Code activity and detects important operations (editing files, running commands, completing tasks, etc.),
+hen automatically sends activity summaries to the NEKO companion so she can warmly accompany and encourage the user while they develop.
 
-架构：
-  Claude Code ──(HTTP Hook)──▶ 本插件 HTTP Server ──(push_message)──▶ NEKO 伙伴
+Architecture:
+  Claude Code ──(HTTP Hook)──▶ This plugin's HTTP Server ──(push_message)──▶ NEKO companion
 
-依赖：
-  - Claude Code hooks 配置（见 hooks.json）
-  - NEKO 插件系统 SDK v2
+Dependencies:
+  - Claude Code hooks configuration (see hooks.json)
+  - NEKO Plugin System SDK v2
 """
 
 from __future__ import annotations
@@ -35,14 +35,14 @@ from plugin.sdk.plugin import (
     SdkError,
 )
 
-# ── 常量 ──────────────────────────────────────────────────────────────────
+# ── Constants ───────────────────────────────────────────────────────────────
 
 _DEFAULT_PORT = 48920
 _DEFAULT_COOLDOWN = 60
 _SIGNIFICANT_TOOLS = {"Edit", "Write", "MultiEdit", "Bash", "PowerShell", "NotebookEdit"}
 _TASK_COMPLETE_TOOLS = {"TaskUpdate"}
 
-# 活动类型关键词映射
+# Activity-type keyword mapping
 _ACTIVITY_KEYWORDS = {
     "edit": ["edit", "修改", "改", "修改文件", "编辑"],
     "create": ["create", "write", "新建", "创建", "写"],
@@ -55,7 +55,7 @@ _ACTIVITY_KEYWORDS = {
     "deploy": ["deploy", "docker", "k8s", "部署", "上线"],
 }
 
-# ── 工具函数 ──────────────────────────────────────────────────────────────
+# ── Helper functions ───────────────────────────────────────────────────────
 
 _TZ_SHANGHAI = timezone(timedelta(hours=8))
 
@@ -65,12 +65,12 @@ def _now_str() -> str:
 
 
 def _detect_activity_type(user_msg: str, tools_used: List[str]) -> str:
-    """根据用户消息和工具使用情况检测活动类型。"""
+    """Detect activity types based on user messages and tool usage."""
     msg_lower = user_msg.lower()
     tools_str = " ".join(tools_used).lower()
     combined = f"{msg_lower} {tools_str}"
 
-    # 优先级检测
+    # Priority detection
     if any(t in tools_str for t in ("taskupdate",)):
         return "task_complete"
 
@@ -78,7 +78,7 @@ def _detect_activity_type(user_msg: str, tools_used: List[str]) -> str:
         if any(kw in combined for kw in keywords):
             return activity
 
-    # 根据工具推断
+    # Infer from tool
     if any(t in tools_used for t in ("Edit", "Write", "MultiEdit", "NotebookEdit")):
         return "edit"
     if any(t in tools_used for t in ("Bash", "PowerShell")):
@@ -87,10 +87,10 @@ def _detect_activity_type(user_msg: str, tools_used: List[str]) -> str:
     return "general"
 
 
-# ── 收件箱队列 ──────────────────────────────────────────────────────────
+# ── Inbox queue ────────────────────────────────────────────────────────────
 
 class InboxQueue:
-    """线程安全的消息队列，支持文件持久化。用于 NEKO → Claude 方向的消息传递。"""
+    """Thread-safe message queue with file persistence. Used for NEKO → Claude messaging."""
 
     def __init__(self, storage_path: str, max_size: int = 100):
         self._path = Path(storage_path)
@@ -100,7 +100,7 @@ class InboxQueue:
         self._load()
 
     def _load(self):
-        """从文件加载队列。"""
+        """Load the queue from a file."""
         if self._path.exists():
             try:
                 with open(self._path, "r", encoding="utf-8") as f:
@@ -111,7 +111,7 @@ class InboxQueue:
             self._messages = []
 
     def _save(self):
-        """持久化队列到文件。"""
+        """Persist the queue to a file."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._path, "w", encoding="utf-8") as f:
@@ -120,7 +120,7 @@ class InboxQueue:
             pass
 
     def add(self, content: str, source: str = "neko", msg_type: str = "message") -> Dict[str, Any]:
-        """添加一条消息到队列。返回完整消息对象。"""
+        """Add a message to the queue. Return the complete message object."""
         msg = {
             "id": str(uuid.uuid4())[:8],
             "timestamp": datetime.now(_TZ_SHANGHAI).isoformat(),
@@ -131,7 +131,7 @@ class InboxQueue:
         }
         with self._lock:
             self._messages.append(msg)
-            # 超出上限时只淘汰已读消息，保留未读消息
+            # When over capacity, evict only read messages and preserve unread ones
             if len(self._messages) > self._max_size:
                 overflow = len(self._messages) - self._max_size
                 kept: List[Dict[str, Any]] = []
@@ -141,8 +141,8 @@ class InboxQueue:
                         continue
                     kept.append(item)
                 if len(kept) > self._max_size:
-                    # 收件箱已满（全是未读消息），拒绝入队
-                    self._messages.pop()  # 移除刚添加的消息
+                    # Inbox is full (all messages unread); reject the new message
+                    self._messages.pop()  # Remove the message just added
                     self._save()
                     return {"error": "inbox is full of pending messages"}
                 self._messages = kept
@@ -150,12 +150,12 @@ class InboxQueue:
         return msg
 
     def pending(self) -> List[Dict[str, Any]]:
-        """获取所有待处理消息。"""
+        """Get all pending messages."""
         with self._lock:
             return [m for m in self._messages if m["status"] == "pending"]
 
     def ack(self, msg_ids: List[str]) -> int:
-        """标记指定消息为已读。返回实际标记的数量。"""
+        """Mark the specified messages as read. Return the number actually marked."""
         count = 0
         id_set = set(msg_ids)
         with self._lock:
@@ -167,7 +167,7 @@ class InboxQueue:
         return count
 
     def ack_all(self) -> int:
-        """标记所有待处理消息为已读。"""
+        """Mark all pending messages as read."""
         count = 0
         with self._lock:
             for m in self._messages:
@@ -178,7 +178,7 @@ class InboxQueue:
         return count
 
     def cleanup(self, max_age_hours: int = 48):
-        """清理超过指定时间的已读消息。"""
+        """Delete read messages older than the specified age."""
         cutoff = time.time() - max_age_hours * 3600
         with self._lock:
             self._messages = [
@@ -189,12 +189,12 @@ class InboxQueue:
             self._save()
 
 
-# ── 活动摘要生成器 ───────────────────────────────────────────────────────
+# ── Activity summary generator ─────────────────────────────────────────────
 
 class ActivitySummarizer:
-    """将 Claude Code 活动转化为温暖的陪伴消息。"""
+    """Turn Claude Code activity into warm companionship messages."""
 
-    # 不同活动类型的模板列表（随机选取，增加多样性）
+    # Template lists by activity type (randomly choose one for variety)
     TEMPLATES = {
         "edit": [
             "{name}刚刚修改了 {files}，代码越来越好了呢～加油！",
@@ -266,33 +266,33 @@ class ActivitySummarizer:
         tools_used: List[str] = None,
         assistant_msg: str = "",
     ) -> str:
-        """生成活动摘要：用户做了什么 + Claude 回复了什么。"""
+        """Generate an activity summary: what the user did + how Claude responded."""
         import random
         name = user_name or "你"
 
-        # 提取用户意图（去掉系统提示等无关内容）
+        # Extract user intent (remove irrelevant content such as system prompts)
         user_intent = ""
         if user_msg and len(user_msg.strip()) > 0:
-            # 取前100个字符作为用户意图
+            # Use the first 100 characters as the user intent
             user_intent = user_msg.strip()[:100]
             if len(user_msg) > 100:
                 user_intent += "..."
 
-        # 提取 Claude 回复摘要（取前80个字符）
+        # Extract a summary of Claude's response (first 80 characters)
         claude_reply = ""
         if assistant_msg and len(assistant_msg.strip()) > 0:
             claude_reply = assistant_msg.strip()[:80]
             if len(assistant_msg) > 80:
                 claude_reply += "..."
 
-        # 从模板中随机选取一条温暖的陪伴消息
+        # Randomly select a warm companionship message from the templates
         templates = cls.TEMPLATES.get(activity_type, cls.TEMPLATES.get("general", []))
         template_msg = ""
         if templates:
             files_str = ", ".join(files_touched[:2]) if files_touched else "代码"
             template_msg = random.choice(templates).format(name=name, files=files_str)
 
-        # 生成摘要：模板消息 + 用户意图 + Claude回复
+        # Generate a summary: template message + user intent + Claude response
         parts = []
         if template_msg:
             parts.append(template_msg)
@@ -304,15 +304,15 @@ class ActivitySummarizer:
         return " | ".join(parts) if parts else f"{name}和 Claude 在交流"
 
 
-# ── HTTP 服务器 ───────────────────────────────────────────────────────────
+# ── HTTP server ────────────────────────────────────────────────────────────
 
 class _HookHTTPHandler(BaseHTTPRequestHandler):
-    """处理 Claude Code hooks 的 HTTP 请求。"""
+    """Handle HTTP requests from Claude Code hooks."""
 
-    # 类变量，由插件实例设置
+    # Class variable, set by the plugin instance
     plugin_instance: Optional["ClaudeCompanionPlugin"] = None
 
-    # 需要鉴权的路径（NEKO 调用的接口）
+    # Paths that require authentication (APIs called by NEKO)
     _AUTH_PATHS = {"/push-summary", "/inbox/send", "/inbox/ack", "/inbox/pending"}
 
     def do_GET(self):
@@ -339,7 +339,7 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
                 self._respond(400, {"error": "Invalid JSON"})
                 return
 
-        # hook 路径无需鉴权（Claude Code 无法携带 token）
+        # Hook paths do not require authentication (Claude Code cannot include a token)
         if self.path in self._AUTH_PATHS:
             if not self._authorize():
                 return
@@ -360,7 +360,7 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "Not found"})
 
     def _authorize(self) -> bool:
-        """验证 Bearer token。未配置 token 时跳过鉴权。"""
+        """Validate the Bearer token. Skip authentication if no token is configured."""
         token = self.plugin_instance._api_token if self.plugin_instance else ""
         if not token:
             return True
@@ -371,25 +371,25 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle_turn_start(self, data: dict):
-        """处理 UserPromptSubmit hook - 记录用户消息。"""
+        """Handle the UserPromptSubmit hook — record the user's message."""
         if self.plugin_instance:
             self.plugin_instance._on_turn_start(data)
         self._respond(200, {"status": "ok"})
 
     def _handle_turn_end(self, data: dict):
-        """处理 Stop hook - 解析对话、生成摘要、推送消息。"""
+        """Handle the Stop hook — parse the conversation, generate a summary, and push it."""
         if self.plugin_instance:
             self.plugin_instance._on_turn_end(data)
         self._respond(200, {"status": "ok"})
 
     def _handle_push_summary(self, data: dict):
-        """处理直接推送摘要的请求 - 由 Claude 主动调用。"""
+        """Handle a request to push a summary directly — called proactively by Claude."""
         if self.plugin_instance:
             self.plugin_instance._on_push_summary(data)
         self._respond(200, {"status": "ok"})
 
     def _handle_inbox_send(self, data: dict):
-        """处理 NEKO 发送消息到收件箱的请求。"""
+        """Handle a request to send a message from NEKO to the inbox."""
         if self.plugin_instance:
             result = self.plugin_instance._on_inbox_send(data)
             self._respond(200, result)
@@ -397,7 +397,7 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
             self._respond(500, {"error": "Plugin not initialized"})
 
     def _handle_inbox_pending(self):
-        """处理查询待处理消息的请求。"""
+        """Handle a request to query pending messages."""
         if self.plugin_instance:
             result = self.plugin_instance._on_inbox_pending()
             self._respond(200, result)
@@ -405,7 +405,7 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
             self._respond(500, {"error": "Plugin not initialized"})
 
     def _handle_inbox_ack(self, data: dict):
-        """处理确认消息已读的请求。"""
+        """Handle a request to confirm messages were read."""
         if self.plugin_instance:
             result = self.plugin_instance._on_inbox_ack(data)
             self._respond(200, result)
@@ -419,26 +419,26 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(body).encode("utf-8"))
 
     def log_message(self, format, *args):
-        """静默 HTTP 日志，避免刷屏。"""
+        """Silence HTTP logs to avoid flooding."""
         pass
 
 
-# ── 转录解析器 ────────────────────────────────────────────────────────────
+# ── Transcript parser ──────────────────────────────────────────────────────
 
 class TranscriptParser:
-    """解析 Claude Code 的 JSONL 转录文件。"""
+    """Parse Claude Code JSONL transcript files."""
 
     @staticmethod
     def parse_latest_turn(transcript_path: str) -> Dict[str, Any]:
-        """解析转录文件，提取最新一轮对话信息。
+        """Parse the transcript file and extract information about the latest conversation turn.
 
-        返回:
+        Returns:
             {
-                "user_message": str,      # 用户最新消息
-                "assistant_message": str,  # 助手最新文本回复
-                "tools_used": [str],       # 使用的工具列表
-                "files_touched": [str],    # 涉及的文件路径
-                "has_significant_action": bool,  # 是否有重要操作
+                \"user_message\": str,      # Latest user message
+                \"assistant_message\": str,  # Latest assistant text response
+                \"tools_used\": [str],       # Tools used
+                \"files_touched\": [str],    # File paths involved
+                \"has_significant_action\": bool,  # Whether an important operation occurred
             }
         """
         result = {
@@ -458,7 +458,7 @@ class TranscriptParser:
         if not lines:
             return result
 
-        # 从后往前扫描，找到最近一轮的用户消息和助手回复
+        # Scan backward to find the most recent user message and assistant response
         last_user_msg = ""
         last_assistant_text = ""
         tools_used = []
@@ -481,7 +481,7 @@ class TranscriptParser:
             role = msg.get("role", "") or entry.get("role", "")
             msg_type = entry.get("type", "")
 
-            # 找到助手回复（必须有文本内容才算找到）
+            # Find an assistant response (requires text content)
             if (role == "assistant" or msg_type == "assistant") and not found_assistant:
                 content = msg.get("content", "") or entry.get("content", "")
 
@@ -496,21 +496,21 @@ class TranscriptParser:
                             elif block.get("type") == "tool_use":
                                 tool_name = block.get("name", "")
                                 tools_used.append(tool_name)
-                                # 提取文件路径
+                                # Extract file paths
                                 tool_input = block.get("input", {})
                                 for key in ("file_path", "path", "command"):
                                     val = tool_input.get(key, "")
                                     if val and isinstance(val, str) and ("/" in val or "\\" in val):
                                         files_touched.append(val)
 
-                # 只有当有文本内容时才认为找到了助手回复
-                # 纯 tool_use 的 assistant 消息不算，继续向前扫描
+                # Count an assistant response only when it contains text
+                # A tool_use-only assistant message does not count; keep scanning backward
                 if text_parts:
                     found_assistant = True
                     last_assistant_text = " ".join(text_parts)
 
-            # 找到用户消息（在助手回复之前的第一个用户消息）
-            # 注意：跳过 tool_result 类型的消息，只找真正的用户文本消息
+            # Find the user message (first user message before the assistant response)
+            # Skip tool_result messages; look only for actual user text
             if (role == "user" or msg_type == "user") and found_assistant:
                 content = msg.get("content", "") or entry.get("content", "")
                 if isinstance(content, str):
@@ -525,23 +525,23 @@ class TranscriptParser:
                                 text_parts.append(block.get("text", ""))
                             elif block.get("type") == "tool_result":
                                 has_tool_result = True
-                    # 只有当有文本内容时才认为是用户消息
-                    # 跳过纯 tool_result 消息
+                    # Count a user message only when it contains text
+                    # Skip messages containing only tool_result
                     if text_parts:
                         last_user_msg = " ".join(text_parts)
                         break
                     elif not has_tool_result:
-                        # 没有 tool_result 也没有 text，可能是空消息
+                        # No tool_result or text may indicate an empty message
                         break
-                    # 如果是 tool_result，继续向前扫描
+                    # If this is tool_result, keep scanning backward
 
-            # 从 last-prompt 类型中提取用户消息（备用方案）
+            # Extract user messages from the last-prompt type (fallback)
             if msg_type == "last-prompt" and not last_user_msg:
                 last_prompt = entry.get("lastPrompt", "")
                 if last_prompt and len(last_prompt) > 5:
                     last_user_msg = last_prompt
 
-        # 如果还没找到用户消息，从 last-prompt 中提取
+        # If the user message is still missing, extract it from last-prompt
         if not last_user_msg:
             for line in reversed(lines):
                 line = line.strip()
@@ -557,11 +557,11 @@ class TranscriptParser:
                         last_user_msg = last_prompt
                         break
 
-        # 检查是否有重要操作
+        # Check whether an important operation occurred
         significant_tools = _SIGNIFICANT_TOOLS | _TASK_COMPLETE_TOOLS
         has_significant = bool(set(tools_used) & significant_tools)
 
-        # 如果有 Bash 或 PowerShell 命令，解析命令内容看是否有文件操作
+        # If there is a Bash or PowerShell command, parse it for file operations
         if any(t in tools_used for t in ("Bash", "PowerShell")):
             for line in reversed(lines):
                 try:
@@ -577,10 +577,10 @@ class TranscriptParser:
                         for block in content:
                             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in ("Bash", "PowerShell"):
                                 cmd = block.get("input", {}).get("command", "")
-                                # 检测文件操作命令
+                                # Detect file-operation commands
                                 if any(kw in cmd.lower() for kw in ("rm ", "mv ", "cp ", "mkdir", "touch", "echo ", "cat ", "sed ", "pip ", "npm ", "cargo ")):
                                     has_significant = True
-                                # 提取命令中的文件路径
+                                # Extract file paths from the command
                                 file_matches = re.findall(r'[\w/\\.-]+\.\w+', cmd)
                                 files_touched.extend(file_matches[:3])
                     break
@@ -588,17 +588,17 @@ class TranscriptParser:
         result["user_message"] = last_user_msg
         result["assistant_message"] = last_assistant_text
         result["tools_used"] = tools_used
-        result["files_touched"] = list(dict.fromkeys(files_touched))  # 去重保序
+        result["files_touched"] = list(dict.fromkeys(files_touched))  # Deduplicate while preserving order
         result["has_significant_action"] = has_significant
 
         return result
 
 
-# ── 插件主类 ──────────────────────────────────────────────────────────────
+# ── Main plugin class ──────────────────────────────────────────────────────
 
 @neko_plugin
 class ClaudeCompanionPlugin(NekoPluginBase):
-    """Claude 伙伴陪伴插件 - 让 NEKO 伙伴在你开发时温暖陪伴。"""
+    """Claude Companion plugin — gives you warm NEKO companionship while you develop."""
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
@@ -638,20 +638,20 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         except (TypeError, ValueError):
             self._cooldown = _DEFAULT_COOLDOWN
 
-        # API 鉴权 token（用于 NEKO → Claude 方向的接口）
+        # API authentication token (for NEKO → Claude endpoints)
         self._api_token = cc_cfg.get("api_token") or os.environ.get("NEKO_CLAUDE_COMPANION_TOKEN") or ""
         if not self._api_token:
             self._api_token = uuid.uuid4().hex[:16]
             self.logger.warning("No api_token configured; generated a temporary token. Please persist it via config before using protected endpoints.")
 
-        # 获取用户名
+        # Get username
         try:
             self._user_name = await self._load_user_name()
         except Exception as e:
             self.logger.warning("Failed to load user name: {}", e)
             self._user_name = "你"
 
-        # 初始化收件箱
+        # Initialize inbox
         try:
             inbox_path = str(Path(__file__).parent / "inbox.json")
             self._inbox = InboxQueue(inbox_path)
@@ -663,13 +663,13 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             self.logger.warning("Failed to initialize inbox: {}", e)
             self._inbox = None
 
-        # 启动 HTTP 服务器
+        # Start HTTP server
         try:
             self._start_http_server()
         except Exception as e:
             self.logger.error("Failed to start HTTP server on port {}: {}", self._port, e)
 
-        # 注册 Web UI
+        # Register Web UI
         try:
             self.register_static_ui("static")
         except Exception as e:
@@ -691,10 +691,10 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         self.logger.info("ClaudeCompanion shutdown")
         return Ok({"status": "shutdown"})
 
-    # ── 用户名加载 ──
+    # ── Username loading ──
 
     async def _load_user_name(self) -> str:
-        """从 NEKO 配置中加载用户名。"""
+        """Load the username from NEKO configuration."""
         try:
             from utils.config_manager import get_config_manager
             cm = get_config_manager()
@@ -706,7 +706,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         except Exception as e:
             self.logger.warning("Failed to load user name from config: {}", e)
 
-        # 备用：从 store 读取
+        # Fallback: read from store
         try:
             stored = self.store._read_value("user_name", "")
             if stored:
@@ -716,13 +716,13 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
         return "你"
 
-    # ── HTTP 服务器管理 ──
+    # ── HTTP server management ──
 
     def _start_http_server(self):
-        """在后台线程启动 HTTP 服务器。"""
+        """Start the HTTP server in a background thread."""
         _HookHTTPHandler.plugin_instance = self
 
-        # 同步绑定端口，确保启动成功
+        # Bind port synchronously to ensure startup succeeds
         try:
             server = HTTPServer(("127.0.0.1", self._port), _HookHTTPHandler)
             self._http_server = server
@@ -745,7 +745,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         self._http_thread.start()
 
     def _stop_http_server(self):
-        """停止 HTTP 服务器。"""
+        """Stop the HTTP server."""
         if self._http_server:
             try:
                 self._http_server.shutdown()
@@ -760,38 +760,38 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             self._http_thread.join(timeout=3)
             self._http_thread = None
 
-    # ── Hook 事件处理 ──
+    # ── Hook event processing ──
 
     def _on_turn_start(self, data: dict):
-        """处理 UserPromptSubmit 事件（记录用户输入）。"""
+        """Handle the UserPromptSubmit event (record user input)."""
         user_prompt = data.get("prompt", "")
         if user_prompt:
             self.logger.debug("Turn start: {}", user_prompt[:100])
 
     def _on_turn_end(self, data: dict):
-        """处理 Stop 事件 - 解析对话、生成摘要、推送。"""
+        """Handle the Stop event — parse the conversation, generate a summary, and push it."""
         transcript_path = data.get("transcript_path", "")
         if not transcript_path:
             self.logger.debug("No transcript_path in hook data")
             return
 
-        # 去重：冷却时间内不重复推送
+        # Deduplicate: do not push the same event again during the cooldown
         now = time.time()
         if now - self._last_push_time < self._cooldown:
             self.logger.debug("Duplicate push blocked (within cooldown)")
             return
 
-        # 解析转录
+        # Parse transcript
         turn_info = TranscriptParser.parse_latest_turn(transcript_path)
         self.logger.debug("Parsed turn: tools={}, has_significant={}", turn_info["tools_used"], turn_info["has_significant_action"])
 
-        # 检测活动类型
+        # Detect activity type
         activity_type = _detect_activity_type(
             turn_info["user_message"],
             turn_info["tools_used"],
         )
 
-        # 生成摘要
+        # Generate summary
         summary = ActivitySummarizer.summarize(
             user_name=self._user_name,
             activity_type=activity_type,
@@ -801,17 +801,17 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             assistant_msg=turn_info["assistant_message"],
         )
 
-        # 仅在有重要操作时推送
+        # Push only when an important operation occurred
         if not turn_info.get("has_significant_action", False):
             self.logger.debug("Skipping push: no significant action")
             return
 
-        # 推送到 NEKO 伙伴
+        # Push to the NEKO companion
         if not self._notify_companion(summary, activity_type, turn_info):
             return
         self._last_push_time = now
 
-        # 记录事件日志
+        # Record event log
         self._add_event_log(activity_type, summary, turn_info)
 
         self.logger.info(
@@ -822,7 +822,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         )
 
     def _on_push_summary(self, data: dict):
-        """处理 Claude 主动推送的摘要 - 直接接收总结内容。"""
+        """Receive a summary proactively pushed by Claude."""
         now = time.time()
         if now - self._last_push_time < self._cooldown:
             self.logger.debug("push-summary blocked: already pushed within cooldown")
@@ -834,7 +834,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
 
         self.logger.debug("Received push-summary: activity_type={}", activity_type)
 
-        # 生成摘要
+        # Generate summary
         summary = ActivitySummarizer.summarize(
             user_name=self._user_name,
             activity_type=activity_type,
@@ -844,21 +844,21 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             assistant_msg=assistant_msg,
         )
 
-        # 推送到 NEKO 伙伴
+        # Push to the NEKO companion
         turn_info = {"tools_used": [], "files_touched": [], "user_message": user_msg, "assistant_message": assistant_msg}
         if not self._notify_companion(summary, activity_type, turn_info):
             return
         self._last_push_time = time.time()
 
-        # 记录事件日志
+        # Record event log
         self._add_event_log(activity_type, summary, turn_info)
 
         self.logger.info("Pushed summary from Claude: type={}", activity_type)
 
-    # ── 收件箱处理 ──
+    # ── Inbox processing ──
 
     def _on_inbox_send(self, data: dict) -> dict:
-        """NEKO 向 Claude 发送消息。"""
+        """Send a message from NEKO to Claude."""
         if self._inbox is None:
             return {"error": "inbox not initialized"}
         content = data.get("content", "")
@@ -871,14 +871,14 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         return {"status": "ok", "message": msg}
 
     def _on_inbox_pending(self) -> dict:
-        """查询待处理消息。"""
+        """Query pending messages."""
         if self._inbox is None:
             return {"error": "inbox not initialized", "count": 0, "messages": []}
         messages = self._inbox.pending()
         return {"status": "ok", "count": len(messages), "messages": messages}
 
     def _on_inbox_ack(self, data: dict) -> dict:
-        """确认消息已读。"""
+        """Confirm that messages were read."""
         if self._inbox is None:
             return {"error": "inbox not initialized", "acknowledged": 0}
         msg_ids = data.get("message_ids", [])
@@ -889,7 +889,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         return {"status": "ok", "acknowledged": count}
 
     def _notify_companion(self, summary: str, activity_type: str, turn_info: dict) -> bool:
-        """通过 push_message 将摘要发送给 NEKO 伙伴。返回是否成功。"""
+        """Send a summary to the NEKO companion using push_message. Return whether it succeeded."""
         self.logger.info("Pushing companion message: type={}", activity_type)
         try:
             if not hasattr(self.ctx, 'push_message'):
@@ -914,10 +914,10 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             self.logger.error("Failed to push companion message: {}", e)
             return False
 
-    # ── 事件日志（供 UI 展示）──
+    # ── Event log (displayed in UI) ──
 
     def _add_event_log(self, activity_type: str, summary: str, turn_info: dict):
-        """添加事件到日志。"""
+        """Add an event to the log."""
         event = {
             "timestamp": datetime.now(_TZ_SHANGHAI).isoformat(),
             "time_str": _now_str(),
@@ -933,7 +933,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             if len(self._event_log) > self._max_log_size:
                 self._event_log = self._event_log[-self._max_log_size:]
 
-    # ── 插件入口点（供 LLM / API 调用）──
+    # ── Plugin entry points (for LLM / API calls) ──
 
     @plugin_entry(
         id="get_status",

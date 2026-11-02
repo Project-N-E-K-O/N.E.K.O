@@ -46,7 +46,7 @@ def test_chinese_fact_is_not_one_token():
     """#2703 root cause: unicode61 indexes a run of CJK as a single token."""
     tokens = fts_tokens("用户最近养了一只猫")
     assert len(tokens) > 1
-    # 2-gram + 3-gram 滑窗：9 个字 → 8 + 7 个 token。
+    # Sliding 2-gram + 3-gram windows: nine characters -> eight + seven tokens.
     assert "养了" in tokens
     assert "了一只" in tokens
 
@@ -95,7 +95,7 @@ def test_overlap_does_not_separate_meaning():
     rephrase = fts_tokens("用户的职业是程序员")
     same = fts_tokens("用户是一名程序员")
     assert token_overlap(cat, dog) > token_overlap(rephrase, same)
-    # ...而那条真该合并的改写仍然够得着仲裁线。
+    # The paraphrase that really should merge still reaches the arbitration threshold.
     assert token_overlap(rephrase, same) >= FACT_NEAR_DUP_ARBITRATE_OVERLAP
 
 
@@ -134,8 +134,8 @@ def test_tokenize_refuses_to_fall_back_to_a_different_splitter(monkeypatch):
     real_import = builtins.__import__
 
     def _boom(name, *args, **kwargs):
-        # persona 是 _tokenize **自己**那条空白切分兜底的触发条件：只挡
-        # hybrid_recall 的话，下游那条兜底照样能把整句中文写进索引。
+        # persona triggers _tokenize's own whitespace fallback: blocking hybrid_recall alone
+        # still lets that downstream fallback index entire Chinese sentences.
         if name in ("memory.hybrid_recall", "memory.persona"):
             raise ImportError("simulated")
         return real_import(name, *args, **kwargs)
@@ -238,7 +238,7 @@ def test_creating_the_v2_table_drops_the_legacy_one(index):
         remaining = conn.execute(sql_text(
             "SELECT name FROM sqlite_master WHERE name = 'facts_fts'"
         )).fetchone()
-    # 隐私擦除只认新表；旧表留着就等于删掉的原文还躺在另一处。
+    # Privacy erasure recognizes only the new table; retaining the old one leaves erased raw text elsewhere.
     assert remaining is None
 
 
@@ -253,7 +253,7 @@ def test_backfill_indexes_history_once(index):
     hits = dict(index.search_similar_facts("小天", "用户前几天养了只猫"))
     assert "f1" in hits
 
-    # 重跑不会重复插入（崩在 insert 与标记之间只赔一次重扫）。
+    # Reruns do not duplicate inserts; crashing between insert and marking costs only one rescan.
     assert index.backfill_fact_index(
         "小天", [("f1", "用户最近养了一只猫")],
     ) == 0
@@ -267,8 +267,8 @@ class _FakeIndex:
         self.hits = list(hits)
 
     async def asearch_similar_facts(self, _name, _text, limit):
-        # 与真实实现同构：SQL 先按 bm25 截窗（这里用给定顺序当 bm25 序），
-        # dice 排序发生在**截窗之后**。
+        # Match real behavior: SQL truncates by bm25 first (given order stands for bm25 here),
+        # then Dice sorting occurs after truncation.
         return sorted(self.hits[:limit], key=lambda h: h[1], reverse=True)
 
     async def aindex_fact(self, *_a, **_k):
@@ -286,8 +286,8 @@ class _PersistHarness(FactStore):
     async def aload_facts(self, name):
         return self._mem
 
-    # 签名跟着基类走：基类的内部调用点会传 _fact_lock_held=True，
-    # 收窄成位置参数的话，某条走到那里的用例会 TypeError 而不是断言失败。
+    # Match the base signature: internal calls pass _fact_lock_held=True;
+    # narrowing to positional arguments causes TypeError rather than assertion failure on affected cases.
     async def asave_facts(self, name, *, _fact_lock_held: bool = False):
         return None
 
@@ -497,8 +497,8 @@ async def test_a_busy_arbitration_queue_does_not_stall_the_write(tmp_path):
         )
 
     assert len(created) == 1
-    # 只是不再等它，**不**取消：取消会放掉队列锁而底层的原子写还在跑，另一
-    # 个写者的读改写就会盖掉它。
+    # Stop waiting without cancelling: cancellation releases the queue lock while the atomic disk write still runs,
+    # allowing another writer's read-modify-write to overwrite it.
     assert not started[0].cancelled()
     started[0].cancel()
 
@@ -553,9 +553,9 @@ def test_tokens_are_cut_where_sqlite_would_cut_them():
     token here and two there: the row was retrieved and then scored 0."""
     assert fts_tokens("foo/bar") == ["foo", "bar"]
     assert token_overlap(fts_tokens("foo/bar"), fts_tokens("foo bar")) == 1.0
-    # 纯标点的 token 整个消失，顺带避免往 FTS 查询里塞一个空引号项。
+    # Remove punctuation-only tokens entirely, avoiding empty quoted terms in FTS queries.
     assert fts_tokens("--- ///") == []
-    # CJK n-gram 不受影响（里面每个字都是 alnum）。
+    # CJK n-grams are unaffected: each constituent character is alphanumeric.
     assert "了一只" in fts_tokens("用户最近养了一只猫")
 
 
@@ -564,7 +564,7 @@ def test_a_single_character_fact_still_gets_a_token():
     an empty row and skip Stage-2 entirely."""
     assert fts_tokens("猫") == ["猫"]
     assert token_overlap(fts_tokens("猫"), fts_tokens("貓")) == 1.0
-    # 回落同样要剥停用名，否则名字会原样变成 token。
+    # Strip stop names from fallback too, or names become unchanged tokens.
     assert fts_tokens("兰兰猫", ["兰兰"]) == fts_tokens("猫")
     assert fts_tokens("") == []
 
@@ -615,7 +615,7 @@ async def test_strong_overlap_writes_the_fact_and_queues_arbitration(tmp_path):
     assert pairs[0]["existing_id"] == "existing"
     assert pairs[0]["text_overlap"] == 0.87
     assert pairs[0]["detector"] == "fts_near_dup"
-    # cosine 不能被文字重叠冒名顶替：它会原样进仲裁 prompt。
+    # Text overlap must not impersonate cosine similarity: the value enters the arbitration prompt unchanged.
     assert "cosine" not in pairs[0]
 
 
@@ -754,22 +754,22 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         assert len(first) == 1
 
 
-        # 繁体重述：召回够得着（折叠），但折叠有损，不许据此直接丢——进仲裁。
+        # Traditional paraphrase: folding enables recall but is lossy, so arbitrate rather than dropping directly.
         trad = await _write("用戶最近養了一隻貓")
         assert len(trad) == 1
         resolver.aenqueue_candidates.assert_awaited_once()
         resolver.aenqueue_candidates.reset_mock()
 
-        # 一字之差的另一件事：写入 + 进仲裁队列，不能被闸门吃掉。
+        # A different fact one character away: write and queue for arbitration; the gate must not swallow it.
         dog = await _write("用户最近养了一只狗")
         assert len(dog) == 1
         _, pairs = resolver.aenqueue_candidates.await_args.args
-        # first 与 trad 折叠后 token 串逐字相同、bm25 并列，SQLite 的行序未
-        # 定义，代码也没承诺挑哪一条——断言只该管「配到了猫那两条之一」。
+        # first and trad fold into identical token strings and tie on bm25. SQLite row order is unspecified,
+        # and the code promises neither choice; assert only a match to one of the two cat-related facts.
         assert pairs[0]["existing_id"] in {first[0]["id"], trad[0]["id"]}
         assert pairs[0]["candidate_id"] == dog[0]["id"]
 
-        # 无关的事实：不入队。
+        # Unrelated fact: do not enqueue.
         resolver.aenqueue_candidates.reset_mock()
         assert len(await _write("用户喜欢在深夜写代码")) == 1
         resolver.aenqueue_candidates.assert_not_awaited()
@@ -826,9 +826,9 @@ def test_backfill_reads_archive_rows_too(tmp_path):
     assert captured and dict(captured[0]) == {
         "act1": "用户最近养了一只猫", 7: "旧的整数 id 行", "arch1": "群规是不剧透",
     }
-    # id 原样带走：str() 强转会让隐私擦除按原 id 删不掉这一行。
+    # Preserve IDs unchanged: str() coercion prevents privacy erasure deleting this row by its original ID.
     assert [type(fid) for fid, _ in captured[0]] == [str, int, str]
-    # 标记落下之后就不再重扫（靠持久标记，不靠进程内缓存）。
+    # Once persisted, the marker prevents rescans without relying on an in-process cache.
     index_obj = harness._time_indexed
     index_obj.needs = False
     asyncio.run(harness._aensure_fact_index_backfilled("小天", []))
@@ -867,9 +867,9 @@ def test_an_unreadable_archive_aborts_the_backfill(tmp_path):
         asyncio.run(harness._aensure_fact_index_backfilled(
             "小天", [{"id": "act1", "text": "用户最近养了一只猫"}],
         ))
-        assert calls == []  # 回填根本没跑，标记自然落不下
+        assert calls == []  # Backfill never ran, so no marker can be written.
 
-        # 修好归档之后，下一次写入照常回填。
+        # After archive repair, the next write backfills normally.
         with open(archive_path, "w", encoding="utf-8") as fh:
             fh.write('[{"id": "arch1", "text": "群规是不剧透"}]')
         asyncio.run(harness._aensure_fact_index_backfilled(
@@ -1005,12 +1005,12 @@ def test_a_failed_backfill_is_retried(tmp_path):
     with patch.object(harness, "_facts_archive_path", return_value=""):
         asyncio.run(harness._aensure_fact_index_backfilled("小天", rows))
         assert attempts == [1]
-        # 失败之后照样重试（标记没落下，也没有进程内缓存兜着）。
+        # Retry after failure: no marker was persisted and no in-process cache masks it.
         asyncio.run(harness._aensure_fact_index_backfilled("小天", rows))
         assert attempts == [1, 1]
 
 
-# ── 6. 仲裁侧的两条契约 ──────────────────────────────────────────
+# -- 6. Two arbitration-side contracts. --
 
 
 def test_the_arbitration_prompt_never_claims_a_detector(): 

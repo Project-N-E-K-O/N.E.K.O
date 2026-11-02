@@ -324,11 +324,11 @@ def test_probe_defaults_to_off_when_no_switch_is_wired():
 
 
 #: Words that mean something only to whoever read the design doc.  The first
-#: version of this copy shipped "[R11]" and "取证" to end users; this list is
+#: version of this copy shipped "[R11]" and "取证" ('forensics') to end users; this list is
 #: what stops that happening again.  Deliberately case-insensitive and
 #: substring-matched.
 
 
 #: Implementation detail that has no meaning to the person reading the panel.
-#: Two rounds of this copy shipped "字段名" and a "200 行" cap before the
+#: Two rounds of this copy shipped "字段名" ('field name') and a "200 行" ('200 lines') cap before the
 #: maintainer asked, twice, what the sentence was even supposed to mean.

@@ -86,7 +86,7 @@ async def test_interrupt_prelude_sequence_is_unchanged(realtime):
         expected.append(("cancel_response",))
     expected.append(("user_activity", "old-speech"))
     assert calls == expected
-    # 前奏之后照常轮换 speech id
+    # Rotate the speech ID as usual after the prelude
     assert result["speech_id"] != "old-speech" and mgr.current_speech_id == result["speech_id"]
 
 
@@ -105,4 +105,4 @@ async def test_public_method_runs_the_same_prelude():
     await LLM.interrupt_mirror_speech(mgr)
     assert calls == [("resampler_clear",), ("clear_tts_pipeline",), ("release_gain", "old-speech"),
                      ("cancel_response",), ("user_activity", "old-speech")]
-    assert mgr.current_speech_id == "old-speech"      # 只打断，不轮换
+    assert mgr.current_speech_id == "old-speech"      # Interrupt without rotating

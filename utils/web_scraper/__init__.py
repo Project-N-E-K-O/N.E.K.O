@@ -34,8 +34,8 @@ from utils.token_tracker import set_call_type
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 import os
 
-# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
-# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+# Lazy bs4 import on first parser use, backed by utils.module_warmup background warmup: this module is
+# imported at system_router's top level in main_server's startup chain; eager bs4 delays port readiness.
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
 from pathlib import Path

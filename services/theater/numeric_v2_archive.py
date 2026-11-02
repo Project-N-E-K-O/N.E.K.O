@@ -1,4 +1,4 @@
-"""Numeric v2 结束回执与公开记忆归档。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 ending receipts and public-memory archival."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from .numeric_v2_performance import content_blocks, mixed_performance_blocks
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 
 
-# 调用线程进入 with 后会强持有锁；空闲回执锁无需常驻，避免历史 Session 数量决定进程内存。
+# The caller strongly holds the lock inside with; idle receipt locks need not remain resident, so historical Session counts do not determine process memory.
 _RECEIPT_LOCKS: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
 _RECEIPT_LOCKS_GUARD = threading.Lock()
 PUBLIC_ARCHIVES_PER_STORY_CHARACTER = 5
@@ -82,24 +82,24 @@ def _retry_windows_permission_error(operation):
 
 
 def _receipt_lock(path: Path) -> threading.Lock:
-    """同一进程内按 Session 指针串行创建回执，避免并发刷新生成分叉。"""  # noqa: DOCSTRING_CJK
+    """Serialize receipt creation by Session pointer within one process to prevent concurrent refreshes creating forks."""  # noqa: DOCSTRING_CJK
 
     key = str(path.resolve())
     with _RECEIPT_LOCKS_GUARD:
         lock = _RECEIPT_LOCKS.get(key)
         if lock is None:
-            # 返回前由局部变量强持有，避免弱引用表在创建和 with 接管之间立即回收新锁。
+            # Retain a strong local reference until return so the weak-reference table cannot immediately collect a new lock before with takes ownership.
             lock = threading.Lock()
             _RECEIPT_LOCKS[key] = lock
         return lock
 
 
 class NumericV2ArchiveError(ValueError):
-    """结束回执或归档请求无效。"""  # noqa: DOCSTRING_CJK
+    """Invalid ending receipt or archive request."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2ArchiveStore:
-    """把归档回执与剧情 Session 分开持久化，避免改写已结束 Ledger。"""  # noqa: DOCSTRING_CJK
+    """Persist archive receipts separately from story Sessions to avoid rewriting ended Ledgers."""  # noqa: DOCSTRING_CJK
 
     def __init__(self, theater_root: Path, *, write_transaction=nullcontext):
         self.write_transaction = write_transaction
@@ -269,7 +269,7 @@ class NumericV2ArchiveStore:
         return paths
 
     def _receipt_path(self, receipt_id: str) -> Path:
-        # 回执 ID 只能采用服务端生成的固定格式，禁止路径分隔符和父目录片段逃逸回执根目录。
+        # Receipt IDs must use the fixed server-generated format; forbid path separators and parent segments escaping the receipt root.
         if not _RECEIPT_ID_RE.fullmatch(str(receipt_id or "")):
             raise NumericV2ArchiveError("numeric_end_receipt_invalid")
         return self.root / f"{receipt_id}.json"
@@ -278,7 +278,7 @@ class NumericV2ArchiveStore:
         return self.public_archive_root / f"{self._session_key(session_id)}.json"
 
     def _staged_archive_path(self, receipt_id: str) -> Path:
-        # 待提交档案与回执同根，剧本删除事务可以使用同一份备份清单。
+        # Pending archives share the receipt root so script-deletion transactions can use the same backup manifest.
         return self.root / f"staged-{self._receipt_path(receipt_id).stem}.json"
 
     @staticmethod
@@ -309,7 +309,7 @@ class NumericV2ArchiveStore:
             return None
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             error = NumericV2ArchiveError("numeric_end_receipt_read_failed")
-            # 严格枚举失败时调用方需要指出具体文件，便于用户修复或移走它。
+            # On strict-enumeration failure, callers must identify the specific file so users can repair or move it.
             error.path = str(path)
             raise error from exc
         return value if isinstance(value, dict) else None
@@ -354,7 +354,7 @@ class NumericV2ArchiveStore:
         pointer: Mapping[str, Any],
         receipt: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        """返回 written 回执应补写的 Session 水位；更新回执已经接管时不得回退指针。"""  # noqa: DOCSTRING_CJK
+        """Return the Session watermark a written receipt should backfill; never roll pointers back after a newer receipt takes ownership."""  # noqa: DOCSTRING_CJK
 
         if receipt.get("status") != "written":
             return None
@@ -378,7 +378,7 @@ class NumericV2ArchiveStore:
         }
 
     def reconcile_written_receipt(self, receipt: Mapping[str, Any]) -> bool:
-        """修复回执已写入但 Session 水位尚未提交的中断窗口。"""  # noqa: DOCSTRING_CJK
+        """Repair interruption between receipt writing and Session watermark commit."""  # noqa: DOCSTRING_CJK
 
         session_id = str(receipt.get("session_id") or "")
         if not session_id:
@@ -614,10 +614,10 @@ class NumericV2ArchiveStore:
                 existing = self.load(str(pointer["receipt_id"]))
                 reconciled = self._reconciled_written_pointer(pointer, existing or {})
                 if reconciled is not None:
-                    # 进程可能在 written 回执和水位指针两次原子写之间中断；创建下一回执前先对账。
+                    # A process can stop between atomic writes of a written receipt and watermark pointer; reconcile before creating the next receipt.
                     self._write(session_path, reconciled)
                     pointer = reconciled
-                # 同一 Session 可以多次退出后继续；只有相同 revision 才是同一次退出回执。
+                # A Session can exit and resume repeatedly; only matching revisions identify the same exit receipt.
                 if existing is not None and existing.get("revision") == int(session.revision):
                     return existing
             archived_through_revision = -1
@@ -626,21 +626,21 @@ class NumericV2ArchiveStore:
                 if isinstance(raw_archived_revision, int) and not isinstance(raw_archived_revision, bool):
                     archived_through_revision = raw_archived_revision
                 elif pointer.get("receipt_id"):
-                    # 旧版指针没有归档水位；已成功的旧回执按其 revision 视为已归档，
-                    # 避免升级后续演时把同一批公开演绎再次写入猫娘记忆。
+                    # Legacy pointers lack archive watermarks; treat successful old receipts as archived through their revision,
+                    # avoiding duplicate catgirl-memory writes of the same public performance after an upgrade.
                     previous = self.load(str(pointer["receipt_id"]))
                     if previous is not None and previous.get("status") == "written":
                         previous_revision = previous.get("revision")
                         if isinstance(previous_revision, int) and not isinstance(previous_revision, bool):
                             archived_through_revision = previous_revision
-            # 显式遗忘等价于“这些 revision 永不再进入记忆”；其水位不能被新回执重置。
+            # Explicit forgetting means these revisions must never enter memory again; new receipts must not reset that watermark.
             forgotten_through_revision = getattr(session, "forgotten_through_revision", -1)
             if isinstance(forgotten_through_revision, int) and not isinstance(forgotten_through_revision, bool):
                 archived_through_revision = max(
                     archived_through_revision,
                     forgotten_through_revision,
                 )
-            # 回执和归档请求 ID 都由不可变结束事实确定，进程崩溃或并发创建后仍会收敛。
+            # Immutable ending facts determine both receipt/archive-request IDs, ensuring convergence after crashes or concurrent creation.
             seed = "\x1f".join(
                 (
                     str(session.story_package_id),
@@ -676,11 +676,11 @@ class NumericV2ArchiveStore:
                 "archived_through_revision": archived_through_revision,
             })
             if previous_receipt_id and previous_receipt_id != receipt["receipt_id"]:
-                # 新 revision 已接管唯一指针，旧回执和未提交档案不再可达。
+                # A new revision owns the unique pointer; the old receipt and pending archive are no longer reachable.
                 previous_receipt = self.load(previous_receipt_id)
                 previous_public_exists = self._public_archive_path(session_id).is_file()
-                # 升级前可能已写入记忆却没有冷档案；这种旧 written
-                # 回执要留到重开补档完成，否则会失去唯一的兼容证据。
+                # Pre-upgrade data may have reached memory without a cold archive; retain these old written
+                # receipts until reopening backfills the archive, or the only compatibility evidence is lost.
                 if (
                     previous_receipt is None
                     or previous_receipt.get("status") != "written"
@@ -709,7 +709,7 @@ class NumericV2ArchiveStore:
         return receipt
 
     def has_written_receipt_for_session(self, session_id: str) -> bool:
-        """检查升级前遗留的 written 回执，供重开前补写冷档案。"""  # noqa: DOCSTRING_CJK
+        """Check pre-upgrade written receipts for cold-archive backfill before reopening."""  # noqa: DOCSTRING_CJK
 
         normalized_session_id = str(session_id or "").strip()
         receipt_paths = self.root.glob("theater_end_*.json") if self.root.is_dir() else ()
@@ -767,12 +767,12 @@ class NumericV2ArchiveStore:
         return await run_storage_mutation(self.write_transaction, operation, *args, **kwargs)
 
     async def acreate_or_get(self, session: Any) -> dict[str, Any]:
-        """在线请求通过线程执行持久化，避免阻塞 FastAPI 事件循环。"""  # noqa: DOCSTRING_CJK
+        """Persist online requests through threads to avoid blocking the FastAPI event loop."""  # noqa: DOCSTRING_CJK
 
         return await self.mutate(self.create_or_get, session)
 
     async def aload(self, receipt_id: str) -> dict[str, Any] | None:
-        """异步读取结束回执。"""  # noqa: DOCSTRING_CJK
+        """Read ending receipts asynchronously."""  # noqa: DOCSTRING_CJK
 
         return await asyncio.to_thread(self.load, receipt_id)
 
@@ -790,7 +790,7 @@ class NumericV2ArchiveStore:
         archive_request_id: str = "",
         archive_attempt: int | None = None,
     ) -> dict[str, Any]:
-        """异步原子更新归档状态。"""  # noqa: DOCSTRING_CJK
+        """Atomically update archival state asynchronously."""  # noqa: DOCSTRING_CJK
 
         return await self.mutate(
             self.update,
@@ -807,7 +807,7 @@ class NumericV2ArchiveStore:
         session: Any,
         ending: Mapping[str, Any] | None,
     ) -> int:
-        """原子保存完整公开演绎；隐藏 Runtime 状态不进入冷档案。"""  # noqa: DOCSTRING_CJK
+        """Atomically save complete public performance; hidden Runtime state never enters cold archives."""  # noqa: DOCSTRING_CJK
 
         archive_path = self._public_archive_path(str(session.session_id))
         previous = self._read(archive_path) or {}
@@ -820,7 +820,7 @@ class NumericV2ArchiveStore:
         archive.update({
             "created_at": str(previous.get("created_at") or now),
             "updated_at": now,
-            # 同一 Session 暂停后再写入时不能丢失用户收藏标记。
+            # Rewriting after pausing the same Session must preserve user favorites.
             "pinned": previous.get("pinned") is True,
         })
         self._write(archive_path, archive)
@@ -838,7 +838,7 @@ class NumericV2ArchiveStore:
         session: Any,
         ending: Mapping[str, Any] | None,
     ) -> None:
-        """在记忆服务迁移前先保存可恢复的待提交公开档案。"""  # noqa: DOCSTRING_CJK
+        """Save a recoverable pending public archive before memory-service migration."""  # noqa: DOCSTRING_CJK
 
         receipt_id = str(receipt.get("receipt_id") or "")
         if str(receipt.get("session_id") or "") != str(session.session_id):
@@ -859,7 +859,7 @@ class NumericV2ArchiveStore:
         self._write(self._staged_archive_path(receipt_id), archive)
 
     def commit_staged_public_archive(self, receipt: Mapping[str, Any]) -> int:
-        """记忆服务成功后原子发布待提交档案并执行保留策略。"""  # noqa: DOCSTRING_CJK
+        """After memory-service success, atomically publish the pending archive and enforce retention."""  # noqa: DOCSTRING_CJK
 
         receipt_id = str(receipt.get("receipt_id") or "")
         staged_path = self._staged_archive_path(receipt_id)
@@ -926,7 +926,7 @@ class NumericV2ArchiveStore:
         legacy_catgirl_name: str = "",
         raise_on_io_error: bool = False,
     ) -> list[dict[str, Any]]:
-        """只返回冷档案摘要，列表接口不暴露完整演绎正文。"""  # noqa: DOCSTRING_CJK
+        """Return only cold-archive summaries; listing endpoints do not expose complete performance bodies."""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
         normalized_character_id = str(character_id or "").strip()
@@ -939,7 +939,7 @@ class NumericV2ArchiveStore:
                 payload = self._read(path)
                 modified_ns = path.stat().st_mtime_ns
             except NumericV2ArchiveError:
-                # 普通列表允许跳过不可读档案；破坏性操作必须中止，损坏 JSON 也不能被遗漏。
+                # Ordinary listings may skip unreadable archives; destructive operations must abort, including for corrupt JSON.
                 if raise_on_io_error:
                     raise
                 continue
@@ -948,7 +948,7 @@ class NumericV2ArchiveStore:
                     raise
                 continue
             if not self._valid_public_archive_payload(payload):
-                # 严格枚举无法确认未知载荷的故事与角色归属，必须中止而不能宣称删除完整。
+                # Strict enumeration cannot establish story/character ownership of unknown payloads; abort instead of claiming complete deletion.
                 if raise_on_io_error:
                     error = NumericV2ArchiveError("numeric_public_archive_invalid")
                     error.path = str(path)
@@ -1017,7 +1017,7 @@ class NumericV2ArchiveStore:
                 payload = self._read(path)
             except NumericV2ArchiveError as exc:
                 if isinstance(exc.__cause__, OSError):
-                    # 暂时不可读的档案可能仍然有效，绝不能移走。
+                    # Temporarily unreadable archives may still be valid; never move them.
                     continue
                 payload = None
             if self._valid_public_archive_payload(payload) or not path.is_file():
@@ -1030,7 +1030,7 @@ class NumericV2ArchiveStore:
                 continue
             try:
                 quarantine_root.mkdir(parents=True, exist_ok=True)
-                # 只移动、不删除；该目录不参与 Session 隔离区的数量裁剪。
+                # Move only, never delete; this directory is excluded from Session-quarantine count-based pruning.
                 os.replace(path, quarantine_root / quarantined_file_name("invalid", path.name))
                 moved += 1
             except OSError:
@@ -1155,7 +1155,7 @@ class NumericV2ArchiveStore:
                 payload = self._read(path)
             except NumericV2ArchiveError as exc:
                 if isinstance(exc.__cause__, OSError):
-                    # 暂时不可读时无法确认归属，破坏性操作必须整体中止并指出该文件。
+                    # Temporary unreadability prevents confirming ownership; abort the entire destructive operation and identify the file.
                     raise
                 payload = None
             key_match = _QUARANTINED_ARCHIVE_KEY_RE.search(path.name)
@@ -1267,7 +1267,7 @@ class NumericV2ArchiveStore:
                 payload = self._read(path)
             except NumericV2ArchiveError as exc:
                 if isinstance(exc.__cause__, OSError):
-                    # 暂时不可读时无法确认归属，破坏性操作必须整体中止并指出该文件。
+                    # Temporary unreadability prevents confirming ownership; abort the entire destructive operation and identify the file.
                     raise
                 payload = None
             name_match = _QUARANTINED_SESSION_NAME_RE.fullmatch(path.name)
@@ -1293,7 +1293,7 @@ class NumericV2ArchiveStore:
         character_id: str,
         legacy_catgirl_name: str = "",
     ) -> dict[str, Any]:
-        """按剧本、Session 和当前角色读取一份公开演绎正文。"""  # noqa: DOCSTRING_CJK
+        """Read a public-performance body by script, Session, and current character."""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
         normalized_session_id = str(session_id or "").strip()
@@ -1313,7 +1313,7 @@ class NumericV2ArchiveStore:
                 normalized_legacy_name,
             )
         ):
-            # 身份不匹配与文件不存在统一返回 not found，不能泄露其他角色是否保存过该周目。
+            # Return not found for both identity mismatch and missing files, avoiding disclosure of other characters' saved playthroughs.
             raise NumericV2ArchiveError("numeric_public_archive_not_found")
         return dict(payload)
 
@@ -1324,7 +1324,7 @@ class NumericV2ArchiveStore:
         character_id: str,
         legacy_catgirl_name: str = "",
     ) -> int:
-        """保留最近五份未收藏档案，收藏档案不计入自动淘汰额度。"""  # noqa: DOCSTRING_CJK
+        """Retain the latest five unfavorited archives; favorites do not count toward automatic eviction."""  # noqa: DOCSTRING_CJK
 
         archives = self.list_public_archives(
             story_id=story_id,
@@ -1354,7 +1354,7 @@ class NumericV2ArchiveStore:
         legacy_catgirl_name: str,
         pinned: bool,
     ) -> dict[str, Any]:
-        """只允许当前角色收藏自己在指定剧本中的冷档案。"""  # noqa: DOCSTRING_CJK
+        """Allow only the current character to favorite its own cold archives for the specified script."""  # noqa: DOCSTRING_CJK
 
         path = self._public_archive_path(str(session_id or "").strip())
         payload = self._read(path)
@@ -1365,8 +1365,8 @@ class NumericV2ArchiveStore:
         ):
             raise NumericV2ArchiveError("numeric_public_archive_not_found")
         payload["pinned"] = pinned is True
-        # 收藏操作不改变演绎时间；否则取消收藏旧周目会把它误排成最新记录，
-        # 进而在保留策略中淘汰真正较新的演绎。
+        # Favoriting must not change performance time, or unfavoriting an old playthrough makes it appear newest,
+        # causing retention to evict genuinely newer performances.
         self._write(path, payload)
         self.prune_public_archives(
             story_id=str(payload.get("story_id") or ""),
@@ -1382,7 +1382,7 @@ class NumericV2ArchiveStore:
         legacy_catgirl_name: str,
         catgirl_name: str,
     ) -> dict[str, int]:
-        """角色改名时同步刷新冷档案、结束回执和待提交档案的身份投影。"""  # noqa: DOCSTRING_CJK
+        """On character rename, refresh identity projections in cold archives, ending receipts, and pending archives together."""  # noqa: DOCSTRING_CJK
 
         normalized_character_id = str(character_id or "").strip()
         normalized_legacy_name = str(legacy_catgirl_name or "").strip()
@@ -1478,7 +1478,7 @@ class NumericV2ArchiveStore:
         legacy_catgirl_name: str = "",
         raise_on_io_error: bool = False,
     ) -> list[Path]:
-        """列出指定范围内的回执和 Session 指针，供事务备份与删除共用。"""  # noqa: DOCSTRING_CJK
+        """List receipts and Session pointers within scope for shared transactional backup/deletion."""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
         normalized_character_id = str(character_id or "").strip()
@@ -1490,7 +1490,7 @@ class NumericV2ArchiveStore:
             try:
                 receipt = self._read(path)
             except NumericV2ArchiveError:
-                # 普通查询允许跳过不可读回执；破坏性操作必须中止，损坏 JSON 也不能被遗漏。
+                # Ordinary queries may skip unreadable receipts; destructive operations must abort, including for corrupt JSON.
                 if raise_on_io_error:
                     raise
                 continue
@@ -1541,7 +1541,7 @@ class NumericV2ArchiveStore:
         return removed
 
     def delete_session_receipts(self, session_id: str) -> int:
-        """重开替换旧 Session 后删除已失效回执。"""  # noqa: DOCSTRING_CJK
+        """Delete invalidated receipts after restarting replaces the old Session."""  # noqa: DOCSTRING_CJK
 
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
@@ -1581,10 +1581,10 @@ class NumericV2ArchiveStore:
         *,
         skip_story_ids: frozenset[str] | set[str] = frozenset(),
     ) -> dict[str, int]:
-        """冷启动清理无 Session 指向或已被新指针替换的回执。
+        """Clean receipts with no Session pointer or superseded pointers on cold startup.
 
-        skip_story_ids 中的剧本（删除回滚失败、等待人工恢复）其回执、指针与待提交档案
-        原样保留，也不为它们排队撤回：这些剧本的 Session 可能正缺失在事务备份里。
+        Preserve receipts, pointers, and pending archives for skip_story_ids (failed deletion rollback awaiting manual recovery)
+        unchanged, without scheduling revocations: their missing Sessions may be inside transaction backups.
         """  # noqa: DOCSTRING_CJK
 
         if not self.root.is_dir():
@@ -1608,7 +1608,7 @@ class NumericV2ArchiveStore:
             try:
                 pointer = self._read(pointer_path)
             except NumericV2ArchiveError as exc:
-                # 暂时性 I/O 故障不能被解释为垃圾数据，否则会删除仍有效的回执指针。
+                # Transient I/O failures must not mean garbage data, which would delete still-valid receipt pointers.
                 if isinstance(exc.__cause__, OSError):
                     raise
                 pointer = None
@@ -1649,7 +1649,7 @@ class NumericV2ArchiveStore:
             try:
                 receipt = self._read(receipt_path)
             except NumericV2ArchiveError as exc:
-                # written 兼容回执可能是升级补档的唯一证据，I/O 失败时必须保留并中止清理。
+                # Written compatibility receipts may be the only upgrade-backfill evidence; preserve them and abort cleanup on I/O failure.
                 if isinstance(exc.__cause__, OSError):
                     raise
                 receipt = None
@@ -1663,7 +1663,7 @@ class NumericV2ArchiveStore:
                 and receipt_session_id in normalized_active
                 and not self._public_archive_path(receipt_session_id).is_file()
             ):
-                # 保留尚未完成升级补档的兼容回执。
+                # Retain compatibility receipts whose upgrade backfill is incomplete.
                 continue
             # Queued before the receipt (and, below, its staged copy) is removed.
             self.queue_retractions(receipt, skip_request_ids=carried_request_ids)
@@ -1707,7 +1707,7 @@ def _visible_action(text: str) -> str:
 
 
 def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tuple[list[dict[str, str]], str]:
-    """把一次已提交演绎投影成无文本标签的结构化记忆片段。"""  # noqa: DOCSTRING_CJK
+    """Project one committed performance into a structured memory segment without text labels."""  # noqa: DOCSTRING_CJK
 
     parts: list[dict[str, str]] = []
     chunks: list[str] = []
@@ -1829,7 +1829,7 @@ def _compact_episode_summary(
     archive_through_revision: int | None = None,
     include_opening: bool = True,
 ) -> str:
-    """确定性生成单集摘要；完整公开正文由 Theater 冷档案承接。"""  # noqa: DOCSTRING_CJK
+    """Generate episode summaries deterministically; Theater cold archives hold the complete public body."""  # noqa: DOCSTRING_CJK
 
     through = session.revision if archive_through_revision is None else archive_through_revision
     forgotten = getattr(session, "forgotten_through_revision", -1)
@@ -1865,7 +1865,7 @@ def build_numeric_v2_public_archive(
     session: Any,
     ending: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """投影一份不含隐藏状态的完整公开演绎冷档案。"""  # noqa: DOCSTRING_CJK
+    """Project a complete public-performance cold archive without hidden state."""  # noqa: DOCSTRING_CJK
 
     forgotten_through_revision = getattr(session, "forgotten_through_revision", -1)
     if not isinstance(forgotten_through_revision, int) or isinstance(forgotten_through_revision, bool):
@@ -1876,7 +1876,7 @@ def build_numeric_v2_public_archive(
             fallback_phase="opening",
         )
     else:
-        # 开场属于 revision 0 之前的初始事实；一旦显式遗忘就不能在后续冷档案中复活。
+        # The opening is an initial fact predating revision 0; explicit forgetting must prevent revival in later cold archives.
         opening_parts, opening_text = [], ""
     turns: list[dict[str, Any]] = []
     for record in session.performance_history:
@@ -1926,7 +1926,7 @@ def build_numeric_v2_memory_messages(
     archive_through_revision: int | None = None,
     include_opening: bool = True,
 ) -> list[dict[str, Any]]:
-    """构造单个剧场记忆胶囊；完整演绎只保存在 Theater 冷档案。"""  # noqa: DOCSTRING_CJK
+    """Build one theater memory capsule; complete performances remain only in Theater cold archives."""  # noqa: DOCSTRING_CJK
 
     through_revision = int(
         session.revision if archive_through_revision is None else archive_through_revision

@@ -308,7 +308,7 @@ def test_get_documents_directory_preserves_first_readable_legacy_candidate(tmp_p
         cm = ConfigManager("N.E.K.O")
 
     assert cm.docs_dir == standard_dir
-    # Linux 回退到 XDG 可写目录时并不进入 CFA 可读目录模式，readable_live2d_dir 应保持 None。
+    # Falling back to a writable XDG directory on Linux does not enter CFA readable-directory mode; readable_live2d_dir must remain None.
     assert cm.readable_live2d_dir is None
 
 
@@ -362,7 +362,7 @@ def test_get_documents_directory_ignores_non_document_legacy_roots_for_cfa_detec
         cm = ConfigManager("N.E.K.O")
 
     assert cm.docs_dir == standard_dir
-    # 非 Windows CFA 场景不应暴露额外的只读回退目录。
+    # Non-Windows CFA scenarios must not expose an additional read-only fallback directory.
     assert cm.readable_live2d_dir is None
 
 
@@ -403,7 +403,7 @@ def test_get_documents_directory_uses_linux_xdg_fallback_when_xdg_data_home_miss
         cm = ConfigManager("N.E.K.O")
 
     assert cm.docs_dir == home_dir / ".local" / "share"
-    # Linux XDG fallback 下不启用 CFA 可读目录回退。
+    # Do not enable CFA readable-directory fallback under the Linux XDG fallback.
     assert cm.readable_live2d_dir is None
 
 

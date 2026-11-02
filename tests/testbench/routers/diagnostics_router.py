@@ -116,7 +116,7 @@ def list_errors(
     If the caller passes an explicit ``level=`` that filter wins
     and ``include_info`` is ignored (see
     ``diagnostics_store.list_errors`` for precedence details).
-    """
+    """  # noqa: DOCSTRING_CJK
     return diagnostics_store.list_errors(
         limit=limit,
         offset=offset,

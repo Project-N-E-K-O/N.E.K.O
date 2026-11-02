@@ -15,36 +15,36 @@ def ok(
     time: Optional[str] = None,
     **meta: Any,
 ) -> Dict[str, Any]:
-    """创建成功响应的标准格式
+    """Create the standard success-response format
     
-    用于插件entry返回成功结果。返回统一的响应格式,包含成功标记、数据和元信息。
+    Plugin entries use this to return success with a consistent success flag, data, and metadata.
     
     Args:
-        data: 返回的数据,可以是任何可序列化的类型
-        code: 错误码,默认 SUCCESS (0)
-        message: 可选的消息说明
-        trace_id: 可选的追踪ID,用于日志关联
-        time: 可选的时间戳,默认使用当前UTC时间
-        **meta: 额外的元数据,会放入"meta"字段
+        data: Returned data, of any serializable type
+        code: Error code, default SUCCESS (0)
+        message: Optional explanatory message
+        trace_id: Optional trace ID for log correlation
+        time: Optional timestamp, defaulting to current UTC
+        **meta: Extra metadata placed in the \"meta\" field
     
     Returns:
-        标准响应字典,格式为:
+        Standard response dictionary with this shape:
         {
-            "success": True,
-            "code": 0,
-            "data": <data>,
-            "message": <message>,
-            "error": None,
-            "time": <ISO时间>,
-            "trace_id": <trace_id>,
-            "meta": <meta>  # 如果提供了meta
+            \"success\": True,
+            \"code\": 0,
+            \"data\": <data>,
+            \"message\": <message>,
+            \"error\": None,
+            \"time\": <ISO timestamp>,
+            \"trace_id\": <trace_id>,
+            \"meta\": <meta>  # If meta was supplied
         }
     
     Example:
-        >>> ok(data={"result": 42})
+        >>> ok(data={\"result\": 42})
         {'success': True, 'code': 0, 'data': {'result': 42}, ...}
         
-        >>> ok(data=[1, 2, 3], message="处理完成", custom_field="value")
+        >>> ok(data=[1, 2, 3], message=\"处理完成\", custom_field=\"value\")
         {'success': True, 'code': 0, 'data': [1, 2, 3], 'message': '处理完成', 'meta': {'custom_field': 'value'}, ...}
     """
     payload: Dict[str, Any] = {
@@ -71,46 +71,46 @@ def fail(
     time: Optional[str] = None,
     **meta: Any,
 ) -> Dict[str, Any]:
-    """创建失败响应的标准格式
+    """Create the standard failure-response format
     
-    用于插件entry返回错误结果。返回统一的错误响应格式,包含错误码、错误信息和详情。
+    Plugin entries use this to return consistent errors containing code, message, and details.
     
     Args:
-        code: 错误码,可以使用ErrorCode枚举、整数或自定义字符串
-        message: 错误描述信息
-        details: 可选的错误详情,可以是任何可序列化的类型
-        retriable: 是否可重试,True表示客户端可以重试此操作
-        trace_id: 可选的追踪ID,用于日志关联
-        time: 可选的时间戳,默认使用当前UTC时间
-        **meta: 额外的元数据,会放入"meta"字段
+        code: Error code as ErrorCode enum, integer, or custom string
+        message: Error description
+        details: Optional error details, of any serializable type
+        retriable: Whether the client may retry this operation
+        trace_id: Optional trace ID for log correlation
+        time: Optional timestamp, defaulting to current UTC
+        **meta: Extra metadata placed in the \"meta\" field
     
     Returns:
-        标准错误响应字典,格式为:
+        Standard error-response dictionary with this shape:
         {
-            "success": False,
-            "code": <int>,
-            "data": None,
-            "message": "",
-            "error": {
-                "code": <code_name>,
-                "message": <message>,
-                "details": <details>,
-                "retriable": <retriable>
+            \"success\": False,
+            \"code\": <int>,
+            \"data\": None,
+            \"message\": \"\",
+            \"error\": {
+                \"code\": <code_name>,
+                \"message\": <message>,
+                \"details\": <details>,
+                \"retriable\": <retriable>
             },
-            "time": <ISO时间>,
-            "trace_id": <trace_id>,
-            "meta": <meta>  # 如果提供了meta
+            \"time\": <ISO timestamp>,
+            \"trace_id\": <trace_id>,
+            \"meta\": <meta>  # If meta was supplied
         }
     
     Example:
         >>> from plugin.sdk import ErrorCode, fail
-        >>> fail(ErrorCode.VALIDATION_ERROR, "参数无效")
+        >>> fail(ErrorCode.VALIDATION_ERROR, \"参数无效\")
         {'success': False, 'code': 400, 'error': {'code': 'VALIDATION_ERROR', 'message': '参数无效', ...}, ...}
         
-        >>> fail("CUSTOM_ERROR", "自定义错误", details={"field": "email"}, retriable=True)
+        >>> fail(\"CUSTOM_ERROR\", \"自定义错误\", details={\"field\": \"email\"}, retriable=True)
         {'success': False, 'code': 500, 'error': {'code': 'CUSTOM_ERROR', 'retriable': True, ...}, ...}
     """
-    # 解析错误码
+    # Parse error codes
     if isinstance(code, ErrorCode):
         code_int = int(code)
         code_name = get_error_name(code)
@@ -121,7 +121,7 @@ def fail(
         except ValueError:
             code_name = str(code)
     else:
-        code_int = ErrorCode.INTERNAL.value  # 自定义字符串默认使用 500
+        code_int = ErrorCode.INTERNAL.value  # Custom strings default to 500
         code_name = str(code)
     
     payload: Dict[str, Any] = {
@@ -144,22 +144,22 @@ def fail(
 
 
 def is_envelope(value: Any) -> bool:
-    """检查值是否是标准响应格式
+    """Check whether a value uses the standard response format
     
-    验证给定的值是否符合ok()/fail()返回的标准响应格式。
+    Validate agreement with the standard ok()/fail() response shape.
     
     Args:
-        value: 要检查的值
+        value: Value to inspect
     
     Returns:
-        True 如果是标准响应格式,False 否则
+        True for standard response format, otherwise False
     
     Example:
-        >>> is_envelope(ok(data="test"))
+        >>> is_envelope(ok(data=\"test\"))
         True
-        >>> is_envelope({"success": True})
-        False  # 缺少必需字段
-        >>> is_envelope("not a dict")
+        >>> is_envelope({\"success\": True})
+        False  # Missing required fields
+        >>> is_envelope(\"not a dict\")
         False
     """
     if not isinstance(value, dict):

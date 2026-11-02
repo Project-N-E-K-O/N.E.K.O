@@ -1,4 +1,4 @@
-"""P32 — read-only **code leads** aggregator (由记忆分析反推主程序记忆代码可疑点).
+"""P32 -- read-only **code leads** aggregator (infer suspicious main-program memory code from memory analysis).
 
 Turns the mechanical-invariant findings that P29 :func:`memory_overview.build_overview`
 already computed into *navigational leads* pointing at which main-program memory

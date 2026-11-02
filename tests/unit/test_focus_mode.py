@@ -170,7 +170,7 @@ def test_decide_topic_switch_exits_focus_and_clears_regular():
 
 
 def test_decide_topic_switch_seeds_new_topic_with_current_score():
-    # A topic-switch opener that is ITSELF vulnerable ("对了，我撑不住了") must
+    # A topic-switch opener that is ITSELF vulnerable ("对了，我撑不住了", 'by the way, I cannot cope') must
     # not be dropped: the old charge is cleared (no leak) but this turn's score
     # seeds the new topic from a clean slate.
     d = _focus_decide(mode=CognitionMode.REGULAR, focus_turn_count=0, charge=0.9,
@@ -379,7 +379,7 @@ def test_vulnerability_keyword_count():
 
 
 def test_vulnerability_denests_nested_phrases():
-    # "好难受" matches both "难受" and "好难受"; de-nesting counts it once,
+    # "好难受" ('so uncomfortable') matches both "难受" and "好难受"; de-nesting counts it once,
     # so one cue can't double-count toward saturation.
     assert scan_vulnerability_keywords("好难受") == 1
     assert scan_vulnerability_keywords("so lonely") == 1
@@ -411,7 +411,7 @@ def test_vulnerability_profanity_avoids_short_substring_false_positives():
         "please pass the class", "let me assume the worst",
         "我先操作一下电脑", "去操场跑步", "他幹活很认真", "shell command",
         # reviewer-flagged neutral substrings we deliberately dropped:
-        "垃圾桶在哪", "垃圾分类怎么做",          # bare 垃圾 removed
+        "垃圾桶在哪", "垃圾分类怎么做",          # bare 垃圾 ('trash') removed
         "找 tmdb 上的评分", "tmdb 这部电影",      # bare tmd removed (TMDB)
         "застрахуй меня", "надо страхуй оформить",  # bare хуй removed (insurance)
     ]:
@@ -421,7 +421,7 @@ def test_vulnerability_profanity_avoids_short_substring_false_positives():
 def test_vulnerability_excludes_filler_interjections():
     # Mild interjections that have become everyday filler are deliberately NOT
     # cues — too noisy as a distress signal (卧槽好牛 / damn cool are often
-    # positive; 馬鹿 is affectionate; 존나 means "very").
+    # positive; 馬鹿 ('fool') is affectionate; 존나 means "very").
     for filler in [
         "卧槽这也太牛了", "我擦真的假的", "wtf is this", "damn that's cool",
         "馬鹿だなあ", "존나 좋아", "hostia tío", "que cacete bom",
@@ -455,12 +455,12 @@ def test_focus_stream_overrides_decision():
     assert _C._focus_stream_overrides(True, "glm-5.2") == {
         "extra_body": {"thinking": {"type": "enabled"}}
     }
-    # Anthropic claude: enable needs {type:adaptive} via OpenAI-compat; 本 PR 暂不翻 →
-    # 保持 disabled（安全退化，绝不 400），adaptive 接入留 follow-up
+    # Anthropic claude: enabling requires {type:adaptive} through OpenAI compatibility; this PR leaves it unchanged →
+    # retain disabled as a safe fallback without 400; adaptive integration is follow-up work
     assert _C._focus_stream_overrides(True, "claude-opus-4-7") == {
         "extra_body": {"thinking": {"type": "disabled"}}
     }
-    # 免费版沿用 thinking.type 方言，Focus 会把关闭状态翻转为启用状态。
+    # The free provider retains the thinking.type dialect; Focus switches disabled to enabled.
     assert _C._focus_stream_overrides(True, "free-model") == {
         "extra_body": {"thinking": {"type": "enabled"}}
     }
@@ -510,7 +510,7 @@ def test_focus_extra_body_provider_dialects():
     )
     from config.providers import EXTRA_BODY_MINIMAX  # not re-exported via config/__init__
 
-    # 免费版默认下发 thinking.disabled，Focus 翻转为 thinking.enabled。
+    # The free provider defaults to thinking.disabled, which Focus changes to thinking.enabled.
     assert get_extra_body("free-model") == {"thinking": {"type": "disabled"}}
     assert get_extra_body("free-model") == EXTRA_BODY_CLAUDE
     assert focus_extra_body("free-model") == {"thinking": {"type": "enabled"}}
@@ -526,14 +526,14 @@ def test_focus_extra_body_provider_dialects():
     }
     assert focus_extra_body("google/gemini-2.5-flash") == {"reasoning": {"effort": "low"}}
 
-    # Anthropic claude: enable 须 {type:adaptive}(OpenAI-compat)，本 PR 暂不翻 → 凝神保持 disabled
+    # Anthropic claude: enabling requires {type:adaptive} (OpenAI compatibility); this PR does not switch it, so Focus retains disabled
     assert get_extra_body("claude-opus-4-7") == {"thinking": {"type": "disabled"}}
     assert focus_extra_body("claude-opus-4-7") == {"thinking": {"type": "disabled"}}
-    # Haiku 5.5 仍收 disabled；Sonnet 5.5 发 disabled 会 400，关思考只能用 between_tools
+    # Haiku 5.5 still accepts disabled; Sonnet 5.5 returns 400 for disabled, requiring between_tools to disable thinking
     assert get_extra_body("claude-haiku-5-5") == {"thinking": {"type": "disabled"}}
     assert get_extra_body("claude-sonnet-5-5") == {"thinking": {"type": "between_tools"}}
     assert focus_extra_body("claude-sonnet-5-5") == {"thinking": {"type": "between_tools"}}
-    # Opus 5.5 / Fable 5.1 只收 adaptive，任何显式 thinking 都 400 → 不登记、不发
+    # Opus 5.5 / Fable 5.1 accept only adaptive; explicit thinking produces 400, so neither register nor send it
     assert get_extra_body("claude-opus-5-5") == {}
     assert get_extra_body("claude-fable-5-1") == {}
     # MiniMax reasoning_split is not an on/off knob → preserved, not flipped
@@ -590,10 +590,10 @@ def test_official_deepseek_v4_registers_the_thinking_type_dialect():
     for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
         assert MODELS_EXTRA_BODY_MAP[model] is EXTRA_BODY_CLAUDE
         assert get_extra_body(model) == {"thinking": {"type": "disabled"}}
-        # 凝神对偶由派生表自动获得，不需要单独登记。
+        # The Focus counterpart is derived automatically from the table, requiring no separate registration.
         assert focus_extra_body(model) == {"thinking": {"type": "enabled"}}
 
-    # 转售同款的网关是另外的键名，各走各的方言，不被官方那两行波及。
+    # Reseller gateways use separate keys and their own dialects, unaffected by these two official-provider entries.
     assert get_extra_body("deepseek-ai/DeepSeek-V4-Flash") == {"enable_thinking": False}
 
 
@@ -701,7 +701,7 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     # weight tweak can't silently break it — to isolate that wiring from the bar.
     keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
     _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
-    # Per-user 凝神 switch defaults on when unset — stub it so this test doesn't
+    # Per-user Focus switch defaults on when unset — stub it so this test doesn't
     # read the dev machine's real user_preferences.json (where the user may have
     # focusCognitionEnabled off, which would gate the inline path before scoring).
     _stub_user_focus_setting(monkeypatch, enabled=None)
@@ -714,7 +714,7 @@ async def test_idle_thinking_is_read_only(monkeypatch):
     # _focus_idle_thinking reports whether we're in Focus WITHOUT mutating the
     # charge — the decay is deferred to the post-turn cooldown.
     _patch_charge(monkeypatch, enter=1.0)
-    # Per-user 凝神 switch defaults on when unset — stub it so this test doesn't
+    # Per-user Focus switch defaults on when unset — stub it so this test doesn't
     # read the dev machine's real user_preferences.json (focusCognitionEnabled
     # off there would force the idle read to return False before checking mode).
     _stub_user_focus_setting(monkeypatch, enabled=None)
@@ -775,8 +775,8 @@ async def test_idle_cooldown_skips_when_episode_changed(monkeypatch):
     assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
 
 
-# ── 7. per-user master switch (对话设置 → focusCognitionEnabled) ─────────────
-# A new conversation setting gates 凝神 entirely: off ⇒ never enters Focus and any
+# ── 7. Per-user master switch (conversation settings → focusCognitionEnabled) ─────────────
+# A new conversation setting gates Focus entirely: off ⇒ never enters Focus and any
 # residual charge is cleared, exactly like the global FOCUS_MODE_ENABLED flag.
 # Defaults to on when unset. master emotion read is independent (not gated here).
 def _stub_user_focus_setting(monkeypatch, *, enabled):
@@ -792,7 +792,7 @@ def _stub_user_focus_setting(monkeypatch, *, enabled):
 
 
 async def test_inline_gate_user_setting_off_blocks_and_clears(monkeypatch):
-    # Global flag on, but the user turned the per-user 凝神 switch off → a strongly
+    # Global flag on, but the user turned the per-user Focus switch off → a strongly
     # vulnerable message must NOT enter Focus, and residual charge is cleared.
     _patch_charge(monkeypatch, enter=1.0)
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
@@ -818,7 +818,7 @@ async def test_inline_gate_user_setting_default_on_allows(monkeypatch):
 
 async def test_idle_thinking_honors_user_setting(monkeypatch):
     # Even while state.mode is still FOCUS, a proactive turn must not run
-    # thinking-on once the user switched 凝神 off (defense in depth).
+    # thinking-on once the user switched Focus off (defense in depth).
     _patch_charge(monkeypatch, enter=1.0)
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
     _stub_user_focus_setting(monkeypatch, enabled=True)
@@ -929,9 +929,9 @@ async def test_update_focus_retention_override_and_count_turn(monkeypatch):
     assert sm.snapshot()["focus_turn_count"] == tc_before    # not bumped
 
 
-# ── 8. 凝神退出：历史 thinking + 已闭合 tool call 清理 ─────────────────────
-# 凝神退出(任何路径)时，把上一个 episode 留在历史里的 reasoning_content + 已闭合
-# tool call 配对清掉，防止带偏退出后的 REGULAR 对话乃至新 session。
+# ── 8. Focus exit: remove historical thinking and completed tool calls ─────────────────────
+# On any Focus exit, remove reasoning_content and completed tool-call pairs left in history by the previous episode,
+# preventing contamination of subsequent REGULAR conversation or new sessions.
 def _tool_pair(call_id="c1", *, reasoning=None, name="t"):
     """Build one assistant tool_calls message + the following tool result (closed pair)."""
     assistant = {
@@ -958,7 +958,7 @@ def test_purge_closed_tool_calls():
                AIMessage(content="今天晴")]
     removed = _purge_closed_tool_calls(history)
     assert removed == 2
-    # 只剩 system / human / ai，dict(tool 配对)及 reasoning_content 全没了
+    # Only system/human/ai remain; dict tool pairs and reasoning_content are gone
     assert all(not isinstance(m, dict) for m in history)
     assert [type(m).__name__ for m in history] == ["SystemMessage", "HumanMessage", "AIMessage"]
 
@@ -966,7 +966,7 @@ def test_purge_closed_tool_calls():
 def test_purge_keeps_unclosed_and_empty():
     from main_logic.core import _purge_closed_tool_calls
     from utils.llm_client import HumanMessage
-    # 未闭合：assistant 有 call 但没有对应 tool result → 保留(不破坏在途状态)
+    # Incomplete: assistant has a call without its tool result; retain it to preserve in-flight state
     a, _ = _tool_pair("c9")
     history = [HumanMessage(content="hi"), a]
     assert _purge_closed_tool_calls(history) == 0
@@ -976,7 +976,7 @@ def test_purge_keeps_unclosed_and_empty():
 
 def test_purge_multiple_calls_one_turn():
     from main_logic.core import _purge_closed_tool_calls
-    # 一个 assistant 两个 call + 两条 result → 全闭合，删 3 条
+    # One assistant with two calls and two results is fully complete; delete all 3 messages
     history = [
         {"role": "assistant", "content": "", "tool_calls": [
             {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}},
@@ -994,10 +994,10 @@ def test_purge_respects_start():
     pre_a, pre_r = _tool_pair("pre")
     ep_a, ep_r = _tool_pair("ep", reasoning="…")
     history = [pre_a, pre_r, ep_a, ep_r]
-    # start=2 → 只清 index>=2 的那对，保留 Focus 之前的
+    # start=2 removes only pairs at index>=2, preserving those preceding Focus
     assert _purge_closed_tool_calls(history, start=2) == 2
     assert history == [pre_a, pre_r]
-    # start 越界 → no-op（历史已被 wipe/缩短的兜底）
+    # Out-of-bounds start → no-op, guarding wiped/shortened history
     assert _purge_closed_tool_calls(history, start=99) == 0
     assert history == [pre_a, pre_r]
 
@@ -1030,24 +1030,24 @@ async def test_maybe_purge_only_after_exit(monkeypatch):
     a, r = _tool_pair("c1", reasoning="…")
     mgr, sess = _purge_mgr(monkeypatch, [a, r])
 
-    # 没进过 focus（未 arm）→ 不清
+    # Never entered Focus and not armed → no cleanup
     await mgr._maybe_purge_focus_artifacts()
     assert len(sess._conversation_history) == 2
 
-    # arm 且仍在 FOCUS → 不清（残留还在用）
+    # Armed and still in FOCUS → no cleanup; residual history is still in use
     mgr._focus_artifacts_pending = True
     await mgr.state.update_focus(1.0)
     assert mgr.state.mode is CognitionMode.FOCUS
     await mgr._maybe_purge_focus_artifacts()
     assert len(sess._conversation_history) == 2
 
-    # silent 退出回 REGULAR → 清 + disarm
+    # Silent exit to REGULAR → cleanup + disarm
     await mgr.state.clear_focus()
     assert mgr.state.mode is CognitionMode.REGULAR
     await mgr._maybe_purge_focus_artifacts()
     assert sess._conversation_history == []
     assert mgr._focus_artifacts_pending is False
-    # 幂等：再调不报错、无副作用
+    # Idempotent: repeated calls neither raise nor cause side effects
     await mgr._maybe_purge_focus_artifacts()
     assert sess._conversation_history == []
 
@@ -1059,7 +1059,7 @@ async def test_idle_cooldown_exit_purges_history(monkeypatch):
     _patch_charge(monkeypatch, enter=1.0, exit=0.3, idle_replied=0.6, idle_silent=0.6)
     a, r = _tool_pair("c1", reasoning="…")
     mgr, sess = _purge_mgr(monkeypatch, [a, r])
-    # 模拟 inline 已进 FOCUS 并 arm（idle 路径自身不会 enter）
+    # Simulate inline entry into FOCUS and arming; idle paths do not enter themselves
     mgr._focus_artifacts_pending = True
     mgr._focus_artifacts_history_start = 0
     await mgr.state.update_focus(1.0)  # FOCUS, charge 1.0
@@ -1067,12 +1067,12 @@ async def test_idle_cooldown_exit_purges_history(monkeypatch):
     tok, turn = snap["focus_episode_id"], snap["focus_turn_count"]
     assert mgr.state.mode is CognitionMode.FOCUS
 
-    # 第一次 cooldown：1.0*0.6=0.6 ≥ exit 0.3 → 仍 FOCUS，历史不动
+    # First cooldown: 1.0*0.6=0.6 ≥ exit 0.3, so remain FOCUS with unchanged history
     await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
     assert mgr.state.mode is CognitionMode.FOCUS
     assert len(sess._conversation_history) == 2
 
-    # 继续衰减直到退出：0.36 → 0.216 < 0.3 → EXIT 时清历史
+    # Decay until exit: 0.36 → 0.216 < 0.3; clean history on EXIT
     await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
     await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
     assert mgr.state.mode is CognitionMode.REGULAR
@@ -1090,7 +1090,7 @@ async def test_inline_decision_purges_episode_only(monkeypatch):
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
     _stub_user_focus_setting(monkeypatch, enabled=True)
 
-    # Focus 之前就有一对普通(非 thinking) tool call —— 必须保留
+    # A normal non-thinking tool-call pair predating Focus must remain
     pre_a, pre_r = _tool_pair("pre", name="weather")
     mgr = _bare_mgr()
     sess = OmniOfflineClient.__new__(OmniOfflineClient)
@@ -1102,17 +1102,17 @@ async def test_inline_decision_purges_episode_only(monkeypatch):
     mgr._push_focus_indicator = _noop
     mgr._push_focus_charge = _noop
 
-    # vulnerable message → enter FOCUS；记下 history 起点(=2)
+    # Vulnerable message → enter FOCUS; record history start (=2)
     assert await mgr._focus_inline_decision("好累，一个人，没意思，撑不住了") is True
     assert mgr.state.mode is CognitionMode.FOCUS
     assert mgr._focus_artifacts_history_start == 2
-    # 模拟 episode 期间又产生一对(带 reasoning_content 的)闭合 tool call
+    # Simulate another completed tool-call pair with reasoning_content during the episode
     ep_a, ep_r = _tool_pair("ep", reasoning="思考链…")
     sess._conversation_history.extend([ep_a, ep_r])
 
-    # neutral message → 衰减出 FOCUS → REGULAR → 只清 episode 期间的(index>=2)
+    # Neutral message → decay out of FOCUS → REGULAR; clean only episode history at index>=2
     assert await mgr._focus_inline_decision("嗯那个文件改好了发你了") is False
     assert mgr.state.mode is CognitionMode.REGULAR
-    assert sess._conversation_history == [pre_a, pre_r]  # Focus 前的保留
+    assert sess._conversation_history == [pre_a, pre_r]  # Retain pre-Focus history
     assert mgr._focus_artifacts_pending is False
     assert mgr._focus_artifacts_history_start is None

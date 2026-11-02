@@ -294,8 +294,8 @@ class CorrectionsMixin:
             'correction_id': uuid.uuid4().hex,
         }
         if subject_fields:
-            # scoped correction 携带完整 subject 戳：section key 不含 scope，
-            # resolve 分域与 apply 界定都需要它。
+            # scoped correction includes the full subject stamp: the section key does not include scope,
+            # and both domain-specific resolution and apply-boundary checks need it.
             item.update(subject_fields)
         item.update(new_event_fields)
         from memory.speaker_trust import stable_speaker_id
@@ -445,34 +445,34 @@ class CorrectionsMixin:
         """
         from config.prompts.prompts_memory import get_persona_correction_prompt
 
-        # ── 串行 resolve（独立锁，与 data lock 不互锁） ──
+        # ── Serialized resolution (independent lock; does not contend with the data lock) ──
         async with self._get_resolve_alock(name):
-            # ── 短临界 1: 拿 corrections 列表 ──
+            # ── Short critical section 1: fetch the corrections list ──
             async with self._get_alock(name):
                 corrections = await self.aload_pending_corrections(name)
             if not corrections:
                 return 0
 
-            # 合并所有矛盾为单个 prompt。受 PERSONA_CORRECTION_BATCH_LIMIT
-            # 限制：corrections 队列可能堆积，单次只处理前 N 条，剩下的下次
-            # 触发时再处理。
+            # Merge all contradictions into one prompt. PERSONA_CORRECTION_BATCH_LIMIT
+            # limits the batch: the corrections queue may build up, so process only the first N entries per call
+            # and handle the remainder on the next trigger.
             #
-            # Liveness：过滤已达 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的 dead-letter
-            # entry（防御性——下面 _abump_correction_attempts_and_dead_letter
-            # 命中阈值时会直接从 queue 删除，正常路径不会让 attempts ≥ MAX 的
-            # entry 还留在 queue。这里只是 race-condition 防御 + schema 兼容）。
+            # Liveness: filter dead-letter entries that have reached ``MEMORY_LIVENESS_MAX_ATTEMPTS``
+            # (defensive — below, _abump_correction_attempts_and_dead_letter
+            # removes entries from the queue when they reach the threshold, so the normal path will not leave entries with attempts ≥ MAX
+            # in the queue. This is only race-condition defense + schema compatibility.)
             from config import (
                 MEMORY_LIVENESS_MAX_ATTEMPTS,
                 PERSONA_CORRECTION_BATCH_LIMIT,
             )
             from memory.scopes import SCOPED_PERSONA_PREFIX
 
-            # 单批只装同一个隔离域：legacy 私聊全体算一个域（与升级前
-            # 行为逐字节一致），每个 @subject/ scoped section 各算一个域。
-            # 不分域的话，不同群/私聊的记忆文本会拼进同一个 correction
-            # prompt 里互相可见，且 keep/merge 的不可逆决策会被相邻域的
-            # 上下文影响（merge 重写文本甚至可能串词）。非本域条目留在
-            # 队列里，下一轮 resolve 触发时按 FIFO 头部轮到的域继续消化。
+            # Keep each batch within one isolation domain: all legacy private chats count as one domain (byte-for-byte compatible with
+            # pre-upgrade behavior); each @subject / scoped section is a separate domain.
+            # Without domain separation, memory text from different groups/private chats would appear together in one correction
+            # prompt, and irreversible keep/merge decisions could be influenced by neighboring domains'
+            # context (rewriting merged text could even mix up their wording). Entries outside this domain stay in
+            # the queue; the next resolve trigger processes whichever domain reaches the FIFO head.
             pairs = []
             batch_domain = None
             for i, item in enumerate(corrections):
@@ -487,14 +487,14 @@ class CorrectionsMixin:
                         if isinstance(entity_raw, str) else ''
                     )
                     if not entity:
-                        # 实体缺失/空/非字符串的畸形 correction 既不算 legacy
-                        # 也不算 scoped：跳过本批、留在队列（fail-closed，
-                        # 与 scopes.py 读路径对损坏描述符的处理一致）。
+                        # A malformed correction with missing/empty/non-string entity is neither legacy
+                        # nor scoped: skip it for this batch and leave it queued (fail-closed,
+                        # matching how scopes.py read paths handle corrupt descriptors).
                         continue
                     if entity.startswith(SCOPED_PERSONA_PREFIX):
-                        # 域 = (section key, scope)：同 kind/id 的自定义
-                        # scope 互为独立隔离域，不得同批。旧队列条目无
-                        # scope 字段时按默认 scope（=key）归域。
+                        # Domain = (section key, scope): custom
+                        # scopes for the same kind/id are separate isolation domains and must not share a batch. Old queue entries without a
+                        # scope field belong to the default scope (=key).
                         domain = (
                             entity,
                             item.get('scope')
@@ -539,10 +539,10 @@ class CorrectionsMixin:
                                 name,
                                 exc,
                             )
-            # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
-            # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
-            # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
-            # 错误消费。
+            # Only consume global indexes that were "sent in this batch's prompt" — the LLM may occasionally return a valid global index
+            # that was not in this batch's prompt (e.g. hallucinating an index from a future batch); without this guard, it would wrongly modify
+            # corrections that were not reviewed and consume queue data
+            # incorrectly.
             allowed_indices = {i for i, _ in pairs}
 
             from config.prompts.prompts_memory import (
@@ -568,19 +568,19 @@ class CorrectionsMixin:
                 count=len(pairs),
             )
 
-            # ── LLM (锁外) ──
+            # ── LLM (unlocked) ──
             try:
                 from utils.token_tracker import set_call_type
                 from memory.thinking_llm import ainvoke_thinking
                 set_call_type("memory_correction")
                 api_config = await self._config_manager.aget_model_api_config('correction')
-                # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发
-                # 120s hard cap，必须 ≤110）。批量决策（每对 keep_old/
-                # keep_new/keep_both/merge + 重写 merged_text）值得吃满
-                # thinking——后果不可逆（persona pollution）。LLM 在 data
-                # lock 外，不阻塞 /process 路径上的 arecord_mentions /
+                # timeout: see MEMORY_LLM_HARD_TIMEOUT_SECONDS (upstream forwarding
+                # hard cap is 120s, so this must be ≤110). Batch decisions (keep_old /
+                # keep_new / keep_both / merge + rewrite merged_text) deserve full
+                # thinking because the outcome is irreversible (persona pollution). The LLM runs outside the data
+                # lock, avoiding blocking arecord_mentions / on the /process path.
                 # aapply_signal。
-                # 这里没业务 retry，单次即终态；显式开 thinking，额度与回退见
+                # There is no business retry here; one attempt is terminal. Explicitly enable thinking; budget and fallback are in
                 # memory.thinking_llm。
                 from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
                 resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # correction prompt built from PERSONA_MERGE_POOL_MAX_TOKENS-capped entity pool.
@@ -596,28 +596,28 @@ class CorrectionsMixin:
                     results = [results]
             except Exception as e:
                 logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
-                # Liveness 兜底：给本批 corrections bump resolve_attempts 字段，
-                # 达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 entry 从 queue dead-letter
-                # 丢弃。否则同样的 (old_text, new_text) 队头 entry 每次 resolve
-                # tick 都被送进相同 prompt，LLM 同样失败，永久卡住后续 corrections
-                # （safety filter / 长 prompt token 超限 / 永远 parse 不出来 等
-                # 毒 payload 场景）。
+                # Liveness fallback: bump resolve_attempts for this batch's corrections;
+                # move entries that reach MEMORY_LIVENESS_MAX_ATTEMPTS to the dead-letter queue.
+                # Otherwise the same queue-head entry with (old_text, new_text) is sent into the same prompt on every resolve
+                # tick, and the LLM keeps failing, permanently blocking later corrections
+                # (e.g. safety filter, oversized prompt token limit, or payload that can never be parsed,
+                # etc.).
                 await self._abump_correction_attempts_and_dead_letter(
                     name, [item for _, item in pairs],
                 )
                 return 0
 
-            # ── 短临界 2: load fresh persona + apply + save ──
+            # ── Short critical section 2: load fresh persona + apply + save ──
             stale_prompt_indices: set[int] = set()
             resolved = await self._apply_correction_results(
                 name, corrections, allowed_indices, results,
                 refresh_pending=True,
                 stale_prompt_indices=stale_prompt_indices,
             )
-            # 对偶 fact_dedup：LLM 返了 list 但 ``_apply_correction_results_locked``
-            # 没消费任何 correction（全 invalid index / 全 unknown action），
-            # corrections queue 原样保留 → 队头同样 N 条下次 tick 重新喂同样
-            # prompt → 仍然 0 resolved → 永久卡死。算 attempts 一次。
+            # Symmetric with fact_dedup: the LLM returned a list, but ``_apply_correction_results_locked``
+            # consumed no corrections (all invalid indexes / all unknown actions),
+            # leaving the correction queue unchanged → the same N queue-head entries feed the same prompt next tick
+            # → still 0 resolved → permanent deadlock. Count one attempt.
             if resolved == 0:
                 attempted_items = [
                     item for idx, item in pairs
@@ -739,9 +739,9 @@ class CorrectionsMixin:
             entity_raw = item.get('entity')
             entity = entity_raw.strip() if isinstance(entity_raw, str) else ''
             if not entity:
-                # 对偶批次构建的畸形实体守卫：绝不能默认写进 master 段——
-                # 一条丢了 entity 的 scoped correction 会因此跨进 legacy
-                # 私聊 persona。跳过即留队，不计 resolved。
+                # Malformed-entity guard, symmetric with batch construction: never default-write into the master section —
+                # otherwise a scoped correction with a missing entity would leak into the legacy
+                # private-chat persona. Skip it and leave it queued; do not count it as resolved.
                 continue
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
@@ -787,10 +787,10 @@ class CorrectionsMixin:
                 )
             section_facts = self._get_section_facts(persona, entity)
 
-            # scoped correction 的一切匹配/删除/新建都限定在 item 自己的
-            # subject 域内：section key 不含 scope，同 kind/id 异 scope 的
-            # 条目共存于同一 section，按裸文本跨域改写即泄漏。item 无戳
-            # （升级前入队）按默认 scope（=key）重建；重建失败 fail-closed。
+            # All matching/removal/creation for a scoped correction is limited to the item's own
+            # subject domain: section keys omit scope, so entries with the same kind/id in different scopes
+            # coexist in one section; editing by bare text across scopes would leak data. An item without a stamp
+            # (queued before upgrade) is rebuilt using the default scope (=key); fail-closed if rebuilding fails.
             from memory.scopes import (
                 SCOPED_PERSONA_PREFIX,
                 MemoryScopeError,
@@ -867,9 +867,9 @@ class CorrectionsMixin:
                 if _subj is not None:
                     new_entry.update(_subj.as_entry_fields())
                 if not new_entry.get('id'):
-                    # correction 新建条目必须有 ID（掺域盐，对齐
-                    # _build_fact_entry）：空 ID 会被 ID 索引的 refine/
-                    # signal/archive 全部跳过，且多条互相撞空串。
+                    # A newly created correction entry must have an ID (with a scope salt, matching
+                    # _build_fact_entry): an empty ID causes ID-indexed refine/
+                    # signal/archive operations to skip it, and multiple entries would collide on the empty string.
                     salt = (
                         f"{_subj.key}|{_subj.scope}|" if _subj is not None else ""
                     )
@@ -1048,8 +1048,8 @@ class CorrectionsMixin:
                     )[-_VH_MAX:]
                 section_facts.append(replacement)
             elif action == 'keep_old':
-                # trust 仲裁选中旧观察时，新观察不能静默蒸发：嵌入赢家的
-                # version_history，保留全文、speaker 与 trust，可人工回滚。
+                # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
+                # version_history, preserving full text, speaker, and trust so it can be manually restored.
                 if preference == 'old':
                     from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                     for existing in section_facts:
@@ -1105,8 +1105,8 @@ class CorrectionsMixin:
                 _correction_queue_identity(corrections[idx])
                 for idx in resolved_indices
             ]
-            # 重新读取文件，仅删除已处理的条目，保留 LLM 期间新增的
-            # （防止并发 _aqueue_correction 新追加的矛盾被覆盖丢失）
+            # Reread the file and delete only processed entries, preserving additions made while the LLM was running
+            # (prevents concurrent _aqueue_correction additions from being overwritten and lost)
             current = await self.aload_pending_corrections(name)
             remaining = list(current)
             for identity in processed_identities:
@@ -1165,8 +1165,8 @@ class CorrectionsMixin:
                             or c.get('subject_id')
                             or c.get('scope')
                         ):
-                            # scoped（成员/群衍生）内容不进日志：只打域标识
-                            # 与长度，对齐 scoped 反思原文不进 stdout 的口径。
+                            # Do not put scoped (member/group-derived) content in logs: record only domain identity
+                            # and length, matching the policy that scoped reflection text never goes to stdout.
                             detail = (
                                 f"(scoped {c.get('subject_kind', '')!s}"
                                 f"/{c.get('subject_id', '')!s}"

@@ -1,7 +1,7 @@
 """P21.1 persistence reliability smoke — G1 / G2 / G8 coverage.
 
 Run after touching ``persistence.py`` / ``session_router.py`` reliability
-bits (PLAN.md §11 — P21.1 持久化可靠性加固 pass)::
+bits (PLAN.md §11 — P21.1 persistence reliability hardening pass)::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p21_1_reliability_smoke.py
 

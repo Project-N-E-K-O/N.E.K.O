@@ -177,9 +177,9 @@ class CharactersMixin:
             ):
                 return deepcopy(cache)
 
-        # 慢路径：独占锁，防止多个线程同时读文件、重复触发迁移和校验警告。
+        # Slow path: exclusive lock prevents concurrent reads and repeated migration/validation warnings.
         with self._characters_reload_lock:
-            # 双检：进锁后重新核对 mtime，另一个线程可能已经完成了加载。
+            # Double-check mtime after acquiring the lock; another thread may already have loaded it.
             with self._characters_cache_lock:
                 cache = self._characters_cache
                 cache_path = self._characters_cache_path
@@ -213,8 +213,8 @@ class CharactersMixin:
                             dirty_retry_due = self._characters_dirty_retry_due_locked()
                         if not dirty_retry_due:
                             return deepcopy(cache)
-                    # 上次迁移已生成稳定角色 ID，但被维护栅栏或暂时性 I/O 阻止写回；
-                    # 每次恢复可写后都先重试持久化，再把该身份交给后续持久化业务使用。
+                    # A prior migration generated a stable character ID but maintenance fencing or transient I/O prevented persistence;
+                    # whenever writes resume, retry persistence before handing that identity to subsequent persistent operations.
                     dirty_cache = deepcopy(cache)
                     try:
                         self.save_characters(
@@ -263,7 +263,7 @@ class CharactersMixin:
                     # Preserve the dirty flag and original mtime for a later retry.
                     return deepcopy(cache)
                 logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
-                # 故障回退不是磁盘文件的权威内容，后续迁移只能在内存中使用，绝不能反写覆盖原文件。
+                # Fault fallback is not authoritative disk content; later migrations may use it in memory only, never overwrite the original file.
                 character_data = (
                     deepcopy(cache)
                     if cache is not None
@@ -334,9 +334,9 @@ class CharactersMixin:
                     self.save_characters(character_data, character_json_path=persist_json_path)
                     logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
                 except Exception as migrate_err:
-                    # character_id 即使在临时只读阶段也必须在本进程内保持稳定；
-                    # 否则每次 load 都会为同一张旧卡生成不同身份。后续正常写入会
-                    # 连同其它迁移结果一起持久化。
+                    # character_id must remain stable within this process even during temporary read-only operation;
+                    # otherwise each load generates a different identity for the same legacy card. Later successful writes
+                    # persist it together with other migration results.
                     with self._characters_cache_lock:
                         self._characters_cache = deepcopy(character_data)
                         self._characters_cache_mtime = loaded_mtime
@@ -345,7 +345,7 @@ class CharactersMixin:
                         self._note_characters_persist_failure_locked()
                     if require_authoritative:
                         raise
-                    # 维护态（只读快照阶段）不能持久化，降级为 debug 日志
+                    # Maintenance (read-only snapshot phase) forbids persistence; downgrade to debug logging.
                     try:
                         from utils.cloudsave_runtime import MaintenanceModeError
                     except Exception:
@@ -376,7 +376,7 @@ class CharactersMixin:
             assert_cloudsave_writable(self, operation="save", target="characters.json")
 
         with self._characters_reload_lock:
-            # 确保config目录存在
+            # Ensure the config directory exists.
             self.ensure_config_directory()
 
             atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
@@ -487,8 +487,8 @@ class CharactersMixin:
                     her_name,
                 )
                 character_data['当前猫娘'] = her_name
-                # 罕见分支（仅配置损坏/删除猫娘后触发），同步落盘以保证重启后修正仍生效。
-                # save_characters 内部会刷新 cache，这里无需再手动同步。
+                # Rare path (corrupt configuration / deleted catgirl only): persist synchronously so the fix survives restart.
+                # save_characters refreshes the cache internally; no manual synchronization is needed here.
                 try:
                     self.save_characters(character_data)
                 except Exception as persist_err:
@@ -513,7 +513,7 @@ class CharactersMixin:
             )
 
         memory_base = str(self.memory_dir)
-        # 角色专属子目录: memory_dir/{name}/
+        # Character-specific subdirectory: memory_dir/{name}/.
         import os as _os
         time_store = {name: _os.path.join(memory_base, name, 'time_indexed.db') for name in catgirl_names}
         setting_store = {name: _os.path.join(memory_base, name, 'settings.json') for name in catgirl_names}

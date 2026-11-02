@@ -214,7 +214,7 @@ def check_b3_ambiguous(client) -> list[str]:
     try:
         _delete_session(client)
         _create_session(client, "b3_ambig")
-        # two cat girls + no 当前猫娘 -> ambiguous.
+        # Two catgirls + no current catgirl -> ambiguous.
         chars = _characters_json(["A猫", "B猫"])
         chars["当前猫娘"] = ""  # force ambiguity (no current pointer)
         zip_bytes = _build_zip({

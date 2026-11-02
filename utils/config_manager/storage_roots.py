@@ -60,13 +60,13 @@ class StorageRootsMixin:
             app_name: application name, defaults to APP_NAME from config
         """
         self.app_name = app_name if app_name is not None else APP_NAME
-        # 检测是否在子进程中，子进程静默初始化（通过 main_server 设置的环境变量）
+        # Detect subprocesses and initialize silently using the environment variable main_server sets.
         self._verbose = '_NEKO_MAIN_SERVER_INITIALIZED' not in os.environ
         self.docs_dir = self._get_documents_directory()
         default_app_docs_dir = self.docs_dir / self.app_name
 
-        # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
-        # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
+        # Detect CFA (Windows Controlled Folder Access / ransomware protection):
+        # if the original Documents path is readable but unwritable, retain it for reading user data such as models.
         first_readable_non_writable = getattr(self, '_first_non_writable_readable_candidate', None)
         self._cfa_fallback_write_docs_dir = None
         if (
@@ -171,12 +171,12 @@ class StorageRootsMixin:
         self.knowledge_dir = self.app_docs_dir / "knowledge"
         self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
-        # VRM模型存储在用户文档目录下（与Live2D保持一致）
+        # Store VRM models under user Documents, consistent with Live2D.
         self.vrm_dir = self.app_docs_dir / "vrm"
-        self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
-        # MMD模型存储在用户文档目录下
+        self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA animation directory.
+        # Store MMD models under user Documents.
         self.mmd_dir = self.app_docs_dir / "mmd"
-        self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
+        self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD animation directory.
         self.pngtuber_dir = self.app_docs_dir / "pngtuber"
         self.avatar_tools_dir = self.app_docs_dir / "avatar_tools"
         self.workshop_dir = self.app_docs_dir / "workshop"
@@ -184,10 +184,10 @@ class StorageRootsMixin:
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
         self.card_faces_dir = self.app_docs_dir / "card_faces"
-        # RLock 而不是 Lock：workshop 配置的「整段事务」（读→合并→写→建目录，见
-        # main_routers/workshop_router/config_files.py）要持着它再调 load_workshop_config，
-        # 而 load 自己在某些分支也拿这把锁 —— 不可重入就是自死锁。可重入只放宽同线程
-        # 再取，跨线程仍然严格串行，对既有用法没有任何削弱。
+        # Use RLock, not Lock: Workshop's complete read->merge->write->mkdir transaction (see
+        # main_routers/workshop_router/config_files.py) holds it while calling load_workshop_config,
+        # which acquires the same lock on some branches, causing self-deadlock without reentrancy. Reentrancy permits only same-thread
+        # reacquisition; cross-thread access remains strictly serialized without weakening existing guarantees.
         self._workshop_config_lock = threading.RLock()
 
         self._characters_cache: dict | None = None
@@ -312,12 +312,12 @@ class StorageRootsMixin:
         return str(self.committed_selected_root) in self.__class__._selected_root_unavailable_recovery_override_roots
 
     def _persist_selected_root_unavailable_recovery_state(self):
-        # 读—改—写整段进锁，而且读必须在锁内。
+        # Lock the entire read-modify-write sequence, including the read.
         #
-        # "跑在 __init__ 里所以是单线程"不成立：受限启动期 storage_location_router
-        # 会临时构造一个兜底 ConfigManager（get_runtime_config_manager(APP_NAME,
-        # migrate=False)），而那一刻变更路由的写序列已经在工作线程上跑了。拿锁外读到
-        # 的 pre-image 去存，会把它刚提交的 mode / current_root / 迁移字段整份盖掉。
+        # Being in __init__ does not imply single-threaded execution: during restricted startup, storage_location_router
+        # temporarily constructs a fallback ConfigManager (get_runtime_config_manager(APP_NAME,
+        # migrate=False)) while the mutation route already writes from a worker thread. Saving an
+        # unlocked preimage would overwrite its just-committed mode / current_root / migration fields wholesale.
         with root_state_transaction():
             state: dict = {}
             try:
@@ -325,7 +325,7 @@ class StorageRootsMixin:
                 if isinstance(loaded, dict):
                     state = loaded
             except Exception:
-                # 读不出来就按空状态重建恢复态——这条路径本来就是给"root 不可用"兜底的
+                # Rebuild recovery state from empty when unreadable; this path exists precisely to handle unavailable roots.
                 state = {}
             self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
@@ -577,15 +577,15 @@ class StorageRootsMixin:
         wrong locations due to IDE / external cwd.
         """
         if getattr(sys, 'frozen', False):
-            # 如果是打包后的exe（PyInstaller）
+            # Packaged executable (PyInstaller).
             if hasattr(sys, '_MEIPASS'):
-                # 单文件模式：使用临时解压目录
+                # Single-file mode: use the temporary extraction directory.
                 return Path(sys._MEIPASS)
             else:
-                # 多文件模式：使用 exe 同目录
+                # Directory mode: use the executable's directory.
                 return Path(sys.executable).parent
         else:
-            # 开发模式：固定使用仓库根目录
+            # Development mode: fix the repository root.
             # Two levels up from this file (utils/config_manager/storage_roots.py);
             # the former monolith computed one level up from utils/config_manager.py.
             return Path(__file__).resolve().parents[2]
@@ -606,22 +606,22 @@ class StorageRootsMixin:
     def _ensure_app_docs_directory(self):
         """Ensure the app documents directory exists (the N.E.K.O directory itself)"""
         try:
-            # 先确保父目录（docs_dir）存在
+            # Ensure the parent docs_dir exists first.
             if not self.docs_dir.exists():
                 print(f"Warning: Documents directory does not exist: {self.docs_dir}", file=sys.stderr)
                 print("Warning: Attempting to create documents directory...", file=sys.stderr)
                 try:
-                    # 尝试创建父目录（可能需要创建多级）
+                    # Try creating the parent directory, including intermediate levels if needed.
                     dirs_to_create = []
                     current = self.docs_dir
                     while current and not current.exists():
                         dirs_to_create.append(current)
                         current = current.parent
-                        # 防止无限循环，到达根目录就停止
+                        # Prevent infinite loops by stopping at the filesystem root.
                         if current == current.parent:
                             break
                     
-                    # 从最顶层开始创建目录
+                    # Create directories from the top down.
                     for dir_path in reversed(dirs_to_create):
                         if not dir_path.exists():
                             print(f"Creating directory: {dir_path}", file=sys.stderr)
@@ -630,7 +630,7 @@ class StorageRootsMixin:
                     print(f"Warning: Failed to create documents directory: {e2}", file=sys.stderr)
                     return False
             
-            # 创建应用目录
+            # Create the application directory.
             if not self.app_docs_dir.exists():
                 print(f"Creating app directory: {self.app_docs_dir}", file=sys.stderr)
                 self.app_docs_dir.mkdir(exist_ok=True)
@@ -651,7 +651,7 @@ class StorageRootsMixin:
     def ensure_config_directory(self):
         """Ensure the config directory under Documents exists"""
         try:
-            # 先确保app_docs_dir存在
+            # Ensure app_docs_dir exists first.
             if not self._ensure_app_docs_directory():
                 return False
             
@@ -664,7 +664,7 @@ class StorageRootsMixin:
     def ensure_memory_directory(self):
         """Ensure the memory directory under Documents exists"""
         try:
-            # 先确保app_docs_dir存在
+            # Ensure app_docs_dir exists first.
             if not self._ensure_app_docs_directory():
                 return False
             
@@ -689,7 +689,7 @@ class StorageRootsMixin:
     def ensure_live2d_directory(self):
         """Ensure the live2d directory under Documents exists"""
         try:
-            # 先确保app_docs_dir存在
+            # Ensure app_docs_dir exists first.
             if not self._ensure_app_docs_directory():
                 return False
 
@@ -753,12 +753,12 @@ class StorageRootsMixin:
     def ensure_vrm_directory(self):
         """Ensure the vrm directory and its animation subdirectory exist under the user documents directory"""
         try:
-            # 先确保app_docs_dir存在
+            # Ensure app_docs_dir exists first.
             if not self._ensure_app_docs_directory():
                 return False
-            # 创建vrm目录
+            # Create the vrm directory.
             self.vrm_dir.mkdir(parents=True, exist_ok=True)
-            # 创建animation子目录
+            # Create the animation subdirectory.
             self.vrm_animation_dir.mkdir(parents=True, exist_ok=True)
             return True
         except Exception as e:
@@ -802,7 +802,7 @@ class StorageRootsMixin:
     def ensure_chara_directory(self):
         """Ensure the character_cards directory under Documents exists"""
         try:
-            # 先确保app_docs_dir存在
+            # Ensure app_docs_dir exists first.
             if not self._ensure_app_docs_directory():
                 return False
             
@@ -1048,7 +1048,7 @@ class StorageRootsMixin:
 
     def save_root_state(self, data):
         """Save root_state."""
-        # 注意 load_root_state 故意不拿这把锁，理由见 utils/root_state_lock.py。
+        # load_root_state intentionally does not acquire this lock; see utils/root_state_lock.py.
         with root_state_transaction():
             if not self.ensure_local_state_directory():
                 self._raise_local_state_directory_error("saving root_state")
@@ -1182,17 +1182,17 @@ class StorageRootsMixin:
         Returns:
             Path: config file path
         """
-        # 首选：我的文档下的配置
+        # Prefer configuration under Documents.
         docs_config_path = self.config_dir / filename
         if docs_config_path.exists():
             return docs_config_path
         
-        # 备选：项目目录下的配置
+        # Fall back to configuration under the project directory.
         project_config_path = self.project_config_dir / filename
         if project_config_path.exists():
             return project_config_path
         
-        # 都不存在，返回我的文档路径（用于创建新文件）
+        # Neither exists: return the Documents path for creating a new file.
         return docs_config_path
 
     def get_runtime_config_path(self, filename):
@@ -1238,7 +1238,7 @@ class StorageRootsMixin:
 
             assert_cloudsave_writable(self, operation="save", target=filename)
 
-        # 确保目录存在
+        # Ensure the directory exists.
         self.ensure_config_directory()
         
         config_path = self.config_dir / filename
@@ -1283,17 +1283,17 @@ class StorageRootsMixin:
         Returns:
             Path: memory file path
         """
-        # 首选：我的文档下的记忆
+        # Prefer memory under Documents.
         docs_memory_path = self.memory_dir / filename
         if docs_memory_path.exists():
             return docs_memory_path
         
-        # 备选：项目目录下的记忆
+        # Fall back to memory under the project directory.
         project_memory_path = self.project_memory_dir / filename
         if project_memory_path.exists():
             return project_memory_path
         
-        # 都不存在，返回我的文档路径（用于创建新文件）
+        # Neither exists: return the Documents path for creating a new file.
         return docs_memory_path
     
     def get_config_info(self):

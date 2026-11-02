@@ -1,5 +1,5 @@
 """
-配置管理路由
+Configuration management routes
 """
 from __future__ import annotations
 

@@ -29,9 +29,17 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.server.routes import market_bridge as module
-from plugin.server.infrastructure import package_download as download_io
+from plugin.server.infrastructure import package_download as download_io, package_sources as sources
+from plugin.server.infrastructure import package_transfer as transfer
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.fixture(autouse=True)
+def fresh_package_client(tmp_path, monkeypatch):
+    """Each test patches httpx itself, so none may reuse another's pooled client."""
+    monkeypatch.setattr(download_io, "_shared_client", None)
+    monkeypatch.setattr(sources, "route_stats_path", lambda: tmp_path / "routes.json")
 
 
 def test_market_and_import_share_the_500_mib_package_limit():
@@ -158,7 +166,7 @@ async def test_download_failure_categories(isolated_download_root, monkeypatch, 
     async def fail(*_args, **_kwargs):
         raise errors[failure]
 
-    monkeypatch.setattr(module, "download_package_file", fail)
+    monkeypatch.setattr(module, "download_package", fail)
     with pytest.raises(module._DownloadAttemptError) as raised:
         await module._download_package_once(str(request.url), {})
     assert raised.value.code == code
@@ -243,7 +251,9 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
     httpx = load_httpx()
     client = httpx.AsyncClient
     direct = "https://github.com/example/demo/releases/download/v1/demo.neko-plugin"
-    proxy_base = next(base for source, base in module._GITHUB_PROXY_SOURCES if source != "github-direct")
+    proxy_id, proxy_base = next(
+        (source, base) for source, base in sources.GITHUB_DOWNLOAD_SOURCES if source != "github-direct"
+    )
     urls = []
 
     def respond(request):
@@ -254,7 +264,12 @@ async def test_raw_network_error_still_falls_back_to_direct_github(isolated_down
 
     transport = httpx.MockTransport(respond)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
-    path, source = await module._download_package(proxy_base + direct, {})
+    task = {"_download_route": module._DownloadRoute(
+        candidates=((proxy_id, proxy_base + direct),),
+        direct_fallback=True,
+        deadline=time.monotonic() + 60,
+    )}
+    path, source = await module._download_package(direct, task)
     assert urls == [proxy_base + direct, direct]
     assert source == direct
     assert path.read_bytes() == b"package"
@@ -275,16 +290,16 @@ async def test_file_close_failure_preserves_the_primary_exception(tmp_path, monk
     handle = File()
     monkeypatch.setattr(Path, "open", lambda *args, **kwargs: handle)
     with pytest.raises(type(failure)) as raised:
-        async with download_io._open_download_file(tmp_path / "package"):
+        async with download_io.open_download_file(tmp_path / "package"):
             raise failure
     assert raised.value is failure
     assert handle.closed
 
 
 class _PackageHandler(http.server.BaseHTTPRequestHandler):
-    """按 ``self.server.chunk`` 大小、``self.server.delay`` 间隔吐 ``self.server.payload``。"""
+    """Emit ``self.server.payload`` in ``self.server.chunk`` chunks every ``self.server.delay``."""
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib 命名
+    def do_GET(self) -> None:  # noqa: N802 - stdlib naming.
         payload: bytes = self.server.payload  # type: ignore[attr-defined]
         chunk: int = self.server.chunk  # type: ignore[attr-defined]
         delay: float = self.server.delay  # type: ignore[attr-defined]
@@ -300,14 +315,14 @@ class _PackageHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
                 sent += len(piece)
                 if delay:
-                    # 滴流式：每一片都及时返回，所以 httpx 的每阶段读超时永不触发。
+                    # Trickle delivery: every chunk arrives promptly, so httpx per-phase read timeout never fires.
                     import time as _time
 
                     _time.sleep(delay)
-        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 客户端提前断开
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - Client disconnected early.
             pass
 
-    def log_message(self, *args) -> None:  # 静音
+    def log_message(self, *args) -> None:  # Silence.
         pass
 
 
@@ -337,7 +352,7 @@ def http_server():
 
 @pytest.fixture
 def isolated_download_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """把 artifacts root 指到 tmp_path，别碰真实用户目录。"""
+    """Point artifacts root at tmp_path, leaving real user directories untouched."""
     monkeypatch.setattr(
         module,
         "PluginCliPathPolicy",
@@ -419,8 +434,8 @@ async def test_invalid_download_length_keeps_the_received_byte_limit(
 async def test_downloaded_bytes_are_exact_and_progress_is_reported(
     http_server, isolated_download_root
 ) -> None:
-    """攒批写不能改变落盘字节，也不能丢进度上报。"""
-    payload = bytes((i * 7 + 13) % 256 for i in range(3 * module._DOWNLOAD_FLUSH_BYTES))
+    """Batch writes must preserve persisted bytes and progress reporting."""
+    payload = bytes((i * 7 + 13) % 256 for i in range(3 * transfer.FLUSH_BYTES))
     srv = http_server(payload, chunk=65536)
     task: dict = {"progress": 0.0, "message": ""}
 
@@ -434,7 +449,7 @@ async def test_downloaded_bytes_are_exact_and_progress_is_reported(
         )
         assert task["downloaded_bytes"] == len(payload)
         assert task["total_bytes"] == len(payload)
-        # 0.1 + 1.0*0.6 = 0.7 是下满时的进度
+        # 0.1 + 1.0*0.6 = 0.7 progress when download completes.
         assert task["progress"] == pytest.approx(0.7, abs=1e-9)
         assert "正在下载" in task["message"]
     finally:
@@ -445,11 +460,11 @@ async def test_downloaded_bytes_are_exact_and_progress_is_reported(
 async def test_every_write_happens_off_the_event_loop(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """变异：把 ``await _flush_pending()`` 换回 ``handle.write(chunk)``。
+    """Mutation: replace ``await _flush_pending()`` with ``handle.write(chunk)``.
 
-    钉的是"写盘在别的线程上"，不是"下载能成功"——后者换回同步写也照样过。
+    Assert writes run on another thread, not merely download success, which synchronous writes also satisfy.
     """
-    payload = bytes(range(256)) * (3 * module._DOWNLOAD_FLUSH_BYTES // 256)
+    payload = bytes(range(256)) * (3 * transfer.FLUSH_BYTES // 256)
     srv = http_server(payload, chunk=65536)
 
     loop_thread = threading.current_thread().name
@@ -484,7 +499,7 @@ async def test_every_write_happens_off_the_event_loop(
 async def test_download_preserves_bytes_with_one_file_handle(
     http_server, isolated_download_root, monkeypatch,
 ):
-    payload = b"x" * (3 * module._DOWNLOAD_FLUSH_BYTES + 19)
+    payload = b"x" * (3 * transfer.FLUSH_BYTES + 19)
     srv = http_server(payload)
     handles = []
     open_threads = []
@@ -557,11 +572,11 @@ async def test_cancelled_file_open_is_closed_before_download_cleanup(
 async def test_a_drip_feed_download_hits_the_total_budget(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """变异：去掉 ``async with asyncio.timeout(_DOWNLOAD_TOTAL_TIMEOUT)``。
+    """Mutation: remove ``async with asyncio.timeout(_DOWNLOAD_TOTAL_TIMEOUT)``.
 
-    每片 50ms 返回 1 字节：httpx 的每阶段读超时（120s）永远不触发，只有总时长兜底
-    能停下来。载荷故意只有 64 字节 —— 去掉兜底后它会在 3.2s 内**正常下完**（于是
-    ``pytest.raises`` 失败），而不是把测试挂住几百秒。
+    One byte every 50ms never trips httpx per-phase read timeout (120s); only total timeout
+    stops it. Deliberately 64 bytes: removing fallback completes normally in 3.2s, failing
+    ``pytest.raises`` rather than hanging for hundreds of seconds.
     """
     srv = http_server(b"x" * 64, chunk=1, delay=0.05)
     monkeypatch.setattr(module, "_DOWNLOAD_TOTAL_TIMEOUT", 0.6)
@@ -580,10 +595,10 @@ async def test_a_drip_feed_download_hits_the_total_budget(
 async def test_total_timeout_is_not_confused_with_the_httpx_one(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """两个超时必须是两条独立的路：内建 TimeoutError 不是 httpx.TimeoutException。
+    """Timeouts need independent branches: builtin TimeoutError is not httpx.TimeoutException.
 
-    变异：删掉 ``except TimeoutError`` 分支 —— 那它会落到最后的 ``except Exception``
-    裸抛，既拿不到 GitHub 直连回退，也不是 ``_DownloadAttemptError``。
+    Mutation: remove ``except TimeoutError``; it reaches final ``except Exception``
+    bare raise, losing GitHub direct fallback and failing to become ``_DownloadAttemptError``.
     """
     assert not issubclass(load_httpx().TimeoutException, TimeoutError), (
         "前提变了：httpx 的超时类成了内建 TimeoutError 的子类，两条 except 会互相遮蔽"
@@ -596,7 +611,7 @@ async def test_total_timeout_is_not_confused_with_the_httpx_one(
     raised: BaseException | None = None
     try:
         await module._download_package_once(_url(srv), {"progress": 0.0})
-    except BaseException as exc:  # noqa: BLE001 - 要看清究竟是哪个类型
+    except BaseException as exc:  # noqa: BLE001 - Inspect the actual exception type.
         raised = exc
     assert isinstance(raised, module._DownloadAttemptError), (
         f"总时长超时没有被转成 _DownloadAttemptError，实际是 {type(raised).__name__}: {raised}"
@@ -607,7 +622,7 @@ async def test_total_timeout_is_not_confused_with_the_httpx_one(
 async def test_the_size_cap_is_still_enforced(
     http_server, isolated_download_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """攒批写不能把大小上限的检查推后到超过上限之后。"""
+    """Batch writes must check size caps before exceeding them, never afterward."""
     payload = b"z" * 4096
     srv = http_server(payload, chunk=512)
     monkeypatch.setattr(module, "_DOWNLOAD_MAX_BYTES", 1024)
@@ -658,15 +673,14 @@ async def test_slow_file_io_drains_without_blocking_the_loop(
         return real_open(path, mode, *args, **kwargs)
 
     class Response:
+        status_code = 200
+        url = "https://example.invalid/pkg"
         headers = {"content-length": str(1024 * 1024)}
 
         def raise_for_status(self):
             pass
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
+        async def aclose(self):
             pass
 
         async def aiter_bytes(self, chunk_size):
@@ -674,16 +688,15 @@ async def test_slow_file_io_drains_without_blocking_the_loop(
                 yield b"x" * chunk_size
 
     class Client:
+        is_closed = False
+
         def __init__(self, **_kwargs):
             pass
 
-        async def __aenter__(self):
-            return self
+        def build_request(self, *_args, **_kwargs):
+            return None
 
-        async def __aexit__(self, *_args):
-            pass
-
-        def stream(self, *_args):
+        async def send(self, _request, *, stream):
             return Response()
 
     real_cleanup = download_io.cleanup_download_file
@@ -739,7 +752,7 @@ async def test_filesystem_timeout_is_not_classified_as_download_deadline(
                 raise OSError(errno.ETIMEDOUT, "filesystem timed out")
         yield File()
 
-    monkeypatch.setattr(download_io, "_open_download_file", broken_file)
+    monkeypatch.setattr(transfer, "open_download_file", broken_file)
     srv = http_server(b"package")
     with pytest.raises(module._DownloadAttemptError) as excinfo:
         await module._download_package_once(_url(srv), {"progress": 0.0})

@@ -75,11 +75,11 @@ from .plugin_filter import (
 
 logger = get_module_logger(__name__, "Agent")
 _TIMEOUT_UNSET = object()
-# analyze 回合复用插件列表缓存的最长时间。变更信号（见
-# set_plugin_list_change_token）覆盖启停/重载/卸载与插件进程意外退出；TTL 兜底
-# 覆盖没有信号的变化（如 registry refresh 后 manifest 变更）。
+# Maximum plugin-list cache reuse across analyze turns. Change signals (see
+# set_plugin_list_change_token) cover start/stop/reload/uninstall and unexpected process exit; TTL
+# covers unsignaled changes such as manifests changed after registry refresh.
 _PLUGIN_LIST_CACHE_TTL_SECONDS = 30.0
-# 单独引用，便于测试注入确定性时钟。
+# Separate reference lets tests inject deterministic clocks.
 _monotonic = time.monotonic
 _PLUGIN_LIST_TOKEN_UNAVAILABLE = object()
 
@@ -193,7 +193,7 @@ class UnifiedChannelDecision:
     computer_use: Optional[Dict[str, Any]] = None
 
 
-# 优先级：qwenpaw > browser_use > computer_use
+# Priority: qwenpaw > browser_use > computer_use.
 _CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
 _CHANNEL_TO_METHOD = {
     "qwenpaw": "openclaw",
@@ -203,14 +203,14 @@ _CHANNEL_TO_METHOD = {
 
 
 
-# ── 含糊指代词表 ────────────────────────────────────────────────
-# 提到模块级是为了**可断言**：函数内的局部 tuple 测试拿不到，缺一侧字形只能
-# 靠人眼发现。（同 utils/music_crawlers.py 的路由词表、prompts_soccer 的
-# anger-cap 词表。）
-# ⚠️ 中文侧简繁并列。这张表撞的是用户实际打出来的字，繁简不同码位。
-# 表里原本只零散有「上一個 / 這個 / 那個」三条繁体，其余十四条只有简体
-# ——是「补了一半就停」而不是有意只覆盖简体。漏命中的后果是不拼上下文，
-# 派给 agent 的任务描述缺指代对象，agent 更可能问「你指哪个」或做错事。
+# -- Ambiguous-reference vocabulary --
+# Module scope enables assertions: tests cannot access function-local tuples, so missing script variants
+# would otherwise require visual detection, like utils/music_crawlers.py routing words and prompts_soccer's
+# anger-cap vocabulary.
+# Include Simplified and Traditional Chinese; actual user text uses distinct code points.
+# Only 上一個 / 這個 / 那個 previously had scattered Traditional forms; fourteen others were Simplified only,
+# incomplete coverage rather than deliberate restriction. Misses omit context,
+# leaving task descriptions without referents and increasing clarification questions or wrong actions.
 VAGUE_REFERENCE_MARKERS = (
     "这个", "這個", "那个", "那個", "一下",
     "继续", "繼續", "继续弄", "繼續弄", "处理一下", "處理一下",
@@ -243,13 +243,13 @@ class DirectTaskExecutor:
         # ChatOpenAI instance cache: keyed by (api_key, base_url, model, temperature, max_completion_tokens)
         self._cached_llms: dict[tuple, ChatOpenAI] = {}
         self._cached_llm_config_key: tuple = ()  # tracks (api_key, base_url, model) to detect config changes
-        self._cleanup_tasks: set = set()  # 持有关闭任务的强引用，防止 GC 回收
+        self._cleanup_tasks: set = set()  # Retain strong references to closing tasks so GC cannot collect them.
         # plugin_id -> (description_key, generated_short_description)
-        # description_key = full description 的 hash（见 _desc_key）：既精确反映完整
-        # description 的变化（截断只用于喂 LLM，不能当失效 key），又有界，避免超大
-        # description 撑爆内存/缓存文件。只有 LLM 生成的条目会落盘（见
-        # _persist_generated_short_descriptions）；manifest 自带 short_description
-        # 的插件每次加载都能免费重新 prime，无需持久化。
+        # description_key hashes the full description (see _desc_key), accurately reflecting all
+        # changes while bounding size. Truncation feeds only the LLM and must not determine invalidation;
+        # huge descriptions must not inflate memory/cache files. Persist only generated entries (see
+        # _persist_generated_short_descriptions); plugins shipping manifest short_description
+        # can reprime freely on each load without persistence.
         self._short_desc_cache_filename = "plugin_short_desc_cache.json"
         self._short_desc_cache: dict[str, tuple[str, str]] = self._load_short_desc_cache()
         # plugin ids currently being generated in a background prewarm task —
@@ -257,18 +257,18 @@ class DirectTaskExecutor:
         # generation tasks. The tasks set holds strong refs to prevent GC.
         self._short_desc_prewarm_inflight: set[str] = set()
         self._short_desc_prewarm_tasks: set = set()
-        # analyze 回合的插件列表缓存新鲜度：上次成功拉取的时间与变更信号值。
+        # Analyze-turn plugin-list cache freshness: last successful fetch time and change-token value.
         self._plugin_list_change_token: Optional[Callable[[], Any]] = None
         self._plugin_list_fetched_at: Optional[float] = None
         self._plugin_list_fetched_token: Any = None
-        # 刷新序号：/plugin/execute 不持 analyze_lock，并发刷新时先发起、后返回的
-        # 旧结果不得覆盖已发布的新结果。
+        # Refresh sequence: /plugin/execute does not hold analyze_lock; an earlier-started fetch returning late
+        # must not overwrite newer published results during concurrent refreshes.
         self._plugin_list_request_seq = 0
         self._plugin_list_published_seq = 0
         self._correction_memory_filename = "correction_memory.json"
         self._search_term_allowlist = {"id", "os", "db", "ui", "ux", "qa"}
-        # 白名单 + alias 归一化，防止任意字符串被写进 correction_memory.json
-        # 并跨会话注入到路由 system prompt 里。未命中一律归一为空串，由调用方丢弃。
+        # Whitelist and normalize aliases so arbitrary strings cannot enter correction_memory.json
+        # and cross-session routing system prompts. Normalize misses to empty for caller rejection.
         self._correction_tool_canonical = {
             "computer_use": "computer_use",
             "browser_use": "browser_use",
@@ -343,7 +343,7 @@ class DirectTaskExecutor:
             return token_fn()
         except Exception as e:
             logger.debug("[Agent] plugin list change token failed: %s", e)
-            return _PLUGIN_LIST_TOKEN_UNAVAILABLE  # 读不到信号 → 视为已变化，强制刷新
+            return _PLUGIN_LIST_TOKEN_UNAVAILABLE  # Unreadable change token means changed: force refresh.
 
     def _plugin_list_cache_is_fresh(self) -> bool:
         fetched_at = getattr(self, "_plugin_list_fetched_at", None)
@@ -492,9 +492,9 @@ class DirectTaskExecutor:
                     from config import PLUGIN_INPUT_DESC_MAX_TOKENS
                     from utils.tokenize import truncate_to_tokens
                     raw_desc = str(p.get("description", "") or "").strip()
-                    # Plugin manifest 的 description 字段无 cap，恶意/超大
-                    # plugin 可能塞 1MB 文本。先截到 PLUGIN_INPUT_DESC_MAX_TOKENS
-                    # 再送入 short_description 生成 prompt。
+                    # Plugin manifests have uncapped description fields; malicious/oversized plugins
+                    # may supply 1MB text. Limit to PLUGIN_INPUT_DESC_MAX_TOKENS
+                    # before constructing short-description generation prompts.
                     desc = truncate_to_tokens(raw_desc, PLUGIN_INPUT_DESC_MAX_TOKENS)
                     messages = [
                         {"role": "system", "content": "You are an agentic automation assessment agent, generate a concise plugin summary under 200 tokens in English."},
@@ -511,7 +511,7 @@ class DirectTaskExecutor:
                         self._short_desc_cache[pid] = (desc_key, text)
                         if isinstance(pid, str) and pid:
                             generated[pid] = (desc_key, text)
-                        # LLM 生成原文不写 logger
+                        # Never write raw LLM-generated text to logger.
                         logger.debug("[Agent] Generated short_description for %s (len=%d chars)", pid, len(text))
                         print(f"[Agent] short_description {pid}: {text[:80]}")
                 except Exception as e:
@@ -521,19 +521,19 @@ class DirectTaskExecutor:
             logger.warning("[Agent] short_description generation batch failed: %s", e)
         finally:
             self._short_desc_prewarm_inflight -= pids
-            # 把本批生成的（贵的）条目落盘，下次启动直接复用、不再现生成。
-            # 这里刻意保留同步落盘（不改 await asyncio.to_thread），两个原因：
-            # 1) _persist_generated_short_descriptions 内部是「读盘—合并—写盘」，
-            #    全程没有锁；今天靠「整段同步、不让出事件循环」才保证两批并发
-            #    prewarm 不互相覆盖（见该函数里 re-read 那行注释）。挪进线程后，
-            #    两批会各自在自己的 worker 线程里 load→merge→write 交错，先写的
-            #    那批条目会被后写的整份 payload 盖掉。
-            # 2) 这是 finally，而本协程绝大部分时间挂在 llm.ainvoke 上——事件循环
-            #    收尾时它正是会被 cancel 的 pending task。在取消路径的 finally 里
-            #    await，落盘可能被直接跳过，白白丢掉花了 LLM 调用生成的条目。
-            # 代价可控：每批 prewarm 只写一次小 JSON，发生在插件加载期，不在
-            # analyze 热路径上。
-            self._persist_generated_short_descriptions(generated)  # noqa: ASYNC_BLOCK — 无锁读-改-写 + 取消路径 finally，加 await 会引入互相覆盖/漏落盘
+            # Persist this expensive generated batch for direct reuse on next startup.
+            # Intentionally keep persistence synchronous rather than await asyncio.to_thread, for two reasons:
+            # 1. _persist_generated_short_descriptions performs unlocked disk read-merge-write.
+            #    Only uninterrupted synchronous execution prevents concurrent prewarm
+            #    batches overwriting each other (see its reread comment). Moving to threads
+            #    lets their worker load/merge/write sequences interleave, and the later full
+            #    payload overwrites entries written by the earlier batch.
+            # 2. This is finally, and the coroutine spends most time awaiting llm.ainvoke,
+            #    making it a pending task cancelled during loop shutdown. Awaiting inside cancellation's
+            #    finally may skip persistence entirely, wasting entries generated through paid LLM calls.
+            # Cost is bounded: one small JSON write per prewarm batch during plugin loading,
+            # outside the analyze hot path.
+            self._persist_generated_short_descriptions(generated)  # noqa: ASYNC_BLOCK - Unlocked read-modify-write in cancellation finally; awaiting risks lost updates / skipped persistence.
 
     def _next_plugin_list_request_seq(self) -> int:
         seq = getattr(self, "_plugin_list_request_seq", 0) + 1
@@ -582,7 +582,7 @@ class DirectTaskExecutor:
         # try external provider first (e.g., injected by agent_server)
         if self._external_plugin_provider is not None:
             try:
-                # 拉取前读信号：拉取期间发生的变更会让下一轮再刷新一次。
+                # Read change tokens before fetch so changes during fetch trigger another refresh next round.
                 token_before = self._read_plugin_list_change_token()
                 request_seq = self._next_plugin_list_request_seq()
                 plugins = await self._external_plugin_provider(force_refresh)
@@ -994,8 +994,8 @@ class DirectTaskExecutor:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
-        # 走统一原子写（tmp + fsync + os.replace）：补齐此前缺的 fsync，断电不留 0
-        # 字节文件；mkstemp 的 tmp 天生 0o600，不经过 umask 决定的可读窗口。
+        # Use shared atomic writes (tmp + fsync + os.replace), adding previously missing fsync so power loss cannot leave
+        # zero-byte files. mkstemp starts at 0o600, avoiding a readable interval determined by umask.
         atomic_write_json(path, data, ensure_ascii=False, indent=2)
         try:
             os.chmod(path, 0o600)
@@ -1068,7 +1068,7 @@ class DirectTaskExecutor:
                 os.chmod(path.parent, 0o700)
             except OSError:
                 pass
-            # 统一原子写：tmp + fsync + os.replace，崩溃只丢 .tmp 不破坏原文件。
+            # Shared atomic write: tmp + fsync + os.replace; crashes lose only .tmp, preserving the original.
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             try:
                 os.chmod(path, 0o600)
@@ -1254,7 +1254,7 @@ class DirectTaskExecutor:
         the most suitable channel. If the LLM outputs multiple can_execute=true, the caller
         picks by priority.
         """
-        # 动态组装渠道描述 ──────────────────────────────────
+        # -- Dynamically construct channel descriptions --
         channel_descs: List[str] = []
         available_keys: List[str] = []
 
@@ -1312,7 +1312,7 @@ class DirectTaskExecutor:
                 response = await llm.ainvoke(messages)
                 text = (response.content or "").strip()
 
-                # LLM raw response 不写 logger
+                # Never write raw LLM responses to logger.
                 logger.debug("[UnifiedAssessment] Raw response (len=%d chars)", len(text))
                 print(f"[UnifiedAssessment] Raw response: {text[:500]}")
 
@@ -1441,9 +1441,9 @@ class DirectTaskExecutor:
                                                 if isinstance(enum_values, list) and enum_values:
                                                     shown = [str(v) for v in enum_values[:12]]
                                                     inner = "|".join(shown)
-                                                    # 截断时把 "..." 放进 [] 内，并附上剩余数量。
-                                                    # 让 LLM 明确知道 "还有 N 个未列出的合法值"，
-                                                    # 而不是把可见 12 个误当成完整白名单。
+                                                    # When truncating, put "..." inside [] and append the remaining count,
+                                                    # telling the LLM explicitly that N legal values remain unlisted,
+                                                    # rather than treating the twelve visible values as the complete whitelist.
                                                     if len(enum_values) > 12:
                                                         enum_hint = (
                                                             f" enum=[{inner}|... +{len(enum_values) - 12} more]"
@@ -1472,11 +1472,11 @@ class DirectTaskExecutor:
             pass
         return lines
 
-    # Stage-1 触发阈值。Stage 1 削减 stage 2 LLM prompt 长度的代价是 BM25
-    # (~1 ms) 和 LLM coarse-screen（emotion tier，几百 ms）。两级分流：
-    #   plugins_desc ≤ _STAGE1_TRIGGER_TOKENS → 完全跳过 stage 1
-    #   plugins_desc >  _STAGE1_TRIGGER_TOKENS → BM25 与 LLM coarse-screen 用
-    #     asyncio.gather 并行；关键路径 ≈ max(BM25, LLM) ≈ LLM 时长。
+    # Stage-1 trigger threshold. Reducing Stage-2 prompts costs BM25
+    # (~1ms) and LLM coarse screening (emotion tier, hundreds of milliseconds). Two branches:
+    #   plugins_desc <= _STAGE1_TRIGGER_TOKENS: skip Stage 1 entirely.
+    #   plugins_desc > _STAGE1_TRIGGER_TOKENS: run BM25 and LLM coarse screening
+    #     concurrently with asyncio.gather; critical path ~= max(BM25,LLM) ~= LLM duration.
     _STAGE1_TRIGGER_TOKENS = AGENT_PLUGIN_DESC_BM25_THRESHOLD
 
     async def _stage1_llm_coarse_screen(
@@ -1489,7 +1489,7 @@ class DirectTaskExecutor:
             pid = p.get("id", "unknown") if isinstance(p, dict) else "unknown"
             short = (p.get("short_description") or p.get("description", "")) if isinstance(p, dict) else ""
             if count_tokens(short) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
-                # 给 "..." 预留 token 空间，保证最终长度 ≤ 200
+                # Reserve tokens for "...", keeping final length <=200.
                 short = truncate_to_tokens(short, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS - count_tokens("...")) + "..."
             summaries.append(f"- {pid}: {short}")
         plugin_summaries = "\n".join(summaries)
@@ -1500,9 +1500,9 @@ class DirectTaskExecutor:
         )
 
         try:
-            # 走 emotion tier（qwen-flash 等 latency-sensitive 档），粗筛只要
-            # 快、JSON list 输出准确即可；BM25 + keyword hits 兜底，coarse-
-            # screen 漏一两个候选不会让最终决策崩。
+            # Use emotion-tier latency-sensitive models such as qwen-flash; coarse screening needs
+            # speed and accurate JSON lists. BM25 / keyword hits provide fallback, so missing
+            # one or two coarse candidates cannot ruin the final decision.
             llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_COARSE_MAX_TOKENS, tier="emotion")
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -1528,7 +1528,7 @@ class DirectTaskExecutor:
         - Stage 1 + 2 (plugins_desc > AGENT_PLUGIN_DESC_BM25_THRESHOLD tokens):
           BM25 + LLM coarse screen + keyword -> filtered candidates -> Stage 2
         """
-        # 如果没有插件，快速返回
+        # Return quickly when no plugins exist.
         try:
             if not plugins:
                 return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="No plugins")
@@ -1585,8 +1585,8 @@ class DirectTaskExecutor:
                 keyword_hit_ids.append(pid)
 
         # ── Two-stage decision ──────────────────────────────────
-        # plugins_desc ≤ trigger 完全跳过；超阈值则 BM25 与 LLM coarse-screen
-        # （emotion tier，latency-sensitive）asyncio.gather 并行执行。
+        # Skip entirely below trigger; otherwise run BM25 and latency-sensitive emotion-tier LLM
+        # coarse screening concurrently through asyncio.gather.
         from utils.tokenize import count_tokens
         plugins_desc_tokens = count_tokens(plugins_desc)
         plugin_count = len(plugin_list)
@@ -1643,7 +1643,7 @@ class DirectTaskExecutor:
         # Annotate keyword-hit plugins
         plugins_desc = annotate_keyword_hits(plugins_desc, keyword_hit_ids)
 
-        # plugin descriptions 可能含用户安装的插件配置文本（含 prompt 模板），不写 logger
+        # Plugin descriptions may include installed-plugin configuration and prompt templates; never write to logger.
         logger.debug(f"[UserPlugin] passing plugin descriptions (len={len(plugins_desc)})")
         print(f"[UserPlugin] plugin descriptions: {plugins_desc[:1000]}")
 
@@ -1677,14 +1677,14 @@ class DirectTaskExecutor:
                     from utils.instrument import counter as _instr_counter
                     _instr_counter("plugin_assess_stage2")
                 except Exception:
-                    # 埋点失败静默，绝不能影响插件评估主路径。
+                    # Telemetry failures are silent and must never affect plugin evaluation.
                     pass
                 # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
                 try:
                     prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
                 except Exception:
                     prompt_dump = "(failed to build prompt dump)"
-                # prompt 含用户输入 + LLM 响应原文，不写 logger
+                # Prompt includes raw user input and LLM responses; never write to logger.
                 logger.debug(f"[UserPlugin Assessment] prompt (truncated, len={len(prompt_dump)})")
                 print(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
                 _raw_repr = repr(raw_text) if raw_text is not None else "None"
@@ -1705,20 +1705,20 @@ class DirectTaskExecutor:
                 # Remove trailing commas before closing braces/brackets
                 # Fix trailing commas in objects and arrays
                 text = re.sub(r',(\s*[}\]])', r'\1', text)
-                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
-                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
+                # NOTE: Perform minimal JSON repairs only; comment stripping may damage string contents.
+                # Never strip comments with regex, which corrupts JSON string content such as http:// or /*...*/.
                 
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    # raw_text 含 LLM 原文，不写 logger
+                    # raw_text contains raw LLM output; never write to logger.
                     _raw_dump = repr(raw_text) if raw_text is not None else "None"
                     logger.debug(
                         "[UserPlugin Assessment] JSON parse error; raw_text len=%d",
                         len(_raw_dump),
                     )
                     print(f"[UserPlugin Assessment] JSON parse error; raw_text (truncated): {_raw_dump[:2000]}")
-                    # ERROR 级别只记录错误信息，不包含敏感内容
+                    # ERROR logging includes error metadata only, without sensitive content.
                     logger.exception("[UserPlugin Assessment] JSON parse error")
                     # Try to extract JSON from the text if it's embedded in other text
                     try:
@@ -1792,7 +1792,7 @@ class DirectTaskExecutor:
                         from utils.instrument import counter as _instr_counter
                         _instr_counter("plugin_assess_stage2_actionable")
                     except Exception:
-                        # 埋点失败静默，绝不能影响插件评估主路径。
+                        # Telemetry failures are silent and must never affect plugin evaluation.
                         pass
                     correction_hint = None
                     visible_entries = valid_entries_map.get(d_pid)
@@ -1902,7 +1902,7 @@ class DirectTaskExecutor:
                             result="success" if _retry_ok else "fail",
                         )
                     except Exception:
-                        # 埋点失败静默，绝不能影响插件评估主路径。
+                        # Telemetry failures are silent and must never affect plugin evaluation.
                         pass
 
                 return UserPluginDecision(
@@ -2054,9 +2054,9 @@ class DirectTaskExecutor:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
 
-        # 格式化对话。主动搭话轮把 LATEST_USER_REQUEST 设为猫娘自己最近这句主动
-        # 台词（而非上一轮旧用户请求），让 unified / plugin 两路评估都对着主动意图
-        # 跑——两者都从 conversation 的 LATEST_USER_REQUEST 取意图。
+        # Format conversation. On proactive turns, set LATEST_USER_REQUEST to the catgirl's latest proactive
+        # line, not the previous user request, so unified and plugin assessment both evaluate proactive intent;
+        # both read intent from conversation's LATEST_USER_REQUEST.
         conversation = self._format_messages(messages, proactive=proactive)
         if not conversation.strip():
             return None
@@ -2064,16 +2064,16 @@ class DirectTaskExecutor:
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
 
-        # ── 廉价前置闸 ───────────────────────────────────────
-        # external_intent 是 master-emotion 在 input-time 那次小模型调用产出的
-        # 「外部能力相关度」信号（显式对外操作 + 需要外部/实时信息两类合一），已在
-        # main 侧做过两件事：(1) 按本轮 user 文本做 freshness 匹配（陈旧/异轮读数 →
-        # None，绝不用上一轮信号刹本轮）；(2) 折进 complexity 取 max，所以高
-        # complexity 的硬推理轮（如多步推理请求）即便 external 低也不会被刹。
-        # 这里只要：自信地低 + 零 LLM 确定性 shortcut（magic word 规则 + 插件关键词）
-        # 也全静默，就跳过下面 1~2 次大模型评估。
-        # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
-        # 评估，绝不漏真任务。
+        # -- Cheap preliminary gate --
+        # external_intent is master-emotion's input-time small-model relevance signal for external capabilities,
+        # combining explicit external actions with requests needing external/realtime information. main already
+        # (1) matches freshness to this user text, mapping stale/other-turn readings to None,
+        # never stopping this turn from prior signals; and (2) takes max with complexity, so high-complexity
+        # reasoning such as multistep requests is never gated even with low external relevance.
+        # Skip the following one or two large-model evaluations only when confidently low and all deterministic
+        # zero-LLM shortcuts (magic-command rules / plugin keywords) also remain silent.
+        # Asymmetric gate: None (missing/stale signal) or any deterministic hit never blocks; at worst spend another
+        # evaluation, never miss a real task.
         if external_intent is not None and AGENT_EXTERNAL_GATE_ENABLED:
             if external_intent < AGENT_EXTERNAL_GATE_THRESHOLD and not self._deterministic_action_signal(
                 latest_user_request,
@@ -2086,7 +2086,7 @@ class DirectTaskExecutor:
                 )
                 return None
 
-        # ── 可用性检查 ──────────────────────────────────────
+        # -- Availability checks --
         cu_available = False
         if computer_use_enabled:
             try:
@@ -2108,19 +2108,19 @@ class DirectTaskExecutor:
         qwenpaw_available = False
         if openclaw_enabled and self.openclaw:
             try:
-                # openclaw.is_available 内部走 sync httpx，必须 offload
+                # openclaw.is_available uses synchronous httpx internally; offload it.
                 oc_status = await asyncio.to_thread(self.openclaw.is_available)
                 qwenpaw_available = oc_status.get("ready", False) if isinstance(oc_status, dict) else False
                 logger.info("[TaskExecutor] QwenPaw available: %s", qwenpaw_available)
             except Exception as e:
                 logger.warning("[TaskExecutor] Failed to check QwenPaw: %s", e)
 
-        # ── 魔法命令前置拦截（仅对 openclaw/qwenpaw）──────────────────────
+        # -- Early magic-command interception, openclaw/qwenpaw only. --
         if proactive:
-            # 主动搭话轮：意图是猫娘自己最近这句主动台词（已写进 latest_user_request /
-            # conversation 的 LATEST_USER_REQUEST），无 user 附件。绝不拿窗口里那条陈旧
-            # user 消息去 classify_magic_intent——否则旧 user 的魔法命令会被重放，或
-            # OpenClaw 派单成旧 user 文本而非主动意图。
+            # Proactive turns derive intent from the catgirl's latest proactive line already stored in latest_user_request /
+            # conversation LATEST_USER_REQUEST, without user attachments. Never classify the stale user message
+            # still in the window, or old magic commands replay and OpenClaw dispatches old user text
+            # rather than proactive intent.
             user_intent, user_attachments = latest_user_request, []
         else:
             user_intent, user_attachments = self._extract_latest_user_payload(messages)
@@ -2155,18 +2155,18 @@ class DirectTaskExecutor:
                     reason=f"magic_intent:{magic_intent.get('source', 'unknown')}",
                 )
 
-        # ── 并行执行：plugin 单独 + 统一渠道评估 ──────────────
+        # -- Parallel independent-plugin and unified-channel evaluation --
         parallel_tasks: List[tuple] = []   # [(key, coro), ...]
 
-        # Plugin 支路
+        # Plugin branch.
         plugins = []
         if user_plugin_enabled:
-            # 普通回合复用缓存；列表可能变化（生命周期信号 / TTL）时才重新拉取。
+            # Reuse cache in ordinary turns; refetch only when lifecycle signals / TTL indicate possible changes.
             plugins = await self.plugin_list_provider(force_refresh=False)
         if user_plugin_enabled and plugins:
             parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
 
-        # 统一渠道评估（qwenpaw / browser / computer）
+        # Unified channel evaluation: qwenpaw / browser / computer.
         has_any_unified = qwenpaw_available or browser_available or cu_available
         if has_any_unified:
             parallel_tasks.append(('unified', self._assess_unified_channels(
@@ -2206,8 +2206,8 @@ class DirectTaskExecutor:
             elif key == 'unified':
                 unified = r
 
-        # ── 决策逻辑 ──────────────────────────────────────
-        # 1. UserPlugin（plugin 单独判定，优先级最高）
+        # -- Decision logic --
+        # 1. UserPlugin: independent plugin decision, highest priority.
         if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
             if not up_decision.can_execute:
                 logger.info(
@@ -2215,7 +2215,7 @@ class DirectTaskExecutor:
                     up_decision.plugin_id, up_decision.entry_id, up_decision.reason,
                 )
                 return TaskResult(task_id=task_id, has_task=False, reason=up_decision.reason)
-            # task_description 是 LLM 决策出的任务描述，不写 logger
+            # task_description is an LLM-decided task description; never write to logger.
             logger.info("[TaskExecutor] Using UserPlugin (desc_len=%d), plugin_id=%s", len(up_decision.task_description or ""), up_decision.plugin_id)
             print(f"[TaskExecutor] Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
             return TaskResult(
@@ -2231,7 +2231,7 @@ class DirectTaskExecutor:
                 latest_user_request=latest_user_request,
             )
 
-        # 2. 统一渠道 — 按优先级 qwenpaw > browser_use > computer_use
+        # 2. Unified channels, priority qwenpaw > browser_use > computer_use.
         if isinstance(unified, UnifiedChannelDecision):
             for ch_key in _CHANNEL_PRIORITY:
                 ch_info = getattr(unified, ch_key, None)
@@ -2265,7 +2265,7 @@ class DirectTaskExecutor:
                     **result_context_kwargs,
                 )
 
-        # 3. 没有可执行的分支，汇总原因
+        # 3. No executable branch: summarize reasons.
         reason_parts = []
         if isinstance(up_decision, UserPluginDecision):
             reason_parts.append(f"UserPlugin: {up_decision.reason}")
@@ -2446,19 +2446,19 @@ class DirectTaskExecutor:
             else:
                 safe_args = {}
             try:
-                # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
+                # Build _ctx with lanlan_name and conversation_id.
                 ctx_obj = safe_args.get("_ctx")
                 if not isinstance(ctx_obj, dict):
                     ctx_obj = {}
                 if lanlan_name and "lanlan_name" not in ctx_obj:
                     ctx_obj["lanlan_name"] = lanlan_name
-                # 添加 conversation_id，用于关联触发事件和对话上下文
+                # Add conversation_id to connect trigger events and dialogue context.
                 if conversation_id:
                     ctx_obj["conversation_id"] = conversation_id
-                # 用户最新原话：framework 在 dispatch 时已经提取过，通过 _ctx 暴露给
-                # plugin。plugin 在内部 NL 决策时，可以拿原文兜底，避免 LLM 改写过的
-                # plugin_args 里 string 字段丢失语气/连词等关键信号。是否使用由 plugin
-                # 自己决定，setdefault 让 plugin 提前塞的同名值优先。
+                # Latest verbatim user utterance was already extracted at dispatch and exposed to plugins through _ctx.
+                # Internal natural-language decisions may use it as fallback when LLM-rewritten plugin_args string
+                # fields lose tone/conjunction signals. Plugins choose whether to use it;
+                # setdefault prioritizes any same-name value plugins supplied earlier.
                 if latest_user_request:
                     ctx_obj.setdefault("latest_user_request", latest_user_request)
                 entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)

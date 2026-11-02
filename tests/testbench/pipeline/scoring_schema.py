@@ -304,24 +304,24 @@ class ScoringSchema:
     def render_prompt(self, ctx: dict[str, Any] | None = None) -> str:
         """Interpolate ``prompt_template`` with the given context.
 
-        Unknown placeholders (not in ``ctx`` and not one of our precomputed
-        blocks) collapse to empty string rather than raising — prompts stay
-        robust across schema / context drift. If you need strict behavior
-        for testing, call ``validate_schema_dict`` first which rejects
-        templates referencing unresolvable names.
+        Unknown placeholders (not in ``ctx`` and not among our precomputed
+        blocks) collapse to an empty string instead of raising — prompts remain
+        robust across schema / context drift. For strict behavior
+        in tests, call ``validate_schema_dict`` first to reject
+        templates that reference unresolvable names.
 
-        Hardened for P21.3 F1 (prompt injection 最小化防御 pass):
+        Hardened for P21.3 F1 (prompt-injection minimization defense pass):
 
         * Attribute access (``{x.__class__}``) and index access (``{x[0]}``)
-          are disabled via :class:`_SafeFormatter`; user-authored templates
-          cannot traverse Python object internals on ctx values for info
-          leak purposes.
-        * ``ValueError`` from malformed templates (unmatched braces / bad
+          are disabled through :class:`_SafeFormatter`; user-authored templates
+          cannot traverse Python object internals in ctx values to leak
+          information.
+        * ``ValueError`` from malformed templates (unmatched braces / invalid
           format spec) is caught and re-raised as
           :class:`ScoringSchemaError` (``SchemaInvalid``) with an
           actionable ``path=prompt_template`` message, so a corrupt or
-          manually-edited-and-smuggled-past-validate schema surfaces as a
-          clean 422 in the judger API instead of crashing the judge
+          manually edited and smuggled past validation schema appears as a
+          clean 422 from the judger API instead of crashing the judge
           worker with a raw stack trace.
         """
         ctx = dict(ctx or {})
@@ -702,7 +702,7 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
                 if total_w <= 0:
                     add("dimensions", "\u6240\u6709\u7ef4\u5ea6\u7684 weight \u603b\u548c\u5fc5\u987b > 0.")
             except (TypeError, ValueError, OverflowError):
-                pass  # 已在上面逐条报过
+                pass  # Already reported individually above
 
     penalty = raw.get("ai_ness_penalty")
     if penalty is not None:
@@ -750,10 +750,10 @@ def _collect_schema_errors(raw: Any) -> list[dict[str, str]]:
     if not isinstance(prompt, str) or not prompt.strip():
         add("prompt_template", "prompt_template \u5fc5\u987b\u662f\u975e\u7a7a\u5b57\u7b26\u4e32.")
     else:
-        # 兜底: 检测未闭合 { / } 之类的低级语法错 (format_map 对单花括号会抛).
+        # Fallback: detect basic syntax errors such as unmatched { / } (format_map raises on a single brace).
         try:
             ScoringSchema._probe_format(prompt)
-        except ValueError as exc:  # 来自 str.Formatter
+        except ValueError as exc:  # From str.Formatter
             add("prompt_template", f"prompt_template \u683c\u5f0f\u975e\u6cd5: {exc}")
 
     for field_name in ("pass_rule", "verdict_rule", "raw_score_formula", "normalize_formula"):

@@ -1,14 +1,14 @@
 """
-插件日志服务
+Plugin log service.
 
-提供插件日志和服务器日志的读取和查询功能。
-支持 WebSocket 实时推送日志更新。
+Reads and queries plugin and server logs.
+Supports live WebSocket log updates.
 
-⚠ 历史教训：本模块过去用 `BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent / "log"`
-推测插件日志路径，AppImage 打包后 plugin/ 在只读 squashfs 下直接崩。
-现在统一通过 utils.logger_config.RobustLoggerConfig(service_name=...)
-读取真实落盘目录（Documents/N.E.K.O/logs/），不再做相对路径推算。
-谁再加 loguru / cwd-based fallback —— 按维护者口径就把谁杀了。
+Historical lesson: this module inferred log paths from BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent / \"log\",
+crashing with AppImage's read-only squashfs plugin/ package.
+Now obtain actual Documents/N.E.K.O/logs/ paths through
+utils.logger_config.RobustLoggerConfig(service_name=...), never relative-path inference.
+The maintainer emphatically forbids adding loguru / cwd-based fallback again.
 """
 import re
 import asyncio
@@ -27,7 +27,7 @@ logger = get_logger("server.logs")
 
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
 
-# 服务器日志的特殊 ID
+# Special server-log ID.
 SERVER_LOG_ID = "_server"
 
 
@@ -56,26 +56,26 @@ def _parse_log_time(value: object) -> datetime | None:
 
 def _validate_plugin_id(plugin_id: str) -> None:
     """
-    验证 plugin_id 是否安全（防止路径遍历攻击）
+    Validate safe plugin_id against path traversal.
     
     Args:
-        plugin_id: 插件ID
+        plugin_id: Plugin ID.
     
     Raises:
-        HTTPException: 如果 plugin_id 不安全
+        HTTPException: Unsafe plugin_id.
     """
-    # 服务器日志ID是特殊的，允许通过
+    # Permit the special server-log ID.
     if plugin_id == SERVER_LOG_ID:
         return
     
-    # 验证 plugin_id 只包含安全字符（防止路径遍历攻击）
+    # Validate plugin_id contains safe characters only, preventing traversal.
     if not re.match(r'^[a-zA-Z0-9_-]+$', plugin_id):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid plugin_id: '{plugin_id}'. Only alphanumeric characters, underscores, and hyphens are allowed."
         )
     
-    # 额外检查：确保不包含路径遍历符号
+    # Also reject path-traversal symbols.
     if '..' in plugin_id or '/' in plugin_id or '\\' in plugin_id:
         raise HTTPException(
             status_code=400,
@@ -84,14 +84,14 @@ def _validate_plugin_id(plugin_id: str) -> None:
 
 
 def _resolve_robust_log_dir(service_name: str, log_subdir: str | None = None) -> Path:
-    """通过本体 RobustLoggerConfig 拿落盘目录。
+    """Get persisted log directories from the host's RobustLoggerConfig.
 
-    AppImage 打包后 plugin 包在只读 squashfs 下，禁止用 cwd / __file__ 推
-    日志路径。RobustLoggerConfig 会按 5 级回退（Documents → AppData → home
-    → temp）选择可写目录。
+    AppImage puts plugin packages on read-only squashfs; never derive paths from cwd / __file__.
+    RobustLoggerConfig chooses writable directories through five fallback levels (Documents -> AppData -> home
+    -> temp).
 
-    ``log_subdir`` 与 writer 侧保持一致：plugin 子进程写入 ``logs/plugin/``，
-    server 主进程写入 ``logs/``。
+    Match writer log_subdir: plugin subprocesses write logs/plugin/,
+    while the main server writes logs/.
     """
     try:
         from utils.logger_config import RobustLoggerConfig
@@ -114,22 +114,22 @@ def _resolve_robust_log_dir(service_name: str, log_subdir: str | None = None) ->
 
 def get_plugin_log_dir(plugin_id: str) -> Path:
     """
-    获取插件的日志目录。
+    Get a plugin's log directory.
 
-    落盘分层（与 writer 侧 ``plugin/core/host.py`` / ``plugin/logging_config.py``
-    保持对偶）：
+    Storage layers remain symmetric with writers in plugin/core/host.py and plugin/logging_config.py:
+    Directory layout:
 
-      - 服务器日志：``<docs>/N.E.K.O/logs/N.E.K.O_PluginServer_YYYYMMDD.log``
-      - 插件日志：  ``<docs>/N.E.K.O/logs/plugin/N.E.K.O_Plugin_{id}_YYYYMMDD.log``
+      - Server logs: ``<docs>/N.E.K.O/logs/N.E.K.O_PluginServer_YYYYMMDD.log``.
+      - Plugin logs: ``<docs>/N.E.K.O/logs/plugin/N.E.K.O_Plugin_{id}_YYYYMMDD.log``.
 
     Args:
-        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
+        plugin_id: Plugin ID, or SERVER_LOG_ID for server logs.
 
     Returns:
-        日志目录路径
+        Log-directory path.
 
     Raises:
-        HTTPException: 如果 plugin_id 不安全（含路径遍历字符）
+        HTTPException: Unsafe plugin_id containing traversal characters.
     """
     _validate_plugin_id(plugin_id)
 
@@ -144,14 +144,14 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
     except HTTPException:
         raise
     except (
-        ImportError,  # _resolve_robust_log_dir 会先 import utils.logger_config，
-        ModuleNotFoundError,  #   失败时这两类异常会逃过原本的 _RUNTIME_ERRORS。
+        ImportError,  # _resolve_robust_log_dir first imports utils.logger_config;
+        ModuleNotFoundError,  # these two import exceptions previously escaped _RUNTIME_ERRORS.
         *_RUNTIME_ERRORS,
     ) as exc:
-        # 终极兜底：临时目录。绝不再走 plugin/ 包内目录（squashfs 只读）。
-        # 把 log_subdir 也接到兜底路径上，保持 reader/writer 对偶 —— 否则
-        # writer 正常写 ``.../logs/plugin/``、reader 走到这里去读
-        # ``.../neko/logs/``，前端直接读空。
+        # Final fallback: temporary directory, never plugin/ package paths on read-only squashfs.
+        # Include log_subdir in fallback paths too, preserving reader/writer symmetry; otherwise
+        # writers use .../logs/plugin/ while this reader reads
+        # .../neko/logs/, leaving the frontend empty.
         logger.warning(f"Failed to resolve robust log dir for {service_name}: {exc}; falling back to temp")
         import tempfile
         fallback_dir = Path(tempfile.gettempdir()) / "neko" / "logs"
@@ -162,31 +162,31 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
 
 
 def _is_error_log_file(name: str) -> bool:
-    """判断文件名是不是 RobustLoggerConfig 的 ``_error.log`` 系列。
+    """Determine whether a filename belongs to RobustLoggerConfig's _error.log family.
 
-    RobustLoggerConfig 会单独打开 ``N.E.K.O_<Service>_error.log``（以及
-    rotation 后的 ``_error.log.1`` / ``_error.log.2025-04-21`` 等）作为
-    "永久错误流" 文件。它的 mtime 可能晚于今天的常规日志（因为最近一次
-    错误就在刚才），导致 "找最新文件" 的逻辑误选错误日志，让 tail/WebSocket
-    feed 只剩下错误行——常规 INFO/DEBUG 整体消失。
+    RobustLoggerConfig opens separate N.E.K.O_<Service>_error.log files and rotated
+    _error.log.1 / _error.log.2025-04-21 variants as permanent error streams.
+    Their mtime may be newer than today's ordinary log because the latest error just occurred,
+    causing latest-file logic to choose error logs and leave tail/WebSocket feeds
+    with only errors, losing all ordinary INFO/DEBUG entries.
 
-    所有 "拿最新一条 log 文件" 的入口都要先用这个 helper 排掉错误文件。
-    listing 端点 (``get_plugin_log_files``) 不需要，那里要让用户看到所有文件。
+    Every latest-log-file entry point must exclude error files with this helper.
+    Listing get_plugin_log_files does not exclude them, allowing users to see every file.
     """
-    # ``_error.log`` 或者 rotation 后缀（_error.log.1 / _error.log.2025-04-21 …）
+    # _error.log or rotated suffixes (_error.log.1 / _error.log.2025-04-21 ...).
     return "_error.log" in name
 
 
 def _list_plugin_log_files_for_tail(log_dir: Path, plugin_id: str) -> list[Path]:
-    """按 mtime 倒序返回该 plugin 的常规日志文件（已剔除 ``_error.log`` 系列）。
+    """Return ordinary plugin logs in descending mtime order, excluding _error.log families.
 
-    给 ``get_plugin_logs`` / ``LogFileWatcher`` 共享，避免 6 处 glob 各写各的、
-    一个一个修。
+    Shared by get_plugin_logs / LogFileWatcher, replacing six independent globs
+    requiring separate fixes.
 
-    pattern 末尾带 ``*`` —— RotatingFileHandler 轮转后会写出
-    ``N.E.K.O_<Service>_YYYYMMDD.log.1`` / ``.log.2026-04-21`` 等后缀；如果只
-    匹配 ``*.log`` 会在目录里只剩下轮转文件时返回空，让 tail / WebSocket 误报
-    "无日志"。``_is_error_log_file`` 已经覆盖 ``_error.log.1`` 这类后缀。
+    End patterns with *: RotatingFileHandler creates suffixes such as
+    N.E.K.O_<Service>_YYYYMMDD.log.1 / .log.2026-04-21; matching
+    *.log only returns empty when only rotated files remain, falsely reporting no logs
+    to tail/WebSockets. _is_error_log_file already recognizes _error.log.1 variants.
     """
     if plugin_id == SERVER_LOG_ID:
         pattern = "N.E.K.O_PluginServer_*.log*"
@@ -200,13 +200,13 @@ def _list_plugin_log_files_for_tail(log_dir: Path, plugin_id: str) -> list[Path]
 
 def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
     """
-    获取插件的日志文件列表
+    Get the plugin's log-file list.
     
     Args:
-        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
+        plugin_id: Plugin ID, or SERVER_LOG_ID for server logs.
     
     Returns:
-        日志文件列表
+        List of log files.
     """
     log_dir = get_plugin_log_dir(plugin_id)
     
@@ -215,7 +215,7 @@ def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
     
     log_files = []
     
-    # 文件名由 RobustLoggerConfig 控制：N.E.K.O_{ServiceName}_YYYYMMDD.log
+    # RobustLoggerConfig controls names: N.E.K.O_{ServiceName}_YYYYMMDD.log.
     if plugin_id == SERVER_LOG_ID:
         pattern = "N.E.K.O_PluginServer_*.log*"
     else:
@@ -232,56 +232,56 @@ def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
         except OSError:
             continue
     
-    # 按修改时间排序（最新的在前）
+    # Sort by modification time, newest first.
     log_files.sort(key=lambda x: x["modified"], reverse=True)
     return log_files
 
 
 def list_plugin_log_files_for_export(log_dir: Path, plugin_id: str) -> list[Path]:
-    """返回该 plugin 自己的全部日志文件，用于打包导出。
+    """Return all files belonging to this plugin for packaged export.
 
-    与 ``_list_plugin_log_files_for_tail`` 的区别：导出要保留 ``_error.log``
-    系列，用户排障时错误流往往才是关键。pattern 末尾的 ``*`` 覆盖轮转后缀。
+    Unlike _list_plugin_log_files_for_tail, exports retain _error.log
+    families, often essential for diagnosis. Trailing * includes rotation suffixes.
 
-    注意：
-    1. plugin_id 必须先经过 sanitize，与实际写入日志时使用的 ID 一致
-    2. 文件名匹配精确到插件边界，防止 foo 匹配到 foo_bar 的日志
+    Notes:
+    1. Sanitize plugin_id first, matching actual log-writing IDs.
+    2. Match exact plugin boundaries so foo cannot include foo_bar logs.
     """
     from plugin.core.host import _sanitize_plugin_id
     import re
 
-    # 与日志写入时保持一致：先 sanitize plugin_id
+    # Sanitize plugin_id first, matching log writes.
     safe_id = _sanitize_plugin_id(plugin_id, max_len=64)
 
     if plugin_id == SERVER_LOG_ID:
         pattern = "N.E.K.O_PluginServer_*.log*"
     else:
-        # 精确匹配插件边界：_后必须是 8位日期(YYYYMMDD) 或 error.log
-        # 正确匹配： N.E.K.O_Plugin_foo_20260906.log, N.E.K.O_Plugin_foo_error.log.1
-        # 拒绝匹配： N.E.K.O_Plugin_foo_bar_20260906.log
+        # Match exact plugin boundaries: underscore must precede an eight-digit YYYYMMDD date or error.log.
+        # Match: N.E.K.O_Plugin_foo_20260906.log, N.E.K.O_Plugin_foo_error.log.1.
+        # Reject: N.E.K.O_Plugin_foo_bar_20260906.log.
         pattern = f"N.E.K.O_Plugin_{safe_id}_*.log*"
 
     candidates = [p for p in log_dir.glob(pattern) if p.is_file()]
 
-    # 二次过滤：确保 _ 后是日期或 error，防止前缀误匹配
+    # Secondary filtering requires a date/error after underscore, preventing prefix false matches.
     if plugin_id != SERVER_LOG_ID:
-        # 匹配 N.E.K.O_Plugin_{safe_id}_{YYYYMMDD}.log[.轮转后缀]
-        # 或     N.E.K.O_Plugin_{safe_id}_error.log[.轮转后缀]
-        # 轮转后缀：RotatingFileHandler 使用 .1, .2, ... 纯数字后缀
-        #           TimedRotatingFileHandler 使用 .YYYY-MM-DD 日期后缀
+        # Match N.E.K.O_Plugin_{safe_id}_{YYYYMMDD}.log[.rotation_suffix]
+        # or    N.E.K.O_Plugin_{safe_id}_error.log[.rotation_suffix].
+        # RotatingFileHandler uses numeric .1, .2, ... suffixes;
+        # TimedRotatingFileHandler uses .YYYY-MM-DD dates.
         expected_prefix = f"N.E.K.O_Plugin_{safe_id}_"
-        # YYYYMMDD.log 或 YYYYMMDD.log.1 或 YYYYMMDD.log.2026-04-21
+        # YYYYMMDD.log or YYYYMMDD.log.1 or YYYYMMDD.log.2026-04-21.
         date_pattern = re.compile(r"^\d{8}\.log(?:\.\d+|\.\d{4}-\d{2}-\d{2})?$")
-        # error.log 或 error.log.1 或 error.log.2026-04-21
+        # error.log or error.log.1 or error.log.2026-04-21.
         error_pattern = re.compile(r"^error\.log(?:\.\d+|\.\d{4}-\d{2}-\d{2})?$")
 
         filtered = []
         for p in candidates:
-            # 提取 prefix 之后的部分
+            # Extract the part after prefix.
             if not p.name.startswith(expected_prefix):
                 continue
             suffix = p.name[len(expected_prefix):]
-            # 必须是 YYYYMMDD.log* 或 error.log*
+            # Require YYYYMMDD.log* or error.log*.
             if date_pattern.match(suffix) or error_pattern.match(suffix):
                 filtered.append(p)
 
@@ -292,16 +292,16 @@ def list_plugin_log_files_for_export(log_dir: Path, plugin_id: str) -> list[Path
 
 def get_plugin_log_directory_path(plugin_id: str) -> str:
     """
-    获取插件日志目录的绝对路径
+    Get the absolute plugin-log directory.
 
     Args:
-        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
+        plugin_id: Plugin ID, or SERVER_LOG_ID for server logs.
 
     Returns:
-        日志目录的绝对路径字符串
+        Absolute log-directory path string.
 
     Raises:
-        HTTPException: 如果 plugin_id 不安全
+        HTTPException: Unsafe plugin_id.
     """
     log_dir = get_plugin_log_dir(plugin_id)
     return str(log_dir.resolve())
@@ -309,19 +309,19 @@ def get_plugin_log_directory_path(plugin_id: str) -> str:
 
 def parse_log_line(line: str) -> dict[str, object] | None:
     """
-    解析日志行
+    Parse a log line.
     
-    支持多种日志格式：
-    1. 插件日志格式: 2024-01-01 00:00:00 - [plugin.xxx] - INFO - file.py:123 - message
-    2. 服务器日志格式: 2024-01-01 00:00:00,123 - user_plugin_server - INFO - message
-    3. 标准日志格式: 2024-01-01 00:00:00 - INFO - message
-    4. 管道分隔格式: 2024-01-01 00:00:00 | INFO | module:function:123 | message
+    Support several formats:
+    1. Plugin: 2024-01-01 00:00:00 - [plugin.xxx] - INFO - file.py:123 - message.
+    2. Server: 2024-01-01 00:00:00,123 - user_plugin_server - INFO - message.
+    3. Standard: 2024-01-01 00:00:00 - INFO - message.
+    4. Pipes: 2024-01-01 00:00:00 | INFO | module:function:123 | message.
     """
     line = line.strip()
     if not line:
         return None
     
-    # 模式1: 插件日志格式 - 2024-01-01 00:00:00 - [plugin.xxx] - INFO - file.py:123 - message
+    # Pattern 1, plugin: 2024-01-01 00:00:00 - [plugin.xxx] - INFO - file.py:123 - message.
     pattern1 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) - \[([^\]]+)\] - (\w+) - ([^:]+):(\d+) - (.+)'
     match = re.match(pattern1, line)
     if match:
@@ -334,7 +334,7 @@ def parse_log_line(line: str) -> dict[str, object] | None:
             "message": message
         }
     
-    # 模式2: 服务器日志格式 - 2024-01-01 00:00:00,123 - user_plugin_server - INFO - message
+    # Pattern 2, server: 2024-01-01 00:00:00,123 - user_plugin_server - INFO - message.
     pattern2 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?) - ([^-]+) - (\w+) - (.+)'
     match = re.match(pattern2, line)
     if match:
@@ -347,7 +347,7 @@ def parse_log_line(line: str) -> dict[str, object] | None:
             "message": message.strip()
         }
     
-    # 模式3: 标准日志格式 - 2024-01-01 00:00:00 - INFO - message
+    # Pattern 3, standard: 2024-01-01 00:00:00 - INFO - message.
     pattern3 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?) - (\w+) - (.+)'
     match = re.match(pattern3, line)
     if match:
@@ -372,14 +372,14 @@ def parse_log_line(line: str) -> dict[str, object] | None:
             "message": message.strip(),
         }
     
-    # 模式4: 管道分隔格式 - 2024-01-01 00:00:00 | INFO | module:function:123 | message
-    # 支持格式: timestamp | level | location | message
-    # location 可以是 module:function:line 或 module:function 或 module
+    # Pattern 4, pipes: 2024-01-01 00:00:00 | INFO | module:function:123 | message.
+    # Supported shape: timestamp | level | location | message.
+    # location may be module:function:line, module:function, or module.
     pattern4 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(\w+)\s*\|\s*([^|]+)\s*\|\s*(.+)'
     match = re.match(pattern4, line)
     if match:
         timestamp, level, location, message = match.groups()
-        # 解析 location: 可能是 module:function:line 或 module:function 或 module
+        # Parse location as module:function:line, module:function, or module.
         location_parts = location.strip().split(':')
         if len(location_parts) >= 3:
             # module:function:line
@@ -402,8 +402,8 @@ def parse_log_line(line: str) -> dict[str, object] | None:
             "message": message.strip()
         }
 
-    # 模式5: loguru 管道分隔格式 - 2024-01-01 00:00:00 | INFO | [Proc-xxx] message
-    # 支持格式: timestamp | level | message
+    # Pattern 5, loguru pipes: 2024-01-01 00:00:00 | INFO | [Proc-xxx] message.
+    # Supported shape: timestamp | level | message.
     pattern5 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(\w+)\s*\|\s*(.+)'
     match = re.match(pattern5, line)
     if match:
@@ -411,7 +411,7 @@ def parse_log_line(line: str) -> dict[str, object] | None:
         message = message.strip()
 
         file = ""
-        # 尝试提取 loguru 前缀，如 [Proc-xxx] 或 [Plugin-xxx]
+        # Try extracting loguru prefixes such as [Proc-xxx] / [Plugin-xxx].
         prefix_match = re.match(r'^\[([^\]]+)\]\s*(.*)$', message)
         if prefix_match:
             file, message = prefix_match.groups()
@@ -453,7 +453,7 @@ def parse_log_line(line: str) -> dict[str, object] | None:
             "message": message,
         }
     
-    # 如果格式不匹配，返回原始行
+    # Unmatched formats return the original line.
     return {
         "timestamp": "",
         "level": "UNKNOWN",
@@ -465,26 +465,26 @@ def parse_log_line(line: str) -> dict[str, object] | None:
 
 def read_log_file_tail(log_file: Path, lines: int = 100) -> list[dict[str, object]]:
     """
-    读取日志文件的最后N行
+    Read the last N lines of a log file.
     
     Args:
-        log_file: 日志文件路径
-        lines: 要读取的行数
+        log_file: Log-file path.
+        lines: Number of lines to read.
     
     Returns:
-        解析后的日志条目列表
+        Parsed log-entry list.
     """
     if not log_file.exists():
         return []
     
     try:
         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            # 使用deque高效读取最后N行
+            # Efficiently read the last N lines with deque.
             tail_lines = deque(maxlen=lines)
             for line in f:
                 tail_lines.append(line)
             
-            # 解析日志行
+            # Parse log lines.
             parsed_logs = []
             for line in tail_lines:
                 log_entry = parse_log_line(line)
@@ -505,26 +505,26 @@ def filter_logs(
     search: str | None = None
 ) -> list[dict[str, object]]:
     """
-    过滤日志
+    Filter logs.
     
     Args:
-        logs: 日志列表
-        level: 日志级别过滤
-        start_time: 开始时间（ISO格式）
-        end_time: 结束时间（ISO格式）
-        search: 关键词搜索
+        logs: Log list.
+        level: Log-level filter.
+        start_time: Start time, ISO format.
+        end_time: End time, ISO format.
+        search: Keyword search.
     
     Returns:
-        过滤后的日志列表
+        Filtered log list.
     """
     filtered = logs
     
-    # 按级别过滤
+    # Filter by level.
     if level:
         level_upper = level.upper()
         filtered = [log for log in filtered if log.get("level") == level_upper]
     
-    # 按时间过滤
+    # Filter by time.
     if start_time or end_time:
         start_dt = _parse_log_time(start_time) if isinstance(start_time, str) else None
         end_dt = _parse_log_time(end_time) if isinstance(end_time, str) else None
@@ -541,7 +541,7 @@ def filter_logs(
                 time_filtered.append(log)
             filtered = time_filtered
     
-    # 关键词搜索
+    # Keyword search.
     if search:
         search_lower = search.lower()
         filtered = [
@@ -561,18 +561,18 @@ def get_plugin_logs(
     search: str | None = None
 ) -> dict[str, object]:
     """
-    获取插件日志或服务器日志
+    Get plugin or server logs.
     
     Args:
-        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
-        lines: 返回的行数
-        level: 日志级别过滤
-        start_time: 开始时间
-        end_time: 结束时间
-        search: 关键词搜索
+        plugin_id: Plugin ID, or SERVER_LOG_ID for server logs.
+        lines: Number of returned lines.
+        level: Log-level filter.
+        start_time: Start time.
+        end_time: End time.
+        search: Keyword search.
     
     Returns:
-        日志数据
+        Log data.
     """
     log_dir = get_plugin_log_dir(plugin_id)
     
@@ -584,7 +584,7 @@ def get_plugin_logs(
             "returned_lines": 0
         }
     
-    # 找到最新的常规日志文件（剔除 _error.log 系列，避免 tail 误读错误流）
+    # Find the latest ordinary log, excluding _error.log files so tail does not read only errors.
     try:
         log_files = _list_plugin_log_files_for_tail(log_dir, plugin_id)
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
@@ -608,7 +608,7 @@ def get_plugin_logs(
     
     latest_log = log_files[0]
     
-    # 读取日志
+    # Read logs.
     try:
         logs = read_log_file_tail(latest_log, lines)
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
@@ -621,7 +621,7 @@ def get_plugin_logs(
             "error": "Failed to read log file"
         }
     
-    # 过滤
+    # Filter.
     filtered_logs = filter_logs(logs, level, start_time, end_time, search)
     
     return {
@@ -633,38 +633,38 @@ def get_plugin_logs(
     }
 
 
-# ========== WebSocket 实时日志推送 ==========
+# ========== Live WebSocket log delivery ==========
 
-# 全局日志监控器字典：{plugin_id: LogFileWatcher}
+# Global log watchers: {plugin_id: LogFileWatcher}.
 _log_watchers: dict[str, "LogFileWatcher"] = {}
-# 保护 _log_watchers 的线程锁（用于异步环境下的并发访问）
+# Thread lock protecting _log_watchers during concurrent async access.
 _log_watchers_lock = threading.Lock()
 
 
 def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[list[dict[str, object]], int]:
     """
-    从指定位置读取日志文件的增量内容
+    Read incremental log content from a specified position.
     
     Args:
-        log_file: 日志文件路径
-        last_position: 上次读取的位置（字节偏移）
+        log_file: Log-file path.
+        last_position: Previous byte offset.
     
     Returns:
-        (新增的日志条目列表, 新的位置)
+        (New log-entry list, new position).
     """
     if not log_file.exists():
         return [], last_position
     
     try:
         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            # 移动到上次读取的位置
+            # Seek to the previous read position.
             f.seek(last_position)
             
-            # 读取新增内容
+            # Read appended content.
             new_lines = f.readlines()
             new_position = f.tell()
             
-            # 解析新增的日志行
+            # Parse appended log lines.
             new_logs = []
             for line in new_lines:
                 log_entry = parse_log_line(line)
@@ -678,7 +678,7 @@ def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[list[
 
 
 class LogFileWatcher:
-    """日志文件监控器，用于 WebSocket 实时推送"""
+    """Log-file watcher for live WebSocket delivery."""
     
     def __init__(self, plugin_id: str):
         self.plugin_id = plugin_id
@@ -689,19 +689,19 @@ class LogFileWatcher:
         self._running = False
     
     def add_client(self, websocket: WebSocket):
-        """添加 WebSocket 客户端"""
+        """Add a WebSocket client."""
         self.clients.add(websocket)
         if not self._running:
             self._start_watching()
     
     def remove_client(self, websocket: WebSocket):
-        """移除 WebSocket 客户端"""
+        """Remove a WebSocket client."""
         self.clients.discard(websocket)
         if not self.clients and self._running:
             self._stop_watching()
     
     def _start_watching(self):
-        """开始监控日志文件"""
+        """Start watching log files."""
         if self._running:
             return
         
@@ -709,42 +709,42 @@ class LogFileWatcher:
         self._watch_task = asyncio.create_task(self._watch_loop())
     
     def _stop_watching(self):
-        """停止监控日志文件"""
+        """Stop watching log files."""
         self._running = False
         if self._watch_task:
             self._watch_task.cancel()
             self._watch_task = None
     
     async def _watch_loop(self):
-        """监控循环：定期检查文件变化并推送新日志"""
+        """Watch loop: periodically inspect file changes and deliver new logs."""
         while self._running:
             try:
-                # 获取最新的日志文件（同样剔除 _error.log，避免 stream 只剩错误行）
+                # Get the latest log, excluding _error.log so streams do not contain errors only.
                 log_dir = get_plugin_log_dir(self.plugin_id)
                 log_files = _list_plugin_log_files_for_tail(log_dir, self.plugin_id)
 
                 if not log_files:
-                    await asyncio.sleep(1)  # 没有日志文件，等待
+                    await asyncio.sleep(1)  # No log files: wait.
                     continue
                 
                 latest_log = log_files[0]
                 
-                # 如果日志文件切换了，重置位置
+                # Reset position when the log file changes.
                 if self.current_log_file != latest_log:
                     self.current_log_file = latest_log
                     self.last_position = 0
                 
-                # 读取增量日志
+                # Read incremental logs.
                 new_logs, new_position = read_log_file_incremental(
                     latest_log, self.last_position
                 )
                 
                 if new_logs:
                     self.last_position = new_position
-                    # 推送新日志给所有客户端
+                    # Push new logs to all clients.
                     await self._broadcast_logs(new_logs)
                 
-                # 等待 0.5 秒后再次检查
+                # Wait 0.5 seconds before checking again.
                 await asyncio.sleep(0.5)
                 
             except asyncio.CancelledError:
@@ -754,14 +754,14 @@ class LogFileWatcher:
                 await asyncio.sleep(1)
     
     async def _broadcast_logs(self, logs: list[dict[str, object]]):
-        """广播日志给所有连接的客户端"""
+        """Broadcast logs to every connected client."""
         if not logs or not self.clients:
             return
         
         disconnected = []
         for client in list(self.clients):
             try:
-                # 检查连接状态
+                # Check connection state.
                 if hasattr(client, 'client_state'):
                     from starlette.websockets import WebSocketState
                     if client.client_state != WebSocketState.CONNECTED:
@@ -773,20 +773,20 @@ class LogFileWatcher:
                     "logs": logs
                 })
             except (WebSocketDisconnect, ConnectionError, RuntimeError) as e:
-                # 连接已断开或关闭，记录但不抛出异常
+                # Disconnected/closed: record without raising.
                 logger.debug(f"Failed to send logs to client (disconnected): {e}")
                 disconnected.append(client)
             except (ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
-                # 其他错误，记录并标记为断开
+                # Other errors: record and mark disconnected.
                 logger.debug(f"Failed to send logs to client: {e}")
                 disconnected.append(client)
         
-        # 移除断开的客户端
+        # Remove disconnected clients.
         for client in disconnected:
             self.clients.discard(client)
     
     async def send_initial_logs(self, websocket: WebSocket, lines: int = 100):
-        """发送初始日志（最后 N 行）"""
+        """Send initial logs, the last N lines."""
         try:
             result = get_plugin_logs(self.plugin_id, lines=lines)
             await websocket.send_json({
@@ -796,13 +796,13 @@ class LogFileWatcher:
                 "total_lines": result.get("total_lines", 0)
             })
             
-            # 记录当前日志文件和位置（剔除 _error.log，与 _watch_loop / get_plugin_logs 一致）
+            # Track current log file/position, excluding _error.log like _watch_loop / get_plugin_logs.
             log_dir = get_plugin_log_dir(self.plugin_id)
             log_files = _list_plugin_log_files_for_tail(log_dir, self.plugin_id)
 
             if log_files:
                 self.current_log_file = log_files[0]
-                # 获取文件当前大小作为起始位置
+                # Start at the current file size.
                 self.last_position = self.current_log_file.stat().st_size
         except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             logger.exception("Failed to send initial logs")
@@ -810,15 +810,15 @@ class LogFileWatcher:
 
 async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
     """
-    WebSocket 端点：实时推送日志流
+    WebSocket endpoint streaming logs live.
     
     Args:
-        websocket: WebSocket 连接
-        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
+        websocket: WebSocket connection.
+        plugin_id: Plugin ID, or SERVER_LOG_ID for server logs.
     """
     await websocket.accept()
     
-    # 获取或创建监控器（使用锁保护，避免并发访问问题）
+    # Get/create a watcher under lock to avoid concurrency races.
     with _log_watchers_lock:
         if plugin_id not in _log_watchers:
             _log_watchers[plugin_id] = LogFileWatcher(plugin_id)
@@ -827,39 +827,39 @@ async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
     watcher.add_client(websocket)
     
     try:
-        # 发送初始日志
+        # Send initial logs.
         await watcher.send_initial_logs(websocket, lines=100)
         
-        # 保持连接，等待客户端消息（可选）
+        # Keep the connection open, optionally awaiting client messages.
         while True:
             try:
-                # 接收客户端消息（如过滤条件变更等）
+                # Receive client messages such as filter changes.
                 _ = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                # 可以处理客户端消息，比如更新过滤条件
-                # 目前暂时忽略
+                # Could process client messages to update filters.
+                # Currently ignore them.
             except asyncio.TimeoutError:
-                # 发送心跳保持连接
+                # Send heartbeat keepalives.
                 try:
                     await websocket.send_json({"type": "ping"})
                 except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
-                    # 如果发送失败，连接可能已关闭，退出循环
+                    # Failed sends may mean closure; exit the loop.
                     break
             except WebSocketDisconnect:
                 break
             except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
-                # 其他异常，记录日志并退出
+                # Log other exceptions and exit.
                 logger.debug(f"WebSocket receive error for {plugin_id}: {e}")
                 break
     except WebSocketDisconnect:
         pass
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
-        # 记录错误但不抛出，确保 finally 块执行
+        # Record without raising so finally still runs.
         logger.debug(f"Error in log stream endpoint for {plugin_id}: {e}")
     finally:
-        # 确保清理客户端连接
+        # Ensure client-connection cleanup.
         try:
             watcher.remove_client(websocket)
-            # 如果没有客户端了，清理监控器（使用锁保护）
+            # With no clients left, clean up the watcher under lock.
             with _log_watchers_lock:
                 if not watcher.clients:
                     _log_watchers.pop(plugin_id, None)

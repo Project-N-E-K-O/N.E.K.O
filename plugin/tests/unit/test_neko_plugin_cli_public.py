@@ -173,7 +173,7 @@ def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -
         leaked = [name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo"))]
         assert leaked == []
         for plugin_id in plugin_ids:
-            # 探测真的跑成了：没有元数据的包同样不会带 .pyc，那样这条断言就是空转。
+            # Confirm the probe actually ran: packages without metadata also lack .pyc files, making this assertion vacuous otherwise.
             meta = archive.read(f"payload/plugins/{plugin_id}/plugin.meta.json").decode("utf-8")
             assert "from child from vendor" in meta
             assert f"payload/plugins/{plugin_id}/vendor/probedep/__init__.py" in names
@@ -398,8 +398,8 @@ def test_build_bundle_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Pat
 
 
 def test_plugin_builder_default_import_mode_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
-    # 直接用 PluginBuilder() 的调用方走普通导入，探测会往暂存目录写 __pycache__；
-    # 这些字节码同样不能进包。
+    # Direct PluginBuilder() callers use normal imports, so probing writes __pycache__ into staging;
+    # these bytecode files must also stay out of the package.
     plugin_dir = _make_importable_plugin_dir(tmp_path)
     package_path = tmp_path / "probe_plugin.neko-plugin"
 

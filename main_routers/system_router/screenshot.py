@@ -268,10 +268,10 @@ async def backend_screenshot(request: Request):
 
         shot = await asyncio.to_thread(_capture_rgb_screenshot)
 
-        # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
-        # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
+        # macOS black-screen detection only: pyautogui returns all-black images without Screen Recording permission.
+        # On Windows/Linux, all-black screenshots can be valid content and must not be blocked.
         if sys.platform == "darwin":
-            # 低分辨率采样：把图缩到 16×16 后用 PIL extrema 检测，避免全量 numpy 数组的内存开销
+            # Low-resolution sampling: resize to 16x16 and inspect PIL extrema, avoiding a full NumPy array's memory cost.
             try:
                 thumb = shot.resize((16, 16))
                 extrema = thumb.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
@@ -316,9 +316,9 @@ async def backend_interactive_screenshot(request: Request):
     if not _is_loopback_request(request):
         return _json_no_store_response({"success": False, "error": "only available from localhost"}, status_code=403)
 
-    # 用原始 header 是否存在来判断"这是不是浏览器请求"，而不是 _get_request_origin 的归一化结果。
-    # 后者会把 `Origin: null`（sandboxed iframe / file:// / data:）和无效 `Referer` 归一成空串，
-    # 让恶意页面可以通过 sandboxed iframe 故意送 `Origin: null` 来绕过 CSRF 校验。
+    # Detect browser requests from original header presence, not normalized _get_request_origin output.
+    # It normalizes `Origin: null` (sandboxed iframe / file:// / data:) and invalid Referer to empty strings,
+    # allowing malicious pages to bypass CSRF checks by deliberately sending Origin: null from sandboxed iframes.
     if request.headers.get("origin") is not None or request.headers.get("referer") is not None:
         validation_error = _validate_local_mutation_request(
             request,
@@ -383,9 +383,9 @@ async def backend_interactive_screenshot(request: Request):
         logger.warning("系统原生交互截图不可用: %s", e)
         return _json_no_store_response({"success": False, "error": str(e)}, status_code=501)
     except SystemExit as e:
-        # Nuitka 等场景下，缺失某些可选依赖会用 SystemExit 当 sentinel 抛出（继承 BaseException
-        # 而非 Exception）。如果不在这里截住，会逃出 asyncio worker thread → 拖死整个后端
-        # 进程，连带 Electron shell 一起崩。这里转成普通 500，让前端能继续走兜底链。
+        # In environments like Nuitka, missing optional dependencies can raise SystemExit as a sentinel (a BaseException,
+        # not Exception). Uncaught, it escapes an asyncio worker thread and crashes the whole backend
+        # and Electron shell. Convert it to an ordinary 500 so the frontend can continue its fallback chain.
         logger.error("系统原生交互截图 runner 抛 SystemExit: %s", e)
         return _json_no_store_response(
             {"success": False, "error": f"interactive screenshot runner aborted: {e}"},

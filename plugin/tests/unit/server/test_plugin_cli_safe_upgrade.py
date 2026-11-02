@@ -398,6 +398,84 @@ def _rewrite_package_manifest_id(package_path: Path, package_id: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("initially_pending", [False, True])
+@pytest.mark.parametrize("code_remains", [False, True])
+async def test_manifestless_rollback_restores_preferences_independently_of_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_runtime_overrides: dict,
+    initially_pending: bool,
+    code_remains: bool,
+) -> None:
+    """Existing pending approval must not prevent restoring a failed install's preference."""
+    from copy import deepcopy
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+    from plugin.server.infrastructure import runtime_overrides
+
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    target = plugins_root / "demo"
+    (target / "data").mkdir(parents=True)
+    sentinel = target / "data" / "user.txt"
+    sentinel.write_text("retained", encoding="utf-8")
+    initial = {"demo": {"enabled": False, "auto_start": True}, "unrelated": False}
+    _isolate_runtime_overrides.update(deepcopy(initial))
+    pending = {"demo"} if initially_pending else set()
+    cleared = []
+
+    def mark(plugin_id):
+        pending.add(plugin_id)
+        return True
+
+    def clear(plugin_id):
+        pending.discard(plugin_id)
+        cleared.append(plugin_id)
+        return True
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(service_module, "get_install_source_manager", lambda: _managed_manager())
+    monkeypatch.setattr(service_module, "is_autostart_approved", lambda plugin_id: plugin_id not in pending)
+    monkeypatch.setattr(service_module, "mark_autostart_pending", mark)
+    monkeypatch.setattr(service_module, "clear_autostart_pending", clear)
+
+    async def failed_replace(**_kwargs):
+        assert runtime_overrides.get_runtime_auto_start_override("demo") is False
+        if code_remains:
+            (target / "plugin.toml").write_text('[plugin]\nid="demo"\n', encoding="utf-8")
+        raise ReplacePluginError(stage="install", rollback_status="restored", cause=RuntimeError("synthetic failure"))
+
+    monkeypatch.setattr(replacement_transaction, "replace_plugin", failed_replace)
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    assert plan["manifestless_state"] is True
+    with pytest.raises(ServerDomainError) as exc_info:
+        # The operation lock is covered separately; keep this transaction isolated.
+        await PluginCliService.install.__wrapped__(
+            service, package=str(package_path), confirm_upgrade=True,
+            confirmation_token=str(plan["confirmation_token"]),
+        )
+    assert exc_info.value.code == "PLUGIN_UPGRADE_ROLLED_BACK"
+    expected = deepcopy(initial)
+    if code_remains:
+        expected["demo"]["auto_start"] = False
+    assert _isolate_runtime_overrides == expected
+    runtime_overrides.reset_cache_for_testing()
+    assert runtime_overrides.load_runtime_overrides() == expected
+    assert pending == ({"demo"} if initially_pending or code_remains else set())
+    assert cleared == ([] if initially_pending or code_remains else ["demo"])
+    assert sentinel.read_text(encoding="utf-8") == "retained"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("target_version", "expected_operation"),
     [
@@ -912,7 +990,7 @@ async def test_local_manual_takeover_reloads_ownership_inside_operation_lock(
 
 
 @pytest.mark.asyncio
-async def test_local_manual_takeover_rejects_unowned_existing_profile(
+async def test_local_manual_takeover_leaves_unowned_package_profile_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -942,10 +1020,20 @@ async def test_local_manual_takeover_rejects_unowned_existing_profile(
     )
     monkeypatch.setattr(service_module, "get_install_source_manager", lambda: manager)
 
-    plan = await PluginCliService().plan_install(package=str(package_path))
+    monkeypatch.setattr(
+        replacement_transaction, "_plugin_is_running", lambda _plugin_id: _async_false(),
+    )
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
 
-    assert plan["action"] == "blocked"
-    assert plan["reason"] == "manual_takeover_profile_target_exists"
+    assert plan["action"] == "upgrade"
+    assert plan["reason"] == "manual_takeover"
+    result = await service.install(
+        package=str(package_path), confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+    assert result["profile_dir"] is None
+    assert manager.entry.channel == "imported"
     assert sentinel.read_text(encoding="utf-8") == "belongs_to_user = true\n"
     assert manual_dir.is_dir()
 

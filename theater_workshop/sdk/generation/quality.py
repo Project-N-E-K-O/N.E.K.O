@@ -35,7 +35,7 @@ QUALITY_DIMENSIONS = {
 }
 QUALITY_PASS_SCORE = 75.0
 
-# 文学阶段保留作者边界、只关联已核对事实；写稿与节点修订仍使用完整的共享生成合同。
+# Literary review preserves author boundaries and links only verified facts; drafting/node revision still use the complete shared generation contract.
 _ASSESSMENT_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O 互动剧情质量评估编辑
 
 事实一致性已由上一阶段独立核对，fact_review 是完整事实报告，story_outline 是同一份作者稿。本轮只评文学质量：人物塑造、情节构思、主题、文笔、节奏和共鸣，不修改故事。
@@ -98,16 +98,16 @@ target_node_ids 和 repair_targets.node_id 只能从 allowed_target_node_ids 选
 各维度issues中每个问题的结构（没有独立问题时用空数组，不凑数）：
 {"issue_id":"L1","severity":"blocking|major|minor","target_node_ids":["真实节点ID"],"problem":"独立文学问题","modification_plan":"修改方案","expected_result":"预期结果","preserve":["保留项"],"repair_scope":"text|structure","repair_targets":[{"node_id":"实际需要修改的节点ID","field":"实际需改的投影路径"}]}
 """ + "\n\n" + REPAIR_PLAN_RULE + "\n\n" + (
-    # 文学阶段不再重复整份生成合同里的事实复核任务，避免再次检查主体、状态和转场。
-    # 用户允许低分关联已有事实；逐维填写避免跨列表漏项，服务端只展开、不补造建议。
+    # Literary review no longer repeats the complete generation contract's factual review of actors, states, and transitions.
+    # Users allow low scores to reference existing facts; fill each dimension to prevent cross-list omissions, while the server only expands without inventing suggestions.
     "本轮只返回文学报告。每个scores维度先写issues和fact_issue_ids，再写summary和score。"
     "低分依据可以是本维度新文学问题、related_issue_ids引用的已有文学/关系问题或已有事实ID；关联理由写入summary，不重复修改方案。"
     "无独立文学问题可用issues=[]；高分发现的问题也全部保留。数值建议只放metric_advice。"
     "若已有事实的修改方案执行后该问题就消失，只引用该事实ID，不再以人物、文笔、节奏或关系名义重写同一方案。"
-    # 用户允许跨维度/关系建议明确关联；无关联的空问题低分仍拒绝，不自动挪动或补造问题。
+    # Users allow explicit cross-dimension/relationship associations; reject low scores with empty unassociated issues instead of relocating or inventing issues.
     "关系建议或其它维度问题作为低分依据时，必须填写related_issue_ids，不能只在summary提到后省略引用。"
     "输出前检查每个低于75的维度：issues、fact_issue_ids和related_issue_ids不能同时为空。"
-    # 把可执行字段写进示例，并要求原文依据与具体修法；保留模型给出的所有意见，不事后过滤。
+    # Include executable fields in examples and require source evidence plus specific fixes; retain all model opinions without post-filtering.
     "每条文学问题在problem点明节点、字段和短原文；modification_plan写具体替换方向，不能只要求丰富层次或增强氛围。"
     "实际开场、转场或反应指引重复才可作为文笔依据，后台状态记录简短或格式重复不等于演出文笔差。"
     "修法逐项核对text_repair_fields，repair_targets列全实际需要改的字段；涉及goals、narrative_focus或acting_contract仍是structure，不借改summary绕开。"
@@ -116,8 +116,8 @@ target_node_ids 和 repair_targets.node_id 只能从 allowed_target_node_ids 选
     "若本维度唯一缺陷是事实报告已有问题，低于75也允许issues=[]，由fact_issue_ids及summary说明依据；不得把同一根因或修法再写成新问题。"
 )
 
-# 结构示例之后重申共享交付规则，避免长篇字段说明淹没反应因果与结局边界。
-# 修订也沿用相同运行合同，避免根据正确的评分结论又补造分支或结局待办。
+# Restate shared delivery rules after structural examples so long field descriptions do not obscure reaction causality and ending boundaries.
+# Revision uses the same runtime contract, preventing correct scoring conclusions from inspiring invented branches or ending tasks.
 _NODE_OPTIMIZATION_PROMPT = SCORING_RUNTIME_RULES + "\n" + """# Role: N.E.K.O 单节点质量优化编辑
 
 用户已在故事地图中点击并确认优化一个高亮节点。请结合 story_outline、target_node 和 accepted_suggestions，只优化 target_node。若同一节点有多条六维评分问题或人物关系建议，必须在一次修改中统筹解决。
@@ -168,7 +168,7 @@ class QualityAssessmentError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.provider_details = dict(provider_details or {})
-        # 评分失败必须标出事实、证据、文学或方案复核阶段，不用旧报告或半份结果冒充本次评分。
+        # Scoring failure must identify the fact/evidence/literary/plan-review stage; never present old reports or partial results as current scores.
         self.phase = phase
 
 
@@ -208,11 +208,11 @@ class NumericV2QualityAssessor(ModelAgent):
         authoring: Mapping[str, Any],
     ) -> dict[str, Any]:
         context = self._assessment_context(story, setup, authoring)
-        # 证据目录只存在于本次评分内，恢复后的报告继续使用既有path/quote协议。
+        # The evidence catalog exists only for this scoring run; restored reports retain the existing path/quote protocol.
         fact_outline, fact_sources = build_fact_sources(context)
         node_ids = self._context_node_ids(context)
-        # 在同一事实请求末尾集中展示同一时点的对照，覆盖主线、支线与结局。
-        # 复用原ref/text及状态字段，不改作者原文、引用路径或后续文学/修订输入。
+        # Present same-time comparisons together at the end of the fact request, covering mainline, branches, and endings.
+        # Reuse original ref/text and state fields without changing author text, citation paths, or later literary/revision inputs.
         opening_comparisons = [
             {"node_id": node["id"],
              "opening_performance": node.get("opening_scene"),
@@ -222,14 +222,14 @@ class NumericV2QualityAssessor(ModelAgent):
                          *(node for branch in fact_outline.get("branches", []) for node in branch.get("nodes", [])),
                          *fact_outline.get("endings", [])]
         ]
-        # 作者显式评分时顺序执行；事实失败不进入文学阶段，任一步失败都不返回可保存报告。
+        # Explicit author-requested scoring runs sequentially; factual failure skips literary review, and any failure returns no savable report.
         try:
             facts_response = self.call_llm(
                 [{"role": "system", "content": FACT_REVIEW_PROMPT + "\n\n" + REPAIR_PLAN_RULE + "\n" + OPENING_STATE_COMPARISON_RULE},
                  {"role": "user", "content": json.dumps(
                      {"story_outline": fact_outline, "checked_node_ids": sorted(node_ids),
                       "opening_end_state_comparisons": opening_comparisons},
-                     # 事实阶段按build_fact_sources的阅读顺序序列化；字母排序会把结局提前。
+                     # Serialize facts in build_fact_sources reading order; alphabetical sorting would place endings first.
                      ensure_ascii=False)}],
                 temperature=0.1, max_tokens=6000, max_retries=1,
                 response_format={"type": "json_object"}, thinking={"type": "disabled"},
@@ -242,10 +242,10 @@ class NumericV2QualityAssessor(ModelAgent):
             raise
         except ValueError as error:
             raise QualityAssessmentError("invalid_fact_review", phase="facts") from error
-        # 仅有问题时复核一次；失败不继续文学，不保存半份报告，不自动重试。
+        # Review once only when issues exist; failure skips literature, saves no partial report, and triggers no automatic retry.
         if facts["issues"]:
             try:
-                # 复核只看原问题和证据；修复资格在复核后计算，不把预设结论送回裁判。
+                # Review sees only original issues/evidence; calculate repair eligibility afterward instead of feeding predetermined conclusions back to the judge.
                 proposed = [{**{key: value for key, value in issue.items() if key != "repairable"},
                              "repair_targets": review_targets(issue)} for issue in facts["issues"]]
                 response = self.call_llm(
@@ -264,7 +264,7 @@ class NumericV2QualityAssessor(ModelAgent):
         protected = protected_targets(facts["issues"])
         facts["issues"] = [classify_repair(context, issue, protected=protected) for issue in facts["issues"]]
         supported = [issue for issue in facts["issues"] if issue["evidence_review"]["verdict"] == "supported"]
-        # 原误报仍在最终报告展示，但不把被否定的指控重复灌入文学输入，避免诱导再次扣分。
+        # Keep original false positives in the final report, but exclude rejected accusations from literary input to avoid inducing renewed deductions.
         literary_facts = {**facts, "issues": supported,
                           "excluded_issue_ids": [issue["issue_id"] for issue in facts["issues"] if issue["evidence_review"]["verdict"] != "supported"],
                           "protected_repair_targets": protected}
@@ -273,7 +273,7 @@ class NumericV2QualityAssessor(ModelAgent):
         except QualityAssessmentError as error:
             error.phase = "literature"
             raise
-        # 事实结论由服务端原样保留，文学模型无权删掉、改分抵消或覆盖其证据。
+        # The server preserves factual conclusions verbatim; literary models cannot remove them, offset them through rescoring, or overwrite evidence.
         report["issues"] = facts["issues"] + [classify_repair(context, dict(issue, source="literature"), protected=protected) for issue in report["issues"]]
         report["relationship_advice"] = [classify_repair(context, issue, protected=protected) for issue in report["relationship_advice"]]
         report["fact_check"] = {"status": "complete", "checked_node_ids": facts["checked_node_ids"],
@@ -293,14 +293,14 @@ class NumericV2QualityAssessor(ModelAgent):
         protected = protected_targets(result["issues"])
         candidates = [row for row in rows if row.get("repairable") is True]
         if candidates:
-            # 方案复核只核对修改命令；原生压测曾把问题背景/引文中提及的字段当成修改要求。
-            # 原问题与证据仍完整保留在报告及节点修订中，此处只隔离复核输入；保留逐字段事实复核。
+            # Plan review checks modification commands only; native stress tests mistook fields mentioned in issue context/quotations for requested changes.
+            # Preserve full original issues/evidence in reports and node revisions; isolate only review input here, retaining field-by-field factual review.
             plans = [{key: deepcopy(row[key]) for key in (
                 "issue_id", "source", "modification_plan", "suggestion", "preserve",
                 "target_node_ids", "repair_targets", "evidence_review") if key in row}
                 for row in candidates]
-            # 显式给出不同方案对；空列表使单条方案只做内部检查，避免把自相矛盾伪造成跨方案冲突。
-            # 比较同一份成稿能否满足要求，而非假想两份补丁并发写入；每对仅列一次。
+            # Explicitly supply distinct plan pairs; an empty list checks a plan internally, avoiding fabricated cross-plan conflict from self-contradiction.
+            # Compare whether one final draft can satisfy both requirements, not imaginary concurrent patch writes; list each pair once.
             pairs = [{"issue_ids": [first["issue_id"], second["issue_id"]],
                       "question": "同一份成稿有没有可能同时满足这两条修改要求？可同时满足就不列为冲突；不要判断并发写入或资源竞争。"}
                      for index, first in enumerate(plans) for second in plans[index + 1:]]
@@ -324,7 +324,7 @@ class NumericV2QualityAssessor(ModelAgent):
             for row in candidates:
                 row["plan_review"] = reviews[row["issue_id"]]
                 row.update(classify_repair(context, row, protected=protected, require_plan_review=True))
-        # 只有完整流程可以发布新版报告；旧评分仍可读，不能凭旧repairable直接执行。
+        # Only the complete workflow publishes new-version reports; old scores remain readable but old repairable flags cannot authorize execution.
         result.update(repair_plan_version=3, plan_review={
             "status": "complete" if candidates else "not_needed", "reviewed_count": len(candidates)})
         return result
@@ -337,7 +337,7 @@ class NumericV2QualityAssessor(ModelAgent):
                 {
                     "role": "user",
                     "content": json.dumps(
-                        # 已核对事实先于作者稿呈现，原文和作者节点顺序完整保留，不归一或删减内容。
+                        # Present verified facts before author drafts, preserving full text and author node order without normalization or deletion.
                         {"fact_review": facts, "story_outline": context,
                          "allowed_target_node_ids": sorted(self._context_node_ids(context))},
                         ensure_ascii=False,
@@ -352,7 +352,7 @@ class NumericV2QualityAssessor(ModelAgent):
             operation="numeric_v2_quality_assessment",
         )
         payload = self._parse_response(response, "invalid_quality_assessment")
-        # 模型逐维填写，服务端机械展开成既有报告；不猜维度、不补问题、不过滤建议。
+        # Models fill dimensions individually; the server mechanically expands into existing reports without guessing dimensions, adding issues, or filtering suggestions.
         if "issues" in payload or not isinstance(payload.get("scores"), Mapping):
             raise QualityAssessmentError("invalid_quality_assessment")
         flattened = deepcopy(dict(payload))
@@ -391,7 +391,7 @@ class NumericV2QualityAssessor(ModelAgent):
         if node_id not in all_nodes:
             raise QualityAssessmentError("quality_issue_stale")
 
-        # 保留要求覆盖所有建议来源，重新从原事实复核计算，避免旧高亮或缓存放宽权限。
+        # Preservation requirements cover every suggestion source; recompute from original factual review so old highlights/caches cannot relax permissions.
         protected = protected_targets(assessment.get("issues") or [])
         suggestions: list[dict[str, Any]] = []
         allowed_fields: set[str] = set()
@@ -406,7 +406,7 @@ class NumericV2QualityAssessor(ModelAgent):
                 suggestions.append({
                     "repair_targets": effective_targets(issue),
                     "evidence_review": deepcopy(issue.get("evidence_review")),
-                    # 事实建议携带已校验原文，修订不能仅凭文学化的问题概述补猜。
+                    # Factual suggestions include validated original text; revision must not guess from literary issue summaries alone.
                     "source": "fact_check" if issue.get("source") == "facts" else "quality_issue",
                     "evidence": deepcopy(issue.get("evidence") or []),
                     "dimension": issue.get("dimension"),
@@ -434,7 +434,7 @@ class NumericV2QualityAssessor(ModelAgent):
         if not suggestions:
             raise QualityAssessmentError("quality_node_not_repairable")
 
-        # 完全相同的修法只发一次；各来源的理由、预期和保留项都带入，不能吞掉不同影响。
+        # Send identical fixes only once, retaining every source's rationale, expectations, and preserved items rather than losing distinct effects.
         merged = {}
         for suggestion in suggestions:
             key = (suggestion["suggestion"].strip(), tuple(sorted((target["node_id"], target["field"]) for target in suggestion["repair_targets"])))
@@ -444,8 +444,8 @@ class NumericV2QualityAssessor(ModelAgent):
             else:
                 merged[key] = suggestion
         suggestions = list(merged.values())
-        # 完整方案可能覆盖多幕；本次请求的执行字段必须与单节点校验范围一致。
-        # 原报告、证据及跨幕理由仍完整保留，只收窄本次请求的授权字段，不改共用方案判定。
+        # Complete plans may span acts; executable fields for this request must match single-node validation scope.
+        # Retain full reports, evidence, and cross-act rationale; narrow only this request's authorized fields without changing shared plan decisions.
         for suggestion in suggestions:
             suggestion["repair_targets"] = [
                 target for target in suggestion["repair_targets"] if target["node_id"] == node_id
@@ -478,17 +478,17 @@ class NumericV2QualityAssessor(ModelAgent):
         )
         payload = self._parse_response(response, "invalid_quality_repair")
         repaired = self._apply_node_updates(story, payload, [node_id])
-        # 实际变更须落在作者看到的方案范围，不能借文字权限顺带重写正确开场或其他节点。
+        # Actual changes must remain inside the plan shown to authors; text permissions cannot justify rewriting correct openings or other nodes.
         before_nodes = context_nodes(context)
         after_nodes = context_nodes(self._assessment_context(repaired, setup, authoring))
         changes = [(current_id, field) for current_id, node in before_nodes.items()
                    for field in changed_fields(node, after_nodes[current_id])]
-        # relationship_goal可只读投影transition_goal；修改原字段造成的镜像变化不是额外修订。
+        # relationship_goal may project transition_goal read-only; mirrored changes caused by editing the source field are not additional revisions.
         changes = [(current_id, "/transition_goal" if field == "/relationship_goal"
                     and before_nodes[current_id]["relationship_goal"] == before_nodes[current_id]["transition_goal"]
                     and after_nodes[current_id]["relationship_goal"] == after_nodes[current_id]["transition_goal"]
                     else field) for current_id, field in changes]
-        # 即使另一条建议列了更宽的父字段，也不能改动复核明确要求保留的内容。
+        # Even another suggestion naming a broader parent field cannot override explicitly reviewed preservation requirements.
         if any(current_id == row["node_id"] and fields_overlap(field, row["field"])
                for current_id, field in changes for row in protected):
             raise QualityAssessmentError("quality_repair_outside_plan")
@@ -542,12 +542,12 @@ class NumericV2QualityAssessor(ModelAgent):
             node = all_nodes[node_id]
             beat = node.get("story_beat") or {}
             stage = relationship_stages.get(node_id) or {}
-            # 评分核对实际送入演绎器的状态；旧包缺失时才使用作者侧状态线。
-            # 不能用可能滞后的作者缓存盖掉已经编辑过的 Story Package。
+            # Scoring checks states actually passed to the performer; use author-side state tracks only when absent from old packages.
+            # Potentially stale author caches must not overwrite edited Story Packages.
             state_stage = beat.get("character_state") or character_state_stages.get(node_id) or {}
             return {
                 "id": node_id,
-                # 目录来自实际补丁权限，评分模型不自行决定哪些字段可以直接修改。
+                # Derive the catalog from actual patch permissions; scoring models cannot decide which fields permit direct modification.
                 "text_repair_fields": text_repair_fields(node),
                 "title": str(node.get("chapter") or "").strip(),
                 "summary": str(beat.get("summary") or "").strip(),
@@ -559,12 +559,12 @@ class NumericV2QualityAssessor(ModelAgent):
                    if "fixed_narrations" in beat else {}),
                 "goals": [
                     {
-                        # 保留实际目标ID和交付依据，评分才能定位错位而非凭目标描述补猜。
+                        # Preserve actual target IDs and delivery evidence so scoring locates mismatches without guessing from target descriptions.
                         "id": str(item.get("id") or ""),
                         "owner": str(item.get("owner") or ""),
                         "description": str(item.get("description") or "").strip(),
                         "delivery_type": str((item.get("delivery") or {}).get("type") or ""),
-                        # 输出通道也是行动主体的证据，不能只靠自然语言或类型猜测。
+                        # Output channels also evidence action actors; do not guess solely from natural language or types.
                         "output_field": str((item.get("delivery") or {}).get("output_field") or ""),
                         "timing": str((item.get("delivery") or {}).get("timing") or ""),
                         "source_ids": deepcopy((item.get("delivery") or {}).get("source_ids") or []),
@@ -589,7 +589,7 @@ class NumericV2QualityAssessor(ModelAgent):
                                 field: deepcopy((route.get("transition_contract") or {}).get(field))
                                 for field in (*_TRANSITION_CONTRACT_FIELDS, "fallback_offer", "accept_input", "silent_choice")
                             },
-                            # 桥段核对需要来源目标，但只读输入不能扩大文字修订白名单。
+                            # Bridge checks require source/target information, but read-only input cannot expand text-revision allowlists.
                             "source_ids": deepcopy((route.get("transition_contract") or {}).get("source_ids") or []),
                         },
                     }
@@ -709,9 +709,9 @@ class NumericV2QualityAssessor(ModelAgent):
         intro = story.get("intro") or {}
         binding = story.get("catgirl_binding") or {}
         return {
-            # 保留作者原意供评分和单节点优化共用；不触发默认评分或自动改稿。
+            # Preserve author intent for shared scoring/single-node optimization without triggering default scoring or automatic rewriting.
             "author_intent": str(setup.get("brief") or "").strip(),
-            # 正式背景只供核对和引用，不进入节点文本修订目录。
+            # Formal background supports checking/citations only and never enters the node-text revision catalog.
             "background": str(intro.get("background") or ""),
             "characters": {
                 **{field: intro[field] for field in ("player_name", "catgirl_name") if field in intro},
@@ -731,8 +731,8 @@ class NumericV2QualityAssessor(ModelAgent):
             "branches": branches,
             "endings": [
                 {
-                    # 终点与普通幕使用相同投影，避免漏掉仍等待输入的状态或禁令。
-                    # 单独保留正文摘要，以便发现它与结局记录摘要互相矛盾。
+                    # Endings use the same projection as ordinary acts, preserving states still awaiting input and prohibitions.
+                    # Retain body summaries separately to detect contradictions with ending-record summaries.
                     **compact_node(node_id),
                     "scene_summary": str((node.get("story_beat") or {}).get("summary") or "").strip(),
                     "title": str(
@@ -801,7 +801,7 @@ class NumericV2QualityAssessor(ModelAgent):
             if not summary:
                 raise QualityAssessmentError("invalid_quality_assessment")
             normalized_scores[dimension] = {"score": float(row["score"]), "summary": summary}
-            # 只接受本次已完成事实阶段的ID；旧报告没有此字段时仍走原有文学依据校验。
+            # Accept only IDs from this run's completed fact stage; old reports without this field retain existing literary-evidence validation.
             if "fact_issue_ids" in row:
                 refs = row["fact_issue_ids"]
                 if (not isinstance(refs, list)
@@ -851,8 +851,8 @@ class NumericV2QualityAssessor(ModelAgent):
         }
 
         node_ids = NumericV2QualityAssessor._context_node_ids(context)
-        # 真实评分会把路线 ID 放进目标列表。仅按现有图的唯一归属转为来源节点，
-        # 不猜测自然语言指代、不改路线指向；未知或多归属 ID 仍拒绝整份报告。
+        # Real scoring includes route IDs in target lists. Convert only uniquely owned IDs in the current graph to source nodes,
+        # without guessing natural-language references or changing route destinations; reject whole reports with unknown/multiply-owned IDs.
         route_owners: dict[str, set[str]] = {}
         context_nodes = [
             *(context.get("mainline") or []),
@@ -915,7 +915,7 @@ class NumericV2QualityAssessor(ModelAgent):
             dimension = str(raw.get("dimension") or "")
             if dimension not in QUALITY_DIMENSIONS:
                 raise QualityAssessmentError("invalid_quality_assessment")
-            # 所有问题都校验并保留，包括高分维度的轻微建议；分数只参与通过判定。
+            # Validate and retain every issue, including minor suggestions in high-scoring dimensions; scores affect only pass decisions.
             severity = str(raw.get("severity") or "")
             targets = resolve_targets(raw.get("target_node_ids"))
             preserve = raw.get("preserve")
@@ -947,8 +947,8 @@ class NumericV2QualityAssessor(ModelAgent):
                 "repairable": repair_scope == "text",
             }))
         issue_dimensions = {issue["dimension"] for issue in issues}
-        # 模型局部编号只用于本次明确引用；映射到既有卡片ID，不按文字相似度推断关联。
-        # 先收集全部问题，支持引用后面维度或关系栏；旧的无编号、无引用输出仍可校验。
+        # Model-local numbering serves explicit references only in this run; map to existing card IDs without inferring links from text similarity.
+        # Collect all issues first to support references to later dimensions/relationship sections; legacy unnumbered/unreferenced output remains validatable.
         issue_ids: dict[str, str] = {}
         for raw, issue in zip([*raw_issues, *raw_relationship_advice], [*issues, *relationship_advice]):
             if "issue_id" not in raw:
@@ -966,7 +966,7 @@ class NumericV2QualityAssessor(ModelAgent):
                     or len(refs) != len(set(refs))):
                 raise QualityAssessmentError("invalid_quality_assessment")
             normalized_scores[dimension]["related_issue_ids"] = [issue_ids[ref] for ref in refs]
-        # 关联只提供低分依据，不复制问题、不改变严重度或扩大节点修订权限。
+        # Associations justify low scores only, without duplicating issues, changing severity, or expanding node-revision permissions.
         fact_dimensions = {key for key, row in normalized_scores.items() if row.get("fact_issue_ids")}
         linked_dimensions = {key for key, row in normalized_scores.items() if row.get("related_issue_ids")}
         if not set(failed_dimensions).issubset(issue_dimensions | fact_dimensions | linked_dimensions):
@@ -977,7 +977,7 @@ class NumericV2QualityAssessor(ModelAgent):
         ), 2)
         return {
             "scope": "full_story_simple",
-            # 此处只是文学结果规范化；评分编排完成方案复核后才升级到可执行的版本3。
+            # This only normalizes literary output; scoring orchestration upgrades to executable version 3 only after plan review.
             "repair_plan_version": 2,
             "content_sha256": _content_hash(context),
             "overall_score": overall,
@@ -987,7 +987,7 @@ class NumericV2QualityAssessor(ModelAgent):
             "relationship_advice": relationship_advice,
             "issues": issues,
             "failed_dimensions": failed_dimensions,
-            # 分数全部合格也不能抵消严重问题；仅有 minor 时仍可通过并展示建议。
+            # Passing every score cannot offset serious issues; minor-only results can still pass while showing suggestions.
             "passed": not failed_dimensions and not any(
                 issue["severity"] in {"major", "blocking"} for issue in issues
             ),
@@ -1044,8 +1044,8 @@ class NumericV2QualityAssessor(ModelAgent):
                             raise QualityAssessmentError("invalid_quality_repair")
                         beat[field] = [item.strip() for item in value]
                     elif field == "character_state":
-                        # 合并已有状态的文字子字段；保留未修改主体及全部权限/边界元数据。
-                        # 原稿缺结构时拒绝候选，不从叙事猜测并创建另一份角色状态。
+                        # Merge text subfields into existing state, preserving unmodified actors and all permission/boundary metadata.
+                        # Reject candidates when original structure is missing instead of inventing another character state from narration.
                         state = beat.get(field)
                         if (not isinstance(value, Mapping) or not value
                                 or set(value).difference(_CHARACTER_STATE_TEXT_FIELDS)

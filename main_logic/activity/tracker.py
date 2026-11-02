@@ -346,28 +346,28 @@ class UserActivityTracker:
         self._work_break_pending: dict | None = None
         self._anti_slack_pending: dict | None = None
 
-        # ── 情境弹窗（A/B 实验组前端用）──────────────────────────
-        # 当用户「进入」游戏/娱乐 或「进入」专注工作时，给前端推一次性信号，让前端
-        # （仅实验组、每会话每类一次）弹窗问要不要开/关屏幕分享来源。后端只负责检测
-        # 「进入」这一刻并推送，分组判定 + 去重都在前端。
-        #   * ``_context_prompt_pending``：一次性槽位，由 ``_tick_break_reminders``
-        #     在检测到进入目标状态时 set（同步安全，只置 dict），由异步
-        #     ``_activity_guess_loop`` 心跳 drain 后 await 推送回调。后写覆盖前写
-        #     （两次 drain 间多次切换只推最新那次，够用）。
-        #   * ``_on_context_prompt``：core.py 注入的 async 回调，签名 ``(context: str)``
-        #     —— context 取 'play'（游戏/娱乐）或 'work'（专注工作）。未注入则不推。
+        # ── Context dialogs (frontend A/B treatment group) ──────────────────────────
+        # On entering games/entertainment or focused work, send a one-shot frontend signal prompting
+        # whether to enable/disable screen-sharing sources (treatment only, once per type/session). Backend detects
+        # entry and pushes; frontend handles group assignment and deduplication.
+        #   * ``_context_prompt_pending``: one-shot slot set by ``_tick_break_reminders``
+        #     on entering target states (synchronously safe dict assignment), drained by async
+        #     ``_activity_guess_loop`` heartbeats before awaiting push callbacks. Later writes overwrite earlier ones
+        #     (only latest transition between drains is needed).
+        #   * ``_on_context_prompt``: async core.py callback, signature ``(context: str)``;
+        #     context is 'play' (games/entertainment) or 'work' (focused work). No injection means no push.
         self._context_prompt_pending: dict | None = None
         self._on_context_prompt: Callable[[str], Awaitable[None]] | None = None
-        # activity_guess narration 的「下游是否还有消费方」谓词。注入方
-        # （core.py）给一个返回 bool 的回调：True 表示当前 narration 无人消费
-        # （会话已 goodbye_silent，proactive Phase 2 会在入口 bail），本 tick
-        # 跳过昂贵的 emotion-tier LLM 外呼。规则心跳（break-reminder / 情境弹窗）
-        # 不受影响照常 tick。未注入则恒不抑制（保持旧行为）。
+        # Predicate for whether activity_guess narration has a downstream consumer. The injector
+        # (core.py) provides a bool callback: True means nobody consumes current narration
+        # (session is goodbye_silent; proactive Phase 2 bails at entry), so skip this tick's
+        # expensive emotion-tier LLM call. Rule heartbeats (break reminders / context dialogs)
+        # still tick normally. Without injection, never suppress (preserve old behavior).
         self._narration_suppressed_check: Callable[[], bool] | None = None
-        # 情境弹窗专属的「上一状态」基线，独立于 break-reminder 的 _last_known_state
-        # ——这样可以在每个 session 开始时单独清掉（reset_context_prompt_baseline），让
-        # 「跨 session 仍在同一状态」也能重新算作一次「进入」并再弹（前端按 app 会话去
-        # 重），同时不扰动 break/anti-slack 的状态机。
+        # Context-dialog previous-state baseline, independent of break reminders' _last_known_state,
+        # reset separately at each session start (reset_context_prompt_baseline), allowing
+        # unchanged states across sessions to count as entry and prompt again (frontend deduplicates by app session),
+        # without disturbing break/anti-slack state machines.
         self._context_prompt_last_state: ActivityState | None = None
 
     # ── hooks (called from core.py and friends) ─────────────────
@@ -384,9 +384,9 @@ class UserActivityTracker:
         ts = now if now is not None else time.time()
         self._sm.update_user_message(now=ts)
         self._conv_seq += 1
-        # 隐私模式：让用户消息文本直接不进 buffer，避免在切回非隐私模式时
-        # 旧数据被 enrichment LLM 二次曝光。state machine 的时间戳还要更新
-        # （下游 idle / focused_work 判定依赖），文本扔了即可。
+        # Privacy mode: omit user-message text from buffers, preventing enrichment LLM exposure
+        # of old data when privacy is disabled again. Still update state-machine timestamps
+        # for downstream idle / focused_work decisions; discard only text.
         if text and not _privacy_mode_active():
             cleaned = text.strip()[:1000]
             self._user_msg_buffer.append((ts, cleaned))
@@ -806,16 +806,16 @@ class UserActivityTracker:
         ):
             self._anti_slack_pending = None
 
-        # ── 情境弹窗一次性检测（A/B 实验组前端用）────────────────
-        # 只在「进入」目标状态那一刻置 pending（state != 上一状态），状态保持期间不重复
-        # 触发，避免 20s 心跳刷屏。分组判定 + 每会话去重都在前端。
-        #   gaming / casual_browsing（=娱乐，进游戏/看番/视频）→ 'play'
-        #   focused_work（进专注工作）                       → 'work'
-        # 用 _context_prompt_last_state（情境弹窗专属基线）而非 _last_known_state：后者
-        # 跨 session 长存，会让「上个 session 结束时在游戏、新 session 仍在游戏」检测不到
-        # 进入、漏弹；专属基线在每个 session 开始时被 reset_context_prompt_baseline 清成
-        # None，于是当前状态重新算作一次「进入」。为 None（首启 / 不安全 delta 重置 /
-        # 新 session）都算「进入」，前端按 app 会话去重兜住重复。
+        # ── One-shot context-dialog detection (frontend A/B treatment group) ────────────────
+        # Set pending only on entering a target state (state differs from previous); do not repeat while unchanged,
+        # avoiding 20s heartbeat spam. Frontend handles assignment and per-session deduplication.
+        #   gaming / casual_browsing (entertainment: gaming/anime/video) -> 'play'
+        #   focused_work (entering focused work)                       -> 'work'
+        # Use context-specific _context_prompt_last_state rather than _last_known_state, which persists
+        # across sessions and misses entry when a user ends one session gaming and starts another still gaming.
+        # reset_context_prompt_baseline clears the dedicated baseline to None at each session start,
+        # so current state counts as fresh entry. None (first start / unsafe-delta reset /
+        # new session) always means entry; frontend app-session deduplication handles repeats.
         ctx_prev = self._context_prompt_last_state
         _CONTEXT_PROMPT_TARGET_STATES = ('gaming', 'casual_browsing', 'focused_work')
         if state != ctx_prev:
@@ -823,11 +823,11 @@ class UserActivityTracker:
                 self._context_prompt_pending = {'context': 'play', 'set_at': now}
             elif state == 'focused_work':
                 self._context_prompt_pending = {'context': 'work', 'set_at': now}
-        # 离开目标状态（进 idle/away/chatting/transitioning/private 等非目标态）时，清掉
-        # 还没 drain 的过期 pending：pending 可能是 get_snapshot 路径（实验组 kick）置的、
-        # 还没等到 loop drain，用户就离开了游戏/工作；若不清，loop 会把「已经离开的场景」
-        # 推成过期弹窗，甚至据此翻错设置。目标态之间切换（gaming↔casual_browsing↔
-        # focused_work）由上面的 overwrite 处理，不受影响。
+        # On leaving target states (idle/away/chatting/transitioning/private, etc.), clear stale undrained
+        # pending; get_snapshot (treatment kick) may set it, then users leave gaming/work before
+        # loop drain. Otherwise the loop pushes an obsolete dialog for an exited context,
+        # potentially changing the wrong setting. Target-to-target transitions (gaming<->casual_browsing<->
+        # focused_work) still use overwrite above, unaffected.
         if state not in _CONTEXT_PROMPT_TARGET_STATES:
             self._context_prompt_pending = None
         self._context_prompt_last_state = state
@@ -925,7 +925,7 @@ class UserActivityTracker:
         self._anti_slack_last_fired_at = ts
         self._anti_slack_pending = None
 
-    # ── 情境弹窗（A/B 实验组前端用）──────────────────────────────
+    # ── Context dialogs (frontend A/B treatment group) ──────────────────────────────
 
     def reset_context_prompt_baseline(self) -> None:
         """Clear the context prompt's "previous state" baseline so the next tick counts the current state as a fresh "entry".
@@ -1005,16 +1005,16 @@ class UserActivityTracker:
         callback = self._on_context_prompt
         if callback is None:
             return
-        # 内置小游戏已经接管交互时，当前 ``gaming`` 信号描述的是 N.E.K.O 自己的
-        # 游戏窗口，不是用户刚打开的外部游戏。继续推送会让首页弹出“是否开启屏幕
-        # 分享”的情境选择框；Electron 又把小游戏窗口置于前台，于是该选择框看得见
-        # 却点不到。pending 已在上面消费，避免退出小游戏后补弹一条过期提示。
-        # 任何外部路由（不止小游戏）接管期间都一样不推。
+        # When builtin mini-games own interaction, gaming describes N.E.K.O's own game window,
+        # not a newly opened external game. Pushing again creates a homepage screen-sharing
+        # prompt while Electron foregrounds the mini-game, leaving the prompt visible
+        # but unclickable. Pending was consumed above, preventing an obsolete prompt on game exit.
+        # Apply the same suppression during any external route takeover, not just mini-games.
         if is_external_route_active(self.lanlan_name):
             return
         try:
             await callback(pending['context'])
-        except Exception as e:  # noqa: BLE001 — 推送失败不能让心跳挂掉
+        except Exception as e:  # noqa: BLE001 - Push failure must not stop the heartbeat.
             logger.debug(
                 '[%s] context prompt push failed (%s): %s',
                 self.lanlan_name, pending.get('context'), e,
@@ -1135,7 +1135,7 @@ class UserActivityTracker:
             except asyncio.CancelledError:
                 return
 
-            # 隐私模式：本 tick 不读窗口/进程，也不调 activity LLM。
+            # Privacy mode: no window/process reads or activity LLM calls this tick.
             # Deep-topic candidate is intentionally independent from privacy
             # mode now; it consumes the persisted conversation signal window
             # and owns its own readiness/pending checks.
@@ -1178,19 +1178,19 @@ class UserActivityTracker:
                 # for the break-reminder timers.
                 self._tick_break_reminders(rule_snap, now=ts)
 
-                # Drain 情境弹窗 pending 并推送（必须在下面 away/private 的 bail 之前，
-                # 否则进 away/private 那一 tick 设的 pending 会被 continue 跳过永不推；
-                # 实际进游戏/娱乐/工作都不会是 away/private，这里只是防御性早 drain）。
-                # 这是唯一的 drain 点：心跳每 tick 都跑、且是 async 上下文，能 await 回调。
-                # get_snapshot 路径也调 _tick_break_reminders 设 pending，但 _last_known_state
-                # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
+                # Drain and push context-dialog pending before away/private bails below,
+                # or pending set on entry to away/private could be skipped by continue forever.
+                # Games/entertainment/work are never away/private; this early drain is defensive.
+                # Sole drain point: heartbeat runs every tick in async context and can await callbacks.
+                # get_snapshot also calls _tick_break_reminders and updates _last_known_state;
+                # drain sends that pending too, neither missing nor duplicating it.
                 await self._drain_context_prompt()
 
-                # 两条都用全码（#2500 第 2 步）：activity_lang 只喂
-                # ``call_activity_guess``，那边的 ``_normalize_lang`` 认 zh-TW 且
-                # ``ACTIVITY_GUESS_PROMPTS`` 有 zh-TW 模板，塌成短码会让繁中用户
-                # 拿简体叙述。简中的 'zh-CN' 在 ``_normalize_lang`` 里照样归到
-                # 'zh'，行为不变。
+                # Both use full locale codes (#2500 step 2): activity_lang feeds only
+                # ``call_activity_guess``, whose ``_normalize_lang`` recognizes zh-TW and
+                # ``ACTIVITY_GUESS_PROMPTS`` has a zh-TW template. Short codes give Traditional users
+                # Simplified narration; Simplified 'zh-CN' still normalizes to
+                # 'zh', preserving behavior.
                 from utils.language_utils import get_global_language_full
                 activity_lang = get_global_language_full() or 'en'
                 topic_lang = activity_lang
@@ -1205,18 +1205,18 @@ class UserActivityTracker:
                 if rule_snap.state == 'private':
                     continue
 
-                # 主动搭话关时跳过 activity_guess 的 LLM 叙述：它只喂 proactive Phase 2，
-                # 没开主动搭话就没有消费方。上面的 _tick_break_reminders + 情境弹窗 drain
-                # 是纯规则、已经跑过，所以「进游戏/工作」检测照常工作。这样实验组为弹窗
-                # kick 起的 loop 在用户没开主动搭话时只有廉价规则轮询、零 LLM 开销。
+                # With proactive chat disabled, skip activity_guess LLM narration: its sole consumer is proactive Phase 2.
+                # Rule-only _tick_break_reminders and context-dialog drain already ran,
+                # preserving game/work entry detection. Treatment-triggered loops for dialogs therefore use
+                # cheap rule polling without LLM costs when proactive chat is off.
                 if not _proactive_chat_enabled():
                     continue
 
-                # 会话已 goodbye_silent（猫娘挂机静默）时跳过 activity_guess 的 LLM：
-                # 唯一消费方 proactive Phase 2 会在入口直接 bail，narration 没人读。
-                # 上面的 _tick_break_reminders + 情境弹窗 drain + topic 候选都是规则/
-                # 已限流路径，已经跑过，这里只省掉昂贵且无意义的 emotion-tier 外呼。
-                # 用户被唤回（goodbye_silent 清除）后，下一 tick 自然恢复 narration。
+                # Skip activity_guess LLM while goodbye_silent (idle silent catgirl):
+                # its sole consumer proactive Phase 2 bails at entry, leaving narration unread.
+                # Rule-based / rate-limited break reminders, context-dialog drain, and topic candidates
+                # already ran; this only saves an expensive pointless emotion-tier call.
+                # After user wake-up clears goodbye_silent, narration naturally resumes next tick.
                 if self._is_narration_suppressed():
                     continue
 

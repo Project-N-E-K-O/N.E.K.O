@@ -31,13 +31,13 @@ import platform
 import sys
 from pathlib import Path
 
-# N.E.K.O 项目根目录
+# N.E.K.O project root.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# Python 解释器路径
+# Python interpreter path.
 PYTHON_EXE = sys.executable
-# 协议处理器模块
+# Protocol-handler module.
 HANDLER_MODULE = "plugin.server.market_protocol_handler"
-# 协议处理命令
+# Protocol-handler command.
 HANDLER_CMD = f'"{PYTHON_EXE}" -m {HANDLER_MODULE} "%1"'
 
 
@@ -111,18 +111,18 @@ def _register_windows() -> bool:
     try:
         import winreg
 
-        # 创建 neko 键
+        # Create the neko key.
         key_path = r"Software\Classes\neko"
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "N.E.K.O Protocol")
             winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
 
-        # 创建 DefaultIcon
+        # Create DefaultIcon.
         icon_path = str(PROJECT_ROOT / "static" / "favicon.ico")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{key_path}\\DefaultIcon") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, icon_path)
 
-        # 创建 shell\open\command
+        # Create shell\open\command.
         #
         # ``set "PYTHONPATH=...;%PYTHONPATH%"`` quotes the assignment so spaces
         # in the repo path are tolerated, and cmd.exe strips those outer
@@ -214,7 +214,7 @@ def _register_macos() -> bool:
 """
     (contents / "Info.plist").write_text(plist_content)
 
-    # 可执行脚本
+    # Executable script.
     quoted_project_root = _posix_shell_quote(str(PROJECT_ROOT))
     quoted_python_exe = _posix_shell_quote(PYTHON_EXE)
     handler_script = f"""#!/bin/bash
@@ -226,7 +226,7 @@ exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
     handler_path.write_text(handler_script)
     handler_path.chmod(0o755)
 
-    # 注册 URL scheme
+    # Register the URL scheme.
     os.system("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
               "LaunchServices.framework/Support/lsregister "
               f"-R '{app_dir}'")
@@ -266,9 +266,9 @@ MimeType=x-scheme-handler/neko;
 """
     desktop_file.write_text(desktop_content)
 
-    # 注册 MIME type
+    # Register the MIME type.
     os.system(f"xdg-mime default neko-protocol-handler.desktop x-scheme-handler/neko")
-    # 更新 desktop database
+    # Update the desktop database.
     os.system(f"update-desktop-database {desktop_dir} 2>/dev/null || true")
 
     print(f"[OK] Registered neko:// protocol (Linux)")
@@ -286,7 +286,7 @@ def _remove_linux() -> bool:
     return True
 
 
-# ─── 入口 ──────────────────────────────────────────────────────────
+# -- Entry point --
 
 if __name__ == "__main__":
     if "--remove" in sys.argv or "--unregister" in sys.argv:

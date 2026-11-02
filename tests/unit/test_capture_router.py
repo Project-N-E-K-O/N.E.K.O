@@ -2,7 +2,7 @@
 """Unit tests for ``main_routers/capture_router.py``.
 
 Covers contracts agreed in
-``md/当前方案/cross-platform-capture-phase5-bridge-plan.md`` §7:
+``md/当前方案/cross-platform-capture-phase5-bridge-plan.md`` section 7:
 
 * /api/capture/health 503 with no renderer, 200 with renderer, 503 after
   renderer disconnects (registry cleanup).
@@ -12,7 +12,7 @@ Covers contracts agreed in
 * Renderer timeout returns 502 / 504 and clears pending futures.
 * Oversized image payload is rejected without logging the bytes.
 * Unknown ``request_id`` produces no side-effect.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 

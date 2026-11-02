@@ -113,8 +113,8 @@ class MemorySubject:
         clean_id = _clean_component(subject_id, field="subject_id")
         if scope is None:
             scope = f"{clean_kind}:{clean_id}"
-        # 显式空串不是"省略"：静默归一到默认 scope 会把畸形请求并进
-        # 默认隔离域，必须走 _clean_component 的空值拒绝。
+        # An explicit empty string is not an omitted value: silently normalizing to the default scope would merge malformed requests into
+        # the default isolation domain, so _clean_component must reject the empty value.
         return cls(clean_kind, clean_id, scope)
 
     @classmethod

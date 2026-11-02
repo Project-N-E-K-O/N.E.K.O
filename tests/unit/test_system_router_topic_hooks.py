@@ -15,8 +15,8 @@ from utils.llm_client import anthropic_retry_error_types
 def test_proactive_llm_retry_errors_include_anthropic_transients():
     retry_types = proactive_service._proactive_llm_retry_error_types()
     anthropic_types = anthropic_retry_error_types()
-    # anthropic 缺席时 accessor 兜底返回 ()，for 循环会零迭代假绿——CI/开发环境必装
-    # anthropic，空即测试环境坏了，别让本测试静默空跑。
+    # Without anthropic, the accessor falls back to (), so the loop silently passes with zero iterations. CI/development must install
+    # anthropic; an empty result means a broken test environment and must not silently skip this test.
     assert anthropic_types, "anthropic retry error types 为空，本测试在空跑"
     for error_type in anthropic_types:
         assert error_type in retry_types

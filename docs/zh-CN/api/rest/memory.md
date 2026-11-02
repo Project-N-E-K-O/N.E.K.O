@@ -18,6 +18,7 @@
 | `POST` | `/api/memory/review_config` | 更新近期记忆自动复核开关 |
 | `GET` | `/api/memory/powerful_memory_config` | 读取强力记忆开关 |
 | `POST` | `/api/memory/powerful_memory_config` | 更新强力记忆开关，并执行必要迁移 |
+| `GET` | `/api/memory/farewell-summary` | 只读的记忆摘要，供桌面端退出告别卡使用 |
 | `GET` | `/api/memory/legacy/scan` | 只读扫描用户可见的遗留记忆根目录 |
 | `POST` | `/api/memory/legacy/purge` | 删除从遗留根目录中明确选中的条目 |
 
@@ -192,6 +193,37 @@
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
+
+## 告别摘要
+
+### `GET /api/memory/farewell-summary`
+
+当前选中猫娘的只读记忆摘要，显示在桌面端的退出告别卡上。桌面端主进程以回环地址调用，超时 1.2 秒，因此该路由只读本地文件：不调用大模型、不触发同步、不写任何文件。
+
+```json
+{
+  "memory_count": 128,
+  "conversation_count": 342,
+  "flashback": {
+    "id": "fact_20260314103000_ab12cd34",
+    "text": "主人最喜欢下雨天窝在家里看书",
+    "date": "2026-03-14"
+  }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `memory_count` | 本地有效记忆数，与社区铸卡的 `totalMemoryCount` 同口径：`facts.json` 与 `facts_archive.json` 去重，去掉机器日志行。 |
+| `conversation_count` | 该猫娘 `time_indexed.db` 中的用户消息数（每轮对话一条）。数据库不存在或读不了时省略。 |
+| `flashback` | 一段值得回忆的旧记忆，可以为 `null`。 |
+| `flashback.id` | 记忆 id；不是普通字符串的 id 会转成稳定的不透明标记。 |
+| `flashback.text` | 记忆原文，合并空白，最多 200 个字符。 |
+| `flashback.date` | 记忆发生的本地日期 `YYYY-MM-DD`；没有事件时间时用记录时间。 |
+
+闪回只从可分享的记忆里挑，规则与 `/api/card-drop/facts` 一致：跳过 private、redacted、机器日志行和 `neko_visit` 来源，归档行里带 `subject_archived_at` 或 `arbitration_*` 的也跳过。不满 7 天的记忆不会被选中。其余记忆优先取 importance ≥ 5 的，在最早的四分之一里按 importance 加权随机抽一条，所以每次调用可能不同。
+
+没有选中猫娘时返回 `{"flashback": null}`；出错时省略统计项，不返回错误码。
 
 ## 遗留记忆清理
 

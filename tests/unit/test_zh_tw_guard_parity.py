@@ -160,8 +160,8 @@ def test_traditional_advice_request_does_not_trigger_an_edit():
         ("把整个卡的名字重写一下", "把整個卡的名字重寫一下"),
         ("重写整个卡的简介", "重寫整個卡的簡介"),
         ("调整整张卡的性格", "調整整張卡的性格"),
-        # ⚠️ 「整个卡」是常用名词「整个卡片」的前缀——只挡「的」挡不住它
-        # （Codex P1 第二轮）。
+        # ⚠ 整个卡 prefixes the common noun 整个卡片; blocking only 的 is insufficient
+        # (Codex P1 round 2).
         ("重写整个卡片的名字", "重寫整個卡片的名字"),
         ("重写整个角色卡片的简介", "重寫整個角色卡片的簡介"),
     ],
@@ -185,17 +185,17 @@ def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditiona
     [
         ("把整个卡重写一遍", "把整個卡重寫一遍"),
         ("所有可见字段都重写", "所有可見欄位都重寫"),
-        # ⚠️ 「…卡片」也是完整的重写目标。上一版只加 (?![的片]) 而没把 卡片
-        # 收进交替，把这三类真请求全挡掉了（Codex P2 第三轮）。
+        # ⚠ Forms ending in 卡片 are complete rewrite targets too. Previously adding only (?![的片]) without
+        # including 卡片 in the alternation blocked all three genuine request types (Codex P2 round 3).
         ("重写整个角色卡片", "重寫整個角色卡片"),
         ("重写整张卡片", "重寫整張卡片"),
         ("重写整个卡片", "重寫整個卡片"),
-        # ⚠️ 「字段/欄位」类不该被那条挡定语的 lookahead 波及——这里的「的」后面
-        # 跟的是内容，不是某个单一字段（Codex P2 第四轮）。
+        # ⚠ The 字段/欄位 group must not be affected by the attributive-blocking lookahead: its 的 precedes
+        # content, not one field (Codex P2 round 4).
         ("把所有字段的内容重写一遍", "把所有欄位的內容重寫一遍"),
         ("重写每个字段的内容", "重寫每個欄位的內容"),
-        # ⚠️ 「整卡 + 的全部內容」是整卡重写，不是单字段定语——上一版的
-        # (?![的片]) 把它一起挡了（Codex P2，简繁两侧都坏）。
+        # ⚠ Whole card + 的全部內容 is a whole-card rewrite, not a single-field attribute; the previous
+        # (?![的片]) blocked it too (Codex P2, both scripts broken).
         ("把整个角色卡的全部内容重写一遍", "把整個角色卡的全部內容重寫一遍"),
         ("把整张卡的所有内容重写", "把整張卡的所有內容重寫"),
         ("重写整个卡片的内容", "重寫整個卡片的內容"),
@@ -208,17 +208,17 @@ def test_a_genuine_full_rewrite_still_matches(simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-# ⚠️ 判定「是不是整卡重写」的信号是**限定词 + 它管着的中心语**，两半都要。
+# ⚠ Whole-card rewrite signals require **both quantifier and governed head**.
 #
-# 只看名词不行：上一版只白名单了「内容」，于是 `把整個角色卡的全部設定重寫一遍`
-# 被守卫挡掉，整卡补全通路不触发、只落库半张卡（简繁两侧都坏，共 22 条）。
-# 只看限定词也不行：`把整个卡的全部名字重写` 里限定词管的是单字段「名字」，
-# 却被判成整卡重写，把用户没要求改的字段全覆盖掉（Codex P1，base 是 False）。
+# The noun alone is insufficient: allowlisting only 内容 blocked `把整個角色卡的全部設定重寫一遍`,
+# skipping whole-card completion and persisting half a card (both scripts broken, 22 cases).
+# The quantifier alone is insufficient too: in `把整个卡的全部名字重写` it governs the single field 名字,
+# yet whole-card classification overwrites every unrequested field (Codex P1, base=False).
 #
-# 两张表都**从 router 的常量取**，不手抄：
-#   · 手抄这张表已经落后过两次（先漏 每个/每個/一切，补全之后又漏 每一个/每項/各項）。
-#   · 上一版改成从正则源码 scrape，正则一改结构 scrape 就静默换了个前视捞出
-#     另一张表——只剩下面那条相等断言把它兜住。表提成常量之后不用再 scrape。
+# **Read both tables from router constants**, without copying:
+#   · Manual copies have lagged twice (first missing 每个/每個/一切, then 每一个/每項/各項).
+#   · The previous regex-source scraper silently switched to another lookahead after regex restructuring,
+#     retrieving a different table; only the equality assertion below caught it. Constants eliminate scraping.
 def _router_table(name: str) -> list[str]:
     import main_routers.card_assist_router as router
 
@@ -230,12 +230,12 @@ def _router_table(name: str) -> list[str]:
     return table
 
 
-# ⚠️⚠️ 下面那几个「限定词 + 范围名词」的笛卡尔积从**收窄后**的表派生。
-# `每一项`/`每一項` 是本 PR 引进的整卡目标，**base 从来不认**（base 侧根本没有
-# 这张表，它是本 PR 从内联正则里提出来的常量）。逐条差分：全称类 base 全是
-# True，逐项类里 每个/每一个/每项/各项 base 也是 True，只有这两个是 False。
-# 拿它们当「必须是整卡重写」的正例，等于把一个 PR 自造的目标钉成期望值——
-# 第六十八/六十九/七十轮 reviewer 报的 7 条 P1 全部拿它当例子，就是这么来的。
+# ⚠⚠ The quantifier + scope-noun Cartesian products below derive from the **narrowed** table.
+# `每一项`/`每一項` are targets introduced by this PR, **never recognized by base** (base has no such
+# table; this PR extracted it from inline regex). Differential checks show universal forms all have base=True,
+# as do itemwise 每个/每一个/每项/各项; only these two have False.
+# Using them as mandatory whole-card positive cases pins a PR-invented target as expected behavior;
+# all seven P1s reported in rounds 68/69/70 used it, arising from this choice.
 WHOLE_CARD_QUANTIFIERS = _router_table("_WHOLE_CARD_SCOPED_QUANTIFIERS")
 WHOLE_CARD_ALL_QUANTIFIERS = _router_table("_WHOLE_CARD_QUANTIFIERS")
 WHOLE_CARD_BARE_QUANTIFIERS = _router_table("_WHOLE_CARD_BARE_QUANTIFIERS")
@@ -243,33 +243,33 @@ WHOLE_CARD_NOUNS = _router_table("_WHOLE_CARD_SCOPE_NOUNS")
 
 
 def test_the_quantifier_table_is_derived_not_transcribed():
-    """⚠️ 取表一旦失效，下面的笛卡尔积会静默缩水。这里钉住整张表。"""  # noqa: DOCSTRING_CJK
-    # ⚠️ 断言**相等**而不是「规模下界 + 几个必含项」。上一版钉了 11 个里的 7 个、
-    # 下界写 >= 9，于是删掉「各项」后 len 从 11 掉到 10 照样过，而下游笛卡尔积
-    # 只是少跑几条用例——闭集被悄悄缩小，整个文件全绿。
-    # 这跟「手抄表只测了闭集一半」是同一个毛病往上挪了一层：派生这一步做对了，
-    # 钉子这一步又漏了一半。
+    """⚠ If table extraction fails, Cartesian products below silently shrink. Pin the entire table here."""  # noqa: DOCSTRING_CJK
+    # ⚠ Assert **equality**, not a lower size bound plus required members. Previously seven of 11 entries were pinned,
+    # with >=9 as the bound, so removing 各项 reduced length from 11 to 10 and still passed; downstream products
+    # merely ran fewer cases, silently shrinking a closed set while the entire file stayed green.
+    # This repeats testing only half a copied closed set one level higher: derivation was right,
+    # but the assertion still missed half.
     #
-    # 相等断言意味着往正则里加词时必须同步改这里。那是**刻意的摩擦**——闭集
-    # 变动应该被看见；而笛卡尔积的覆盖仍然是自动的，不用手工加用例。
-    # ⚠️ 这条钉的是**全表**，所以用 WHOLE_CARD_ALL_QUANTIFIERS；上面那个
-    # WHOLE_CARD_QUANTIFIERS 从第七十轮起是**收窄后**的表（排除了 `每一项`），
-    # 供「限定词 + 范围名词」的笛卡尔积用。两者的差由
-    # test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch 钉住。
+    # Equality requires synchronized updates here when regex terms are added: **deliberate friction** making closed-set
+    # changes visible. Cartesian-product coverage remains automatic, without manually adding cases.
+    # ⚠ This asserts the **full table**, hence WHOLE_CARD_ALL_QUANTIFIERS; since round 70,
+    # WHOLE_CARD_QUANTIFIERS above is the **narrowed** table (excluding 每一项),
+    # used for quantifier + scope-noun Cartesian products. Their difference is pinned by
+    # test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch.
     assert set(WHOLE_CARD_ALL_QUANTIFIERS) == {
         "全部", "所有", "每一个", "每一個", "每个", "每個",
         "每一项", "每一項", "每项", "每項", "各项", "各項", "一切",
-    # ⚠️ 失败消息也要打**全表**：打收窄表的话红了以后输出里正好少两项，
-    # 看的人会以为闭集本身缺词，排查方向就偏了（CodeRabbit）。
+    # ⚠ Failure messages must show the **full table** too; printing the narrowed one omits exactly two entries,
+    # misleading investigators into thinking the closed set itself lacks terms (CodeRabbit).
     }, WHOLE_CARD_ALL_QUANTIFIERS
 
 
 def test_the_scope_noun_table_is_derived_not_transcribed():
-    """⚠️ 整卡级名词表同样钉死——往里加一个词就是放开一次整卡覆盖。
+    """⚠ Pin the whole-card noun table too: each added term permits another whole-card overwrite.
 
-    这张表是开集里刻意只列安全侧的那一半：多一个词，`把整个卡的全部<词>重写`
-    就会从「只改那一个字段」变成「给其余所有字段合成内容并 autosave」。所以
-    改动必须被看见，不能靠下界断言放过去。
+    This intentionally lists only the safe side of an open set: one additional term changes `把整个卡的全部<词>重写`
+    from editing one field to synthesizing and autosaving every other field's contents.
+    Changes must therefore be visible, never hidden behind lower-bound assertions.
     """  # noqa: DOCSTRING_CJK
     assert set(WHOLE_CARD_NOUNS) == {
         "设定", "設定", "设置", "設置", "资料", "資料", "人设", "人設",
@@ -281,10 +281,10 @@ def test_the_scope_noun_table_is_derived_not_transcribed():
 
 
 WHOLE_CARD_TARGETS = ["整个角色卡", "整張卡", "整个卡片", "全卡"]
-# ⚠️ 笛卡尔积按「名词 × 限定词 × 目标」会到四位数。目标那一维在正则里是**另一
-# 条交替**（跟限定词/名词那两张表互不影响），而且上面已经有整整一组 4 目标的
-# 用例覆盖它，所以下面两个大积各只跑两个目标：一简一繁。这是刻意的裁剪，写在
-# 这里是为了别让人以为目标维度也被这两个积覆盖了。
+# ⚠ Noun × quantifier × target products reach four digits. The target dimension is **another
+# regex alternative**, independent of quantifier/noun tables, already covered by a full group of four-target
+# cases above. Each large product below therefore uses two targets: one per script. This deliberate reduction
+# is documented so nobody assumes these products cover the target dimension too.
 WHOLE_CARD_TARGETS_MINIMAL = ["整个卡", "整張卡"]
 
 
@@ -292,7 +292,7 @@ WHOLE_CARD_TARGETS_MINIMAL = ["整个卡", "整張卡"]
 @pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS_MINIMAL)
 def test_a_quantified_whole_card_request_is_a_full_rewrite(target, quantifier, noun):
-    """「<整卡目标>的<全量限定词><整卡级名词>重写」必须是整卡重写。"""  # noqa: DOCSTRING_CJK
+    """A whole-card target + 的 + universal quantifier + whole-card noun + rewrite must be a whole-card rewrite."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'把{target}的{quantifier}{noun}重写一遍'
@@ -300,11 +300,11 @@ def test_a_quantified_whole_card_request_is_a_full_rewrite(target, quantifier, n
 
 
 def _card_template_field_names() -> list[str]:
-    """中文角色卡模板里**真实存在**的字段名，从 config/characters 读。
+    """Read field names **actually present** in Chinese character-card templates from config/characters.
 
-    ⚠️ 手写字段清单会漏。判据是「限定词管着的是整卡级名词还是某个字段名」，
-    所以反向用例的清单必须自动发现——模板改一个字段名，这条守卫跟着覆盖到
-    新名字，而不是继续测一个已经不存在的词。
+    ⚠ Manual field lists miss entries. The criterion is whether a quantifier governs a whole-card noun or a field name,
+    so negative-case lists must be discovered automatically: changing a template field name makes the guard cover
+    the new name rather than continuing to test a nonexistent term.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -325,14 +325,14 @@ CARD_TEMPLATE_FIELD_NAMES = _card_template_field_names()
 def test_a_quantifier_governing_a_field_name_is_not_a_full_rewrite(
     target, quantifier, field
 ):
-    """⚠️⚠️ 限定词必须管着**整卡级名词**，管着字段名不算。
+    """⚠⚠ Quantifiers must govern **whole-card nouns**, never merely field names.
 
-    `把整个卡的全部名字重写` / `把整个卡的所有昵称重写` 里用户只想改一个字段，
-    上一版光看「的」后面有没有限定词就放行，于是
-    `_complete_full_rewrite_actions` 给其余所有字段合成内容并 autosave，把用户
-    从没提过的数据静默覆盖掉（Codex P1，base 是 False）。
+    In `把整个卡的全部名字重写` / `把整个卡的所有昵称重写`, the user intends one field;
+    the former version checked only for a quantifier after 的 and admitted them, so
+    `_complete_full_rewrite_actions` synthesized and autosaved every other field, silently
+    overwriting unmentioned data (Codex P1, base=False).
 
-    清单从模板自动发现：**任何一个真实字段名都不许被当成整卡级名词**。
+    Discover the list from templates: **no actual field name may count as a whole-card noun**.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -350,10 +350,10 @@ def test_a_quantifier_governing_a_field_name_is_not_a_full_rewrite(
     ],
 )
 def test_a_quantified_single_field_is_not_a_full_rewrite(simplified, traditional):
-    """⚠️ 上一条是自动发现的守卫，这几句是**另外钉死**的高价值样本。
+    """⚠ The preceding guard uses discovery; these sentences are **separately pinned** high-value samples.
 
-    模板字段清单缩水（改名/减字段）时那条参数化会跟着缩水，这几句不会——
-    「名字」「昵称」「性格」都不是模板字段名，正是用户实际会打出来的说法。
+    If template fields shrink (renaming/removal), that parameterization shrinks too; these sentences remain.
+    名字/昵称/性格 are not template field names, but are terms users actually type.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -364,11 +364,11 @@ def test_a_quantified_single_field_is_not_a_full_rewrite(simplified, traditional
 @pytest.mark.parametrize("modifier", ["可见", "可見"])
 @pytest.mark.parametrize("noun", WHOLE_CARD_NOUNS)
 def test_a_visible_qualified_scope_noun_is_still_a_full_rewrite(noun, modifier):
-    """⚠️ 整卡级名词前面可以带「可见/可見」。
+    """⚠ Whole-card nouns can take 可见/可見 modifiers.
 
-    同一条正则本来就把 `所有可见字段` 当整卡目标，逃生口却不认 `的每个可见字段`
-    ——`把整个卡的每个可见字段重写` 于是掉了下来（Codex P2，base 是 True）。
-    写成可选前缀而不是往名词表里塞几个合成词：它对表里每个名词都成立。
+    The same regex already treats 所有可见字段 as a whole-card target, but the escape hatch missed 的每个可见字段,
+    rejecting `把整个卡的每个可见字段重写` (Codex P2, base=True).
+    Use an optional prefix rather than adding composite nouns: it applies to every noun in the table.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -386,7 +386,7 @@ def test_a_visible_qualified_scope_noun_is_still_a_full_rewrite(noun, modifier):
 def test_the_visible_field_phrasings_codex_named_are_full_rewrites(
     simplified, traditional
 ):
-    """⚠️ 上一条是笛卡尔积，这两句是 Codex 点名的原句，另外钉死。"""  # noqa: DOCSTRING_CJK
+    """⚠ The preceding Cartesian product is supplemented by separately pinned exact sentences reported by Codex."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for text in (simplified, traditional):
@@ -396,16 +396,16 @@ def test_the_visible_field_phrasings_codex_named_are_full_rewrites(
 @pytest.mark.parametrize(
     ("simplified", "traditional"),
     [
-        # 限定词自己当中心语，后面直接跟重写动词（base 是 True，别改掉）。
+        # Quantifier acting as head, immediately followed by rewrite verb (base=True; preserve it).
         ("把整个卡的全部重写一遍", "把整個卡的全部重寫一遍"),
         ("把整个卡的所有都重写", "把整個卡的所有都重寫"),
     ],
 )
 def test_a_bare_quantifier_head_is_still_a_full_rewrite(simplified, traditional):
-    """⚠️ 要求「限定词后面得有个整卡级名词」时容易顺手把这一类也毙掉。
+    """⚠ Requiring a whole-card noun after the quantifier can accidentally block this family too.
 
-    `把整個卡的全部重寫一遍` 里限定词自己就是中心语，是明确的整卡请求。
-    合法收尾（重写动词首字/都/语气词/句末）是闭集，字段名不长这样。
+    In `把整個卡的全部重寫一遍`, the quantifier itself is the head, an explicit whole-card request.
+    Valid endings (rewrite-verb initial/都/particles/sentence end) form a closed set unlike field names.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -419,12 +419,12 @@ def test_a_bare_quantifier_head_is_still_a_full_rewrite(simplified, traditional)
 def test_a_quantifier_after_a_single_field_is_not_a_full_rewrite(
     target, quantifier, field
 ):
-    """⚠️⚠️ 限定词必须紧贴「的」。
+    """⚠⚠ Quantifiers must immediately follow 的.
 
-    给它浮动窗口的版本连着被判了三次 P1，每次都是同一个破坏面：限定词修饰的
-    是单字段「名字」，窗口却跨过它匹配上了，于是
-    _complete_full_rewrite_actions 给其余所有字段合成重写，把用户从没提过的
-    内容静默覆盖掉并 autosave 落库。
+    Floating-window versions received three consecutive P1 findings with the same destructive effect: a quantifier
+    modifies the single field 名字, but the window jumps across it and matches,
+    making _complete_full_rewrite_actions synthesize rewrites for every other field, silently overwriting
+    and autosaving content the user never mentioned.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -434,15 +434,15 @@ def test_a_quantifier_after_a_single_field_is_not_a_full_rewrite(
 
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
 def test_an_inverted_quantifier_is_deliberately_not_a_full_rewrite(target):
-    """⚠️ 这是一条**刻意接受的触发不足**，不是漏改。
+    """⚠ This is **deliberately accepted under-triggering**, not a missed change.
 
-    「…的設定全部重寫」语序倒置，限定词没紧贴「的」，所以不触发整卡补全。
-    要救它就得给限定词一个浮动窗口，而窗口会把上一条那一整类破坏性误判
-    放进来——过度触发会静默覆盖用户没要求改的字段，触发不足只是少补几个
-    字段。两者代价不对称。
+    Inverted ...的設定全部重寫 has a quantifier nonadjacent to 的, so whole-card completion does not trigger.
+    Rescuing it requires a floating window, which admits the entire destructive misclassification family above:
+    over-triggering silently overwrites unrequested fields, whereas under-triggering merely leaves a few
+    fields uncompleted. The costs differ.
 
-    模型仍会照用户原话改设定，只是不跑补全那一趟。
-    ⚠️ 如果哪天有人为了「修好」这条重新加回窗口，上一条会立刻变红。
+    The model still edits definitions as requested, only skipping completion.
+    ⚠ Reintroducing the window to fix this will immediately fail the preceding test.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -450,10 +450,10 @@ def test_an_inverted_quantifier_is_deliberately_not_a_full_rewrite(target):
     assert router._chat_text_requests_full_rewrite(text) is False, text
 
 
-# ⚠️ 限定词闭集要按**语法分布**再切一刀：全部/所有/每个/一切 是全称限定词，
-# 可以后置浮动；整体/整體 是副词、内容/內容 是普通名词，只有紧贴「的」当中心语
-# 时才代表整卡。放进 12 字窗口的话「…的名字整体重写」会触发整卡补全，把用户
-# 只想改一个字段的卡整张覆盖掉。
+# ⚠ Split the closed quantifier set by **syntactic distribution**: 全部/所有/每个/一切 are universal quantifiers
+# that can float afterward; 整体/整體 are adverbs and 内容/內容 common nouns, denoting the whole card only as heads
+# directly adjacent to 的. A 12-character window lets ...的名字整体重写 trigger whole-card completion,
+# overwriting a whole card when the user intended one field.
 FIELD_MODIFIERS = ["整体", "整體", "内容", "內容"]
 
 
@@ -461,7 +461,7 @@ FIELD_MODIFIERS = ["整体", "整體", "内容", "內容"]
 @pytest.mark.parametrize("field", ["名字", "简介", "性格"])
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
 def test_an_adverb_after_a_single_field_is_not_a_full_rewrite(target, field, modifier):
-    """副词/普通名词不能靠 12 字窗口远距离触发整卡补全。"""  # noqa: DOCSTRING_CJK
+    """Adverbs/common nouns cannot trigger whole-card completion remotely through a 12-character window."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'把{target}的{field}{modifier}重写一下'
@@ -471,10 +471,10 @@ def test_an_adverb_after_a_single_field_is_not_a_full_rewrite(target, field, mod
 @pytest.mark.parametrize("modifier", FIELD_MODIFIERS)
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
 def test_the_same_word_next_to_de_is_still_a_full_rewrite(target, modifier):
-    """反向：同一个词紧贴「的」当中心语时仍是整卡重写。
+    """Negative case: the same term still denotes a whole-card rewrite when acting as head immediately after 的.
 
-    ⚠️ 没有这条反向用例，把 整体/内容 从闭集里整个删掉也是绿的——那会把
-    「重寫整個卡片的內容」打回上一轮刚修好的坏行为。
+    ⚠ Without this reverse case, deleting 整体/内容 entirely also passes, returning
+    重寫整個卡片的內容 to the broken behavior fixed last round.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -487,10 +487,10 @@ def test_the_same_word_next_to_de_is_still_a_full_rewrite(target, modifier):
 )
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
 def test_a_single_field_possessive_is_not_a_full_rewrite(target, field):
-    """⚠️ 反向：没有全量限定词的单字段定语必须仍然**不是**整卡重写。
+    """⚠ Negative case: single-field attributes without universal quantifiers must still **not** be whole-card rewrites.
 
-    把判据从名词白名单换成限定词闭集，一不小心就会把这一整类放行——那是
-    `(?![的片])` 当初要挡的东西（`重寫整個卡的名字` 不该触发整卡补全）。
+    Replacing noun allowlists with a closed quantifier set can accidentally admit this whole family,
+    exactly what `(?![的片])` originally blocked (`重寫整個卡的名字` must not trigger whole-card completion).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -651,13 +651,13 @@ def test_ordinary_notes_do_not_trip_the_injection_warning(text):
 )
 @pytest.mark.parametrize("prefix", ["整个卡", "整個卡"])
 def test_a_whole_card_target_must_be_a_complete_word(prefix, continuation):
-    """⚠️⚠️ `整个卡` 同时是 整个卡通 / 整个卡组 / 整个卡牌 的**前缀**。
+    """⚠⚠ `整个卡` is also a **prefix** of 整个卡通 / 整个卡组 / 整个卡牌.
 
-    不要求完整匹配的话，`把整个卡通角色的名字重写` 会触发整卡补全、把用户
-    从没提过的字段全覆盖掉——跟前面三次 P1 是同一个破坏面。
+    Without complete matches, `把整个卡通角色的名字重写` triggers whole-card completion, overwriting
+    every unmentioned field: the same destructive effect as the preceding three P1s.
 
-    续接字（通/组/牌/座/车…）是开集，拉黑不完；所以正向要求目标后面必须是
-    句末、非汉字、结构助词「的」，或一个重写动词的首字（动词表是闭集）。
+    Following characters (通/组/牌/座/车...) are open-ended and cannot be denylisted exhaustively; positively require
+    sentence end, non-Han text, structural particle 的, or a rewrite-verb initial (a closed verb set).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -671,33 +671,33 @@ def test_a_whole_card_target_must_be_a_complete_word(prefix, continuation):
      "重写整个卡的内容", "把全卡重写一遍", "把整个卡的每一个字段都重写"],
 )
 def test_the_completeness_guard_does_not_block_real_whole_card_requests(text):
-    """反向：要求完整匹配不能把真的整卡请求一起挡掉。"""  # noqa: DOCSTRING_CJK
+    """Negative case: requiring complete matches must not block genuine whole-card requests."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-# ⚠️ 吗/嗎/呢 已移出：它们是**疑问**语气词，归疑问守卫管（Codex P1 第五十七轮）。
-# 用例体里的反向断言钉住这条分工。
+# ⚠ Remove 吗/嗎/呢: these are **interrogative** particles handled by the question guard (Codex P1 round 57).
+# Reverse assertions in the case body pin this division of responsibility.
 @pytest.mark.parametrize("particle", ["吧", "啊", "呀", "了", "嘛", "喔"])
 @pytest.mark.parametrize("target", ["整个卡", "整個卡", "整个卡片", "整張卡"])
 def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
-    """⚠️ 完整性守卫的收尾集合必须含语气词。
+    """⚠ The completeness guard's ending set must include particles.
 
-    只放行「的 + 重写动词首字」的话，`重寫整個卡吧` 被判成不是整卡请求
-    （base 是 True）——修一个前缀误判顺手制造了一个新的触发不足。
-    语气词是封闭词类，跟重写动词表一样可以列干净。
+    Allowing only 的 + rewrite-verb initial rejects `重寫整個卡吧` as a whole-card request
+    (base=True), introducing under-triggering while fixing a prefix false positive.
+    Particles form a closed class, fully enumerable like rewrite verbs.
 
-    ⚠️ 但 `吗`/`嗎`/`呢` **不属于**这一族：它们是疑问语气词，用户在问要不要改，
-    不是在下命令（Codex P1 第五十七轮）。下面的反向断言钉住这条分工。
+    ⚠ `吗`/`嗎`/`呢` **do not belong**: they are interrogative particles asking whether to edit,
+    not commands (Codex P1 round 57). Negative assertions below pin this division.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'重写{target}{particle}'
     assert router._chat_text_requests_full_rewrite(text) is True, text
-    # ⚠️ 两道防线各自管一段：句末的由疑问守卫拦，句中的由收尾表拦
-    # （它们不在中性语气词那张表里）。只写句末那一半的话，
-    # 「把 吗/呢 放回中性表」那个变异会照样绿（变异 SURVIVED 才发现）。
+    # ⚠ Two defenses cover separate positions: final particles are blocked by the question guard, medial ones by ending tables
+    # (they are absent from the neutral-particle table). Testing only sentence-final cases lets the mutation
+    # restoring 吗/呢 to the neutral table pass (discovered as mutation SURVIVED).
     for interrogative in ('吗', '嗎', '呢'):
         question = f'重写{target}{interrogative}'
         assert router._chat_text_requests_full_rewrite(question) is False, question
@@ -706,27 +706,27 @@ def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
 
 
 def _negators() -> list[str]:
-    """否定词闭集从实现常量取。
+    """Read the closed negator set from implementation constants.
 
-    ⚠️ 最早一版是手抄 10 个，于是 不准/不許/禁止/嚴禁/休要/不得/莫 全没跑到。
-    ⚠️ 上一版改成从正则源码 scrape（按第一个 `)` 切开再拆 `|`），英文分支
-    一加拉丁词边界就把切点提前了，整张表静默截断——这就是为什么要提成
-    实现侧元组而不是对着正则做字符串手术。
+    ⚠ The earliest manual list of ten missed 不准/不許/禁止/嚴禁/休要/不得/莫 entirely.
+    ⚠ The previous regex-source scraper (split at the first `)` then `|`) silently truncated the table
+    when Latin boundaries were added to English branches, moving the split early. Extract an implementation
+    tuple instead of performing string surgery on regexes.
     """  # noqa: DOCSTRING_CJK
     return _router_table("_CHAT_NEGATION_WORDS")
 
 
 def test_the_english_negation_branch_exists():
-    """英文否定分支不进上面那个笛卡尔积，但它的**存在**必须被断言。
+    """English negation is outside the preceding Cartesian product, but its **existence** must be asserted.
 
-    ⚠️ 同时钉住拉丁词边界：没它的话 `never` 会匹配 `whenever` 的子串。
+    ⚠ Also pin Latin word boundaries: without them, never matches a substring of whenever.
 
-    ⚠️⚠️ 反向断言原本用的是 `whenever you rewrite all fields`，**那是错的**：
-    它 base 就是 False（base 的 `never` 确实匹配进了 `whenever`，结论碰巧对了），
-    我加词边界时把它翻成 True，等于往数据覆盖那一侧放，还把它钉成了期望值。
-    第六十三轮补上英文疑问/条件守卫之后它回到 False ＝ base 行为。
-    改用 `nevertheless`：它同样含 `never` 子串，但整句**确实是命令**，
-    用它验词边界才不会顺带钉住一个缺陷。
+    ⚠⚠ The reverse assertion originally used `whenever you rewrite all fields`, **incorrectly**:
+    base=False already (base's never did match whenever, accidentally reaching the right result),
+    but adding word boundaries flipped it to True, permitting data overwrite and pinning it as expected behavior.
+    Round 63's English question/conditional guard restored False, matching base.
+    Use nevertheless instead: it too contains never, but its whole sentence **really is a command**,
+    verifying word boundaries without also pinning a bug.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -749,9 +749,9 @@ def test_the_english_negation_branch_exists():
 NEGATORS = _negators()
 
 
-# ⚠️ 逐字对照表：只列**简繁写法不同**的那些字。这个 PR 是做繁体对等的，
-# 却在否定词表里漏了繁体「不準」（greptile P1）——所以这一维必须有结构守卫，
-# 不能靠 reviewer 一个一个揪。
+# ⚠ Character correspondence table: include only characters **differing between scripts**. This PR seeks Traditional parity,
+# yet omitted Traditional 不準 from negators (Greptile P1); this dimension needs a structural guard,
+# rather than relying on reviewers to catch omissions individually.
 _SCRIPT_TWIN_CHARS = {
     '准': '準', '许': '許', '无': '無', '请': '請', '严': '嚴',
     '暂': '暫', '时': '時', '别': '別', '禁': '禁', '需': '需',
@@ -759,19 +759,19 @@ _SCRIPT_TWIN_CHARS = {
 
 
 def test_every_negator_has_its_script_twin():
-    """⚠️⚠️ 否定词表里每个含简繁差异字的词，两种写法都必须在。
+    """⚠⚠ Every negator containing differing script characters must have both forms in the table.
 
-    `不准` 有而 `不準` 没有 → 繁中用户说「不準重寫整個卡」照样把整张卡改了。
-    这条守卫是**自动发现**的：逐字扫简繁差异，两侧都要求在表里，
-    以后往表里加词漏了孪生会立刻变红。
+    Having 不准 without 不準 still rewrites a whole card when Traditional users say 不準重寫整個卡.
+    This guard uses **automatic discovery**, scanning character-level script differences and requiring both forms,
+    immediately failing future additions missing their twin.
     """  # noqa: DOCSTRING_CJK
     present = set(NEGATORS)
     to_trad = str.maketrans(_SCRIPT_TWIN_CHARS)
     to_simp = str.maketrans({v: k for k, v in _SCRIPT_TWIN_CHARS.items()})
     missing = []
     for word in NEGATORS:
-        # ⚠️ 整词一次性转换，不要逐字。逐字会要求 暫时不 / 暂時不 这种混写形式，
-        # 现实里没人这么打字——守卫过严会逼着往表里塞垃圾。
+        # ⚠ Convert whole words at once, not character by character, which would require mixed-script 暫时不 / 暂時不
+        # that nobody types; an overly strict guard forces garbage entries into tables.
         for twin in (word.translate(to_trad), word.translate(to_simp)):
             if twin != word and twin not in present:
                 missing.append((word, twin))
@@ -779,14 +779,14 @@ def test_every_negator_has_its_script_twin():
 
 
 def test_the_negator_table_is_derived_and_complete():
-    """⚠️ 钉住闭集**本身**，不用下界。
+    """⚠ Pin the closed set **itself**, not a lower bound.
 
-    下界允许**成对删词**（成对删除连孪生守卫也抓不到），len 掉几个仍然满足
-    `>=`，下游笛卡尔积只是少跑几条用例、不会变红。上一轮
-    `WHOLE_CARD_QUANTIFIERS` 已经因为同样的理由改成相等断言了——「闭集变动
-    应该被看见」——否定词这边是同一个毛病换了个位置（CodeRabbit）。
+    A lower bound permits **paired deletions** (even twin guards cannot catch those): reducing length still satisfies
+    >=, and downstream products merely run fewer cases without failing. Last round,
+    WHOLE_CARD_QUANTIFIERS already changed to equality for the same reason: closed-set changes
+    must be visible. Negators have the same problem elsewhere (CodeRabbit).
 
-    而且这条守卫挡的是整卡补全通路，分支被静默删掉的代价更不对称。
+    This guard protects whole-card completion, making silently deleted branches even more costly.
     """  # noqa: DOCSTRING_CJK
     assert set(NEGATORS) == {
         "不要", "不用", "不需要", "不必", "不想",
@@ -794,8 +794,8 @@ def test_the_negator_table_is_derived_and_complete():
         "别", "別", "甭", "莫", "休要",
         "先不", "暫不", "暂不", "暫時不", "暂时不",
         "無需", "无需", "勿", "切勿", "請勿", "请勿", "禁止", "嚴禁", "严禁",
-        # ⚠️ 「没有必要」那一族是**否定断言**不是祈使禁止，但对我们是同一件事：
-        # `没有必要重写整个卡的每一项内容` base 是 False（第六十八轮 P1）。
+        # ⚠ The 没有必要 family is a **negative assertion**, not an imperative prohibition, but equivalent here:
+        # `没有必要重写整个卡的每一项内容` has base=False (round 68 P1).
         "没有必要", "沒有必要", "没必要", "沒必要", "不必要", "無必要", "无必要",
     }, NEGATORS
 
@@ -803,13 +803,13 @@ def test_the_negator_table_is_derived_and_complete():
 @pytest.mark.parametrize("negator", NEGATORS)
 @pytest.mark.parametrize("target", ["整个卡", "整個卡", "整个角色卡", "整張卡"])
 def test_a_negated_rewrite_never_triggers_full_card_completion(target, negator):
-    """⚠️⚠️ 否定的整卡请求绝不能走整卡补全通路。
+    """⚠⚠ Negated whole-card requests must never enter whole-card completion.
 
-    那是本 PR 里破坏性最强的一条路径：`_complete_full_rewrite_actions` 会给
-    每个缺失字段合成内容并 autosave。`不要重写整个卡` 同时满足整卡目标和重写
-    动词两条谓词，于是用户说「别改」反而把整张卡改了。
+    This is the PR's most destructive path: `_complete_full_rewrite_actions` synthesizes
+    and autosaves every missing field. `不要重写整个卡` meets both target and rewrite-verb
+    predicates, so a don't-edit request instead rewrites the whole card.
 
-    否定词是**封闭类虚词**，可以列干净。
+    Negators are a **closed function-word class**, fully enumerable.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -827,11 +827,11 @@ def test_a_negated_rewrite_never_triggers_full_card_completion(target, negator):
     ],
 )
 def test_the_negation_guard_spans_the_whole_object_phrase(simplified, traditional):
-    """⚠️ 否定词和重写动词之间隔着整个宾语短语，窗口必须够宽。
+    """⚠ A whole object phrase separates negator and rewrite verb, requiring a sufficiently wide window.
 
-    `請勿把整個角色卡全部重寫` 里隔了八个字，{0,4} 够不着。
-    这里放宽是**安全方向**：否定守卫误触发＝整卡补全不跑（少补几个字段），
-    漏触发＝用户说「别改」却把整张卡改了并 autosave。两者代价不对称。
+    Eight characters intervene in `請勿把整個角色卡全部重寫`, beyond {0,4}.
+    Widening is the **safe direction**: false-positive negation skips completion (a few fields remain missing),
+    while false negatives rewrite and autosave despite a don't-edit request. Costs differ.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -845,10 +845,10 @@ def test_the_negation_guard_spans_the_whole_object_phrase(simplified, traditiona
      "dont rewrite the whole card", "please don't rewrite the whole card"],
 )
 def test_an_english_negation_also_blocks_full_card_completion(text):
-    """⚠️ 整卡目标和重写动词那两张表本来就有英文分支，只有否定守卫是纯中文——
-    于是英文否定请求整类绕过去，直接走进整卡补全通路（CodeRabbit）。
+    """⚠ Targets and rewrite verbs already have English branches, but a Chinese-only negation guard lets
+    the entire family of English negative requests bypass it into whole-card completion (CodeRabbit).
 
-    补齐时**两侧都要补**：只加英文否定词而不加英文动词，照样绕过。
+    Complete **both sides**: adding English negators without verbs still permits bypasses.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -859,17 +859,17 @@ def test_an_english_negation_also_blocks_full_card_completion(text):
     "text", ["rewrite the whole card", "regenerate the entire card"]
 )
 def test_an_english_full_rewrite_still_matches(text):
-    """反向：英文否定守卫不能宽到把正常的英文整卡请求也挡掉。"""  # noqa: DOCSTRING_CJK
+    """Negative case: the English negation guard must not be broad enough to block normal English whole-card requests."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
 def test_the_clause_splitter_and_the_negation_window_share_one_table():
-    """⚠️⚠️ 切分器的标点表和否定守卫里那个「不许跨过」的字符类必须同源。
+    """⚠⚠ The splitter's punctuation table and negation guard's do-not-cross class must share one source.
 
-    只改一处的话，「否定只在自己子句内生效」这句话在两个地方就是两个意思。
-    这个文件已经因为「两条判据的前缀漂开」踩过两次坑。
+    Changing only one gives negation acting within its own clause different meanings in each place.
+    This file has already failed twice from drift between two criteria's prefixes.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -893,9 +893,9 @@ def test_the_clause_splitter_and_the_negation_window_share_one_table():
     ],
 )
 def test_a_long_object_phrase_does_not_escape_the_negation(simplified, traditional):
-    """⚠️ 固定长度窗口这条路没有终点：{0,4}→{0,12}→{0,24} 各被绕过一次。
+    """⚠ Fixed windows have no final solution: {0,4}->{0,12}->{0,24} were each bypassed.
 
-    宾语短语可以任意长，真正的上界是**子句**。
+    Object phrases can be arbitrarily long; the real upper bound is the **clause**.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -912,8 +912,8 @@ def test_a_long_object_phrase_does_not_escape_the_negation(simplified, tradition
     ],
 )
 def test_a_negation_does_not_leak_into_another_clause(simplified, traditional):
-    """⚠️ 反方向：否定守卫原本是**全局早退**，一个子句里的「不用」把另一个
-    子句里明确的整卡请求也一起否掉——这是触发不足那一侧的破坏。
+    """⚠ Opposite direction: negation formerly caused a **global early return**, letting 不用 in one clause also negate
+    another clause's explicit whole-card request, an under-triggering defect.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -929,8 +929,8 @@ def test_a_negation_does_not_leak_into_another_clause(simplified, traditional):
     ],
 )
 def test_the_target_and_the_verb_must_share_a_clause(simplified, traditional):
-    """⚠️ 「整个卡」是「展示」的宾语，「重写」管的只是名字。两个信号分属不同
-    子句却被组合起来，就会把整张卡覆盖掉。
+    """⚠ 整个卡 is 展示's object, while 重写 governs only the name. Combining these signals across separate
+    clauses overwrites the whole card.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -939,11 +939,11 @@ def test_the_target_and_the_verb_must_share_a_clause(simplified, traditional):
 
 
 def test_all_three_full_rewrite_predicates_share_a_case_policy():
-    """⚠️⚠️ 三条谓词的大小写口径必须一致。
+    """⚠⚠ All three predicates must share case handling.
 
-    整卡目标和重写动词都带 `re.IGNORECASE`，否定守卫漏了就是单边不对称：
-    `Don't rewrite the whole card` 满足两条正向谓词却躲过守卫，直接走进整卡
-    补全通路（Codex P1）。这是**自动发现**的守卫，不用逐句举例。
+    Targets and rewrite verbs use re.IGNORECASE; omitting it from negation creates asymmetry:
+    `Don't rewrite the whole card` meets both positive predicates but bypasses negation directly into whole-card
+    completion (Codex P1). This guard uses **automatic discovery**, without enumerating sentences.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -960,7 +960,7 @@ def test_all_three_full_rewrite_predicates_share_a_case_policy():
      "Do Not Regenerate The Entire Card"],
 )
 def test_an_english_negation_is_case_insensitive(text):
-    """句首大写是英文最常见的写法，不能因为大小写就绕过守卫。"""  # noqa: DOCSTRING_CJK
+    """Initial capitalization is the most common English form and must not bypass the guard."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is False, text
@@ -971,10 +971,10 @@ def test_an_english_negation_is_case_insensitive(text):
 def test_de_between_a_quantifier_and_its_scope_noun_is_a_full_rewrite(
     quantifier, noun
 ):
-    """⚠️ 限定词和中心语之间可以有结构助词「的」。
+    """⚠ Structural particle 的 may separate quantifier and head.
 
-    `把整个卡的所有的字段重写` 是最自然的说法之一，漏了它整卡补全不触发
-    （Codex P2，base 是 True）。
+    `把整个卡的所有的字段重写` is among the most natural forms; missing it skips whole-card completion
+    (Codex P2, base=True).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -985,10 +985,10 @@ def test_de_between_a_quantifier_and_its_scope_noun_is_a_full_rewrite(
 @pytest.mark.parametrize("field", CARD_TEMPLATE_FIELD_NAMES + ["名字", "昵称", "暱稱"])
 @pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
 def test_de_between_a_quantifier_and_a_field_name_is_still_blocked(quantifier, field):
-    """⚠️ 上一条放开「的」时，单字段那道保险必须原样保住。
+    """⚠ Admitting 的 above must preserve the single-field guard unchanged.
 
-    `把整个卡的所有的名字重写` 仍然只想改一个字段——放行它就等于把 P1 那条
-    整卡覆盖从另一个入口放回来。
+    `把整个卡的所有的名字重写` still intends one field; admitting it reopens P1's whole-card
+    overwrite through another entry point.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1002,22 +1002,22 @@ def test_de_between_a_quantifier_and_a_field_name_is_still_blocked(quantifier, f
 def test_a_separator_does_not_turn_a_field_edit_into_a_full_rewrite(
     quantifier, separator, field
 ):
-    """⚠️⚠️ P1：空白不能算「限定词自己当中心语」的合法收尾。
+    """⚠⚠ P1: whitespace cannot validly end a quantifier acting as its own head.
 
-    上一版把收尾写成 `[^一-鿿]`，空格也在里面，于是 `把整个卡的全部 名字重写`
-    被判成整卡重写——同一句话不带空格时是正确的单字段编辑，加个空格就走进
-    `_complete_full_rewrite_actions` 把其余字段全覆盖并 autosave（Codex P1）。
+    The former `[^一-鿿]` ending included spaces, making `把整个卡的全部 名字重写`
+    a whole-card rewrite: without spaces it correctly edits one field, but one added space enters
+    `_complete_full_rewrite_actions`, overwriting and autosaving all other fields (Codex P1).
 
-    ⚠️ 配对正向断言：空白后面确实是合法收尾时，仍然是整卡重写——否则把空白
-    整个禁掉也能让这条变绿。
+    ⚠ Paired positive: a genuinely valid ending after whitespace still means a whole-card rewrite,
+    or banning whitespace entirely would also pass this test.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     blocked = f'把整个卡的{quantifier}{separator}{field}重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
-    # ⚠️ 限定词**自己当中心语**只对窄表成立：逐项类（每个/每项/每一项/各项）
-    # 是在**点名**而不是在说整卡，`把整个卡的每一项重写` base 就是 False
-    # （第五十八轮：把 `每一项` 当整卡目标一口气长出三条 P1）。
+    # ⚠ Quantifiers **acting as heads** use only the narrow table: itemwise 每个/每项/每一项/各项
+    # **name items**, not the whole card; `把整个卡的每一项重写` has base=False
+    # (round 58: treating 每一项 as a whole-card target produced three P1s at once).
     allowed = f'把整个卡的{quantifier}{separator}重写一遍'
     expected = quantifier in WHOLE_CARD_BARE_QUANTIFIERS
     assert router._chat_text_requests_full_rewrite(allowed) is expected, allowed
@@ -1027,10 +1027,10 @@ def test_a_separator_does_not_turn_a_field_edit_into_a_full_rewrite(
 @pytest.mark.parametrize("space", [" ", "\u3000", "  "])
 @pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
 def test_whitespace_before_a_scope_noun_is_skipped(quantifier, space, noun):
-    """⚠️ 空白只在**中心语确实是整卡级名词**时才跳过（base 是 True）。
+    """⚠ Skip whitespace only **when the head really is a whole-card noun** (base=True).
 
-    ⚠️ 配对反向断言：同样的空白后面跟字段名时仍然被挡——这两条合起来才说明
-    「跳过空白」没有把上一轮那条 P1（空格绕过单字段保险）放回来。
+    ⚠ Paired negative: a field name after identical whitespace stays blocked; together these establish
+    that skipping whitespace did not restore last round's P1 space bypass of the single-field guard.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1043,14 +1043,14 @@ def test_whitespace_before_a_scope_noun_is_skipped(quantifier, space, noun):
 @pytest.mark.parametrize("space", [" ", "\u3000", "  "])
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
 def test_whitespace_before_de_does_not_bypass_the_possessive_guard(target, space):
-    """⚠️ 目标和「的」之间的空白也要跳过。
+    """⚠ Skip whitespace between target and 的 too.
 
-    `(?![的片])` 只看一个字符，看到空格就放行，于是 `把整个卡 的名字重写` 被判成
-    整卡重写、覆盖用户没要求改的字段（CodeRabbit）。这是空格绕过保险的**第二个**
-    入口——第一个是限定词后面那个（见上面那条 P1）。
+    `(?![的片])` sees only one character and admits a space, classifying `把整个卡 的名字重写`
+    as a whole-card rewrite and overwriting unrequested fields (CodeRabbit). This is the **second** whitespace
+    bypass, after the post-quantifier one (see P1 above).
 
-    ⚠️ 配对正向断言：跳过空白之后确实是整卡请求时仍然是 True，否则把空白一刀切
-    禁掉也能让这条变绿。
+    ⚠ Paired positive: genuine whole-card requests stay True after skipping whitespace, or banning
+    all whitespace would also pass.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1064,10 +1064,10 @@ def test_whitespace_before_de_does_not_bypass_the_possessive_guard(target, space
 @pytest.mark.parametrize("space", [" ", "\u3000"])
 @pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
 def test_whitespace_after_the_attributive_linker_is_skipped(quantifier, space, noun):
-    """⚠️ 空白可能落在第二个「的」**后面**：`把整个卡的所有的 字段重写`（base 是
-    True）。这是空格绕过/挡路的第三个位置，前两个是限定词后面和目标与「的」之间。
+    """⚠ Whitespace may follow the second 的: `把整个卡的所有的 字段重写` (base=
+    True). This is the third whitespace bypass/block position, after quantifiers and between target and 的.
 
-    ⚠️ 配对反向断言：跳过空白后仍然是字段名时照旧被挡。
+    ⚠ Paired negative: if a field name follows skipped whitespace, it remains blocked.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1083,13 +1083,13 @@ def test_whitespace_after_the_attributive_linker_is_skipped(quantifier, space, n
 def test_a_longer_noun_starting_with_a_scope_noun_is_not_a_full_rewrite(
     quantifier, noun, suffix
 ):
-    """⚠️⚠️ P1：整卡级名词是**前缀匹配**，必须要求右边界。
+    """⚠⚠ P1: whole-card nouns use **prefix matching**, requiring a right boundary.
 
-    `把整个卡的所有字段名重写` 说的是「把所有字段**名**改掉」，却会触发
-    `_complete_full_rewrite_actions` 给每个字段合成**内容**并 autosave
-    （Codex P1 第十二轮，base 也是 True——属这个 PR 要修的同一族破坏）。
+    `把整个卡的所有字段名重写` asks to change all field **names**, yet triggers
+    `_complete_full_rewrite_actions` to synthesize and autosave every field's **content**
+    (Codex P1 round 12, base=True too: the same destructive family this PR fixes).
 
-    ⚠️ 字段清单那一支（`所有字段`）同样是前缀匹配，两处都要挂边界。
+    ⚠ The field-list branch (所有字段) also matches prefixes; both places need boundaries.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1100,11 +1100,11 @@ def test_a_longer_noun_starting_with_a_scope_noun_is_not_a_full_rewrite(
 @pytest.mark.parametrize(
     "phrasing",
     [
-        # 续接成分**仍是范围名词**时不能被边界误伤
+        # Boundaries must not reject continuations that **remain scope nouns**.
         "把整个卡的所有设定项重写",
         "把整个卡的所有字段内容重写",
         "把整个卡的所有属性值重写",
-        # 边界本身的合法收尾
+        # Valid endings at the boundary itself.
         "把整个卡的所有字段重写",
         "把整个卡的每一个字段都重写",
         "把所有字段的内容重写一遍",
@@ -1112,9 +1112,9 @@ def test_a_longer_noun_starting_with_a_scope_noun_is_not_a_full_rewrite(
     ],
 )
 def test_the_scope_noun_boundary_does_not_block_real_requests(phrasing):
-    """⚠️ 与上一条成对：加边界很容易顺手把「设定项 / 字段内容」这类真整卡请求
-    一起挡掉，所以续接允许量词化后缀和另一个整卡级名词（都是闭集），「的」也是
-    合法收尾。
+    """⚠ Paired with the preceding case: adding boundaries can accidentally block genuine requests such as 设定项 / 字段内容,
+    so allow classifier-like suffixes and another whole-card noun (both closed sets) as continuations; 的 is
+    also a valid ending.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1126,13 +1126,13 @@ def test_the_scope_noun_boundary_does_not_block_real_requests(phrasing):
     ["一并", "一併", "一起", "统统", "統統", "通通", "全都", "彻底", "徹底",
      "好好", "认真", "認真", "重新"],
 )
-# ⚠️ 参数只取**能自己当中心语**的限定词：逐项类（每一个/每项…）不在此列，
-# 它们是在点名而不是在说整卡（第五十八轮，三条 P1 的根因）。
+# ⚠ Parameters include only quantifiers **able to act as heads themselves**; itemwise forms (每一个/每项...)
+# name items rather than the whole card (round 58, root cause of three P1s).
 @pytest.mark.parametrize("quantifier", ["全部", "所有", "一切"])
 def test_an_adverb_between_a_bare_quantifier_and_the_verb(quantifier, adverb):
-    """⚠️ 限定词自己当中心语时，动词前面还可以夹并列/强调副词（base 是 True）。
+    """⚠ With quantifiers acting as heads, coordinating/emphatic adverbs may intervene before verbs (base=True).
 
-    ⚠️ 配对反向断言：副词位置换成字段名时仍然被挡——副词后面仍然要求重写动词。
+    ⚠ Paired negative: replacing the adverb with a field name remains blocked; a rewrite verb is still required after adverbs.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1150,7 +1150,7 @@ def test_an_adverb_between_a_bare_quantifier_and_the_verb(quantifier, adverb):
     ],
 )
 def test_de_after_the_visibility_modifier_is_allowed(simplified, traditional):
-    """`可见的字段` 是最常规的定语写法，base 是 True（Codex P2 第十二轮）。"""  # noqa: DOCSTRING_CJK
+    """可见的字段 is the standard attributive form, base=True (Codex P2 round 12)."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for text in (simplified, traditional):
@@ -1160,19 +1160,19 @@ def test_de_after_the_visibility_modifier_is_allowed(simplified, traditional):
 @pytest.mark.parametrize(
     "latin_field", ["nickname", "field_name", "age2", "Signature Line", "_meta"]
 )
-# ⚠️ 参数只取**能自己当中心语**的限定词：逐项类（每一个/每项…）不在此列，
-# 它们是在点名而不是在说整卡（第五十八轮，三条 P1 的根因）。
+# ⚠ Parameters include only quantifiers **able to act as heads themselves**; itemwise forms (每一个/每项...)
+# name items rather than the whole card (round 58, root cause of three P1s).
 @pytest.mark.parametrize("quantifier", ["全部", "所有", "一切"])
 def test_a_latin_field_name_after_a_bare_quantifier_is_not_a_full_rewrite(
     quantifier, latin_field
 ):
-    """⚠️⚠️ P1：「非汉字收尾」不能把**拉丁字母/数字/下划线**算进去。
+    """⚠⚠ P1: non-Han endings must not include **Latin letters/digits/underscores**.
 
-    自定义字段名可以叫 nickname / field_name / age2（en 模板里本来就全是拉丁
-    字段名），于是 `把整个卡的全部 nickname重写` 又是一条绕过单字段保险的后门
-    （Codex P1 第十三轮）。合法的非汉字收尾只有**标点**。
+    Custom field names can be nickname / field_name / age2 (en templates already use Latin
+    field names), so `把整个卡的全部 nickname重写` is another single-field guard bypass
+    (Codex P1 round 13). Only **punctuation** is a valid non-Han ending.
 
-    ⚠️ 配对正向断言：真正的标点收尾和重写动词收尾都不能被误伤。
+    ⚠ Paired positive: genuine punctuation and rewrite-verb endings must remain accepted.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1187,45 +1187,45 @@ def test_a_latin_field_name_after_a_bare_quantifier_is_not_a_full_rewrite(
     ["把所有字段值重写", "重写全部字段内容", "把所有欄位值重寫", "把每个字段内容重写"],
 )
 def test_a_direct_field_list_consumes_scope_suffixes(phrasing):
-    """⚠️ 字段清单那一支也要**先吃掉合法的范围续接再判边界**。
+    """⚠ The field-list branch must also **consume valid scope continuations before checking boundaries**.
 
-    `把所有字段值重写` / `重写全部字段内容` 被自己刚加的边界挡掉了
-    （Codex P2 第十三轮，base 是 True）——加边界那一轮只在整卡级名词那一支
-    做了后缀消费，这一支漏了。
+    `把所有字段值重写` / `重写全部字段内容` were blocked by their newly added boundary
+    (Codex P2 round 13, base=True): the boundary update consumed suffixes only for whole-card nouns,
+    missing this branch.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
-    # 反向：字段**名**照旧被挡。
+    # Negative cases: field **names** remain blocked.
     assert router._chat_text_requests_full_rewrite('把所有字段名重写') is False
 
 
 @pytest.mark.parametrize(
     "field",
-    # 各语种模板 / 自定义字段名可能长的样子：拉丁、片假名、西里尔、谚文、希腊、
-    # 以及程序味的 `_meta` / `@type`。
+    # Possible template/custom field names across languages: Latin, katakana, Cyrillic, Hangul, Greek,
+    # and code-like `_meta` / `@type`.
     ["nickname", "field_name", "ニックネーム", "имя", "이름", "Δname", "_meta", "@type"],
 )
-# ⚠️ 参数只取**能自己当中心语**的限定词：逐项类（每一个/每项…）不在此列，
-# 它们是在点名而不是在说整卡（第五十八轮，三条 P1 的根因）。
+# ⚠ Parameters include only quantifiers **able to act as heads themselves**; itemwise forms (每一个/每项...)
+# name items rather than the whole card (round 58, root cause of three P1s).
 @pytest.mark.parametrize("quantifier", ["全部", "所有", "一切"])
 def test_only_punctuation_can_terminate_a_bare_quantifier(quantifier, field):
-    r"""⚠️⚠️ P1：收尾必须**正向白名单标点**，不能写「非汉字」的否定类。
+    r"""⚠⚠ P1: endings need a **positive punctuation allowlist**, never a negated non-Han class.
 
-    否定类挡掉拉丁之后照样把**其它所有文字**当标点——ja 模板的字段名本来就是
-    片假名（`ニックネーム`），俄/韩/希腊同理（Codex P1 第十三、十四轮各抓到
-    一半）。「不是汉字的东西」是开集，能枚举干净的是**标点**。
+    Even excluding Latin, a negative class treats **all other scripts** as punctuation; ja templates use
+    katakana (`ニックネーム`), and Russian/Korean/Greek are similar (Codex P1 rounds 13/14 each caught
+    half). Non-Han is open-ended; **punctuation** can be fully enumerated.
 
-    ⚠️ 白名单里也不能顺手收 `_ @ + / #`：字段名可以叫 `_meta` / `@type`。
-    ⚠️ 全角空格更不能收：它是空白不是标点，`\s*` 已经会跳过它；收进来第四轮
-    那条 P1 会当场回来（这两处第一版都写错了，是配对用例逮住的）。
+    ⚠ Do not casually include `_ @ + / #`: fields can be named `_meta` / `@type`.
+    ⚠ Especially exclude full-width space: it is whitespace, not punctuation, and `\s*` already skips it; including it
+    immediately restores round 4's P1 (both first-version errors were caught by paired cases).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for space in (" ", "\u3000"):
         blocked = f'把整个卡的{quantifier}{space}{field}重写'
         assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
-    # 配对正向：真正的标点收尾和重写动词收尾都不能被误伤。
+    # Paired positives: genuine punctuation endings and rewrite-verb endings must remain accepted.
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡的{quantifier}…重写'
     ) is True
@@ -1235,38 +1235,38 @@ def test_only_punctuation_can_terminate_a_bare_quantifier(quantifier, field):
 
 
 def test_scope_suffix_matching_is_unambiguous():
-    """⚠️⚠️ P1：范围续接的重复交替**不能有重叠解析**。
+    """⚠⚠ P1: repeated scope-continuation alternatives **must not allow overlapping parses**.
 
-    `项目` 既能当整卡级名词、也能拆成 `项` + `目` 两个后缀，于是
-    `把所有字段` + `项目`×N + `名字重写`（边界失败）在每个位置都有多种切法：
-    实测 N=16 → 23ms，N=20 → 370ms，再往上指数增长（Codex P1 第十四轮）。
-    这条判据处理的是**用户聊天原文**，没有长度上限。
+    项目 is both a whole-card noun and two suffixes 项 + 目, so
+    `把所有字段` + `项目`×N + `名字重写` (failing boundary) has multiple segmentations at each position:
+    measured N=16 -> 23ms, N=20 -> 370ms, then exponential growth (Codex P1 round 14).
+    This criterion processes **raw user chat** without a length cap.
 
-    原子组让重复只有一种切法（不同切法消费的字符数本来就相同，所以语义不变）。
-    ⚠️ 同一个片段在两处用（整卡前视 + 字段清单），两处都要原子化。
+    Atomic groups allow only one segmentation (all alternatives already consume the same character count, preserving semantics).
+    ⚠ This fragment appears twice (whole-card lookahead + field list); both must be atomic.
     """  # noqa: DOCSTRING_CJK
     import time
 
     import main_routers.card_assist_router as router
 
-    # ⚠️ 钉**相等**不是下界：`>= 2` 时删掉其中任意一处原子组测试照样绿，而现在
-    # 整条正则里有 6 处（CodeRabbit nitpick）。真要加/减原子组，改这个数的同时
-    # 得在下面补一条对应路径的最坏输入。
+    # ⚠ Assert **equality**, not a lower bound: with >=2, removing any one atomic group still passed; now
+    # the complete regex has six (CodeRabbit nitpick). Adding/removing an atomic group requires updating the count
+    # and adding a worst-case input for its corresponding path below.
     assert router._CHAT_FULL_REWRITE_RE.pattern.count("(?>") == 6, (
         "范围续接的原子组数量变了——重叠解析会指数回溯，改这里前先补最坏用例"
     )
-    # ⚠️ 最坏输入要**每条路径各来一条**：上一版只打了「限定词 + 范围成分」那条，
-    # 头部名词分支和「的」递归分支的回溯没人看着（CodeRabbit nitpick）。
+    # ⚠ Supply a worst-case input **for every path**: the former version covered only quantifier + scope components,
+    # leaving head-noun and recursive 的 branches' backtracking unguarded (CodeRabbit nitpick).
     worst_cases = (
-        '把所有字段' + '项目' * 40 + '名字重写',            # 限定词 + 范围成分续接
-        '把整个卡的内容' + '项目' * 40 + '名字重写',         # 头部名词分支
-        '把所有字段的所有内容' + '项目' * 40 + '名字重写',    # 「的」递归 + 闭集收尾
+        '把所有字段' + '项目' * 40 + '名字重写',            # Quantifier + scope continuation.
+        '把整个卡的内容' + '项目' * 40 + '名字重写',         # Head-noun branch.
+        '把所有字段的所有内容' + '项目' * 40 + '名字重写',    # Recursive 的 + closed-set ending.
     )
     start = time.perf_counter()
     for worst in worst_cases:
         assert router._chat_text_requests_full_rewrite(worst) is False, worst
-    # ⚠️ 指数回溯是**秒级起跳**（修前 N=20 已经 370ms、N=40 跑不完），所以上限
-    # 留一个数量级余量：既能抓住回溯，又不会在共享 CI runner 上因负载抖动假红
+    # ⚠ Exponential backtracking takes **seconds or more** (before the fix, N=20 took 370ms and N=40 never finished), so
+    # leave an order of magnitude of headroom: catch backtracking without false failures from shared CI runner load.
     # （CodeRabbit nitpick）。
     assert time.perf_counter() - start < 5.0, "范围续接又开始回溯了"
 
@@ -1274,8 +1274,8 @@ def test_scope_suffix_matching_is_unambiguous():
 @pytest.mark.parametrize("adverb", ["一并", "一併", "彻底", "徹底", "统统", "重新"])
 @pytest.mark.parametrize("noun", ["字段", "欄位", "设定"])
 def test_an_adverb_after_a_scope_noun_is_still_a_full_rewrite(noun, adverb):
-    """⚠️ 名词收尾也要认并列副词——跟限定词那一支同一张表，两处别漂开
-    （`把所有字段一并重写` base 是 True，Codex P2 第十四轮）。
+    """⚠ Noun endings also accept coordinating adverbs, sharing the quantifier branch's table to prevent drift
+    (`把所有字段一并重写` has base=True, Codex P2 round 14).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1287,10 +1287,10 @@ def test_an_adverb_after_a_scope_noun_is_still_a_full_rewrite(noun, adverb):
 @pytest.mark.parametrize("suffix", ["内容", "內容", "值", "项"])
 @pytest.mark.parametrize("prefix", ["所有字段", "全部欄位", "每个字段"])
 def test_whitespace_before_a_direct_scope_suffix_is_skipped(prefix, suffix, space):
-    """⚠️ 范围续接前面也可能有空白（`把所有字段 内容重写`，base 是 True）。
+    """⚠ Whitespace may precede scope continuations (`把所有字段 内容重写`, base=True).
 
-    这是空白在这条判据里的**第四个位置**（前三个：限定词后、目标与「的」之间、
-    第二个「的」后）。⚠️ 配对反向断言：字段**名**照旧被挡。
+    This is whitespace's **fourth position** in this criterion (after quantifiers, between target and 的,
+    after the second 的). ⚠ Paired negative: field **names** remain blocked.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1305,7 +1305,7 @@ def test_whitespace_before_a_direct_scope_suffix_is_skipped(prefix, suffix, spac
     [("把整个卡的所有数据重写", "把整個卡的所有數據重寫")],
 )
 def test_data_is_a_whole_card_scope_noun(simplified, traditional):
-    """`数据/數據` 跟 `资料/資料` 同族，base 是 True（Codex P2 第十五轮）。"""  # noqa: DOCSTRING_CJK
+    """数据/數據 belongs with 资料/資料, base=True (Codex P2 round 15)."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for text in (simplified, traditional):
@@ -1315,8 +1315,8 @@ def test_data_is_a_whole_card_scope_noun(simplified, traditional):
 @pytest.mark.parametrize("space", [" ", "\u3000"])
 @pytest.mark.parametrize("quantifier", ["每一个", "每项", "各项", "所有"])
 def test_whitespace_before_quantified_scope_suffixes_is_skipped(quantifier, space):
-    """⚠️ 整卡那一支的续接前面也要跳空白——直接字段清单那一支上一轮改了，这一支
-    漏了（Codex P2 第十七轮，base 是 True）。又是同一件事两处漂开。
+    """⚠ Whole-card continuations must skip preceding whitespace too: last round updated direct field lists but
+    missed this branch (Codex P2 round 17, base=True), another duplicated-rule drift.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1329,27 +1329,27 @@ def test_whitespace_before_quantified_scope_suffixes_is_skipped(quantifier, spac
 @pytest.mark.parametrize(
     "phrasing",
     [
-        # 「的」后面跟的是字段名 —— 跟 `字段名` 同族，只是中间多了个「的」
+        # 的 precedes a field name: same family as 字段名, with an intervening 的.
         "把所有字段的名字重写",
         "把整个卡的所有字段的名字重写",
         "把整个卡的所有设定的名字重写",
-        # 头部名词那一支同样是前缀匹配
+        # The head-noun branch also uses prefix matching.
         "把整个卡的内容名重写",
         "把整个卡的内容概要重写",
         "把整个卡的设定风格重写",
     ],
 )
 def test_every_scope_branch_requires_a_right_boundary(phrasing):
-    """⚠️⚠️ 这条把「前缀匹配缺右边界」这一族的**最后两个入口**堵上。
+    """⚠⚠ This closes the **last two entry points** in the missing-right-boundary prefix family.
 
-    整卡级名词、字段清单两处第十二/十三轮已经加了边界，但
-    * 收尾里的裸「的」不检查后续成分 → `字段的名字` 照样进整卡补全；
-    * 头部名词（整体/内容）那一支根本没挂边界 → `内容名` / `内容概要` 同理。
-    两处都会触发 `_complete_full_rewrite_actions` 覆盖用户没要求改的字段
+    Whole-card nouns and field lists gained boundaries in rounds 12/13, but
+    * bare 的 in endings did not inspect following components, admitting 字段的名字 to whole-card completion;
+    * head nouns (整体/内容) had no boundary at all, likewise admitting 内容名 / 内容概要.
+    Both trigger `_complete_full_rewrite_actions` to overwrite unrequested user fields.
     （CodeRabbit Major ×2）。
 
-    ⚠️ 这一族在这个 PR 里出现了**四次**，每次都是同一个形状：白名单里的词是
-    另一个更长词的前缀。加白名单词时必须同时问「它后面凭什么结束」。
+    ⚠ This family appeared **four times** in this PR with the same shape: an allowlisted term prefixes
+    another longer word. Whenever adding an allowlist term, ask what establishes its ending.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1368,7 +1368,7 @@ def test_every_scope_branch_requires_a_right_boundary(phrasing):
     ],
 )
 def test_the_right_boundary_does_not_block_real_whole_card_requests(phrasing):
-    """⚠️ 与上一条成对：加边界最容易顺手把「的内容」这类真整卡请求一起挡掉。"""  # noqa: DOCSTRING_CJK
+    """⚠ Paired with the preceding case: boundaries can easily block genuine whole-card requests such as 的内容."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
@@ -1377,14 +1377,14 @@ def test_the_right_boundary_does_not_block_real_whole_card_requests(phrasing):
 @pytest.mark.parametrize(
     ("phrasing", "expected"),
     [
-        # 范围后缀自己当中心语（base 是 True）
+        # Scope suffix acting as its own head (base=True).
         ("把整个卡的全部值都重写", True),
         ("把整個卡的所有值重寫", True),
         ("把整个卡的全部项重写", True),
-        # 头部名词后面先吃掉范围成分再判边界（base 是 True）
+        # Consume scope components after head nouns before checking boundaries (base=True).
         ("把整个卡的内容设定重写", True),
         ("把整个卡的内容资料重写", True),
-        # ⚠️ 反向：边界放宽之后，单字段那一族仍然必须被挡
+        # ⚠ Negative cases: the single-field family must remain blocked after widening boundaries.
         ("把整个卡的内容名重写", False),
         ("把整个卡的内容概要重写", False),
         ("把整个卡的全部名字重写", False),
@@ -1392,11 +1392,11 @@ def test_the_right_boundary_does_not_block_real_whole_card_requests(phrasing):
     ],
 )
 def test_the_scope_boundary_is_neither_too_tight_nor_too_loose(phrasing, expected):
-    """⚠️ 加右边界（第十二~十九轮）之后必然会有「收得太紧」的另一面。
+    """⚠ Right boundaries (rounds 12-19) necessarily risk excessive restriction too.
 
-    这条把两个方向钉在**同一个用例**里：范围后缀能自己当中心语、头部名词后面
-    能先吃掉范围成分，同时 `内容名` / `全部名字` / `字段的名字` 这一族照旧被挡。
-    分开写的话，下次放宽边界的人只会看到自己那一半。
+    This pins both directions **in one test**: suffixes can act as heads and head nouns can consume
+    scope components, while 内容名 / 全部名字 / 字段的名字 remain blocked.
+    Separate tests show future boundary changes only one half of the tradeoff.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1406,18 +1406,18 @@ def test_the_scope_boundary_is_neither_too_tight_nor_too_loose(phrasing, expecte
 @pytest.mark.parametrize("verb", ["rewrite", "revise", "regenerate", "redo", "refresh"])
 @pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有字段"])
 def test_an_english_rewrite_verb_terminates_a_chinese_scope(scope, verb):
-    r"""⚠️ 英文重写动词也是合法收尾（base 是 True）。
+    r"""⚠ English rewrite verbs are valid endings too (base=True).
 
-    第十四轮把收尾收成「只认标点」堵拉丁字段名时，把这一族一起挡掉了
-    （Codex P2 第二十二轮）。这一侧安全——它是 `_CHAT_REWRITE_VERB_RE` 里的
-    **闭集**，不像 `nickname` 那样是任意字段名。
+    Round 14's punctuation-only endings blocked Latin field names but also blocked this family
+    (Codex P2 round 22). This side is safe: a **closed set** from `_CHAT_REWRITE_VERB_RE`,
+    unlike arbitrary field names such as nickname.
 
-    ⚠️ 右边界用 `\b`：`rewriteX` 这类更长的标识符不能命中，否则 P1 从这里回来。
+    ⚠ Use `\b` on the right: longer identifiers such as rewriteX must not match, or P1 returns here.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(f'{scope} {verb}') is True
-    # 反向：拉丁字段名照旧被挡，更长的标识符也不能借这条路进来。
+    # Negative cases: Latin field names remain blocked, and longer identifiers cannot enter this path either.
     assert router._chat_text_requests_full_rewrite(
         f'{scope} {verb}X重写'
     ) is False
@@ -1427,26 +1427,26 @@ def test_an_english_rewrite_verb_terminates_a_chinese_scope(scope, verb):
 @pytest.mark.parametrize(
     ("phrasing", "expected"),
     [
-        # ⚠️「的」这一支自己也要递归到收尾：只检查一个范围成分时 `内容` 匹配上、
-        # `概要` 没人管，于是又从这里进了整卡补全通路（CodeRabbit Major）。
+        # ⚠ The 的 branch must recurse through its ending: checking one scope component matches 内容,
+        # leaving 概要 unchecked and reentering whole-card completion (CodeRabbit Major).
         ("把所有字段的内容概要重写", False),
         ("把整个卡的所有设定的内容概要重写", False),
         ("把所有字段的内容名重写", False),
         ("把所有字段的设定风格重写", False),
-        # 反向：真正的整卡请求不能被这道递归收尾误伤
+        # Negative cases: genuine whole-card requests must survive this recursive ending check.
         ("把所有字段的内容重写一遍", True),
         ("把整个卡的所有字段的内容重写", True),
         ("把整个卡的所有字段值重写", True),
     ],
 )
 def test_the_de_branch_recurses_to_a_closed_tail(phrasing, expected):
-    """⚠️ 「白名单词是更长词的前缀」在本 PR 里的**第五个入口**。
+    """⚠ The PR's **fifth entry point** where an allowlisted term prefixes a longer word.
 
-    前四个：字段名 / 字段清单 / 的名字 / 内容名。这一个是「的」分支自己——它只
-    检查一个范围成分就收工，后面跟什么都不管。修法是吃掉一串范围成分（原子化，
-    避免重叠解析）再要求闭集收尾。
+    The first four: 字段名 / 字段清单 / 的名字 / 内容名. This is the 的 branch itself: it checks
+    one scope component then ignores everything following. Consume a run of scope components (atomically,
+    avoiding overlapping parses), then require a closed-set ending.
 
-    ⚠️ 闭集收尾那份**刻意不含「的」那一支**，否则这条会无限递归。
+    ⚠ The closed-set ending **deliberately excludes the 的 branch**, or this would recurse infinitely.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1459,9 +1459,9 @@ def test_the_de_branch_recurses_to_a_closed_tail(phrasing, expected):
 )
 @pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有字段"])
 def test_more_whole_card_rewrite_adverbs(scope, adverb):
-    """范围级副词表补齐（base 全是 True，Codex P2 第二十六轮）。
+    """Complete scope-level adverb coverage (all base=True, Codex P2 round 26).
 
-    ⚠️ 配对反向断言：副词位置换成字段名仍然被挡——副词后面依旧要求重写动词。
+    ⚠ Paired negative: a field name instead of the adverb remains blocked; a rewrite verb is still required afterward.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1472,9 +1472,9 @@ def test_more_whole_card_rewrite_adverbs(scope, adverb):
 @pytest.mark.parametrize("quantifier", ["所有", "全部", "每一个", "各项"])
 @pytest.mark.parametrize("noun", ["内容", "內容", "设定", "字段"])
 def test_a_quantifier_may_sit_between_de_and_the_scope_noun(quantifier, noun):
-    """⚠️ 「的」和范围成分之间还能夹一个**全称限定词**（base 是 True）。
+    """⚠ A **universal quantifier** may intervene between 的 and scope component (base=True).
 
-    ⚠️ 配对反向断言：夹了限定词也不能把字段名放进来。
+    ⚠ Paired negative: an intervening quantifier must not admit field names.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1487,9 +1487,9 @@ def test_a_quantifier_may_sit_between_de_and_the_scope_noun(quantifier, noun):
 @pytest.mark.parametrize("noun", ["文本", "文字", "文案"])
 @pytest.mark.parametrize("quantifier", ["所有", "全部", "每一个"])
 def test_textual_content_nouns_are_whole_card_scopes(quantifier, noun):
-    """文本/文字/文案 跟 内容/资料/数据 同族（base 是 True，Codex P2 第二十七轮）。
+    """文本/文字/文案 belong with 内容/资料/数据 (base=True, Codex P2 round 27).
 
-    ⚠️ 配对反向断言：加了后缀的更长词照旧被右边界挡住。
+    ⚠ Paired negative: longer suffixed words remain blocked by the right boundary.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1502,14 +1502,14 @@ def test_textual_content_nouns_are_whole_card_scopes(quantifier, noun):
 @pytest.mark.parametrize(
     ("phrasing", "expected"),
     [
-        # 全称限定词当副词用 / 逐项类副词（base 是 True）
+        # Universal quantifiers as adverbs / itemwise adverbs (base=True).
         ("把所有字段全部重写", True),
         ("把所有字段逐项重写", True),
         ("把全部欄位逐條重寫", True),
-        # 嵌套限定词后面也能带「的」（base 是 True）
+        # Nested quantifiers can also precede 的 (base=True).
         ("把所有字段的所有的内容重写", True),
         ("把全部字段的全部的内容重写", True),
-        # ⚠️⚠️ 反向：这四条是 P1 保险，放宽副词/嵌套时**最容易被顺手带开**
+        # ⚠⚠ Negative cases: these four P1 guards are **especially easy to loosen accidentally** while widening adverbs/nesting.
         ("把所有字段的所有名字重写", False),
         ("把所有字段的所有的名字重写", False),
         ("把所有字段的内容概要重写", False),
@@ -1517,19 +1517,19 @@ def test_textual_content_nouns_are_whole_card_scopes(quantifier, noun):
     ],
 )
 def test_adverb_and_nested_quantifier_widening_keeps_the_p1_guard(phrasing, expected):
-    """⚠️⚠️ 这条用例记录一次**我自己写坏又改回来**的经过，根因值得记。
+    """⚠⚠ This test records a mistake **I introduced then fixed**, whose cause is worth preserving.
 
-    第二十八轮放宽副词槽时，`把整个卡的全部设定标题重写` / `把所有字段的所有名字
-    重写` 这类单字段请求从边界溜了进来，P1 保险当场破——是这个文件里的参数化用例
-    逮住的。
+    Widening the adverb slot in round 28 admitted single-field requests such as `把整个卡的全部设定标题重写` / `把所有字段的所有名字
+    重写` through boundaries, immediately breaking the P1 guard; parameterized cases in this file
+    caught it.
 
-    ⚠️ 根因**不是**词表内容（事后用变异体单独验证过：往副词表里塞
-    每个/每項/各项/一切 并不会破保险）。真正的原因是我拼接正则时在一个已经以
-    `|` 结尾的片段后面又写了 `|`，造出一条**空的交替分支**——空分支匹配空串，
-    于是那条收尾前视对任何文本都成立，整道边界形同虚设。
+    ⚠ The root cause was **not vocabulary content** (verified afterward with isolated mutations: adding
+    每个/每項/各项/一切 to adverbs does not break protection). Concatenating regex fragments added
+    another `|` after a fragment already ending in `|`, creating an **empty alternative**. It matches the empty string,
+    making the ending lookahead true for all text and the entire boundary ineffective.
 
-    ⚠️ 教训：这个文件的正则是**字符串拼起来**的，加分支时要看清相邻片段末尾有没有
-    已经带 `|`。空分支不会报错，只会让守卫静默失效。
+    ⚠ Lesson: this file builds regexes by **string concatenation**; when adding branches, inspect whether adjacent
+    fragments already end in `|`. Empty branches raise no errors, only silently disable guards.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1539,9 +1539,9 @@ def test_adverb_and_nested_quantifier_widening_keeps_the_p1_guard(phrasing, expe
 @pytest.mark.parametrize("verb", ["rewrite", "regenerate", "revise"])
 @pytest.mark.parametrize("adverb", ["全部", "全面", "一并", "彻底"])
 def test_an_adverb_may_precede_an_english_rewrite_verb(adverb, verb):
-    """副词 + 英文重写动词的组合（base 是 True，Codex P2 第二十九轮）。
+    """Adverb + English rewrite verb combinations (base=True, Codex P2 round 29).
 
-    ⚠️ 配对反向断言：拉丁**字段名**照旧被挡——放开的是闭集里的英文动词。
+    ⚠ Paired negative: Latin **field names** remain blocked; only closed-set English verbs are admitted.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1556,16 +1556,16 @@ def test_an_adverb_may_precede_an_english_rewrite_verb(adverb, verb):
 @pytest.mark.parametrize("suffix", ["一下", "一遍", "吧", "了", "一次"])
 @pytest.mark.parametrize("verb", ["rewrite", "regenerate"])
 def test_a_chinese_suffix_may_follow_an_english_rewrite_verb(verb, suffix):
-    r"""⚠️ 右边界不能用 `\b`：汉字也是 Unicode 词字符，`\b` 在 `rewrite一下` 的
-    e/一 之间**不成立**，于是中英混写被挡掉（Codex P2 第三十轮，base 是 True）。
-    这里要拒的只是拉丁标识符的续接，所以用 `(?![A-Za-z0-9_])`。
+    r"""⚠ Right boundaries cannot use `\b`: Han characters are Unicode word characters, so `\b` **does not exist**
+    between e/一 in rewrite一下, blocking mixed Chinese/English (Codex P2 round 30, base=True).
+    Reject only Latin identifier continuations with `(?![A-Za-z0-9_])`.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
         f'把所有字段 {verb}{suffix}'
     ) is True
-    # 反向：拉丁续接照旧被挡（否则 P1 从这条路回来）。
+    # Negative cases: Latin continuations remain blocked, or P1 returns through this path.
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡的全部 {verb}X重写'
     ) is False
@@ -1574,22 +1574,22 @@ def test_a_chinese_suffix_may_follow_an_english_rewrite_verb(verb, suffix):
 @pytest.mark.parametrize(
     ("phrasing", "expected"),
     [
-        # 嵌套范围也允许「可见」修饰（外层那支早就允许了，这支漏了）
+        # Nested scopes also allow 可见 modifiers (the outer branch already did; this branch missed them).
         ("把所有字段的可见内容重写", True),
         ("把全部欄位的可見內容重寫", True),
         ("把整个卡的所有字段的可见内容重写", True),
-        # 动词在目标**前面**时，目标后面跟的是动量补语
+        # When the verb **precedes the target**, an action-count complement follows the target.
         ("重写所有字段一遍", True),
         ("请重写所有字段一次", True),
         ("全部重做所有欄位一遍", True),
         ("重新写所有字段一下", True),
-        # ⚠️ 反向：单字段保险不受这两处放宽影响
+        # ⚠ Negative cases: these two expansions must not affect the single-field guard.
         ("把所有字段的名字重写", False),
         ("把整个卡的全部 nickname重写", False),
     ],
 )
 def test_nested_visibility_and_measure_complements(phrasing, expected):
-    """两处「收得太紧」的放宽，与 P1 保险钉在同一个用例里（Codex P2 第三十一轮）。"""  # noqa: DOCSTRING_CJK
+    """Two relaxations of excessive restriction, pinned alongside P1 protection in one case (Codex P2 round 31)."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
@@ -1598,19 +1598,19 @@ def test_nested_visibility_and_measure_complements(phrasing, expected):
 @pytest.mark.parametrize("verb", ["rewrite", "regenerate", "重写"])
 @pytest.mark.parametrize("adverb", ["全部", "全面", "一并"])
 def test_all_three_tails_accept_an_adverb_plus_english_verb(adverb, verb):
-    """⚠️ 收尾判据在这个文件里有**三张表**（名词收尾 / 限定词收尾 / 名词闭集收尾）。
+    """⚠ This file has **three ending tables** (noun / quantifier / closed-set noun endings).
 
-    第二十九轮加「副词 + 英文重写动词」时我只改了前两张，第三张漏了，
-    `把所有字段的所有内容全部 rewrite` 于是静默失效（CodeRabbit）。
+    Round 29 added adverb + English rewrite verb only to the first two, missing the third,
+    silently breaking `把所有字段的所有内容全部 rewrite` (CodeRabbit).
 
-    ⚠️ 这条用例**同时打三条路径**，就是为了让「只改其中一张」立刻见红。
+    ⚠ This case exercises **all three paths** so changing only one table fails immediately.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for phrasing in (
-        f'把所有字段{adverb} {verb}',              # 限定词收尾
-        f'把整个卡的所有设定{adverb} {verb}',       # 名词收尾
-        f'把所有字段的所有内容{adverb} {verb}',      # 名词闭集收尾（「的」分支之后）
+        f'把所有字段{adverb} {verb}',              # Quantifier ending.
+        f'把整个卡的所有设定{adverb} {verb}',       # Noun ending.
+        f'把所有字段的所有内容{adverb} {verb}',      # Closed-set noun ending (after the 的 branch).
     ):
         assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
     assert router._chat_text_requests_full_rewrite(
@@ -1624,10 +1624,10 @@ WHOLE_CARD_INDEFINITE = _router_table("_WHOLE_CARD_INDEFINITE_QUANTITIES")
 
 
 def test_the_measure_and_numeral_tables_are_derived_not_transcribed():
-    """⚠️ 上一版这两族是**人眼抄**的：实现侧七个量词，参数表只抄了六个、漏了「遭」。
+    """⚠ Previously both families were **manually copied**: implementation had seven classifiers, parameters only six, missing 遭.
 
-    漏掉的那一支被误删时测试不会见红（CodeRabbit）——跟副词表漏「挨個」同一族。
-    现在两张表都从实现侧取，并钉住**相等**：改实现必然要改这里。
+    Accidentally deleting that branch would not fail tests (CodeRabbit), the same family as missing 挨個 from adverbs.
+    Both tables now come from implementation, pinned by **equality**: implementation changes require updates here.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1650,24 +1650,24 @@ def test_the_measure_and_numeral_tables_are_derived_not_transcribed():
 )
 @pytest.mark.parametrize("measure", WHOLE_CARD_MEASURES)
 def test_numeral_measure_complements_are_productive(numeral, measure):
-    """⚠️ 动量补语是**能产**的（一遍/两遍/三次/2遍/几遍…），不是几个成品。
+    """⚠ Action-count complements are **productive** (一遍/两遍/三次/2遍/几遍...), not a few fixed forms.
 
-    数词是闭集、量词也是闭集，所以写成「数词 + 量词」而不是逐个列成品
-    （Codex P2 第三十三轮）。
+    Numerals and classifiers are closed sets, so express numeral + classifier rather than listing finished forms
+    (Codex P2 round 33).
 
-    ⚠️ 三条收尾路径**一条都不能少**：第三十三轮只把这一支加进了名词收尾那张表，
-    于是 `重写所有字段的所有内容两遍` / `重写整个卡的全部两遍` 从 base 的 True
-    掉成 False（CodeRabbit Major）。这已经是三张收尾表第三次漏改，所以判据收成了
-    共用常量，这条用例同时打三条路径把它钉住。
-    ⚠️ 配对反向断言：动量补语不是万能收尾，单字段那条保险照旧挡着。
+    ⚠ **All three ending paths** are required: round 33 added this only to noun endings,
+    changing `重写所有字段的所有内容两遍` / `重写整个卡的全部两遍` from base=True
+    to False (CodeRabbit Major). This third missed update across ending tables prompted a shared
+    constant, pinned by a test exercising all three paths.
+    ⚠ Paired negative: action-count complements are not universal endings; single-field protection remains.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for text in (
-        f'重写整个卡的全部{numeral}{measure}',           # 限定词收尾（后面没有范围名词）
-        f'重写整个卡的所有设定{numeral}{measure}',       # 名词收尾
-        f'重写所有字段的所有内容{numeral}{measure}',      # 名词闭集收尾（「的」分支之后）
-        f'重写所有字段{numeral}{measure}',              # 第三十三轮原样那条
+        f'重写整个卡的全部{numeral}{measure}',           # Quantifier ending (without a following scope noun).
+        f'重写整个卡的所有设定{numeral}{measure}',       # Noun ending.
+        f'重写所有字段的所有内容{numeral}{measure}',      # Closed-set noun ending (after the 的 branch).
+        f'重写所有字段{numeral}{measure}',              # The original round 33 case.
     ):
         assert router._chat_text_requests_full_rewrite(text) is True, text
     assert router._chat_text_requests_full_rewrite(
@@ -1677,9 +1677,9 @@ def test_numeral_measure_complements_are_productive(numeral, measure):
 
 @pytest.mark.parametrize("adverb", ["彻底", "徹底", "统一", "統一", "全面", "认真"])
 def test_an_adverbial_de_suffix_is_accepted(adverb):
-    """副词的常规「地」后缀（base 是 True，Codex P2 第三十三轮）。
+    """The standard adverbial 地 suffix (base=True, Codex P2 round 33).
 
-    ⚠️ 配对反向断言：单字段保险不受影响。
+    ⚠ Paired negative: single-field protection is unaffected.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1696,9 +1696,9 @@ def test_an_adverbial_de_suffix_is_accepted(adverb):
 )
 @pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有内容"])
 def test_batch_rewrite_modifiers(scope, adverb):
-    """批量类副词（base 全是 True，Codex P2 第三十四轮）。
+    """Batch adverbs (all base=True, Codex P2 round 34).
 
-    ⚠️ 配对反向断言：副词后仍要求重写动词，单字段那条路没被放开。
+    ⚠ Paired negative: adverbs still require a following rewrite verb, preserving the single-field block.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1714,14 +1714,14 @@ WHOLE_CARD_PREVERBS = _router_table("_WHOLE_CARD_PREVERB_WORDS")
 
 
 def test_the_adverb_table_is_a_prefix_code():
-    """⚠️ 副词表是**前缀码**——这条性质就是 `_WHOLE_CARD_ADVERB_RUN` 那个 `+` 的安全依据。
+    """⚠ The adverb table is a **prefix code**, the safety basis for `_WHOLE_CARD_ADVERB_RUN`'s `+`.
 
-    没有哪个词是另一个词的前缀 → 任何输入至多只有一种切分 → 叠词失败时线性退出，
-    不会指数回溯。往表里加个会破坏这条性质的词（比如单独加「一」，它是 一并/一起/
-    一律/一次性 的前缀）会在这里当场见红，而不是等到线上被一串副词卡死。
+    No term prefixes another -> at most one segmentation per input -> linear exit on failed stacked terms,
+    without exponential backtracking. Adding a violating term (such as standalone 一, prefixing 一并/一起/
+    一律/一次性) fails here immediately rather than hanging production on a chain of adverbs.
 
-    ⚠️ 同时钉住整张表**相等**：下面按这张表派生的叠词用例会跟着表缩水而假绿。
-    ⚠️ 也钉住正则是从表拼出来的——手写那一版混进过重复的「统统」。
+    ⚠ Also pin **equality** for the full table: generated stacking cases could otherwise shrink with it and falsely pass.
+    ⚠ Pin that the regex derives from the table too: the handwritten version once duplicated 统统.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1743,13 +1743,13 @@ def test_the_adverb_table_is_a_prefix_code():
     }
     assert set(WHOLE_CARD_LIGHT_VERBS) == {
         "进行", "進行",
-        # 受事/礼貌短语占同一个槽（Codex P2 第五十七轮，base 都是 True）。
+        # Benefactive/polite phrases occupy the same slot (Codex P2 round 57, all base=True).
         "给我", "給我", "帮我", "幫我", "替我", "为我", "為我",
     }
-    # ⚠️ 必要性情态动词是第三张表，占同一个槽（Codex P2 第六十一轮）。
-    # ⚠️ 单音节本体 须/應/當 进表，复合形 应该/应当 **移出**——`应` 是 `应该`
-    # 的前缀，两者并存会破掉这张表的前缀码性质。复合形由 run 的 `+` 自己拼，
-    # 覆盖不减（下面那条断言钉住这一点）。
+    # ⚠ Necessity modals form the third table and occupy the same slot (Codex P2 round 61).
+    # ⚠ Add monosyllabic roots 须/應/當 and **remove** compounds 应该/应当: 应 prefixes 应该,
+    # so coexistence breaks the table's prefix-code property. The run's `+` composes compounds itself,
+    # without losing coverage (pinned by the assertion below).
     assert set(router._WHOLE_CARD_MODAL_VERBS) == {
         "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
         "须", "須", "应", "應", "当", "當", "该", "該", "一定", "最好",
@@ -1770,20 +1770,20 @@ def test_the_adverb_table_is_a_prefix_code():
 
 @pytest.mark.parametrize("adverb", WHOLE_CARD_PREVERBS)
 def test_stacked_rewrite_modifiers_across_all_three_tails(adverb):
-    """副词可以叠着用（base 是 True，Codex P2 第三十五轮）。
+    """Adverbs can stack (base=True, Codex P2 round 35).
 
-    上一版只吃**一个**副词就要求重写动词，`把所有字段再统一重写` 这类请求全掉了。
+    Previously only **one** adverb was consumed before requiring a rewrite verb, rejecting all requests such as 把所有字段再统一重写.
 
-    ⚠️ 跟第二十九轮那条一样**同时打三条收尾路径**：叠词能力现在收在
-    `_WHOLE_CARD_ADVERB_RUN` 一处，只要有一张表没换过去就立刻见红。
-    ⚠️ 配对反向断言：叠词只放开了动词前面那一段，单字段那条保险没被顺手打开。
+    ⚠ Like round 29's case, exercise **all three ending paths**: stacking is now defined once in
+    `_WHOLE_CARD_ADVERB_RUN`, so any table not switched to it immediately fails.
+    ⚠ Paired negative: stacking widens only the pre-verb portion, without opening single-field protection.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for phrasing in (
-        f'把所有字段再{adverb}重写',              # 限定词收尾
-        f'把整个卡的所有设定再{adverb}重写',       # 名词收尾
-        f'把所有字段的所有内容再{adverb}重写',      # 名词闭集收尾（「的」分支之后）
+        f'把所有字段再{adverb}重写',              # Quantifier ending.
+        f'把整个卡的所有设定再{adverb}重写',       # Noun ending.
+        f'把所有字段的所有内容再{adverb}重写',      # Closed-set noun ending (after the 的 branch).
     ):
         assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
     assert router._chat_text_requests_full_rewrite(
@@ -1796,7 +1796,7 @@ def test_stacked_rewrite_modifiers_across_all_three_tails(adverb):
     ["把所有字段再统一重写", "把全部欄位再統一重寫", "把整个卡的所有内容批量统一重写"],
 )
 def test_the_reported_stacked_modifier_cases(text):
-    """Codex 报的三条原样钉住——上面那条派生用例缩水时这里还在。"""  # noqa: DOCSTRING_CJK
+    """Pin Codex's three original sentences; they remain even if generated cases above shrink."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is True, text
@@ -1804,15 +1804,15 @@ def test_the_reported_stacked_modifier_cases(text):
 
 @pytest.mark.parametrize("text", ["把所有字段分别重写", "把全部欄位分別重寫"])
 def test_separately_is_not_added_to_the_adverb_table(text):
-    """⚠️ 「分别/分別」**故意不收**（Codex 第三十七轮报了它，但 base 就是 False）。
+    """⚠ **Deliberately exclude** 分别/分別 (reported in Codex round 37, but base=False).
 
-    它 base 不成立的原因不是副词表没收，而是撞上了否定守卫
-    `_CHAT_NEGATED_REWRITE_RE` 里的 `别|別`。那条守卫的取舍写得很清楚：
-    漏触发 = 用户说「别改」却把整张卡改了并 autosave。为一个 base 从来没成立过
-    的说法去松动否定守卫，方向反了。
+    Base fails not because adverbs omit it, but because 别|別 in the negation guard
+    `_CHAT_NEGATED_REWRITE_RE` matches it. That guard's tradeoff is explicit:
+    false negatives rewrite and autosave the whole card despite a don't-edit request. Relaxing negation
+    for a form never accepted by base takes the wrong direction.
 
-    ⚠️ 这条用例是**有意的边界**，不是待办：哪天真要收 分别，得先回答
-    「它跟 `别改` 怎么区分」，而不是直接往副词表里塞一个词。
+    ⚠ This is an **intentional boundary**, not a TODO: admitting 分别 requires first explaining
+    how to distinguish it from 别改, rather than merely adding an adverb.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1823,13 +1823,13 @@ def test_separately_is_not_added_to_the_adverb_table(text):
 
 @pytest.mark.parametrize("apostrophe", ["'", "’", "ʼ"])
 def test_english_negation_accepts_every_apostrophe(apostrophe):
-    """⚠️ 擇号有三种写法，只认 ASCII 那个时否定守卫直接漏掉（CodeRabbit Major）。
+    """⚠ Apostrophes have three forms; ASCII-only recognition lets negation bypass the guard directly (CodeRabbit Major).
 
-    iOS/macOS/Word 会把 `'` 自动替换成 U+2019，所以 `don’t` 反而是真实输入里
-    **更常见**的那个写法。漏了它 = 用户明确说了不要改，却触发整卡补全并 autosave。
+    iOS/macOS/Word substitutes U+2019 for `'`, so don’t is actually **more common**
+    in real input. Missing it triggers whole-card completion + autosave despite explicit don't-edit requests.
 
-    ⚠️ base 也是这样，**不是**本 PR 的回归；方向是危险的那一侧、改动只有一个
-    字符类，就一起修了。music_requests 那边是对偶的那一半。
+    ⚠ Base behaves this way too, **not** a PR regression; the dangerous direction and one-character-class
+    fix warranted addressing it together. music_requests is the symmetric counterpart.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1845,15 +1845,15 @@ def test_english_negation_accepts_every_apostrophe(apostrophe):
 @pytest.mark.parametrize("target", ["把所有字段", "重写所有字段", "把全部欄位"])
 @pytest.mark.parametrize("modifier", ["可见", "可見", "可见的", ""])
 def test_visibility_modifier_on_direct_scope_continuations(target, modifier):
-    """可见/可見 修饰要能挂在**每一节**续接上（base 是 True，Codex P2 第三十九轮）。
+    """可见/可見 modifiers must apply to **every continuation segment** (base=True, Codex P2 round 39).
 
-    上一版只有「的」那一支带修饰，直接续接那三处都没有，于是
-    `把所有字段可见内容重写` 掉成 False。
+    Previously modifiers were supported only in the 的 branch, missing all three direct continuations,
+    changing 把所有字段可见内容重写 to False.
 
-    ⚠️ 续接写法在整条正则里有**四处**，现在统一走
-    `_WHOLE_CARD_SCOPE_RUN_OPT` / `_WHOLE_CARD_SCOPE_RUN_ONE`。这是紧跟三张收尾表
-    之后的**第二个**「同一件事写四份」位置。
-    ⚠️ 配对反向断言：单字段保险没被顺手打开。
+    ⚠ Continuations occur **four times** in the full regex; all now share
+    `_WHOLE_CARD_SCOPE_RUN_OPT` / `_WHOLE_CARD_SCOPE_RUN_ONE`, the **second** place after three ending tables
+    where one rule had four copies.
+    ⚠ Paired negative: single-field protection remains intact.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1870,10 +1870,10 @@ def test_visibility_modifier_on_direct_scope_continuations(target, modifier):
                  "请将所有字段全部{v}重写", "对所有字段{v}统一重写"],
 )
 def test_light_verb_between_target_and_rewrite_verb(phrasing, light):
-    """轻动词「进行」占的是跟副词同一个槽（base 全是 True，Codex P2 第四十二轮）。
+    """The light verb 进行 occupies the adverb slot (all base=True, Codex P2 round 42).
 
-    ⚠️ 它跟副词可以**互相穿插**（全部进行重写 / 进行统一重写），所以直接并进
-    那个 `+` 循环，而不是在动词前面单加一节。词类不同所以表分开列、正则合起来用。
+    ⚠ It can **interleave** with adverbs (全部进行重写 / 进行统一重写), so include it directly in
+    the `+` loop, not a separate pre-verb section. Separate word-class tables combine in the regex.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1893,27 +1893,27 @@ def test_light_verb_between_target_and_rewrite_verb(phrasing, light):
     ],
 )
 def test_a_quoted_negation_still_blocks_even_inside_a_song_title(text):
-    """⚠⚠ **按设计少触发**：引号里的否定词一律算数，哪怕它只是歌名的一部分。
+    """⚠⚠ **Under-triggering by design**: quoted negators always count, even as part of a song title.
 
-    第四十二轮 reviewer 要求把这一类放行（base 是 True），我改了三版，
-    每一版都在下一轮被报成 P1，而且**都在危险那一侧**：
+    The round 42 reviewer requested admitting this family (base=True). I wrote three versions,
+    each reported as P1 next round, **all in the dangerous direction**:
 
-    * 「引用跨度一律抹掉」      → `请“不要重写”所有字段` 的禁止没了（第四十三轮）
-    * 「含重写动词才算指令」  → `Please “do not” rewrite all fields` 漏（第四十七轮）
-    * 「去掉否定词还剩字」  → `请“千万不要”重写所有字段` 漏（第四十八轮）
+    * Erase all quotation spans -> lost prohibition in 请“不要重写”所有字段 (round 43).
+    * Only rewrite verbs indicate instructions -> missed Please “do not” rewrite all fields (round 47).
+    * Other text remains after removing negators -> missed 请“千万不要”重写所有字段 (round 48).
 
-    三轮三个新形状，说明这条线**划不出来**：引号里是歌名还是被强调的禁止，
-    句法上完全同形。而两个方向的代价差着量级：放过一个歌名只是少补几个字段，
-    放过一个真禁止是把用户明说不要动的数据覆盖掉并 autosave。
+    Three new shapes in three rounds show the boundary **cannot be drawn**: quoted song titles and
+    emphasized prohibitions have identical syntax. Costs differ by orders of magnitude: admitting a song title
+    only skips a few fields, while admitting a real prohibition overwrites and autosaves explicitly protected data.
 
-    所以停在安全那一侧：**否定守卫读原句**。引号只对正向信号生效（见
-    test_quoted_prohibitions_do_not_supply_a_target）。这条用例钉的就是这个取舍本身，
-    不是待办——要改它得先回答「怎么区分歌名和被强调的禁止」。
+    Stay on the safe side: **negation reads the original sentence**. Quotes affect only positive signals (see
+    test_quoted_prohibitions_do_not_supply_a_target). This test pins that tradeoff itself,
+    not a TODO: changing it first requires explaining how to distinguish titles from emphasized prohibitions.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    # 没有否定词的引用照常走得通。
+    # Quotations without negators still work normally.
     for kept in (
         '用《别再犹豫》当主题，把整个卡的全部设定重写一遍',
         '把《整个卡》重写',
@@ -1931,7 +1931,7 @@ WHOLE_CARD_CONTINUATIONS = _router_table("_WHOLE_CARD_CLAUSE_CONTINUATIONS")
 
 
 def test_the_continuation_table_is_derived_not_transcribed():
-    """⚠️ 这张表已经扩了两轮，下面的用例按它派生，所以要钉住相等。"""  # noqa: DOCSTRING_CJK
+    """⚠ This table has expanded twice; pin equality because cases below derive from it."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert set(WHOLE_CARD_CONTINUATIONS) == {
@@ -1947,12 +1947,12 @@ def test_the_continuation_table_is_derived_not_transcribed():
 
 @pytest.mark.parametrize("conjunction", WHOLE_CARD_CONTINUATIONS)
 def test_clause_continuation_after_a_completed_target(conjunction):
-    """目标说完之后接一个并列/承接连词再讲下一件事（base 是 True）。
+    """After the target, a coordinating/sequential conjunction introduces the next action (base=True).
 
-    ⚠⚠ **没有收裸的「后/後」**，虽然 reviewer 举的例子里有 `重写所有字段后发给我`：
-    收了它 `重写所有字段后缀` 会一起放行，而那正是这个 PR 要修的单字段破坏
-    本体（base 是 True，本 PR 故意改成 False）。`后` 后面是动词还是名词是开集。
-    下面的反向断言就钉这一条。
+    ⚠⚠ **Exclude bare 后/後**, despite the reviewer's 重写所有字段后发给我 example:
+    admitting it also admits 重写所有字段后缀, precisely the destructive single-field case
+    this PR fixes (base=True, intentionally changed to False). Verbs/nouns following 后 form an open set.
+    The negative assertion below pins this boundary.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1969,14 +1969,14 @@ def test_clause_continuation_after_a_completed_target(conjunction):
      'Please “do not rewrite” all fields', '请「不要重写」整个卡'],
 )
 def test_quotes_that_emphasize_the_instruction_are_not_stripped(text):
-    """⚠⚠ 引号有两种用法，只能抹掉其中一种（Codex P1 第四十三轮）。
+    """⚠⚠ Quotes have two uses; erase only one (Codex P1 round 43).
 
-    上一轮我把**所有**引用跨度都从否定守卫里抹掉了，于是用引号**强调指令**的
-    写法把用户明确的禁止弄丢了，整卡补全照跑并 autosave——base 是 False，危险方向，
-    是我自己上一轮引进的。
+    Last round I erased **all** quotation spans for negation, losing explicit prohibitions
+    when quotes **emphasized instructions**; whole-card completion + autosave still ran (base=False, dangerous direction),
+    introduced by my preceding change.
 
-    判据：**引号里含重写动词，那段就是指令本身**。指令一定带着动词，
-    被引用的素材（歌名/主题）通常不带。
+    Criterion: **a quoted rewrite verb makes the span the instruction itself**. Instructions necessarily contain verbs;
+    quoted material (song titles/themes) usually does not.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -1990,26 +1990,26 @@ def test_quotes_that_emphasize_the_instruction_are_not_stripped(text):
     ["“do not touch all fields”", "「不要动所有字段」", "《别碰所有字段》"],
 )
 def test_quoted_prohibitions_do_not_supply_a_target(quoted):
-    """⚠⚠ 抹掉的那一段引用对**三条谓词一视同仁**（Codex P1 第四十四轮）。
+    """⚠⚠ Erased quotations must affect **all three predicates equally** (Codex P1 round 44).
 
-    上一版只从否定守卫里抹、正向信号照读原文，于是引号内的「所有字段」
-    配上引号外的单字段重写就进了整卡补全通路并 autosave——base 是 False，
-    危险方向，又是我上一轮引进的。
+    Previously only negation erased them while positive signals read original text, combining quoted 所有字段
+    with an unquoted single-field rewrite to trigger whole-card completion + autosave (base=False,
+    dangerous direction), another bug I introduced last round.
 
-    ⚠️ 只抹**同时满足「不含重写动词」和「含否定词」**的跨度。不含否定的
-    引用（`把《整个卡》重写`）里没有可抹的东西，留着让正向信号照读，
-    base 上那些说法就不会被误伤——下面两条正向断言钉的就是这个。
+    ⚠ Erase only spans **both lacking rewrite verbs and containing negators**. Quotations without negation
+    (`把《整个卡》重写`) have nothing to erase; retain them for positive signals,
+    preserving base behavior, as pinned by the two positive assertions below.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    # ⚠️ 句子里**不能有句读**：有的话子句切分就已经把目标和动词分开了，
-    # 这条用例会因为另一个原因而过（第一版就是这么空的，变异 SURVIVED 才发现）。
+    # ⚠ The sentence **must have no clause punctuation**, or clause splitting already separates target and verb,
+    # making this case pass for another reason (the first version was vacuous this way; mutation SURVIVED exposed it).
     text = f'请把{quoted}当例子并重写标题'
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    # ⚠️ 上面那句话其实被**否定守卫**拦下了（否定在前、动词在后），
-    # 所以它对「正向信号跳过引用」那一步是**空断言**（变异 SURVIVED）。
-    # 真正需要它的是动词在**前**、引用在后的形状：否定守卫要求
-    # 「否定词 → 重写动词」的顺序，这时候它不开火，只剩引用里那个目标。
+    # ⚠ The preceding sentence is actually blocked by the **negation guard** (negator before verb),
+    # so it is **vacuous** for positive-signal quotation skipping (mutation SURVIVED).
+    # The case that truly needs this has the verb **before** the quotation: the negation guard requires
+    # negator -> rewrite verb, so it does not fire and only the quoted target remains.
     assert router._chat_text_requests_full_rewrite(
         f'重写标题就像{quoted}那样'
     ) is False
@@ -2025,11 +2025,11 @@ def test_quoted_prohibitions_do_not_supply_a_target(quoted):
 )
 @pytest.mark.parametrize("de", ["的", ""])
 def test_locative_linker_between_target_and_scope_noun(locative, de):
-    """目标和范围名词之间可以隔一个方位短语（base 全是 True）。
+    """A locative phrase may separate target and scope noun (all base=True).
 
-    ⚠️ 方位词后面**仍然要求是范围名词**，所以单字段保险不受影响：
-    `重写所有字段里的名字` 仍然是 False（base 是 True，本 PR 故意改掉）。
-    下面的反向断言钉的就是这一条。
+    ⚠ A scope noun is **still required** after the locative, preserving single-field protection:
+    重写所有字段里的名字 remains False (base=True, intentionally changed by this PR).
+    The negative assertion below pins this boundary.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2037,9 +2037,9 @@ def test_locative_linker_between_target_and_scope_noun(locative, de):
         pytest.skip('裸的「的」不属于方位续接，走的是另一支')
     text = f'重写所有字段{locative}{de}内容'
     assert router._chat_text_requests_full_rewrite(text) is True, text
-    # ⚠️ 方位词能吃的只有方位词本身：允许它再多吞几个字的话，
-    # `里的名字` 会被一起吞掉、后面的范围名词接上，单字段保险就破了。
-    # 第一版只钉了 `{locative}{de}名字`，那个变异 SURVIVED。
+    # ⚠ Locatives must consume only themselves: consuming extra characters swallows
+    # 里的名字 too, connecting the following scope noun and breaking the single-field guard.
+    # The first version pinned only `{locative}{de}名字`; that mutation SURVIVED.
     for kept in (f'重写所有字段{locative}{de}名字',
                  f'重写所有字段{locative}{de}名字内容',
                  f'重写所有字段{locative}{de}标题设定'):
@@ -2049,19 +2049,19 @@ def test_locative_linker_between_target_and_scope_noun(locative, de):
 @pytest.mark.parametrize("locative", ["里的", "中的", "裡的", "里面的", "当中的", ""])
 @pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
 def test_quantifier_after_a_locative_continuation(locative, quantifier):
-    """方位短语和范围名词之间还能夹一个全称限定词（base 全是 True）。
+    """A universal quantifier may separate locative phrase and scope noun (all base=True).
 
-    「的」那一支早就允许了，方位这一支上一轮漏了（Codex P2 第四十六轮）。
-    限定词表直接复用，不另抄。
+    The 的 branch already allowed it; the locative branch missed it last round (Codex P2 round 46).
+    Reuse the quantifier table directly rather than copying it.
 
-    ⚠️ 限定词后面**仍然要求是范围名词**：反向断言钉住单字段保险。
+    ⚠ A scope noun is **still required** after quantifiers: the negative assertion pins single-field protection.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'重写所有字段{locative}{quantifier}内容'
     assert router._chat_text_requests_full_rewrite(text) is True, text
-    # ⚠️ 跟方位那条一样：光钉 `{quantifier}名字` 不够——「限定词多吞几个字」
-    # 那个变异会照样绿，能区分的是后面还接着范围名词的形式。
+    # ⚠ As with locatives, pinning only `{quantifier}名字` is insufficient: the mutation consuming extra characters
+    # after a quantifier stays green; a following scope noun is needed to distinguish it.
     for kept in (f'重写所有字段{locative}{quantifier}名字',
                  f'重写所有字段{locative}{quantifier}名字内容',
                  f'重写所有字段{locative}{quantifier}标题设定'):
@@ -2077,14 +2077,14 @@ def test_quantifier_after_a_locative_continuation(locative, quantifier):
      "请“禁止”重写所有字段"],
 )
 def test_a_separately_quoted_negation_still_governs(text):
-    """⚠⚠ 引号里**只有否定词**时，那是被强调的指令，不是被引用的素材。
+    """⚠⚠ Quotes containing **only negators** emphasize instructions rather than reference material.
 
-    上一版的判据是「含否定、不含动词 → 素材」，`“do not”` 正好落进这一格，
-    于是用户明确的禁止被抹掉、整卡补全照跑并 autosave（Codex P1 第四十七轮，
-    base 是 False——危险方向，连着两轮都是我自己引进的）。
+    Previously negation without verbs meant material, exactly fitting “do not”,
+    so explicit prohibition was erased and whole-card completion + autosave still ran (Codex P1 round 47,
+    base=False: dangerous direction, introduced by my own changes two rounds in succession).
 
-    判据改成：**把否定词去掉之后还剩别的字**，才算素材。
-    `“do not”` 去掉就空了；`“Don’t Panic”` 去掉还剩 `Panic`，那是个名字。
+    New criterion: material requires **additional text after removing negators**.
+    Removing negation empties “do not”, while “Don’t Panic” leaves Panic, a name.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2101,9 +2101,9 @@ def test_a_separately_quoted_negation_still_governs(text):
     ["之中的", "之内的", "之內的", "内部的", "內部的", "里头的", "裡頭的"],
 )
 def test_compound_locative_continuations(locative):
-    """复合方位词跟单字方位词同族（base 全是 True，Codex P2 第四十八轮）。
+    """Compound locatives belong with single-character locatives (all base=True, Codex P2 round 48).
 
-    ⚠️ 方位词后面仍然要求是范围名词，单字段保险不受影响。
+    ⚠ A scope noun is still required afterward, preserving single-field protection.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2120,12 +2120,12 @@ def test_compound_locative_continuations(locative):
 )
 @pytest.mark.parametrize("de", ["的", ""])
 def test_existing_and_visible_field_modifiers(modifier, de):
-    """范围名词前面的属性限定语不只有「可见」（base 全是 True）。
+    """Attribute qualifiers before scope nouns include more than 可见 (all base=True).
 
-    现有/已有/既有/当前 跟 可见 同族：都不改变「范围是整张卡」这件事
-    （Codex P2 第四十九轮）。
+    现有/已有/既有/当前 belong with 可见: none changes the whole-card scope
+    (Codex P2 round 49).
 
-    ⚠️ 限定语后面**仍然要求是范围名词**：反向断言钉住单字段保险。
+    ⚠ A scope noun is **still required** after qualifiers: negative assertions pin single-field protection.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2143,7 +2143,7 @@ WHOLE_CARD_RESULT_PHRASES = _router_table("_WHOLE_CARD_RESULT_PHRASES")
 
 
 def test_the_result_phrase_table_is_derived_not_transcribed():
-    """下面的用例按这张表派生，所以要钉住相等。"""  # noqa: DOCSTRING_CJK
+    """Cases below derive from this table, so pin equality."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert set(WHOLE_CARD_RESULT_PHRASES) == {
@@ -2158,10 +2158,10 @@ def test_the_result_phrase_table_is_derived_not_transcribed():
 @pytest.mark.parametrize("phrase", WHOLE_CARD_RESULT_PHRASES)
 @pytest.mark.parametrize("target", ["所有字段", "全部字段", "每个字段"])
 def test_terminal_result_phrase_after_a_completed_target(target, phrase):
-    """动词在目标前面时，目标后面跟的可以是「就行了」式的结果短语
-    （base 全是 True，Codex P2 第五十轮）。
+    """When the verb precedes the target, a result phrase like 就行了 may follow
+    (all base=True, Codex P2 round 50).
 
-    ⚠️ 反向断言：结果短语不是万能收尾，单字段那条保险照旧挡着。
+    ⚠ Negative assertion: result phrases are not universal endings; single-field protection remains.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2176,13 +2176,13 @@ def test_terminal_result_phrase_after_a_completed_target(target, phrase):
     "sequential", ["随后", "隨後", "最后", "最後", "接下来", "接下來", "之后", "之後"]
 )
 def test_sequential_words_used_as_attributives_are_not_continuations(sequential):
-    """⚠⚠ 顺序类词后面跟**定语结构**时说的是某一项，不是整卡（CodeRabbit Major）。
+    """⚠⚠ Sequential terms before **attributive constructions** denote one item, not the whole card (CodeRabbit Major).
 
-    `重写所有字段最后一项` / `最后两个` / `最后的名字` 如果算整卡，
-    就会给缺失字段合成内容并 autosave——危险方向。
+    Classifying 重写所有字段最后一项 / 最后两个 / 最后的名字 as whole-card requests
+    synthesizes and autosaves missing fields: the dangerous direction.
 
-    判据：真正的承接词后面跟的是**谓语**，不会是 `的` 也不会是「数词 + 量词」。
-    ⚠️ 真承接用法（`最后保存`）必须保留，下面第一条正向断言钉的就是它。
+    Criterion: true sequential terms precede a **predicate**, never 的 or numeral + classifier.
+    ⚠ Genuine sequential usage (最后保存) must remain; the first positive assertion below pins it.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2197,11 +2197,11 @@ def test_sequential_words_used_as_attributives_are_not_continuations(sequential)
 @pytest.mark.parametrize("reflexive", ["本身", "自身", "本体", "本體"])
 @pytest.mark.parametrize("target", ["所有字段", "所有欄位", "全部字段"])
 def test_reflexive_emphasis_after_a_completed_target(target, reflexive):
-    """反身强调加强的是已经明确的整卡范围，不是在点名某一个字段
-    （base 全是 True，Codex P2 第五十二轮）。
+    """Reflexive emphasis reinforces already explicit whole-card scope, without naming one field
+    (all base=True, Codex P2 round 52).
 
-    ⚠️ 它是**透明的**：后面该接什么还接什么（句末 / 副词 + 动词）。
-    ⚠️ 反向断言：字段**名**本身 仍然是单字段，保险没被打开。
+    ⚠ It is **transparent**: the same following endings apply (sentence end / adverb + verb).
+    ⚠ Negative assertion: field **names** themselves remain single-field; protection stays intact.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2213,16 +2213,16 @@ def test_reflexive_emphasis_after_a_completed_target(target, reflexive):
 
 
 @pytest.mark.parametrize(
-    # ⚠️ 不列 块/塊：「一块」本身也是副词（together），已在下一条的口子里。
+    # ⚠ Exclude 块/塊: 一块 itself is also an adverb (together), covered by the next exception.
     "measure", ["段", "章", "节", "頁", "页", "项", "个", "条", "张", "行", "篇", "句"]
 )
 @pytest.mark.parametrize("numeral", ["一", "两", "兩", "三", "几", "数"])
 def test_any_quantified_phrase_after_a_continuation_is_attributive(numeral, measure):
-    """⚠️⚠️ 量词不能枚举（Codex P1 第五十四轮，base 是 False）。
+    """⚠⚠ Classifiers cannot be exhausted by enumeration (Codex P1 round 54, base=False).
 
-    `段` / `章` / `节` / `页` 都不在上一版的短表里，于是
-    `把整个卡的每一项最后两段重写` 绕过去了——用户只要改每项的最后两段，
-    却触发整卡补全并 autosave。改成结构规则：**数词 + 任意单个汉字**就当定语。
+    段 / 章 / 节 / 页 were absent from the short list, letting
+    把整个卡的每一项最后两段重写 bypass it; the user wanted each item's last two paragraphs,
+    yet completion + autosave ran. Use a structural rule: **numeral + any single Han character** counts as an attribute.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2234,10 +2234,10 @@ def test_any_quantified_phrase_after_a_continuation_is_attributive(numeral, meas
     "adverb", ["一起", "一并", "一併", "一同", "一块", "一塊", "一律", "一概"]
 )
 def test_numeral_shaped_adverbs_after_a_continuation_still_work(adverb):
-    """⚠️ 留的那个口子：`一起` / `一并` 本身就是副词的「数词 + 字」组合。
+    """⚠ Exception: 一起 / 一并 are numeral + character combinations that themselves act as adverbs.
 
-    `重写所有字段最后一起保存` base 是 True，不能跟定语一起挡掉
-    （Codex P1 第五十四轮修的是定语，不是这一族）。
+    重写所有字段最后一起保存 has base=True and must not be blocked alongside attributes
+    (Codex P1 round 54 fixes attributes, not this family).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2246,17 +2246,17 @@ def test_numeral_shaped_adverbs_after_a_continuation_still_work(adverb):
     assert router._chat_text_requests_full_rewrite('重写所有字段最后一项') is False
 
 
-# ⚠️ 数词参数表从实现侧常量派生：手抄那一版只列了 几/数，繁体 幾/數
-# 被误删时不会见红（CodeRabbit）——跟 挨個 / 遭 是同一族。
+# ⚠ Derive numeral parameters from implementation constants: the manual list had only 几/数, so accidentally removing
+# Traditional 幾/數 would not fail tests (CodeRabbit), the same family as 挨個 / 遭.
 @pytest.mark.parametrize(
     "numeral", ["2", "10", "3", *WHOLE_CARD_NUMERALS, *WHOLE_CARD_INDEFINITE]
 )
 @pytest.mark.parametrize("measure", ["段", "章", "节", "页", "项", "条"])
 def test_arabic_numerals_are_attributive_too(numeral, measure):
-    """⚠️ 定语守卫的数词侧要带 `\\d+`（Codex P1 第五十五轮，base 是 False）。
+    """⚠ The attributive guard's numeral side needs `\\d+` (Codex P1 round 55, base=False).
 
-    只认汉字数词时 `最后2段` 从守卫底下漏过去，又回到整卡补全 autosave。
-    旁边的动量补语常量早就是「汉字数词 | \\d+」两支，这里当时只抄了一半。
+    Han-only numerals let 最后2段 bypass the guard into whole-card completion + autosave.
+    The adjacent action-count constant already had Han numerals | \\d+; only half was copied here.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2270,13 +2270,13 @@ def test_arabic_numerals_are_attributive_too(numeral, measure):
      ("[", "]"), ('"', '"'), ("〈", "〉")],
 )
 def test_an_opening_delimiter_does_not_complete_a_target(opener, closer):
-    """⚠️⚠️ **开引号/开括号不是收尾**（Codex P1 第五十五轮，base 是 False——数据覆盖）。
+    """⚠⚠ **Opening quotes/brackets are not endings** (Codex P1 round 55, base=False: data overwrite).
 
-    算进收尾时目标匹配会停在开引号上，于是 `把整个卡的每一项《正文》重写` 里那个
-    把范围收窄到子字段的引用被无视，整卡补全照跑并 autosave。
+    Treating them as endings stops matching at the opening quote in 把整个卡的每一项《正文》重写,
+    ignoring the quoted subfield restriction and still running whole-card completion + autosave.
 
-    ⚠️ 闭合的那一半仍然是收尾：闭引号出现时前面必然已经有过开引号，目标确实说完了；
-    下面第二条正向断言钉的就是这个，两边必须同时成立。
+    ⚠ Closing halves remain endings: a closing quote necessarily follows an opening quote, so the target really ended;
+    the second positive assertion below pins this. Both sides must hold.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2286,14 +2286,14 @@ def test_an_opening_delimiter_does_not_complete_a_target(opener, closer):
     assert router._chat_text_requests_full_rewrite(complete) is True, complete
 
 
-# ⚠️ `呢`/`吗`/`嗎` **不在**这张表里：它们是**疑问**语气词，归疑问守卫管
-# （Codex P1 第五十七轮）。下面的反向断言钉住这条分工。
+# ⚠ `呢`/`吗`/`嗎` are **not** in this table: they are **interrogative** particles handled by the question guard
+# (Codex P1 round 57). Negative assertions below pin the division.
 @pytest.mark.parametrize("particle", ["啦", "喽", "嘍", "咯", "嘞", "咧", "吧", "了"])
 def test_terminal_particles_after_a_target(particle):
-    """句末语气词是**闭集**，一次补齐（base 都是 True，Codex P2 第五十五轮）。
+    """Final particles are a **closed set**: complete them at once (all base=True, Codex P2 round 55).
 
-    ⚠️ 这一族值得补是因为它列得干净；`再补一种罕见说法` 那种开集不在此列。
-    ⚠️ 配对反向断言：语气词不是万能收尾，单字段那条保险照旧挡着。
+    ⚠ This family merits completion because it is enumerable, unlike open-ended rare phrasings.
+    ⚠ Paired negative: particles are not universal endings; single-field protection remains.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2309,13 +2309,13 @@ def test_terminal_particles_after_a_target(particle):
                            ("【", "】"), ("《", "》"), ("[", "]")]
 )
 def test_a_closing_delimiter_is_transparent_not_terminal(opener, closer):
-    """⚠️⚠️ 闭合定界符是**透明**的，不是收尾（Codex P1 第五十七轮，base 是 False）。
+    """⚠⚠ Closing delimiters are **transparent**, not endings (Codex P1 round 57, base=False).
 
-    当收尾用时 `把（整个卡的每一项）的名字重写` 里 `）` 满足收尾、后面的 `的名字`
-    被无视，整卡补全照跑并 autosave。
+    As endings, ） in 把（整个卡的每一项）的名字重写 ignores the following 的名字,
+    still running whole-card completion + autosave.
 
-    ⚠️ 但也不能直接从表里删掉：`把「所有字段」重写` 里用户就是用引号强调目标，
-    base 是 True——下面第二条正向断言钉的就是这个，两边必须同时成立。
+    ⚠ Yet removing them outright blocks 把「所有字段」重写, where quotes emphasize the target,
+    base=True; the second positive assertion pins this too. Both sides must hold.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2328,9 +2328,9 @@ def test_a_closing_delimiter_is_transparent_not_terminal(opener, closer):
 @pytest.mark.parametrize("dash", ["-", "–", "—", "~", "～", "至", "到"])
 @pytest.mark.parametrize(("low", "high"), [("2", "3"), ("一", "两"), ("10", "12")])
 def test_numeric_ranges_are_attributive(dash, low, high):
-    """数量成分可以是**范围**：`最后2-3段`（Codex P1 第五十七轮，base 是 False）。
+    """Quantities can be **ranges**: 最后2-3段 (Codex P1 round 57, base=False).
 
-    只要求数字后面紧跟一个汉字时，中间的连接号把定语守卫整个绕开了。
+    Requiring a Han character immediately after digits let the intervening separator bypass the attributive guard.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2344,21 +2344,21 @@ def test_numeric_ranges_are_attributive(dash, low, high):
      "需要重写整个卡的每一项吗", "要不要把所有字段重写",
      "该不该重写整个角色卡的全部设定", "能不能把所有字段重写呢",
      "重写整个卡的所有内容好不好",
-     # ⚠️ 繁体分支同样要覆盖：嗎 / 有沒有 / 該不該 / 應不應該 / 對不對 被误删时
-     # 必须见红——繁体用户走的正是这几条（CodeRabbit）。
+     # ⚠ Cover Traditional branches too: accidentally removing 嗎 / 有沒有 / 該不該 / 應不應該 / 對不對
+     # must fail tests, since Traditional users take exactly these branches (CodeRabbit).
      "把整個卡的每一項都需要重寫嗎", "該不該重寫整個角色卡的全部設定",
      "應不應該把所有欄位重寫", "有沒有需要重寫整個卡的所有內容",
      "重寫整個卡的所有內容對不對"],
 )
 def test_interrogative_clauses_are_not_edit_commands(question):
-    """⚠️⚠️ 疑问句**不是编辑命令**（Codex P1 第五十七轮，base 都是 False）。
+    """⚠⚠ Questions **are not edit commands** (Codex P1 round 57, all base=False).
 
-    卡片侧原先完全没有疑问守卫（音乐侧有一整套），于是用户只是在问要不要改，
-    却一路走进 `_complete_full_rewrite_actions` 给每个缺失字段合成内容并 autosave。
+    Cards originally had no question guard (music had a full set), so merely asking whether to edit
+    reached `_complete_full_rewrite_actions`, synthesizing and autosaving every missing field.
 
-    ⚠️ 代价方向是安全的：守卫误触发 = 少补几个字段；漏触发 = 把用户只是问问的
-    东西真改了并存盘。所以宁可判得宽一点。
-    ⚠️ 配对正向断言：陈述式的整卡请求照旧是 True。
+    ⚠ Erring broadly is safe: false positives leave a few fields uncompleted; false negatives actually edit and
+    save what the user merely asked about. Prefer a broad guard.
+    ⚠ Paired positive: declarative whole-card requests remain True.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2373,9 +2373,9 @@ def test_interrogative_clauses_are_not_edit_commands(question):
 )
 @pytest.mark.parametrize("target", ["所有字段", "全部字段", "整个卡的所有内容"])
 def test_recipient_phrases_between_target_and_verb(target, recipient):
-    """受事/礼貌短语占的是跟轻动词同一个槽（base 都是 True，Codex P2 第五十七轮）。
+    """Benefactive/polite phrases occupy the light-verb slot (all base=True, Codex P2 round 57).
 
-    ⚠️ 配对反向断言：单字段那条保险没被顺手打开。
+    ⚠ Paired negative: single-field protection remains intact.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2387,15 +2387,15 @@ def test_recipient_phrases_between_target_and_verb(target, recipient):
 
 
 def test_per_item_quantifiers_cannot_head_a_whole_card_target():
-    """⚠⚠ 逐项类限定词不能**自己当整卡目标**（Codex P1 ×3，第五十七/五十八轮）。
+    """⚠⚠ Itemwise quantifiers cannot **act as whole-card targets themselves** (three Codex P1s, rounds 57/58).
 
-    第四十八轮把 `每一项` 收进限定词表时只想着「限定词 + 范围名词」
-    （`把所有字段里的每一项内容重写`，base 是 True），却同时让
-    `整个卡的每一项` 自己成了整卡目标——而那个形式 base 是 False。
-    由此一口气长出三条 P1（定语绕过 / 只改名字却整卡补全 / 明确否定却照改），
-    都是数据覆盖方向。
+    Round 48 added 每一项 to quantifiers thinking only of quantifier + scope noun
+    (把所有字段里的每一项内容重写, base=True), but simultaneously made
+    整个卡的每一项 a standalone whole-card target, a form with base=False.
+    Three P1s followed at once (attributive bypass / whole-card completion for a name-only edit / editing despite explicit negation),
+    all in the data-overwrite direction.
 
-    与其在下游再加三道守卫，不如收回源头：分成两张表。
+    Separate the source into two tables rather than adding three downstream guards.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2416,10 +2416,10 @@ def test_per_item_quantifiers_cannot_head_a_whole_card_target():
 @pytest.mark.parametrize("prefix", ["第", "前", "后", "後", "头", "頭", "末", ""])
 @pytest.mark.parametrize("numeral", ["2", "二", "两"])
 def test_ordinal_prefixes_before_the_attributive_numeral(prefix, numeral):
-    """数量成分前面还可以有**序数/范围修饰**：`最后第2段` / `最后前两段`
-    （Codex P1 第五十八轮，base 是 False）。
+    """Quantities can be preceded by **ordinal/range modifiers**: 最后第2段 / 最后前两段
+    (Codex P1 round 58, base=False).
 
-    只认「数词打头」时它们从定语守卫底下绕过去了。
+    Requiring a numeral first let them bypass the attributive guard.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2431,17 +2431,17 @@ def test_ordinal_prefixes_before_the_attributive_numeral(prefix, numeral):
     "head", ["为什么", "為什麼", "为何", "為何", "为啥", "為啥", "干嘛", "幹嘛", "凭什么", "憑什麼"]
 )
 def test_wh_question_heads_are_not_edit_commands(head):
-    """⚠️ 疑问守卫也要收 wh 头（Codex P1 第五十九轮）。
+    """⚠ The question guard needs wh-heads too (Codex P1 round 59).
 
-    ⚠️ 但这条**不是本 PR 的回归**——`为什么要重写整个卡的所有内容` 在 base 上就是
-    True。是我第五十七轮加这道守卫时只收了极性/情态那一族，把它建了一半。
-    补齐会收窄一条 base 行为，方向是安全的那一侧（少补几个字段而不是多改数据）。
+    ⚠ **Not a PR regression**: 为什么要重写整个卡的所有内容 already has base=
+    True. When adding the guard in round 57, I included only polarity/modal forms, leaving it half built.
+    Completion narrows baseline behavior in the safe direction (fewer completed fields, rather than extra data edits).
 
-    ⚠️ reviewer 举的 `为什么要重写整个卡的每一项` 到这一轮已经**不复现**了：
-    上一轮把 `每一项` 收回源头之后它就不再是整卡目标。这条补的是同族里剩下的
-    那半边。
+    ⚠ The reviewer's 为什么要重写整个卡的每一项 **no longer reproduces** this round:
+    removing 每一项 at the source last round stopped it being a whole-card target. This fixes the remaining
+    half of the same family.
 
-    ⚠️ 左界必须挡 `因`：`因为什么都没写…` 里 `为什么` 只是子串（base 是 True）。
+    ⚠ Exclude preceding 因: 为什么 in 因为什么都没写… is merely a substring (base=True).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2457,13 +2457,13 @@ def test_wh_question_heads_are_not_edit_commands(head):
 )
 @pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
 def test_question_markers_inside_quoted_field_values(opener, closer, value):
-    """⚠️ 疑问守卫看的是**抹掉引用跨度之后**的文本（base 是 True，Codex P2 第五十九轮）。
+    """⚠ The question guard reads text **after quotation erasure** (base=True, Codex P2 round 59).
 
-    `重写所有字段并把口头禅设为“好不好”` 里的 `好不好` 是字段内容不是提问。
+    好不好 in 重写所有字段并把口头禅设为“好不好” is field content, not a question.
 
-    ⚠️ 跟否定守卫那边**方向相反**——那边是「引号里的禁止一律算数」，这边是
-    「引号里的疑问不算」。两边不矛盾：都取**少改用户数据**的那一侧。
-    下面第二条反向断言钉住否定那一侧没被顺手改掉。
+    ⚠ This is **opposite to negation handling**: quoted prohibitions always count there, while quoted
+    questions do not count here. Both consistently choose **fewer edits to user data**.
+    The second negative assertion below pins that negation handling stays intact.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2474,8 +2474,8 @@ def test_question_markers_inside_quoted_field_values(opener, closer, value):
     assert router._chat_text_requests_full_rewrite('把整个卡的每一项都需要重写吗') is False
 
 
-# 这些字在本 PR 的词表里成对出现（简 -> 繁）。⚠️ 只列**表里实际用到**的，
-# 不是通用简繁表——通用表在这里既没必要也维护不动。
+# These characters occur as script pairs in this PR's vocabulary (Simplified -> Traditional). ⚠ Include only **actually used** characters,
+# not a general conversion table, which is unnecessary and unmaintainable here.
 _SIMPLIFIED_TO_TRADITIONAL_RAW = {
     "个": "個", "们": "們", "为": "為", "无": "無", "万": "萬", "与": "與",
     "专": "專", "业": "業", "东": "東", "丝": "絲", "严": "嚴", "么": "麼",
@@ -2552,26 +2552,26 @@ _SIMPLIFIED_TO_TRADITIONAL_RAW.update({
 })
 
 
-# ⚠️ 多形字：一个简体对应多个繁体（并 → 並/併，几 → 幾）。
+# ⚠ Multiple forms: one Simplified character can map to several Traditional forms (并 -> 並/併, 几 -> 幾).
 _SIMPLIFIED_TO_TRADITIONAL = {
     key: (value,) for key, value in _SIMPLIFIED_TO_TRADITIONAL_RAW.items()
 }
 _SIMPLIFIED_TO_TRADITIONAL.update({
     "并": ("並", "併"),
-    # ⚠️ `准` 也是多形字，而且**两个形都可能对**：批准/准许 里它繁体仍是 `准`，
-    # 準備/標準 里才是 `準`。第六十二轮加 `_ZH_INQUIRY_VERBS` 时这条断言当场
-    # 报了 `准备` 缺 `准備`——其实表里有 `準備`，是这张映射自己漏了 `准`。
-    # 两次了（上一轮是 `一并`/`暂时不`），漏的都是**映射**而不是词表。
+    # ⚠ 准 has multiple forms too, and **both can be correct**: it stays 准 in 批准/准许,
+    # becoming 準 only in 準備/標準. When round 62 added _ZH_INQUIRY_VERBS, this assertion
+    # reported 准备 missing 准備 despite 準備 being present; this mapping itself lacked 准.
+    # Twice now (previously 一并/暂时不), omissions were in the **mapping**, not vocabulary.
     "准": ("准", "準"),
-    # ⚠️ `着` 同样是多形字：緊接著 / 緊接着 都通行。这是这条断言**第三次**
-    # 报出映射自己的洞而不是词表的洞（前两次是 `一并`/`暂时不` 和 `准备`）——
-    # 说明它真正在拦的东西比「补词条」更靠前一层。
+    # ⚠ 着 has multiple forms too: 緊接著 / 緊接着 are both common. This assertion has now **three times**
+    # exposed its own mapping gaps rather than vocabulary gaps (previously 一并/暂时不 and 准备),
+    # showing it guards a layer earlier than adding vocabulary entries.
     "着": ("着", "著"),
-    # ⚠️ 第四次了（一并/暂时不、准备、紧接着，现在是 无须）。这条断言真正在拦的
-    # 不是「词表少收一个词」，而是「映射表说不出这个词有繁体形」。
+    # ⚠ Fourth time (一并/暂时不, 准备, 紧接着, now 无须). This assertion really guards not missing vocabulary,
+    # but a mapping unable to express a word's Traditional form.
     "须": ("须", "須"),
-    # ⚠️ 第五次了（一并/暂时不、准备、紧接着、无须，现在是 只是）。`只` 同样是
-    # 多形字：「只有」的 `只` 繁体不变，「一隻」的 `隻` 才变。
+    # ⚠ Fifth time (一并/暂时不, 准备, 紧接着, 无须, now 只是). 只 has multiple forms too:
+    # it remains 只 in 只有, becoming 隻 only in 一隻.
     "只": ("只", "隻"),
     "几": ("幾",),
     "后": ("後",),
@@ -2581,11 +2581,11 @@ _SIMPLIFIED_TO_TRADITIONAL.update({
 })
 
 
-# 上一轮这里是**手写清单**，于是新加一张表就漏一张——第六十一轮加
-# `_WHOLE_CARD_MODAL_VERBS` / `_ZH_FRAME_SCOPE_COORDINATORS` 时当场撞上。
-# 改成**自动发现**：模块里所有「全大写名 + 字符串元组 + 含汉字」的常量。
-# ⚠️ 这条断言是自限的——只有当某个词按字映射出**不同于自己**的繁体形时才要求
-# 配对，纯数字/量词/标点那些表天然免检，不必再维护豁免名单。
+# Previously a **manual list** missed each newly added table, exposed immediately in round 61 when adding
+# _WHOLE_CARD_MODAL_VERBS / _ZH_FRAME_SCOPE_COORDINATORS.
+# Use **automatic discovery**: every module constant with an uppercase name, string tuple value, and Han text.
+# ⚠ This assertion limits itself: a term needs a counterpart only if character mapping yields a Traditional form
+# **different from itself**. Numeric/classifier/punctuation tables naturally need no checks or exemption lists.
 _PAIRED_TABLE_FLOOR = frozenset({
     "_WHOLE_CARD_QUANTIFIERS", "_WHOLE_CARD_BARE_ADVERBS",
     "_WHOLE_CARD_LIGHT_VERBS", "_WHOLE_CARD_MEASURE_WORDS",
@@ -2596,15 +2596,15 @@ _PAIRED_TABLE_FLOOR = frozenset({
 
 
 def _paired_tables():
-    """实现模块里所有「简繁成对」的词表，**自动发现**。"""  # noqa: DOCSTRING_CJK
+    """**Automatically discover** all script-paired vocabularies in the implementation module."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     found = {}
     for name, value in vars(router).items():
-        # ⚠️ 只看**私有**常量。公开的那些是**数据契约**而不是匹配词表——
-        # `CHARACTER_RESERVED_FIELDS` 存的是角色卡 JSON 的字段名，
-        # 把 `原始数据` 配成 `原始數據` 会凭空造出一个读不到的键。
-        # 判据不是「这张表我审过」而是「它是不是拿去匹配用户输入的」。
+        # ⚠ Inspect only **private** constants. Public constants are **data contracts**, not input-match vocabularies:
+        # CHARACTER_RESERVED_FIELDS contains character-card JSON field names;
+        # pairing 原始数据 with 原始數據 invents an unreadable key.
+        # The criterion is whether a table matches user input, not whether it has been reviewed.
         if not name.startswith("_"):
             continue
         if not name.isupper() or not isinstance(value, tuple) or not value:
@@ -2617,36 +2617,36 @@ def _paired_tables():
 
 
 def test_the_paired_table_discovery_still_sees_the_known_tables():
-    """⚠️ 自动发现的**下限**：过滤条件写错（比如全都被滤掉）时上面那条
-    参数化会退化成空集合、静默变成零覆盖。这里钉住已知的 12 张一张都不能少。
+    """⚠ Discovery's **lower bound**: incorrect filters (e.g. excluding everything) turn the preceding parameterization
+    into an empty set and silently zero coverage. Pin all 12 known tables here.
 
-    ⚠️ 只钉下限不钉上限——钉了上限就等于把手写清单换个地方写，新表照样漏。
-    ⚠️ 下限张数以 `_PAIRED_TABLE_FLOOR` 为准，这里**不重复写数字**——原来写着
-    「已知的 12 张」，集合后来加到 14 张，数字就漂了（CodeRabbit）。
+    ⚠ Pin only the lower bound, not an upper bound, which merely relocates the manual list and still misses new tables.
+    ⚠ Use `_PAIRED_TABLE_FLOOR` for the count, **without repeating a number here**: the old comment said
+    12 known tables after the set grew to 14, drifting out of date (CodeRabbit).
     """  # noqa: DOCSTRING_CJK
     discovered = set(_paired_tables())
     assert _PAIRED_TABLE_FLOOR <= discovered, sorted(
         _PAIRED_TABLE_FLOOR - discovered
     )
-    # ⚠️ 并且**确实比手写清单宽**：换成自动发现之后多盖到了 7 张表
+    # ⚠ This is genuinely **broader than the manual list**: discovery covers seven additional tables,
     # （_WHOLE_CARD_SCOPE_NOUNS / _ZH_PROGRESSIVE_ADVERBS / _WHOLE_CARD_HEAD_NOUNS
-    # 这三张里都有真的简繁对，删掉繁体形会当场见红——变异验证过）。
-    # 这条不是凑数——它拦的是「过滤条件收得太紧、退化回原来那张清单」。
+    # three of which contain real script pairs; deleting Traditional forms fails immediately (mutation verified).
+    # This test is substantive: it prevents overly restrictive filters from reverting discovery to the old list.
     assert len(discovered) > len(_PAIRED_TABLE_FLOOR)
     assert "CHARACTER_RESERVED_FIELDS" not in discovered
 
 
 @pytest.mark.parametrize("table_name", sorted(_paired_tables()))
 def test_every_simplified_entry_has_its_traditional_twin(table_name):
-    """⚠️⚠️ 实现侧词表里，**凡是能写成繁体的词，繁体形必须也在表里**。
+    """⚠⚠ **Every implementation vocabulary term that can be written in Traditional must include its Traditional form**.
 
-    这个 PR 的主旨就是简繁对等，可它自己的词表反复出现「只收了一半」：
-    挨個 / 遭 / 幾·數 / 忘记 / 鈴聲 都是 reviewer 一个一个揪出来的，
-    而 `鈴聲` 那次更是我把字打错成了 `鈘聲`——一个不存在的词，静默失效。
+    Script parity is this PR's purpose, yet its own tables repeatedly included only one half:
+    挨個 / 遭 / 幾·數 / 忘记 / 鈴聲 were each caught by reviewers;
+    for 鈴聲 I even mistyped 鈘聲, a nonexistent term silently failing.
 
-    ⚠️ 逐个补词治标。这条断言是结构性的：拿表里每个简体词按字映射出繁体形，
-    如果映射结果跟原词不同（说明这个词有繁体写法），就要求它也在表里。
-    打错字同样会被抓到——`鈘聲` 不是 `鈴聲` 的映射结果。
+    ⚠ Individual patches treat symptoms. This structural assertion maps every Simplified term to Traditional character by character;
+    if the result differs (the word has a Traditional form), require it in the table too.
+    Typos are caught too: 鈘聲 is not the mapped form of 鈴聲.
     """  # noqa: DOCSTRING_CJK
     import itertools
 
@@ -2654,16 +2654,16 @@ def test_every_simplified_entry_has_its_traditional_twin(table_name):
     entries = set(table)
     missing = []
     for word in table:
-        # ⚠️ 一个简体字可能对应**多个**繁体字（`并` → 並/併），
-        # 所以映射值是候选集，只要**任一**候选形在表里就算成对。
+        # ⚠ One Simplified character may map to **multiple** Traditional characters (`并` -> 並/併),
+        # so each mapping value is a candidate set; **any** candidate in the table establishes a pair.
         options = [_SIMPLIFIED_TO_TRADITIONAL.get(ch, (ch,)) for ch in word]
         twins = {"".join(combo) for combo in itertools.product(*options)}
-        # ⚠️⚠️ 多形字的候选里**含恒等形**时，这个词本身就已经是合法繁体写法，
-        # 不该再要求另一个形也在表里。`只是` 就是这样——「只有」的 `只` 繁体不变，
-        # 「一隻」的 `隻` 才变；映射写成 `只 → (只, 隻)` 是对的，可原来的写法
-        # 先把原词从候选里 discard 掉，于是永远只剩 `隻是`，报一个假缺口
-        # （第七十八轮）。同族的 `准`（批准/準備）之前没暴露，是因为表里恰好
-        # 两个形都有。这是**断言自己的洞**，不是词表的。
+        # ⚠⚠ If candidates **include the identity form**, the term itself is already valid Traditional spelling,
+        # so another form need not exist. 只是 is such a case: 只 stays unchanged in 只有,
+        # becoming 隻 only in 一隻. Mapping 只 -> (只, 隻) is correct, but the former logic
+        # discarded the original term from candidates, leaving only 隻是 and reporting a false gap
+        # (round 78). The related 准 (批准/準備) issue stayed hidden because both forms happened
+        # to exist in the table. This is **the assertion's own gap**, not the vocabulary's.
         if word in twins:
             continue
         if twins and not (twins & entries):
@@ -2672,9 +2672,9 @@ def test_every_simplified_entry_has_its_traditional_twin(table_name):
 
 
 def test_the_modal_verb_table_is_pinned():
-    """⚠️ 下面那条笛卡尔积是从这张表派生的，改表就改测试——所以先把表本身钉住。
+    """⚠ The Cartesian product below derives from this table; table changes alter tests, so pin the table first.
 
-    ⚠️ 用相等而不是包含：只有相等才拦得住「悄悄删掉一个词」。
+    ⚠ Use equality rather than containment: only equality catches silent term removal.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2687,11 +2687,11 @@ def test_the_modal_verb_table_is_pinned():
 @pytest.mark.parametrize("modal", _router_table("_WHOLE_CARD_MODAL_VERBS"))
 @pytest.mark.parametrize("target", ["所有字段", "整个卡的全部内容", "全部欄位"])
 def test_necessity_modals_sit_in_the_preverb_slot(target, modal):
-    """必要性情态动词占的是「目标 + X + 重写动词」那个槽（base 全是 True，
-    Codex P2 第六十一轮）。
+    """Necessity modals occupy the target + X + rewrite-verb slot (all base=True,
+    Codex P2 round 61).
 
-    ⚠️ Codex 只报了 必须/務必，实测同族一起丢的还有 需要/应该/得/一定要/最好。
-    能愿动词是封闭词类，一次列全。
+    ⚠ Codex reported only 必须/務必; tests also found 需要/应该/得/一定要/最好 lost from the same family.
+    Modal verbs form a closed class: enumerate all at once.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2704,12 +2704,12 @@ def test_necessity_modals_sit_in_the_preverb_slot(target, modal):
     [("需要", ("需", "要")), ("一定要", ("一定", "要")), ("必须要", ("必须", "要"))],
 )
 def test_modal_compounds_come_from_the_run_not_from_the_table(compound, parts):
-    """⚠️ 复合情态形（需要 / 一定要）**不在表里**，是 `_WHOLE_CARD_ADVERB_RUN`
-    那个 `+` 自己拼出来的。
+    """⚠ Compound modals (需要 / 一定要) **are absent from the table**, composed by
+    `_WHOLE_CARD_ADVERB_RUN`'s `+` itself.
 
-    列了 `需要` 又列 `需` 就破了那张表的**前缀码**性质，而前缀码正是这个 `+`
-    不会指数回溯的依据。所以这里同时断言：复合形能用，且它的两截都在表里、
-    复合形本身不在。
+    Listing both 需要 and 需 breaks the table's **prefix-code** property, the reason this `+`
+    avoids exponential backtracking. Assert both that compounds work and their two components are in the table,
+    while the compound itself is absent.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2721,12 +2721,12 @@ def test_modal_compounds_come_from_the_run_not_from_the_table(compound, parts):
 
 @pytest.mark.parametrize("modal", ["必须", "必須", "需要", "应该", "一定要", "得"])
 def test_necessity_modals_do_not_defeat_the_earlier_guards(modal):
-    """⚠️ 情态词开的口子**不能穿过前面两道守卫**。
+    """⚠ Modal acceptance **must not bypass the two earlier guards**.
 
-    否定（`不要…`）和疑问（`…吗` / `该不该`）都在这一步之前判掉，情态词只是
-    在两道守卫**之后**的那个槽里放宽。这三条反向断言钉住这个顺序。
+    Negation (不要…) and questions (…吗 / 该不该) are rejected earlier; modals widen only
+    the slot **after** these guards. Three negative assertions pin this order.
 
-    ⚠️ 第四条钉住缺陷一本体：`把整个卡的全部名字重写` 仍然不是整卡命令。
+    ⚠ The fourth pins bug one's core case: 把整个卡的全部名字重写 remains no whole-card command.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2738,11 +2738,11 @@ def test_necessity_modals_do_not_defeat_the_earlier_guards(modal):
 
 @pytest.mark.parametrize("modal", ["能", "会", "會", "可以", "想", "愿意", "願意"])
 def test_possibility_modals_stay_out(modal):
-    """⚠️ 只收**必要性**那一支。可能性/意愿那一支不进来——`所有字段能重写`
-    是在问能力不是在下命令，收进来就是往数据覆盖那一侧放。
+    """⚠ Admit only **necessity**, excluding possibility/intention: 所有字段能重写
+    asks about ability, not a command; admitting it risks data overwrite.
 
-    ⚠️ 这条是**方向断言**而不是覆盖断言：它规定的是这张表的边界在哪，
-    往表里顺手加个 `能` 会当场见红。
+    ⚠ This is a **direction assertion**, not coverage: it defines this table's boundary;
+    casually adding 能 immediately fails.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2752,11 +2752,11 @@ def test_possibility_modals_stay_out(modal):
 
 
 def test_the_free_choice_frame_table_is_pinned():
-    """⚠️ 下面两条笛卡尔积从这张表派生，先钉住表本身（相等，不是包含）。"""  # noqa: DOCSTRING_CJK
+    """⚠ The two Cartesian products below derive from this table; first pin equality, not containment."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    # ⚠️ 第六十三轮补齐条件/让步/认知三族——当初只搬了任指，于是
-    # `即使是否满意都把所有字段重写一遍` 照旧被当成提问丢掉（base 是 True）。
+    # ⚠ Round 63 completed conditional/concessive/cognitive families, previously omitted when only free-choice was copied;
+    # `即使是否满意都把所有字段重写一遍` was still discarded as a question (base=True).
     assert router._CHAT_FREE_CHOICE_FRAMES == (
         "无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便",
         "如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若",
@@ -2773,11 +2773,11 @@ def test_the_free_choice_frame_table_is_pinned():
 def test_polarity_inside_a_free_choice_frame_is_not_a_question(
     correlative, polarity, frame
 ):
-    """任指框架辖域里的极性标记是「无论是否」的意思，不是提问
-    （base 全是 True，Codex P2 第六十二轮，同族实测 60 条）。
+    """Polarity markers under free-choice scope mean regardless of whether, not questions
+    (all base=True, Codex P2 round 62, 60 related tested cases).
 
-    上一版的疑问守卫无条件扫标记，`无论是否缺失都重写所有字段` 被整条丢掉，
-    整卡补全被跳过。
+    The former question guard scanned markers unconditionally, discarding 无论是否缺失都重写所有字段
+    and skipping whole-card completion.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2792,25 +2792,25 @@ def test_polarity_inside_a_free_choice_frame_is_not_a_question(
 def test_a_correlative_without_a_frame_word_is_still_a_question(
     correlative, polarity
 ):
-    """⚠️⚠️ **这条是上面那条的安全边界，比它更重要。**
+    """⚠⚠ **This is the preceding test's safety boundary, and more important**.
 
-    音乐侧的 `_ZH_CORRELATIVE_RIGHT` 只前视关联词 都/就/也 就放行。这一侧
-    **不能照抄**：那边放宽的代价是少停一次歌（轻），这一侧的代价是把用户没要求
-    改的字段全覆盖掉并 autosave（重）。只看关联词的话，这些**真提问**会被当成命令。
-    所以判据要求「框架词 + 窗口 + 关联词」**同时**出现，缺一不可。
+    Music's `_ZH_CORRELATIVE_RIGHT` admits cases by looking only for 都/就/也. This side
+    **cannot copy that**: widening music only misses a stop (light), but here overwrites and autosaves every
+    unrequested field (heavy). Correlatives alone would turn these **genuine questions** into commands.
+    Require frame term + window + correlative **together**, all indispensable.
 
-    ⚠️⚠️ 语序是承重的，别改成「所有字段是不是都要重写」。那个写法**测不出东西**：
-    `是不是都` 卡在整卡目标和重写动词之间，`_CHAT_FULL_REWRITE_RE` 本来就不匹配，
-    于是不管疑问守卫怎么写它都是 False——通过的理由是错的。
-    第六十二轮第一版就是这么写的，变异（把框架词改成可选）**存活**了才发现。
-    标记在前、`重写所有字段` 在后时，唯一让它变 False 的才是疑问守卫本身。
+    ⚠⚠ Word order bears weight; do not substitute 所有字段是不是都要重写. That form **tests nothing**:
+    是不是都 intervenes between target and verb, so `_CHAT_FULL_REWRITE_RE` already fails,
+    yielding False regardless of the question guard: passing for the wrong reason.
+    Round 62's first version did exactly this; only a **surviving** mutation making frame terms optional exposed it.
+    Put the marker first and 重写所有字段 afterward so only the question guard can make it False.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'{polarity}{correlative}要重写所有字段'
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    # ⚠️ 同时钉住这个语序在没有疑问标记时**确实是命令**——否则上面那条又会
-    # 因为「主判据压根不匹配」而通过。
+    # ⚠ Also pin that this word order **really is a command** without a question marker, or the preceding test
+    # could pass merely because the main criterion never matches.
     assert router._chat_text_requests_full_rewrite(
         f'{correlative}要重写所有字段'
     ) is True
@@ -2821,32 +2821,32 @@ def test_a_correlative_without_a_frame_word_is_still_a_question(
 def test_a_separator_inside_a_quoted_value_still_splits_the_clause(
     separator, opener, closer
 ):
-    """⚠️⚠️ **这条是 by-design 的代价，不是缺陷。别再去"修"它。**
+    """⚠⚠ **This is an accepted by-design cost, not a bug. Do not fix it again**.
 
-    `重写所有字段并把口头禅设为“好不好，随便”` base 是 True、现在是 False——
-    引号里那个逗号照样切子句，`好不好` 裸露出来被疑问守卫当成提问。
+    重写所有字段并把口头禅设为“好不好，随便” has base=True, now=False:
+    the quoted comma still splits clauses, exposing 好不好 to the question guard.
 
-    我确实改过 `_chat_clauses` 让它跳过引用跨度，那条现象当场就好了。但那个改动
-    一口气造出两条**数据覆盖方向**的缺陷（都不可逆）：
-      · `先展示“整个卡，姓名”然后重写名字` 走进整卡补全并 autosave；
-      · `不要把“整个卡，包括头像”重写`——否定守卫那段窗口是这张标点表的**补集**，
-        它没跟着改，`不要` 够不到 `重写`，用户明说了禁止照样被覆盖。
+    I did change `_chat_clauses` to skip quoted spans, immediately fixing that case. However, that
+    created two **data-overwrite bugs**, both irreversible:
+      · 先展示“整个卡，姓名”然后重写名字 entered whole-card completion + autosave;
+      · 不要把“整个卡，包括头像”重写: the negation window is **the complement** of this punctuation table,
+        but was unchanged, leaving 不要 unable to reach 重写 and allowing overwrite despite explicit prohibition.
 
-    为一条「少补几个字段」去换两条「多改一整张卡」，方向反了，所以退回。
-    这条用例把退回后的行为钉住，免得下一轮又被当成缺陷捡起来。
+    Trading a few uncompleted fields for two extra whole-card edits takes the wrong direction, so revert.
+    This test pins reverted behavior to prevent rediscovering it as a defect next round.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'重写所有字段并把口头禅设为{opener}好不好{separator}随便{closer}'
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    # ⚠️ 但**没有分隔符**的那一半仍然成立（第五十九轮修的），别一起退掉。
+    # ⚠ The **delimiter-free** half still works (fixed in round 59); do not revert it too.
     assert router._chat_text_requests_full_rewrite(
         f'重写所有字段并把口头禅设为{opener}好不好{closer}'
     ) is True
 
 
 def test_clause_splitting_ignores_quotes_by_design():
-    """⚠️ 切分**不看引号**——见上一条为什么退回。这里直接钉住切分函数本身。"""  # noqa: DOCSTRING_CJK
+    """⚠ Splitting **ignores quotes**: see the preceding reason for reverting. Pin the splitter itself here."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_clauses('重写所有字段并设为“好不好，随便”') == [
@@ -2859,9 +2859,9 @@ def test_clause_splitting_ignores_quotes_by_design():
 
 @pytest.mark.parametrize("separator", ["，", ",", "；", ";", "、"])
 def test_a_prohibition_still_stays_inside_its_own_clause(separator):
-    """⚠️ 反向：切分改成跳过引用跨度之后，「否定只在自己子句内生效」不能被弄坏。
+    """⚠ Negative case: making splitting skip quotations must not break negation acting within its own clause.
 
-    这是第四十二~四十八轮反复收敛过的判据，改切分是最容易碰坏它的地方。
+    This criterion converged through rounds 42-48; splitting changes easily break it.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2878,13 +2878,13 @@ def test_a_prohibition_still_stays_inside_its_own_clause(separator):
 def test_a_quoted_span_between_target_and_verb_breaks_the_pairing(
     separator, opener, closer
 ):
-    """整卡目标被拿来当例子/素材、真正的宾语在别处时，不算整卡重写命令
-    （base 都是 False）。
+    """A whole-card target used as example/material, with the real object elsewhere, is no whole-card rewrite command
+    (all base=False).
 
-    ⚠️ 这两句一度变成 True——第六十二轮把切分改成跳过引用跨度，引号里的逗号
-    不再切子句，目标和动词并回同一句就配上了。第六十三轮我给它加了一道
-    「夹着跨度不算配上」的守卫；第六十五轮把切分整个退回之后，那道守卫不再需要，
-    连同它引进的 O(n²) 一起删掉。结论不变，靠的是切分本身，不是额外的守卫。
+    ⚠ These two sentences once became True: round 62 skipped quoted punctuation, merging target and verb
+    into one clause. Round 63 added a guard against matching across an intervening quotation;
+    reverting splitting in round 65 removed the need for that guard,
+    so it and its O(n²) cost were deleted. The result stays unchanged through splitting itself, without an extra guard.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2895,11 +2895,11 @@ def test_a_quoted_span_between_target_and_verb_breaks_the_pairing(
 
 
 def test_a_target_written_inside_quotes_is_still_a_command():
-    """⚠️ 目标本身写在引号里时仍然是命令（base 是 True）。
+    """⚠ Quoted targets themselves can still be commands (base=True).
 
-    第六十三轮我为此加过一个「目标和动词之间夹着引用跨度就不算配上」的守卫，
-    那是为了补第六十二轮切分改动的后果；切分退回之后那个守卫连同它的复杂度
-    一起删掉了，这条断言留着——它钉的是 base 行为，跟守卫在不在无关。
+    Round 63 added a guard rejecting quoted spans between target and verb to compensate
+    for round 62's splitting change; reverting splitting removed that guard and its complexity,
+    but this assertion remains, pinning base behavior independently of the guard's existence.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2912,12 +2912,12 @@ def test_a_target_written_inside_quotes_is_still_a_command():
      "should", "could", "can", "do", "does", "why", "how", "what"],
 )
 def test_english_question_and_conditional_heads_are_not_commands(head):
-    """⚠️⚠️ 英文侧一条守卫都没有：整卡目标和重写动词那两张表本来就有英文分支，
-    疑问/条件守卫却只有中文，于是 `Whenever you rewrite all fields, …` 这种条件
-    小句被判成整卡重写并 autosave（base 是 False——数据覆盖方向，第六十三轮）。
+    """⚠⚠ English had no guards: targets and rewrite verbs already included English,
+    while question/conditional guards were Chinese-only, making conditional clauses such as Whenever you rewrite all fields, …
+    into whole-card rewrites with autosave (base=False: data overwrite direction, round 63).
 
-    ⚠️ 这跟第三十轮那条「否定守卫漏英文导致单边不对称」是同一个病：
-    一侧收了英文、另一侧没收，就会有句子满足全部正向谓词却躲过全部守卫。
+    ⚠ Same asymmetry as round 30's missing English negation guard:
+    supporting English on only one side lets sentences meet every positive predicate while bypassing all guards.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2927,9 +2927,9 @@ def test_english_question_and_conditional_heads_are_not_commands(head):
 
 
 def test_english_commands_still_go_through():
-    """⚠️ 反向：英文命令本身不能被这道守卫误伤。
+    """⚠ Negative case: English commands themselves must survive this guard.
 
-    ⚠️ 拉丁词边界也钉在这里——`nevertheless` 含 `never` 子串但整句是命令。
+    ⚠ Also pin Latin word boundaries here: nevertheless contains never but the whole sentence is a command.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2949,11 +2949,11 @@ def test_english_commands_still_go_through():
     ],
 )
 def test_the_english_question_heads_need_a_right_word_boundary(text):
-    """⚠️ 英文疑问头两侧都要拉丁词边界。没有右边界的话 `do` 会命中
-    `document`、`if` 命中 `different`、`is` 命中 `island`，整条命令被当成提问丢掉。
+    """⚠ English question heads need Latin boundaries on both sides. Without the right boundary, do matches
+    document, if matches different, and is matches island, discarding whole commands as questions.
 
-    ⚠️ 左边界那一半上面那条已经钉了（never ⊄ nevertheless），这条补右边界——
-    第六十三轮变异验证发现只钉了一半。
+    ⚠ The preceding test already pins the left boundary (never ⊄ nevertheless); this adds the right,
+    after round 63's mutation checks found only half covered.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2963,12 +2963,12 @@ def test_the_english_question_heads_need_a_right_word_boundary(text):
 @pytest.mark.parametrize("frame", ["即使", "即便", "就算", "哪怕", "如果", "要是", "不知道"])
 @pytest.mark.parametrize("correlative", ["都", "就", "也"])
 def test_the_card_frame_table_covers_all_four_groups(correlative, frame):
-    """卡片侧框架表当初只搬了**任指**九个词，条件/让步/认知三族全缺
-    （base 都是 True，第六十三轮）。音乐侧同族表有 45 个词——同一个语言现象
-    两边表不一样，是「两模块守卫不对称」的又一例。
+    """The card frame table initially copied only **nine free-choice** terms, omitting conditional/concessive/cognitive families
+    (all base=True, round 63). Music has 45 terms in the same family: different tables for one linguistic
+    phenomenon, another instance of asymmetric module guards.
 
-    ⚠️ 往这张表加词是**放宽**方向，本来危险；第六十二轮那条「框架词 + 关联词
-    同时出现」的安全边界断言钉着，加词不会让真提问漏过去。
+    ⚠ Adding terms **widens** acceptance and is normally dangerous, but round 62's safety assertion requiring
+    frame term + correlative together prevents real questions from bypassing the guard.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2977,30 +2977,30 @@ def test_the_card_frame_table_covers_all_four_groups(correlative, frame):
 
 
 def test_a_scope_modifier_slot_is_still_an_open_set():
-    """⚠️ **这条是明确不修的**，写成用例免得下一轮又被当成缺陷捡起来。
+    """⚠ **Explicitly left unfixed**, recorded as a test to prevent rediscovery next round.
 
-    `把整个卡的所有没有填的内容重写一遍` base 是 True、现在是 False。根因不在
-    疑问守卫（`所有没有` 那个子串已经在第六十三轮挡掉了），而在**修饰语槽**
-    不认「没有填的」。那一侧是开集形容词——没填的/空着的/缺失的/漏掉的/为空的…
-    补不干净，而方向是轻的那一侧（少补几个字段，用户再说一遍）。
+    把整个卡的所有没有填的内容重写一遍 has base=True, now=False. The cause is not the question
+    guard (the 所有没有 substring was excluded in round 63), but the **modifier slot**
+    lacking 没有填的. Those adjectives are open-ended (没填的/空着的/缺失的/漏掉的/为空的...),
+    impossible to complete, and the cost is lighter: a few uncompleted fields; the user can ask again.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
         '把整个卡的所有没有填的内容重写一遍'
     ) is False
-    # ⚠️ 但 `所有没有` 不再被当成极性标记——这半边是修好的，别一起退回去。
+    # ⚠ 所有没有 is no longer treated as a polarity marker: preserve this repaired half.
     assert router._CHAT_QUESTION_CLAUSE_RE.search('所有没有填的内容') is None
     assert router._CHAT_QUESTION_CLAUSE_RE.search('有没有填') is not None
 
 
 def test_clause_splitting_stays_roughly_linear_in_input_length():
-    """⚠️ 第六十二/六十三轮那两处「跳过引用跨度」的判据，第一版都是对每个位置
-    线性扫全表 ＝ O(位置 × 跨度)。42K 字符要 300 ms、169K 就到秒级，而这是条
-    **聊天输入路径**——用户粘一段长文本进来就能把它拖住。
+    """⚠ Both skip-quotation criteria in rounds 62/63 originally scanned the entire table linearly at each position,
+    O(positions × spans). 42K characters took 300ms; 169K took seconds on a
+    **chat-input path**, so pasted long text could stall it.
 
-    ⚠️ 界限放得很松（30 万字符 3 秒）：这里要拦的是「退回二次方」，不是测性能。
-    二次方在这个规模是十几秒起，线性是 0.1 秒量级，中间空得下机器差异。
+    ⚠ The loose limit (300,000 characters in three seconds) guards against returning to quadratic cost, not benchmarking.
+    Quadratic takes tens of seconds here versus linear around 0.1s, leaving room for machine differences.
     """  # noqa: DOCSTRING_CJK
     import time
 
@@ -3016,15 +3016,15 @@ def test_clause_splitting_stays_roughly_linear_in_input_length():
                          [("“", "”"), ("「", "」"), ("『", "』"), ("《", "》"), ("【", "】")])
 @pytest.mark.parametrize("target", ["整个卡", "整张卡", "所有字段", "全部欄位"])
 def test_a_quoted_span_enclosing_the_target_is_quoted_material(opener, closer, target):
-    """⚠️⚠️ 引号**包住整卡目标**时，那是被引用的素材，不是重写动词的宾语
-    （base 全是 False——数据覆盖方向，第六十五轮扫描发现）。
+    """⚠⚠ When quotes **enclose the whole-card target**, it is reference material, not the rewrite verb's object
+    (all base=False: data overwrite direction, found in round 65's scan).
 
-    `先展示“整个卡，姓名”然后重写名字` 里用户只想改「名字」一个字段。
-    一度判成 True：第六十二轮让切分跳过引用跨度，引号里的逗号不再切子句，
-    目标和动词并回同一句。第六十三轮加的配对守卫只挡「跨度完全落在两者之间」，
-    跨度**往左吃掉目标本身**就绕过去了——同一族只堵住了一半。
+    In 先展示“整个卡，姓名”然后重写名字, only 名字 is meant to change.
+    It once became True: round 62 skipped quoted commas, merging target and verb into one clause.
+    Round 63's pairing guard blocked only spans lying wholly between them;
+    spans extending **leftward over the target itself** bypassed it, leaving half the family open.
 
-    切分退回之后整族一起消失，不需要那道守卫。这条用例钉住结论。
+    Reverting splitting eliminated the whole family without that guard. This test pins the result.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3037,17 +3037,17 @@ def test_a_quoted_span_enclosing_the_target_is_quoted_material(opener, closer, t
 def test_a_prohibition_reaches_the_verb_across_a_quoted_comma(
     opener, closer, negation
 ):
-    """⚠️⚠️ **这条是这个 PR 里最重的一条**：用户明确说了禁止，整张卡照样被覆盖。
+    """⚠⚠ **The gravest case in this PR**: explicit prohibition still allowed overwriting the entire card.
 
-    `不要把“整个卡，包括头像”重写` base 是 False，一度变成 True。
+    不要把“整个卡，包括头像”重写 has base=False, but once became True.
 
-    根因是**两处脱钩**：`_CHAT_NEGATED_REWRITE_RE` 中间那段窗口是
-    `_CHAT_CLAUSE_SPLIT_RE` 那张标点表的**补集**，两边注释都写着「必须同源」；
-    第六十二轮只把切分那一侧改成跳过引用跨度，否定守卫没跟着改，于是两边对
-    「一个子句有多长」的定义不一致——切分认为整句是一个子句，否定守卫却在引号内
-    的逗号处停住，`不要` 够不到 `重写`，守卫一次都不触发。
+    Cause: **two definitions drifted**. The window in `_CHAT_NEGATED_REWRITE_RE` is
+    **the complement** of `_CHAT_CLAUSE_SPLIT_RE`'s punctuation table; both comments require one source,
+    but round 62 made only splitting skip quotations. The definitions of clause length
+    diverged: splitting saw one clause, while negation stopped at the quoted comma,
+    unable to connect 不要 to 重写, so the guard never fired.
 
-    切分退回之后两边重新同源。这条用例钉住这个不变量。
+    Reverting splitting restored a shared source. This test pins the invariant.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3057,48 +3057,48 @@ def test_a_prohibition_reaches_the_verb_across_a_quoted_comma(
 
 @pytest.mark.parametrize("head", ["怎么", "怎麼", "怎样", "怎樣", "如何"])
 def test_how_style_question_heads_are_not_edit_commands(head):
-    """wh 头当初只收了「为」那一支（为什么/为何/为啥），问**做法**的这一支漏了：
-    `怎么把整个卡的每一项内容重写` base 是 False，却走进整卡补全并 autosave
-    （第六十八轮 P1）。
+    """Wh-heads initially covered only 为 forms (为什么/为何/为啥), missing **how-to questions**:
+    怎么把整个卡的每一项内容重写 has base=False, yet entered whole-card completion + autosave
+    (round 68 P1).
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
         f'{head}把整个卡的每一项内容重写'
     ) is False, head
-    # ⚠️ 只认**子句句首**：句中的 `怎么` 太常见，`把所有字段该怎么重写就怎么重写`
-    # 是命令不是提问。第一版用左界黑名单（挡 不管/无论/该），变异验证显示那条黑名单
-    # **是多余的**（任指遮蔽早就把 `不管怎么…都` 抹掉了），而且它还漏掉了句尾
-    # 那个前面是 `就` 的 `怎么`。
+    # ⚠ Recognize **only clause starts**: medial 怎么 is common, and `把所有字段该怎么重写就怎么重写`
+    # is a command, not a question. The first version denylisted left contexts (不管/无论/该); mutation checks showed
+    # the denylist **redundant** (free-choice masking already erased 不管怎么…都), and it missed the final
+    # 怎么 preceded by 就 anyway.
     assert router._chat_text_requests_full_rewrite(
         f'不管{head}都把所有字段重写一遍'
     ) is True, head
-    # ⚠️ 这条打**守卫本身**而不是端到端结论：`把所有字段该怎么重写就怎么重写`
-    # 端到端确实是 False，但根因不在这条分支——把整卡目标正则的介词左界剥掉之后
-    # 它照样匹配不上，是更早某轮的第 3 类回归（按边界不修）。拿端到端当断言会把
-    # 一个无关缺陷绑进来，这一轮已经在 `谁` 那条上栽过一次。
+    # ⚠ Test **the guard itself**, not the end-to-end result: `把所有字段该怎么重写就怎么重写`
+    # does return False end-to-end, but not because of this branch; stripping the target regex's preposition boundary
+    # still does not match, a type-3 regression from an earlier round (outside this fix's boundary). End-to-end assertions
+    # bind an unrelated bug to this test, a mistake already made this round with 谁.
     assert router._CHAT_QUESTION_CLAUSE_RE.search(
         f'把所有字段该{head}重写就{head}重写'
     ) is None, head
 
 
 def test_who_only_counts_at_the_start_of_a_clause():
-    """⚠️ `谁` 只认**子句句首**——那才是疑问主语。
+    """⚠ Recognize 谁 **only at clause start**, where it is an interrogative subject.
 
-    第一版写成「左边黑名单 + 右边二十字内有重写动词」，实测误伤了两句 base=True 的
-    命令：`把所有字段里谁的名字都重写`、`告诉我谁写的然后重写所有字段`。
-    `谁` 在句中太常见，左邻是开集（里谁 / 我谁 / 问谁 / 看谁…），黑名单堵不完；
-    句首这条判据闭合。
+    Initially a left denylist plus a rewrite verb within 20 following characters wrongly blocked two base=True
+    commands: 把所有字段里谁的名字都重写 and 告诉我谁写的然后重写所有字段.
+    Medial 谁 is common; its left neighbors (里谁 / 我谁 / 问谁 / 看谁...) are open-ended and cannot all be denylisted;
+    clause start is a closed criterion.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite('谁把整个卡的每一项内容重写') is False
     assert router._chat_text_requests_full_rewrite('誰把整個卡的每一項內容重寫') is False
-    # ⚠️ 反向断言要选**不受别处干扰**的句子。第一版用的是
-    # `把所有字段里谁的名字都重写`，那句确实 base=True / now=False，但根因不在
-    # `谁` 这条分支——把整卡目标正则的介词左界剥掉之后它照样匹配不上，是更早某轮
-    # 引进的第 3 类回归（少触发，按边界不修）。拿它当反向断言等于把一个无关缺陷
-    # 绑进这条用例，下次谁改 `谁` 分支都会被它误导。
+    # ⚠ Negative assertions need sentences **unaffected elsewhere**. The first version used
+    # `把所有字段里谁的名字都重写`, genuinely base=True / now=False, but not because of
+    # 谁: stripping the target regex's preposition boundary still fails, a type-3 regression
+    # from an earlier round (under-triggering, outside scope). Using it as a negative assertion binds an unrelated
+    # bug to this case and misleads future changes to the 谁 branch.
     assert router._chat_text_requests_full_rewrite(
         '告诉我谁写的然后重写所有字段'
     ) is True
@@ -3109,10 +3109,10 @@ def test_who_only_counts_at_the_start_of_a_clause():
     "tail", ["并不是必要的", "並不是必要的", "不是必须的", "算不上必要", "谈不上必要"]
 )
 def test_a_postposed_negated_assertion_is_not_a_command(tail):
-    """⚠️ 否定在动词**后面**时前置窗口够不着：`把整个卡的每一项内容都重写并不是
-    必要的` base 是 False（第六十八轮 P1）。
+    """⚠ A preceding window cannot reach negation **after** the verb: 把整个卡的每一项内容都重写并不是
+    必要的 has base=False (round 68 P1).
 
-    这一族是闭集（并不是/不是/算不上/谈不上 + 必要/必须/必需 + 的），单列一条判据。
+    This family is closed (并不是/不是/算不上/谈不上 + 必要/必须/必需 + 的); give it its own criterion.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3122,7 +3122,7 @@ def test_a_postposed_negated_assertion_is_not_a_command(tail):
 
 @pytest.mark.parametrize("negator", ["没有必要", "沒有必要", "没必要", "不必要", "无必要"])
 def test_a_prefixed_negated_assertion_is_not_a_command(negator):
-    """`没有必要重写整个卡的每一项内容` —— 否定断言不是祈使禁止，但对我们是同一件事。"""  # noqa: DOCSTRING_CJK
+    """没有必要重写整个卡的每一项内容: a negative assertion, not imperative prohibition, but equivalent for our purpose."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'{negator}重写整个卡的每一项内容'
@@ -3131,35 +3131,35 @@ def test_a_prefixed_negated_assertion_is_not_a_command(negator):
 
 @pytest.mark.parametrize("preposition", _router_table("_CHAT_REFERENCE_PREPOSITIONS"))
 def test_reference_material_is_not_the_rewrite_target(preposition):
-    """⚠️ 介词引出的是**参照材料**，不是重写动词的宾语：`根据整个卡的每一项内容
-    重写名字` 里用户只想改「名字」（base 是 False——数据覆盖方向，第六十八轮 P1）。
+    """⚠ Prepositions introduce **reference material**, not the rewrite verb's object: in 根据整个卡的每一项内容
+    重写名字, the user wants only 名字 changed (base=False: data overwrite direction, round 68 P1).
 
-    ⚠️ 介词是**封闭词类**，列得干净。这跟「重写动词是否支配整卡目标」那个一般性
-    问题不是一回事——那个要建支配关系（新机制，归 issue #2693），这个只是给已有的
-    目标正则加一道左界。
+    ⚠ Prepositions are a **closed class**, fully enumerable, unlike the general question of whether
+    a rewrite verb governs a whole-card target, requiring dependency relations (a new mechanism under issue #2693).
+    This only adds a left boundary to the existing target regex.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    # ⚠️ 目标用 `整个卡的全部内容`（base 是 True）而不是 `整个卡的每一项内容`——
-    # 后者是本 PR 自造的目标、base 从来不认，第七十轮已经收掉。拿它当例子的话
-    # 这条用例就算通过也说明不了介词左界在起作用。
+    # ⚠ Use target `整个卡的全部内容` (base=True), not `整个卡的每一项内容`:
+    # the latter was invented by this PR, never recognized by base, and removed in round 70. A passing test
+    # using it cannot establish that the preposition boundary works.
     text = f'{preposition}整个卡的全部内容重写名字'
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    # ⚠️ 反向：没有介词时它照旧是整卡目标。
+    # ⚠ Negative case: without a preposition it remains a whole-card target.
     assert router._chat_text_requests_full_rewrite('把整个卡的全部内容重写') is True
 
 
 @pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ('"', '"')])
 @pytest.mark.parametrize("head", ["Whenever", "If", "When", "Whether"])
 def test_a_quoted_conditional_clause_is_not_a_command(opener, closer, head):
-    """⚠️⚠️ 根子是**两份文本对同一段引用不对称**：疑问守卫读「抹掉所有跨度」之后的
-    文本、看不见引号里的 `Whenever`；正向信号读「只抹带禁止的跨度」之后的文本、
-    看得见引号里的 `all fields` 和 `rewrite`。缺口就在中间——
-    `卡里这句“Whenever you rewrite all fields…”有点奇怪` 走进整卡补全并 autosave
-    （base 是 False——数据覆盖方向，第六十八轮退出条件检查发现）。
+    """⚠⚠ Root cause: **two text versions treat the same quotation asymmetrically**. The question guard erases all
+    spans and cannot see quoted Whenever; positive signals erase only prohibition spans and still see
+    quoted all fields and rewrite. The gap between them lets
+    卡里这句“Whenever you rewrite all fields…”有点奇怪 enter whole-card completion + autosave
+    (base=False: data overwrite direction, found in round 68's exit-condition check).
 
-    ⚠️ 修在**正向信号**这一侧：引号里的疑问式本来就可能是字段值
-    （`把口头禅设为“好不好”`，第五十九轮），让疑问守卫看见它会把那条命令误杀。
+    ⚠ Fix **positive signals**: quoted questions can be field values
+    (把口头禅设为“好不好”, round 59); exposing them to the question guard wrongly blocks that command.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3168,7 +3168,7 @@ def test_a_quoted_conditional_clause_is_not_a_command(opener, closer, head):
 
 
 def test_quoted_field_values_and_quoted_targets_still_work():
-    """⚠️ 反向：抹掉「带疑问头的跨度」不能误伤这两条已经收敛过的判据。"""  # noqa: DOCSTRING_CJK
+    """⚠ Negative case: erasing question-head spans must preserve these two previously settled criteria."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
@@ -3178,14 +3178,14 @@ def test_quoted_field_values_and_quoted_targets_still_work():
 
 
 def test_the_modal_a_not_a_family_comes_from_the_shared_generator():
-    """⚠️⚠️ 情态 A-not-A **跟共享文本模块用同一张表的生成器**，不在卡片侧抄一份。
+    """⚠⚠ Modal A-not-A forms **share the text module's table generator**, without a separate card-side copy.
 
-    手抄那一版只有 9 个，`愿不愿意 / 值不值得 / 允不允许 / 舍不舍得` 全漏，用户在问
-    却被判成整卡命令并 autosave（base 都是 False，第六十九轮 P1）。
+    The manual list had only nine, missing 愿不愿意 / 值不值得 / 允不允许 / 舍不舍得, turning questions
+    into whole-card commands with autosave (all base=False, round 69 P1).
 
-    ⚠️ 这个 PR 已经**三次**栽在「同一个概念两处各写一份」上（子句切分 vs 否定守卫
-    窗口、标题遮蔽扫描 vs 疑问守卫标记表、理由辖域 vs 框架辖域），所以这次直接同源。
-    这条断言钉住「同源」本身——有人把它抄回卡片侧就会红。
+    ⚠ This PR has failed **three times** from duplicate definitions (clause splitting vs negation windows,
+    title masking vs question markers, reason scope vs frame scope), so share the source directly.
+    This assertion pins source sharing itself; copying it back to cards fails.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
     from main_logic.text_patterns import zh_a_not_a_forms
@@ -3201,7 +3201,7 @@ def test_the_modal_a_not_a_family_comes_from_the_shared_generator():
     "question", ["愿不愿意", "願不願意", "值不值得", "允不允许", "允不允許", "舍不舍得"]
 )
 def test_more_modal_a_not_a_questions_are_not_edit_commands(question):
-    """base 全是 False——用户在问，却走进整卡补全并 autosave。"""  # noqa: DOCSTRING_CJK
+    """All base=False: users ask questions, yet whole-card completion + autosave ran."""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'{question}重写整个卡的每一项内容'
@@ -3209,11 +3209,11 @@ def test_more_modal_a_not_a_questions_are_not_edit_commands(question):
 
 
 def test_the_generated_forms_keep_the_suo_left_guard():
-    """⚠️ 生成出来的分支也要挡 `所`：`所有没有填的内容` 里的 `有没有` 只是子串。
+    """⚠ Generated branches must exclude preceding 所 too: 有没有 in 所有没有填的内容 is merely a substring.
 
-    手写分支上那道 `(?<!所)` 必须跟着生成的一起走——第六十九轮把生成器接进来时
-    忘了带，`test_a_scope_modifier_slot_is_still_an_open_set` 当场见红。
-    同一个坑换个入口又来了一次。
+    Carry the handwritten branch's `(?<!所)` into generated forms: forgetting it when adding the generator in round 69
+    immediately failed test_a_scope_modifier_slot_is_still_an_open_set.
+    The same hole returned through a different entry point.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3224,11 +3224,11 @@ def test_the_generated_forms_keep_the_suo_left_guard():
 @pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》"), ("【", "】")])
 @pytest.mark.parametrize("preposition", ["参考", "根据", "按照", "依据", "对照"])
 def test_a_quoted_reference_target_is_not_the_rewrite_target(preposition, opener, closer):
-    """⚠️ 介词和目标之间可以隔着一个**开引号**：`参考“整个卡的每一项内容”重写标题`
-    里引号中的是参照材料（base 是 False——数据覆盖方向，第六十九轮 P1）。
+    """⚠ An **opening quote** may separate preposition and target: in 参考“整个卡的每一项内容”重写标题,
+    the quotation is reference material (base=False: data overwrite direction, round 69 P1).
 
-    定长后视写不出「可选的一个字符」，所以按 介词 × (无引号 + 每种开引号) 展开——
-    两张表都是闭集，展开是机械的，不是逐个补说法。
+    Fixed-length lookbehind cannot express one optional character, so expand preposition × (no quote + each opener);
+    both tables are closed, making mechanical expansion rather than phrase-by-phrase patches.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3237,14 +3237,14 @@ def test_a_quoted_reference_target_is_not_the_rewrite_target(preposition, opener
 
 
 def test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch():
-    """⚠️⚠️ `每一项` 只从「限定词 + 范围名词」那一支排除，**不是**整个逐项类。
+    """⚠⚠ Exclude 每一项 only from quantifier + scope noun, **not the whole itemwise family**.
 
-    实测 264 条逐项类组合（每个/每一个/每项/各项 × 范围名词）base 是 True，
-    一刀切会把它们全打掉；只有 `每一项`/`每一項` 那 66 条 base 是 False。
+    Testing found 264 itemwise combinations (每个/每一个/每项/各项 × scope noun) with base=True;
+    wholesale removal rejects all of them. Only the 66 每一项/每一項 combinations have base=False.
 
-    第五十八轮已经把它从「限定词自己当中心语」那一支收回去过一次，当时留下了
-    这一支，于是 `整个卡的每一项内容` 继续当整卡目标，第六十八/六十九/七十轮
-    的 7 条 P1 全挂在它身上。
+    Round 58 already removed it from bare-quantifier heads but retained this branch,
+    leaving 整个卡的每一项内容 as a whole-card target; all seven P1s in rounds 68/69/70
+    used it.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -3252,32 +3252,32 @@ def test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch():
     assert set(WHOLE_CARD_ALL_QUANTIFIERS) - set(WHOLE_CARD_QUANTIFIERS) == {
         "每一项", "每一項",
     }
-    # ⚠️ 逐项类的其余成员必须还在——它们 base 是 True。
+    # ⚠ The remaining itemwise forms must stay: they have base=True.
     for kept in ("每个", "每個", "每一个", "每一個", "每项", "每項", "各项", "各項"):
         assert kept in WHOLE_CARD_QUANTIFIERS, kept
     assert router._chat_text_requests_full_rewrite('把整个卡的每一项内容重写') is False
     assert router._chat_text_requests_full_rewrite('把整个卡的每个内容重写') is True
-    # ⚠️ 第四十八轮那条（限定词修饰**另一个**整卡目标）不受影响。
+    # ⚠ Round 48's case (quantifier modifying **another** whole-card target) remains unaffected.
     assert router._chat_text_requests_full_rewrite('把所有字段里的每一项内容重写') is True
 
 
 @pytest.mark.parametrize("particle", ["啦", "喽", "嘍", "咯", "嘞", "咧"])
 def test_a_terminal_particle_must_actually_terminate(particle):
-    """⚠️⚠️ 语气词必须**真的收尾**（后面只允许句末标点/空白）。
+    """⚠⚠ Particles must **really end the sentence** (only final punctuation/whitespace may follow).
 
-    只写成「后面接语气词就算完整目标」时，`啦` 让 `整个卡啦OK` 成了合法整卡目标——
-    `把整个卡啦OK的名字重写` 里收窄到单字段的 `的名字` 被无视，整张卡被合成内容
-    并 autosave（base 是 False——数据覆盖方向，第七十五轮）。
+    Merely accepting particles after targets lets 啦 make 整个卡啦OK a whole-card target;
+    in 把整个卡啦OK的名字重写, the single-field restriction 的名字 is ignored, synthesizing and
+    autosaving the entire card (base=False: data overwrite direction, round 75).
 
-    ⚠️ 现有那条 `test_terminal_particles_after_a_target` 是**空转**的：它断言的是
-    `重写所有字段{语气词}`，那句走的是另一组交替、base 无条件 True，压根没碰到
-    「卡」类目标这一支——而这一支 base 恰恰是 False。派生测试选错了载体句，
-    参数再全也测不到目标分支。
+    ⚠ The existing test_terminal_particles_after_a_target is **vacuous**: it asserts
+    重写所有字段{particle}, using another alternative with unconditional base=True, never reaching
+    card targets, where base=False. Generated tests chose the wrong carrier sentence;
+    even complete parameters cannot reach the intended branch.
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡{particle}OK的名字重写'
     ) is False, particle
-    # ⚠️ 反向：语气词**真收尾**时照旧是完整目标（这正是当初加它们的理由）。
+    # ⚠ Negative case: a particle **truly ending the sentence** still completes a target (the original reason for adding them).
     assert router._chat_text_requests_full_rewrite(f'重写整个卡{particle}') is True

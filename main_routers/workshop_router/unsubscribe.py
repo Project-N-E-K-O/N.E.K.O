@@ -247,8 +247,8 @@ def _collect_character_names_by_workshop_item_id(config_mgr, item_id: int) -> li
         )
         return []
 
-    # characters.json 是用户可写文件，根对象或 猫娘 字段被写成 list/string 时
-    # 直接 .get() / .items() 会抛异常，把退订流程打成 500。这里受控降级。
+    # characters.json is user-writable; list/string roots or 猫娘 fields make
+    # direct .get()/.items() fail with unsubscribe 500. Degrade in controlled fashion.
     if not isinstance(characters, dict):
         logger.warning(
             "_collect_character_names_by_workshop_item_id: "
@@ -312,8 +312,8 @@ def _scan_workshop_folder_character_names(item_path: str | None) -> list[str]:
                         f"_scan_workshop_folder_character_names: 读取 {chara_file_path} 失败: {exc}"
                     )
                     continue
-                # Workshop 文件属于外部输入，任何畸形（顶层非 dict、档案名为 list/dict
-                # 等）不应中断整个 os.walk；校验失败跳过该卡片继续扫描。
+                # Workshop files are external; malformed roots/profile names (list/dict, etc.) must not
+                # abort os.walk. Skip invalid cards, continue scanning.
                 if not isinstance(chara_data, dict):
                     logger.warning(
                         f"_scan_workshop_folder_character_names: {chara_file_path} "
@@ -418,9 +418,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
     steamworks = get_steamworks()
     released_derived_task_claims: dict[str, str] = {}
     mutation_lock_acquired = False
-    reserved_names: list[str] = []  # 事务期间占住、不准入路由的角色名
+    reserved_names: list[str] = []  # Character names reserved during transaction, blocking route admission.
 
-    # 检查Steamworks是否初始化成功
+    # Check Steamworks initialized successfully.
     if steamworks is None:
         return JSONResponse({
             "success": False,
@@ -429,7 +429,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         }, status_code=503)
 
     try:
-        # 获取请求体中的数据
+        # Read request body.
         data = await request.json()
         item_id = data.get('item_id')
 
@@ -440,7 +440,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 "message": "请求中缺少物品ID"
             }, status_code=400)
 
-        # 转换item_id为整数
+        # Convert item_id to integer.
         try:
             item_id_int = int(item_id)
         except ValueError:
@@ -452,10 +452,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
         config_mgr = get_config_manager()
 
-        # 反向索引：优先用 character_origin.source_id 找到来自该 Workshop 物品的角色，
-        # 再用磁盘上 .chara.json 的扫描结果兜底合并（文件夹可能已被 Steam 删除）。
-        # 三个 helper 都是同步磁盘 / Steamworks 调用（_resolve_workshop_item_install_path
-        # 会调 GetItemInstallInfo + 磁盘兜底搜索），必须 offload 避免阻塞事件循环。
+        # Reverse index: find Workshop characters by character_origin.source_id first,
+        # merge disk .chara.json scan fallback (Steam may already have deleted folders).
+        # All three helpers perform synchronous disk/Steamworks calls (_resolve_workshop_item_install_path
+        # calls GetItemInstallInfo + disk fallback search), so offload away from event loop.
         candidate_names = await asyncio.to_thread(
             _collect_character_names_by_workshop_item_id, config_mgr, item_id_int
         )
@@ -520,14 +520,14 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 asset_source == 'steam_workshop' and asset_source_id == target_item_id_str
             )
 
-        # 前置校验：候选角色中若包含当前猫娘，直接阻止取消订阅并提示用户切换。
+        # Precheck: candidates include current catgirl → block unsubscribe and prompt character switch.
         try:
             current_characters = await config_mgr.aload_characters()
         except Exception as exc:
             logger.warning(f"取消订阅前读取 characters.json 失败: {exc}")
             current_characters = await asyncio.to_thread(config_mgr.load_characters)
-        # characters.json 根对象若被写成 list/string，.get() 会抛 AttributeError；
-        # 受控降级为空 dict 并继续，候选角色为空时前置校验自然 no-op。
+        # List/string characters.json root makes .get() raise AttributeError;
+        # controlled empty-dict fallback continues, empty candidates naturally no-op precheck.
         if not isinstance(current_characters, dict):
             logger.warning(
                 f"取消订阅: characters.json 根对象不是 dict"
@@ -535,8 +535,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             )
             current_characters = {}
         current_catgirl = str(current_characters.get('当前猫娘', '') or '')
-        # 只在当前猫娘**确实绑定该 Workshop item** 时才阻断；仅靠名字匹配的磁盘
-        # 候选（如工坊另有同名 .chara.json）不应把无辜的本地猫娘挡住退订。
+        # Block only if current catgirl is genuinely bound to this Workshop item; name-only disk
+        # matches (another same-name .chara.json) must not block unrelated local characters.
         if (
             current_catgirl
             and current_catgirl in candidate_names
@@ -552,9 +552,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 "character_name": current_catgirl,
                 "details": {"character_name": current_catgirl},
             }, status_code=400)
-        # 候选角色正在串门 / 小游戏、或串门还在按它的名字写后台数据（收尾、摘要、清除记忆）：
-        # 退订会删掉它，与改名 / 删除同一个守卫（OD-13）。此时已持有角色配置变更锁，
-        # 清除记忆的守卫也在这把锁下登记，两边不会交错
+        # Candidate visiting/playing, or background visit data still writing by name (finalization/summary/clear):
+        # unsubscribe deletes it, requiring same rename/delete guard (OD-13). Character config mutation lock held;
+        # memory-clear guard registers under same lock, preventing interleaving.
         from utils.external_route_registry import begin_character_mutation, is_character_lifecycle_locked
 
         confirmed_names = sorted(
@@ -570,18 +570,18 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 "character_name": busy_names[0],
                 "details": {"character_name": busy_names[0]},
             }, status_code=400)
-        # 与上面的检查之间没有 await：从这里到写完 characters.json，这些角色不能再开串门 / 小游戏
+        # No await after checks: characters cannot start visits/games before characters.json write finishes.
         reserved_names = confirmed_names
         begin_character_mutation(*reserved_names)
 
-        # 前置尝试释放 memory_server 对候选角色的 SQLite 句柄（best-effort + 并行）。
-        # 与 delete_catgirl 不同：取消订阅场景下，memory_server 对非活跃角色
-        # 可能本来就没持有句柄，/release_character 会返回 non-success，但此时
-        # 也根本不存在文件锁 —— 硬拒绝会导致用户永远无法取消订阅。
-        # 真正的安全网是同步清理里的 PermissionError retry；这里只记录 warning。
+        # Best-effort parallel prerelease of memory_server SQLite handles for candidates.
+        # Unlike delete_catgirl, unsubscribe may target inactive characters for which memory_server
+        # never held handles; /release_character returns non-success despite
+        # no file lock. Hard rejection would permanently block unsubscribe.
+        # Synchronous PermissionError retries are true fallback; warn only here.
         #
-        # 并行预算：per-call 2.5s，整体 3s（参考 main_server 关机阶段做法）。
-        # 多候选时耗时从 O(N * RT) 降到 O(max(RT))；单候选表现不变。
+        # Parallel budget: 2.5s per call, 3s total, matching main_server shutdown.
+        # Multiple candidates reduce O(N×RT) to O(max(RT)); single candidate unchanged.
         release_warnings: list[str] = []
         if candidate_names:
             try:
@@ -617,24 +617,24 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     f"{'（' + err + '）' if err else ''}，继续走清理流程"
                 )
 
-        # 同步执行记忆/角色卡/tombstone 清理（与 DELETE /catgirl/{name} 对齐）。
-        # 这一步必须在 UnsubscribeItem 之前完成，这样 HTTP 响应就能直接汇报
-        # "删了哪些角色、删了哪些记忆路径"，用户能立刻确认结果，不用等 Steam 异步回调。
-        # 任意角色子步骤失败都只记录到 cleanup_summary.errors，不中断整体流程
-        # （因为 UnsubscribeItem 一旦发出，Steam 端已无法回滚；记忆残留由用户看到错误后重试）。
+        # Synchronous memory/card/tombstone cleanup, matching DELETE /catgirl/{name}.
+        # Finish before UnsubscribeItem so HTTP response immediately reports
+        # deleted characters/memory paths, without waiting for asynchronous Steam callbacks.
+        # Individual character-step failures only enter cleanup_summary.errors, never abort whole flow,
+        # since Steam cannot roll back sent UnsubscribeItem; users retry visible memory residue errors.
         #
-        # 性能优化：
-        #   - 单角色内 delete_memory / tombstone / remove_one_catgirl 三步互相独立，
-        #     用 asyncio.gather 并发（return_exceptions=True 各自兜异常）。
-        #   - characters.json 的 del 只改内存 dict，循环末尾批量一次写盘
-        #     （N 次 atomic_write → 1 次）。
+        # Performance:
+        #   - Per-character delete_memory / tombstone / remove_one_catgirl are independent;
+        #     gather concurrently with return_exceptions=True for individual failures.
+        #   - characters.json deletions mutate dict only; batch one disk write after loop
+        #     (N atomic writes → one).
         cleanup_summary: dict = {
             "candidate_characters": list(candidate_names),
             "cleaned_characters": [],
             "removed_memory_paths": [],
             "errors": [],
-            # memory_server release 返回 non-success 的角色名（不影响清理流程，
-            # 仅用于诊断，一般表示该角色在 memory_server 侧本来就没持有句柄）。
+            # Character names whose memory_server release returned non-success (diagnostics only,
+            # cleanup unaffected; usually no handle was held for them).
             "release_warnings": list(release_warnings),
         }
 
@@ -672,9 +672,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 }, status_code=500)
 
             characters_mut = await config_mgr.aload_characters()
-            # 同步清理会对 characters_mut['猫娘'] 做 del；根对象或 猫娘 字段
-            # 结构异常时直接按 LOCAL_CONFIG_CLEANUP_FAILED 中止，避免
-            # TypeError/AttributeError 把退订流程打成 500。
+            # Cleanup deletes characters_mut['猫娘']; malformed root or 猫娘 field
+            # aborts with LOCAL_CONFIG_CLEANUP_FAILED, avoiding
+            # unsubscribe 500 via TypeError/AttributeError.
             if (
                 not isinstance(characters_mut, dict)
                 or not isinstance(characters_mut.get('猫娘'), dict)
@@ -691,11 +691,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     "cleanup_summary": cleanup_summary,
                 }, status_code=500)
             current_catgirl_now = str(characters_mut.get('当前猫娘', '') or '')
-            # 二次校验：前置校验后、同步清理前用户可能切到候选角色；此时
-            # 仅 `continue` 会跳过角色删除但仍执行 UnsubscribeItem + 删除订阅
-            # 文件夹，留下指向已删 Workshop 资源的当前猫娘配置，应直接中止。
-            # 同样复用 _is_confirmed_workshop_character：只有当前猫娘确实绑定
-            # 当前 item_id 才阻断，避免磁盘同名误挡。
+            # Recheck: user may switch to candidate between precheck and cleanup;
+            # continue alone skips character deletion but still unsubscribes/deletes folders,
+            # leaving current configuration pointing to missing assets. Abort instead.
+            # Reuse _is_confirmed_workshop_character: block only when current catgirl genuinely binds
+            # this item_id, avoiding same-name disk false positives.
             if (
                 current_catgirl_now
                 and current_catgirl_now in candidate_names
@@ -772,15 +772,15 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # Theater data owned by each deleted character, collected with the
             # same strict preflight as DELETE /catgirl/{name}.
             numeric_purges: dict[str, object] = {}
-            catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
+            catgirl_map = characters_mut['猫娘']  # isinstance already guarded above.
             target_item_id_str = str(item_id_int)
-            # characters.json 是第一项不可逆提交。外层从这里开始会完成本地提交
-            # 与 Steam 请求，再把请求取消传播给调用方。
+            # characters.json is first irreversible commit. Outer flow completes local commit
+            # and Steam request from here, then propagates cancellation to caller.
             commit_started.set()
             for name in candidate_names:
                 if not name:
                     continue
-                # 保护性双保险：绝不删当前猫娘（前置校验已覆盖，这里兜底）
+                # Extra protection: never delete current catgirl (already prechecked, fallback here).
                 if name == current_catgirl_now:
                     logger.warning(
                         f"取消订阅同步清理: 跳过当前猫娘 '{name}'（保护性双保险）"
@@ -800,9 +800,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
                     continue
 
-                # characters.json 条目仅做内存删除，循环结束一次性批量写盘。
-                # 复用前面捕获的 catgirl_map 引用（上面 isinstance 已守卫），
-                # 避免每次都走 characters_mut.get('猫娘') or {} 的兜底链路。
+                # Delete characters.json entries in memory only; batch persistence after loop.
+                # Reuse captured catgirl_map reference, isinstance-guarded above,
+                # avoiding repeated characters_mut.get('猫娘') or {} fallback.
                 if name in catgirl_map:
                     # Collect the theater cascade before the irreversible
                     # characters.json commit. Like the ordinary character
@@ -851,10 +851,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                             "error": str(exc),
                         })
 
-            # 本地角色配置写盘失败 / 内存 del 失败 → 绝不能继续发 UnsubscribeItem：
-            # Steam 订阅一旦取消，订阅文件夹会被删；但 characters.json 仍保留
-            # 该角色，配置会指向不存在的 Workshop 资源，且下次启动可能加载坏卡。
-            # 这里 Steam 请求还没发，安全地提前中止并把 summary 返回给前端。
+            # Failed config persistence/in-memory deletion forbids UnsubscribeItem:
+            # unsubscribing removes Workshop folders while characters.json still references
+            # them, causing missing assets and corrupt-card loading next startup.
+            # Steam request unsent here, so safely abort and return summary.
             local_config_cleanup_failed = False
             # A failed theater preflight aborts before anything is committed:
             # no character of this item may be removed from characters.json.
@@ -906,8 +906,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             if theater_preflight_failed:
                 await _discard_uncommitted_purge_intents()
 
-            # 串门残留退役：提交 characters.json 之前逐个记删除标记（pending_retire），提交后才退役；
-            # 没提交成功时按配置判定角色仍在，只撤标记。记不上标记就和剧场预检失败一样整体中止
+            # Retire visit residue: record pending_retire before characters.json commit, retire only afterward;
+            # unsuccessful commit means character remains; remove marker only. Marker failure aborts like theater precheck failure.
             from main_routers.visit_router import character_hooks as visit_hooks
 
             visit_items: dict[str, dict] = {}
@@ -932,7 +932,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 for item_name, item in visit_items.items():
                     try:
                         settled = await visit_hooks.settle_retire(config_mgr, item)
-                    except Exception as exc:  # noqa: BLE001 - 标记留着，启动对账补完
+                    except Exception as exc:  # noqa: BLE001 - Retain marker for startup reconciliation.
                         settled = False
                         logger.warning(f"取消订阅同步清理: 串门数据退役失败 {item_name}: {exc!r}")
                     if not settled:
@@ -944,10 +944,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 visit_items.clear()
 
             if visit_marker_failed:
-                # 不提交：已记的标记在下面的中止分支里按「删除没提交」撤掉
+                # No commit: abort branch below removes recorded markers as uncommitted deletion.
                 await _discard_uncommitted_purge_intents()
 
-            # 批量写 characters.json（N 个 del → 1 次 atomic write）
+            # Batch characters.json write (N deletions → one atomic write).
             if pending_del_names and not theater_preflight_failed and not visit_marker_failed:
                 try:
                     await config_mgr.asave_characters(characters_mut)
@@ -969,7 +969,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         "error": str(exc),
                     })
 
-            # 若任一本地配置清理失败（per-name del 或批量写盘），立即中止。
+            # Any local config cleanup failure (per-name deletion/batch persistence) aborts immediately.
             delete_config_failed = any(
                 err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker"}
                 for err in cleanup_summary.get("errors") or []
@@ -979,7 +979,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     f"取消订阅同步清理: 本地角色配置清理失败（item_id={item_id_int}），"
                     f"已中止 Steam UnsubscribeItem 请求以避免配置-订阅不一致"
                 )
-                # 标记按配置收口：已提交删除的角色照常退役，没删掉的只撤标记
+                # Finalize markers against config: retire committed deletions, remove markers for undeleted characters.
                 await _settle_visit_items()
                 return JSONResponse({
                     "success": False,
@@ -988,9 +988,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     "cleanup_summary": cleanup_summary,
                 }, status_code=500)
 
-            # 配置先成功发布，再做不可逆的记忆、tombstone 与运行时清理。
-            # 若配置写失败，用户的记忆文件仍原样保留，不会出现回滚 registry
-            # 成功但文件已经被 shutil.rmtree 永久删除的假回滚。
+            # Publish config successfully before irreversible memory/tombstone/runtime cleanup.
+            # Config failure preserves memory files, avoiding false rollback where registry restores
+            # but shutil.rmtree permanently deleted files.
             for name in pending_del_names:
                 uid = pending_avatar_uids.get(name)
                 if uid:
@@ -1078,10 +1078,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                             "error": str(exc),
                         })
 
-            # characters.json 已提交：退役这些角色的串门残留（场次、名册条目、串门人设）
+            # characters.json committed: retire visit residue (visits/roster/personas) for these characters.
             await _settle_visit_items()
 
-            # 通知 memory_server 重新加载（一次即可）
+            # Notify memory_server reload once.
             try:
                 reload_succeeded = await notify_memory_server_reload(
                     reason=f"取消订阅 item_id={item_id_int}",
@@ -1115,24 +1115,24 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             f"errors={len(cleanup_summary['errors'])}"
         )
 
-        # 回调与延迟兜底共享的幂等标志（first-winner 模式）。
-        # 使用 Lock 保证 check + set 的原子性，避免两线程同时通过闸口。
+        # Callback/delayed fallback share idempotent first-winner flag.
+        # Lock makes check+set atomic, preventing two threads passing together.
         #
-        # 角色卡/记忆/tombstone 已经在同步路径（上方）处理完毕；perform_cleanup
-        # 只负责 Steam 订阅文件夹的磁盘删除兜底。不再需要把 async 任务调回主
-        # 事件循环（_run_async_in_main_loop / _purge_character_memory_and_config
-        # 已移除），回调线程做的事纯粹是阻塞 IO（shutil.rmtree），可以直接跑。
+        # Cards/memory/tombstones already handled synchronously above; perform_cleanup
+        # only provides disk-deletion fallback for Steam subscription folder. No need to schedule
+        # async work onto main loop (_run_async_in_main_loop / _purge_character_memory_and_config
+        # removed); callback thread performs blocking shutil.rmtree directly.
         cleanup_event = threading.Event()
         cleanup_claim_lock = threading.Lock()
 
-        # cleanup_claim_lock 含义变更：现在只保护 "是否正在执行" 判定，
-        # cleanup_event 只在 **确认成功** 后 set，避免删除失败时把 5 秒延迟
-        # 兜底门闩锁死（rmtree ignore_errors 吞掉异常 / 目录仍存在 / 抛出
-        # 异常的三种失败路径都必须允许后续重试）。
+        # cleanup_claim_lock now guards running-state only;
+        # set cleanup_event only after confirmed success, avoiding permanently latching five-second
+        # fallback on deletion failure (swallowed ignore_errors / surviving directory / thrown
+        # exception must all permit later retries).
         cleanup_in_progress = threading.Event()
-        # Steam 明确返回取消订阅失败时设置：此时用户仍处于订阅状态，
-        # 5 秒延迟兜底必须跳过 perform_cleanup，否则会删掉仍在订阅中的
-        # 本地 Workshop 文件夹（Steam 下次同步会再下回来）。
+        # Set on explicit Steam unsubscribe failure: user remains subscribed,
+        # so five-second fallback must skip perform_cleanup to preserve still-subscribed
+        # local Workshop folder (Steam would redownload next sync).
         unsubscribe_failed_event = threading.Event()
 
         def _is_item_still_subscribed(item_id: int) -> bool:
@@ -1179,11 +1179,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 if cleanup_event.is_set():
                     logger.debug(f"perform_cleanup({item_id}): 已成功过，跳过（幂等）")
                     return False
-                # 把 unsubscribe_failed_event 的判定也放进临界区。delayed_cleanup
-                # 外层的先 check cleanup_event → check unsubscribe_failed_event →
-                # 再调 perform_cleanup 两次 check 之间没锁，Steam 失败回调若恰好
-                # 落在这个窗口里，rmtree 还是会把仍订阅中的本地工坊目录删掉。
-                # 在锁内原子化闭环；成功回调路径本来就不会 set 失败 event，不会误伤。
+                # Check unsubscribe_failed_event inside critical section too. delayed_cleanup's
+                # outer cleanup_event check → unsubscribe_failed_event check → perform_cleanup
+                # lacks locking between checks; a Steam failure callback in that window
+                # lets rmtree delete a still-subscribed local folder.
+                # Make atomic under lock; successful callbacks never set failure event, unaffected.
                 if unsubscribe_failed_event.is_set():
                     logger.warning(
                         f"perform_cleanup({item_id}): 已收到 Steam 退订失败信号，"
@@ -1197,9 +1197,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             try:
                 import shutil
-                # Fail-closed: 未明确确认成功时，必须先查 Steam 的订阅位
-                # （GetItemState & 1）。仍订阅中就跳过清理，同时 set 失败
-                # event 防止后续路径重复发起 rmtree。
+                # Fail closed: without explicit confirmed success, first check Steam subscription bit
+                # (GetItemState & 1). If still subscribed, skip cleanup and set failure
+                # event to prevent later rmtree retries.
                 if not confirmed_unsubscribed and _is_item_still_subscribed(item_id):
                     logger.warning(
                         f"perform_cleanup({item_id}): Steam 状态仍显示已订阅，"
@@ -1208,7 +1208,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     unsubscribe_failed_event.set()
                     return False
 
-                # 重新解析一次路径（候选路径可能在取消订阅过程中失效）
+                # Resolve path again; candidates may invalidate during unsubscribe.
                 final_item_path = _resolve_workshop_item_install_path(
                     get_steamworks(), item_id
                 ) or pre_item_path
@@ -1216,7 +1216,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     try:
                         shutil.rmtree(final_item_path, ignore_errors=True)
                     except Exception as rmtree_exc:
-                        # ignore_errors=True 通常不会外抛，但兜底一下
+                        # ignore_errors=True usually does not raise, but guard anyway.
                         logger.error(
                             f"perform_cleanup({item_id}): rmtree 抛异常: {rmtree_exc}",
                             exc_info=True,
@@ -1225,7 +1225,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         logger.warning(
                             f"perform_cleanup({item_id}): 订阅文件夹仍存在（可能被占用）: {final_item_path}"
                         )
-                        return False  # 未成功 → 不 set cleanup_event，留给延迟兜底重试
+                        return False  # Failure leaves cleanup_event unset for delayed retry.
                     logger.info(
                         f"perform_cleanup({item_id}): 已删除订阅文件夹 {final_item_path}"
                     )
@@ -1233,7 +1233,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     logger.debug(
                         f"perform_cleanup({item_id}): 订阅文件夹已不存在，视为成功"
                     )
-                # 只有走到这里（目录确认不存在）才锁死 cleanup_event
+                # Set cleanup_event only here, after confirming directory absent.
                 cleanup_event.set()
                 return True
             except Exception as exc:
@@ -1254,7 +1254,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 f"取消订阅回调被触发: 期望item_id={item_id_int}, 回调item_id={callback_item_id}, "
                 f"result.result={getattr(result, 'result', None)}"
             )
-            # 验证 item_id 是否匹配（防止其他取消订阅操作触发此回调）
+            # Verify matching item_id, excluding callbacks from other unsubscribe operations.
             if callback_item_id and int(callback_item_id) != item_id_int:
                 logger.warning(
                     f"回调item_id不匹配: 期望{item_id_int}, 实际{callback_item_id}，跳过处理"
@@ -1263,34 +1263,34 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             if getattr(result, 'result', None) == 1:  # k_EResultOK
                 logger.info(f"取消订阅成功回调: {item_id_int}，开始执行清理")
-                # Steam 明确回调 OK，不必再用 GetItemState 二次确认；直接删。
+                # Explicit Steam OK needs no GetItemState recheck; delete directly.
                 perform_cleanup(item_id_int, confirmed_unsubscribed=True)
             else:
-                # Steam 明确退订失败 → 订阅仍然存在，不能删本地文件夹。
+                # Explicit unsubscribe failure means subscription remains; never delete local folder.
                 unsubscribe_failed_event.set()
                 logger.warning(
                     f"取消订阅失败回调: {item_id_int}, 错误代码: {getattr(result, 'result', None)}，"
                     f"不执行订阅文件夹清理"
                 )
 
-        # 调用 Steamworks 的 UnsubscribeItem 方法，并提供回调函数
+        # Call Steamworks UnsubscribeItem with callback.
         try:
             steamworks.Workshop.UnsubscribeItem(
                 item_id_int, callback=unsubscribe_callback, override_callback=True
             )
             logger.info(f"取消订阅请求已发送: {item_id_int}，等待回调...")
 
-            # 延迟兜底：5 秒后若回调仍未触发（cleanup_event 未 set），
-            # 在后台线程里直接执行一次 perform_cleanup（幂等）。
+            # Delayed fallback: after five seconds without callback (cleanup_event unset),
+            # execute idempotent perform_cleanup on background thread.
             def delayed_cleanup():
                 import time as _time
-                # noqa: BLOCKING-OK - 只在 daemon 后台线程跑，不阻塞主事件循环。
+                # noqa: BLOCKING-OK - Daemon background thread only, never blocks main event loop.
                 _time.sleep(5)
                 if cleanup_event.is_set():
                     logger.debug(f"延迟兜底: item_id={item_id_int} 已清理，跳过")
                     return
                 if unsubscribe_failed_event.is_set():
-                    # 已收到 Steam 明确失败回调，用户仍订阅中 → 不删本地文件夹。
+                    # Explicit Steam failure already received; still subscribed, preserve local folder.
                     logger.warning(
                         f"延迟兜底: item_id={item_id_int} 已收到退订失败回调，"
                         f"跳过订阅文件夹清理"
@@ -1305,11 +1305,11 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             cleanup_thread.start()
 
         except Exception as e:
-            # UnsubscribeItem 调用失败 = Steam 退订请求根本没发出 / 没被接受。
-            # 此时不能再 perform_cleanup：用户仍处于订阅状态，删本地文件夹会
-            # 让他保持订阅却丢失本地 Workshop 文件（下次 Steam 会再下载一遍）。
-            # 同步阶段已经删了的 characters.json / memory 无法回滚，但至少
-            # 订阅-文件夹状态保持一致，由用户手动处理后续。
+            # UnsubscribeItem call failure means Steam request unsent/unaccepted.
+            # Never perform_cleanup: user remains subscribed, deleting local folder would
+            # remove subscribed assets until Steam redownloads next time.
+            # Synchronously deleted characters.json/memory cannot roll back, but at least
+            # subscription/folder stay consistent for manual follow-up.
             logger.error(
                 f"调用 UnsubscribeItem 失败: {e}，已保留本地 Workshop 文件夹，"
                 f"不执行备用清理",
@@ -1328,8 +1328,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             "status": "accepted",
             "message": "取消订阅请求已被接受，正在处理中。实际结果将在后台异步完成。",
             "candidate_character_count": len(candidate_names),
-            # 同步阶段的实际清理结果（记忆/角色卡/tombstone 已删除），
-            # 订阅文件夹由 Steam 异步回调或 5 秒延迟兜底负责删除。
+            # Actual synchronous cleanup results (memory/card/tombstone deletion);
+            # Steam callback or five-second fallback deletes subscription folder.
             "cleanup_summary": cleanup_summary,
         }
 

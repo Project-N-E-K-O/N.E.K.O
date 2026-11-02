@@ -80,7 +80,7 @@ def env(tmp_path, monkeypatch):
     async def readable():
         return None
 
-    # 不碰真实运行时根目录里的 characters.json
+    # Do not touch characters.json in the real runtime directory
     monkeypatch.setattr(local_chars, "ensure_characters_readable", readable)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
     app = FastAPI()
@@ -125,14 +125,14 @@ def test_local_origin_gate(env, method, path, body):
     _seed(tmp_path)
     call = getattr(client, method)
     kwargs = {} if body is None else {"json": body}
-    assert call(path, headers={"Origin": ORIGIN}, **kwargs).status_code == 403           # 缺 token
+    assert call(path, headers={"Origin": ORIGIN}, **kwargs).status_code == 403           # Missing token
     assert call(path, headers={"Origin": ORIGIN, "X-CSRF-Token": "wrong"}, **kwargs).status_code == 403
     assert call(path, headers={"Origin": "http://evil.example", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
                 **kwargs).status_code == 403
     assert call(path, headers={**GOOD, "X-Forwarded-For": "127.0.0.1"}, **kwargs).status_code == 403
-    assert server.requests == []                                                        # 失败不产生副作用
+    assert server.requests == []                                                        # Failure causes no side effects
     assert not (tmp_path / "visit_blocklist.json").exists()
-    assert call(path, headers=GOOD, **kwargs).status_code == 200                         # 允许的 Origin + token
+    assert call(path, headers=GOOD, **kwargs).status_code == 200                         # Allowed Origin + token
 
 
 def test_non_loopback_peer_is_rejected_even_with_token(env, tmp_path):
@@ -169,7 +169,7 @@ def test_peers_lists_only_people_of_that_character_with_full_uid(env):
     assert row["chars"] == [{"peer_char_id": cat_x, "display_name": "Mimi", "pair_id": PAIR,
                              "last_visit_at": 100.0, "fact_count": 2}]
     assert "last_summary" not in str(row)
-    # 往返：直接回填 forget / block 请求体
+    # Round trip: populate forget / block request bodies directly
     assert client.post("/api/visit/contacts/block", json={"peer_uid": row["peer_uid"], "blocked": True},
                        headers=GOOD).json()["ok"]
     assert client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).json()["peers"][0]["blocked"]
@@ -177,7 +177,7 @@ def test_peers_lists_only_people_of_that_character_with_full_uid(env):
                        headers=GOOD)
     assert resp.json() == {"ok": True, "forgotten": 1}
     assert client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).json()["peers"] == []
-    # 拉黑不是记忆：清除不动黑名单
+    # Blocking is not memory: forgetting does not alter the blocklist
     assert Blocklist.load(tmp_path).is_blocked(PEER_X)
 
 
@@ -227,7 +227,7 @@ def test_memory_server_down_keeps_the_log_for_replay(env):
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
     assert resp.status_code == 503 and resp.json()["retry"] is True
     logs = list((tmp_path / "visit_revocations").glob("*.json"))
-    assert len(logs) == 2           # 撤销日志 + 清除意图哨兵，留给补录重放
+    assert len(logs) == 2           # Revocation log + forget-intent sentinel, retained for startup reconciliation replay
 
 
 def test_forget_all_clears_everyone_under_the_character(env):
@@ -290,7 +290,7 @@ def test_forget_voids_unwritten_debriefs_of_that_person(env):
     state = _run(mine.read_state())
     assert state["debrief_choice"] == "forget" and state["debrief_pending"] is None
     assert state["peer_uid"] is None and state["debrief_chip_pending"] is False
-    assert mine.jsonl_path.exists()                    # 转录正文不删，等结清或 7 天回收
+    assert mine.jsonl_path.exists()                    # Do not delete transcript contents; retain them until settled or reclaimed after 7 days
     assert _run(other.read_state())["debrief_choice"] == "ask_later"
 
 
@@ -318,7 +318,7 @@ def test_peers_survive_a_damaged_cat_record(env):
 
 @pytest.mark.parametrize("damaged", ["sentinel", "log"])
 def test_unreadable_forget_record_answers_its_reason_not_retry(env, damaged):
-    # 读不出的清除记录：重试永远失败，回带 reason 的不可重试 503，页面据此给出丢弃入口
+    # Unreadable forget record: retry always fails, returning non-retryable 503 with a reason; the page then offers a discard action
     client, server, tmp_path, _state = env
     _seed(tmp_path)
     sentinel_dir = tmp_path / "visit_revocations"
@@ -333,7 +333,7 @@ def test_unreadable_forget_record_answers_its_reason_not_retry(env, damaged):
         assert resp.json() == {"ok": False, "code": "forget_failed",
                                "reason": "forget_record_unreadable", "retry": False}
     assert server.requests == []
-    # 丢弃之后同一次清除照常做完
+    # After discarding, the same forget operation completes normally
     assert client.post("/api/visit/memory/forget/discard_unreadable", json={"confirm": True},
                        headers=GOOD).json() == {"ok": True, "discarded": 1}
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
@@ -363,7 +363,7 @@ def test_rename_landing_before_the_guard_is_taken_uses_the_new_name(env, monkeyp
     import contextlib
 
     client, server, tmp_path, _state = env
-    _seed(tmp_path, own_char="C")                    # 改名迁移已把名册条目搬到新名字 C
+    _seed(tmp_path, own_char="C")                    # Rename migration already moved the roster entry to the new name C
     table = {"A": CHAR_UID_A}
 
     async def chars():
@@ -374,7 +374,7 @@ def test_rename_landing_before_the_guard_is_taken_uses_the_new_name(env, monkeyp
     @contextlib.asynccontextmanager
     async def guard(_uids):
         table.clear()
-        table["C"] = CHAR_UID_A                      # 改名恰在路由解析之后、守卫生效之前提交
+        table["C"] = CHAR_UID_A                      # Rename commits immediately after route resolution and before the guard takes effect
         yield
 
     names = set()
@@ -414,7 +414,7 @@ def test_character_unresolvable_under_the_guard_is_a_retryable_503(env, monkeypa
 
     @contextlib.asynccontextmanager
     async def guard(_uids):
-        table.clear()                                # 拿到守卫时角色配置读不出（或刚被删）
+        table.clear()                                # The character config is unreadable (or was just deleted) when the guard is acquired
         yield
 
     memory_routes.configure_memory_routes(lifecycle_guard=guard)
@@ -422,7 +422,7 @@ def test_character_unresolvable_under_the_guard_is_a_retryable_503(env, monkeypa
         resp = client.post(path, json=body, headers=GOOD)
     finally:
         memory_routes.configure_memory_routes(lifecycle_guard=None)
-    # 不报成功、也不回 404：分不清「删了」与「一时读不出」，回可重试的 503
+    # Do not report success or return 404: deletion and temporary unreadability cannot be distinguished, so return retryable 503
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
 
@@ -436,7 +436,7 @@ def test_forget_all_with_unreadable_character_config_is_a_retryable_503(env, mon
 
     monkeypatch.setattr(local_chars, "ensure_characters_readable", unreadable)
     resp = client.post("/api/visit/memory/forget_all", json={}, headers=GOOD)
-    # 常规加载会静默换成默认角色：不能把默认角色当成完整范围报成功
+    # Normal loading silently falls back to the default character: do not report success as if the default represented the full scope
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
     assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_peer(PEER_X)) is not None
@@ -457,10 +457,10 @@ def _char(uid=None):
     ("{torn", False),
     ("[]", False),
     ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char(CHAR_UID_B)}}, True),
-    ({"猫娘": {"A": _char(CHAR_UID_A), "B": "damaged"}}, False),          # 记录坏了
-    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char()}}, False),             # 缺 id
-    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char("not-a-uid")}}, False),  # id 坏了
-    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char(CHAR_UID_A)}}, False),   # id 重复
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": "damaged"}}, False),          # Corrupted record
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char()}}, False),             # Missing id
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char("not-a-uid")}}, False),  # Invalid id
+    ({"猫娘": {"A": _char(CHAR_UID_A), "B": _char(CHAR_UID_A)}}, False),   # Duplicate id
 ], ids=["missing", "empty", "torn", "list", "valid", "bad_record", "no_uid", "bad_uid", "dup_uid"])
 def test_character_config_check(tmp_path, body, ok):
     path = tmp_path / "characters.json"
@@ -483,7 +483,7 @@ def test_peers_survive_a_damaged_pairs_list(env):
     data["accounts"][OWN_A]["peers"][PEER_X]["by_char"]["A"]["pairs"] = 1
     path.write_text(json.dumps(data), encoding="utf-8")
     resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
-    # 一条坏了的 pairs 只当作空，其余对端照常列出
+    # Treat a malformed pairs value as empty and continue listing the other peers
     assert resp.status_code == 200
     assert {row["peer_uid"] for row in resp.json()["peers"]} == {PEER_X, PEER_Z}
 
@@ -497,7 +497,7 @@ def test_forget_with_unreadable_character_config_is_a_retryable_503(env, monkeyp
 
     monkeypatch.setattr(local_chars, "ensure_characters_readable", unreadable)
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
-    # 不回看似永久的 404：回可重试的 503
+    # Return retryable 503 instead of an apparently permanent 404
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
 
@@ -508,10 +508,10 @@ def test_peers_skip_a_malformed_peer_id(env):
     path = tmp_path / "visit_peers.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     peers = data["accounts"][OWN_A]["peers"]
-    peers[""] = json.loads(json.dumps(peers[PEER_X]))       # 坏了的对端 id
+    peers[""] = json.loads(json.dumps(peers[PEER_X]))       # Invalid peer ID
     path.write_text(json.dumps(data), encoding="utf-8")
     resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
-    # 坏 id 那一条跳过，其余对端照常列出
+    # Skip the entry with the invalid ID and continue listing the other peers
     assert resp.status_code == 200
     assert [row["peer_uid"] for row in resp.json()["peers"]] == [PEER_X]
 
@@ -529,7 +529,7 @@ def test_peers_skip_a_malformed_pair_or_char_id(env, damage):
         entry["chars"][""] = {"display_name": "x"}
     path.write_text(json.dumps(data), encoding="utf-8")
     resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
-    # 构不成 subject 的 pair id 只跳过它自己
+    # Skip only the pair ID that cannot form a subject
     assert resp.status_code == 200 and [row["peer_uid"] for row in resp.json()["peers"]] == [PEER_X]
 
 
@@ -542,13 +542,13 @@ def test_forget_waits_for_a_pending_rename_to_be_reconciled(env, path, body):
     _seed(tmp_path)
     peers_path = tmp_path / "visit_peers.json"
     data = json.loads(peers_path.read_text(encoding="utf-8"))
-    data["pending_rename"] = {"old": "A0", "new": "A"}       # 改名崩在名册迁移之前
+    data["pending_rename"] = {"old": "A0", "new": "A"}       # Rename failed before roster migration
     peers_path.write_text(json.dumps(data), encoding="utf-8")
     resp = client.post(path, json=body, headers=GOOD)
-    # 不按新名展开出一个空条目报成功：回可重试的 503，等启动补录对账
+    # Do not expand the new name into an empty entry and report success: return retryable 503 while startup reconciliation catches up
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.requests == []
-    assert not list((tmp_path / "visit_revocations").glob("*.json"))      # 没写任何哨兵 / 日志
+    assert not list((tmp_path / "visit_revocations").glob("*.json"))      # No sentinel or log was written
 
 
 
@@ -559,7 +559,7 @@ def test_peers_show_blocked_regardless_of_uid_case(env):
     assert client.post("/api/visit/contacts/block", json={"peer_uid": mixed, "blocked": True},
                        headers=GOOD).status_code == 200
     rows = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD).json()["peers"]
-    # 屏蔽名单按小写存、名册按原样存：交给 Blocklist 自己归一化后比较
+    # The blocklist stores lowercase values while the roster preserves original case: let Blocklist normalize before comparing
     assert [row["blocked"] for row in rows if row["peer_uid"] == mixed] == [True]
 
 
@@ -572,7 +572,7 @@ def test_block_reports_success_when_ending_the_live_visit_fails(env):
 
     memory_routes.configure_memory_routes(on_blocked=failing)
     resp = client.post("/api/visit/contacts/block", json={"peer_uid": PEER_X, "blocked": True}, headers=GOOD)
-    # 屏蔽已经落盘：不回 500，如实告知没能结束在飞串门
+    # The block is already persisted: do not return 500; accurately report that the active peer session could not be ended
     assert resp.status_code == 200 and resp.json() == {"ok": True, "changed": True, "ended": False}
     assert Blocklist.load(tmp_path).is_blocked(PEER_X)
 
@@ -582,10 +582,10 @@ def test_rename_marker_of_another_character_does_not_block_forget(env):
     _seed(tmp_path)
     peers_path = tmp_path / "visit_peers.json"
     data = json.loads(peers_path.read_text(encoding="utf-8"))
-    data["pending_rename"] = {"old": "Z0", "new": "Z1"}       # 与角色 A 无关的改名
+    data["pending_rename"] = {"old": "Z0", "new": "Z1"}       # Rename unrelated to character A
     peers_path.write_text(json.dumps(data), encoding="utf-8")
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
-    # 改名门槛只挡涉及那两个名字的清除
+    # The rename gate blocks forgetting only when it involves either of those two names
     assert resp.status_code == 200 and server.calls("scoped_forget")
 
 
@@ -594,7 +594,7 @@ def test_blank_or_padded_peer_ids_are_rejected(env, peer_uid):
     client, server, tmp_path, state = env
     _seed(tmp_path)
     resp = client.post("/api/visit/contacts/block", json={"peer_uid": peer_uid, "blocked": True}, headers=GOOD)
-    # 拉黑会先 strip：全空白的会变空串抛 500，带空白的会和清除成了两个 id
+    # Blocking strips first: all-whitespace becomes empty and raises 500, while a value with surrounding whitespace becomes a different ID from forget
     assert resp.status_code == 400 and state["blocked_calls"] == []
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": peer_uid}, headers=GOOD)
     assert resp.status_code == 400 and server.requests == []
@@ -611,9 +611,9 @@ def test_peers_survive_non_finite_timestamps(env, first_seen):
     peer["last_seen"] = float("inf")
     chars = peer["by_char"]["A"]["chars"]
     chars[next(iter(chars))]["last_seen"] = float("-inf")
-    path.write_text(json.dumps(data), encoding="utf-8")         # 写出 NaN / Infinity 字面量
+    path.write_text(json.dumps(data), encoding="utf-8")         # Write NaN / Infinity literals
     resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
-    # 坏时间戳回 null，不让整张列表序列化失败
+    # Return null for an invalid timestamp so the entire list can still be serialized
     assert resp.status_code == 200
     (row,) = resp.json()["peers"]
     assert row["first_seen"] is None and row["last_seen"] is None
@@ -630,28 +630,28 @@ def test_malformed_rename_marker_blocks_forget_without_500(env, marker):
     data["pending_rename"] = marker
     peers_path.write_text(json.dumps(data), encoding="utf-8")
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
-    # 认不出涉及哪两个名字：不能当作无关放行，也不能抛 TypeError 让接口 500；回可重试的 503
+    # Could not determine which two names are involved: neither allow it as unrelated nor raise TypeError and return 500; return retryable 503
     assert resp.status_code == 503 and resp.json()["retry"] is True
     assert server.calls("scoped_forget") == []
 
 
 def test_block_ends_the_live_visit_by_the_canonical_uid(env):
     client, _server, tmp_path, state = env
-    peer = "abcdef012345abcdef012345"                          # 带字母的 uid，大小写变体才有区别
+    peer = "abcdef012345abcdef012345"                          # Alphabetic uid, where case variants differ
     _seed(tmp_path, peer_uid=peer)
     resp = client.post("/api/visit/contacts/block", json={"peer_uid": peer.upper(), "blocked": True}, headers=GOOD)
     assert resp.status_code == 200 and resp.json()["changed"] is True
-    # 黑名单按小写记；结束在飞串门也要用同一个规范形，否则找不到那场
+    # Blocklist stores lowercase; use the same canonical form to end an active peer session, or that session cannot be found
     assert state["blocked_calls"] == [peer]
     assert Blocklist.load(tmp_path).get(peer).display_name_at_block == "Xiaoming"
 
 
 def test_forget_finds_the_person_by_the_canonical_uid(env):
     client, server, tmp_path, _state = env
-    peer = "abcdef012345abcdef012345"                          # 带字母的 uid，大小写变体才有区别
+    peer = "abcdef012345abcdef012345"                          # Alphabetic uid, where case variants differ
     _seed(tmp_path, peer_uid=peer)
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": peer.upper()}, headers=GOOD)
-    # 与拉黑同一口径按小写认人：大写变体也要找到名册里的这个人并清掉，不能去擦一个无关 subject
+    # Match people case-insensitively, like the blocklist: an uppercase variant must still find and forget this roster entry, not clear an unrelated subject
     assert resp.status_code == 200 and resp.json()["forgotten"] == 1
     assert _run(PeerRoster(tmp_path, own_uid=OWN_A).get_peer(peer)) is None
     assert server.calls("scoped_forget")
@@ -659,10 +659,10 @@ def test_forget_finds_the_person_by_the_canonical_uid(env):
 
 def test_forget_of_someone_never_visited_writes_nothing(env):
     client, server, tmp_path, _state = env
-    _seed(tmp_path)                                   # 名册里只有 PEER_X
-    server.fail_always.add("scoped_forget")           # memory_server 不可用也不会留下哨兵
+    _seed(tmp_path)                                   # The roster contains only PEER_X
+    server.fail_always.add("scoped_forget")           # No sentinel is left behind when memory_server is unavailable
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_Z}, headers=GOOD)
-    # 拼错 / 从没串过门的人：如实回 0，不写哨兵、不开日志、不发 scoped_forget
+    # Misspelled / never chatted with this person: accurately return 0; write no sentinel, log nothing, and send no scoped_forget
     assert resp.status_code == 200 and resp.json() == {"ok": True, "forgotten": 0}
     assert server.requests == []
     assert not list((tmp_path / "visit_revocations").glob("*.json"))
@@ -672,7 +672,7 @@ def test_forget_of_someone_only_left_in_a_visit_still_runs(env):
     from tests.unit.visit_memory_test_helpers import ln, make_visit
 
     client, server, tmp_path, _state = env
-    # 名册条目已不在，但还有一场串门指向这一对：照常清除（抹掉 spool 里的对端身份）
+    # The roster entry is gone, but an active peer session still points to this pair: complete the forget normally (remove the peer identity from the spool)
     _run(make_visit(tmp_path, vid(5), [ln(0, "你好")]))
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_X}, headers=GOOD)
     assert resp.status_code == 200 and resp.json()["forgotten"] == 1
@@ -683,7 +683,7 @@ def test_forget_of_an_unknown_peer_with_a_damaged_roster_is_retryable(env):
     client, server, tmp_path, _state = env
     (tmp_path / "visit_peers.json").write_text('{"accounts": {', encoding="utf-8")
     resp = client.post("/api/visit/memory/forget", json={"catgirl": "A", "peer_uid": PEER_Z}, headers=GOOD)
-    # 名册读不出：不能当作「没有这个人」回 0
+    # If the roster cannot be read, do not treat it as "person not found" and return 0
     assert resp.status_code == 503 and resp.json()["retry"] is True
 
 
@@ -697,15 +697,15 @@ def test_peers_survive_lone_surrogates_in_display_names(env):
     peer["display_name"] = "Xiao" + lone + "ming"
     chars = peer["by_char"]["A"]["chars"]
     chars[next(iter(chars))]["display_name"] = lone + "Mimi"
-    path.write_text(json.dumps(data, ensure_ascii=True), encoding="utf-8")   # 转义形式写出，json.load 读得回孤立代理
+    path.write_text(json.dumps(data, ensure_ascii=True), encoding="utf-8")   # Write an escaped form that json.load reads back as a lone surrogate
     resp = client.get("/api/visit/memory/peers?catgirl=A", headers=GOOD)
-    # 编码不出的字符去掉，不让整张列表 500
+    # Remove characters that cannot be encoded so the entire list does not return 500
     assert resp.status_code == 200
     (row,) = resp.json()["peers"]
     assert row["display_name"] == "Xiaoming" and row["chars"][0]["display_name"] == "Mimi"
 
 
-# ── 丢弃读不出的清除记录 ───────────────────────────────────────────────
+# ── Discard unreadable forget records ────────────────────────────────────
 
 DISCARD = "/api/visit/memory/forget/discard_unreadable"
 
@@ -716,7 +716,7 @@ def _damage(tmp_path):
     log = directory / f"{'0' * 32}.json"
     log.write_text("{torn", encoding="utf-8")
     sentinel = directory / f"clearing-{'0' * 32}.json"
-    sentinel.write_text(json.dumps({"v": 99}), encoding="utf-8")       # 降级后读不懂的新格式
+    sentinel.write_text(json.dumps({"v": 99}), encoding="utf-8")       # A new format that cannot be read after downgrade
     return log, sentinel
 
 
@@ -760,15 +760,15 @@ def test_discard_quarantines_only_unreadable_records(env, caplog):
     with caplog.at_level("WARNING"):
         resp = client.post(DISCARD, json={"confirm": True}, headers=GOOD)
     assert resp.status_code == 200 and resp.json() == {"ok": True, "discarded": 2}
-    # 读得出的日志与哨兵原样不动
+    # Leave readable logs and sentinels unchanged
     assert {p.name: p.read_bytes() for p in directory.glob("*.json")} == readable
     assert f"{rev_id}.json" in readable and f"{good_sentinel['op_id']}.json" in readable
-    # 坏的挪进隔离目录（不删），每份一条诊断
+    # Move corrupt files to quarantine (do not delete them), with one diagnostic per file
     moved = sorted(p.name for p in (directory / "quarantine").iterdir())
     assert len(moved) == 2 and moved[0].startswith(log.name) and moved[1].startswith(sentinel.name)
     assert sum("forget_record_discarded" in r.getMessage() for r in caplog.records) == 2
     assert _run(RevocationLog.list_all_open(tmp_path))[0]["id"] == rev_id
-    # 再丢一次：没有读不出的了
+    # Discard again: nothing unreadable remains
     assert client.post(DISCARD, json={"confirm": True}, headers=GOOD).json() == {"ok": True, "discarded": 0}
 
 

@@ -1,9 +1,9 @@
 """Regression tests for LLMSessionManager.request_fresh_screenshot.
 
-回归保护：前端有的截图路径（Electron 主进程直捕 captureSourceAsDataUrl）返回
-原生分辨率大图，base64 可达 ~1.4MB。若 WebSocket 分支原样返回，Phase 2 直接把
-它发给 vision LLM 会被代理 nginx 以 413 Request Entity Too Large 拒掉。
-request_fresh_screenshot 的两条返回路径都必须统一压到 720p/JPEG-80。
+Regression protection: some frontend capture paths (Electron main-process captureSourceAsDataUrl) return
+native-resolution images whose base64 reaches about 1.4 MB. Returning these unchanged through WebSocket makes Phase 2
+send them to the vision LLM, where proxy nginx rejects them with 413 Request Entity Too Large.
+Both request_fresh_screenshot return paths must normalize to 720p/JPEG-80.
 """
 import asyncio
 import base64
@@ -17,9 +17,9 @@ from main_logic.core import LLMSessionManager
 
 
 def _png_b64(width: int, height: int) -> str:
-    """生成一张指定尺寸的 PNG 并返回纯 base64（不含 data: 前缀）。"""
+    """Generate a PNG at the specified dimensions and return plain base64 without a data: prefix."""
     img = Image.new("RGB", (width, height))
-    # 画一点渐变，让它像真实截图而不是纯色（纯色 JPEG 会压到几乎为 0）
+    # Add a gradient resembling a real screenshot; solid-color JPEGs compress almost to zero.
     px = img.load()
     for y in range(0, height, 4):
         for x in range(0, width, 4):
@@ -31,15 +31,15 @@ def _png_b64(width: int, height: int) -> str:
 
 @pytest.mark.unit
 def test_ws_screenshot_is_downscaled_to_720p():
-    """WebSocket 分支返回的原生分辨率大图必须被压到 720p JPEG。"""
-    big_b64 = _png_b64(2560, 1440)  # 模拟 Electron 主进程直捕的原生 1440p 大图
+    """Normalize native-resolution WebSocket screenshots to 720p JPEG."""
+    big_b64 = _png_b64(2560, 1440)  # Simulate a native 1440p image captured directly by Electron's main process.
 
     async def _run() -> str:
         fake = SimpleNamespace(_screenshot_future=None, lanlan_name="桃奈")
 
         async def _send_json(payload):
-            # send_json 在 create_future 之后、wait_for 之前被 await，
-            # 此处直接 resolve future，模拟前端回传截图。
+            # send_json is awaited after create_future and before wait_for;
+            # resolve the future directly here to simulate the frontend returning a screenshot.
             assert payload['type'] == 'request_screenshot'
             assert payload['request_id']
             LLMSessionManager.resolve_screenshot_request(
@@ -53,16 +53,16 @@ def test_ws_screenshot_is_downscaled_to_720p():
 
     assert out_b64, "应返回非空 base64"
     out_img = Image.open(BytesIO(base64.b64decode(out_b64)))
-    # 必须已被归一化为 720p JPEG，而不是原样 1440p PNG
+    # Must be normalized to 720p JPEG rather than retaining the original 1440p PNG.
     assert out_img.format == "JPEG"
     assert out_img.height == 720
-    # 字节数应远小于 nginx 默认 1MB body 限制（这正是 413 的触发线）
+    # Bytes should be well below nginx's default 1 MB body limit, the trigger for 413.
     assert len(base64.b64decode(out_b64)) < 1024 * 1024
 
 
 @pytest.mark.unit
 def test_ws_screenshot_already_small_stays_under_limit():
-    """已经是小图（720p 以内）时也应正常返回，且不会被放大。"""
+    """Small images already within 720p must return normally without enlargement."""
     small_b64 = _png_b64(1280, 720)
 
     async def _run() -> str:

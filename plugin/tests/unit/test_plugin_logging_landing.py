@@ -153,8 +153,8 @@ def test_plugin_server_main_process_unifies_logs_under_pluginserver(
     # and a stray N.E.K.O_Plugin_*.log would exist.
     assert not list(isolated_log_dir.glob("N.E.K.O_Plugin_*.log"))
 
-    # PluginServer 是宿主进程，绝对不能被收纳到 logs/plugin/ —— 否则 Electron
-    # 那侧按顶层路径读 PluginServer 日志时会一片空白。
+    # PluginServer is a host process and must never be placed in logs/plugin/; otherwise Electron
+    # reads its top-level PluginServer log path and sees nothing.
     plugin_subdir = isolated_log_dir / "plugin"
     if plugin_subdir.exists():
         assert not list(plugin_subdir.glob("N.E.K.O_PluginServer_*.log")), (
@@ -203,9 +203,9 @@ def test_plugin_subprocess_logs_to_its_own_service_file(isolated_log_dir, monkey
     if error_file.exists():
         assert "hello-from-plugin-demo" not in error_file.read_text(encoding="utf-8")
 
-    # Plugin_* 子进程日志绝对不能再污染顶层 logs/。顶层是留给 PluginServer /
-    # Main / Memory / Agent 宿主进程的。如果未来又有人忘了传 log_subdir，
-    # 这个反向断言会在 CI 直接报错。
+    # Plugin_* subprocess logs must never pollute top-level logs/, reserved for the PluginServer /
+    # Main / Memory / Agent hosts. If someone forgets log_subdir again,
+    # this negative assertion will fail directly in CI.
     assert not list(isolated_log_dir.glob("N.E.K.O_Plugin_demo_*.log")), (
         "Plugin_demo 子进程日志落到 logs/ 顶层了；应收纳到 logs/plugin/。"
     )
@@ -417,3 +417,23 @@ def test_bootstrap_failure_does_not_lock_root_initialised(
         h.flush()
     text = _read_logs(isolated_log_dir, "PluginServer")
     assert "post-retry-success" in text
+
+
+@pytest.mark.parametrize("template", ["external={}", "external=%s"])
+def test_plugin_controls_are_escaped_after_interpolation(
+    isolated_log_dir, monkeypatch, capsys, template
+):
+    monkeypatch.setenv("NEKO_PLUGIN_SERVICE_NAME", "PluginServer")
+    from utils.logger_config import setup_logging as bootstrap_setup_logging
+
+    bootstrap_setup_logging(service_name="PluginServer", silent=True)
+    plogging = importlib.import_module("plugin.logging_config")
+    adapter = plogging.get_logger("external-plugin").bind(plugin_id="demo")
+    adapter.error(template, "response\x07\x1b[2J")
+
+    console = capsys.readouterr().out
+    output = _read_logs(isolated_log_dir, "PluginServer")
+    for text in (console, output):
+        assert r"external=response\x07\x1b[2J" in text
+        assert "\x07" not in text
+        assert "\x1b" not in text

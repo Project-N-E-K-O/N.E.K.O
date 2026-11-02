@@ -4,8 +4,8 @@ from typing import Any, Mapping
 
 from .runtime_rules import SCORING_RUNTIME_RULES
 
-# 用户确认仅在事实报出问题时增加一次复核；沿用已压测的逐字段布尔输出。
-# 与事实和文学阶段使用同一框架解释，仍只复核原问题及其原字段，不添加新判断步骤。
+# User confirmation adds one review only when the factual stage reports a problem; keep the load-tested per-field boolean output.
+# Use the same explanatory framework as the factual and literary stages; review only the original issues and fields, without adding judgment steps.
 EVIDENCE_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n" + """你负责核对已有事实报告的证据，不寻找新问题，不改剧本、不评分。输入story_outline是原作者规划，proposed_issues是另一份可能出错的评审。逐条判断原文是否真的证明该问题，并核对已列修改字段是否必要。
 
 时间依据：每幕summary是整幕概览；opening_scene与character_state同属开场演完时点；goals的turn事件规划在普通回合中呈现，不是程序逐项完成记录；outgoing_routes是来源核心互动成立、玩家接受换场后的桥段；目标幕开场随后发生。结局承接最后互动完成后的结果，没有普通玩家回合。目标结果可以延续，桥段不必逐字重复它。参考实际路线，不把同节点开场和出口当成同一时点。
@@ -70,7 +70,7 @@ def validate_evidence_review(issues: list[dict], payload: Any) -> list[dict]:
         found[identity] = {k: deepcopy(check[k]) for k in ("verdict", "reason", "target_checks")}
     if set(found) != set(originals):
         fail()
-    # 原问题、原方案、证据和范围均不改写；复核是附加意见，前端可完整对照。
+    # Preserve the original issue, proposal, evidence, and scope; review adds an opinion that the frontend can compare in full.
     return [{**deepcopy(issue), "evidence_review": found[issue["issue_id"]]} for issue in issues]
 
 

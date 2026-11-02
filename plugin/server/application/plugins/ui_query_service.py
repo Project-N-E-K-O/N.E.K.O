@@ -1578,8 +1578,8 @@ class PluginUiQueryService:
                                 for item in context_actions
                                 if isinstance(item, Mapping)
                             ]
-                        # provider 缺失 / 抛错 / 超时不再让整次查询失败（否则连
-                        # actions 都拿不到），但诊断信息必须照旧落到 warning 上。
+                        # A missing, failing, or timed-out provider no longer fails the entire query (which would also lose
+                        # actions), but diagnostic information must still be reported as warnings.
                         context_error = ui_context_result.get("context_error")
                         if context_error:
                             warnings.append(PluginUiWarning(

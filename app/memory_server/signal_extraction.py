@@ -66,13 +66,13 @@ Schema:
   {
     'turns_since': int,           # turn counter since last successful check
     'last_check_ts': str | None,  # ISO cursor for path A window start
-    'last_a_msg_ts': datetime,    # path A 实际处理过的最晚 msg ts (path B 上游边界)
+    'last_a_msg_ts': datetime,    # latest message timestamp actually processed by path A (path B's upstream boundary)
     'last_b_check_ts': datetime,  # ISO cursor for path B window start
     'b_tick_counter': int,        # ticks since last path B trigger
-    # Liveness counters (in-memory only)：cursor key → 连续失败次数。
-    # 成功 mark_done 时清空对应 path 的 counter。重启清零是有意为之的"软兜底"
-    # ——重启后再试 MEMORY_LIVENESS_MAX_ATTEMPTS 次再 dead-letter，避免内存
-    # counter 错误地把短暂 transient 失败永久放弃。
+    # Liveness counters (in-memory only): cursor key -> consecutive failure count.
+    # Successful mark_done clears the corresponding path's counter. Resetting on restart is an intentional soft fallback:
+    # retry MEMORY_LIVENESS_MAX_ATTEMPTS times after restart before dead-lettering, preventing memory
+    # counters from permanently abandoning transient failures.
     'a_extract_failures': dict[str, int],  # path A cursor (last_check_ts) → fail count
     'b_extract_failures': dict[str, int],  # path B cursor (last_b_check_ts) → fail count
   }
@@ -85,7 +85,7 @@ def _signal_check_should_run(name: str, now: datetime) -> bool:
         return True
     last = state.get('last_check_ts')
     if last is None:
-        # 未 check 过 → 走空闲分支（需要 idle）
+        # Never checked: use the idle branch, which requires idleness.
         return gates._is_idle() and state['turns_since'] > 0
     try:
         last_dt = datetime.fromisoformat(last)
@@ -151,9 +151,9 @@ def _signal_check_mark_done(
         else max(0, current_turns - processed_turns)
     )
     state['last_check_ts'] = now.isoformat()
-    # Cursor 推进 → path A 的旧 cursor key 永远不会再被命中，清空 counter
-    # 避免内存 dict 随 cursor 历史无限增长。同时把"曾经失败但靠新数据冲过去
-    # 了"的窗口归零，下次毒窗口出现按 fresh attempt 计算。
+    # Cursor advanced: path A's old cursor key will never be reused; clear its counter
+    # to prevent unbounded dictionary growth. Also reset windows that failed before new data
+    # let them advance, so the next toxic window starts with a fresh attempt count.
     state['a_extract_failures'] = {}
 
 
@@ -196,7 +196,7 @@ def _stage1_path_a_bump_failure(
         name,
         now,
         processed_turns=processed_turns,
-    )  # 会顺带把 a_extract_failures 清空
+    )  # Also clears a_extract_failures.
     return True
 
 
@@ -380,13 +380,13 @@ async def _run_path_b(name: str, state: dict) -> None:
     """
     last_a_msg_ts = state.get('last_a_msg_ts')
     if last_a_msg_ts is None:
-        # A 还没成功处理过任何 batch，B 无源可看
+        # A has never successfully processed a batch; B has no source to inspect.
         return
-    # 防御性 TZ normalize：`_coerce_db_ts` 已经在写入 state 时归一化成 naive
-    # 是主路径保护，但外部 state injection / 升级前残留的 aware 值仍可能漏进
-    # 来——下面所有 cursor 比较 + known_pool created_at 比较都按 naive 工作，
-    # 这里再 strip 一遍把整个 _run_path_b 变成自包含 naive-only 域（Codex P2
-    # round-8 on PR #1408 双侧 case）。
+    # Defensive TZ normalization: _coerce_db_ts already stores naive timestamps in state,
+    # protecting the main path, but externally injected state / pre-upgrade aware values can leak
+    # through. All cursor and known_pool created_at comparisons below expect naive values;
+    # strip timezone information again so _run_path_b is a self-contained naive-only domain (Codex P2,
+    # round 8 on PR #1408, both-side cases).
     if last_a_msg_ts.tzinfo is not None:
         last_a_msg_ts = last_a_msg_ts.replace(tzinfo=None)
         state['last_a_msg_ts'] = last_a_msg_ts
@@ -396,16 +396,16 @@ async def _run_path_b(name: str, state: dict) -> None:
         last_b = last_b.replace(tzinfo=None)
         state['last_b_check_ts'] = last_b
     if last_b is None:
-        # Cold start lookback：B 第一次 trigger 时 last_b 无值，需要估个起点。
-        # A tick 不一定按 IDLE gate 节律走——也可能被 turn-count gate
-        # (EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS 累积) 触发，或在 sparse turn
-        # 场景（user 间歇性发声、turn 间隔 >> IDLE_MIN）下两 tick 之间跨度
-        # 远超 IDLE_MIN。只按 piggyback 估算 (N_TICKS × IDLE_MIN) 会让 cold
-        # start 起点落在 A 真正处理过的范围之内，B 永久 skip 那段之前的
+        # Cold-start lookback: last_b is unset on B's first trigger, so estimate a start.
+        # A ticks need not follow the IDLE gate cadence: the turn-count gate
+        # (accumulated EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS) can also trigger them, and sparse turns
+        # (intermittent user speech, turn intervals >> IDLE_MIN) may separate ticks
+        # by much more than IDLE_MIN. Estimating only N_TICKS x IDLE_MIN could place the cold-start
+        # boundary inside A's already-processed range, making B permanently skip earlier content.
         # AI-only msg（Codex P2 round-6 on PR #1408）。
-        # 修法：取 max(piggyback 节律, turn-count 节律) × IDLE_MIN 当估算
-        # 上限。默认下 max(3, 10) × 10min = 100min。LIMIT 兜底防爆 prompt，
-        # Stage-1 dedup hash 防双写——overshoot 是安全的。
+        # Fix: use max(piggyback cadence, turn-count cadence) x IDLE_MIN as the estimate's
+        # upper bound: max(3, 10) x 10min = 100min by default. LIMIT bounds prompts;
+        # Stage-1 dedup hashes prevent duplicate writes, so overshooting is safe.
         cold_start_ticks_estimate = max(
             EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
             EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
@@ -416,7 +416,7 @@ async def _run_path_b(name: str, state: dict) -> None:
         last_b = last_a_msg_ts - estimated_a_coverage
 
     if last_b >= last_a_msg_ts:
-        # 窗口为空（B 已追上 A）
+        # Empty window: B has caught up with A.
         return
 
     try:
@@ -428,15 +428,15 @@ async def _run_path_b(name: str, state: dict) -> None:
         logger.warning(f"[PathB] {name}: 读取窗口失败: {e}")
         return
     if not rows:
-        # `aretrieve_original_by_timeframe` 在 SQL exception / engine init 失败
-        # / 维护态等情况下都 swallow + 返 []（见 timeindex.py 实现），从 caller
-        # 端无法区分"真空窗口"vs"transient 读失败"。保守起见 cursor 不推：
-        # - 真空窗口：A 刚成功处理了同段范围，B 这里几乎不可能真空（除非
-        #   A 的 SQL 看到 row 但 B 的 SQL 同段读不到——意味着 SQL 层异常）。
-        #   下次 B trigger 再 query 一次 0 rows 也是常数代价（SQLite 空范围
-        #   scan 极快）。
-        # - Transient 失败：保留 cursor 让下次 trigger 重试该窗口，避免把整段
-        #   [last_b, last_a_msg_ts] 永久 skip（Codex P1 round-5 on PR #1408）。
+        # aretrieve_original_by_timeframe swallows SQL errors / engine initialization failures /
+        # maintenance conditions and returns [] (see timeindex.py), so callers cannot distinguish
+        # a genuinely empty window from a transient read failure. Conservatively keep the cursor:
+        # - Truly empty: A just processed this range successfully; B should almost never find it empty
+        #   unless SQL is faulty (A saw rows that B cannot read in the same range).
+        #   Querying zero rows again on B's next trigger costs only constant time;
+        #   SQLite scans of empty ranges are very fast.
+        # - Transient failure: retain the cursor so the next trigger retries this window instead of
+        #   permanently skipping [last_b, last_a_msg_ts] (Codex P1, round 5 on PR #1408).
         logger.debug(
             f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
             f"{last_a_msg_ts.isoformat(timespec='seconds')} 取回 0 rows "
@@ -444,27 +444,27 @@ async def _run_path_b(name: str, state: dict) -> None:
         )
         return
 
-    # 解析 SQL 实际取到的最后一行 ts —— 后续所有 cursor 推进点都用这个值，
-    # 不能用 last_a_msg_ts。差别只在窗口被 MAX_AI_AWARE_WINDOW_MSGS LIMIT
-    # 截断时显现：截断时 last_fetched_ts < last_a_msg_ts，未取到的尾巴留
-    # 给下次 B trigger 继续处理；若推到 last_a_msg_ts 会让尾巴永久 skip
+    # Parse the last row timestamp actually fetched by SQL; use it for all later cursor advances,
+    # never last_a_msg_ts. The distinction matters when MAX_AI_AWARE_WINDOW_MSGS LIMIT
+    # truncates the window: last_fetched_ts < last_a_msg_ts, leaving the unfetched tail
+    # for the next B trigger. Advancing to last_a_msg_ts would skip that tail permanently.
     # （Codex P1 round-1 on PR #1408, P2 round-2 covers filtered-empty case）。
     last_fetched_ts = _coerce_db_ts(rows[-1][0])
     if last_fetched_ts is None:
-        # 防御：_coerce_db_ts 解析失败退回 last_a_msg_ts（避免 cursor 不动
-        # 死循环）。正常路径不触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
+        # Defensive fallback: if _coerce_db_ts fails, use last_a_msg_ts to avoid a stuck-cursor
+        # loop. The normal path never needs this: rows[-1][0] is SQLite's timestamp string.
         last_fetched_ts = last_a_msg_ts
 
-    # 同 ts 簇 LIMIT 截断死循环防御（Codex P2 round-3 on PR #1408）：
-    # aretrieve_original_by_timeframe 用 inclusive `BETWEEN`，若窗口里
-    # > MAX_AI_AWARE_WINDOW_MSGS 行共享同一 ts（极端情况：bulk import 或
-    # store_conversation 给一次请求里所有 row 写同 ts），那么 LIMIT 切出
-    # 的最早 N 行全在同 ts，cursor 推到 last_fetched_ts 后下次 BETWEEN
-    # 仍把这批 row 全部捞回来 → 无限循环、该 ts 簇后面的 row 永远 skip。
-    # 检测：LIMIT 拉满 AND 所有 fetched row 同 ts → cursor +1μs 越过该 ts。
-    # 代价：该 ts 簇 LIMIT 之后的 tail row 被 skip（罕见——一次正常对话
-    # turn 写 2~5 行，远 < MAX_AI_AWARE_WINDOW_MSGS=200）。无更便宜的修法
-    # 除非把 cursor 改成 (ts, rowid) 复合键、改写 SQL，太重不划算。
+    # Guard against LIMIT loops within tied timestamps (Codex P2, round 3 on PR #1408):
+    # aretrieve_original_by_timeframe uses inclusive BETWEEN. If more than
+    # MAX_AI_AWARE_WINDOW_MSGS rows share a timestamp (e.g. bulk import or
+    # store_conversation assigning one timestamp to all rows in a request), LIMIT returns
+    # the earliest N rows with that timestamp. Advancing to last_fetched_ts then rereads
+    # the same rows forever, permanently skipping rows after the cluster.
+    # Detect LIMIT reached AND all fetched timestamps equal; advance cursor by 1 microsecond.
+    # Cost: skip the cluster's tail beyond LIMIT (rare: a normal conversation
+    # turn writes 2-5 rows, far below MAX_AI_AWARE_WINDOW_MSGS=200). A better fix requires
+    # a composite (ts, rowid) cursor and SQL changes, too costly for this case.
     first_fetched_ts = _coerce_db_ts(rows[0][0])
     if (
         len(rows) >= MAX_AI_AWARE_WINDOW_MSGS
@@ -480,19 +480,19 @@ async def _run_path_b(name: str, state: dict) -> None:
 
     message_dicts = _extract_role_tagged_messages_from_rows(rows)
     if not message_dicts:
-        # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
-        # 截断时未取尾巴可能含有效 msg。
+        # Only system messages / empty content: advance to last fetched, not last_a_msg_ts;
+        # a truncated tail may still contain valid messages.
         state['last_b_check_ts'] = last_fetched_ts
         state['b_extract_failures'] = {}
         return
 
-    # 截到 user msg bracket：首条 user msg 到末条 user msg 之间（含两端）。
-    # Product thesis 防廉价层污染——首尾的 AI 残段（user 没印证过的试探 /
-    # user 没回应过的独白）不该当 fact 沉淀。
+    # Restrict to the user-message bracket, from first through last user message inclusive.
+    # Product thesis: avoid low-value-layer pollution. Leading/trailing AI fragments (unconfirmed
+    # guesses / monologues the user never answered) must not become facts.
     message_dicts = _trim_to_user_msg_bracket(message_dicts)
     if not message_dicts:
-        # 窗口内完全无 user msg → AI-only 廉价层，故意 skip。cursor 照常推
-        # 进，下次 B trigger 不会再来覆盖这段。
+        # No user messages: deliberately skip the AI-only low-value layer. Advance the cursor
+        # normally so B's next trigger does not revisit it.
         logger.debug(
             f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
             f"{last_fetched_ts.isoformat(timespec='seconds')} 无 user msg bracket "
@@ -505,24 +505,24 @@ async def _run_path_b(name: str, state: dict) -> None:
     from utils.llm_client import convert_to_messages
     messages = convert_to_messages(message_dicts)
 
-    # 已知 fact 池：用 path A 在本 B 窗口内 / 之后写的 fact 当 do-not-repeat 提示。
-    # 只设下界 ``created_at >= last_b``、不设上界（CodeRabbit on PR #1408）：
-    # A 的 idle/polling 延迟让"刚扫完本 B 窗口"那批 fact 的 created_at 普遍
-    # 略晚于 last_a_msg_ts，若用 created_at <= last_a_msg_ts 过滤会把最新一
-    # 批 A facts 整批排除——known_pool 对"刚被 A 抽过的内容"失效，path B 更
-    # 容易和 A 重复抽同一窗口。多包含一些"窗口后"的 A fact 是安全的：known
-    # _pool 只是 LLM 的提示，多余条目至多让 B 多抑制少量新 fact，且 Stage-1
-    # dedup hash 仍是兜底。按 importance DESC 取前 MAX_KNOWN_POOL_FACTS。
+    # Known-fact pool: use facts written by path A during / after this B window as do-not-repeat hints.
+    # Apply only ``created_at >= last_b``, with no upper bound (CodeRabbit on PR #1408):
+    # A's idle/polling delay means facts for the just-scanned B window commonly have created_at
+    # slightly later than last_a_msg_ts. An upper bound would exclude the newest entire
+    # A batch, making known_pool ineffective for content A just extracted, and B more
+    # likely to duplicate it. Including some later A facts is safe: known_pool
+    # only guides the LLM; extra entries may suppress a few new facts at worst, while Stage-1
+    # dedup hashes remain a safeguard. Take MAX_KNOWN_POOL_FACTS ordered by descending importance.
     try:
         all_facts = await runtime.fact_store.aload_facts(name)
     except Exception as e:
         logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
         all_facts = []
 
-    # Importance 用 safe_importance 兜底——legacy/手改 facts.json 里可能
-    # 有 'importance': "high" / None / list 等脏值，raw int(...) cast 会
-    # ValueError 把整个 B 跑挂、下次 trigger 又同样脏值同样挂，path B 对该
-    # 角色永久哑火（Codex P2 round-1 on PR #1408）。
+    # Use safe_importance: legacy / manually edited facts.json can contain
+    # dirty importance values like "high", None, or lists. Raw int(...) would raise
+    # ValueError on every B trigger, permanently disabling path B for that
+    # character (Codex P2, round 1 on PR #1408).
     from memory.facts import safe_importance
     from memory.scopes import is_legacy_private_entry
 
@@ -530,26 +530,26 @@ async def _run_path_b(name: str, state: dict) -> None:
     for f in all_facts:
         if not isinstance(f, dict):
             continue
-        # Path B 是私聊 AI-aware 抽取：known pool 只能含 legacy 私聊
-        # facts。scoped（群/成员）fact 混进来会把群内容渲进私聊 Stage-1
-        # prompt（跨边界泄漏），且在繁忙群把 top-N 名额挤满、抑制私聊
-        # fact 抽取。
+        # Path B extracts AI-aware facts for private chats; the known pool must contain only legacy
+        # private-chat facts. Scoped group/member facts would render group content in the private Stage-1
+        # prompt (cross-boundary leakage), and busy groups could fill top-N slots, suppressing
+        # private-chat fact extraction.
         if not is_legacy_private_entry(f):
             continue
         created_at_raw = f.get('created_at') or ''
         try:
-            # 完整 ISO 解析（含微秒）—— `created_at` 是 datetime.now().isoformat()
-            # 写盘的，截到 [:19] 会丢微秒，让 created_at == last_b + 0.x 秒的
-            # fact 在 `>= last_b` 比较里被误判出窗口（CodeRabbit on PR #1408）。
+            # Parse full ISO timestamps including microseconds: created_at is written with datetime.now().isoformat().
+            # Truncating to [:19] loses microseconds and incorrectly excludes facts whose
+            # created_at == last_b + 0.x seconds from the >= last_b window (CodeRabbit on PR #1408).
             created_at = datetime.fromisoformat(created_at_raw)
         except (ValueError, TypeError):
             continue
-        # 防御：本仓库 `_apersist_new_facts` 写的 `created_at` 都是 naive
-        # datetime.now().isoformat()，但若 import/migration 路径写入了 TZ-aware
-        # 值（如 "...+00:00"），跟 naive 的 last_b 比较会抛 TypeError 让
-        # `_run_path_b` 一直 fail，path B 对该角色永久哑火（Codex P1 round-7
-        # on PR #1408）。比较口径上把 aware 当 naive 处理——绝大多数场景就是
-        # 同一 wall-clock 时间，时区差异不应让 fact 抽取整段挂掉。
+        # Defensive handling: _apersist_new_facts writes naive datetime.now().isoformat(),
+        # but import/migration paths may write timezone-aware values
+        # (e.g. "...+00:00"). Comparing to naive last_b raises TypeError, causing
+        # _run_path_b to fail forever for that character (Codex P1, round 7
+        # on PR #1408). Treat aware values as naive for comparison: in most cases
+        # they represent the same wall-clock time; timezone differences must not disable fact extraction.
         if created_at.tzinfo is not None:
             created_at = created_at.replace(tzinfo=None)
         if created_at >= last_b:
@@ -561,14 +561,14 @@ async def _run_path_b(name: str, state: dict) -> None:
         name, messages, known_pool,
     )
     if persisted is None:
-        # Stage-1 LLM 终态失败（重试耗尽）。cursor 保留不推进，下次 B trigger
-        # 重试同窗口（fact dedup hash 防双写）。区分 None vs [] 至关重要：
-        # 若把失败折叠成"成功 0 抽"，失败窗口会被永久 skip（CodeRabbit / Codex
+        # Stage-1 LLM terminal failure (retries exhausted): retain cursor and retry the window on
+        # B's next trigger (fact dedup hashes prevent duplicate writes). Distinguishing None from [] is crucial:
+        # treating failure as successful zero extraction would permanently skip the window (CodeRabbit / Codex
         # P1 round-2 on PR #1408）。
         #
-        # Liveness 兜底（path A 的对偶）：同一 last_b_check_ts cursor 反复
-        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 时强推 cursor 到 last_fetched_ts，
-        # 避免毒窗口让 B pipeline 永久卡死该角色的 AI-aware fact 抽取。
+        # Liveness fallback, symmetric with path A: repeated failures at last_b_check_ts reaching
+        # MEMORY_LIVENESS_MAX_ATTEMPTS force cursor to last_fetched_ts,
+        # preventing a toxic window from permanently stalling that character's AI-aware extraction.
         cursor_key = (
             last_b.isoformat(timespec='microseconds') if last_b else 'cold'
         )
@@ -588,9 +588,9 @@ async def _run_path_b(name: str, state: dict) -> None:
         )
 
     state['last_b_check_ts'] = last_fetched_ts
-    # Cursor 推进 → 旧 cursor key 永远不会再被命中，清空 path-B counter
-    # 避免内存 dict 随 cursor 历史无限增长（对偶 _signal_check_mark_done
-    # 在 path A 成功路径上清 a_extract_failures）。
+    # Cursor advanced: clear the path-B counter, since its old key will never be used again,
+    # preventing unbounded history growth (symmetric with _signal_check_mark_done
+    # clearing a_extract_failures on path A success).
     state['b_extract_failures'] = {}
 
 
@@ -602,13 +602,13 @@ async def _periodic_signal_extraction_loop():
     """
     await asyncio.sleep(_INITIAL_DELAY_SIGNAL)
     while True:
-        # 强力记忆关 → Stage-1 + Stage-2 evidence 抽取整段停。这是 evidence-RFC
-        # 引入的 token 大头（每 40s 轮询一次，trigger 时跑 Stage-1 + Stage-2 两
-        # 个 LLM 调用，Stage-2 还开 thinking）。关闭后 evidence_score 不再变化，
-        # confirmed/promoted 走 time-driven fallback。
+        # Strong memory disabled: stop Stage-1 + Stage-2 evidence extraction entirely. These are
+        # evidence-RFC's largest token costs (polling every 40s, with two LLM calls
+        # on trigger and thinking enabled in Stage-2). evidence_score then stops changing;
+        # confirmed/promoted transitions use the time-driven fallback.
         #
-        # 关态推进 last_check_ts 到 now（同 rebuttal 处的理由）：避免重开后
-        # 把关闭期间的所有 user msg 当成"积压"一次性塞进 Stage-1+Stage-2 prompt。
+        # While disabled, advance last_check_ts to now (same rationale as rebuttal), avoiding
+        # loading all disabled-period user messages as backlog into Stage-1 + Stage-2 on re-enable.
         if not await gates._ais_powerful_memory_enabled():
             try:
                 character_data = await runtime._config_manager.aload_characters()
@@ -618,8 +618,8 @@ async def _periodic_signal_extraction_loop():
                     try:
                         _signal_check_mark_done(name, cursor_now)
                     except Exception as cursor_e:
-                        # 单角色 last_check_ts 推进失败不致命——同 rebuttal
-                        # 处的理由，下一轮再试。
+                        # A single character's last_check_ts update failure is nonfatal: retry next round,
+                        # for the same reasons as the rebuttal path.
                         logger.debug(
                             f"[SignalLoop] {name}: 关态 cursor 推进失败: {cursor_e}"
                         )
@@ -662,9 +662,9 @@ async def _periodic_signal_extraction_loop():
                 if not _signal_check_should_run(name, now):
                     return
                 processed_turns = processed_turns_by_name.get(name, 0)
-                # 窗口起点：优先用上次成功 check 时戳（cursor 语义），避免
-                # 长对话期间 >10 分钟的消息被永远 skip（§3.4.3 游标推进）。
-                # 冷启动 / cursor 缺失时回退到 IDLE_MINUTES*2。
+                # Window start: prefer the last successful check timestamp (cursor semantics), avoiding
+                # permanent skips of messages older than 10 minutes in long chats (section 3.4.3 cursor advancement).
+                # Fall back to IDLE_MINUTES*2 on cold start / missing cursor.
                 start_time = _signal_check_window_start(name, now)
                 rows = await runtime.time_manager.aretrieve_original_by_timeframe(
                     name, start_time, now,
@@ -676,31 +676,31 @@ async def _periodic_signal_extraction_loop():
                     return
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
-                    # 窗口里没 user msg —— 纯 proactive / AI 自言自语 / tool
-                    # turn。这种内容**故意**不进 memory：
-                    # 1. Path A 抽 user_observation fact 需要 user 发声当源
-                    # 2. Path B 拣 AI 自我披露**也**只在 user 有 engagement
-                    #    的窗口里跑（B 是 piggyback A，不是独立路径）
-                    # 设计原则：用户不搭理 = 内容廉价层 ("90% 没心没肺"
-                    # product thesis)，不该被自动当 fact 沉淀污染 memory。
-                    # cursor 照常推进、计数清零，让下次有 user msg 的窗口
-                    # 直接进入正常 A+B 流程。
+                    # No user messages: purely proactive / AI monologue / tool
+                    # turns. Deliberately exclude these from memory:
+                    # 1. Path A needs user speech as the source for user_observation facts.
+                    # 2. Path B collects AI self-disclosure only in windows with user engagement
+                    #    too (B piggybacks A rather than running independently).
+                    # Design principle: user disengagement means low-value content (the "90% carefree"
+                    # product thesis), which must not automatically become facts and pollute memory.
+                    # Advance cursor and reset counters normally so the next window containing user messages
+                    # enters the normal A+B flow directly.
                     _signal_check_mark_done(
                         name, now, processed_turns=processed_turns,
                     )
                     return
 
-                # 组装成 BaseMessage-like 结构给 extract_facts 使用
+                # Build BaseMessage-like structures for extract_facts.
                 from utils.llm_client import convert_to_messages
                 message_dicts = [
                     {'type': 'human', 'data': {'content': m}}
                     for m in user_msgs_text
                 ]
-                # convert_to_messages 只接 list，不再解 JSON 字符串（PR #547 以来的契约）；
-                # 这里之前的 json.dumps 让函数走 isinstance(data, list)==False 分支直接返回 []，
-                # → messages=[] → _format_conversation render 出空字符串 → Stage-1 prompt
-                # 里 ======以下为对话====== 跟 ======以上为对话====== 之间为空 → LLM 合理
-                # 返回 []，整套 fact 抽取 + 后续 Stage-2 evidence 都被静默跳过。
+                # convert_to_messages accepts only lists, no JSON decoding (contract since PR #547).
+                # The previous json.dumps hit isinstance(data, list)==False and returned [] directly,
+                # giving messages=[] and an empty _format_conversation output. The Stage-1 prompt
+                # then had no text between ======以下为对话====== and ======以上为对话======, so the LLM correctly
+                # returned [], silently skipping all fact extraction and subsequent Stage-2 evidence work.
                 messages = convert_to_messages(message_dicts)
 
                 try:
@@ -712,20 +712,20 @@ async def _periodic_signal_extraction_loop():
                 except FactExtractionFailed as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next
                     # cycle retries the same message window (§3.4.3)。
-                    # Liveness 兜底：同一窗口反复失败 ≥ MEMORY_LIVENESS
-                    # _MAX_ATTEMPTS 强推 cursor 到 now，避免毒窗口让
-                    # fact pipeline 永久卡死。
+                    # Liveness fallback: repeated failures for one window reaching MEMORY_LIVENESS
+                    # _MAX_ATTEMPTS force cursor to now, preventing a toxic window from
+                    # permanently stalling the fact pipeline.
                     state = _signal_check_state.setdefault(
                         name, {'turns_since': 0, 'last_check_ts': None},
                     )
-                    # CodeRabbit: 用 start_time 当 key，不要字面 'cold'。
-                    # 字面 'cold' 把所有冷启动多轮失败聚合到同一桶，
-                    # 第 N 次会强推 cursor 到当时的 now，把那段时间内进来的
-                    # 正常 msg 也跟着 dead-letter。改用 start_time（每轮
-                    # window 起点）：有稳定 cursor 时 start_time == cursor
-                    # （`_signal_check_window_start` 直接返 cursor），冷启动
-                    # 时 start_time 是 `now - IDLE_MINUTES*2`，每轮不同 →
-                    # 冷启动阶段不会错误聚合 dead-letter。
+                    # CodeRabbit: use start_time as the key, not the literal 'cold'.
+                    # A literal 'cold' combines failures across all cold-start rounds in one bucket;
+                    # its Nth failure advances cursor to the current now, dead-lettering
+                    # valid messages arriving during that time too. Use start_time, the current
+                    # window's start: with a stable cursor, start_time == cursor
+                    # (_signal_check_window_start returns cursor directly); on cold start,
+                    # start_time is now - IDLE_MINUTES*2 and changes every round,
+                    # so unrelated cold-start failures cannot be incorrectly combined for dead-lettering.
                     cursor_key = start_time.isoformat(timespec='microseconds')
                     if not _stage1_path_a_bump_failure(
                         name,
@@ -739,11 +739,11 @@ async def _periodic_signal_extraction_loop():
                         )
                     return
 
-                # 先 dispatch 再 mark_done：dispatch 中途有任何 aapply 失败
-                # cursor 不推进，下轮 Stage-1 在同一窗口重新抽取（Stage-1
-                # dedup 保证 fact 不会翻倍写入，Stage-2 会重新生成 signal
-                # 再试一次）。CodeRabbit PR #929 fix：之前 dispatch 吞异常
-                # 后 mark_done 仍跑，单次 aapply 失败会永久丢一条 evidence。
+                # Dispatch before mark_done: any intermediate aapply failure keeps
+                # cursor unchanged so next Stage-1 retries the same window; Stage-1
+                # dedup prevents duplicate facts and Stage-2 regenerates signals
+                # for retry. CodeRabbit PR #929 fix: dispatch previously swallowed errors
+                # while mark_done still ran, permanently losing evidence after one aapply failure.
                 dispatch_ok = True
                 if signals:
                     dispatch_ok = await _adispatch_evidence_signals(
@@ -753,10 +753,10 @@ async def _periodic_signal_extraction_loop():
                         f"[SignalLoop] {name}: dispatch {len(signals)} 个 evidence 信号"
                     )
 
-                # Drain checkpoint：dispatch 全部成功（含 signals=[] 即 LLM
-                # 看过没关联）才 mark batch processed。任何 aapply 失败保留
-                # signal_processed=False 让下轮 idle 重试这批 fact，避免
-                # 把没落地的 signal 永久跳过（CodeRabbit fingerprint c755101c）。
+                # Drain checkpoint: mark processed only after every dispatch succeeds, including signals=[]
+                # when the LLM saw no relation. Any aapply failure preserves
+                # signal_processed=False for next idle retry, preventing permanently skipping
+                # unpersisted signals (CodeRabbit fingerprint c755101c).
                 if dispatch_ok and batch_fact_ids:
                     await runtime.fact_store.amark_signal_processed(name, batch_fact_ids)
 
@@ -764,26 +764,26 @@ async def _periodic_signal_extraction_loop():
                     logger.warning(
                         f"[SignalLoop] {name}: dispatch 有失败，保留 cursor 下轮重试"
                     )
-                    return  # 保留 cursor（不调 _signal_check_mark_done）
+                    return  # Retain cursor without calling _signal_check_mark_done.
 
-                # 信号写完后触发一次 score-driven pending→confirmed 扫描；
-                # 独立 try/except：本步失败不应阻止 cursor 推进（score 下
-                # 轮会自然重算）。
+                # After writing signals, trigger one score-driven pending->confirmed scan;
+                # isolate try/except so its failure cannot prevent cursor advancement,
+                # since scores naturally recompute next round.
                 try:
                     await runtime.reflection_engine.aauto_promote_stale(name)
                 except Exception as e:
                     logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
 
-                # Stage-1 + dispatch 都跨过了，cursor 推进。
+                # Stage-1 and dispatch both succeeded: advance cursor.
                 _signal_check_mark_done(
                     name, now, processed_turns=processed_turns,
                 )
 
-                # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
-                # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
-                # 用真实 msg ts 而不是 wall-clock now：保证 path B 看到的
-                # 消息严格被 path A 看过，避免"A scan SQL 完成那一刻之后才入
-                # SQLite 的 msg 被 B 抢先处理"的 race。
+                # Record A's latest actually processed message timestamp as path B's downstream boundary.
+                # Rows are already ORDER BY ts ASC, making the final row the latest within the window.
+                # Use actual message timestamps rather than wall-clock now so B sees only
+                # messages A already inspected, avoiding B processing messages inserted into
+                # SQLite after A's SQL scan finished.
                 state = _signal_check_state.setdefault(
                     name, {'turns_since': 0, 'last_check_ts': None},
                 )
@@ -791,18 +791,18 @@ async def _periodic_signal_extraction_loop():
                 if last_msg_ts is not None:
                     state['last_a_msg_ts'] = last_msg_ts
 
-                # Path B trigger：A 成功跑完后 bump counter；达 N 触发
-                # _run_path_b（AI-aware Stage-1 only，详见函数 docstring）。
+                # Path B trigger: increment counter after successful A; at N invoke
+                # _run_path_b, AI-aware Stage-1 only, documented in its docstring.
                 state['b_tick_counter'] = state.get('b_tick_counter', 0) + 1
                 if state['b_tick_counter'] >= EVIDENCE_AI_AWARE_EVERY_N_A_TICKS:
                     state['b_tick_counter'] = 0
                     try:
                         await _run_path_b(name, state)
                     except Exception as e:
-                        # B 失败完全不应该影响 A 路径（A 已经在 mark_done 之
-                        # 后了）；只 log warning。下次 b_tick_counter 又满 N
-                        # 时 B 自动重试，cursor 是 last_b_check_ts 推进的，
-                        # 失败时不推 cursor → 下次 B 重新覆盖同窗口。
+                        # B failures must never affect A, already beyond mark_done;
+                        # warn only. B retries when b_tick_counter next reaches N;
+                        # last_b_check_ts advances its cursor only on success,
+                        # so failures retry the same window next time.
                         logger.warning(
                             f"[PathB] {name}: AI-aware Stage-1 失败 (skip 本轮，下次 B trigger 重试): {e}"
                         )

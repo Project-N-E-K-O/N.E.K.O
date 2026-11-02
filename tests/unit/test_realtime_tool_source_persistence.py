@@ -1,6 +1,7 @@
-"""A provider terminal cannot outrun local-only provenance for its tool preface."""
+"""Tool provenance survives terminal races while all visible text shares the chat grant."""
 
 import asyncio
+import json
 import sqlite3
 import time
 from types import SimpleNamespace
@@ -12,6 +13,13 @@ from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F4
 from tests.unit.test_chat_sync_source import DOMAIN, UID, make_runtime, source_for
 from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event, _tool_ids
 from tests.unit.test_realtime_tool_ownership import _QueueSocket, _gemini_response, _raw_tool_event, _wait_for_tool_tasks
+
+
+def tool_records(source):
+    """Inspect durable provenance even after the reply joined the shared history."""
+    with sqlite3.connect(source.path) as db:
+        return [{"messageId": identity, **json.loads(raw)} for identity, raw in db.execute(
+            "SELECT record_id,original FROM source_local_replies WHERE uid=? AND deleted=0 ORDER BY rowid", (UID,))]
 
 
 @pytest.mark.asyncio
@@ -38,8 +46,8 @@ async def test_provider_terminal_cannot_save_tool_preface_before_deferred_dispat
     async def save_original(name, role, text, **kwargs):
         return await original_save(name, role, text, config_manager=config, **kwargs)
 
-    async def save_local(name, text, proof):
-        return await local_save(name, text, proof, config_manager=config)
+    async def save_local(name, text, proof, **kwargs):
+        return await local_save(name, text, proof, config_manager=config, **kwargs)
 
     monkeypatch.setattr(source_module, "save_original", save_original)
     monkeypatch.setattr(source_module, "save_local_reply", save_local)
@@ -120,7 +128,7 @@ async def test_provider_terminal_cannot_save_tool_preface_before_deferred_dispat
         # while no deferred handler has started. It is not a queue-only check.
         before_dispatch = {
             "pending": len(source.pending(200)),
-            "local": [row["text"] for row in source.read_local_replies(source.path, UID)],
+            "local": [row["text"] for row in tool_records(source)],
         }
         with sqlite3.connect(source.path) as db:
             before_dispatch["originals"] = db.execute("SELECT COUNT(*) FROM source_originals").fetchone()[0]
@@ -147,14 +155,14 @@ async def test_provider_terminal_cannot_save_tool_preface_before_deferred_dispat
             await _dispatch(client, provider, _event(text="ordinary voice reply"))
             await _dispatch(client, provider, _event(complete=True))
         await settled()
-        local = source.read_local_replies(source.path, UID)
+        local = tool_records(source)
         pending = source.pending(200)
-        assert before_dispatch == {"pending": 0, "local": ["tool preface"],
-                                   "originals": 0, "unbound": 0, "ledger": 0}, before_dispatch
+        assert before_dispatch == {"pending": 1, "local": ["tool preface"],
+                                   "originals": 1, "unbound": 0, "ledger": 0}, before_dispatch
         assert [row["text"] for row in local] == ["tool preface"]
         assert source_markers.count(local[0]["messageId"]) == 1
-        assert len(pending) == 1
-        assert "ordinary voice reply" in pending[0][0]["original"]
+        assert [json.loads(row[0]["original"])["text"] for row in pending] == ["tool preface", "ordinary voice reply"]
+        assert source.read_local_replies(source.path, UID) == []
         assert runtime.ledger.pending(DOMAIN) == []
     finally:
         release_dispatch.set()
@@ -208,6 +216,7 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
     from google.genai import types
     from main_logic import cross_server
     from main_logic.core.turn import TurnMixin
+    from main_logic.tool_calling import ToolResult
     from main_logic.omni_realtime_client import _gemini_support
     import services.chat_sync.source as source_module
 
@@ -224,8 +233,8 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
     async def save_original(name, role, text, **kwargs):
         return await original_save(name, role, text, config_manager=config, **kwargs)
 
-    async def save_local(name, text, proof):
-        return await local_save(name, text, proof, config_manager=config)
+    async def save_local(name, text, proof, **kwargs):
+        return await local_save(name, text, proof, config_manager=config, **kwargs)
 
     monkeypatch.setattr(source_module, "save_original", save_original)
     monkeypatch.setattr(source_module, "save_local_reply", save_local)
@@ -315,19 +324,19 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
             assert await client.prompt_ephemeral(language="en") is True
         await settled()
         source = source_for(runtime)
-        pending_text = [entry[0]["original"] for entry in source.pending(200)]
-        local_text = [entry["text"] for entry in source.read_local_replies(source.path, UID)]
+        pending_text = [json.loads(entry[0]["original"])["text"] for entry in source.pending(200)]
+        local_text = [entry["text"] for entry in tool_records(source)]
         if scenario.startswith("proactive_tool"):
             assert {"local": local_text, "pending": pending_text} == {
                 "local": (["proactive tool preface"] if "preface" in scenario else []) + ["proactive reply tail"],
-                "pending": [],
+                "pending": (["proactive tool preface"] if "preface" in scenario else []) + ["proactive reply tail"],
             }
         elif scenario == "combined_fast_terminal":
             assert local_text == ["combined tool reply", "fast tool continuation"]
-            assert pending_text == []
+            assert pending_text == local_text
         else:
             assert local_text == ["old tool preface"]
-            assert len(pending_text) == 1 and "proactive reply tail" in pending_text[0]
+            assert pending_text == ["old tool preface", "proactive reply tail"]
         assert runtime.ledger.pending(DOMAIN) == []
         client._ai_recent_activity_time = 0
         await _dispatch(client, provider, _event(text="next ordinary voice"))
@@ -336,7 +345,8 @@ async def test_gemini_tool_boundaries_preserve_durable_source(tmp_path, monkeypa
         pending_after = [entry[0]["original"] for entry in source.pending(200)]
         assert len(pending_after) == len(pending_text) + 1
         assert any("next ordinary voice" in text for text in pending_after)
-        assert [entry["text"] for entry in source.read_local_replies(source.path, UID)] == local_text
+        assert [entry["text"] for entry in tool_records(source)] == local_text
+        assert source.read_local_replies(source.path, UID) == []
     finally:
         await _wait_for_tool_tasks(client)
         connector.cancel()

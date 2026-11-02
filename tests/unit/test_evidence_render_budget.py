@@ -142,34 +142,34 @@ def test_heuristic_floor_for_short_non_empty_text(monkeypatch):
     _reset_fallback_warned_for_tests()
 
 
-# ── 降级计数是上界，不是估算（#2574） ────────────────────────────────
+# ── Fallback counts are upper bounds, not estimates (#2574) ────────────────
 #
-# #2574 报的是老启发式（非 CJK 约 0.25 token/char）在打包形态下系统性
-# 低估：URL / base64 / 代码片段这类高熵文本实测真实 token 能到预算的
-# 2.5–2.7 倍，而且整条链路没有任何告警。修法是把权重换成 UTF-8 字节
-# 长度（#2626）——BPE 的每个 token 至少映射 1 字节，merge 只会让 token
-# 更少，所以字节数是真实 token 数的**严格上界**。
+# #2574 reported old heuristic (~0.25 token/char for non-CJK) systematically
+# undercounting packed high-entropy URLs/base64/code: actual tokens reached
+# 2.5–2.7 times budget without warnings. Fix uses UTF-8 byte
+# length (#2626): each BPE token maps at least one byte, merges only reduce
+# tokens, making byte count a strict upper bound on actual tokens.
 #
-# 这条上界性质是整个修复的立论基础，但此前没有测试直接钉住它：现有用
-# 例只覆盖了 warning 一次性、空串和短串下限。下面三条按「计数 → 单条
-# 截断 → 整段预算」把这条不变量在每一层各钉一遍，用的就是 issue 点名
-# 的那几类高熵样本。
+# This property underpins the fix but lacked direct tests: existing cases covered
+# one-time warnings, empty strings and short-string minima. Three tests below pin
+# counting → entry truncation → whole-block budget at every layer using
+# high-entropy samples named in the issue.
 
-# issue 点名的三类高熵文本，加上 CJK / 混合 / 组合字符等边界形态。
+# Three issue-named high-entropy types plus CJK/mixed/combining-character edges.
 _HIGH_ENTROPY_SAMPLES = [
-    # URL：老启发式最惨的一类，标点和路径段几乎每个字符都自成 token
+    # URLs: worst old-heuristic case; punctuation/path characters nearly each form a token.
     "https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/tokenize.py#L112",
-    # base64：没有任何可 merge 的自然语言词块
+    # base64: no mergeable natural-language chunks.
     "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgcGFkZGluZyBkYXRhIQ==",
-    # 代码片段
+    # Code fragments.
     "def _heuristic_char_weight(c): return float(len(c.encode('utf-8')))",
-    # 纯 CJK：字节权重在这里最保守（3 字节/字 vs 真实约 1 token/字）
+    # Pure CJK: byte weights most conservative here (3 bytes/character vs actual ~1 token/character).
     "主人今天心情不错，说想吃辣条",
-    # 中英混排 + URL
+    # Mixed Chinese/English + URL.
     "主人发了个链接 https://example.com/a?b=1&c=2 说让我看看",
-    # emoji（4 字节）与组合字符
+    # Emoji (four bytes) and combining characters.
     "辣条好吃🌶️🔥 café é",
-    # 短串：max(1, ...) 下限的那一头
+    # Short strings: max(1, ...) lower-bound edge.
     "ok",
     "a",
 ]
@@ -285,16 +285,16 @@ def test_heuristic_line_budget_holds_against_real_tokenizer(force_heuristic, bud
     assert dropped == len(_HIGH_ENTROPY_SAMPLES) - len(kept)
 
     real = len(enc.encode(separator.join(kept), disallowed_special=()))
-    # 留了两行以上，就没有任何理由超预算；只留一行时豁免（首行必留）。
+    # Two or more retained lines must fit budget; single line exempt because first always kept.
     if len(kept) > 1:
         assert real <= budget, (
             f"降级整段预算被突破：留了 {len(kept)} 行，真实 {real} > {budget}"
         )
 
     if dropped:
-        # 裁剪点必须紧贴预算：把下一条加回来一定得超。这条按启发式（也就
-        # 是降级形态下调用方实际用的那把尺）量，因为它钉的是"什么时候停"，
-        # 不是"停下来那一刻真实是多少"。
+        # Trimming must hug budget: adding next entry back must exceed it. Measure with heuristic,
+        # the actual fallback ruler callers use, because this asserts when to stop,
+        # not actual token count at stopping.
         with_next = separator.join(kept + [_HIGH_ENTROPY_SAMPLES[len(kept)]])
         assert _count_tokens_heuristic(with_next) > budget, (
             f"裁剪提前收手：留了 {len(kept)} 行、丢了 {dropped} 行，但加上"
@@ -444,17 +444,17 @@ def test_split_promotes_legacy_string_facts(tmp_path):
 
 
 def test_split_drops_whitespace_only_string_facts(tmp_path):
-    """裸字符串半边的空白闸（#2578 只修了 dict entry 那半）：'   ' 对
-    truthiness 为真，promote 之后跳过了 dict 路径的 _renderable_text
-    检查，一路渲成空 bullet。判据必须与 dict 路径同口径（strip）。"""  # noqa: DOCSTRING_CJK
+    """Whitespace gate for bare strings (#2578 fixed dict entries only): '   ' is truthy,
+    and promotion bypassed dict-path _renderable_text validation, rendering empty bullets.
+    Match dict semantics with strip."""  # noqa: DOCSTRING_CJK
     pm = _persona_manager()
     persona = {
         'master': {'facts': [
             '   ',
             '  \t ',
-            # 非 str 假值：裸 str() 判空会把它们变成 "None"/"False"/"0"
-            # 文本渲染出来（review 抓的）——legacy 形态只有裸字符串，
-            # 其余一律丢弃。
+            # Nonstr false-like values: bare str() emptiness checks render "None"/"False"/"0"
+            # as text (caught in review). Legacy form accepts bare strings only,
+            # discarding all others.
             None,
             False,
             0,
@@ -471,9 +471,9 @@ def test_split_drops_whitespace_only_string_facts(tmp_path):
 
 
 def test_compose_skips_blank_dict_entries_even_if_split_missed_them():
-    """compose 半边的独立护栏：split 侧已挡住空白条目，但 compose 的判据
-    必须自成一道（走 _renderable_text 而非 truthiness）——否则上游不变量
-    一松动，'- ' 空 bullet 就直接进 prompt。绕过 split 直调 compose。"""  # noqa: DOCSTRING_CJK
+    """Independent compose guard: split already rejects blank entries, but compose must
+    independently use _renderable_text, not truthiness; loosened upstream invariants would
+    otherwise inject '- ' empty bullets. Bypass split and invoke compose directly."""  # noqa: DOCSTRING_CJK
     pm = _persona_manager()
     blank = _entry('b1', '   ')
     good = _entry('g1', '主人喜欢辣条', rein=1.0)
@@ -496,9 +496,9 @@ def test_compose_skips_blank_dict_entries_even_if_split_missed_them():
 
 @pytest.mark.asyncio
 async def test_render_emits_no_blank_bullets_for_legacy_blank_strings(tmp_path):
-    """端到端：facts 列表混入纯空格裸字符串（pre-PR-1 遗留数据形态）时，
-    渲染出的 markdown 不得含空 bullet 行。compose 侧的判据同样要走
-    _renderable_text，不能靠 truthiness。"""  # noqa: DOCSTRING_CJK
+    """End-to-end: facts containing whitespace-only bare strings (legacy pre-PR-1 form)
+    must produce Markdown without empty bullets. Compose must also use
+    _renderable_text, never truthiness."""  # noqa: DOCSTRING_CJK
     from memory.persona import PersonaManager
 
     cm = MagicMock()
@@ -717,8 +717,8 @@ async def test_arender_preserves_reflection_score_order(tmp_path):
     assert pending_header in md
     assert confirmed_header in md
 
-    # Within pending section: 高分pending (rein=5.0) must appear before
-    # 低分pending (rein=0.5).
+    # Within pending section: high-score pending (rein=5.0) must appear before
+    # low-score pending (rein=0.5).
     pending_section = md.split(pending_header, 1)[1]
     # Next section starts with '\n\n### ' — cut there.
     pending_body = pending_section.split('\n\n### ', 1)[0]
@@ -731,8 +731,8 @@ async def test_arender_preserves_reflection_score_order(tmp_path):
         f"pending must be score-DESC; got 高分@{high_pos} vs 低分@{low_pos}"
     )
 
-    # Within confirmed section: 最高confirmed (rein=9.0) must appear
-    # before 中分confirmed (rein=2.0).
+    # Within confirmed section: highest confirmed (rein=9.0) must appear
+    # before medium-score confirmed (rein=2.0).
     confirmed_section = md.split(confirmed_header, 1)[1]
     confirmed_body = confirmed_section.split('\n\n### ', 1)[0]
     top_pos = confirmed_body.find('最高confirmed')

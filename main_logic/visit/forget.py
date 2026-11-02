@@ -179,8 +179,8 @@ async def plan_forget_person(
     Only ``by_char[own_char]`` contributes; other local characters' entries
     with the same person stay untouched.
     """
-    # subjects 与 pair_ids 来自同一次加锁读：分两次读时中间插进一次 upsert，两者会对不上，
-    # open_plan 随即因「pair_ids 与主体不一致」报错
+    # subjects and pair_ids come from the same locked read: if they are read separately, an upsert could occur between them, making the two inconsistent,
+    # and open_plan would then fail with "pair_ids do not match subjects"
     pair_ids, subjects = await roster.expand(peer_uid, own_char, current)
     return ForgetPlan(
         own_uid=roster.own_uid,
@@ -198,8 +198,8 @@ def _read_record(path: Path, rev_id: str) -> dict:
         try:
             data = json.load(f)
         except RecursionError as exc:
-            # 深层嵌套（"[[[[…"）让 json.load 抛 RecursionError：同样是读不出的日志，
-            # 归入 ValueError，走 fail closed（列表抛 RevocationLogUnreadable）
+            # Deep nesting ("[[[[…") makes json.load raise RecursionError: this is also an unreadable log,
+            # normalize to ValueError and fail closed (listing raises RevocationLogUnreadable)
             raise ValueError("revocation log is too deeply nested") from exc
     return _validate_record(data, rev_id)
 
@@ -207,8 +207,8 @@ def _read_record(path: Path, rev_id: str) -> dict:
 def _validate_record(record: Any, rev_id: str) -> dict:
     if not isinstance(record, dict):
         raise ValueError("revocation log is not an object")
-    # 版本不对（缺失 / 别的版本 / true）的日志不能按当前步骤语义重放后删掉：
-    # 字段同名不代表契约相同
+    # A log with the wrong version (missing / another version / true) must not be replayed using current step semantics and then deleted:
+    # same field names do not imply the same contract
     if type(record.get("v")) is not int or record["v"] != _LOG_VERSION:
         raise ValueError("unsupported revocation log version")
     for name in ("own_uid", "peer_uid", "own_char_uid"):
@@ -221,31 +221,31 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     for name in ("pair_ids", "subjects", "steps", "done_steps"):
         if not isinstance(record.get(name), list):
             raise ValueError(f"revocation log {name} must be a list")
-    # 步骤计划必须能从 subjects 原样推出：损坏成 steps:[] 的日志若被放行，重放会
-    # 什么都不清就把日志删掉，清除请求就此丢失
+    # The step plan must be derivable verbatim from subjects: if a corrupted steps:[] log were accepted, replay would
+    # delete the log without forgetting anything, permanently losing the request
     subjects = [_clean_subject(s) if isinstance(s, Mapping) else _bad_subject() for s in record["subjects"]]
-    # subject 只许 subject_kind / subject_id 两个键：多出的 scope 会被原样转发给
-    # /scoped_forget，换掉删除的作用域，清的不是本该清的那一份
+    # subject may contain only subject_kind / subject_id: an extra scope would be forwarded unchanged to
+    # /scoped_forget and change the deletion scope, clearing the wrong data
     if any(set(s) != {"subject_kind", "subject_id"} for s in record["subjects"]):
         raise ValueError("revocation log subjects carry unexpected fields")
     if record["steps"] != build_steps(subjects):
         raise ValueError("revocation log steps do not match its subjects")
-    # 执行器严格按序记完成、合并只撤掉尾部标记，所以 done_steps 必是 steps 的无重复前缀；
-    # 只查成员关系会放过 ["wipe_spool"] 之类不可能的进度，重放时跳过真正没做的步骤
+    # The executor records completion strictly in order, and merge removes only trailing markers, so done_steps must be a duplicate-free prefix of steps;
+    # membership-only validation would accept impossible progress such as ["wipe_spool"] and skip genuinely uncompleted work during replay
     done = record["done_steps"]
     if done != record["steps"][: len(done)]:
         raise ValueError("revocation log done_steps are not a prefix of its steps")
-    # pair_ids 驱动 wipe_spool 找场次：必须是非空字符串，且覆盖每个按 pair 存的 subject，
-    # 否则 pair_ids:[] 之类的日志会清完记忆却漏抹 spool 里的对端字段
+    # pair_ids drives wipe_spool session lookup: each entry must be a non-empty string and cover every pair-scoped subject,
+    # or a log such as pair_ids:[] would erase memory but leave peer fields in the spool
     pair_ids = record["pair_ids"]
     if not all(isinstance(p, str) and p for p in pair_ids):
         raise ValueError("revocation log pair_ids must be non-empty strings")
-    # 撤销日志只清串门记忆：subject 必须在 neko_visit 平台下，否则 qq:<pair> 之类的
-    # 会被转发给 /scoped_forget，按平台前缀删掉别处的记忆
+    # Revocation logs clear only peer-session memory: every subject must be on the neko_visit platform, or qq:<pair> and similar values
+    # would be forwarded to /scoped_forget and delete memory elsewhere by platform prefix
     if any(s["subject_id"].split(":", 1)[0] != VISIT_MEMORY_PLATFORM for s in subjects):
         raise ValueError("revocation log subjects must belong to the visit platform")
-    # 每个 subject 都必须是 MemorySubject 会产出的规范形态：未知 kind、空分量
-    # （neko_visit::）之类在 memory_server 那边每次重放都 422，清除就永远关不掉
+    # Every subject must use the canonical form produced by MemorySubject: unknown kind or empty component
+    # (such as neko_visit::) returns 422 on every replay from memory_server and keeps forget blocked forever
     subject_pairs = set()
     for subject in subjects:
         kind = subject["subject_kind"]
@@ -255,33 +255,33 @@ def _validate_record(record: Any, rev_id: str) -> dict:
         elif kind == "group_participant" and len(parts) == 3:
             canonical = group_participant_subject(parts[1], parts[2])
         elif kind == "participant":
-            canonical = subject            # 下面另外要求等于这个人的人级主体
+            canonical = subject            # Also require the person-level subject below
         else:
             raise ValueError(f"revocation log subject {kind!r} is not a visit subject")
         if subject != canonical:
             raise ValueError("revocation log subject is not in canonical form")
         if kind != "participant":
             subject_pairs.add(parts[1])
-    # 双向相等：多出的无关 pair 会让 wipe_spool 去抹别人的场次
+    # Require equality in both directions: an unrelated extra pair would make wipe_spool erase someone else's session
     if set(pair_ids) != subject_pairs or len(pair_ids) != len(set(pair_ids)):
         raise ValueError("revocation log pair_ids do not match its pair subjects")
-    # 再绑定到日志自己的身份：pair 只能是 (own_uid, peer_uid) 那一对，人级主体只能是
-    # 这个人。否则把 pair 在两处一起换掉的日志也能自洽通过、去清别人的记忆
+    # Also bind to the identity in the log: the pair must be exactly (own_uid, peer_uid), and the person-level subject must identify
+    # this person. Otherwise a log that replaces the pair in both places could still pass internal consistency and erase someone else's memory
     own_pair = derive_pair_id(record["own_uid"], record["peer_uid"])
     if subject_pairs - {own_pair}:
         raise ValueError("revocation log pairs do not belong to its own / peer uid")
     own_person = participant_subject(derive_person_id(record["own_uid"], record["peer_uid"]))
-    # 每份合法计划都含这个人的人级主体：缺了它的日志即便内部自洽（subjects:[]），
-    # 重放也只会删名册、不清任何记忆
+    # Every valid plan includes this person's person-level subject; a log without it can be internally consistent (subjects:[]),
+    # but replay would delete only the roster entry and leave all memory untouched
     if own_person not in subjects:
         raise ValueError("revocation log lacks the person subject of its peer")
-    # 每个记录在案的 pair 都必须带它的群主体：只丢了 group_chat 的日志会在重放后
-    # 把这一对的群记忆永久留下
+    # Every recorded pair must include its group subject: a log that drops only group_chat would leave
+    # this pair's group memory permanently behind after replay
     for pair in pair_ids:
         if group_chat_subject(pair) not in subjects:
             raise ValueError("revocation log lacks the group subject of a recorded pair")
-        # 名册里每个 pair 至少关联一只对方猫娘（upsert 必带 peer_char_id），所以每个 pair
-        # 都必须有 group_participant；一只都没有的日志会把对方猫娘的记忆留下
+        # Every pair in the roster must have at least one associated peer catgirl (upsert requires peer_char_id), so every pair
+        # must include a group_participant; otherwise the log would leave the other person's catgirl memory behind
         prefix = group_chat_subject(pair)["subject_id"] + ":"
         if not any(s["subject_kind"] == "group_participant" and s["subject_id"].startswith(prefix)
                    for s in subjects):
@@ -320,7 +320,7 @@ class RevocationLog:
         """Return the log path of ``rev_id`` (format-checked, confined to the directory)."""
         return revocation_path(self.dir, rev_id)
 
-    # ── 工作线程内 ──
+    # ── Inside the worker thread ──
 
     def _load_sync(self, rev_id: str) -> dict | None:
         path = self.path_for(rev_id)
@@ -359,12 +359,12 @@ class RevocationLog:
                 }
                 record["subjects"], _ = _union([], subjects, _subject_key)
                 record["steps"] = build_steps(record["subjects"])
-                # 写盘前按读取时的同一套规则校验：写进去就读不出的日志会卡住清除，
-                # 还会让 list_all_open 全局 fail closed、挡住之后所有串门
+                # Validate before writing using the same rules as reads: a log that cannot be read after writing would block forget,
+                # make list_all_open fail closed globally, and block all later peer sessions
                 _validate_record(record, rev_id)
                 atomic_write_json(path, record)
                 return rev_id
-            # 同 id 未完成日志：合并新展开的 pair / subject，done_steps 原样保留。
+            # Existing unfinished log with the same id: merge newly expanded pairs / subjects and preserve done_steps unchanged.
             merged_pairs, pairs_added = _union(record["pair_ids"], pair_ids)
             merged_subjects, subjects_added = _union(
                 [_clean_subject(s) for s in record["subjects"]], subjects, _subject_key
@@ -378,8 +378,8 @@ class RevocationLog:
             record["steps"] = build_steps(merged_subjects)
             done = [s for s in record["done_steps"] if s in record["steps"]]
             if pairs_added or subjects_added:
-                # 新加入的 forget 未做：remove_char 及其后的本地步骤必须重新排在它们之后，
-                # 名册里新出现的条目 / 新 pair 的 spool 也要重新清一遍（各步都幂等）。
+                # Forget operations newly added but not yet completed: move remove_char and later local steps after them again,
+                # and clear spool data for newly added roster entries / pairs again (each step is idempotent).
                 done = [s for s in done if s not in _TRAILING_STEPS]
             record["done_steps"] = done
             if own_char is not None:
@@ -394,8 +394,8 @@ class RevocationLog:
         try:
             return self._load_sync(rev_id) is not None
         except (OSError, ValueError) as exc:
-            # 文件名就是 (own_uid, peer_uid, own_char_uid) 的撤销 id：这份读不出的日志一定属于这一对，
-            # 按「还在清除」处理（fail closed），但只挡这一对
+            # The filename is the revocation ID (own_uid, peer_uid, own_char_uid), so an unreadable log definitely belongs to this pair;
+            # fail closed and treat it as "still being forgotten," but block only this pair
             logger.error("visit revocation log %s unreadable, treating the pair as being cleared: %s",
                          rev_id, exc)
             return True
@@ -410,8 +410,8 @@ class RevocationLog:
                 raise ValueError(f"unknown revocation step {step!r}")
             if step in record["done_steps"]:
                 return
-            # 只接受下一个待做步骤：乱序记完成会写出非前缀的 done_steps，之后每次读取都
-            # 被校验拒绝，list_all_open 随之全局 fail closed、挡住重放与新串门
+            # Accept only the next pending step: out-of-order completion would write a non-prefix done_steps value, which every later read
+            # rejects, causing list_all_open to fail closed globally and block replay and new peer sessions
             pending = record["steps"][len(record["done_steps"])]
             if step != pending:
                 raise ValueError(f"revocation step {step!r} is not the next pending step")
@@ -422,7 +422,7 @@ class RevocationLog:
     def _close_sync(self, rev_id: str) -> bool:
         path = self.path_for(rev_id)
         with path_lock(path):
-            # 日志是唯一的重放依据：还有步骤没做完（或读不出来）就不能删
+            # The log is the sole replay source: do not delete it while any step is unfinished (or unreadable)
             record = self._load_sync(rev_id)
             if record is None:
                 return False
@@ -463,12 +463,12 @@ class RevocationLog:
         if unreadable_out is not None:
             unreadable_out.extend(unreadable)
         elif unreadable:
-            # 读不出来的日志不能当作「没有未完成的清除」：补录与建房闸都靠这份列表，
-            # 跳过它等于放任新记忆写进正在清除的范围。属于哪个账号也读不出，一律上抛
+            # An unreadable log does not mean "no unfinished forget": startup reconciliation and the session-creation gate both rely on this list;
+            # skipping it would allow new memories to be written into a scope being cleared. If the owning account is also unreadable, propagate the error
             raise RevocationLogUnreadable(unreadable)
         return out
 
-    # ── 公开 API ──
+    # ── Public API ──
 
     async def open(
         self,
@@ -577,7 +577,7 @@ class RevocationLog:
         return logs, unreadable
 
 
-# ── 清除代数（forget epoch）────────────────────────────────────────────
+# ── Forget generation (epoch) ─────────────────────────────────────────────
 
 
 def subject_key(subject: Mapping[str, Any]) -> str:
@@ -674,7 +674,7 @@ class ForgetEpochs:
         return await asyncio.to_thread(self._bump_sync, keys)
 
 
-# ── 清除意图哨兵（clearing sentinel）──────────────────────────────────
+# ── Forget-intent sentinel (clearing sentinel) ────────────────────────────
 
 
 class ClearingSentinels:
@@ -803,7 +803,7 @@ class ClearingSentinels:
         if isinstance(own_uid, str) and own_uid:
             hint["own_uid"] = own_uid
         uids = doc.get("own_char_uids")
-        # 空表 / 夹着非字符串的表都不可信：当作不知道是哪些角色，宁可多挡
+        # An empty list or one containing non-string values is untrusted: treat the character set as unknown and block more rather than less
         if isinstance(uids, list) and uids and all(isinstance(u, str) and u for u in uids):
             hint["own_char_uids"] = list(uids)
         peer = doc.get("peer_uid")
@@ -834,7 +834,7 @@ class ClearingSentinels:
                 if hints is not None:
                     hints.append(self._unreadable_hint(self.dir / name, op_id))
         if unreadable and hints is None:
-            # 读不出来的清除意图不能当作没有：放行会让新串门写进正在清除的范围
+            # An unreadable forget-intent sentinel is not equivalent to no intent: allowing it would let new peer sessions write into a scope being cleared
             raise RevocationLogUnreadable(unreadable)
         return out
 
@@ -892,7 +892,7 @@ def sentinel_covers(doc: Mapping[str, Any], own_char_uid: str, peer_uid: str | N
     return True
 
 
-# ── 丢弃读不出的清除记录（用户明确确认后）──────────────────────────────
+# ── Discard unreadable forget records (after explicit user confirmation) ──
 
 
 @dataclass(frozen=True)
@@ -955,18 +955,18 @@ def _quarantine_unreadable_sync(config_dir: Path, now: float) -> tuple[list[Quar
         try:
             lock = path_lock(path)
         except RuntimeError as exc:
-            # Python 3.11 的 Path.resolve 遇到循环符号链接抛 RuntimeError：记为挪不动，端点回可重试的 503
+            # In Python 3.11, Path.resolve raises RuntimeError on a symlink loop: treat it as unmovable and return retryable 503 from the endpoint
             logger.error("visit forget record %s could not be locked: %s", name, exc)
             failed += 1
             continue
-        # 与所有写入（开日志 / 记完成 / 关日志 / 写删哨兵）同一把文件锁：锁内重读一遍，
-        # 只有此刻仍读不出才移走。正在被写好的、读得出的记录一律不碰
+        # Use the same file lock as all writes (open log / record completion / close log / write deletion sentinel): reread under the lock,
+        # and move it only if it is still unreadable now. Never touch a record that is being written and is readable.
         with lock:
             error = _still_unreadable(read, path, record_id)
             if error is None:
                 continue
-            # 不删，挪进隔离目录：文件名带时间与随机后缀、不以 .json 结尾，同名不会互相覆盖，
-            # 重放与准入闸只列顶层，看不到这里
+            # Do not delete; move it to quarantine. The filename includes a timestamp and random suffix, does not end in .json, and cannot overwrite an existing file;
+            # replay and admission gates list only the top level, so they cannot see it here.
             target = quarantine / f"{name}.{int(now)}-{secrets.token_hex(4)}.bad"
             try:
                 quarantine.mkdir(parents=True, exist_ok=True)
@@ -1063,16 +1063,16 @@ async def run_revocation(
     if record["own_uid"] != log.own_uid:
         raise ValueError("revocation log belongs to another community account")
     peer_uid = record["peer_uid"]
-    # 不回落到日志里存的名字：开日志后改过名的话，旧名下什么都找不到，名册步骤
-    # 「成功」却删不到条目和摘要，日志随之关闭、再无重放入口
+    # Do not fall back to the name stored in the log: if it was renamed after the log opened, the old name no longer finds anything; the roster step would
+    # report "success" despite deleting neither the entry nor summary, then close the log and remove its only replay path.
     char_name = own_char
     if not isinstance(char_name, str) or not char_name:
         raise ValueError("own_char must be the character's current non-empty name")
     if STEP_REMOVE_CHAR not in record["done_steps"]:
-        # 名册条目还在时，以它为准对账：日志里丢了某只对方猫娘的 group_participant
-        # （或某个 pair）也能自洽通过校验，重放会清掉其余主体、删名册、关日志，
-        # 漏掉的那份记忆就再也没有重放入口。名册展开得到而日志缺的部分先并回日志
-        # （合并会把 remove_char 及其后的步骤重新排到新 forget 之后）
+        # If the roster entry still exists, use it for reconciliation: a log that omits one peer catgirl's group_participant
+        # (or a pair) may still pass internal validation; replay could clear the other subjects, delete the roster entry, and close the log,
+        # leaving the omitted memory with no way to replay its deletion. Merge missing roster-derived data back into the log first
+        # (Merging moves remove_char and later steps after the new forget operation)
         plan = await plan_forget_person(roster, peer_uid, char_name, record["own_char_uid"])
         known = {_subject_key(_clean_subject(s)) for s in record["subjects"]}
         if any(_subject_key(s) not in known for s in plan.subjects) or (
@@ -1093,15 +1093,15 @@ async def run_revocation(
             subject = subjects.get(step)
             if subject is None:
                 raise ValueError(f"revocation step {step!r} has no subject")
-            # 先把本地代数抬到服务端墓碑的当前值（云存档恢复 / 换机后本地从 0 重计）：否则加 1 之后
-            # 仍不高于已有墓碑，服务端会当成已擦过的重放直接跳过，这次清除什么都不删
+            # First raise the local generation to the current server tombstone (e.g. after cloud restore / device replacement, local counter starts over at 0); otherwise incrementing it
+            # may still not exceed the existing tombstone, so the server treats this forget as an already-erased replay and skips it
             if sync_epochs is not None:
                 await sync_epochs([dict(subject)])
-            # 先把这个 subject 的清除代数加 1 并落盘，再发 /scoped_forget：之前开轮的 digest
-            # 带的代数更小，不论多晚到达都会被服务端墓碑挡下（重放时再加一次也无妨，只增不减）
+            # Increment this subject's forget generation and persist it before sending /scoped_forget: digests from earlier turns
+            # carry a smaller generation and will be blocked by the server tombstone no matter how late they arrive (incrementing again during replay is harmless; it only increases)
             await ForgetEpochs(log.config_dir).bump([subject])
-            # 只认明确的 True：post_forget 失败返回 False，不检查就会记完成、
-            # 随后删名册与日志，残留记忆再也没有重放入口
+            # Accept only explicit True: post_forget returns False on failure; without checking, we would mark it complete,
+            # then delete the roster entry and log, leaving residual memory with no replay path
             if await forget_subject(dict(subject)) is not True:
                 raise ForgetStepFailed(f"scoped_forget not confirmed for {step!r}")
         elif step == STEP_REMOVE_CHAR:
@@ -1115,11 +1115,11 @@ async def run_revocation(
             for visit_id in visit_ids:
                 await VisitSpool(log.config_dir, visit_id).delete_peer_fields()
             for visit_id in corrupt_wiped:
-                # 头行身份已抹、state.json 内容损坏（可能崩在抹身份的两步之间）：谁都用不了，
-                # 连同里面可能残留的对端字段一并删掉，清除报完成时本地不留身份
+                # Header identity was erased and state.json contents are corrupt (possibly crashed between the two erasure steps): unusable by anyone;
+                # also remove any remaining peer fields so local identity is gone when forget reports completion
                 await VisitSpool.drop_corrupt_state(log.config_dir, visit_id)
         elif step == STEP_VOID_PENDING:
-            # 必填：缺省时静默记完成会让暂存的日记事实 / 预览在清除后照样被提交
+            # Required: silently marking complete when absent would allow staged diary facts / previews to be submitted after forgetting
             await void_pending(copy.deepcopy(record))
         else:
             raise ValueError(f"unknown revocation step {step!r}")

@@ -1318,8 +1318,8 @@ async def test_mini_game_button_response_records_user_engagement(monkeypatch):
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
-    # mini_game_invite_respond 在 router_module 内取 request_arrival_time，
-    # 假时钟打在这个模块上即可。
+    # mini_game_invite_respond obtains request_arrival_time inside router_module,
+    # so patch the clock on that module.
     patch_module_clock(monkeypatch, router_module, time=lambda: clock["now"])
     config_manager = SimpleNamespace(
         aget_character_data=AsyncMock(
@@ -1402,7 +1402,7 @@ async def test_rejected_mini_game_button_response_records_user_engagement(
         "_validate_local_mutation_request",
         lambda *_args, **_kwargs: None,
     )
-    # 同上：读时钟的是 mini_game_invite_respond 所在的 router_module 自己。
+    # As above, the clock is read by router_module itself, where mini_game_invite_respond lives.
     patch_module_clock(monkeypatch, router_module, time=lambda: 456.0)
     monkeypatch.setattr(
         router_module,

@@ -210,7 +210,7 @@ def normalize_voice_id(
         return VoiceConfig(source=SOURCE_PRESET, provider="vllm_omni", ref=ref)
 
     # Explicit configured presets own an exact collision before clone lookup.
-    # 显式配置的预制音色在同名冲突时先于历史克隆记录确定归属。
+    # Explicitly configured preset voices take precedence over historical clones on name collisions.
     if preferred_preset_provider is not None:
         provider = preferred_preset_provider(ref)
         if provider:

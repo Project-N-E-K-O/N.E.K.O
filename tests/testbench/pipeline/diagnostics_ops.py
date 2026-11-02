@@ -79,12 +79,12 @@ class DiagnosticsOp(StrEnum):
     # aggregate. Severity: warning.
     PROMPT_INJECTION_SUSPECTED = "prompt_injection_suspected"
 
-    # P24 Day 8 验收 — Auto-Dialog pipeline runtime error (SimUser LlmFailed
-    # / RateLimitError 429 / API 5xx / network timeout / 其他防御兜底).
-    # 之前只走 SSE 到前端 banner 显示, 不入 diagnostics ring buffer; 导致
-    # 顶栏 Err 徽章 + Diagnostics → Errors 页都看不见这一类错误 — 跑夜里
-    # batch 时完全失察. 改走 record_internal 统一兜住三处 except 分支.
-    # Severity: error (触发徽章计数 +1, 区别于 injection 的 advisory warn).
+    # P24 Day 8 acceptance: Auto-Dialog runtime errors (SimUser LlmFailed,
+    # RateLimitError 429, API 5xx, network timeouts, and defensive fallbacks).
+    # Previously SSE-only frontend banners bypassed the diagnostics ring buffer, hiding these errors
+    # from the topbar Err badge and Diagnostics -> Errors, leaving overnight
+    # batches unobserved. Use record_internal for all three except branches.
+    # Severity: error, incrementing the badge unlike advisory injection warnings.
     AUTO_DIALOG_ERROR = "auto_dialog_error"
 
     # P24 Day 10 §14.4 M4 — diagnostics ring buffer hit its 200-entry cap
@@ -99,77 +99,77 @@ class DiagnosticsOp(StrEnum):
     # Severity: warning.
     DIAGNOSTICS_RING_FULL = "diagnostics_ring_full"
 
-    # ── P25 new ops (Day 1 外部事件仿真面板落盘) ─────────────────────────
+    # -- P25 new operations: Day 1 external-event simulation-panel persistence --
 
-    # P25 §2.1 / §3 Day 1 — tester 从前端 Chat 工作区 "外部事件模拟" 面板
-    # 触发的 avatar interaction 仿真请求已被后端处理. 一次调用一条审计,
-    # 不管语义层是否真的落盘 (dedupe 命中窗口会把事件静默丢掉, 但本 op
-    # 仍然记录, dedupe_hit=True, 方便事后复核去重是否符合预期). detail
-    # 字典承载 interaction_id / tool_id / action_id / intensity /
-    # reward_drop / easter_egg / dedupe_hit / mirror_to_recent 等字段.
-    # 与主程序 avatar interaction 语义契约对齐 (见 §2.1). 真正的缓存
-    # "满了" 另走 AVATAR_DEDUPE_CACHE_FULL, 不要混用.
-    # Severity: info (事件密度审计, 不触发 Err 徽章).
+    # P25 sections 2.1/3 Day 1: backend handled an avatar-interaction simulation from the Chat
+    # workspace's external-event panel. Audit every call regardless of semantic
+    # persistence; deduplication may silently discard events, but this operation
+    # still records dedupe_hit=True for retrospective validation. The detail
+    # dict includes interaction_id / tool_id / action_id / intensity /
+    # reward_drop / easter_egg / dedupe_hit / mirror_to_recent.
+    # Match main-app avatar-interaction semantics, section 2.1. Real cache
+    # exhaustion uses AVATAR_DEDUPE_CACHE_FULL separately.
+    # Severity: info for event-density auditing without Err badge increments.
     AVATAR_INTERACTION_SIMULATED = "avatar_interaction_simulated"
 
-    # P25 §2.1 / §3 Day 1 — tester 从前端 "外部事件模拟" 面板触发的
-    # agent callback 仿真. 复现主程序 AGENT_CALLBACK_NOTIFICATION 的
-    # 5 语言 instruction 拼接 + LLM 回复抓取 + 回复写入 session.messages
-    # 流程. detail 字典承载 callback_count / total_chars /
-    # instruction_lang / reply_len / mirror_to_recent 等字段. **与
-    # avatar 不同**: agent_callback 不做 dedupe (多条 callback 合并成
-    # 一个 instruction 一次性塞给 LLM, 语义层只跑一次), 所以 detail
-    # 里没有 dedupe_hit 字段.
+    # P25 sections 2.1/3 Day 1: agent-callback simulation triggered from the frontend
+    # external-event panel, reproducing main-app AGENT_CALLBACK_NOTIFICATION's
+    # five-language instruction assembly, LLM reply capture, and session.messages
+    # persistence. detail includes callback_count / total_chars /
+    # instruction_lang / reply_len / mirror_to_recent. Unlike avatar,
+    # agent_callback performs no deduplication: multiple callbacks merge into
+    # one instruction and one semantic LLM call, so detail
+    # has no dedupe_hit field.
     # Severity: info.
     AGENT_CALLBACK_SIMULATED = "agent_callback_simulated"
 
-    # P25 §2.1 / §3 Day 1 — tester 从前端 "外部事件模拟" 面板触发的
-    # 主动搭话仿真. 复现主程序 get_proactive_chat_prompt(kind, lang)
-    # 的 LLM 调用 + LLM 可能返回 [PASS] 跳过 (合法, pass_signaled=True)
-    # + 非 [PASS] 回复走 append_message 写入 session.messages. detail
-    # 字典承载 kind (home/screenshot/window/news/video/personal/music)
-    # + lang + pass_signaled + reply_len + mirror_to_recent 等字段.
-    # 与 agent_callback 一样不做 dedupe.
+    # P25 sections 2.1/3 Day 1: proactive-chat simulation from the frontend
+    # external-event panel, reproducing get_proactive_chat_prompt(kind, lang)
+    # calls and valid LLM [PASS] skips with pass_signaled=True.
+    # Non-PASS replies use append_message into session.messages. detail
+    # includes kind (home/screenshot/window/news/video/personal/music)
+    # plus lang / pass_signaled / reply_len / mirror_to_recent.
+    # Like agent_callback, no deduplication applies.
     # Severity: info.
     PROACTIVE_SIMULATED = "proactive_simulated"
 
-    # P25 §3 Day 1 + §4.5 L27 四问 3 (通知频率) 回应 — avatar 事件去重
-    # 缓存软上限 100 条, 达到上限后按 LRU 丢最旧, 并在本 fill cycle 内
-    # 发一次本通知 (once-per-fill). 锁会自动重新武装的两条路径:
-    # (a) caller 手动 POST /api/session/external-event/dedupe-reset 清空,
-    # (b) 8 s 过期清扫让缓存回落到 < 100 条 (高峰静默后自然发生).
-    # 与 diagnostics_store ring-full 的 warn-once 语义对齐.
-    # 常见触发: tester 在短时间内高频连点 avatar 道具
-    # 按钮 (L25 + LESSONS_LEARNED §4.27 #91 "避免 DoS 测试面板" 同类
-    # 风险). 自查方式: 查 GET /api/session/external-event/dedupe-info
-    # 的 cache 条目数, 配合本通知 detail 字典里的 max_entries 字段.
+    # P25 section 3 Day 1 / section 4.5 L27 question 3, notification frequency: avatar-event deduplication
+    # has a soft 100-entry cap, evicts oldest via LRU, and emits this notification
+    # once per fill cycle. Rearm automatically through either:
+    # (a) Manual POST /api/session/external-event/dedupe-reset.
+    # (b) 8 s expiry sweeps shrinking cache below 100 after bursts subside.
+    # Match diagnostics_store ring-full warn-once semantics.
+    # Common trigger: testers rapidly click avatar prop
+    # buttons, the same avoid-test-panel-DoS risk as L25 / LESSONS_LEARNED section 4.27 #91.
+    # Inspect cache counts via GET /api/session/external-event/dedupe-info
+    # alongside this notification's detail.max_entries.
     # Severity: warning.
     AVATAR_DEDUPE_CACHE_FULL = "avatar_dedupe_cache_full"
 
-    # P25 Day 2 polish r3 (L36 §7.25 第四次同族证据 / 同族更广根因) —
-    # tester 在 composer 里选 Role=System 并点 [发送]. 主程序
-    # (main_logic/omni_offline_client.py) 的运行期契约是 SystemMessage
-    # 只出现在 _conversation_history[0] (初始化阶段), 所有运行期输入路径
-    # 统一以 HumanMessage(role=user) 注入; 因此 session.messages 里追加
-    # 的 role=system 消息与主程序语义**不等价**. wire 层 chokepoint
-    # (prompt_builder.build_prompt_bundle) 会把这条消息重写为 role=user
-    # + `[system note] ` 前缀, 避免 Vertex AI Gemini 对 "wire 中间/末尾
-    # 有 system" shape 过敏 (400 INVALID_ARGUMENT 或 200 空 reply 导致
-    # stale reply 时序错位). 本 op 把契约偏离点审计进 ring buffer, 方便
-    # tester 在 Diagnostics → Errors/Logs 回看 "我发的 system 实际被 LLM
-    # 当 user 消费了".
+    # P25 Day 2 polish r3, L36 section 7.25 fourth related finding/broader root cause:
+    # testers send Role=System from the composer. Main-app
+    # main_logic/omni_offline_client.py permits SystemMessage only
+    # at _conversation_history[0] during initialization; all runtime input
+    # injects HumanMessage(role=user), so appending role=system to
+    # session.messages differs semantically. Wire chokepoint
+    # prompt_builder.build_prompt_bundle rewrites it as role=user
+    # with a `[system note] ` prefix, avoiding Vertex AI Gemini's sensitivity to
+    # middle/trailing system messages, which cause 400 INVALID_ARGUMENT or empty-200 replies
+    # and stale-reply timing drift. Audit the contract deviation in the ring buffer so
+    # Diagnostics -> Errors/Logs shows testers their system message was actually
+    # consumed by the LLM as user input.
     # Severity: info.
     CHAT_SEND_SYSTEM_REWRITTEN = "chat_send_system_rewritten"
 
-    # P25 Day 2 polish r5 — tester 在 composer textarea 里留空或只输了
-    # 空白然后点 [发送]. 不走 pipeline 的"只跑 LLM 对末尾 user 重发"
-    # 路径 (那条路径只有当 session.messages 末尾已经是 user 时才合法)
-    # 而是直接忽略本次点击, 只 toast warn 提示 tester "消息不能为空".
-    # 之前 (r4 及以前) 是让后端走 user_content=None → pipeline 抛
-    # ValueError → 前端 SSE error frame → UI error 徽章 + Errors 页也
-    # 会出现. 用户反馈 "这种情况不应当算 error, 只需要报警提示用户不
-    # 得输入空消息即可, 但是依然需要在日志里面记录下来" — 所以降级到
-    # info + 仅 ring 审计留痕, 不写 session JSONL 避免成为"假信号".
+    # P25 Day 2 polish r5: sending an empty/whitespace-only
+    # composer does not enter the pipeline's LLM-only resend path,
+    # legal only when session.messages already ends with user;
+    # ignore the click and warn through a message-cannot-be-empty toast.
+    # Previously, through r4, backend user_content=None raised pipeline
+    # ValueError, producing frontend SSE errors, Err badge increments,
+    # and Errors entries. User feedback requested a warning against empty input
+    # without counting an error, while still retaining logs. Downgrade to
+    # info and ring-only auditing, avoiding false session-JSONL signals.
     # Severity: info.
     CHAT_SEND_EMPTY_IGNORED = "chat_send_empty_ignored"
 

@@ -1,8 +1,8 @@
 """
-插件SDK Protocol接口定义模块
+Plugin SDK Protocol interface definitions.
 
-提供Protocol接口定义,用于类型提示和IDE智能补全。
-这些Protocol定义在types/层，避免循环依赖。
+Provides Protocol definitions for type hints and IDE completion.
+These Protocols live in the types layer to avoid circular dependencies.
 """
 from typing import Protocol, Dict, Any, Optional, Union, Coroutine, runtime_checkable, TYPE_CHECKING
 from pathlib import Path
@@ -14,16 +14,16 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class PluginContextProtocol(Protocol):
-    """插件上下文接口定义 (面向插件开发者)
+    """Plugin-context interface for plugin developers.
     
-    这是一个Protocol类型,定义了插件开发者可以使用的所有ctx方法。
-    使用Protocol而不是具体类可以避免循环导入,同时提供完整的类型提示。
+    This Protocol defines all ctx methods available to plugin developers.
+    Using a Protocol rather than a concrete class avoids circular imports while retaining complete type hints.
     
     Attributes:
-        plugin_id: 插件ID
-        config_path: 插件配置文件路径
-        logger: 日志记录器(plugin.logging_config.PluginLoggerAdapter)
-        run_id: 当前运行ID(如果在/runs触发的上下文中)
+        plugin_id: Plugin ID.
+        config_path: Plugin configuration-file path.
+        logger: Logger (plugin.logging_config.PluginLoggerAdapter).
+        run_id: Current run ID, if triggered under /runs.
     
     Example:
         >>> from plugin._types import PluginContextProtocol
@@ -31,66 +31,66 @@ class PluginContextProtocol(Protocol):
         >>> class MyPlugin(NekoPluginBase):
         ...     def __init__(self, ctx: PluginContextProtocol):
         ...         super().__init__(ctx)
-        ...         # IDE现在可以提示所有ctx方法!
+        ...         # The IDE now completes every ctx method!
     """
     
-    # ==================== 基础属性 ====================
+    # ==================== Basic properties ====================
     plugin_id: str
     config_path: Path
     logger: Any  # plugin.logging_config.PluginLoggerAdapter (stdlib-backed)
     
     @property
     def run_id(self) -> Optional[str]:
-        """当前运行ID(如果在/runs触发的上下文中)"""
+        """Current run ID, if triggered under /runs."""
         ...
     
     def require_run_id(self) -> str:
-        """要求必须有run_id,否则抛出异常"""
+        """Require run_id, raising if absent."""
         ...
     
-    # ==================== 配置管理 ====================
+    # ==================== Configuration management ====================
     async def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """获取插件配置(包含profile覆盖)
+        """Get plugin configuration including profile overrides.
         
         Args:
-            timeout: 超时时间(秒)
+            timeout: Timeout in seconds.
         
         Returns:
-            配置字典
+            Configuration dictionary.
         """
         ...
     
     async def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """获取插件基础配置(不含profile覆盖)
+        """Get base plugin configuration without profile overrides.
         
         Args:
-            timeout: 超时时间(秒)
+            timeout: Timeout in seconds.
         
         Returns:
-            基础配置字典
+            Base configuration dictionary.
         """
         ...
     
     async def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """获取profiles.toml状态(激活的profile和文件映射)
+        """Get profiles.toml state: active profile and file mappings.
         
         Args:
-            timeout: 超时时间(秒)
+            timeout: Timeout in seconds.
         
         Returns:
-            profiles状态字典
+            Profile-state dictionary.
         """
         ...
     
     async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
-        """获取指定profile的配置
+        """Get configuration for a specific profile.
         
         Args:
-            profile_name: profile名称
-            timeout: 超时时间(秒)
+            profile_name: Profile name.
+            timeout: Timeout in seconds.
         
         Returns:
-            profile配置字典
+            Profile configuration dictionary.
         """
         ...
     
@@ -99,26 +99,26 @@ class PluginContextProtocol(Protocol):
         profile_name: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """获取有效配置
+        """Get effective configuration.
         
         Args:
-            profile_name: profile名称(None表示使用当前激活的profile)
-            timeout: 超时时间(秒)
+            profile_name: Profile name; None uses the active profile.
+            timeout: Timeout in seconds.
         
         Returns:
-            有效配置字典
+            Effective configuration dictionary.
         """
         ...
     
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
-        """更新插件配置
+        """Update plugin configuration.
         
         Args:
-            updates: 要更新的配置字典
-            timeout: 超时时间(秒)
+            updates: Configuration dictionary to update.
+            timeout: Timeout in seconds.
         
         Returns:
-            更新后的配置字典
+            Updated configuration dictionary.
         """
         ...
 
@@ -127,17 +127,17 @@ class PluginContextProtocol(Protocol):
         ...
     
     async def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """获取系统配置
+        """Get system configuration.
         
         Args:
-            timeout: 超时时间(秒)
+            timeout: Timeout in seconds.
         
         Returns:
-            系统配置字典
+            System configuration dictionary.
         """
         ...
     
-    # ==================== 插件间通信 ====================
+    # ==================== Inter-plugin communication ====================
     def trigger_plugin_event(
         self,
         target_plugin_id: str,
@@ -146,44 +146,44 @@ class PluginContextProtocol(Protocol):
         params: Dict[str, Any],
         timeout: float = 10.0
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """触发其他插件的事件
+        """Trigger another plugin's event.
         
         Args:
-            target_plugin_id: 目标插件ID
-            event_type: 事件类型
-            event_id: 事件ID
-            params: 参数字典
-            timeout: 超时时间(秒)
+            target_plugin_id: Target plugin ID
+            event_type: Event type.
+            event_id: Event ID
+            params: Parameter dictionary
+            timeout: Timeout in seconds.
         
         Returns:
-            事件处理结果
+            Event-handling result.
         """
         ...
     
     def query_plugins(
         self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """查询插件列表
+        """Query the plugin list.
         
         Args:
-            filters: 过滤条件
-            timeout: 超时时间(秒)
+            filters: Filter criteria.
+            timeout: Timeout in seconds.
         
         Returns:
-            插件列表
+            Plugin list.
         """
         ...
     
-    # ==================== 状态更新 ====================
+    # ==================== State updates ====================
     def update_status(self, status: Dict[str, Any]) -> None:
-        """更新插件状态
+        """Update plugin state.
         
         Args:
-            status: 状态字典
+            status: State dictionary.
         """
         ...
     
-    # ==================== Export功能 ====================
+    # ==================== Export functionality ====================
     def export_push_text(
         self,
         *,
@@ -193,17 +193,17 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """推送文本导出(智能同步/异步)
+        """Push a text export with automatic sync/async selection.
         
         Args:
-            run_id: 运行ID(None表示使用当前run_id)
-            text: 文本内容
-            description: 描述
-            metadata: 元数据
-            timeout: 超时时间(秒)
+            run_id: Run ID; None uses the current run_id.
+            text: Text content.
+            description: Description.
+            metadata: Metadata.
+            timeout: Timeout in seconds.
         
         Returns:
-            在事件循环中返回协程,否则返回结果字典
+            Return a coroutine in the event loop; otherwise return a result dictionary
         """
         ...
     
@@ -216,7 +216,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送文本导出(异步)"""
+        """Push a text export asynchronously."""
         ...
     
     def export_push_text_sync(
@@ -228,7 +228,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送文本导出(同步)"""
+        """Push a text export synchronously."""
         ...
     
     def export_push_binary(
@@ -241,7 +241,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """推送二进制数据导出(智能同步/异步)"""
+        """Push a binary-data export with automatic sync/async selection."""
         ...
     
     async def export_push_binary_async(
@@ -254,7 +254,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送二进制数据导出(异步)"""
+        """Push a binary-data export asynchronously."""
         ...
     
     def export_push_binary_sync(
@@ -267,7 +267,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送二进制数据导出(同步)"""
+        """Push a binary-data export synchronously."""
         ...
     
     def export_push_binary_url(
@@ -280,7 +280,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """推送二进制URL导出(智能同步/异步)"""
+        """Push a binary-URL export with automatic sync/async selection."""
         ...
     
     async def export_push_binary_url_async(
@@ -293,7 +293,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送二进制URL导出(异步)"""
+        """Push a binary-URL export asynchronously."""
         ...
     
     def export_push_binary_url_sync(
@@ -306,7 +306,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送二进制URL导出(同步)"""
+        """Push a binary-URL export synchronously."""
         ...
     
     def export_push_url(
@@ -318,7 +318,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """推送URL导出(智能同步/异步)"""
+        """Push a URL export with automatic sync/async selection."""
         ...
     
     async def export_push_url_async(
@@ -330,7 +330,7 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送URL导出(异步)"""
+        """Push a URL export asynchronously."""
         ...
     
     def export_push_url_sync(
@@ -342,10 +342,10 @@ class PluginContextProtocol(Protocol):
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """推送URL导出(同步)"""
+        """Push a URL export synchronously."""
         ...
     
-    # ==================== Run进度更新 ====================
+    # ==================== Run progress updates ====================
     def run_update(
         self,
         *,
@@ -359,7 +359,7 @@ class PluginContextProtocol(Protocol):
         metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """更新运行状态(智能同步/异步)"""
+        """Update run state with automatic sync/async selection."""
         ...
     
     async def run_update_async(
@@ -375,7 +375,7 @@ class PluginContextProtocol(Protocol):
         metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """更新运行状态(异步)"""
+        """Update run state asynchronously."""
         ...
     
     def run_update_sync(
@@ -391,7 +391,7 @@ class PluginContextProtocol(Protocol):
         metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """更新运行状态(同步)"""
+        """Update run state synchronously."""
         ...
     
     def run_progress(
@@ -403,7 +403,7 @@ class PluginContextProtocol(Protocol):
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
-        """更新运行进度(智能同步/异步)"""
+        """Update run progress with automatic sync/async selection."""
         ...
     
     async def run_progress_async(
@@ -415,7 +415,7 @@ class PluginContextProtocol(Protocol):
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """更新运行进度(异步)"""
+        """Update run progress asynchronously."""
         ...
     
     def run_progress_sync(
@@ -427,18 +427,18 @@ class PluginContextProtocol(Protocol):
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """更新运行进度(同步)"""
+        """Update run progress synchronously."""
         ...
     
-    # ==================== 消息推送 ====================
+    # ==================== Message pushes ====================
     def push_message(
         self,
         *,
-        # v2 schema (preferred)：见 plugin/sdk/shared/core/push_message_schema.py
+        # Preferred v2 schema: see plugin/sdk/shared/core/push_message_schema.py.
         visibility: Optional[list] = None,
         ai_behavior: Optional[str] = None,
         parts: Optional[list] = None,
-        # 通用：
+        # General:
         source: str = "",
         target_lanlan: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -456,49 +456,49 @@ class PluginContextProtocol(Protocol):
         delivery: Any = None,
         reply: Optional[bool] = None,
     ) -> "PushMessageResult":
-        """推送消息到主进程，并返回本地传输层提交结果。
+        """Push a message to the main process and return the local transport submission result.
 
-        v2 推荐参数 (visibility/ai_behavior/parts) 见 push_message_schema 文档；
-        其余参数为 v1 deprecated，host 端会自动翻译并 emit DeprecationWarning。
+        See push_message_schema for recommended v2 visibility/ai_behavior/parts;
+        remaining parameters are deprecated v1, translated automatically by the host with DeprecationWarning.
         """
         ...
     
-    # ==================== 内存查询 ====================
+    # ==================== Memory queries ====================
     def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Union[Coroutine[Any, Any, Dict[str, Any]], Dict[str, Any]]:
-        """查询内存数据（智能版本：自动检测执行环境）
+        """Query memory data with automatic execution-environment detection.
         
         Args:
-            lanlan_name: lanlan名称
-            query: 查询字符串
-            timeout: 超时时间(秒)
+            lanlan_name: Lanlan name.
+            query: Query string.
+            timeout: Timeout in seconds.
         
         Returns:
-            在事件循环中返回协程，否则返回结果字典
+            Return a coroutine inside an event loop, otherwise a result dictionary.
         """
         ...
     
     # ==================== Bus Hub ====================
     @property
     def bus(self) -> "BusHubProtocol":
-        """总线Hub，提供 memory/messages/events/lifecycle/conversations/frames 客户端
+        """Bus Hub providing memory/messages/events/lifecycle/conversations/frames clients.
         
         Example:
-            # 获取消息
+            # Get messages.
             messages = ctx.bus.messages.get(max_count=10)
             
-            # 获取事件
+            # Get events.
             events = ctx.bus.events.get(plugin_id="my_plugin")
             
-            # 获取生命周期事件
+            # Get lifecycle events.
             lifecycle = ctx.bus.lifecycle.get()
             
-            # 获取内存数据
+            # Get memory data.
             memory = ctx.bus.memory.get(bucket_id="default")
             
-            # 获取对话上下文
+            # Get conversation context.
             conversations = ctx.bus.conversations.get_by_id(conversation_id)
 
-            # 获取宿主最近推给模型的那几帧（有损，不是日志）
+            # Get recent host-supplied model frames, lossy rather than a log.
             frames = ctx.bus.frames.get(max_count=4)
         """
         ...

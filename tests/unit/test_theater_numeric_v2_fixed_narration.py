@@ -135,7 +135,7 @@ async def test_workflow_assembles_target_entry_once_in_runtime(tmp_path, monkeyp
         return NumericV2TransitionOfferReview(False, False, (), ())
 
     monkeypatch.setattr(runtime_module, 'add_entry', track_entry)
-    # 若编排层仍持有旧别名，记录它的装配调用以捕获重复生产者。
+    # If the orchestration layer retains an old alias, record its assembly calls to catch duplicate producers.
     if hasattr(workflow, 'add_entry'):
         monkeypatch.setattr(workflow, 'add_entry', track_entry)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -145,7 +145,7 @@ async def test_workflow_assembles_target_entry_once_in_runtime(tmp_path, monkeyp
     result = await workflow.execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('one', 0, '就到这里吧。'), ensure_current_binding=lambda _: _binding())
-    # 提交校验会重建来源开场；目标幕入场只在本次 Runtime finalizer 装配一次。
+    # Commit validation rebuilds the source opening; entry into the destination act is assembled only once in this Runtime finalizer.
     assert entries.count(result.stored.session.current_node_id) == 1
     assert result.stored.session.revision == len(result.stored.ledger_events) == 1
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session('entry-once') == result.stored
@@ -242,7 +242,7 @@ def test_fixed_dependencies_still_belong_to_review_and_delivery():
 
 
 def test_actor_receive_trigger_requires_player_handoff_direction():
-    """猫娘接收类条件不能由候选正文自证；玩家明确递交时仍可触发。"""  # noqa: DOCSTRING_CJK
+    """Conditions requiring the catgirl to receive something cannot be established by candidate prose alone; explicit player handover can still trigger them."""  # noqa: DOCSTRING_CJK
 
     story = deepcopy(_engine().story)
     story['nodes'][0]['story_beat']['fixed_narrations'][1]['trigger']['condition'] = '小葵接过旧照片。'

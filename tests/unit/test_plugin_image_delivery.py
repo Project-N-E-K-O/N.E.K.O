@@ -2798,7 +2798,7 @@ async def test_offline_turn_with_images_reaches_history_without_crashing():
         committed["history_len"] = len(client._conversation_history)
         return
 
-    # 只跑到「装配完、进 history」为止：真正的 provider 调用在这之后。
+    # Run only through assembly and insertion into history; the actual provider call follows afterward.
     client._stream_from_llm = AsyncMock(side_effect=fake_stream)
 
     await client.stream_text("这是什么", on_turn_committed=lambda: committed.setdefault("marked", True))
@@ -2811,11 +2811,11 @@ async def test_offline_turn_with_images_reaches_history_without_crashing():
         for part in content
         if isinstance(part, dict) and part.get("type") == "image_url"
     ]
-    # 三个来源的图都到齐了，并且没有在装配途中抛异常。
+    # Images from all three sources arrived without exceptions during assembly.
     assert any("proactive-frame" in url for url in attached)
     assert any("plugin-frame" in url for url in attached)
     assert any("user-frame" in url for url in attached)
-    # 消费完就清空，与用户列表同一窗口。
+    # Clear immediately after consumption, in the same window as the user list.
     assert client._pending_images == []
     assert client._pending_plugin_images == []
 
@@ -2863,10 +2863,10 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
         with pytest.raises(asyncio.CancelledError):
             await client.stream_text("看看这个")
 
-    # 两条队列都完整还了回来，顺序也没乱。
+    # Both queues were fully restored without changing order.
     assert client._pending_images == ["user-frame-a", "user-frame-b"]
     assert client._pending_plugin_images == ["plugin-frame"]
-    # 这一轮什么都没提交。
+    # Nothing was committed this round.
     assert client._conversation_history == []
 
 
@@ -3614,7 +3614,7 @@ async def test_trim_notice_waits_for_the_proactive_turn_to_actually_speak(
     client, _sent = _offline_client_for_ephemeral()
 
     async def _silent_stream(messages, **_overrides):
-        # 流正常结束却一个可见字符都没有：emitted_any 保持 False。
+        # The stream ended normally without any visible character: emitted_any remains False.
         return
         yield  # pragma: no cover - makes this an async generator
 
@@ -3707,8 +3707,8 @@ async def test_text_only_proactive_turn_completes_without_touching_image_state()
     client, sent = _offline_client_for_ephemeral()
 
     async def _talky(messages, **_overrides):
-        # 替掉夹具的 stream 就丢了它对 sent 的追加，这里补上，
-        # 否则「LLM 被调用了」这条断言测的是夹具自己。
+        # Replacing the fixture's stream loses its append to sent; restore that here,
+        # or the 'LLM was called' assertion would only test the fixture itself.
         sent.append(messages)
         yield SimpleNamespace(content="今天也想你了喵~")
 

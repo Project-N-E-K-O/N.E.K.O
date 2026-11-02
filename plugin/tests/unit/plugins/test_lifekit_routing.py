@@ -91,9 +91,9 @@ async def test_osrm_network_error_is_provider_error(monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.asyncio
 async def test_osrm_public_instance_uses_driving_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    """router.project-osrm.org 公共实例要求路径是 /route/v1/driving/...，
-    而不是本地 osrm-backend 默认的 /route/v1/car/... 喵。无 AMap/Baidu key 时
-    lifekit 默认走的就是这个公共实例，所以 driving 路径必须对上喵。"""
+    """The router.project-osrm.org public instance requires /route/v1/driving/...,
+    not local osrm-backend's default /route/v1/car/..., meow. Without AMap/Baidu keys,
+    LifeKit uses this public instance by default, so the driving path must match, meow."""
     captured_url: dict[str, str] = {}
 
     class Response:

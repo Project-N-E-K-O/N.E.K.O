@@ -50,7 +50,7 @@ from main_logic.session_state import SessionStateMachine
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. set_proactive_screenshot —— isolated single slot + 与 _pending_images 隔离
+# 1. set_proactive_screenshot — isolated single slot, separate from _pending_images.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _bare_offline() -> OmniOfflineClient:
@@ -68,9 +68,9 @@ def test_set_proactive_screenshot_stores_in_isolated_slot():
     c = _bare_offline()
     c.set_proactive_screenshot("SHOT_B64")
     assert c._proactive_image_to_inject == "SHOT_B64"
-    # 暂存即打上时间戳，给 TTL 用。
+    # Timestamp at staging for TTL.
     assert c._proactive_image_staged_at > 0.0
-    # 关键隔离：绝不污染用户自己的待发帧队列（守住 Codex P2 约束）。
+    # Critical isolation: never contaminate the user's pending-frame queue (Codex P2 constraint).
     assert c._pending_images == []
 
 
@@ -80,8 +80,8 @@ def test_set_proactive_screenshot_none_and_empty_clear_slot():
     c._proactive_image_staged_at = 123.0
     c.set_proactive_screenshot(None)
     assert c._proactive_image_to_inject is None
-    assert c._proactive_image_staged_at == 0.0  # 时间戳一并清
-    # 空串也按"清空"处理（image_b64 or None），不会把空字符串当成一张图。
+    assert c._proactive_image_staged_at == 0.0  # Clear the timestamp too.
+    # Empty strings also clear the slot (image_b64 or None), rather than counting as images.
     c._proactive_image_to_inject = "OLD"
     c.set_proactive_screenshot("")
     assert c._proactive_image_to_inject is None
@@ -122,10 +122,10 @@ def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineCl
     c._proactive_image_to_inject = None
     c._proactive_image_staged_at = 0.0
     c._proactive_image_history_len = 0
-    # stream_text 在到达 astream stub 前会读 self.llm.max_completion_tokens（focus
-    # overrides / summary-budget bump），且 self.llm is None 会被当成「client 已 close」
-    # 提前 break。astream 本身被 stub，llm 只当占位，给个可读写 max_completion_tokens
-    # 的轻量对象即可。
+    # Before reaching the astream stub, stream_text reads self.llm.max_completion_tokens (focus
+    # overrides / summary-budget bump), while self.llm=None means the client is closed
+    # and breaks early. With astream stubbed, llm is only a placeholder; a lightweight object
+    # with writable max_completion_tokens suffices.
     c.llm = SimpleNamespace(max_completion_tokens=2000)
     c.model = "m"
     c.vision_model = vision_model
@@ -143,10 +143,10 @@ def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineCl
     captured: list = []
 
     async def _fake_astream_visible(messages, **overrides):
-        # messages 此刻 = self._conversation_history，末尾就是刚构建的用户消息。
+        # messages currently equals self._conversation_history, ending in the newly built user message.
         captured.append(list(messages))
         raise RuntimeError("stop-after-construction")
-        yield  # pragma: no cover —— 标记为 async generator
+        yield  # pragma: no cover — mark as an async generator.
 
     c._astream_visible_with_tools = _fake_astream_visible
     return c, captured
@@ -177,12 +177,12 @@ def test_stream_text_injects_proactive_screenshot_before_user_text():
     assert isinstance(msg.content, list)
     urls = _image_urls(msg.content)
     assert urls == ["data:image/jpeg;base64,PROACTIVE_B64"]
-    # 图在前、文本在后（"用户说话前加入"）。
+    # Image precedes text (inserted before the user's utterance).
     assert msg.content[0].get("type") == "image_url"
     assert msg.content[-1] == {"type": "text", "text": "这是什么呀"}
-    # 一次性消费：消费后槽清空，绝不再注入后续轮次。
+    # Consume once: clear the slot afterward, never injecting into later turns.
     assert c._proactive_image_to_inject is None
-    # 有图 → 切 vision 模型（让对话模型真能看见这张屏）。
+    # Image present → switch to vision model so the dialogue model can actually see the screen.
     c.switch_model.assert_awaited_once()
 
 
@@ -214,7 +214,7 @@ def test_stream_text_without_staging_is_text_only():
     asyncio.run(c.stream_text("普通一句话"))
 
     msg = _last_user_message(captured)
-    assert msg.content == "普通一句话"  # 纯字符串，非多模态列表
+    assert msg.content == "普通一句话"  # Plain string, not a multimodal list.
     c.switch_model.assert_not_awaited()
 
 
@@ -224,13 +224,13 @@ def test_stream_text_drops_expired_screenshot():
 
     c, captured = _make_offline_for_stream()
     c.set_proactive_screenshot("STALE_B64")
-    # 把暂存时刻倒拨到 TTL 之外，模拟用户隔了很久才回。
+    # Move the staging timestamp beyond TTL to simulate a much later user reply.
     c._proactive_image_staged_at = time.monotonic() - (_PROACTIVE_SCREENSHOT_TTL_SECONDS + 5)
 
     asyncio.run(c.stream_text("现在才回你"))
 
     msg = _last_user_message(captured)
-    assert msg.content == "现在才回你"  # 过期 → 纯文本，无图
+    assert msg.content == "现在才回你"  # Expired → plain text, no image.
     assert c._proactive_image_to_inject is None
     assert c._proactive_image_staged_at == 0.0
     c.switch_model.assert_not_awaited()
@@ -256,13 +256,13 @@ def test_stream_text_drops_screenshot_superseded_by_later_ai_turn():
     into the user's reply."""
     c, captured = _make_offline_for_stream()
     c.set_proactive_screenshot("SCREEN_TALK_B64")  # marker = len([Sys]) = 1
-    # 模拟随后一条 prompt_ephemeral 投递的 AI 轮把历史变长（不经 set_*）。
+    # Simulate a subsequent AI turn delivered through prompt_ephemeral growing history (without set_*).
     c._conversation_history.append(AIMessage(content="顺便说，记得喝水哦"))
 
     asyncio.run(c.stream_text("好的"))
 
     msg = _last_user_message(captured)
-    assert msg.content == "好的"  # 陈旧屏被丢弃 → 纯文本
+    assert msg.content == "好的"  # Discard stale screen → plain text.
     assert c._proactive_image_to_inject is None
     assert c._proactive_image_history_len == 0
     c.switch_model.assert_not_awaited()
@@ -541,9 +541,9 @@ async def test_finish_stages_vision_screenshot_on_commit():
 
     assert result is True
     assert mgr.session._proactive_image_to_inject == "SHOT_B64"
-    # 截图只进独立槽，绝不混进用户的 _pending_images。
+    # Screenshot enters only the isolated slot, never the user's _pending_images.
     assert mgr.session._pending_images == []
-    # 历史里仍只有纯文本 AIMessage（截图不作为图片写历史）。
+    # History still contains only a plain-text AIMessage (screenshot is not written as an image).
     assert mgr.session._conversation_history[0].content == "你这屏幕上的图好好看～"
 
 
@@ -597,7 +597,7 @@ async def test_finish_does_not_stage_on_sid_mismatch():
     )
 
     assert result is False
-    # 既不写新截图，也不清旧值——整轮在 sid 校验处早 return。
+    # Neither write a new screenshot nor clear the old one: the whole turn returns early at sid validation.
     assert mgr.session._proactive_image_to_inject == "PREEXISTING"
     assert mgr.session._conversation_history == []
 

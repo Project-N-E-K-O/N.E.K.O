@@ -1,10 +1,10 @@
-"""Numeric v2 小剧场可选模块开关。
+"""Optional Numeric v2 theater module switches.
 
-除"回复"（Actor 生成）之外的每一步模型调用都可以关闭：默认开启前置判定，
-其他可选调用默认关闭。关闭某个模块会改变体验语义，各开关的取舍写在这里的唯一来源里，运行端、
-HTTP 接口与前端只读这张表。
+Every model call other than the Actor reply can be disabled: preliminary evaluation defaults on,
+while other optional calls default off. Disabling modules changes experience semantics; this table is the sole source
+for those tradeoffs, read by runtime, HTTP APIs, and frontend.
 
-开关存在全局偏好的全局条目旁（``theaterModule...``），未设置即默认值。
+Switches live beside global preference entries (``theaterModule...``); unset means default.
 """  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
@@ -18,21 +18,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TheaterModuleOption:
-    """一个可选模块：存储键、默认值与它关闭后的语义代价。"""  # noqa: DOCSTRING_CJK
+    """One optional module: storage key, default, and semantic cost of disabling it."""  # noqa: DOCSTRING_CJK
 
     key: str
     default: bool
-    # 关闭后失去什么；供接口与文档复用，避免三处各写一套说法。
+    # Consequences of disabling modules, shared by APIs and documentation to avoid three divergent explanations.
     disabled_effect: str
 
 
-# 顺序即"每回合调用链"的顺序：判定 → 回复 → 快检 → 争议 → 补推荐 → 历史查找。
-# 只有"前置判定"（数值增减/路线/转场意图）默认开启，其余可选模块默认关闭。
+# Order matches each turn's call chain: evaluation -> reply -> quick check -> dispute -> extra recommendation -> history lookup.
+# Only preliminary evaluation (numeric changes/routes/transition intent) is enabled by default; other optional modules default off.
 THEATER_MODULE_OPTIONS: tuple[TheaterModuleOption, ...] = (
     TheaterModuleOption(
         key="evaluator",
         default=True,
-        # 数值增减、路线条件与转场意图来自同一次判定调用，因此这一模块默认保留。
+        # Numeric changes, route conditions, and transition intent share one evaluation call, so retain this module by default.
         disabled_effect="不再判定数值增减、路线与转场意图；数值冻结，靠数值条件的出口永远不满足。",
     ),
     TheaterModuleOption(
@@ -48,13 +48,13 @@ THEATER_MODULE_OPTIONS: tuple[TheaterModuleOption, ...] = (
     TheaterModuleOption(
         key="review_delivery",
         default=False,
-        # 纯程序校验，不增加模型调用：换场时核对作者声明必须保留的关键道具是否真的出现过。
+        # Programmatic validation only, with no extra model calls: on transition, verify author-required key props actually appeared.
         disabled_effect="不再核对作者声明必须保留的关键道具是否已交付，缺失也能继续换场。",
     ),
     TheaterModuleOption(
         key="review_contract",
         default=False,
-        # 换场时一次窄判定（约 +2 秒）：核对作者禁令是否被违反，抓"提前到达/越过阶段边界"。
+        # One narrow transition evaluation (about +2 seconds): check author prohibitions for premature arrival / crossing phase boundaries.
         disabled_effect="不再核对作者禁令是否被违反，提前到达或越过阶段边界也不会被拦下改写。",
     ),
     TheaterModuleOption(
@@ -70,13 +70,13 @@ THEATER_MODULE_OPTIONS: tuple[TheaterModuleOption, ...] = (
     TheaterModuleOption(
         key="actor_retry",
         default=False,
-        # 开启时每次 Actor 生成最多 4 次尝试（首发 + 3 次重试），见 workflow 的输出重试循环。
+        # When enabled, each Actor generation gets at most four attempts (initial + three retries); see Workflow's output-retry loop.
         disabled_effect="演员输出不合格时不再重试（开启时每次生成最多调用演员 4 次），本轮原子回滚并由玩家重发；正式换场复用来源正文时仍保留一次窄重试。",
     ),
 )
 
 _OPTION_BY_KEY = {option.key: option for option in THEATER_MODULE_OPTIONS}
-# 存储键前缀：所有小剧场模块开关共用这一命名。
+# Storage-key prefix shared by all theater module switches.
 _STORAGE_PREFIX = "theaterModule"
 
 

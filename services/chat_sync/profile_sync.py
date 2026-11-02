@@ -14,6 +14,7 @@ import sqlite3
 from services.chat_sync.writer import store_connection
 from uuid import uuid4
 
+from services.chat_sync import host as _host
 from services.chat_sync.profile_protocol import (
     RESERVED_PROFILE_FIELD_KEYS, decode_character_profile, encode_character_profile,
 )
@@ -38,6 +39,15 @@ def _field_text(value):
         return json.dumps(value, ensure_ascii=False, allow_nan=False)
     # Structured values need a separate reviewed mapping, never str(dict)/joins.
     raise ValueError("character_profile_unsupported_value")
+
+
+def _profile_name_invalid(name):
+    """Refuse any name the desktop create/rename UI refuses, plus padded spellings."""
+    from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+
+    # Same rule as characters_router._shared._validate_profile_name, minus its
+    # UI messages; a parity test keeps the two from drifting.
+    return not validate_character_name(name, max_units=PROFILE_NAME_MAX_UNITS).ok or name != name.strip()
 
 
 def export_profile(name: str, raw: dict) -> dict:
@@ -318,16 +328,14 @@ class DesktopProfileAdapter:
 
     def busy(self, name):
         """An active/starting conversation keeps its current prompt until it is idle."""
-        from main_routers.shared_state import get_session_manager
-        from main_logic.session_state import ProactivePhase, session_reply_in_progress
-        manager = (get_session_manager() or {}).get(name)
-        state = getattr(manager, "state", None)
-        # The existing state machine owns streaming/playback; a connected idle
-        # session alone is not a reason to defer settings indefinitely.
-        return bool(manager and (getattr(manager, "is_starting", False)
-                                 or session_reply_in_progress(getattr(manager, "session", None))
-                                 or getattr(manager, "_is_voice_playing", lambda: False)()
-                                 or getattr(state, "phase", ProactivePhase.IDLE) is not ProactivePhase.IDLE))
+        manager = (_host.get_session_manager() or {}).get(name)
+        # Asked even without a manager: a missing predicate raises instead of
+        # reporting "not busy".
+        return _host.conversation_busy(manager)
+
+    async def delete(self, uid, before_delete):
+        """Use the host's complete role/history/memory deletion transaction."""
+        return await _host.delete_character(uid, before_delete)
 
     async def apply(self, uid, status, commit, *, confirm_rename=False, before_apply=None):
         """Preserve identity/avatar/preferences and bypass greeting/recent-clear paths."""
@@ -350,17 +358,20 @@ class DesktopProfileAdapter:
             if target["name"] != current["name"]:
                 if not confirm_rename:
                     return False
-                from main_routers.characters_router._shared import _validate_profile_name
-                if _validate_profile_name(target["name"]) or target["name"] != target["name"].strip():
+                if _profile_name_invalid(target["name"]):
                     # The portable wire name does not relax desktop filename or
                     # reserved-route constraints used by the normal rename UI.
                     raise ValueError("character_profile_name_invalid")
                 # The user's explicit choice reuses the existing complete rename
                 # transaction; a dictionary-key edit would orphan local histories.
-                from main_routers.characters_router.crud import _rename_catgirl_serialized
                 from utils.external_route_registry import end_character_mutation
                 try:
-                    result = await _rename_catgirl_serialized(current["name"], target["name"], sync_commit=commit)
+                    renaming = _host.rename_character(current["name"], target["name"], sync_commit=commit)
+                except _host.CapabilityNotInstalled:
+                    # Nothing has begun or been written; never fall back to a key edit.
+                    raise ValueError("character_profile_rename_failed") from None
+                try:
+                    result = await renaming
                 finally:
                     end_character_mutation(current["name"], target["name"])
                 if not isinstance(result, dict) or not result.get("success"):
@@ -394,15 +405,13 @@ class DesktopProfileAdapter:
             await commit(self.config.save_characters, characters)
         # The existing fast edit refresh does not call a model, mark a greeting,
         # clear recent history, or restart an existing active session.
-        from main_routers.shared_state import get_init_one_catgirl
-        await get_init_one_catgirl()(target["name"], is_new=False)
+        await _host.get_init_one_catgirl()(target["name"], is_new=False)
         return True
 
     async def import_new(self, uid, profile, commit):
         """Explicit imports create once with the cloud UID and local avatar/voice defaults."""
         from config.character_defaults import DEFAULT_LANLAN_TEMPLATE
-        from main_routers.characters_router.crud import _get_new_catgirl_default_voice_id
-        from main_routers.characters_router._shared import _validate_profile_name
+        from utils import api_config_loader
         from utils.character_memory import character_config_mutation_lock
         from utils.config_manager import set_reserved
         from utils.config_manager.reserved_schema import ensure_catgirl_character_id
@@ -413,7 +422,7 @@ class DesktopProfileAdapter:
                 if isinstance(raw, dict) and get_character_uid(raw) == uid:
                     return name, True
             name = profile["name"]
-            if _validate_profile_name(name) or name != name.strip():
+            if _profile_name_invalid(name):
                 raise ValueError("character_profile_name_invalid")
             if name in characters.get("猫娘", {}):
                 raise ValueError("character_profile_name_conflict")
@@ -427,7 +436,7 @@ class DesktopProfileAdapter:
             raw["昵称"] = profile["nickname"]
             set_reserved(raw, "character_uid", uid)
             ensure_catgirl_character_id(raw)
-            set_reserved(raw, "voice_id", _get_new_catgirl_default_voice_id())
+            set_reserved(raw, "voice_id", api_config_loader.get_new_character_default_voice_id())
             set_reserved(raw, "system_prompt", profile["systemPrompt"])
             set_reserved(raw, "field_order", [field["key"] for field in profile["fields"]] + ["昵称"])
             if profile["persona"] is not None:
@@ -437,8 +446,7 @@ class DesktopProfileAdapter:
             characters.setdefault("猫娘", {})[name] = raw
             await commit(self.config.save_characters, characters)
         # Do not mark a new-character greeting, select this role, or touch memory.
-        from main_routers.shared_state import get_init_one_catgirl
-        await get_init_one_catgirl()(name, is_new=False)
+        await _host.get_init_one_catgirl()(name, is_new=False)
         return name, False
 
 
@@ -581,17 +589,28 @@ class DesktopProfileSync:
             return {"characterSyncId": uid, "displayName": name, "existing": existing, "enabled": True,
                     "profileHash": local["local_hash"]}
 
-    async def step(self, uid, *, presence=None, manual=False, choose_remote=False, local_hash=None, revision=None, confirm_rename=False):
+    async def step(self, uid, *, presence=None, manual=False, choose_remote=False, local_hash=None, revision=None, confirm_rename=False,
+                   initial_upload_only=False):
         """Poll at the existing two-minute cadence and retry approved requests exactly."""
         if self.adapter is None:
             return None
         async with self.lock:
-            if not manual:
+            if not manual and not initial_upload_only:
                 await self.runtime._require_automatic_character(uid)
-            state = await self.local(uid)
             binding = await asyncio.to_thread(self.runtime.state.binding, uid)
             if not binding or not binding["enabled"] or not binding["binding_id"]:
                 raise ValueError("chat_sync_not_enabled")
+            if initial_upload_only:
+                # Initial publication completes already approved bytes after a role switch.
+                # Recheck under the profile lock; this never observes/approves a newer draft.
+                from services.chat_sync.ledger import ChatDomain
+                state = await asyncio.to_thread(self.store.status, ChatDomain(binding["owner_id"], uid).key())
+                operation = await asyncio.to_thread(self.store.next_operation, state["domain"]) if state else None
+                if (not state or state["base_revision"] != 0 or state["head_revision"] != 0
+                        or not operation or operation["base_revision"] != 0):
+                    return state
+            else:
+                state = await self.local(uid)
             authenticated = await self.runtime._session() if presence is None else None
             presence = presence or authenticated[1]
             scheduler = self.runtime.scheduler
@@ -606,7 +625,7 @@ class DesktopProfileSync:
                 if authenticated[1] != presence:
                     raise ValueError("chat_sync_session_changed")
                 _, request, commit = await self.runtime._bound_transport(uid, authenticated=authenticated, expected_binding=binding,
-                    automatic_only=not manual)
+                    automatic_only=not manual and not initial_upload_only)
                 path = f"/prototype/chat-sync/characters/{uid}/profile"
                 operation = await asyncio.to_thread(self.store.next_operation, state["domain"])
                 if operation is not None and not choose_remote:
@@ -617,6 +636,10 @@ class DesktopProfileSync:
                         if not getattr(exc, "profile_conflict", False):
                             raise
                         await commit(self.store.conflict, operation["operation_id"])
+                if initial_upload_only:
+                    # Keep downloads, conflict application and later profile edits current-role only.
+                    await asyncio.to_thread(scheduler.success, state["domain"], "profile")
+                    return await asyncio.to_thread(self.store.status, state["domain"])
                 state = await asyncio.to_thread(self.store.status, state["domain"])
                 head = await request("GET", path + "?metadataOnly=true", None)
                 if "profile" in head:
@@ -660,3 +683,6 @@ class DesktopProfileSync:
             except (ValueError, OSError) as exc:
                 await asyncio.to_thread(scheduler.failure, state["domain"], "profile", binding["generation"], presence, exc)
                 raise
+            finally:
+                if self.runtime.recent_memory is not None:
+                    self.runtime.wake_scheduler()

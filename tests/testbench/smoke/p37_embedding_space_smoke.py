@@ -1,7 +1,7 @@
 """P37 (P28) — memory embedding space aggregator smoke.
 
 Guards the read-only embedding analysis chokepoint
-(``tests/testbench/pipeline/embedding_space.py``) behind the 向量空间 sub-page:
+(``tests/testbench/pipeline/embedding_space.py``) under the Vector Space subpage:
 ``GET /api/memory/embedding/space|neighbors|bridges|duplicates|matrix``.
 
 Contracts under test
@@ -14,19 +14,19 @@ E2 — **scatter shape + PCA**: ``points`` carry ``{id,type,entity,x,y,label}``,
      deterministic, but we assert structure/finiteness, not exact coords.)
 E3 — **neighbors**: cosine top-1 of an entry is its known-closest entry;
      a non-embedded / unknown id returns ``found=False``.
-E4 — **bridges (语义源 vs 结构源)**: a reflection whose nearest fact differs
+E4 — **bridges (semantic source vs structural source)**: a reflection whose nearest fact differs
      from its declared ``source_fact_ids`` surfaces the gap
      (``missing_in_declared`` / ``extra_in_declared``).
 E5 — **data gate + error mapping**: a character with zero vectors returns a
      valid empty payload (200, embedded=0); no session → 404; no character →
      409 NoCharacterSelected.
-E6 — **duplicates (④近重复对)**: upper-triangle cosine ≥ threshold surfaces the
+E6 — **duplicates (④ near-duplicate pairs)**: the upper triangle with cosine ≥ threshold surfaces
      known near-duplicate pairs; a high threshold yields none; stale / missing /
      off-dim entries never participate.
-E7 — **matrix (⑤相似度矩阵)**: NxN cosine over a subset (default = whole primary
+E7 — **matrix (⑤ similarity matrix)**: NxN cosine over a subset (default = the full primary
      space), symmetric with unit diagonal; explicit ``ids`` subset drops unknown
      ids; reordered by seriation.
-E8 — **clusters (⑦自动聚类)**: clustering the original high-dim cosine space groups
+E8 — **clusters (⑦ automatic clustering)**: clustering the original high-dimensional cosine space groups
      known co-located entries together into ≥2 clusters; medoid ∈ members; stale /
      missing / off-dim entries never get a cluster; ``cluster_labels`` never 500s
      and covers every cluster (LLM or medoid fallback).

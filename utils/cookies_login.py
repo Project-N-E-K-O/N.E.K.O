@@ -37,7 +37,7 @@ from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
 # ==========================================
-# 基础配置与日志
+# Basic configuration and logging
 # ==========================================
 logger = get_module_logger(__name__)
 if not logger.handlers:
@@ -66,7 +66,7 @@ class LoginStatus:
     TIMEOUT = -2
 
 # ==========================================
-# 🛡️ 安全模块：脱敏、校验与文件锁
+# 🛡️ Security: redaction, validation, and file locking
 # ==========================================
 def mask_string(s: str) -> str:
     """Mask sensitive credentials to prevent shoulder-surfing or log leaks"""
@@ -100,7 +100,7 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
         "kuaishou": ['kuaishou.server.web_st', 'userId'], 
         'weibo': ['SUB'],
         'twitter': ['auth_token']
-        # reddit Cookie 变动较大，暂不做强制硬性校验
+        # Reddit cookies vary substantially; do not enforce strict validation yet
     }
     
     if platform in required_keys:
@@ -141,7 +141,7 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
         if platform not in COOKIE_FILES:
             return False
 
-        # 【核心修复】增加防御性调用，确保即便从程序化接口传入的 dict 也能通过值类型校验
+        # [Core fix] Add a defensive call so dictionaries passed through programmatic interfaces also undergo value-type validation
         cookies = _normalize_cookies(cookies, platform)
         if not cookies:
             return False
@@ -153,14 +153,14 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
         cookie_file = COOKIE_FILES[platform]
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if sys.platform != 'win32':
-           os.chmod(CONFIG_DIR, 0o700)  # 仅所有者可访问
+           os.chmod(CONFIG_DIR, 0o700)  # Owner access only
         
-        # 根据参数决定是否加密
+        # Decide whether to encrypt based on parameters
         if encrypt:
-            # 加密保存
+            # Save encrypted data
             from cryptography.fernet import Fernet
             
-            # 生成或加载加密密钥
+            # Generate or load an encryption key
             key_file = get_cookie_key_file(platform)
             if key_file.exists():
                 key = _read_encryption_key(platform, key_file)
@@ -176,24 +176,24 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
                 _write_encryption_key(platform, key_file, key)
                 fernet = Fernet(key)
             
-            # 加密Cookie数据
+            # Encrypt cookie data
             cookie_json = json.dumps(cookies, ensure_ascii=False)
             encrypted_data = fernet.encrypt(cookie_json.encode('utf-8'))
             
-            # 保存加密数据
+            # Save encrypted data
             with open(cookie_file, 'wb') as f:
                 f.write(encrypted_data)
             
-            # 设置Cookie文件权限
+            # Set cookie-file permissions
             if sys.platform != 'win32':
                 os.chmod(cookie_file, 0o600)
             
             logger.info(f"✅ 已加密保存 {platform} 凭证到: {cookie_file}")
         else:
-            # 明文保存
+            # Save plaintext
             atomic_write_json(cookie_file, cookies, ensure_ascii=False, indent=4)
                 
-            # 🔒 安全加固：修改文件权限为 600 (仅当前用户可读写)，防止跨用户窃取
+            # 🔒 Security hardening: set permissions to 600 (current-user read/write only) to prevent theft by other users
             if sys.platform != 'win32':
                 os.chmod(cookie_file, 0o600)
             
@@ -203,7 +203,7 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
         # form. Cookie-based platforms retain the existing diagnostic summary.
         if platform != 'twitch':
             logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
-            for k, v in list(cookies.items())[:3]: # 仅展示前三个键
+            for k, v in list(cookies.items())[:3]: # Show only the first three keys
                 logger.info(f"   - {k}: {mask_string(v)}")
         return True
         
@@ -220,18 +220,18 @@ def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]
     valid_cookies: Dict[str, str] = {}
     
     for k, v in cookies.items():
-        # 1. 校验键必须为字符串
+        # 1. Require string keys
         if not isinstance(k, str):
             logger.warning(f"[{platform}] Cookie 键格式错误：'{k}' 必须为字符串类型")
             return {}
         
-        # 2. 【核心修复】校验值必须为字符串。
-        # 移除对 dict/list/int/bool 的分段判断，统一实行“非字符即非法”策略
+        # 2. [Core fix] Require string values.
+        # Replace separate dict/list/int/bool checks with a uniform 'non-string is invalid' policy
         if isinstance(v, str):
             valid_cookies[k] = v
         else:
             logger.warning(f"[{platform}] Cookie 格式非法：键 '{k}' 的值必须为字符串，当前类型为 {type(v).__name__}")
-            # 只要发现一个字段不是字符串（如 bool、int 或 None），即认为整组凭证无效，防止绕过验证
+            # Any non-string field (such as bool, int, or None) invalidates the entire credential set to prevent validation bypass
             return {}
     
     return valid_cookies
@@ -246,16 +246,16 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
         if not cookie_file.exists():
             return {}
         
-        # 尝试解密加载
+        # Try decrypting and loading
         try:
             from cryptography.fernet import Fernet
             
-            # 加载加密密钥
+            # Load the encryption key
             key_file = get_cookie_key_file(platform)
             if key_file.exists():
                 key = _read_encryption_key(platform, key_file)
                 
-                # 解密Cookie数据
+                # Decrypt cookie data
                 with open(cookie_file, 'rb') as f:
                     encrypted_data = f.read()
                 
@@ -263,10 +263,10 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
                 decrypted_data = fernet.decrypt(encrypted_data).decode('utf-8')
                 cookies = json.loads(decrypted_data)
                 
-                # 校验 Cookie 结构: 确保所有值都是字符串
+                # Validate cookie structure: ensure all values are strings
                 if isinstance(cookies, dict):
                     valid_cookies = _normalize_cookies(cookies, platform)
-                    # 【新增】判断归一化后是否为空，并进行核心必填字段校验
+                    # [New] Check whether normalization produced empty data and validate required core fields
                     if not valid_cookies or not validate_cookies(platform, valid_cookies):
                         logger.warning(f"{platform} Cookie 解密后核心字段校验不通过，拒绝加载")
                         return {}
@@ -277,15 +277,15 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
                     logger.warning(f"{platform} Cookie 解密后不是对象")
                     return {}
             else:
-                # 密钥文件不存在，可能是明文文件
+                # No key file; this may be a plaintext file
                 raise FileNotFoundError("密钥文件不存在")
                 
         except Exception as decrypt_error:
-            # 解密失败，尝试明文加载
+            # Decryption failed; try loading plaintext
             logger.debug(f"解密 {platform} Cookie 失败，尝试明文加载: {decrypt_error}")
             
             try:
-                # 【清理】移除重复的 exists() 检查，函数入口已做保护
+                # [Cleanup] Remove the duplicate exists() check; the function entry already guards it
                 if cookie_file.stat().st_size == 0:
                     logger.info(f"{platform} Cookie 文件为空: {cookie_file}")
                     return {}
@@ -301,10 +301,10 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
                     logger.warning(f"{platform} Cookie 明文内容不是对象: {cookie_file}")
                     return {}
                 
-                # 校验 Cookie 结构：确保所有值都是字符串
+                # Validate cookie structure: ensure all values are strings
                 valid_cookies = _normalize_cookies(cookies, platform)
-                # 【新增】判断归一化后是否为空（被判定为不合法）
-                # 同样补上 validate_cookies 校验
+                # [New] Check whether normalization produced empty (invalid) data
+                # Also add validate_cookies validation
                 if not valid_cookies or not validate_cookies(platform, valid_cookies):
                     logger.warning(f"{platform} Cookie 明文内容核心字段校验不通过，拒绝加载: {cookie_file}")
                     return {}
@@ -662,7 +662,7 @@ def get_xhh_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     return cookies
 
 # ==========================================
-# 其他平台登录逻辑 (纯手工导入)
+# Other-platform login logic (manual import only)
 # ==========================================
 def get_douyin_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
@@ -746,7 +746,7 @@ def get_qqmusic_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     return cookies
 
 # ==========================================
-# 交互式终端 UI 引擎
+# Interactive terminal UI engine
 # ==========================================
 class PlatformLoginManager:
     def __init__(self):

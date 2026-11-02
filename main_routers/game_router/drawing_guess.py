@@ -659,12 +659,12 @@ _CJK_CHAR_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _HAN_INNER_SPACE_RE = re.compile(
     r"(?<=[\u3400-\u9fff\uf900-\ufaff])\s+(?=[\u3400-\u9fff\uf900-\ufaff])"
 )
-# 修饰前缀（小大白老）加入白名单：是小猫咪吗/小白兔/大乌龟属正确猜词。
-# 词表内真正危险的单字复合前缀是 火/列/动/单/電/公/月（火车≠车、月球≠球），
-# 与修饰词集合不相交；热狗（热）继续被拦。改词表时需复查这一不相交性。
+# Allowlist descriptive prefixes 小/大/白/老 (small/big/white/old): little kitten, white rabbit, and big turtle are valid guesses.
+# Dangerous single-character compound prefixes in the vocabulary are 火/列/动/单/電/公/月 (train differs from car; moon differs from ball),
+# disjoint from descriptive prefixes; hot dog remains blocked via 热. Recheck this disjointness when changing vocabulary.
 _CJK_ALIAS_PREFIX_CHARS = frozenset("是像猜画畫答为為只条條个個张張小大白老")
-# 只放句末语气词；这些字符可紧跟答案（「是猫啦」「猫哦」），但不应把普通
-# CJK 复合词边界整体放开。改词表时需与上面的危险复合词一并复查。
+# Allow only sentence-final particles, which may directly follow an answer (e.g. 是猫啦/猫哦); do not relax
+# all CJK compound boundaries. Recheck them together with the dangerous compounds above when updating vocabulary.
 _CJK_ALIAS_SUFFIX_CHARS = frozenset("吗嗎吧呢呀啊喵嘛么麼啦哦呗唄哟喲")
 _CJK_ALIAS_NEGATION_RE = re.compile(
     r"(?:不是|并非|並非|不像(?:是)?|不叫|非|"
@@ -813,9 +813,9 @@ def _contains_alias_with_guess_boundary(text: Any, alias: Any) -> bool:
     if not spaced_alias:
         return False
     spaced_text = _spaced_guess_text(text)
-    # 词符类含西里尔：俄语与拉丁语同为空格分词，кот 不应命中 скот 内部。
-    # 假名/谚文是粘着语（助词直接贴词干），一刀切边界会挡掉正常猜词，
-    # 留给独立 follow-up 做助词白名单。
+    # Include Cyrillic in word characters: Russian, like Latin scripts, separates words with spaces; кот must not match inside скот.
+    # Kana/Hangul are agglutinative (particles attach directly to stems); blanket boundaries block valid guesses,
+    # so leave particle allowlists for a separate follow-up.
     alias_pattern = re.compile(
         rf"(?<![a-z0-9Ѐ-ӿ]){re.escape(spaced_alias)}(?![a-z0-9Ѐ-ӿ])"
     )

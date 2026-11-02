@@ -1,5 +1,5 @@
 """
-插件管理路由
+Plugin management routes
 """
 from typing import Optional
 
@@ -62,11 +62,11 @@ async def get_plugin(plugin_id: str, locale: Optional[str] = Query(default=None)
         raise_http_from_domain(error, logger=logger)
 
 
-# 用户在等的那些插件操作，抢锁不能无限等。
+# User-facing plugin operations must not wait indefinitely to acquire the lock.
 #
-# 前端 30s 就放弃，而放弃之后那次操作照样会落地（mutation 被 asyncio.shield 保
-# 着），于是用户看到"失败"、插件其实被启停了。宁可在预算内立刻回 409 并说明是
-# 谁占着。后台调用方（自启动对账、安装事务）不经过这里，行为不变。
+# The frontend gives up after 30s, but the operation can still complete afterward (mutation is protected by asyncio.shield),
+# making users see failure even though the plugin started/stopped. Prefer returning 409 promptly within budget, explaining
+# who holds the lock. Background callers (autostart reconciliation, installation transactions) bypass this path and remain unchanged.
 # Env: NEKO_PLUGIN_OPERATION_WAIT_BUDGET
 from plugin.server.application.plugins._env_budgets import env_seconds
 
@@ -80,7 +80,7 @@ def _busy_response() -> HTTPException:
     and no ``X-Error-Code`` header, while every other failure here goes through
     ``raise_http_from_domain`` — string detail, header set, message in English
     like the rest of the domain errors. A client keying on the header simply did
-    not see this one (本轮对抗复审).
+    not see this one (this round's adversarial review).
     """
     return HTTPException(
         status_code=409,
@@ -274,10 +274,10 @@ async def reload_plugin_endpoint(plugin_id: str, request: Request, _: str = requ
 async def reload_all_plugins_endpoint(request: Request, _: str = require_admin,
                                       __: None = Depends(require_plugin_mutation_access)) -> dict[str, object]:
     """
-    重载所有插件
+    Reload all plugins
     
-    停止所有运行中的插件，然后重新加载。
-    用于前端全局重载按钮。
+    Stop every running plugin, then reload.
+    Used by the frontend's global reload button.
     """
     try:
         with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):

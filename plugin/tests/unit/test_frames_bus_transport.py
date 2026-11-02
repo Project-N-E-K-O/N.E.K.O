@@ -561,7 +561,7 @@ def test_a_cached_rpc_client_is_rebuilt_when_the_endpoint_moves(
             built.append(endpoint)
 
     monkeypatch.setattr(_client_base, "_MessagePlaneRpcClient", _FakeRpc)
-    ctx = SimpleNamespace(plugin_id="p")  # 无预置客户端：走 _ensure_rpc 自建这一路
+    ctx = SimpleNamespace(plugin_id="p")  # No preset client: use the _ensure_rpc self-creation path.
 
     monkeypatch.setenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", "tcp://127.0.0.1:38865")
     first = _client_base._ensure_rpc(ctx)

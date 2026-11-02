@@ -174,7 +174,7 @@ def get_core_config_provider_api_key_field(provider, api_key_registry):
 async def get_core_config_api():
     """Get the core config (API keys)."""
     try:
-        # 尝试从core_config.json读取
+        # Try reading core_config.json
         try:
             from utils.config_manager import get_config_manager
             config_manager = get_config_manager()
@@ -183,12 +183,12 @@ async def get_core_config_api():
             api_key = core_cfg.get('coreApiKey', '')
             runtime_core_config = await config_manager.aget_core_config()
         except FileNotFoundError:
-            # 如果文件不存在，返回当前配置中的CORE_API_KEY
+            # If absent, return CORE_API_KEY from current configuration
             _config_manager = get_config_manager()
             core_config = await _config_manager.aget_core_config()
             runtime_core_config = core_config
             api_key = core_config.get('CORE_API_KEY','')
-            # 创建空的配置对象用于返回默认值
+            # Create empty configuration for default returns
             core_cfg = {}
             runtime_core_api_provider = core_config.get('CORE_API_TYPE') or ''
             runtime_assist_api_provider = core_config.get('assistApi') or ''
@@ -196,10 +196,10 @@ async def get_core_config_api():
             runtime_core_api_provider = ''
             runtime_assist_api_provider = ''
         
-        # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
-        # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
-        # 但只能回退到与 coreApi / assistApi 匹配的服务商，
-        # 以免将不兼容的 API Key 填充到其他服务商。
+        # Old core_config.json may contain only coreApiKey without assistApiKey* fields;
+        # match ConfigManager.get_core_config() fallback logic,
+        # but only fall back to providers matching coreApi / assistApi,
+        # avoiding incompatible keys populated into other providers.
         fallback_key = api_key if api_key != 'free-access' else ''
         _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'qwen'
         _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
@@ -261,8 +261,8 @@ async def get_core_config_api():
             "assistApiKeyDeepseek": core_cfg.get('assistApiKeyDeepseek', '') or _fb('deepseek'),
             "assistApiKeyDoubao": core_cfg.get('assistApiKeyDoubao', '') or _fb('doubao'),
             "assistApiKeyDoubaoTts": core_cfg.get('assistApiKeyDoubaoTts', '') or _doubao_tts_shared_key,
-            # MiniMax / MiMo 是 assist-only TTS provider，coreApiKey 不保证兼容；
-            # 不 fallback，以免把无效 key 塞进 TTS 凭证槽位导致 401。
+            # MiniMax/MiMo are assist-only TTS providers, so coreApiKey may be incompatible;
+            # do not fall back and inject an invalid TTS credential causing 401.
             "assistApiKeyMinimax": core_cfg.get('assistApiKeyMinimax', ''),
             "assistApiKeyMinimaxIntl": core_cfg.get('assistApiKeyMinimaxIntl', ''),
             "assistApiKeyMimo": core_cfg.get('assistApiKeyMimo', ''),
@@ -280,7 +280,7 @@ async def get_core_config_api():
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
             "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
-            # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
+            # Custom API fields: Provider / Url / Id / ApiKey per model type
             **{
                 f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
                 for mt in CORE_CONFIG_MODEL_TYPES
@@ -342,14 +342,14 @@ async def get_core_config_api():
         }
 
 
-# /core_api 保存之间互斥（请求级，与 core_config.json 的文件锁是两回事）：
-# 每次保存基于快照算出派生字段（resolvedProviderUrls、Key Book 槽位迁移等），
-# 再把差异合并进最新文件。两次 /core_api 交错时，按字段合并会拼出「A 的 provider
-# + B 基于旧 provider 算的 resolvedProviderUrls」这种谁都没提交过的组合。串行后，
-# 后一次保存的快照一定已经包含前一次的结果。记忆开关等其它写入方只碰互不相干的键，
-# 不受这把锁影响，照常在 URL 解析期间落盘。
-# 只罩「读快照 → 写盘」：写完立即释放，之后的通知前端 / 结束 session / 重载配置
-# 可能卡在慢 WebSocket 上，不能让它拖住下一次保存。
+# Serialize /core_api saves at request level, separately from core_config.json file locking:
+# each save computes derived fields from a snapshot (resolvedProviderUrls, Key Book slot migrations, etc.),
+# then merges differences into the latest file. Interleaved /core_api requests can combine A's provider
+# with B's resolvedProviderUrls based on the old provider, a combination nobody submitted. Serialization ensures
+# each later snapshot contains the preceding save's result. Other writers such as memory switches use unrelated keys,
+# remain outside this lock, and persist normally during URL resolution.
+# Lock only snapshot read → disk write, releasing immediately afterward; frontend notification / session ending / configuration reload
+# may block on slow WebSockets and must not delay subsequent saves.
 _core_api_save_lock = asyncio.Lock()
 
 
@@ -364,20 +364,20 @@ async def update_core_config(request: Request):
         
         enable_custom_api = data.get('enableCustomApi', False)
 
-        # 保存到core_config.json
+        # Save to core_config.json
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         
-        # 请求体在锁外读完：慢速上传的请求体不能拖住别的保存。从这里起到写盘为止
-        # 都依赖配置快照，必须在锁内。
+        # Read request bodies outside the lock so slow uploads do not delay other saves. Everything from here through persistence
+        # depends on the configuration snapshot and must hold the lock.
         await _core_api_save_lock.acquire()
         save_lock_held = True
 
-        # 构建配置对象：先加载旧配置，再按本次提交覆盖。
-        # 这与前端 API 管理簿的行为保持一致，避免某个字段本次未提交时被意外清空。
-        # 只有「文件不存在」才从空配置开始；文件存在却读不出/解析失败时直接拒绝保存——
-        # 以前这里吞成 {}，结果是用本次提交的寥寥几个字段把整份损坏文件覆盖掉。
-        # 这份快照只用来做决策和算差异，真正落盘见下方 aupdate_json_config。
+        # Build configuration by loading existing values, then overlaying this submission.
+        # Match the frontend API-management book, avoiding accidental clearing of omitted fields.
+        # Start empty only when the file is absent; reject saves when existing files cannot be read/parsed.
+        # Previously swallowing these failures as {} overwrote the entire corrupt file with only this submission's few fields.
+        # Use this snapshot only for decisions/diff calculation; actual writes use aupdate_json_config below.
         from utils.config_manager.json_update import (
             json_values_equal,
             load_json_config_snapshot,
@@ -518,9 +518,9 @@ async def update_core_config(request: Request):
                 raise TypeError("API Key必须是字符串类型")
             return value.strip()
 
-        # 只有在启用自定义API时，才允许不设置coreApiKey
+        # Allow missing coreApiKey only when custom APIs are enabled
         if enable_custom_api:
-            # 启用自定义API时，coreApiKey是可选的
+            # coreApiKey is optional with custom APIs enabled
             if 'coreApiKey' in data:
                 try:
                     api_key = _normalize_core_api_key(data['coreApiKey'])
@@ -529,7 +529,7 @@ async def update_core_config(request: Request):
                 if api_key is not None:
                     core_cfg['coreApiKey'] = api_key
         else:
-            # 未启用自定义API时，必须设置coreApiKey
+            # Require coreApiKey when custom APIs are disabled
             if 'coreApiKey' not in data and not core_uses_free_provider:
                 return {"success": False, "error": "缺少coreApiKey字段"}
             try:
@@ -549,9 +549,9 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "API Key不能为空"}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key
-        # coreApi / assistApi 为空串 = 前端在配置尚未加载完成（下拉被清空）时提交。
-        # 绝不能用空值覆盖已存的有效 provider——否则重新加载时空值会被兜底成别的服务商，
-        # 把免费版用户悄悄切走。仅在非空时写入；空值保留 existing_core_cfg 里的旧值。
+        # Empty coreApi / assistApi means submission before configuration finished loading, with cleared dropdowns.
+        # Never overwrite valid saved providers with emptiness; reload would fall back to another provider,
+        # silently moving free users away. Write only nonempty values; otherwise retain existing_core_cfg values.
         if incoming_core_api:
             core_cfg['coreApi'] = incoming_core_api
         if incoming_assist_api:
@@ -583,10 +583,10 @@ async def update_core_config(request: Request):
                     return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
                 core_cfg[field] = data[field].strip()
         if 'openclawUrl' in data:
-            # 前端表单回填的是文件里的原始值。若启动期迁移曾写盘失败（Windows 上
-            # os.replace 可能被杀软占用），这里收到的就还是旧的 8089，原样落盘等于把
-            # 旧端口重新固化一遍、迁移永远不收敛。在这个 save choke point 再归一化一次：
-            # 用户任何一次保存都能替启动期把迁移补上。
+            # Frontend forms populate original saved values. If startup migration failed to persist (Windows antivirus may block
+            # os.replace), this still receives old 8089; writing unchanged would persist the old port again,
+            # preventing migration convergence. Normalize again at this save boundary,
+            # allowing any user save to complete startup migration.
             _submitted_openclaw_url = data['openclawUrl']
             core_cfg['openclawUrl'] = (
                 config_manager._migrated_openclaw_url(_submitted_openclaw_url)
@@ -674,7 +674,7 @@ async def update_core_config(request: Request):
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
 
-        # 自定义API配置（Provider / Url / Id / ApiKey per model type）
+        # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
                 field = f'{mt}Model{suffix}'
@@ -683,12 +683,12 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
-        # gptsovitsEnabled 退役后的惰性迁移（save choke point，对偶 #1842 voice_id 思路）：
-        # GSV 启用已收口到 ttsModelProvider=='gptsovits' 单一真相，旧 gptsovitsEnabled 仅作
-        # pre-#1830 存量兜底。前端加载会把启用中的 GSV 下拉钉到 'gptsovits'，故任何提交了
-        # 非 'gptsovits' 的 ttsModelProvider 都是用户显式切走 → 顺手把残留旧 flag 落 False，
-        # 否则 get_core_config 的 follow_* 回落分支会把旧 true 兜回来（切到 follow_assist 也
-        # 关不掉 GSV）。未提交 ttsModelProvider 的局部更新不碰旧 flag，保住从不重存的存量。
+        # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
+        # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
+        # pre-#1830 compatibility fallback. Frontend loading pins enabled GSV dropdowns to 'gptsovits', so any submitted
+        # other ttsModelProvider means an explicit user switch; set the leftover old flag False,
+        # or get_core_config's follow_* fallback resurrects old true and even follow_assist cannot
+        # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
         _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
@@ -715,10 +715,10 @@ async def update_core_config(request: Request):
             checked_resolved_urls = {}
         save_connectivity = await _auto_resolve_provider_urls_for_save(core_cfg, checked_resolved_urls)
 
-        # 上面所有决策（含可能联网的 URL 解析）都基于开头那份快照，耗时可能很长；
-        # 这期间别的写入方（记忆开关等）可能已经落盘。所以不能把整份快照写回，
-        # 只把「本次相对快照改了 / 删了哪些顶层字段」在锁内应用到重新读到的文件上，
-        # 本次没碰的字段一律保留磁盘上的最新值。
+        # All earlier decisions, including potentially networked URL resolution, use the initial snapshot and may take time;
+        # other writers such as memory switches may persist meanwhile. Do not write back the whole snapshot;
+        # apply only top-level changes/deletions relative to that snapshot to a freshly read file under lock,
+        # retaining latest disk values for untouched fields.
         changed_fields = {
             key: value for key, value in core_cfg.items()
             if key not in existing_core_cfg
@@ -727,7 +727,7 @@ async def update_core_config(request: Request):
         removed_fields = [key for key in existing_core_cfg if key not in core_cfg]
 
         def _apply_core_config_changes(fresh_cfg):
-            # 没有字段变化时 update_json_config 也会过写栅栏，维护模式下照旧拒绝。
+            # Even without changed fields, update_json_config checks the write fence and rejects maintenance-mode writes.
             for key in removed_fields:
                 fresh_cfg.pop(key, None)
             fresh_cfg.update(deepcopy(changed_fields))
@@ -741,17 +741,17 @@ async def update_core_config(request: Request):
 
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
-        # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
+        # After API updates, notify every client first, then close sessions, then reload configuration
         logger.info("API配置已更新，准备通知客户端并重置所有session...")
         
-        # 1. 并行通知所有连接的客户端即将刷新（WebSocket还连着）
-        # 重要：snapshot (name, mgr, session) 三元组，让 notify 和 end_session 两阶段
-        # 操作同一组 mgr **+** 同一份 session：
-        # - mgr 维度防新 mgr 被加入第二阶段误杀
-        # - session 维度防同一 mgr 在两阶段之间已 rotate 到新 session 被误杀
-        #   （前端 reload 后立即重连 → 触发新 session → 第二阶段不应关掉新 session）
-        # end_session 内部已有 expected_session stale guard（core.py:3013/3026），
-        # 这里把 snapshot 时的 session 传下去即可触发该 guard。
+        # 1. Notify connected clients of upcoming refresh concurrently while WebSockets remain connected
+        # Capture (name, mgr, session) triples so notification and end_session operate on the same managers
+        # **and** the same sessions:
+        # - Manager identity prevents killing new managers introduced before phase two
+        # - Session identity prevents killing newly rotated sessions on existing managers between phases
+        #   (frontend reload reconnects immediately and starts a new session that phase two must preserve)
+        # end_session already has expected_session stale guards (core.py:3013/3026);
+        # pass the captured session to activate them.
         session_manager = get_session_manager()
         mgr_snapshot = [
             (name, mgr, getattr(mgr, "session", None))
@@ -780,9 +780,9 @@ async def update_core_config(request: Request):
         notification_count = sum(1 for r in _notify_results if r is True)
         logger.info(f"已通知 {notification_count} 个客户端")
 
-        # 2. 并行关闭所有活跃的 session（每个 end_session ≈ 1s，串行 N 秒，gather 后 ≈ 1s）
-        # 复用上一阶段的 (mgr, session) snapshot，确保不会误杀重连进来的新 mgr，
-        # 也不会误杀同一 mgr 在中途 rotate 出来的新 session。
+        # 2. Close all active sessions concurrently: end_session takes ~1s each, N seconds serially versus ~1s with gather
+        # Reuse the preceding (mgr, session) snapshot, preserving newly reconnected managers
+        # and new sessions rotated on existing managers meanwhile.
         async def _end(lanlan_name, mgr, expected_session):
             if not mgr.is_active or expected_session is None:
                 return None
@@ -800,7 +800,7 @@ async def update_core_config(request: Request):
         )
         sessions_ended = [r for r in _end_results if isinstance(r, str)]
         
-        # 3. 重新加载配置并重建session manager
+        # 3. Reload configuration and rebuild session managers
         logger.info("正在重新加载配置...")
         try:
             initialize_character_data = get_initialize_character_data()
@@ -811,7 +811,7 @@ async def update_core_config(request: Request):
             return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
         
         # 4. Notify agent_server to rebuild CUA adapter with fresh config
-        # per-call AsyncClient: 用户保存 API key 才触发，冷路径
+        # per-call AsyncClient: cold path triggered only when users save API keys
         try:
             import httpx
             from config import TOOL_SERVER_PORT
@@ -855,12 +855,12 @@ async def get_api_providers_config():
         core_providers = get_core_api_providers_for_frontend(force_reload=True)
         assist_providers = get_assist_api_providers_for_frontend(force_reload=True)
 
-        # TTS provider 的前端驱动元数据：单一源来自 utils.tts.provider_registry，
-        # 避免前端把「哪些 provider 只进 TTS 下拉 / 端点可编辑 / 支持哪些声音来源 /
-        # 用哪种连通性探测」再硬编码一遍（见 api_key_settings.js）。
+        # TTS-provider frontend metadata has one source in utils.tts.provider_registry,
+        # avoiding frontend re-hardcoding of TTS-only dropdown providers, editable endpoints, supported voice sources,
+        # and connectivity-probe types (see api_key_settings.js).
         try:
             from utils.tts import provider_registry
-            # 触发 worker 侧注册副作用（adapter 在 tts_client 定义 worker 后 register）
+            # Trigger worker-side registration effects; tts_client registers adapters after defining workers
             import main_logic.tts_client  # noqa: F401
             tts_providers = provider_registry.ui_metadata()
         except Exception as e:

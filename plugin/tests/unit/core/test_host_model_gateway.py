@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -31,6 +32,7 @@ def host_factory(monkeypatch, tmp_path):
         host_module, "HostTransport",
         lambda: SimpleNamespace(
             downlink_endpoint="ipc://down", uplink_endpoint="ipc://up",
+            message_uplink_endpoint="ipc://msg",
             close=lambda: None,
         ),
     )
@@ -38,8 +40,6 @@ def host_factory(monkeypatch, tmp_path):
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda _logger: None)
     monkeypatch.setattr(host_module.state, "register_downlink_sender", lambda *_args: None)
     monkeypatch.setattr(host_module.state, "remove_downlink_sender", lambda *_args: None)
-    for name in ("plugin_response_map", "plugin_response_notify_event"):
-        monkeypatch.setattr(type(host_module.state), name, property(lambda _self: None))
 
     class Process:
         pid = 321
@@ -210,6 +210,102 @@ async def test_cancel_during_spawn_keeps_launch_options_until_worker_finishes(
     if not spawn_fails:
         expected.insert(1, "process_stopped")
     assert events == expected
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_waiting_for_creation_does_not_launch_later(host_factory, monkeypatch):
+    from utils import process_creation
+
+    occupied = threading.Event()
+    release = threading.Event()
+    attempted = threading.Event()
+    real_start = process_creation.start
+
+    def occupy():
+        occupied.set()
+        assert release.wait(5)
+
+    owner = threading.Thread(target=lambda: real_start(SimpleNamespace(start=occupy)), daemon=True)
+    owner.start()
+    assert await asyncio.to_thread(occupied.wait, 3)
+
+    def observe_start(process, **kwargs):
+        attempted.set()
+        return real_start(process, **kwargs)
+
+    monkeypatch.setattr(process_creation, "start", observe_start)
+    plugin_host = host_factory.make()
+    task = asyncio.create_task(plugin_host.start())
+    try:
+        assert await asyncio.to_thread(attempted.wait, 3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
+        assert not hasattr(plugin_host.process, "launched_options")
+        assert not plugin_host.process.is_alive()
+        assert plugin_host._model_gateway_options == {}
+        assert len(host_factory.revoked) == 1
+    finally:
+        release.set()
+        owner.join(3)
+        await asyncio.gather(task, return_exceptions=True)
+    assert not owner.is_alive()
+    assert not hasattr(plugin_host.process, "launched_options")
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_creation_uses_the_existing_startup_budget(host_factory):
+    from plugin._types.exceptions import PluginLifecycleError
+    from utils import process_creation
+
+    occupied = threading.Event()
+    release = threading.Event()
+
+    def occupy():
+        occupied.set()
+        assert release.wait(5)
+
+    owner = threading.Thread(target=lambda: process_creation.start(SimpleNamespace(start=occupy)), daemon=True)
+    owner.start()
+    assert await asyncio.to_thread(occupied.wait, 3)
+    plugin_host = host_factory.make()
+    try:
+        with pytest.raises(PluginLifecycleError, match="startup timed out after"):
+            await asyncio.wait_for(plugin_host.start(startup_timeout=0.05), 3)
+        assert not hasattr(plugin_host.process, "launched_options")
+        assert not plugin_host.process.is_alive()
+        assert len(host_factory.revoked) == 1
+        assert plugin_host._model_gateway_options == {}
+        plugin_host.comm_manager.shutdown.assert_awaited_once()
+    finally:
+        release.set()
+        owner.join(3)
+    assert not owner.is_alive()
+
+
+@pytest.mark.asyncio
+async def test_handshake_receives_only_the_remaining_creation_budget(host_factory, monkeypatch):
+    now = time.monotonic()
+    ticks = iter([now, now + 0.6])
+    monkeypatch.setattr(host_module, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    plugin_host = host_factory.make()
+    await plugin_host.start(startup_timeout=1)
+    assert plugin_host.comm_manager.wait_for_startup.await_args.kwargs["timeout"] == pytest.approx(0.4)
+
+
+@pytest.mark.asyncio
+async def test_creation_exhausting_budget_stops_child_before_any_handshake(host_factory, monkeypatch):
+    from plugin._types.exceptions import PluginLifecycleError
+
+    now = time.monotonic()
+    ticks = iter([now, now + 2])
+    monkeypatch.setattr(host_module, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    plugin_host = host_factory.make()
+    with pytest.raises(PluginLifecycleError, match="startup timed out after"):
+        await plugin_host.start(startup_timeout=1)
+    assert not plugin_host.process.is_alive()
+    plugin_host.comm_manager.wait_for_startup.assert_not_awaited()
+    assert plugin_host._model_gateway_token == ""
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from utils.http.url import endpoint_identity, same_endpoint  # noqa: E402
 
 
-# (标签, a, b) —— 这些写法差异不改变端点身份
+# (label, a, b): these spelling differences do not change endpoint identity.
 SAME = [
     ('scheme 大小写', 'HTTPS://api.example.com/v1', 'https://api.example.com/v1'),
     ('host 大小写', 'https://API.Example.COM/v1', 'https://api.example.com/v1'),
@@ -41,7 +41,7 @@ SAME = [
     ('同样写坏的 URL', 'http://[::1/v1', 'http://[::1/v1'),
 ]
 
-# (标签, a, b) —— 这些差异**必须**判为不同端点，否则凭证会跨边界
+# (label, a, b): these differences MUST identify distinct endpoints, or credentials cross boundaries.
 DIFFERENT = [
     ('path 大小写', 'https://api.example.com/v1/TenantA', 'https://api.example.com/v1/tenanta'),
     ('query 大小写', 'https://api.example.com/v1?Key=A', 'https://api.example.com/v1?key=a'),
@@ -83,10 +83,10 @@ def test_blank_never_matches_anything(blank):
 
 @pytest.mark.unit
 @pytest.mark.parametrize('bad', [
-    'http://[::1',            # 未闭合 IPv6 —— urlsplit 自己会抛
+    'http://[::1',            # Unclosed IPv6: urlsplit itself raises.
     'http://[::1/v1',
-    'http://h:not-a-port/v1',  # 非数字端口 —— 读 .port 会抛
-    'http://h:99999999/v1',    # 越界端口
+    'http://h:not-a-port/v1',  # Nonnumeric port: reading .port raises.
+    'http://h:99999999/v1',    # Out-of-range port.
     '::::',
     'not a url at all',
 ])

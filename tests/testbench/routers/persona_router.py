@@ -1,6 +1,6 @@
 """Setup workspace backend — session persona + character imports.
 
-Scope (PLAN §Workspace 1 + §Setup workspace + P10 preset 补丁):
+Scope (PLAN §Workspace 1 + §Setup workspace + P10 preset patch):
 
 - ``GET   /api/persona``                              full persona of active session.
 - ``PUT   /api/persona``                              replace persona (whole body).
@@ -16,8 +16,8 @@ Scope (PLAN §Workspace 1 + §Setup workspace + P10 preset 补丁):
                                                       presets bundled with testbench
                                                       (``tests/testbench/presets/``).
 - ``POST  /api/persona/import_builtin_preset/{id}``   apply a bundled preset — also
-                                                      serves as "reset sandbox to
-                                                      known state" when re-applied.
+                                                      serves as \"reset sandbox to
+                                                      known state\" when re-applied.
 
 All mutating endpoints hold the per-session lock via
 :meth:`SessionStore.session_operation`; reads bypass the lock because they
@@ -35,7 +35,7 @@ Implementation notes:
       (``master_name`` / prompt) are pulled from the source ``characters.json``
       to keep the Setup UI in sync.
     * Built-in presets share the same write path as real-character imports —
-      only the *source directory* differs. This keeps "whatever was imported"
+      only the *source directory* differs. This keeps \"whatever was imported\"
       indistinguishable from the sandbox's POV, so downstream code never
       needs to branch on import origin.
     * Nothing in this router ever writes to the *real* (un-sandboxed)
@@ -201,16 +201,16 @@ async def patch_persona(body: _PatchPersonaRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail={"message": str(exc)}) from exc
 
 
-# ── effective system prompt preview (P05 补强) ─────────────────────
+# ── Effective system-prompt preview (P05 enhancement) ─────────────────────
 #
-# 测试人员在 Persona 子页编辑时想知道"留空 / 用当前语言, 实际生成的是什么".
-# 真实运行时组装在两个地方做: `config_manager.get_character_data()` 用
-# `is_default_prompt()` 兜底换成 `get_lanlan_prompt(lang)`, 然后在
-# `tests/dump_llm_input.py` 里用 `{LANLAN_NAME}/{MASTER_NAME}` 替换为真名.
-# 这里把同样的两步在路由里复刻出来做预览, 不触发任何 IO/存储.
+# Persona editors need to see what leaving prompt empty / using current language actually generates.
+# Runtime assembly has two steps: `config_manager.get_character_data()` uses
+# `is_default_prompt()` to fall back to `get_lanlan_prompt(lang)`, then
+# `tests/dump_llm_input.py` replaces `{LANLAN_NAME}/{MASTER_NAME}` with real names.
+# Reproduce both steps in router preview without IO/storage.
 #
-# 不加锁 (纯读); 允许 query 参数覆盖 (master_name / character_name / lang),
-# 这样 UI 可以用 textarea 正在编辑的 draft 值做实时预览, 而无需先 Save.
+# No lock (pure read); allow query overrides (master_name / character_name / lang)
+# so UI previews current textarea draft without saving first.
 
 
 @router.get("/effective_system_prompt")
@@ -222,31 +222,31 @@ async def effective_system_prompt(
     """Preview the system prompt that will actually be fed to the LLM.
 
     Flow mirrors upstream exactly:
-        1. ``is_default_prompt(stored)`` → 空串或任一语言默认文 → 用
-           ``get_lanlan_prompt(lang)`` 取当前 language 版本. 否则保留 stored.
-        2. 对结果做 ``{LANLAN_NAME} / {MASTER_NAME}`` 替换.
+        1. ``is_default_prompt(stored)`` → empty or default in any language → use
+           ``get_lanlan_prompt(lang)`` for current language; otherwise retain stored.
+        2. Replace ``{LANLAN_NAME} / {MASTER_NAME}`` placeholders in the result.
 
-    Query 参数, 皆可省略:
-        - ``lang``            覆盖 session.persona.language (想看"切语言会怎样")
-        - ``master_name``     覆盖当前主人名
-        - ``character_name``  覆盖当前角色名
+    Optional query parameters:
+        - ``lang``            override session.persona.language to preview language changes
+        - ``master_name``     override current master's name
+        - ``character_name``  override current character name
 
     Return shape::
 
         {
-            "language":          "zh-CN",
-            "master_name":       "天凌",
-            "character_name":    "N.E.K.O",
-            "stored_prompt":     "<textarea 里/已保存的内容>",
-            "stored_is_default": true,      # upstream 会把它当"空"处理
-            "template_used":     "default" | "stored",
-            "template_raw":      "<含 {LANLAN_NAME} 占位符>",
-            "resolved":          "<替换完名字, 真实送给 LLM 的字符串>"
+            \"language\":          \"zh-CN\",
+            \"master_name\":       \"天凌\",
+            \"character_name\":    \"N.E.K.O\",
+            \"stored_prompt\":     \"<textarea draft / saved content>\",
+            \"stored_is_default\": true,      # upstream treats it as empty
+            \"template_used\":     \"default\" | \"stored\",
+            \"template_raw\":      \"<contains {LANLAN_NAME} placeholder>\",
+            \"resolved\":          \"<names replaced, actual string sent to LLM>\"
         }
 
-    空名字**不做替换**—保留占位符原样, 让 tester 一眼看到"这里还需要填角色名",
-    避免替换成空串后默默消失造成混淆.
-    """
+    **Do not replace** empty names: keep placeholders visible so testers see required names,
+    avoiding silent disappearance through empty-string replacement.
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     persona = _load(session)
 
@@ -367,13 +367,13 @@ async def list_real_characters() -> dict[str, Any]:
     where the real (pre-patch) ``config_dir`` lives. Each entry is a compact
     summary; the full payload is fetched by :func:`import_from_real`.
 
-    P24 Day 8 §12.4.A (2026-04-22): 用户 dev_note L17 反馈 "本地有数据但
-    列表不显示只有默认小天". Backend scan 逻辑与主程序 ``raw['猫娘']`` 契约
-    同源, 代码层面无 bug. 真正根因大概率在用户本地 characters.json 的
-    具体内容 (手动编辑过 / 主程序新增字段 / 异常 entry 被 ``isinstance(entry,
-    dict)`` 过滤). 加诊断字段 ``note`` 覆盖所有空态路径 + ``skipped_entries``
-    列出被过滤掉的 key + 原因, 让用户手测时**自己诊断**不需要来回贴文件.
-    """
+    P24 Day 8 §12.4.A (2026-04-22): user dev_note L17 reports local data absent
+    from list, showing only default Xiaotian. Backend scan shares main program's ``raw['猫娘']`` contract,
+    with no code bug; root cause likely local characters.json
+    contents (manual edits / added fields / abnormal entries filtered by ``isinstance(entry,
+    dict)``). Diagnostic ``note`` covers every empty-state path, while ``skipped_entries``
+    lists filtered keys + reasons, enabling user self-diagnosis during manual testing without repeated file sharing.
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     paths = session.sandbox.real_paths()
     if not paths:
@@ -390,17 +390,17 @@ async def list_real_characters() -> dict[str, Any]:
     config_dir = paths["config_dir"]
     memory_dir = paths["memory_dir"]
 
-    # 配置路径分裂检测 (2026-04-22 dev_note L17 根因):
-    # 用户报告"Documents\<app>\config\characters.json 改了但程序读不到".
-    # 两种可能:
-    #   (a) Windows CFA 把 Documents 判为只读, ConfigManager 回退到
-    #       AppData\Local → `cm._readable_docs_dir` 非 None;
-    #   (b) 主程序新版本直接以 AppData\Local 作 primary 候选, 根本不
-    #       尝试 Documents; 用户历史遗留的 Documents\<app>\ 目录仍然
-    #       存在但主程序永远不读 → `cm._readable_docs_dir = None`.
-    # 两种场景的用户表现完全一致 ("改了没生效"), 用 **启发式**: 直接查
-    # `%USERPROFILE%\Documents\<app_name>\config\characters.json` 是否存在,
-    # 存在且与 active 路径不同 → 有分裂风险, 警告用户.
+    # Detect split configuration paths (2026-04-22 dev_note L17 root cause):
+    # User reports changes to Documents\<app>\config\characters.json are not read.
+    # Two possibilities:
+    #   (a) Windows CFA makes Documents read-only, ConfigManager falls back to
+    #       AppData\Local → `cm._readable_docs_dir` non-None;
+    #   (b) New main-program version chooses AppData\Local as primary and never
+    #       tries Documents; legacy Documents\<app>\ directory remains
+    #       but is never read → `cm._readable_docs_dir = None`.
+    # Both look identical to users ('changes ineffective'); use **heuristic** existence check for
+    # `%USERPROFILE%\Documents\<app_name>\config\characters.json`;
+    # if present and different from active path, warn about split-path risk.
     cfa_fallback: dict[str, str] | None = None
     active_characters_path = config_dir / "characters.json"
     user_docs = _user_documents_dir()
@@ -452,7 +452,7 @@ async def list_real_characters() -> dict[str, Any]:
         current = str(raw.get("当前猫娘", "") or "")
         for name, entry in catgirls.items():
             if not isinstance(entry, dict):
-                # 把被过滤的条目透出 + 原因, 让用户自查.
+                # Expose filtered entries + reasons for user diagnosis.
                 skipped.append({
                     "name": str(name),
                     "reason": (
@@ -478,8 +478,8 @@ async def list_real_characters() -> dict[str, Any]:
                 "(通常在 ~/Documents/N.E.K.O/config/characters.json)."
             )
 
-    # 不管成功与否都 log 一次给 live_runtime_log / session log 追溯, 用户手测时
-    # 可以去看日志看扫到的完整真相.
+    # Log once regardless of success for live_runtime_log / session tracing; manual testers
+    # can inspect full scan truth in logs.
     python_logger().info(
         "persona.list_real_characters: session=%s, config_dir=%s, "
         "catgirls_type=%s, summaries=%d, skipped=%d",
@@ -501,7 +501,7 @@ async def list_real_characters() -> dict[str, Any]:
 # ── real character export (P31) ─────────────────────────────────────
 #
 # Mirror image of ``import_from_real``: the Import sub-page lists local real
-# characters; each row now also offers a one-click **[导出]** that packs that
+# characters; each row now also offers one-click **Export** that packs that
 # character's whole main-program memory directory into a ``<name>.zip``. The
 # layout matches the reference ``悠怡.zip`` (top folder = character name holding
 # ``characters.json`` + every memory file flat, ``reflection_archive/`` nested),
@@ -520,7 +520,7 @@ async def list_real_characters() -> dict[str, Any]:
 def _content_disposition(filename: str) -> str:
     """Build a ``Content-Disposition`` that survives a CJK ``<角色名>.zip`` name.
 
-    A bare ``filename="..."`` header is latin-1, so a Chinese name cannot ride
+    A bare ``filename=\"...\"`` header is latin-1, so a Chinese name cannot ride
     in it. Emit both: an ASCII fallback plus the RFC 5987 ``filename*=UTF-8''``
     form modern browsers prefer (mirrors ``memory_router._content_disposition``).
     """  # noqa: DOCSTRING_CJK
@@ -777,10 +777,10 @@ def _write_sandbox_characters_json(
 
     PersonaManager / FactStore / ReflectionEngine all locate a character's
     memory via ``cm.memory_dir/{character_name}/...`` and upstream
-    :func:`ConfigManager.load_characters` expects a ``{"猫娘": ..., "主人": ...}``
+    :func:`ConfigManager.load_characters` expects a ``{\"猫娘\": ..., \"主人\": ...}``
     dict. We keep the shape faithful to upstream so later phases (P07/P08) can
     just call ``cm.load_characters()`` without special-casing testbench.
-    """
+    """  # noqa: DOCSTRING_CJK
     sandbox_config_dir.mkdir(parents=True, exist_ok=True)
     target = sandbox_config_dir / "characters.json"
     payload: dict[str, Any] = {
@@ -895,14 +895,14 @@ async def import_from_real(name: str) -> dict[str, Any]:
 
 # ── built-in preset discovery / import ──────────────────────────────
 #
-# Preset 与 real-character 导入**共享** `_write_sandbox_characters_json` +
-# `_copytree_safe` + session.persona 回填逻辑, 只是数据源换成仓库里的
-# `tests/testbench/presets/<preset_id>/`. 设计成"内置虚拟 real"而不是另一套
-# endpoint + service, 是为了保证:
-#   (a) 测试人员感知一致 — 两种来源的导入效果完全相同 (覆盖 characters.json +
-#       覆盖 memory/<char>/ 文件 + 更新 session.persona);
-#   (b) 未来新增 "从 Hugging Face 拉" / "从压缩包导入" 时能复用这条管线;
-#   (c) 不留"只灌 memory 不灌 characters.json"之类的半成品调用路径.
+# Preset and real-character imports **share** `_write_sandbox_characters_json` +
+# `_copytree_safe` + session.persona updates; only source changes to repository
+# `tests/testbench/presets/<preset_id>/`. Built-in virtual real characters rather than separate
+# endpoint/service ensure:
+#   (a) Consistent tester experience: both imports overwrite characters.json +
+#       same-name memory/<char>/ files + update session.persona;
+#   (b) Future Hugging Face / archive imports reuse this pipeline;
+#   (c) No incomplete paths injecting memory without characters.json.
 
 
 def _load_preset_meta(preset_id: str) -> dict[str, Any] | None:
@@ -911,11 +911,11 @@ def _load_preset_meta(preset_id: str) -> dict[str, Any] | None:
     ``meta.json`` schema::
 
         {
-          "id": "<preset_id>",                ← 必须与目录名一致
-          "display_name": "<人类可读名>",
-          "description": "<一句话说明>",
-          "language": "zh-CN" | "en" | ...,
-          "character_name": "<在 characters.json 里的 key>"
+          \"id\": \"<preset_id>\",                ← must match directory name
+          \"display_name\": \"<human-readable name>\",
+          \"description\": \"<one-sentence description>\",
+          \"language\": \"zh-CN\" | \"en\" | ...,
+          \"character_name\": \"<key in characters.json>\"
         }
     """
     meta_path = PRESETS_ROOT / preset_id / "meta.json"
@@ -937,8 +937,8 @@ def _load_preset_meta(preset_id: str) -> dict[str, Any] | None:
 def _iter_preset_dirs() -> list[tuple[str, Path]]:
     """Enumerate ``presets/*/`` subdirs that contain a ``meta.json``.
 
-    返回按 id 字典序排好的 ``(preset_id, preset_dir)`` 列表. 忽略
-    ``__pycache__``、``__init__.py`` 这类非预设条目.
+    Return ``(preset_id, preset_dir)`` sorted lexicographically by id, ignoring
+    non-preset entries such as ``__pycache__`` / ``__init__.py``.
     """
     if not PRESETS_ROOT.exists():
         return []
@@ -957,9 +957,9 @@ def _iter_preset_dirs() -> list[tuple[str, Path]]:
 def _normalize_preset_facts(facts: Any) -> Any:
     """Fill in missing ``hash`` fields for seed facts.
 
-    主程序 ``FactStore`` 用 ``sha256(text)[:16]`` 做 dedup key; 预设文件里我们
-    故意把 ``hash`` 留空字符串, 导入时现算 — 这样维护预设不用手算哈希, 也
-    避免复制时文本微调却忘改 hash 造成 dedup 混乱.
+    Main program ``FactStore`` deduplicates by ``sha256(text)[:16]``; presets intentionally
+    leave ``hash`` empty and compute on import, avoiding manual hash maintenance and
+    stale hashes after small copied-text edits corrupting deduplication.
     """
     if not isinstance(facts, list):
         return facts
@@ -1056,8 +1056,8 @@ def _copytree_safe_with_normalization(src: Path, dst: Path) -> list[str]:
 async def list_builtin_presets() -> dict[str, Any]:
     """Enumerate git-tracked character presets bundled with the testbench.
 
-    用于 Setup → Import 页渲染"内置预设"区. 无需 sandbox / session — 即使空会话
-    也可看列表, 这样用户可以在"建会话 → 灌预设"两步之间先预览有哪些预设.
+    Render Setup → Import's built-in presets section without sandbox/session, even empty sessions,
+    so users can preview presets between creating a session and importing one.
     """
     summaries: list[dict[str, Any]] = []
     for preset_id, preset_dir in _iter_preset_dirs():
@@ -1074,17 +1074,17 @@ async def import_builtin_preset(preset_id: str) -> dict[str, Any]:
     Side effects (mirror :func:`import_from_real`):
       * Writes ``sandbox/config/characters.json`` from the preset
       * Copies ``presets/<id>/memory/<character>/`` → ``sandbox/memory/<character>/``
-        (覆盖同名文件, 其他文件保留)
+        (overwrite same-name files, retaining others)
       * Fills empty ``hash`` fields in copied ``facts.json``
       * Updates ``session.persona`` with preset's master/character/system_prompt
 
-    用户反复调用同一个 preset 相当于**一键清零为预设状态**: characters.json 会
-    被整体覆写, memory 里同名 JSON 会被覆盖 (facts/persona/recent 都是源头真
-    相). 但**额外**存在于 sandbox (preset 里没有) 的文件 — 例如用户自己新建的
+    Repeated application is a one-click reset to preset state: overwrite characters.json
+    entirely and same-name memory JSON (facts/persona/recent are authoritative).
+    **Extra** sandbox files absent from preset, such as user-created
     ``reflections.json`` / ``persona_corrections.json`` / ``surfaced.json`` /
-    ``time_indexed.db`` — 不会被动, 需要用户自己去 memory 子页或磁盘上清. 这是
-    故意的: "覆盖性 reset" 而不是 "清空式 reset", 避免丢失用户手动加进去的
-    调试数据.
+    ``time_indexed.db``, remain untouched; users must clear via memory page or disk. This
+    deliberately overwrites rather than empties, preserving manually added
+    debugging data.
     """
     preset_id = preset_id.strip()
     if not preset_id:

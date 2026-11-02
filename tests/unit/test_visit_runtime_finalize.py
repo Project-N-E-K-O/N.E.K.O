@@ -69,13 +69,13 @@ async def _quiet(tmp_path, monkeypatch, **kw):
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, host_replies=host_replies,
                                                     guest_replies=guest_replies, **kw)
     await wait_for(lambda: len(host.rt.journal.lines()) >= 2 and len(guest.rt.journal.lines()) >= 2)
-    # 下一轮回话被挡住；收尾时的仪式句与简述两轮直接给答复（打断回话那一轮之后才轮到它们）
+    # Block the next conversational reply; answer ritual/summary turns directly after the interrupted reply's turn.
     host_replies.queue = [["我回来啦。"], ["这次聊得很开心。"]]
     guest_replies.queue = [["我回来啦。"], ["这次聊得很开心。"]]
     return host, guest, wire, clock, (hgate, ggate)
 
 
-# ── 原因映射表 ───────────────────────────────────────────────────────
+# -- Reason mapping --
 
 
 def test_every_finalize_reason_either_maps_to_a_leave_reason_or_sends_none():
@@ -103,7 +103,7 @@ def test_every_received_leave_reason_maps_into_the_finalize_set():
     assert finalize_reason_for_peer_leave(None) == "peer_left"
 
 
-# ── 状态翻转、锁与输入 ─────────────────────────────────────────────
+# -- State transitions, locks, and input --
 
 
 async def test_ending_releases_the_input_with_the_takeover_and_keeps_the_lock_until_done(tmp_path, monkeypatch):
@@ -111,23 +111,23 @@ async def test_ending_releases_the_input_with_the_takeover_and_keeps_the_lock_un
     try:
         assert rtm.is_visit_route_active("Host") and registry.get_active_external_route("Host").kind == "neko_visit"
         assert host.rt.request_finalize("route_end") is True
-        assert host.rt.request_finalize("peer_lost") is False          # 幂等
-        # 接管还没释放：普通聊天此刻输出被压着，这句由串门拒掉（不漏进普通聊天）
+        assert host.rt.request_finalize("peer_lost") is False          # Idempotent.
+        # Takeover remains held: ordinary chat output is suppressed; reject this sentence through visits rather than leaking it into chat.
         assert host.rt.phase == "ending" and host.rt.takeover_token is not None
         assert rtm.is_visit_route_active("Host")
-        # 快照也一样：接管还没释放时报收尾前的阶段（页面看到 ending 会交还输入框）
+        # Likewise snapshots report the prefinalization phase until takeover releases, since ending makes the page return input control.
         assert host.rt.snapshot()["phase"] == "active"
         claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "喂"})
         assert claim is registry.RouteClaim.CLAIMED
         assert host.host.status_codes()[-1] == "VISIT_INPUT_REFUSED_WRAPUP"
-        # 接管一释放：输入交还普通聊天，改名 / 删除锁保持到收尾完成
+        # Once takeover releases, return input to ordinary chat but retain rename/deletion locks until finalization completes.
         await wait_for(lambda: host.host.released)
         assert not rtm.is_visit_route_active("Host")
         assert host.rt.snapshot()["phase"] == "ending"
         assert registry.get_active_external_route("Host") is None
         assert registry.is_external_route_locked("Host")
         claim = await registry.route_external_stream_message("Host", {"input_type": "text", "data": "在吗"})
-        assert claim is registry.RouteClaim.UNCLAIMED                  # 亲人打字走普通聊天
+        assert claim is registry.RouteClaim.UNCLAIMED                  # Family typing uses ordinary chat.
         await finish(host.rt, clock)
         assert not registry.is_external_route_locked("Host")
         assert visit_route_state.get_visit_route_state("Host") is None
@@ -156,8 +156,8 @@ async def test_takeover_is_released_right_after_the_hold_and_before_the_home_lin
 
 
 async def test_ending_frame_reaches_the_page_only_after_the_takeover_is_released(tmp_path, monkeypatch):
-    # 页面一看到「结束中」就把输入框交还普通聊天：这一帧要在接管释放之后才推，
-    # 否则那段空档里提交的普通句子会被串门拦下、页面却没有对应的本地气泡可以收尾
+    # The page returns its input to ordinary chat on ending, so send this frame only after releasing takeover;
+    # otherwise visits reject ordinary sentences submitted in the gap, without a corresponding local bubble to finalize.
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     try:
         push = host.rt.push
@@ -178,7 +178,7 @@ async def test_ending_frame_reaches_the_page_only_after_the_takeover_is_released
 
 
 async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, monkeypatch):
-    # 释放抛错：不推 ending（页面一看到它就交还输入框，而接管还在），等 teardown 重试释放后的 ended
+    # Release failure: do not send ending while takeover remains held; await ended after teardown retries release.
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     try:
         push = host.rt.push
@@ -201,8 +201,8 @@ async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, mo
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
         assert "push:ending" not in host.host.events
-        assert calls["n"] >= 2                                          # 重试过
-        # 「已结束」推出去之前接管已经释放：页面交还输入框时输入不再归串门
+        assert calls["n"] >= 2                                          # Retried.
+        # Takeover is released before ended is sent; input no longer belongs to visits when the page restores its composer.
         events = host.host.events
         assert events.index("release_attempt:2") < events.index("push:ended")
         assert not rtm.is_visit_route_active("Host")
@@ -214,7 +214,7 @@ async def test_failed_takeover_release_keeps_the_page_in_visit_mode(tmp_path, mo
 
 
 async def test_twice_failed_release_keeps_the_token_for_teardown(tmp_path, monkeypatch):
-    # 收尾开头与「已结束」前两次释放都抛错：令牌留着，teardown 还会再试（管理器仍持有接管）
+    # Releases at finalization start and before ended both fail; retain the token for teardown's retry while the manager holds takeover.
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     try:
         real_release = host.host.release_takeover
@@ -229,7 +229,7 @@ async def test_twice_failed_release_keeps_the_token_for_teardown(tmp_path, monke
         monkeypatch.setattr(host.host, "release_takeover", flaky_release)
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
-        assert calls["n"] >= 3                                          # teardown 拿着令牌再试了一次
+        assert calls["n"] >= 3                                          # teardown retried using the token.
         assert host.host.released == host.host.takeovers
     finally:
         for g in gates:
@@ -242,19 +242,19 @@ async def test_parked_callbacks_are_handed_back_once_both_segments_ended(tmp_pat
     hh = host.host
     try:
         parked = {"source_kind": "plugin", "priority": 1, "text": "插件回调"}
-        assert hh.sink(parked) is True                 # 串门期间扣进 VisitInbox
+        assert hh.sink(parked) is True                 # Held in VisitInbox during visits.
         hh.auto_play = False
         host.rt.request_finalize("recall")
-        await finish(host.rt, clock)                  # 退出流程完成：路由已 pop、锁已放
+        await finish(host.rt, clock)                  # Exit complete: route popped and lock released.
         assert visit_route_state.get_visit_route_state("Host") is None
         late = {"source_kind": "plugin", "priority": 0, "text": "释放之后才到"}
-        assert hh.hold_sink(late) is True              # release_takeover 之后经 hold 接住
+        assert hh.hold_sink(late) is True              # Held after release_takeover.
         segments = [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
         assert len(segments) == 2 and hh.resubmitted == []
         await rtm.on_page_signal("Host", {"speech_id": segments[0].speech_id, "played_ms": 3000,
                                           "ended": True, "final": True})
         await asyncio.sleep(0.6)
-        assert hh.resubmitted == []                    # 只结束了一段：不交还
+        assert hh.resubmitted == []                    # Only one segment ended: do not hand back control.
         await rtm.on_page_signal("Host", {"speech_id": segments[1].speech_id, "played_ms": 3000,
                                           "ended": True, "final": True})
         await wait_for(lambda: hh.resubmitted)
@@ -300,7 +300,7 @@ async def test_handoff_never_waits_past_the_absolute_deadline(tmp_path, monkeypa
         handoff = host.rt.handoff
         deadline = handoff.absolute_deadline()
         assert deadline - (host.rt.finalize_at or 0) <= 120
-        # 一直报进度、从不 ended：20 s 硬顶到了也不交还，直到绝对期限
+        # Progress continues without ended: even the 20 s cap does not hand back control until the absolute deadline.
         while clock() < deadline - 2.5:
             clock.advance(2)
             for seg in segments:
@@ -308,13 +308,13 @@ async def test_handoff_never_waits_past_the_absolute_deadline(tmp_path, monkeypa
             await asyncio.sleep(0.3)
             assert hh.resubmitted == []
         clock.advance(5)
-        for _ in range(100):                               # 仍在报进度：只有绝对期限能让它交还
+        for _ in range(100):                               # Progress is still arriving; only the absolute deadline permits handoff.
             for seg in segments:
                 await rtm.on_page_signal("Host", {"speech_id": seg.speech_id, "played_ms": 100, "ended": False})
             if hh.resubmitted:
                 break
             await asyncio.sleep(0.05)
-        assert hh.resubmitted                              # 到点一律重投，从不丢弃
+        assert hh.resubmitted                              # Always redeliver at the deadline, never discard.
     finally:
         for g in gates:
             g.set()
@@ -329,7 +329,7 @@ async def test_family_speaking_first_skips_the_home_line_and_only_shows_the_summ
     try:
         host.rt.request_finalize("recall")
         await wait_for(lambda: "release_takeover" in hh.events)
-        hh.last_input = 10 ** 12                       # 亲人在仪式句生成中先开口
+        hh.last_input = 10 ** 12                       # Family speaks while the ritual sentence is being generated.
         ritual_gate.set()
         await finish(host.rt, clock)
         assert not [e for e in hh.events if e.startswith("output:visit-ritual")]
@@ -363,7 +363,7 @@ async def test_home_line_is_generated_only_for_natural_endings(tmp_path, monkeyp
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-# ── 收口顺序与转录 ───────────────────────────────────────────────────
+# -- Finalization ordering and transcripts --
 
 
 async def test_upload_is_sealed_before_the_spool_is_finalized(tmp_path, monkeypatch):
@@ -449,20 +449,20 @@ async def test_memory_commits_run_as_background_tasks_of_the_character(tmp_path,
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-# ── 对端离开 ─────────────────────────────────────────────────────────
+# -- Peer departure --
 
 
 async def test_peer_leave_waits_for_the_gap_then_keeps_the_late_line(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     rt = host.rt
-    # 掐掉真实客人那侧发来的帧：seq + 1 只能由用例自己补上（否则它的可靠消息可能先把缺口补齐）
+    # Drop real guest frames: only the test can fill seq + 1, or reliable messages might fill the gap first.
     wire.drop = lambda role, payload: role == "guest"
-    await asyncio.wait_for(wire.queues["guest"].join(), 5)   # 已在路上的帧都处理完
+    await asyncio.wait_for(wire.queues["guest"].join(), 5)   # All frames already in transit are processed.
     seq = rt.sequencer.contiguous_seq
     try:
         await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload={
             "t": "leave", "v": 1, "seq": seq + 2, "last_seq": seq + 1, "reason": "home"}, nbytes=80)
-        assert rt.exit_task is None, rt.finalize_reason  # 前面还缺一条：先等补齐
+        assert rt.exit_task is None, rt.finalize_reason  # One earlier frame is missing; wait for it first.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "text", "v": 1, "ln": "g:50", "lp": 50, "seq": seq + 1, "sp": "c", "ad": "hc", "rt": "",
             "wu": False, "final": True, "txt": "最后一句。", "truncated": False, "i_done": 0}, nbytes=200)
@@ -484,7 +484,7 @@ async def test_unacked_reliable_messages_end_with_delivery_failed(tmp_path, monk
         await step(clock, 34, host.rt, guest.rt, every=2.0)
         assert host.rt.finalize_reason == "delivery_failed"
         await finish(host.rt, clock)
-        # host 发的全被丢掉、没有 ack：同一条 leave 会按 seq 每 1 s 重传，但只有这一条
+        # All host frames are dropped without ack: retransmit the same leave seq every 1 s, with only one message.
         leaves = [p for p in wire.sent["host"] if p.get("t") == "leave"]
         assert leaves and {p["reason"] for p in leaves} == {"delivery_failed"}
         assert len({p["seq"] for p in leaves}) == 1
@@ -504,7 +504,7 @@ async def test_character_switch_and_replaced_manager(tmp_path, monkeypatch):
         await guest.rt.tick()
         assert guest.rt.finalize_reason == "manager_replaced"
         await finish(guest.rt, clock)
-        # host 已在收尾、可能来不及回 ack：同一条 leave 会按 seq 重传，但只有这一条
+        # Host is finalizing and may miss the ack; retransmit the same leave seq, with only one message.
         leaves = [p for p in wire.sent["guest"] if p.get("t") == "leave"]
         assert {p["reason"] for p in leaves} == {"error"} and len({p["seq"] for p in leaves}) == 1
     finally:
@@ -513,7 +513,7 @@ async def test_character_switch_and_replaced_manager(tmp_path, monkeypatch):
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-# ── 关机 ─────────────────────────────────────────────────────────────
+# -- Shutdown --
 
 
 @pytest.mark.parametrize("memory", [True, False])
@@ -546,7 +546,7 @@ async def test_stop_all_without_visits_does_nothing():
     await settle()
 
 
-# ── 评审补充：失败路径与边界 ─────────────────────────────────────────
+# -- Review additions: failures and boundaries --
 
 
 async def test_a_failing_exit_step_still_hands_the_callbacks_back(tmp_path, monkeypatch):
@@ -561,10 +561,10 @@ async def test_a_failing_exit_step_still_hands_the_callbacks_back(tmp_path, monk
         hh.sink({"source_kind": "plugin", "text": "插件回调"})
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
-        await wait_for(lambda: hh.resubmitted)                # 不等兜底期限：没排上的段落直接跳过
+        await wait_for(lambda: hh.resubmitted)                # Skip unqueued segments immediately without waiting for fallback deadlines.
         assert [c["text"] for c in hh.resubmitted] == ["插件回调"]
         assert hh.hold_released == hh.holds and hh.holds
-        # 仪式句是可选步骤：它失败了，封存与简述照常
+        # Ritual speech is optional; failure still allows archiving and summary.
         assert host.rt.journal.sealed
         assert [b for b in hh.blocks if b[1] == f"visit-debrief:{host.rt.visit_id}"]
     finally:
@@ -588,7 +588,7 @@ async def test_a_leave_that_cannot_be_queued_does_not_wedge_the_channel_close(tm
         rt.request_finalize("route_end")
         await finish(rt, clock)
         await wait_for(lambda: [m for m in wire.downlinks["host"] if m.get("type") == "stop"])
-        await wait_for(lambda: rt.outbox._executor is None)       # 写线程停了、.outbox.jsonl 已删
+        await wait_for(lambda: rt.outbox._executor is None)       # Writer thread stopped and .outbox.jsonl removed.
     finally:
         for g in gates:
             g.set()
@@ -609,7 +609,7 @@ async def test_ended_runtimes_expire_from_the_recent_table(tmp_path, monkeypatch
         rtm._recent["fresh-visit"] = fresh
         rt.request_finalize("route_end")
         await finish(rt, clock)
-        # 没人查过的过期场次也在下一场登记时放掉
+        # Expired unqueried visits are also released when the next visit registers.
         assert "stale-visit" not in rtm._recent
         assert rtm._recent["fresh-visit"] is fresh and rtm._recent[rt.visit_id] is rt
     finally:
@@ -623,13 +623,13 @@ async def test_home_segments_stay_text_only_after_the_visit_fell_back_from_tts(t
     hh = host.host
     try:
         hh.sink({"source_kind": "plugin", "text": "回调"})
-        host.rt.voice.fallen_back = True                   # 这一场 TTS 已起不来、改按估时
+        host.rt.voice.fallen_back = True                   # TTS can no longer start for this visit; switch to estimates.
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
         assert not [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
         assert [e for e in hh.events if e.startswith("output:visit-ritual")]
         clock.advance(30)
-        await wait_for(lambda: hh.resubmitted)              # 按两段估时交还
+        await wait_for(lambda: hh.resubmitted)              # Hand back control using both segments' estimates.
     finally:
         for g in gates:
             g.set()
@@ -646,7 +646,7 @@ async def test_a_drained_audio_queue_does_not_hand_the_callbacks_back(tmp_path, 
         await finish(host.rt, clock)
         segments = [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
         assert len(segments) == 2
-        for seg in segments:                                # 队列暂时排空，之后还会接着播
+        for seg in segments:                                # Queue temporarily empty; playback will continue later.
             await rtm.on_page_signal("Host", {"speech_id": seg.speech_id, "played_ms": 900,
                                               "ended": True, "final": False})
         await asyncio.sleep(0.6)
@@ -668,7 +668,7 @@ async def test_background_tasks_follow_a_rename_of_an_idle_character(monkeypatch
         return "新名字"
 
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
-    rtm._uid_by_name["旧名字"] = "uid-1"                   # 上次串门时的名字
+    rtm._uid_by_name["旧名字"] = "uid-1"                   # Name used during the previous visit.
     gate = asyncio.Event()
     task = rtm.spawn_visit_background("uid-1", gate.wait)
     try:
@@ -692,7 +692,7 @@ async def test_stop_all_also_stops_registered_background_writes(monkeypatch):
     try:
         await asyncio.wait_for(rtm.stop_all("shutdown"), 5)
         await asyncio.sleep(0)
-        assert task.cancelled()                           # 关机时登记的后台写入也停掉，不留给事件循环销毁
+        assert task.cancelled()                           # Stop registered background writes at shutdown too, rather than leaving them for event-loop destruction.
         assert not rtm.has_visit_background_tasks("某角色")
     finally:
         forever.set()
@@ -726,14 +726,14 @@ async def test_a_failing_mandatory_step_still_seals_the_transcript_and_the_spool
 async def test_shutdown_stops_the_channel_close_of_a_visit_already_ending(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     rt = host.rt
-    wire.drop = lambda role, payload: role == "host"           # 对端收不到：leave 一直等不到确认
+    wire.drop = lambda role, payload: role == "host"           # Peer receives nothing, so leave is never acknowledged.
     try:
         rt.request_finalize("route_end")
         await wait_for(lambda: rt._closing_task is not None)
         await settle()
         assert not rt._closing_task.done()
         await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
-        assert rt._closing_task.done()                         # 关机返回时不再有排空 / leave 在跑
+        assert rt._closing_task.done()                         # No draining/leave tasks remain when shutdown returns.
     finally:
         wire.drop = None
         for g in gates:
@@ -744,15 +744,15 @@ async def test_shutdown_stops_the_channel_close_of_a_visit_already_ending(tmp_pa
 async def test_a_home_stream_the_tts_worker_refuses_falls_back_to_text(tmp_path, monkeypatch):
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     hh = host.host
-    hh.dead_worker_prefix = ("visit-ritual",)                # 仪式句开流成功但 worker 已关
+    hh.dead_worker_prefix = ("visit-ritual",)                # Ritual streaming starts successfully, but its worker is already closed.
     try:
         hh.sink({"source_kind": "plugin", "text": "回调"})
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
-        assert host.rt.voice.fallen_back is True                 # 之后不再开语音流
+        assert host.rt.voice.fallen_back is True                 # Do not start further voice streams afterward.
         assert not [s for s in hh.streams if s.request_id.startswith("visit-debrief")]
         clock.advance(30)
-        await wait_for(lambda: hh.resubmitted)                   # 不必等兜底期限
+        await wait_for(lambda: hh.resubmitted)                   # No need to await the fallback deadline.
     finally:
         for g in gates:
             g.set()
@@ -763,7 +763,7 @@ async def test_a_home_stream_that_cannot_open_falls_back_to_the_text_estimate(tm
     host, guest, wire, clock, gates = await _quiet(tmp_path, monkeypatch)
     rt = host.rt
     hh = host.host
-    hh.voice_streams = False                                 # TTS 起不来：开流直接返回 None
+    hh.voice_streams = False                                 # TTS cannot start: stream opening returns None directly.
     calls: list[tuple[str, str]] = []
     try:
         hh.sink({"source_kind": "plugin", "text": "回调"})
@@ -775,9 +775,9 @@ async def test_a_home_stream_that_cannot_open_falls_back_to_the_text_estimate(tm
         monkeypatch.setattr(handoff, "mark_queued",
                             lambda name, est: (calls.append(("queued", name)), real_queued(name, est))[1])
         await finish(rt, clock)
-        assert rt.voice.fallen_back is True                  # 之后不再去开那个起不来的流
+        assert rt.voice.fallen_back is True                  # Do not retry that unstartable stream afterward.
         spoken = [name for kind, name in calls if kind == "queued"]
-        assert spoken and not [name for kind, name in calls if kind == "skip"]   # 只上屏的段按文字估时，不当成已播完
+        assert spoken and not [name for kind, name in calls if kind == "skip"]   # Display-only segments use text duration estimates, never count as finished playback.
     finally:
         for g in gates:
             g.set()
@@ -790,16 +790,16 @@ async def test_shutdown_during_the_exit_flow_keeps_files_first(tmp_path, monkeyp
     stuck = asyncio.Event()
 
     async def ritual(*args, **kwargs):
-        await stuck.wait()                                  # 收尾流程停在仪式句
+        await stuck.wait()                                  # Finalization pauses at ritual speech.
 
     rt.say_ritual = ritual
     try:
         rt.request_finalize("recall")
-        await wait_for(lambda: rt.takeover_token is None)   # 已走到仪式句之前
+        await wait_for(lambda: rt.takeover_token is None)   # Reached the point before ritual speech.
         await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
         await settle()
         assert rt.exit_task.done()
-        # 被取消的收尾流程没有自己再 teardown：文件由 shutdown 收口，状态写的是 shutdown
+        # Canceled finalization does not teardown again; shutdown finalizes files with shutdown status.
         assert rt.ended_at_mono is None
         assert rt.journal.sealed
         state = json.loads((host.config_dir / "visit_spool" / f"{rt.visit_id}.state.json").read_text(encoding="utf-8"))
@@ -818,7 +818,7 @@ async def test_a_global_goodbye_ends_the_visit_without_a_sound(tmp_path, monkeyp
         host.rt.request_finalize("goodbye")
         await finish(host.rt, clock)
         assert not [s for s in hh.streams if s.request_id.startswith(("visit-ritual", "visit-debrief"))]
-        assert [e for e in hh.events if e.startswith("output:visit-ritual")]   # 固定句照样上屏
+        assert [e for e in hh.events if e.startswith("output:visit-ritual")]   # The fixed sentence still displays.
     finally:
         for g in gates:
             g.set()
@@ -827,7 +827,7 @@ async def test_a_global_goodbye_ends_the_visit_without_a_sound(tmp_path, monkeyp
 
 async def test_stop_all_also_stops_detached_background_work():
     stuck = asyncio.Event()
-    task = rtm._detach(stuck.wait())                     # 例如还在退避等待的账号映射补写
+    task = rtm._detach(stuck.wait())                     # For example, account-mapping backfills still waiting in backoff.
     await asyncio.wait_for(rtm.stop_all("shutdown"), 3)
     assert task.cancelled()
 
@@ -837,11 +837,11 @@ async def test_stop_all_during_a_pending_handback_still_releases_the_callbacks(t
     hh = host.host
     try:
         hh.sink({"source_kind": "plugin", "text": "回调"})
-        hh.auto_play = False                                  # 仪式句 / 简述一直没播完：交还还在等
+        hh.auto_play = False                                  # Ritual/summary playback remains unfinished and handoff is still waiting.
         host.rt.request_finalize("recall")
         await finish(host.rt, clock)
         assert rtm.get_runtime("Host") is None and hh.resubmitted == []
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)   # 关机取消了等着交还的任务
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 3)   # Shutdown canceled the pending handoff task.
         assert [c["text"] for c in hh.resubmitted] == ["回调"]
         assert hh.hold_released == hh.holds and hh.holds
         assert inbox_handoff.pending_speech_ids() == 0
@@ -867,7 +867,7 @@ async def test_a_background_task_whose_owner_is_unknown_yet_blocks_lifecycle_cha
     task = rtm.spawn_visit_background("uid-recovery", work.wait)
     try:
         await asyncio.wait_for(resolving.wait(), 3)
-        assert rtm.has_visit_background_tasks("Mimi")        # 名字还没认出来：保守地挡住
+        assert rtm.has_visit_background_tasks("Mimi")        # Name not yet identified: block conservatively.
         release.set()
         await wait_for(lambda: "Mimi" in rtm._uid_by_name)
         assert rtm.has_visit_background_tasks("Mimi") and not rtm.has_visit_background_tasks("Other")

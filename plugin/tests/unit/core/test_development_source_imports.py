@@ -267,7 +267,9 @@ def test_host_passes_source_policy_to_child_without_changing_default(monkeypatch
     from plugin.core import host
     captured = []
     monkeypatch.setattr(host, "state", SimpleNamespace(plugin_response_map={}, plugin_response_notify_event=object()))
-    monkeypatch.setattr(host, "HostTransport", lambda: SimpleNamespace(downlink_endpoint="down", uplink_endpoint="up"))
+    monkeypatch.setattr(host, "HostTransport", lambda: SimpleNamespace(
+        downlink_endpoint="down", uplink_endpoint="up", message_uplink_endpoint="msg"
+    ))
     monkeypatch.setattr(host, "PluginCommunicationResourceManager", lambda **kwargs: None)
     monkeypatch.setattr(host.multiprocessing, "Event", lambda: None)
     monkeypatch.setattr(host.multiprocessing, "Process", lambda **kwargs: captured.append(kwargs))

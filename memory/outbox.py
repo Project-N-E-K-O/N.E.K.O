@@ -56,20 +56,20 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# op_type 常量，避免魔法字符串散落。
+# op_type constants avoid scattered magic strings.
 #
-# 字符串值是 outbox.ndjson 里持久化的 op_type 字面值——视为不可变 wire-format
-# schema id（同数据库列名），重命名 Python 符号时**不能**改值，否则旧机器上
-# 残留的 pending op 在 replay 时 ``_OUTBOX_HANDLERS.get(op_type)`` 拿不到 handler
-# 会被静默 skip。``OP_POST_TURN_SIGNALS`` 的值仍是 ``"extract_facts"``：PR-1
-# 引入时 handler 主操作是 Stage-1 fact 抽取，PR #1346 把 Stage-1（ON-mode）剥离
-# 到 ``_periodic_signal_extraction_loop`` 后，handler 实际只做 counter bump +
-# 复读嗅探 + check_feedback + OFF-mode Stage-1 fallback——符号名随之更新，值保留。
+# String values are persisted op_type literals in outbox.ndjson: immutable wire-format
+# schema IDs, like database column names. Renaming Python symbols must not change values,
+# or existing pending operations cannot find _OUTBOX_HANDLERS.get(op_type) during replay
+# and are silently skipped. OP_POST_TURN_SIGNALS remains "extract_facts": in PR-1,
+# Stage-1 extraction was the handler's main operation. PR #1346 moved ON-mode Stage-1
+# to _periodic_signal_extraction_loop; the handler now only bumps counters, detects repetition,
+# runs check_feedback, and supplies OFF-mode Stage-1 fallback. Rename the symbol but retain its value.
 OP_POST_TURN_SIGNALS = "extract_facts"
 OP_PERSIST_PROMPT_LOCALE = "persist_prompt_locale"
 
 
-# pending 记录在 outbox 中积累超过此阈值时触发自动 compact（启动期调用）
+# Automatically compact at startup when pending outbox records exceed this threshold.
 _COMPACT_LINES_THRESHOLD = 1000
 
 
@@ -93,7 +93,7 @@ class Outbox:
     # ── path / lock ─────────────────────────────────────────────
 
     def _outbox_path(self, name: str) -> str:
-        # 延迟 import 避开 memory/__init__.py ↔ memory/outbox.py 循环依赖
+        # Lazy import avoids memory/__init__.py <-> memory/outbox.py circular dependencies.
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
@@ -266,10 +266,10 @@ class Outbox:
             total_lines = len(records)
             kept = len(kept_records)
             if total_lines == kept:
-                return 0  # 没有可丢弃的行，避免无用 IO
+                return 0  # No discardable rows: avoid unnecessary I/O.
 
             if kept == 0:
-                # 全部已完成 —— 直接清空
+                # All completed: clear directly.
                 atomic_write_text(path, '', encoding='utf-8')
             else:
                 body = '\n'.join(
@@ -284,7 +284,7 @@ class Outbox:
         if not os.path.exists(path):
             return 0
         try:
-            # 只数行数，不解析
+            # Count lines without parsing.
             line_count = 0
             with open(path, encoding='utf-8') as f:
                 for _ in f:

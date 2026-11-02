@@ -40,8 +40,8 @@ pytestmark = pytest.mark.unit
 
 def _tmp_siblings(target: Path) -> list[Path]:
     """Temp files this module would have created in ``target``'s directory."""
-    # 名字里不带目标 basename（见 file_utils 里的注释），所以这是「目录级」而不是
-    # 「目标级」的查询 —— 用例各自用独立的 tmp_path，不会互相看到。
+    # Temporary names omit target basenames; see file_utils. Query by directory rather than
+    # target; independent tmp_path fixtures prevent cross-test visibility.
     return sorted(
         p for p in target.parent.iterdir() if file_utils._STALE_TMP_RE.match(p.name)
     )
@@ -115,8 +115,8 @@ def test_successful_write_leaves_no_temp_file_behind(tmp_path):
 
 
 def test_target_holds_previous_content_until_the_rename(tmp_path, monkeypatch):
-    # 这是「原子」的实际含义：新内容先完整落到 tmp（写满 + fsync），目标文件在
-    # os.replace 之前一直是旧的完整内容 —— 读者永远看不到半截文件。
+    # Atomic means new content completely persists to tmp through write/fsync, while targets
+    # retain complete old content until os.replace; readers never observe half files.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -155,9 +155,9 @@ def test_failed_replace_removes_temp_and_keeps_old_target(tmp_path, monkeypatch)
 
 
 def test_cleanup_failure_does_not_mask_the_real_error(tmp_path, monkeypatch):
-    # 回归点：目标被别的句柄占着时，os.replace 和紧随其后的 os.remove 会被同一个
-    # 原因一起拒掉（Windows 上都是 WinError 5）。清理异常绝不能顶替真实原因，
-    # 否则日志里只剩「删不掉临时文件」，完全指不到病根。
+    # Regression: another handle holding the target makes os.replace and subsequent os.remove
+    # fail for the same Windows WinError 5 reason. Cleanup exceptions must never replace
+    # original failures, or logs show only failed temporary deletion and hide the root cause.
     target = tmp_path / "state.json"
 
     def replace_denied(src, dst):
@@ -177,9 +177,9 @@ def test_cleanup_failure_does_not_mask_the_real_error(tmp_path, monkeypatch):
 
 
 def test_a_base_exception_mid_write_still_cleans_up_the_temp_file(tmp_path, monkeypatch):
-    # Ctrl-C / SystemExit 落在 write/fsync 上很常见，而它们不是 Exception 的子类：失败
-    # 分支只收 Exception 的话 tmp 直接留盘，要等下一个清扫窗口 + 24h 才清掉。
-    # install_source/manager.py 的 _atomic_write 用的也是 BaseException，保持对偶。
+    # Ctrl-C/SystemExit often interrupt write/fsync and are not Exception subclasses; catching
+    # only Exception leaks tmp files until another cleanup window plus 24 hours.
+    # install_source/manager.py _atomic_write also catches BaseException; preserve symmetry.
     target = tmp_path / "state.json"
 
     def interrupted(src, dst):
@@ -204,7 +204,7 @@ def test_missing_temp_file_during_cleanup_is_tolerated(tmp_path, monkeypatch):
         atomic_write_json(target, {"v": 1})
 
 
-# ── 临时文件创建：失败要快，重试要有界 ──────────────────────────────────
+# -- Temporary creation: fail fast, bound retries --
 
 
 def test_temp_create_permission_denied_fails_fast(tmp_path, monkeypatch):
@@ -290,10 +290,10 @@ class _SleepSpy:
 
 
 def test_a_busy_target_is_retried_until_the_other_handle_goes_away(tmp_path, monkeypatch):
-    # Windows 独有的一段窗口：目标此刻被别的句柄打开时 os.replace 被拒（WinError
-    # 5/32）。制造它的不止杀软扫描和资源管理器预览 —— 本进程自己就够了，落盘跑在
-    # to_thread 的工作线程里，另一个线程正好在读同一个文件。窗口是毫秒级的，退避重试
-    # 之后这次写就该成功，而不是把一次瞬时冲突报成落盘失败。
+    # Windows-only window: another open target handle makes os.replace fail with WinError
+    # 5/32. Antivirus/Explorer previews are not the only causes; this process's own to_thread
+    # writes can conflict with another reader. These millisecond windows should resolve after
+    # backoff, not be reported as permanent persistence failures.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -321,9 +321,9 @@ def test_a_busy_target_is_retried_until_the_other_handle_goes_away(tmp_path, mon
 
 
 def test_a_target_that_stays_busy_raises_the_real_replace_error(tmp_path, monkeypatch):
-    # 重试的上界必须是硬的，而且用尽之后抛出来的要是 os.replace 那次真实的异常 ——
-    # 不是一个包装过的「重试失败」。目标被永久占着（只读、别的进程长期持有）时，行为
-    # 和加重试之前完全一样：抛错、旧内容不动、tmp 清掉，只是晚了 155ms。
+    # Enforce a hard retry bound and ultimately raise os.replace's actual exception,
+    # not a retry-failed wrapper. Permanently held/read-only targets retain previous behavior:
+    # raise, preserve old content, remove tmp, merely delayed by 155 ms.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -381,9 +381,9 @@ def test_read_bytes_tolerating_replace_retries_busy_windows_read(
     ],
 )
 def test_only_the_busy_winerrors_are_retried(tmp_path, monkeypatch, make_error):
-    # 判据是 OS 给的错误码，不是消息文本。磁盘满、路径不存在这类错误一次都不重试；
-    # 非 Windows 平台的 OSError 根本没有 winerror 属性，于是整段退避在那里恒等于
-    # 「直接抛」—— 这条用例就是在任何平台上钉住这一点。
+    # Match OS error codes, not message text. Never retry disk-full/missing-path errors.
+    # Non-Windows OSError lacks winerror, reducing all backoff here to immediate
+    # propagation; pin that on every platform.
     target = tmp_path / "state.json"
     attempts: list[str] = []
     spy = _SleepSpy()
@@ -404,11 +404,11 @@ def test_only_the_busy_winerrors_are_retried(tmp_path, monkeypatch, make_error):
 
 @pytest.mark.asyncio
 async def test_the_backoff_never_sleeps_on_the_event_loop(tmp_path, monkeypatch):
-    # 二十多处 `async def` 在裸调同步的 atomic_write_*（memory/anti_repeat.py 与
-    # memory/user_directives.py 甚至是 per-turn 的，跟音频同在一条循环上）。在那里
-    # 睡 155ms 就是掐音频；scripts/check_async_blocking.py 也早就把 time.sleep 列为
-    # 禁止出现在 async 可达路径上的调用。上环调用者必须拿到改动前的行为：第一次
-    # busy 就抛，一次 sleep 都不许有。
+    # More than twenty async functions call synchronous atomic_write_* directly, including per-turn
+    # anti_repeat/user_directives on the audio loop. Sleeping 155 ms there interrupts
+    # audio; check_async_blocking.py already forbids time.sleep on async-reachable paths.
+    # Event-loop callers must retain old behavior: raise on the first
+    # busy error without any sleep.
     target = tmp_path / "state.json"
     attempts: list[str] = []
     spy = _SleepSpy()
@@ -430,8 +430,8 @@ async def test_the_backoff_never_sleeps_on_the_event_loop(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_a_worker_thread_still_gets_the_full_backoff(tmp_path, monkeypatch):
-    # 对偶面，也是本次 flake 修复真正落地的地方：制造 flake 的落盘全部跑在
-    # to_thread 的工作线程里，那里没有 running loop，退避必须原样生效。
+    # Symmetric case and the actual flaky-write fix: offending disk writes run entirely
+    # in to_thread workers without running loops, where backoff must remain effective.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -457,9 +457,9 @@ async def test_a_worker_thread_still_gets_the_full_backoff(tmp_path, monkeypatch
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only handle semantics")
 def test_windows_really_refuses_to_replace_a_target_held_open(tmp_path):
-    # 这条钉的是重试列表的**前提**：Windows 上「目标被打开着」到底报哪个码。哪天
-    # CPython 换了 open 的共享模式、或者系统换了码，这条会红，而不是让退避悄悄地
-    # 永远不触发。
+    # Pin the retry-list premise: actual Windows error codes when open handles block targets. Future
+    # CPython share-mode changes or OS error-code changes must fail this test rather than silently
+    # disabling backoff forever.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -477,7 +477,7 @@ def test_windows_really_refuses_to_replace_a_target_held_open(tmp_path):
 
 
 def test_unserializable_payload_never_touches_the_target(tmp_path):
-    # json.dumps 在 atomic_write_text 之前跑，所以连 tmp 都不该出现。
+    # json.dumps precedes atomic_write_text, so no tmp should exist yet.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -504,8 +504,8 @@ def test_stale_temp_from_a_hard_kill_is_swept(tmp_path):
 
 
 def test_temp_file_of_a_live_writer_is_not_swept(tmp_path):
-    # 另一个进程正在写同一个目标时，它的 tmp 只有几毫秒岁数；扫掉就等于把
-    # 别人写了一半的数据删了。年龄门槛就是为了这个。
+    # Another process's active write has millisecond-old tmp files; sweeping deletes partially written
+    # data. The age threshold prevents this.
     target = tmp_path / "state.json"
     inflight = _abandoned_tmp(target, "inflight")
     inflight.write_text("someone else is mid-write", encoding="utf-8")
@@ -516,9 +516,9 @@ def test_temp_file_of_a_live_writer_is_not_swept(tmp_path):
 
 
 def test_sweep_clears_every_abandoned_temp_in_the_directory(tmp_path):
-    # 清扫按目录而不是按目标 —— 同一个目录里的残留不管当初是哪个目标写的都是这个原语
-    # 产生的垃圾。按目标记账/按目标名匹配会漏掉「写完就沉底、再也不会被写第二次」的
-    # 目标（归档分片就是这种），那些残留永远扫不到。
+    # Sweep by directory, not target: residuals all originate from this primitive regardless of target.
+    # Per-target matching misses write-once, never-rewritten targets such as archive
+    # shards, whose residue would otherwise remain forever.
     target = tmp_path / "state.json"
     leftovers = [_abandoned_tmp(target, r) for r in ("deadbeef", "cafef00d")]
     for path in leftovers:
@@ -531,9 +531,9 @@ def test_sweep_clears_every_abandoned_temp_in_the_directory(tmp_path):
 
 
 def test_sweep_claims_its_temps_whatever_the_random_segment_looks_like(tmp_path):
-    # 随机段的字符集是 tempfile._RandomNameSequence 的实现细节。正则里硬编码
-    # [a-z0-9_] 的话，CPython 哪天往里加个大写字母，自己产的 tmp 就再也不被认领 ——
-    # 而且是静默失效（清扫悄悄变成 no-op，没有任何报错）。
+    # tempfile._RandomNameSequence's alphabet is implementation detail; hardcoding
+    # [a-z0-9_] would stop recognizing our own tmp files if CPython adds uppercase,
+    # silently turning sweeps into no-ops without errors.
     target = tmp_path / "state.json"
     exotic = tmp_path / f".{file_utils._TMP_OWNER_TAG}AB12cd_xYZ-9.tmp"
     exotic.write_text("garbage", encoding="utf-8")
@@ -545,18 +545,18 @@ def test_sweep_claims_its_temps_whatever_the_random_segment_looks_like(tmp_path)
 
 
 def test_sweep_only_touches_files_it_can_prove_it_owns(tmp_path):
-    # 按目录扫的前提是能**证明**所有权：光靠「形状像 + 够老」会把别的程序、插件或
-    # 用户放在同一个目录里的旧文件永久删掉。所以自己的 tmp 名里嵌了所有权标记，
-    # 没有这个标记的一律不碰 —— 包括本模块早先版本留下的无标记 tmp（宁可漏清）。
+    # Directory sweeps require provable ownership: similar shape/age alone could permanently delete other apps', plugins',
+    # or users' old files in the same directory. Embed ownership markers in our tmp names
+    # and leave every unmarked file untouched, including old versions' residue; prefer missed cleanup.
     target = tmp_path / "state.json"
     tag = file_utils._TMP_OWNER_TAG
     keepers = [
-        tmp_path / f".{tag}deadbeef.bak",          # 不是 .tmp
-        tmp_path / f"{tag}deadbeef.tmp",           # 没有前导点
-        tmp_path / f".{target.name}.deadbeef.tmp",  # 没有所有权标记（旧版残留）
-        tmp_path / f".{tag.upper()}deadbeef.tmp",  # 标记大小写不对
-        tmp_path / ".rsync-ish.abcdef.tmp",        # 别的工具的临时文件
-        tmp_path / ".notes.tmp",                   # 用户自己的文件
+        tmp_path / f".{tag}deadbeef.bak",          # Not .tmp.
+        tmp_path / f"{tag}deadbeef.tmp",           # Missing leading dot.
+        tmp_path / f".{target.name}.deadbeef.tmp",  # Missing ownership marker, legacy residue.
+        tmp_path / f".{tag.upper()}deadbeef.tmp",  # Incorrect marker case.
+        tmp_path / ".rsync-ish.abcdef.tmp",        # Another tool's temporary file.
+        tmp_path / ".notes.tmp",                   # User-owned file.
     ]
     for path in keepers:
         path.write_text("keep me", encoding="utf-8")
@@ -568,13 +568,13 @@ def test_sweep_only_touches_files_it_can_prove_it_owns(tmp_path):
 
 
 def test_the_temp_files_this_module_creates_carry_the_owner_tag(tmp_path, monkeypatch):
-    # 所有权标记只有在**创建**时也带上才有意义：只改清扫器的正则、不改创建端的
-    # 前缀，就会变成「以后再也扫不到任何东西」的静默失效。
+    # Ownership markers matter only if creation uses them too. Changing sweep regexes without creation
+    # prefixes silently makes all future cleanup ineffective.
     #
-    # 观察点从 tempfile.mkstemp 换到 _create_exclusive_temp_file：本模块刻意不再走
-    # mkstemp（它在 Windows 上遇到 PermissionError 会换名无限重试，见该函数 docstring），
-    # 给 mkstemp 打桩就再也看不到任何名字了。契约本身没变 —— 仍然钉「创建出来的名字
-    # 必须被清扫器的所有权正则认领」。
+    # Observe _create_exclusive_temp_file rather than tempfile.mkstemp; this module deliberately avoids
+    # mkstemp's unbounded Windows PermissionError renaming retries, documented there,
+    # so stubbing mkstemp sees no names. The contract remains that every created name
+    # matches the sweeper's ownership regex.
     target = tmp_path / "state.json"
     seen = {}
     real_create = file_utils._create_exclusive_temp_file
@@ -605,8 +605,8 @@ def test_sweep_survives_an_unreadable_directory(tmp_path, monkeypatch):
 
 
 def test_sweep_is_throttled_per_directory(tmp_path, monkeypatch):
-    # 节流是有意的：清扫是清理型的副业，不能让每次写盘都白搭一次全目录 scandir。
-    # 同一个目录在一个间隔内只扫一次，同目录的别的目标也共享这个窗口。
+    # Throttling is intentional: cleanup is secondary work, not a whole-directory scandir on every write.
+    # Scan each directory once per interval; all targets within it share the window.
     scans = []
     real_scandir = os.scandir
     monkeypatch.setattr(os, "scandir", lambda p: scans.append(str(p)) or real_scandir(p))
@@ -619,8 +619,8 @@ def test_sweep_is_throttled_per_directory(tmp_path, monkeypatch):
 
 
 def test_sweep_runs_again_once_the_interval_elapses(tmp_path):
-    # 「只扫一次」是错的不变量：本次写自己泄漏的 tmp（清扫跑在 mkstemp 之前）、扫描当时
-    # 还太年轻的 tmp、扫描本身瞬时失败的目录，都得靠下一个窗口兜住。
+    # Once-ever sweeping is wrong: this write's own leaked tmp, created after sweeping, files too young
+    # during scanning, and transient scan failures all require later windows.
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -638,7 +638,7 @@ def test_sweep_runs_again_once_the_interval_elapses(tmp_path):
 
 
 def test_a_failed_scan_is_retried_after_the_interval(tmp_path, monkeypatch):
-    # 瞬时 OSError（目录被短暂锁住、网络盘抖动）不该让这个目录永久失去清扫。
+    # Transient OSError, directory locks/network glitches, must not permanently disable directory sweeps.
     target = tmp_path / "state.json"
     leftover = _abandoned_tmp(target)
     leftover.write_text("garbage", encoding="utf-8")
@@ -659,9 +659,9 @@ def test_a_failed_scan_is_retried_after_the_interval(tmp_path, monkeypatch):
 
 
 def test_a_temp_file_leaked_by_this_write_is_swept_by_a_later_window(tmp_path, monkeypatch):
-    # 清扫跑在 mkstemp 之前，所以本次调用自己泄漏出来的 tmp（replace 失败且兜底的
-    # remove 也被拒 —— 正是这个模块要容忍的 Windows 场景）这一轮清不掉。它必须被下一个
-    # 窗口兜住，否则长寿进程（桌面端一开一整天）里就是永久泄漏。
+    # Sweeping precedes mkstemp, so this call's leaked tmp after both replace and fallback
+    # remove fail, exactly the tolerated Windows case, cannot be collected now. Later
+    # windows must catch it or day-long desktop processes leak permanently.
     target = tmp_path / "state.json"
 
     def replace_denied(src, dst):
@@ -687,8 +687,8 @@ def test_a_temp_file_leaked_by_this_write_is_swept_by_a_later_window(tmp_path, m
 
 
 def test_the_sweep_memo_stays_bounded(tmp_path):
-    # cloudsave 的 staging 每次导出都 mkdtemp 出一批新目录（含 per-character 子目录），
-    # 记账永久留着会随操作次数无界增长。
+    # cloudsave exports create new staging directories and per-character subdirectories via mkdtemp;
+    # retaining bookkeeping permanently grows unboundedly with operations.
     limit = file_utils._STALE_TMP_MEMO_MAX
     for i in range(limit + 40):
         atomic_write_json(tmp_path / f"d{i}" / "state.json", {"v": i})
@@ -697,12 +697,12 @@ def test_the_sweep_memo_stays_bounded(tmp_path):
 
 
 def test_temp_name_is_a_short_constant_shape(tmp_path, monkeypatch):
-    # tmp 名里不嵌目标 basename，所以长度是常量。这条钉住两件事：名字远小于 NAME_MAX
-    # （eCryptfs 这类只给 143 字节的文件系统也够），以及它比改动前的
-    # `.<basename>.<8>.tmp` 严格更短 —— 否则原本能写的长名字目标会因为 ENAMETOOLONG
-    # 写不动。顺便：不嵌 basename 不影响诊断，os.replace 失败的回显自带目标路径。
-    # 观察点同 test_the_temp_files_this_module_creates_carry_the_owner_tag：本模块
-    # 不再调用 tempfile.mkstemp，改成包住真正的创建函数来取名字。
+    # Tmp names omit target basenames, giving constant length. Verify they are far below NAME_MAX,
+    # even eCryptfs's 143 bytes, and strictly shorter than the former
+    # .<basename>.<8>.tmp format; otherwise previously writable long targets fail with ENAMETOOLONG.
+    # Omitting basenames does not harm diagnosis because os.replace errors already include targets.
+    # Like test_the_temp_files_this_module_creates_carry_the_owner_tag, observe the real creation helper
+    # rather than tempfile.mkstemp, no longer called here.
     seen = []
     real_create = file_utils._create_exclusive_temp_file
 
@@ -724,31 +724,31 @@ def test_temp_name_is_a_short_constant_shape(tmp_path, monkeypatch):
 
 
 def test_fork_child_gets_a_fresh_sweep_lock(tmp_path):
-    # app/main_server/__init__.py:56 选的是 fork 启动方式，而 fork 只复制调用它的那
-    # 一个线程：别的线程正持着这把锁时，子进程继承到的是一把永远锁着的 mutex，子进程
-    # 里任何一次落盘都会死锁。这条直接验 after_in_child 钩子（Windows 上没有 fork，
-    # 所以只能直接调它，但要守的不变量是平台无关的）。
+    # main_server selects fork, which copies only its invoking thread; if another thread holds
+    # this mutex, children inherit a permanently locked copy and every persistence call
+    # deadlocks. Test after_in_child directly, since Windows lacks fork,
+    # while preserving the platform-independent invariant.
     atomic_write_json(tmp_path / "state.json", {"v": 1})
     assert file_utils._swept_tmp_dirs, "先造出一些继承过来的记账"
 
     inherited = file_utils._swept_tmp_dirs_lock
-    inherited.acquire()                      # 模拟「fork 时别的线程正持着锁」
+    inherited.acquire()                      # Simulate another thread holding the lock during fork.
     try:
         file_utils._reset_tmp_sweep_state_after_fork()
         assert file_utils._swept_tmp_dirs_lock is not inherited
         assert not file_utils._swept_tmp_dirs_lock.locked()
         assert file_utils._swept_tmp_dirs == {}
-        # 子进程里落盘不该死锁
+        # Child persistence must not deadlock.
         atomic_write_json(tmp_path / "child.json", {"v": 1})
     finally:
         inherited.release()
 
 
 def test_the_fork_hook_is_registered_at_import(monkeypatch):
-    # 上一条只验了钩子函数本身干得对；这条验它真的被挂上去了 —— 否则函数写得再对也
-    # 不会在 fork 时跑（护栏测试最常见的失效就是只测谓词、不测调用点）。
-    # 独立加载一份模块来观察注册动作，不动已经导入的那份。Windows 上 os 本来没有
-    # register_at_fork，raising=False 会把它加上，于是那个 hasattr 分支也会走到。
+    # Previous test checks hook behavior; this checks actual registration, without which correct hooks
+    # never run at fork. Predicate-only tests commonly miss missing call-site wiring.
+    # Independently load the module to observe registration without touching the imported copy. Windows lacks
+    # os.register_at_fork; raising=False adds it and exercises the hasattr branch.
     import importlib.util
 
     calls = []
@@ -767,13 +767,13 @@ def test_the_fork_hook_is_registered_at_import(monkeypatch):
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only handle semantics")
 def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
-    # 年龄门槛本身不能证明 tmp 没有主人（写者理论上可以在 mkstemp 之后被冻结很久）。
-    # Windows 上还有一道 OS 级兜底：活写者的句柄一直开着，unlink 会被拒（WinError
-    # 32），清扫器物理上抢不走。这条把那道兜底钉住。
+    # Age alone cannot prove orphan ownership; writers can theoretically freeze long after mkstemp.
+    # Windows adds OS protection: live writers retain open handles and unlink fails with WinError
+    # 32, physically preventing sweeper takeover. Pin that defense.
     target = tmp_path / "state.json"
     fd, inflight = tempfile.mkstemp(
-        # 必须带所有权标记，否则清扫器在 unlink 之前就把它按「不是我的」拒了，
-        # 这条用例就变成恒真、验不到 Windows 的句柄语义。
+        # Include ownership markers or the sweeper rejects before unlink as not ours,
+        # making the test tautological without checking Windows handle semantics.
         prefix=f".{file_utils._TMP_OWNER_TAG}", suffix=".tmp", dir=str(tmp_path)
     )
     try:
@@ -809,8 +809,8 @@ def test_sweep_survives_a_temp_file_that_cannot_be_removed(tmp_path, monkeypatch
 
 
 async def test_async_text_twin_writes_off_the_event_loop(tmp_path, monkeypatch):
-    # 落盘含 fsync，跑在事件循环线程上会卡住所有协程。async 孪生的唯一职责就是
-    # 把它挪到 worker 线程，这条把它钉住。
+    # Persistence fsync blocks all coroutines on event-loop threads; the async twin exists solely
+    # to move it into workers. Pin that.
     target = tmp_path / "state.txt"
     loop_thread = threading.get_ident()
     seen: dict[str, int] = {}
@@ -878,9 +878,9 @@ async def test_async_twin_propagates_write_failures(tmp_path, monkeypatch):
 
 
 def test_concurrent_writers_never_leave_a_partial_target(tmp_path):
-    # 同目标并发写在 Windows 上会让 os.replace 抛 PermissionError（这是 #2528 的
-    # 真实议题，修法在写者侧加锁，不在这里）。这条只钉住底线：无论哪些写失败，
-    # 目标文件要么是某一个写者的完整内容，要么根本没被创建 —— 绝不会是半截。
+    # Concurrent same-target Windows writes can raise PermissionError in os.replace, #2528's actual
+    # issue fixed through writer-side locking. Here pin the baseline: whatever writes fail,
+    # targets contain one writer's complete content or remain absent, never partial files.
     target = tmp_path / "state.json"
     payloads = [{"writer": i, "pad": "x" * 4096} for i in range(6)]
     start = threading.Barrier(len(payloads))
@@ -891,7 +891,7 @@ def test_concurrent_writers_never_leave_a_partial_target(tmp_path):
         for _ in range(20):
             try:
                 atomic_write_json(target, payload)
-            except Exception as exc:  # noqa: BLE001 - 并发失败是本用例的已知前提
+            except Exception as exc:  # noqa: BLE001 - Concurrent failure is an explicit test premise.
                 failures.append(exc)
 
     threads = [threading.Thread(target=writer, args=(p,)) for p in payloads]
@@ -909,8 +909,8 @@ def test_concurrent_writers_never_leave_a_partial_target(tmp_path):
 
 
 def test_sweeper_is_thread_safe_for_the_same_target(tmp_path):
-    # _sweep_stale_tmp_if_due 的记账是模块级共享状态，多线程同时首写同一目录时
-    # 不许重复扫、也不许抛。
+    # _sweep_stale_tmp_if_due bookkeeping is module-global; concurrent first writes in one directory
+    # must neither duplicate sweeping nor raise.
     target = tmp_path / "state.json"
     start = threading.Barrier(8)
     errors: list[Exception] = []
@@ -919,7 +919,7 @@ def test_sweeper_is_thread_safe_for_the_same_target(tmp_path):
         try:
             start.wait(timeout=5)
             file_utils._sweep_stale_tmp_if_due(target)
-        except Exception as exc:  # noqa: BLE001 - 线程体里任何异常都要交回主线程
+        except Exception as exc:  # noqa: BLE001 - Return every worker exception to the main thread.
             errors.append(exc)
 
     threads = [threading.Thread(target=writer) for _ in range(8)]
@@ -992,8 +992,8 @@ def test_read_json_reports_the_path_of_corrupt_content(tmp_path):
 
 
 def test_asyncio_module_is_used_for_the_thread_hop():
-    # 防回退：async 孪生一旦改成同步直调，上面那三条 off-the-loop 断言会红，
-    # 但这条更直接——它们必须经过 asyncio 的线程池。
+    # Regression guard: synchronous direct-call async twins fail the three off-loop assertions above,
+    # but this directly requires asyncio thread-pool dispatch.
     assert asyncio.iscoroutinefunction(atomic_write_text_async)
     assert asyncio.iscoroutinefunction(atomic_write_json_async)
     assert asyncio.iscoroutinefunction(read_json_async)

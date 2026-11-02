@@ -74,14 +74,14 @@ _INJECTION_LOG_RE = re.compile(
 # failure in the free-text feedback. Both the live completion cue
 # (``_format_completion_cue`` in the facade) and the retroactive cue
 # (``_push_retroactive_completion_cue`` below) sniff these so a blocked
-# action is never narrated as a success (user-reported "她以为找博士成功了"
+# action is never narrated as a success (user report: "she thought finding the doctor succeeded"
 # bug). Kept in ONE place so the two consumers can't drift apart.
 _BLOCKED_TEXT_MARKERS = (
     "obstacle", "obstructed", "not found", "could not", "couldn't",
     "unable", "failed", "no path", "blocked", "missing",
     "cannot", "can't",
-    # status=ok 但缺目标 / 要更多信息也算受阻：mc-agent 对「过来」「跟着我」
-    # 这类缺玩家名/坐标的指令会回 status=ok + "Target unavailable. Please
+    # status=ok without a target / requiring more information also means blocked: mc-agent answers commands
+    # such as "come here" or "follow me" without a player name/coordinates with status=ok + "Target unavailable. Please
     # provide the exact player name or coordinates."
     "unavailable", "please provide", "provide the exact",
     "no target", "target not",
@@ -626,10 +626,10 @@ class GameAgentService:
         self._log_carry.clear()
         self._screenshot_cache.clear()
         # Inventory snapshot belongs to the WS session that just ended.
-        # game_agent_reload_config（ws_url 切换）/ 重启场景下，下一个 WS
-        # 可能连到完全不同的世界，沿用旧 ``_last_inventory`` 会让
-        # query_inventory 把旧世界的库存当新世界 ground truth 上报。
-        # 清空 = "回到 inv_at==0 未知"分支，由下一个 task_finished 重建。
+        # After game_agent_reload_config (ws_url switch) or restart, the next WS
+        # may connect to a wholly different world. Reusing _last_inventory would let
+        # query_inventory report the old world's inventory as the new world's ground truth.
+        # Clearing restores the inv_at==0 unknown branch; the next task_finished rebuilds it.
         self._last_inventory = {}
         self._last_inventory_at = 0.0
         # New session may be a different world — let its first inventory and
@@ -749,10 +749,10 @@ class GameAgentService:
         is_idle = ((not skill) and (not kind)) or any(m in text for m in idle_markers)
         # [BUSY-RACE] Re-arm the busy latch only when the frame correlates to real
         # ongoing work: a pending dispatched task, or an explicitly autonomous
-        # (自主) frame. The agent tags each status 🎯[按指令] (a DISPATCHED command)
-        # or 🤖[自主] (autonomous). With no pending task AND no 自主 tag, a busy
+        # (autonomous) frame. The agent tags each status 🎯[按指令] (a DISPATCHED command)
+        # or 🤖[自主] (autonomous). With no pending task AND no autonomous tag, a busy
         # frame is either a stale trailing report of the just-finished dispatch
-        # (按指令) or an untagged frame we can't attribute — so we do NOT re-arm.
+        # (dispatched) or untagged frame cannot be attributed, so we do NOT re-arm.
         # Conservative on purpose: a wrong "not busy" costs at most one extra
         # nudge, but a wrong "busy" strands recovery for the full TTL while the
         # agent is idle. (A precise call on untagged frames would need the mc-agent
@@ -802,8 +802,8 @@ class GameAgentService:
     def current_task_text(self) -> Optional[str]:
         """Return the text of the currently-pending task, or ``None`` if idle.
         Lock-free snapshot read for the facade's "busy" reply — the facade
-        needs to tell the dialog LLM what task is in flight so the猫娘 can
-        narrate it correctly instead of派 a new conflicting task.
+        needs to tell the dialog LLM what task is in flight so the catgirl can
+        narrate it correctly instead of dispatching a new conflicting task.
         """
         pending = self._pending
         return pending.task_text if pending is not None else None
@@ -1480,8 +1480,8 @@ class GameAgentService:
         nudge tick. ``cause`` (when mc-agent could infer one — nearby
         hostile, lava, fall, etc.) is rendered as a hint inside the cue
         so the character can narrate the actual reason instead of
-        inventing one (the historical UX problem: 猫娘 saw HP drop and
-        made up "被怪物打了" with no evidence).
+        inventing one (the historical UX problem: the catgirl saw HP drop and
+        made up "a monster hit me" with no evidence).
         """
         severity = str(data.get("severity") or "warn").lower()
         cause_hint = self._format_alert_cause(data.get("cause"))
@@ -1618,9 +1618,9 @@ class GameAgentService:
         #      actually blocked (target not found, no path…) — the same
         #      status=ok-but-really-blocked quirk the live completion cue
         #      re-labels (see ``text_signals_blocked``). Without this second
-        #      check the retroactive cue would say "其实跑完了（结果 ok）" while
+        #      check the retroactive cue would say "it actually finished (result ok)" while
         #      its own feedback line shows "could not find path" — re-telling
-        #      猫娘 a success that never happened.
+        #      telling the catgirl about a success that never happened.
         # ``.strip().lower()`` so a whitespace-padded "ok " still reads as ok.
         is_genuine_ok = (
             status.strip().lower() == "ok" and not text_signals_blocked(text)
@@ -1713,7 +1713,7 @@ class GameAgentService:
             #   (b) echoed in dispatched history → retroactive cue
             #       (an earlier task — usually one we overwrote — really
             #       finished on mc-agent, surface that to the dialog LLM
-            #       so猫娘 knows the prior action actually completed)
+            #       so the catgirl knows the prior action actually completed)
             #   (c) no task_id or unknown id, but ``_pending`` is set →
             #       FIFO fallback: treat as completion of current pending
             #       (covers legacy mc-agent builds that don't echo id)
@@ -1768,8 +1768,8 @@ class GameAgentService:
                 self._last_inventory_at = time.time()
 
             # ``duplicate`` is NOT a terminal frame. mc-agent sends it when the
-            # same instruction is already running ("继续当前任务、不重新开始…
-            # 请勿重发"). Treating it as a completion (observed 2026-09-07)
+            # the same instruction is already running ("continue the current task without restarting…
+            # do not resend"). Treating it as completion (observed 2026-09-07)
             # cleared the slot AND told the dialog LLM the action "couldn't
             # finish" → it re-sent the same text → duplicate again, forever.
             # Keep the slot claimed and don't wake the handler; remember the
@@ -1904,7 +1904,7 @@ class GameAgentService:
         # firing entirely ("user has moved on"). In practice that PERMANENTLY
         # killed the autonomous self-prompt — after one >90s idle stretch she
         # went dead-air until something external (mc-agent self-prompt / user)
-        # restarted her (the user-reported "self-prompt 停了很久才恢复"). For an
+        # restarted her (the user-reported "self-prompt stopped for a long time before recovering"). For an
         # autonomous game companion the desired behaviour is the opposite: keep
         # nudging her to play as long as she's idle. So the upper bound is gone —
         # keep_going now fires whenever idle, forever, paced by the cooldown.

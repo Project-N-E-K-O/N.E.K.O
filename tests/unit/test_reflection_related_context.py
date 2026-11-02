@@ -19,9 +19,9 @@ def _make_engine(facts_on_disk: list[dict]):
     cm = MagicMock()
     cm.memory_dir = "/tmp/dummy"
     # Patch the manager submodule because it consumes get_config_manager.
-    # reflection.py 用 `from utils.config_manager import get_config_manager`
-    # 把名字 bind 到本模块 namespace，patch source module 对已 bind 的
-    # 局部引用无效（CodeRabbit minor #1392）。
+    # reflection.py uses `from utils.config_manager import get_config_manager`
+    # to bind the name in its own module namespace; patching the source module cannot affect an already-bound
+    # local reference (CodeRabbit minor #1392).
     with patch("memory.reflection.manager.get_config_manager", return_value=cm):
         engine = ReflectionEngine(fact_store=fact_store, persona_manager=MagicMock())
     return engine
@@ -42,10 +42,10 @@ def _enabled_service():
 
 
 def _loading_service():
-    """INIT/LOADING 中间态：未 sticky disable，但还没 ready。
-    _build_related_context_block 必须把这视为 unavailable
-    （Codex P2 #1392），否则 reranker 会降级 evidence-only 把无关
-    fact 塞进 RELATED_CONTEXT_BLOCK。"""
+    """INIT/LOADING intermediate states are not sticky-disabled but are not ready.
+    _build_related_context_block must treat these as unavailable
+    (Codex P2 #1392), or reranker falls back to evidence-only and injects unrelated
+    facts into RELATED_CONTEXT_BLOCK."""
     svc = MagicMock()
     svc.is_disabled = MagicMock(return_value=False)
     svc.is_available = MagicMock(return_value=False)
@@ -54,7 +54,7 @@ def _loading_service():
 
 @pytest.mark.asyncio
 async def test_returns_empty_when_embedding_disabled():
-    """embedding 不可用 → 整块省略，prompt 与改造前等价。"""
+    """Unavailable embedding → omit the entire block, keeping the prompt equivalent to its pre-change form."""
     engine = _make_engine([{"id": "f1", "text": "x", "absorbed": True}])
     with patch("memory.embeddings.get_embedding_service", return_value=_disabled_service()):
         block = await engine._build_related_context_block(
@@ -73,7 +73,7 @@ async def test_returns_empty_when_unabsorbed_is_empty():
 
 @pytest.mark.asyncio
 async def test_returns_empty_when_no_absorbed_facts():
-    """absorbed_pool 为空（所有 fact 都是 unabsorbed）→ 空字符串。"""
+    """Empty absorbed_pool (all facts are unabsorbed) → empty string."""
     engine = _make_engine([
         {"id": "f1", "text": "x", "absorbed": False, "importance": 5},
     ])
@@ -86,7 +86,7 @@ async def test_returns_empty_when_no_absorbed_facts():
 
 @pytest.mark.asyncio
 async def test_happy_path_renders_watermarked_block():
-    """召回到东西 → 输出含 watermark + 说明 + 尾部 \\n\\n 的 block。"""
+    """Successful recall → a block containing watermark + explanation + trailing \\n\\n."""
     engine = _make_engine([
         {"id": "f1", "text": "absorbed fact text", "absorbed": True, "importance": 7},
     ])
@@ -104,7 +104,7 @@ async def test_happy_path_renders_watermarked_block():
     assert "- absorbed fact text (importance: 7)" in block
     assert "仅供参考" in block
     assert "======以上为相关历史背景======" in block
-    # 末尾 \n\n 是 RELATED_CONTEXT_BLOCK 与下游 ====以下为事实==== 自然分隔的依据
+    # Trailing \n\n naturally separates RELATED_CONTEXT_BLOCK from the downstream ====以下为事实==== fact watermark
     assert block.endswith("\n\n")
 
 
@@ -132,9 +132,9 @@ async def test_happy_path_localizes_traditional_context_instruction():
 
 @pytest.mark.asyncio
 async def test_returns_empty_when_all_absorbed_facts_lack_valid_embedding():
-    """Codex P2 #1392：fact 没 valid embedding 时 reranker 会 fallback 到
-    evidence_score 排序，fact 又没 score 字段 → 注入近随机的历史 fact 当
-    相关背景。必须 pre-filter，pool 为空就 early return。"""
+    """Codex P2 #1392: without valid fact embeddings, reranker falls back to
+    evidence_score ordering, but facts lack score fields, injecting nearly random historical facts as
+    relevant context. Prefilter and return early when the pool is empty."""
     engine = _make_engine([
         {"id": "f1", "text": "absorbed fact", "absorbed": True, "importance": 5},
     ])
@@ -169,8 +169,8 @@ async def test_arbitration_archived_fact_stays_out_of_related_context():
 
 @pytest.mark.asyncio
 async def test_returns_empty_when_embedding_loading_not_ready():
-    """INIT/LOADING：is_disabled=False 但 is_available=False → 仍要返回
-    空，否则 reranker 降级 evidence-only 会注入无关 fact（Codex P2 #1392）。"""
+    """INIT/LOADING: is_disabled=False but is_available=False → still return
+    empty, or evidence-only reranker fallback injects unrelated facts (Codex P2 #1392)."""
     engine = _make_engine([
         {"id": "f1", "text": "absorbed fact text", "absorbed": True, "importance": 7},
     ])

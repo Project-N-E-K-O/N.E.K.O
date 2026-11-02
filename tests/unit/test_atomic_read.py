@@ -76,8 +76,8 @@ def test_sync_read_does_not_swallow_a_missing_file(tmp_path):
 async def test_async_read_waits_through_both_absence_and_a_busy_target(
     tmp_path, monkeypatch
 ):
-    # 这两种失败要一视同仁：文件还没被 replace 上来（FileNotFoundError），和文件
-    # 在盘上但此刻打不开（PermissionError）—— 后者正是 `exists()` 门守不住的那个。
+    # Treat both failures equally: the file has not yet been replaced into place (FileNotFoundError), or it
+    # exists on disk but cannot be opened now (PermissionError), which `exists()` cannot guard against.
     target = tmp_path / "state.json"
     target.write_text('{"v": 7}', encoding="utf-8")
     errors = iter([FileNotFoundError(2, "nope"), PermissionError(13, "denied")])

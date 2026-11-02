@@ -166,16 +166,16 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        # 跟随全局 NEKO_LOG_LEVEL（默认 INFO）。此前硬编码 "INFO" 会把
-        # 自主 nudge loop 的 fire 决策（_log_debug "firing keep_going/
-        # in_progress/general nudge"）和其它 DEBUG 诊断永久吞掉——排查
-        # 「任务结束后猫娘不再开口 / self-prompt 没了」时根本看不到 nudge
-        # 到底有没有 fire、有没有走到 push。改成跟随环境变量，开 DEBUG 即可见。
+        # Follow global NEKO_LOG_LEVEL (default INFO). Hardcoded "INFO" previously hid
+        # autonomous nudge-loop firing decisions (_log_debug "firing keep_going/
+        # in_progress/general nudge") and other DEBUG diagnostics permanently; when investigating
+        # 'the catgirl stops speaking after task completion / self-prompt disappeared', it was impossible to see whether nudges
+        # fired or reached push. Following the environment variable exposes them when DEBUG is enabled.
         _log_level = (os.environ.get("NEKO_LOG_LEVEL") or "INFO").strip().upper()
         try:
             self.file_logger = self.enable_file_logging(log_level=_log_level)
         except ValueError:
-            # 未知级别（理论上不会发生）兜底回 INFO，别让插件因日志配置崩在 __init__。
+            # Unknown levels, theoretically impossible, fall back to INFO rather than crashing plugin __init__ over logging configuration.
             self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._cfg: Dict[str, Any] = {}
@@ -489,14 +489,14 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     def _format_completion_cue(self, result: Dict[str, Any]) -> str:
         """Render the ``run_claimed_task`` return into a short cue for the
-        dialog LLM. Goal: tell猫娘 what just happened in as few words as
+        dialog LLM. Goal: tell the catgirl what just happened in as few words as
         possible — she should *know* the outcome, not parrot it. Long
-        instructional preambles got复述 verbatim in our earlier testing
-        ("【当前持有 ground truth】" became a literal台词)，which is
-        exactly the "像个机器人一直念" problem we're fixing.
+        instructional preambles were repeated verbatim in earlier testing
+        ('current inventory ground truth' became literal dialogue), which is
+        exactly the robotic repeated narration problem being fixed.
 
         Transport-level errors get rewritten to body/sensation language
-        so the dialog LLM never sees "agent server is not connected" and
+        so the dialog LLM never sees \"agent server is not connected\" and
         starts narrating about reconnection.
         """
         if result.get("is_error"):
@@ -522,9 +522,9 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # Re-label transport/blocked statuses into localized phrases the
         # dialog LLM can paraphrase. The "received status string" stays
         # the surface text the LLM sees; routing logic below still keys
-        # off the original ``ok`` / ``受阻`` sentinel values via the
+        # off the original ``ok`` / ``受阻`` ('blocked') sentinel values via the
         # same-language label, so the status branches below survive
-        # localization without growing brittle "if any locale of 受阻"
+        # localization without growing brittle 'if any locale of blocked'
         # checks.
         blocked_label = prompts.t("STATUS_LABEL_BLOCKED", lang=self._lang)
         # Gate the "not connected" text sniff on an actual error envelope.
@@ -544,8 +544,8 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # in-game action was blocked (mineflayer couldn't resolve target,
         # missing tool, path obstructed, etc.) — the failure is buried in
         # the text message. Without re-labeling, the dialog LLM reads
-        # "结果 ok" + "find player not found" and concludes "task done"
-        # (cf. user-reported "她以为找博士成功了，没改用真 username"
+        # "结果 ok" ('result ok') + "find player not found" and concludes "task done"
+        # (cf. the user report: 'she thought finding Doctor succeeded and never used the real username'
         # bug). Surface the blocked-ness explicitly so she has to plan
         # around it. Marker list is shared with the retroactive cue via
         # ``text_signals_blocked`` so the two can't drift apart.
@@ -572,15 +572,15 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # interrupted/superseded (task stopped short but nothing went
         # wrong), or genuine failure (disconnect, timeout, "failed",
         # error, "unknown", arbitrary is_error strings). The catch-all
-        # branch previously cue'd everything that wasn't 受阻 as "做完 ...
-        # 派下一步" which told the dialog LLM the action succeeded when it
+        # branch previously cued everything other than 'blocked' as 'completed ...',
+        # 'dispatch the next step', telling the dialog LLM the action succeeded when it
         # actually disconnected / timed out / crashed — Codex review on
         # PR #1395 caught this, so we whitelist "ok" as success instead
         # of enumerating every failure. ``interrupted`` (our overwrite/
         # shutdown/bounce verdict) and ``superseded`` (mc-agent's "a newer
         # task replaced this") are carved out of the failure bucket: they
         # are non-completions, not failures, and narrating them as
-        # "没做成——想清楚原因" is wrong (there's no cause; she just moved on).
+        # 'Failed — determine why' is wrong (there is no cause; she simply moved on).
         # Normalize once for the buckets: tolerate case + stray whitespace
         # from mc-agent (e.g. "ok " / " SUPERSEDED" must still classify).
         # ``is_blocked`` keeps the exact-label compare — blocked_label is a
@@ -627,17 +627,17 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     @ui.context(id="quickstart")
     async def quickstart_ui_context(self, **_):
-        """quickstart guide surface 的只读上下文 provider。
+        """Read-only context provider for the quickstart guide surface.
 
-        必须存在：hosted-surface 的 ``api.call`` 走 ``call_surface_action`` →
-        ``host.get_ui_context(<surface 的 context_id>)``。surface 没声明
-        ``context`` 时 context_id 取 surface id（这里 "quickstart"），缺了对应
-        provider 会让 get_ui_context 直接报 "UI context not found"，连带
-        ``_collect_ui_actions()`` 暴露的 action 列表也拿不到，``api.call`` 必败。
+        Required: hosted-surface ``api.call`` uses ``call_surface_action`` →
+        ``host.get_ui_context(<surface context_id>)``. Without declared
+        ``context``, context_id defaults to the surface ID (\"quickstart\" here); missing the corresponding
+        provider makes get_ui_context raise \"UI context not found\", also preventing
+        access to ``_collect_ui_actions()``'s action list, so ``api.call`` always fails.
 
-        surface 自身通过 ``props.api.call("game_agent_status")`` 拉实时状态，
-        所以这里返回轻量快照即可（不强制 lazy-start，避免每次取 context 都阻塞
-        3s 等 WS 握手）。返回值会和 host 注入的 ``actions`` 合并下发。
+        The surface itself fetches live state through ``props.api.call(\"game_agent_status\")``,
+        so a lightweight snapshot suffices here; avoid forced lazy-start and its
+        3s WS-handshake wait on every context fetch. The host merges injected ``actions`` into this result.
         """
         try:
             return {"status": self._service.get_status()}
@@ -720,8 +720,8 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             connected = connected or source == "live"
 
             # Short, fact-only summaries. The dialog LLM only needs to
-            # *know* the inventory, not复述 a long preamble — the old
-            # version had her quoting "【ground truth — 完整且唯一】"
+            # *know* the inventory, not repeat a long preamble — the old
+            # version had her quoting 'ground truth — complete and exclusive'
             # verbatim like a robot.
             if inv_at == 0:
                 summary = prompts.t("INV_NO_DATA", lang=self._lang)

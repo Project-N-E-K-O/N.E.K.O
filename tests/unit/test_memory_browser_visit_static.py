@@ -67,7 +67,7 @@ def flatten(obj: dict, prefix: str = "") -> dict[str, str]:
     return out
 
 
-# ── 接线 ──────────────────────────────────────────────────────────────
+# ── Wiring ──────────────────────────────────────────────────────────────
 
 
 def test_visit_panel_is_an_auxiliary_panel_of_the_memory_browser():
@@ -83,7 +83,7 @@ def test_visit_panel_is_an_auxiliary_panel_of_the_memory_browser():
     assert "renderVisitMemoryPanel();" in source
 
 
-# ── 端点字面量 ────────────────────────────────────────────────────────
+# ── Endpoint literals ────────────────────────────────────────────────────────
 
 
 def test_visit_endpoint_literals_have_no_trailing_slash():
@@ -102,12 +102,12 @@ def test_visit_endpoint_literals_have_no_trailing_slash():
     }
     for _q, lit, plus in literals:
         if lit.endswith("/"):
-            # 只有拼接前缀可以以 / 结尾（后面紧跟 + visit_id）
+            # Only the concatenated prefix may end in / (followed immediately by + visit_id)
             assert plus, f"trailing-slash endpoint literal {lit!r}"
     assert "const VISIT_HISTORY_URL = '/api/visit/history';" in section
 
 
-# ── 每场记录：只取本机代理 /api/visit/history，不从本机 spool 拼 ─────────
+# ── Per-visit records: use only the local proxy /api/visit/history; do not assemble from the local spool ─────────
 
 
 def test_history_list_only_comes_from_the_history_endpoint():
@@ -116,13 +116,13 @@ def test_history_list_only_comes_from_the_history_endpoint():
     assert "visitRequest(VISIT_HISTORY_URL + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''))" in load
     assert "result.payload.items" in load
     assert "next_cursor" in load
-    # 列表状态只在 loadVisitHistory 里由 history 响应写入
+    # List state is written from the history response only in loadVisitHistory
     for match in re.finditer(r"visitMemoryState\.history = ", section):
         assert enclosing_function(section, match.start()) == "loadVisitHistory"
     assert "visitMemoryState.history.concat(items)" in load
     render = function_body("renderVisitHistory")
     assert "visitMemoryState.history.forEach" in render
-    # 不读本机副本拼列表
+    # Do not assemble the list from the local copy
     for forbidden in ("/api/visit/transcript", "spool", "localStorage", "sessionStorage", "indexedDB"):
         assert forbidden not in "\n".join(code_lines(section)), forbidden
 
@@ -133,21 +133,21 @@ def test_details_endpoint_is_only_called_after_clicking_view_details():
     assert source.count("'/api/visit/details/'") == 1
     load = function_body("loadVisitDetailsPage")
     assert "visitRequest('/api/visit/details/' + encodeURIComponent(details.visitId)" in load
-    # 分页：带 next_cursor 才有下一页，下一页带 cursor= 再调同一端点
+    # Pagination: a next page exists only when next_cursor is present; request it from the same endpoint with cursor=
     assert "'?cursor=' + encodeURIComponent(cursor)" in load
     assert "result.payload.next_cursor" in load
     step = function_body("stepVisitDetailsPage")
     assert "details.cursors[details.page + 1] = details.nextCursor" in step
-    # loadVisitDetailsPage 只由 openVisitDetails / 翻页调用
+    # loadVisitDetailsPage is called only by openVisitDetails / pagination
     callers = {enclosing_function(section, m.start()) for m in re.finditer(r"(?<!function )\bloadVisitDetailsPage\(\)", section)}
     assert callers == {"openVisitDetails", "stepVisitDetailsPage"}
-    # openVisitDetails 只在「查看详情」按钮的点击回调里调
+    # openVisitDetails is called only by the "View details" button click handler
     calls = [m.start() for m in re.finditer(r"(?<!function )\bopenVisitDetails\(visitId\)", section)]
     assert len(calls) == 1
     assert enclosing_function(section, calls[0]) == "renderVisitHistoryRow"
     before = section[: calls[0]]
     assert before.rstrip().endswith("detailsButton.addEventListener('click', function () {")
-    # 打开面板 / 拉列表时不预取详情
+    # Do not prefetch details when opening the panel or loading the list
     for name in ("openVisitMemoryPanel", "loadVisitHistory", "renderVisitHistory"):
         assert "details/" not in function_body(name)
 
@@ -162,7 +162,7 @@ def test_transcript_text_is_written_with_text_content_only():
     assert "el.textContent = String(text)" in helper
 
 
-# ── 举报 ─────────────────────────────────────────────────────────────
+# ── Reporting ─────────────────────────────────────────────────────────────
 
 
 def test_report_202_queued_is_shown_as_recorded_not_as_error():
@@ -179,8 +179,8 @@ def test_report_202_queued_is_shown_as_recorded_not_as_error():
 
 
 def test_failed_report_keeps_the_draft_and_only_settled_outcomes_drop_it():
-    # 提交失败（report_persist_failed / 网络错等）后重建表单要回填用户填过的内容；
-    # 成功、排队（含已排队但登录失效）、已在排队、取消时才丢掉草稿
+    # After submission fails (report_persist_failed / network error, etc.), rebuilding the form must restore the user's input;
+    # discard the draft only on success, queued (including queued but login expired), already queued, or cancel
     form = function_body("renderVisitReportForm")
     assert "const draft = visitMemoryState.reportDrafts.get(visitId);" in form
     for line in ("reason.value = draft.reason;", "note.value = draft.note;",
@@ -196,12 +196,12 @@ def test_failed_report_keeps_the_draft_and_only_settled_outcomes_drop_it():
     submit = function_body("submitVisitReport")
     branches = re.split(r"\n        \} else ", submit[submit.index("const code = visitResultCode(result);"):])
     drops = ["reportDrafts.delete(visitId)" in b for b in branches]
-    # 202 排队 / 200 已提交 / 已排队但登录失效 / already_queued 丢草稿；persist_failed 与其余错误保留
+    # 202 queued / 200 submitted / queued but login expired / already_queued discard the draft; preserve it for persist_failed and other errors
     assert drops == [True, True, True, True, False, False], drops
 
 
 def test_report_submission_is_guarded_while_in_flight():
-    # 请求在途时表单可能被重建（刷新列表等）：同一场不能再提交一次（CodeRabbit）
+    # The form may be rebuilt while a request is in flight (for example, when refreshing the list): do not allow another submission for the same visit (CodeRabbit)
     submit = function_body("submitVisitReport")
     guard = submit.index("if (visitMemoryState.reportInFlight.has(visitId)) return;")
     assert guard < submit.index("visitMemoryState.reportInFlight.add(visitId);") < submit.index("visitRequest(")
@@ -229,7 +229,7 @@ def test_report_request_body_matches_the_local_report_endpoint():
     assert "const VISIT_REPORT_REASONS = ['harassment', 'sexual', 'privacy', 'spam', 'other'];" in section
 
 
-# ── 完整 peer_uid 永不进可见文本 ────────────────────────────────────────
+# ── Full peer_uid must never appear in visible text ────────────────────────
 
 
 def test_rendering_never_interpolates_peer_uid_only_short_id():
@@ -243,7 +243,7 @@ def test_rendering_never_interpolates_peer_uid_only_short_id():
     assert "visitPeerLabel(peer)" in function_body("renderVisitPeerRow")
     assert "visitPeerLabel(peer)" in function_body("renderVisitBlockRow")
     assert "item.peer_short_code" in function_body("renderVisitHistoryRow")
-    # peer_uid 只出现在：列表过滤、清除这个人 / 拉黑 的请求体
+    # peer_uid appears only in: list filtering and request bodies for forgetting or blocking this person
     allowed = {"loadVisitPeers", "submitVisitForget", "submitVisitBlock"}
     for match in re.finditer(r"peer_uid", section):
         line_start = section.rfind("\n", 0, match.start()) + 1
@@ -278,12 +278,12 @@ def test_forget_body_carries_the_current_catgirl_of_the_panel():
     request = function_body("requestVisitForgetPerson")
     assert "catgirl: visitMemoryState.catgirl" in request
     forget = function_body("submitVisitForget")
-    # 确认期间切了角色：不按旧角色发
+    # The character changed during confirmation: do not send using the old character
     assert "action.catgirl !== visitMemoryState.catgirl" in forget
     assert forget.index("action.catgirl !== visitMemoryState.catgirl") < forget.index("visitRequest(")
 
 
-# ── 确认之后才发清除请求 ───────────────────────────────────────────────
+# ── Send the forget request only after confirmation ───────────────────────────────
 
 
 def test_forget_requests_are_only_sent_after_confirmation():
@@ -291,7 +291,7 @@ def test_forget_requests_are_only_sent_after_confirmation():
     source = read(JS_PATH)
     assert source.count("'/api/visit/memory/forget_all'") == 1
     uses = [m.start() for m in re.finditer(r"\bVISIT_FORGET_ALL_URL\b", section)]
-    assert len(uses) == 2  # 定义 + submitVisitForgetAll 里的一次请求
+    assert len(uses) == 2  # Definition plus the one request in submitVisitForgetAll
     assert enclosing_function(section, uses[1]) == "submitVisitForgetAll"
     for submit in ("submitVisitForgetAll", "submitVisitForget"):
         callers = {enclosing_function(section, m.start())
@@ -301,7 +301,7 @@ def test_forget_requests_are_only_sent_after_confirmation():
     assert "await submitVisitForgetAll(onlyCurrent ? action.catgirl : '');" in confirm
     assert "await submitVisitForget(action);" in confirm
     assert "await submitVisitBlock(action.peer, true);" in confirm
-    # 底部按钮与「清除这个人」只打开确认框，不发请求
+    # The bottom button and "Forget this person" only open the confirmation dialog; they do not send a request
     for name in ("requestVisitForgetAll", "requestVisitForgetPerson", "requestVisitBlock"):
         body = function_body(name)
         assert "openVisitConfirm(" in body
@@ -316,8 +316,8 @@ def test_forget_requests_are_only_sent_after_confirmation():
 
 
 def test_unreadable_forget_record_offers_the_confirmed_discard_entry():
-    # 读不出的清除记录挡住清除时（503 reason:'forget_record_unreadable'）不提示「稍后重试」，
-    # 而是给出丢弃入口；丢弃请求只在二次确认之后发，带 confirm:true
+    # When an unreadable forget record blocks the forget action (503 reason:'forget_record_unreadable'), do not say "Try again later",
+    # instead offer a discard action; send the discard request only after a second confirmation, with confirm:true
     section = visit_section()
     assert "const VISIT_FORGET_RECORD_UNREADABLE = 'forget_record_unreadable';" in section
     errors = function_body("visitErrorText")
@@ -342,13 +342,13 @@ def test_unreadable_forget_record_offers_the_confirmed_discard_entry():
     assert re.search(r'<button[^>]*id="memory-visit-discard-unreadable"[^>]*\bhidden\b', html)
 
 
-# ── CSRF 与错误码 ─────────────────────────────────────────────────────
+# ── CSRF and error codes ─────────────────────────────────────────────────────
 
 
 def test_every_visit_request_carries_the_csrf_header_from_page_config():
     section = visit_section()
     fetch_owners = {enclosing_function(section, m.start()) for m in re.finditer(r"\bfetch\(", section)}
-    assert fetch_owners == {"loadVisitCsrfToken", "visitRequest"}  # sendOnce 是 visitRequest 的内部函数
+    assert fetch_owners == {"loadVisitCsrfToken", "visitRequest"}  # sendOnce is an internal function of visitRequest
     token = function_body("loadVisitCsrfToken")
     assert "fetch('/api/config/page_config'" in token
     assert "payload.autostart_csrf_token" in token
@@ -420,8 +420,8 @@ def test_visit_copy_has_no_dehumanizing_terms():
 
 
 def test_current_catgirl_fallback_syncs_the_panel_triggers():
-    # 没有私聊记忆文件、只靠 current_catgirl 兜底认出的角色：赋值后要同步「导入记忆」与「串门记忆」入口，
-    # 否则两个入口整页都保持禁用（Codex P2）
+    # For a character recognized only as a fallback through current_catgirl, with no private-chat memory file, assigning it must also enable the "Import memory" and "Visit memory" actions,
+    # otherwise both actions remain disabled across the entire page (Codex P2)
     source = read(JS_PATH)
     start = source.index("const response = await fetch('/api/characters/current_catgirl');")
     branch = source[start:source.index("} catch (error) {", start)]

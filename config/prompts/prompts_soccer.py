@@ -1030,17 +1030,17 @@ SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS = {
 }
 
 
-# ⚠️ 这三张表和本模块其余表**性质不同**：它们不是给模型看的文案，而是拿去撞
-# preGameContext 与 lanlan_prompt（用户自己写的人设）里的字，所以不按 locale 取，
-# 而是所有词条一起扫。中文侧必须简繁并列——繁体人设此前两个方向都塌回默认：
-# 「體力弱」拿不到 WEAK 上限（8 → 25，抬高三倍），「擅長運動」拿不到 STRONG
-# （50 → 25，压低一半），是双向的行为偏移而不只是失效。
+# These three tables differ from the module's others: they are matching terms, not model-facing prose, and scan
+# preGameContext and lanlan_prompt (user-authored personas), so scan all entries together rather than selecting by locale.
+# Include both simplified/traditional Chinese. Traditional personas previously fell back to default in both directions:
+# "體力弱" (weak stamina) missed the WEAK cap (8 -> 25, tripling it), while "擅長運動" (athletic) missed STRONG
+# (50 -> 25, halving it): behavioral shifts in both directions, not merely failed matches.
 #
-# ⚠️ 单字条目（宅 / 哄）本身就有子串误伤（「宅」命中「住宅」），是既有取舍；
-# 补繁体时不要顺手再加单字。
+# Single-character entries 宅 / 哄 already cause substring false positives (e.g. 宅 in 住宅); this is an existing tradeoff.
+# Do not add more single-character entries while adding traditional forms.
 #
-# 从 main_routers/game_router/balance.py 搬来（后端多语言/匹配词表按项目规范落在
-# config/prompts 下）。badminton 的 anger cap 也复用这三张表。
+# Moved from main_routers/game_router/balance.py (backend multilingual/matching vocabularies belong under
+# config/prompts per project conventions). Badminton's anger cap also reuses these three tables.
 SOCCER_ANGER_CONTEXT_KEYWORDS: tuple[str, ...] = (
     "生气", "生氣", "发火", "發火", "愤怒", "憤怒", "爆发", "爆發",
     "惩罚", "懲罰", "教训", "教訓", "报复", "報復", "泄愤", "洩憤",

@@ -274,7 +274,7 @@ class TTSProvider:
     configured_preset_voice: bool = False
     # User-pointed endpoints may fall back to the unchanged downstream dispatch
     # order after configuration, startup, or synthesis failures.
-    # 用户自填端点失败时，仅排除当前 provider，后续仍严格沿用既有调度顺序。
+    # When a user-configured endpoint fails, exclude only that provider and retain the established dispatch order.
     fallback_on_failure: bool = False
 
     # Alternate provider ids that share this provider's implementation and
@@ -363,7 +363,7 @@ def _log_provider_predicate_failure(provider: TTSProvider) -> None:
     if getattr(provider, "fallback_on_failure", False):
         # Configured predicates may read signed URLs or credentials. Their raw
         # exceptions must not enter backend logs; provider and stage are enough.
-        # 配置型 provider 的异常可能携带签名 query/密钥，仅记录错误码、归属和阶段。
+        # Configured-provider exceptions may contain signed queries/keys; record only error code, ownership, and phase.
         logger.error(
             "code=TTS_CONFIGURED_API_FAILURE provider=%s stage=selection",
             provider.key,
@@ -389,8 +389,8 @@ def selected_provider(ctx: "DispatchContext") -> "TTSProvider | None":
         try:
             selected = provider.is_selected(ctx)
         except Exception:
-            # is_selected 判定异常不应连带打挂整个 dispatch，跳过该 provider 继续；
-            # 但静默会掩盖配置/适配器 bug，至少留一条带堆栈的可观测日志。
+            # An is_selected exception must not break dispatch; skip that provider and continue.
+            # Silence would hide config/adapter bugs, so retain at least one observable log with a stack trace.
             _log_provider_predicate_failure(provider)
             selected = False
         if selected:
@@ -414,7 +414,7 @@ def resolve_selected(
     # Opted-in configured endpoints may be unreadable while the existing
     # fallback providers remain usable. Other providers retain their original
     # exception behavior, so this issue does not broaden unrelated fallback.
-    # 仅允许声明过的自定义 provider 在解析失败时跳过；其他 provider 维持旧异常语义。
+    # Skip resolution failures only for declared custom providers; retain legacy exception semantics for other providers.
     for provider in all_providers():
         if provider.key in excluded_provider_keys:
             continue
@@ -423,7 +423,7 @@ def resolve_selected(
         except Exception:
             # Match selected_provider's established fault isolation so runtime
             # dispatch and the /voices catalog cannot disagree after one bad predicate.
-            # 与 selected_provider 复用旧容错语义，单个判定异常不能打断后续 provider。
+            # Reuse selected_provider's legacy fault tolerance: one selection-check failure must not interrupt later providers.
             _log_provider_predicate_failure(provider)
             selected = False
         if not selected:
@@ -449,7 +449,7 @@ def falls_back_on_failure(provider_key: str | None) -> bool:
 def uses_configured_preset_voice(provider_key: str | None) -> bool:
     """Whether the provider owns the configured voice field as its preset."""
     # Core and storage query metadata here instead of hardcoding custom/vllm keys.
-    # core 与存储层统一查元数据，避免写死 custom/vllm provider 名称。
+    # Core and storage both consult metadata instead of hardcoding custom/vllm provider names.
     provider = get(provider_key)
     return bool(provider and provider.configured_preset_voice)
 
@@ -486,7 +486,7 @@ def preset_catalog_for_ui(
             "provider": provider.key,
             # Configured voices are shown under the generic Custom API source,
             # while ``provider`` retains the real runtime owner for dispatch.
-            # 配置音色统一显示为“自定义 API”，但 provider 字段仍保留真实路由身份。
+            # Configured voices display as Custom API, while provider retains the actual routing identity.
             "provider_label": "custom",
             "gender": "",
             "display_name": voice_id,

@@ -1,4 +1,4 @@
-"""出行建议 router。"""
+"""Travel-advice router."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from .._location_entry import (
 def build_travel_advice(
     current: Dict[str, Any], daily: Dict[str, Any], t: I18n,
 ) -> Dict[str, Any]:
-    """根据天气数据生成出行建议（使用体感温度）。"""
+    """Generate travel advice from weather data using apparent temperature."""
     feels = current.get("apparent_temperature")
     temp = current.get("temperature_2m")
     ref = feels if feels is not None else temp
@@ -85,7 +85,7 @@ def build_travel_advice(
 
 
 class TravelAdviceRouter(PluginRouter):
-    """travel_advice entry：穿衣/带伞/防晒等出行建议。"""
+    """travel_advice entry: clothing, umbrellas, sunscreen, and other travel advice."""
 
     def __init__(self):
         super().__init__(name="travel_advice")
@@ -125,7 +125,7 @@ class TravelAdviceRouter(PluginRouter):
         summary = i18n.t("summary.travel_prefix", city=loc["city"])
         summary += " ".join(advice["tips"][:3])
 
-        # 推送出行建议卡片到聊天框
+        # Push a travel-advice card to the chat window.
         card_lines = []
         if advice["tips"]:
             card_lines.append(" · ".join(advice["tips"][:3]))

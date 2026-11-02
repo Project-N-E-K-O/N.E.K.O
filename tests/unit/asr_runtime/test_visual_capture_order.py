@@ -30,7 +30,7 @@ async def test_out_of_order_frame_still_joins_the_turn_sample() -> None:
         request_id="screen-later",
         captured_at=base + 1.0,
     )
-    # 更早拍摄、更晚校验完：不能顶掉最新帧缓存，但必须进本回合抽样。
+    # Captured earlier but validated later: it cannot replace the latest-frame cache, but must enter this turn's sample.
     assert runtime._stage_independent_visual_frame(
         "earlier-frame",
         source="camera",
@@ -63,7 +63,7 @@ async def test_post_endpoint_cache_frame_cannot_seed_an_empty_turn() -> None:
         request_id="screen-post",
         captured_at=record.endpoint_at + 0.5,
     )
-    # 缓存里有这一帧（主动搭话观察还要用），但本回合一帧都没收到。
+    # The cache has this frame for proactive observation, but this turn received none.
     assert runtime._latest_independent_visual_frame.image_b64 == "post-endpoint-frame"
     assert record.last_frame is None
 
@@ -76,12 +76,12 @@ async def test_frame_validated_during_lifecycle_notification_joins_the_turn() ->
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
     onset = time.monotonic()
-    # 刻意只设 _asr_turn_onset_at：_asr_turn_audio_started_at 在两条生产路径上是
-    # 投递完成之后才打的，用它当起点正是被修掉的那个缺陷，所以这条用例不能靠它。
+    # Set only _asr_turn_onset_at deliberately: both production paths set _asr_turn_audio_started_at
+    # after delivery; using it as onset was the fixed defect, so this test must not rely on it.
     runtime._asr_turn_onset_at = onset
 
-    # 语音已确认，Core 还卡在 _send_asr_lifecycle_state 的投递里；这一帧就是这段
-    # 发声的开头（用户开口时指的东西），它先于 record 落地。
+    # Speech is confirmed while Core is stuck delivering _send_asr_lifecycle_state; this frame shows the utterance's
+    # beginning and what the user pointed at, captured before record creation.
     assert runtime._stage_independent_visual_frame(
         "onset-frame",
         source="screen",
@@ -151,9 +151,9 @@ async def test_all_prerecord_frames_join_the_turn_not_just_the_newest() -> None:
     turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
 
     assert turn is not None
-    # 开头 / 中间 / 结尾都在，而不是只剩最新那张。
+    # Beginning / middle / end remain, rather than only the latest frame.
     assert turn.images == ("prerecord-0", "prerecord-1", "prerecord-2")
-    # 消费即清空，不会漏进下一轮。
+    # Consumption clears the cache, preventing leakage into the next turn.
     assert runtime._prerecord_visual_frames == []
 
 
@@ -170,7 +170,7 @@ async def test_prerecord_frames_from_a_previous_route_are_not_adopted() -> None:
         request_id="screen-0",
         captured_at=onset + 0.01,
     )
-    # 路由换代之后，那一帧不再属于这条链路。
+    # After route generation changes, this frame no longer belongs to this chain.
     runtime._voice_input_transition_generation += 1
 
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=104)
@@ -178,9 +178,9 @@ async def test_prerecord_frames_from_a_previous_route_are_not_adopted() -> None:
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 关键断言打在"有没有被并进 record"上。只断言 snapshot 为 None 是不够的 ——
-    # accepts() 在冻结时还会按 route_generation 再过滤一次，采纳环节即使漏判也照样
-    # 返回 None，那样这条用例就是假绿（实测：去掉采纳侧的 route 过滤仍然通过）。
+    # Assert whether the frame entered the record. A None snapshot alone is insufficient:
+    # accepts() filters again by route_generation on freezing, returning None even if acceptance
+    # missed the check. Such a test falsely passes (removing route filtering at acceptance still passed in practice).
     assert record.last_frame is None
     assert record.first_frame is None
     assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None
@@ -205,12 +205,12 @@ async def test_frames_after_a_sealed_turn_are_kept_for_the_successor() -> None:
     runtime._begin_core_multimodal_turn(turn_id, token)
     record = runtime._core_multimodal_turns[turn_id]
 
-    # 这一轮说完了：封口，但 provider final 还没回来，所以还没作废。
+    # This turn has finished speaking and is closed, but remains valid until provider final arrives.
     record.endpoint_at = record.started_at + 1.0
     assert not record.invalidated.is_set()
     assert runtime._active_multimodal_turn_record() is None
 
-    # 后继开口，帧在封口之后拍到。
+    # The successor begins; this frame was captured after closure.
     assert runtime._stage_independent_visual_frame(
         "successor-opening-frame",
         source="screen",
@@ -218,7 +218,7 @@ async def test_frames_after_a_sealed_turn_are_kept_for_the_successor() -> None:
         captured_at=record.endpoint_at + 0.5,
     )
 
-    # 它进不了已封口的那条记录，但必须被留住给后继。
+    # It cannot enter the closed record, but must remain available for the successor.
     assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
         "successor-opening-frame"
     ]
@@ -240,11 +240,11 @@ async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
     runtime._asr_route_mode = "independent"
     now = time.monotonic()
 
-    # 前一轮的 onset 很早；后继在它还没收场时开口，边界记在 pending 槽。
+    # The previous turn's onset is early; its successor begins before it ends, recording the boundary in the pending slot.
     runtime._asr_runtime._asr_turn_onset_at = now - 40.0
     runtime._asr_runtime._asr_pending_turn_onset_at = now - 2.0
 
-    # 前一轮封口之后、后继开口之前的帧。
+    # Frame between the previous turn's closure and successor onset.
     for i in range(3):
         assert runtime._stage_independent_visual_frame(
             f"between-{i}",
@@ -252,7 +252,7 @@ async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
             request_id=f"screen-between-{i}",
             captured_at=now - 30.0 + i,
         )
-    # 后继自己的帧。
+    # The successor's own frame.
     for i in range(2):
         assert runtime._stage_independent_visual_frame(
             f"successor-{i}",
@@ -261,7 +261,7 @@ async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
             captured_at=now - 1.5 + i * 0.3,
         )
 
-    # 只有后继自己的帧留下，中间那些没占名额。
+    # Retain only the successor's own frame; intervening frames occupy no slots.
     assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
         "successor-0",
         "successor-1",

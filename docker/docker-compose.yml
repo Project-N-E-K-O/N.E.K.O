@@ -9,18 +9,22 @@ version: '3.8'
 #   2. 完整版 (full)     - 完整 (~2.5GB)，构建时已包含 Chromium，开箱即用
 #
 # 使用方法：
-#   # 使用标准版（默认）
-#   docker-compose up -d
+#   docker compose up -d                                   # 标准版
+#   NEKO_IMAGE_VERSION=latest-full docker compose up -d    # 完整版
 #
-#   # 使用完整版
-#   NEKO_IMAGE_VERSION=latest-full docker-compose up -d
+#   # 本地构建：本文件没有 build: 段，docker compose build 不会构建任何东西。
+#   # 下面两条要在仓库根执行（构建上下文是仓库根），所以 compose 要显式给 -f；
+#   # 在 docker/ 目录里执行时省掉 -f 即可。
+#   docker build -f docker/Dockerfile -t neko:local .
+#   NEKO_IMAGE=neko:local docker compose -f docker/docker-compose.yml up -d
 #
-#   # 本地构建标准版
-#   docker-compose build && docker-compose up -d
-#
-#   # 本地构建完整版
-#   NEKO_IMAGE_VERSION=latest-full docker-compose -f docker-compose.yml build && \
-#   NEKO_IMAGE_VERSION=latest-full docker-compose up -d
+# 多实例：会互相撞车的名字、路径、端口全部可以覆盖，**并且必须给不同的 Compose
+# 项目名**。只改容器名/端口而不加 -p，Compose 仍认为是同一项目的同一个
+# neko-main 服务，会去更新第一个实例而不是起第二个：
+#   NEKO_CONTAINER_NAME=neko-2 NEKO_HOME_DIR=./neko-home-2 NEKO_LOGS_DIR=./logs-2 \
+#   NEKO_HTTP_PORT=48921 NEKO_HTTPS_PORT=48922 \
+#   docker compose -p neko-2 up -d
+# （NEKO_LOGS_DIR 同样不能省：共用 ./logs 时两个实例会往同一批日志文件追加并抢轮转。）
 # ============================================================================
 
 services:
@@ -33,31 +37,44 @@ services:
     # image: ${NEKO_IMAGE:-ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
     # image: ${NEKO_IMAGE:-projectneko/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
 
-    # 容器配置
-    container_name: neko
+    # 容器配置。同宿主机跑多个实例时改 NEKO_CONTAINER_NAME，同时记得改
+    # NEKO_HOME_DIR / NEKO_LOGS_DIR / NEKO_HTTP_PORT / NEKO_HTTPS_PORT。
+    container_name: ${NEKO_CONTAINER_NAME:-neko}
     restart: unless-stopped
 
     # 端口映射配置
     ports:
-      # HTTP端口映射：外部端口48911 -> 容器内部Nginx端口80
-      # 访问方式: http://服务器IP:48911
-      - "48911:80"
-
-      # HTTPS端口映射：外部端口48912 -> 容器内部Nginx端口443
-      # 访问方式: https://服务器IP:48912
-      - "48912:443"
+      # HTTP：外部端口 48911 -> 容器内 Nginx 端口 80
+      - "${NEKO_HTTP_PORT:-48911}:80"
+      # HTTPS：外部端口 48912 -> 容器内 Nginx 端口 443
+      - "${NEKO_HTTPS_PORT:-48912}:443"
 
     # 卷挂载配置
     # ⚠️ 旧版本用 ./N.E.K.O + ./ssl 两个挂载，现已合并为 ./neko-home 一个。
     #    从旧版升级必须先迁移数据（见 README「从旧版本升级」一节），
     #    否则容器会对着一个空目录启动，表现为"数据全没了"。
     volumes:
-      # 1. neko 用户主目录（用户数据、SSL 证书与私钥）
-      - ./neko-home:/home/neko
+      # 1. neko 用户主目录（用户数据、SSL 证书与私钥、实例访问密钥）
+      - ${NEKO_HOME_DIR:-./neko-home}:/home/neko
 
       # 2. 源码模式的调试日志回退目录
-      - ./logs:/app/logs
-    # 环境变量
+      - ${NEKO_LOGS_DIR:-./logs}:/app/logs
+
+      # 3. 可选：把运行期下载的浏览器持久化。
+      #    不开：standard 镜像每次「删除容器后重建」都会重新下载 Chromium。
+      #    开了：镜像自带的浏览器会被复制进这个卷（full 镜像约多占 1GB 磁盘）。
+      #    40G 盘的低配机器先看 docs/deployment/low-spec-server.md 再决定。
+      # - neko-playwright:/opt/ms-playwright
+
+    # .env 里的变量注入容器。
+    # ⚠️ 关键：Compose 默认只把 .env 用于 ${} 插值 —— 没有被 environment 或
+    #    env_file 引用的变量**不会进容器**。API Key 就属于这一类：此前它一直
+    #    没进容器，导致「按文档配了 .env 却没生效」。required: false 让尚未
+    #    创建 .env 的部署照常启动。
+    env_file:
+      - path: .env
+        required: false
+
     environment:
       # 统一容器内的本地时间；可在 docker/.env 中改为其他 IANA 时区
       - TZ=${TZ:-Asia/Shanghai}
@@ -79,6 +96,40 @@ services:
       - NEKO_STORAGE_SELECTED_ROOT=/home/neko/.local/share/N.E.K.O
       - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
 
+      # 容器内服务端口。这些值同时决定「服务绑哪里」和「nginx 转发到哪」：
+      # entrypoint 会把它们渲染进 nginx 路由表，因此两边永远一致。
+      #
+      # 主服务端口必须显式声明：健康检查是独立的 exec 上下文，**继承不到 PID 1
+      # 在 entrypoint 里 export 的变量**。没建 .env 时（required: false 明确支持的
+      # 部署），探针会拿到空端口，URL 变成 http://127.0.0.1:/health，于是一个完全
+      # 正常的默认部署在 start_period 之后被判成 unhealthy。
+      - NEKO_MAIN_SERVER_PORT=${NEKO_MAIN_SERVER_PORT:-48911}
+      - NEKO_MEMORY_SERVER_PORT=${NEKO_MEMORY_SERVER_PORT:-48912}
+      - NEKO_TOOL_SERVER_PORT=${NEKO_TOOL_SERVER_PORT:-48915}
+      - NEKO_USER_PLUGIN_SERVER_PORT=${NEKO_USER_PLUGIN_SERVER_PORT:-48916}
+
+    # 健康检查。三个后端服务任何一个挂掉都会判为不健康 —— 只看容器 running
+    # 或只探 nginx 是不够的：nginx 活着、主进程活着，而 memory/agent 已经死了，
+    # 表现是"记忆不工作 / 插件全失效"，而监控全绿。
+    #
+    # ⚠️ 必须在容器内回环直探后端端口。从宿主打 /health 会撞实例访问门禁拿 401，
+    #    探针会永远"不健康"（门禁只放行真本机调用）。口径与 docker/watchdog/ 一致。
+    #    $$ 是 Compose 转义：写成 $$p 才会把 $p 原样交给容器里的 shell。
+    #
+    # 注意：healthcheck 只提供可见性，unhealthy **不会**触发重启（Docker 的
+    # restart 策略只对进程退出生效）。要自愈请装 docker/watchdog/。
+    healthcheck:
+      # 三个后端是串行探的：单个 --max-time 4s ⇒ 最坏 12s，加上 shell 开销仍小于
+      # 下面的 timeout。写成 3×5=15s 而 timeout 也 15s，会在三个后端都偏慢但都没超时
+      # 的情况下被 Docker 判成 unhealthy（超过 timeout 的检查直接被 kill）。
+      test: ['CMD-SHELL', 'for p in "$$NEKO_MAIN_SERVER_PORT" "$$NEKO_MEMORY_SERVER_PORT" "$$NEKO_TOOL_SERVER_PORT"; do curl --noproxy "*" -fsS --connect-timeout 3 --max-time 4 "http://127.0.0.1:$$p/health" >/dev/null || exit 1; done']
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      # 启动期实测：三个服务各 sleep 5s + 15s 健康检查 + nginx 3s ≈ 33s，还不含
+      # uv sync 与 standard 镜像首次下载 Chromium（分钟级）。放宽到 5m。
+      start_period: 5m
+
     # 限制 Docker 容器日志（docker logs）体积，避免长期运行撑满磁盘；
     # 应用文件日志在 neko-home 内，由应用自行轮转，不受此限制
     logging:
@@ -99,3 +150,7 @@ services:
 networks:
   neko-network:
     driver: bridge
+
+# 可选卷定义（配合上面的 neko-playwright 挂载一起启用）
+# volumes:
+#   neko-playwright:

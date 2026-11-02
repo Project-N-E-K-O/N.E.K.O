@@ -49,7 +49,7 @@ class StorageMixin:
             logger.info(f"Token tracker: migrating {len(legacy_files)} legacy per-instance files")
 
             with _file_lock(self._lock_file_path):
-                # 读取现有的合并文件（如果已存在）
+                # Read the existing merged file, if any.
                 existing = self._load_file(self._storage_path)
                 if not existing:
                     existing = self._empty_file_data()
@@ -64,12 +64,12 @@ class StorageMixin:
                                 else:
                                     _merge_day_stats(existing["daily_stats"][day_key], day_val)
                             existing["recent_records"].extend(data.get("recent_records", []))
-                        # 迁移完毕，删除旧文件
+                        # Migration complete: delete the old file.
                         p.unlink(missing_ok=True)
                     except Exception as e:
                         logger.debug(f"Token tracker: failed to migrate {p.name}: {e}")
 
-                # 去重 recent_records
+                # Deduplicate recent_records.
                 existing["recent_records"] = self._dedupe_records(existing["recent_records"])
                 existing["last_saved"] = datetime.now().isoformat()
 

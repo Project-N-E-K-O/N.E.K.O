@@ -2,10 +2,10 @@
 Manual integration test for task routing (DirectTaskExecutor.analyze_and_execute).
 
 Tests that the routing logic correctly dispatches tasks to the right execution method:
-  - "帮我打开系统计算器" → computer_use
-  - "帮我搜索一下今天的新闻" → browser_use
-  - "在百度地图上找到当前位置" → ambiguous (browser_use or computer_use)
-  - "你好，吃了吗？" → None (casual chat, no task)
+  - \"帮我打开系统计算器\" ('open the system calculator') → computer_use
+  - \"帮我搜索一下今天的新闻\" ('search today's news') → browser_use
+  - \"在百度地图上找到当前位置\" ('find my location in Baidu Maps') → ambiguous (browser_use or computer_use)
+  - \"你好，吃了吗？\" ('hello, have you eaten?') → None (casual chat, no task)
 
 Requires:
   - Agent API key configured (via backup/config/core_config.json)
@@ -14,7 +14,7 @@ Requires:
 
 Run with:
   uv run --with pytest python -m pytest tests/test_routing_manual.py -v -s --run-manual
-"""
+"""  # noqa: DOCSTRING_CJK
 
 import asyncio
 
@@ -54,11 +54,11 @@ def _run(coro):
 
 @pytest.mark.manual
 def test_route_open_calculator(task_executor):
-    """'帮我打开系统计算器' should route to computer_use.
+    """'帮我打开系统计算器' ('open the system calculator') should route to computer_use.
 
     NOTE: user_plugin has highest priority, then browser_use, then computer_use.
     We accept either but warn if it's not computer_use.
-    """
+    """  # noqa: DOCSTRING_CJK
     messages = _make_messages("帮我打开系统计算器")
 
     print("\n[Routing] Testing: '帮我打开系统计算器'")
@@ -86,7 +86,7 @@ def test_route_open_calculator(task_executor):
 
 @pytest.mark.manual
 def test_route_search_news(task_executor):
-    """'帮我搜索一下今天的新闻' should route to browser_use."""
+    """'帮我搜索一下今天的新闻' ('search today's news') should route to browser_use."""  # noqa: DOCSTRING_CJK
     messages = _make_messages("帮我搜索一下今天的新闻")
 
     print("\n[Routing] Testing: '帮我搜索一下今天的新闻'")
@@ -112,10 +112,10 @@ def test_route_search_news(task_executor):
 @pytest.mark.manual
 def test_route_find_location_on_map(task_executor):
     """
-    '在百度地图上找到当前位置' — ambiguous task.
+    '在百度地图上找到当前位置' ('find my location in Baidu Maps') — ambiguous task.
     Could be browser_use (open Baidu Maps website) or computer_use (open maps app).
     This test just verifies routing produces a decision and logs it.
-    """
+    """  # noqa: DOCSTRING_CJK
     messages = _make_messages("在百度地图上找到当前位置")
 
     print("\n[Routing] Testing: '在百度地图上找到当前位置'")

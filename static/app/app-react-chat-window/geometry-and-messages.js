@@ -327,6 +327,7 @@
         if (!element || typeof element.getBoundingClientRect !== 'function') return false;
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
+        if (item === 'visit' && element.getAttribute('data-visit-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
         if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle' && item !== 'cat1Mirror') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
@@ -339,8 +340,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice') {
             var choiceRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-option'))
-                // 串门工具条与选项同层：工具条整条也是命中区（Electron 透明窗）
-                .concat(Array.prototype.slice.call(element.querySelectorAll('.composer-visit-bar')))
+                .concat(Array.prototype.slice.call(element.querySelectorAll('.mini-game-invite')))
                 .map(function (child) {
                     var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                     if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
@@ -659,6 +659,41 @@
             .filter(Boolean));
     }
 
+    function collectCompactVisitGeometryItems(element) {
+        var visualRect = I.normalizeCompactDomRect(element.getBoundingClientRect());
+        var items = [];
+        if (visualRect) {
+            items.push({
+                id: 'visit:visual',
+                owner: 'surface',
+                kind: 'visit',
+                visualRect: visualRect,
+                hitRect: null,
+                nativeRect: null,
+                interactive: false
+            });
+        }
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.composer-visit-bar-action'))
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                if (style && Number(style.opacity) <= 0.01) return null;
+                if (style && style.pointerEvents === 'none') return null;
+                var rect = I.normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                return {
+                    id: child.getAttribute('data-visit-bar-action') || ('visit:action:' + index),
+                    owner: 'surface',
+                    kind: 'visit',
+                    visualRect: rect,
+                    hitRect: rect,
+                    nativeRect: rect,
+                    interactive: true
+                };
+            })
+            .filter(Boolean));
+    }
+
     function collectCompactCompositeGeometryItems(element, kind) {
         var parentRect = getCompactGeometryElementRect(element);
         var items = [];
@@ -756,6 +791,7 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('compact-chat-visit-anchor')
                 && !element.classList.contains('neko-idle-cat1-compact-mirror')
                 && !element.classList.contains('modal-dialog-theater')
                 && !element.classList.contains('visit-dialog')
@@ -767,6 +803,9 @@
             }
             if (compactGeometryItem === 'input') {
                 return items.concat(collectCompactInputSurfaceGeometryItems(element));
+            }
+            if (compactGeometryItem === 'visit') {
+                return items.concat(collectCompactVisitGeometryItems(element));
             }
             if (compactGeometryItem === 'cat1Mirror') {
                 var mirrorRect = getCompactGeometryElementRect(element);

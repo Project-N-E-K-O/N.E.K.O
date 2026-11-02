@@ -93,26 +93,26 @@ class RenamePending(CharacterUnresolved):
 
 
 async def _refuse_pending_rename(config_dir: str | Path, names: Iterable[str]) -> None:
-    # 改名崩在「配置已是新名、名册还在旧名」之间：此时按新名展开会找不到条目，
-    # 清除会「成功」地什么都没删，之后补录又把旧名下没清的数据搬出来。等启动补录对账完。
-    # 只挡涉及改名两端名字的清除：别的角色的名册条目与这次改名无关，不能被一个
-    # 一时对不上账的标记连带挡住。排在队里的改名（云快照一次改了几个角色）同样没对完账：
-    # 配置已是新名、条目还在旧名下，一起算
+    # Rename crashed after config changed but before roster migration; expanding the new name finds nothing,
+    # making clear falsely succeed without deletion before backfill revives old-name data. Await startup reconciliation.
+    # Block only clears involving either rename endpoint; unrelated roster entries must not be blocked
+    # by temporary inconsistency. Queued renames from multicharacter cloud snapshots also remain unreconciled,
+    # with config already renamed but entries still under old names; include them too.
     slot, queued = await read_roster_markers(config_dir, "pending_rename", "pending_rename_queue")
     if slot is None and queued is None:
         return
     held = pending_rename_names(slot, queued)
     if held is None:
-        # 字段缺失 / 不是非空字符串：认不出涉及哪些名字，不能当作「与这次清除无关」放行；
-        # 列表之类不可哈希的值也不能在下面拼集合时抛 TypeError 让接口 500
+        # Missing/nonempty-string-invalid fields prevent identifying affected names; do not assume unrelatedness and allow clearing.
+        # Unhashable values such as lists must not raise TypeError while building sets below and produce HTTP 500.
         raise RenamePending("a malformed rename marker is pending")
     if held & set(names):
         raise RenamePending("a rename of this character is not reconciled yet")
 
-# 「清除这个人」时这些还没写任何私聊记忆的 debrief 一律作废（改记「不记」）：
-# 否则用户之后点「记成日记」会把刚要求清除的这个人写进私聊记忆
+# Clearing this person invalidates all debriefs not yet written into private-chat memory, marking them do-not-record;
+# otherwise later diary recording would reinsert the person just requested for deletion.
 _VOIDABLE_CHOICES = (None, "ask_later", "generating:diary", "preview:diary")
-# 已开始写 / 已有最终结果的 debrief：作废步骤本来就不碰它们
+# Invalidation intentionally ignores debriefs whose writes began or final outcomes already exist.
 _UNVOIDABLE_CHOICES = tuple(choice for choice in DEBRIEF_CHOICES if choice not in _VOIDABLE_CHOICES)
 _STEP_ERRORS = (
     ForgetStepFailed, ForgetEpochsUnreadable, ForgetEpochsUnsynced, SpoolBusy, SpoolStateUnreadable,
@@ -190,15 +190,15 @@ def default_void_pending(config_dir: str | Path) -> VoidPending:
             try:
                 state = await spool.read_state()
             except SpoolStateCorrupt as exc:
-                # 内容本身坏了（不是 JSON / 不是对象）：任何流程都用不了它（debrief 读它同样失败），
-                # 不能让一份无关的坏文件把所有清除永远卡住。记下来跳过
+                # Corrupt content, invalid JSON or nonobjects, is unusable by every flow including debrief;
+                # do not let one unrelated corrupt file permanently block all clears. Log and skip.
                 logger.warning("visit forget: skipping corrupt state of %s: %r", visit_id, exc)
                 continue
             except (OSError, SpoolStateError) as exc:
-                # 一时读不出（被占用）/ 能解析却不合当前 schema（降级后读到新版本写的 state）：
-                # 别的版本、之后的重试还用得上它，不能当坏文件跳过——跳过就让日志关掉，升级回去
-                # 之后用户照样能把刚清除的人「记成日记」。与抹身份步骤的查找同一口径：头行 /
-                # 原始字段明确属于别人才跳过，判断不了的先不结清这份日志，下次再试
+                # Temporarily unreadable/locked files or parseable states incompatible with the current schema after downgrade
+                # may still be useful to other versions/retries. Do not skip as corrupt, which would close the journal and allow
+                # users to record the cleared person again after upgrading. Match identity-erasure lookup semantics: skip only when headers/
+                # raw fields explicitly belong to someone else; otherwise leave this journal unfinished for retry.
                 if await _unreadable_visit_excluded(
                     spool, record, pairs, schema_invalid=isinstance(exc, SpoolStateError),
                 ):
@@ -209,14 +209,14 @@ def default_void_pending(config_dir: str | Path) -> VoidPending:
             if state is None or state["own_char_uid"] != own_char_uid:
                 continue
             if state["own_uid"] != record["own_uid"]:
-                # 别的账号下的场次（含已被抹掉身份的）与这次清除无关
+                # Visits under other accounts, including identity-erased ones, are unrelated to this clear.
                 continue
-            # pair_id 为 None 只可能是之前的清除抹掉的（new_state 不接受未绑定对端的场次），
-            # 这样的场次可能就是这个人的，照常作废
+            # pair_id=None can only result from prior identity erasure because new_state rejects unbound visits;
+            # such visits may belong to this person, so invalidate normally.
             if state["pair_id"] is not None and state["pair_id"] not in pairs:
                 continue
-            # 不看 finalized：启动补录先重放清除、后标崩溃，崩溃场次此时 finalized 仍为空，
-            # 漏掉它会让补录随后照样弹芯片。清除只在该角色没有在飞串门时进行
+            # Ignore finalized: startup replays clears before marking crashes, leaving crashed visits unfinalized here.
+            # Missing them lets later backfill show chips anyway. Clears occur only without in-flight visits for this character.
             if state["debrief_choice"] not in _VOIDABLE_CHOICES:
                 continue
             try:
@@ -307,17 +307,17 @@ async def _open_logs_in_scope(
         name = await resolve_char_name(own_char_uid)
         if not name:
             if drop_deleted_chars:
-                # 角色配置已确认读得出：它确实被删了，数据由删除的退役步骤按 uid 处理。
-                # 从这次展开里剔除，同一哨兵里的其他角色照常清、哨兵能结清
+                # Character config was read successfully, confirming deletion; deletion retirement handles data by uid.
+                # Exclude it from this expansion, clearing other sentinel characters normally and allowing settlement.
                 continue
-            # 名字解析不出可能只是角色配置一时读不出（被替换成默认值）：当作「范围没展开」
-            # 留住哨兵，不能当作「这个角色没有要清的人」把哨兵删掉、清除永远不再执行
+            # Name-resolution failure may be temporary config-read failure replaced with defaults; treat scope as unexpanded
+            # and retain the sentinel, rather than assuming nobody needs clearing and permanently deleting clear intent.
             raise CharacterUnresolved(f"character {own_char_uid} of {sentinel['op_id']} has no name")
         if sentinel["scope"] == "person":
             peers = [sentinel["peer_uid"]]
         else:
-            # 严格读：名册读不出、或某个人的条目结构坏了，都不能当作「没有这个人」，
-            # 否则清除全部会漏掉他、照样删哨兵报完成
+            # Read strictly: unreadable rosters or malformed person entries do not mean the person is absent,
+            # or clear-all would miss them yet remove the sentinel and report completion.
             peers = await roster.peers_of_char(name)
         for peer_uid in peers:
             rev_id = await open_person_log(
@@ -337,9 +337,9 @@ async def _run_scope(
     void_pending: VoidPending | None,
 ) -> ForgetOutcome:
     opened = await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name)
-    # 名册只列还在的人：上一次尝试已做完 remove_char、却在之后的步骤失败的人不在名册里，
-    # 但他的日志还开着。把哨兵范围内已有的开着的日志一并续跑，否则重试会「全部完成」
-    # 删掉哨兵，残留的转录身份或预览要等下次启动才处理
+    # Rosters list only remaining people; prior attempts may finish remove_char before later failure, removing them from the roster
+    # while journals stay open. Resume existing open journals within scope too, or retry falsely reports completion,
+    # deletes the sentinel, and leaves transcript identity/previews until next startup.
     seen = {rev_id for rev_id, *_rest in opened}
     for record in await RevocationLog.list_all_open(config_dir):
         if (
@@ -353,9 +353,9 @@ async def _run_scope(
         opened.append((record["id"], name, record["own_char_uid"], record["peer_uid"]))
         seen.add(record["id"])
     if sentinel["scope"] == "chars":
-        # 范围内还开着的单人清除哨兵：那个人可能已不在名册里（上次单人清除做完了
-        # remove_char、却没来得及删哨兵；或单人清除还没展开）。替它开日志一并执行——
-        # 没清过的这次清掉，清过的再清一遍也是幂等的——之后它的哨兵才能随这次一起删掉
+        # Open single-person clear sentinels in scope may name people already absent from the roster, after remove_char
+        # but before sentinel deletion, or before expansion. Open journals and process them together;
+        # clear untouched data now, idempotently reclear prior work, then remove their sentinels with this operation.
         pairs = {(uid, peer) for *_rest, uid, peer in opened}
         for other in await ClearingSentinels(config_dir).list_open():
             if other["scope"] != "person" or not _sentinel_within(sentinel, other):
@@ -372,7 +372,7 @@ async def _run_scope(
                 )
                 opened.append((rev_id, name, own_char_uid, other["peer_uid"]))
                 pairs.add((own_char_uid, other["peer_uid"]))
-    # 全部日志落盘之后才开始逐对执行：中途崩溃时还没轮到的人也已有日志可重放
+    # Persist all journals before processing pairs so crashes leave replayable journals even for people not reached yet.
     pending: list[str] = []
     for rev_id, name, own_char_uid, peer_uid in opened:
         ok = await execute_log(
@@ -381,8 +381,8 @@ async def _run_scope(
         )
         if not ok:
             pending.append(rev_id)
-    # 「清除全部」里同一个人可能在几个本机角色下各有一份日志：按人计数，
-    # 只有这个人的每份日志都完成才算清掉了
+    # Clear-all can have multiple local-character journals for one person. Count per person,
+    # considering them cleared only when all their journals complete.
     persons = {peer for *_rest, peer in opened}
     unfinished = {peer for rev_id, *_rest, peer in opened if rev_id in pending}
     if pending:
@@ -408,9 +408,9 @@ async def _remove_covered_sentinels(
     config_dir: Path, store: ClearingSentinels, done: Mapping[str, Any],
     *, executed: set[tuple[str, str]],
 ) -> None:
-    # 上一次尝试留下的、范围落在这次已全部完成的范围之内的旧哨兵（比如两次尝试之间
-    # 新建了角色，哨兵的角色集合变了、没能复用）：它们的日志已随这次一并跑完，不删就会
-    # 一直挡着准入与记忆装配直到下次启动。尽力而为：读不出就留给启动重放
+    # Old sentinels from prior attempts may fall within the now-completed scope, e.g. new characters changed the
+    # character set and prevented reuse. Their journals completed here too; retaining them would block admission/memory
+    # assembly until next startup. Remove best-effort, leaving unreadable ones for startup replay.
     try:
         others = await store.list_open()
         remaining = await RevocationLog.list_all_open(config_dir)
@@ -422,8 +422,8 @@ async def _remove_covered_sentinels(
         if other["scope"] == "person" and not all(
             (uid, other.get("peer_uid")) in executed for uid in other["own_char_uids"]
         ):
-            # 单人清除的那个人不在这次展开的名册里（这次没清他）：他的 participant 记忆不靠
-            # 名册也推得出来，必须由那个哨兵自己执行，不能顺手删掉
+            # A single-person sentinel absent from this roster expansion was not cleared here; their participant memories can be
+            # inferred without a roster and need that sentinel's own execution. Do not delete it opportunistically.
             continue
         if any(
             log["own_uid"] == other["own_uid"]
@@ -443,14 +443,14 @@ async def _with_admission_locks(
             for uid in sorted(set(own_char_uids)):
                 await stack.enter_async_context(admission_lock(uid))
         except BaseException:
-            # 拿到一半失败 / 被取消：已拿到的锁必须放掉，否则这些角色再也进不了串门
+            # On partial acquisition failure/cancellation, release acquired locks or these characters can never visit again.
             await stack.aclose()
             raise
     return stack
 
 
 def _refuse_active(is_visit_active: IsVisitActive | None, names: Iterable[str]) -> None:
-    # 在准入锁内复查：锁外检查之后、哨兵落盘之前开场的串门也要挡下
+    # Recheck under admission locks, blocking visits started after the unlocked check but before sentinel persistence.
     if is_visit_active is not None and any(is_visit_active(name) for name in names):
         raise VisitActive("a character in scope is visiting")
 
@@ -552,8 +552,8 @@ async def forget_all(
             for uid in chars.values():
                 name = await resolve_char_name(uid)
                 if not name:
-                    # 解析不出：可能刚被删，也可能角色配置一时读不出（被替换成默认值）。
-                    # 两者在这里分不清，跳过它就会对一个没写下任何哨兵 / 日志的角色报「清除成功」
+                    # Unresolvable character: possibly deleted or config temporarily unreadable/replaced by defaults.
+                    # These cannot be distinguished here; skipping falsely reports clear success without any sentinel/journal for that character.
                     raise CharacterUnresolved(f"character {uid} has no name")
                 current[name] = uid
             chars = current
@@ -634,39 +634,39 @@ async def replay_forgets(
     for sentinel in sentinels:
         try:
             async with guarded(sentinel["own_char_uids"]):
-                # 补录开头对过一次改名，但之后、拿到守卫之前可能又有改名崩在半路：守卫内再查
+                # Backfill reconciles renames initially, but another rename may crash before guard acquisition; recheck inside the guard.
                 names = [n for uid in sentinel["own_char_uids"] if (n := await resolve_char_name(uid))]
                 await _refuse_pending_rename(config_dir, names)
                 await _open_logs_in_scope(config_dir, sentinel, resolve_char_name=resolve_char_name,
                                           drop_deleted_chars=drop_deleted_chars)
         except _STEP_ERRORS as exc:
             logger.warning("visit forget replay: cannot expand %s: %r", sentinel["op_id"], exc)
-            # 范围没展开成功（名册读不出等）：哨兵是这次清除唯一的记录，必须留到下次
+            # Failed scope expansion, e.g. unreadable roster: retain the sentinel as this clear's only record until next time.
             unexpanded.add(sentinel["op_id"])
             clean = False
     logs, unreadable_logs = await RevocationLog.list_all_open_with_unreadable(config_dir)
     if unreadable_logs:
-        # 读不出的日志留着、记为未完成（准入与记忆装配按它的文件名只挡那一对）；其余读得出的
-        # 照常重放，不能让一份坏文件把所有清除一直卡着
+        # Retain unreadable journals as unfinished; admission/memory assembly blocks only their filename-identified pair. Replay readable
+        # journals normally so one corrupt file cannot indefinitely block every clear.
         logger.error("visit forget replay: unreadable revocation logs %s", unreadable_logs)
         clean = False
     for record in logs:
-        # 与端点同一把生命周期守卫：从按 uid 解析名字到重放结束都持有，期间角色
-        # 改不了名、删不掉，不会把清除发到已经迁走的旧名字上又把日志当完成关掉
+        # Hold the endpoint's lifecycle guard from uid-to-name resolution through replay, preventing
+        # renames/deletions from sending clears to vacated old names and falsely settling journals.
         async with guarded([record["own_char_uid"]]):
             name = await resolve_char_name(record["own_char_uid"])
             if not name:
-                # 角色已删（或配置一时读不出）：这份日志执行不了，原样留着交给退役对账，
-                # 不删——删了就丢掉这次清除的意图，名册条目与转录里的对端身份可能残留。
-                # drop_deleted_chars 时下面的哨兵复查不再把它算作「还在清」，同一哨兵里的
-                # 其他角色照常结清
+                # Deleted characters or temporarily unreadable configs prevent execution; retain the journal for retirement reconciliation,
+                # preserving clear intent against residual roster entries or transcript peer identities.
+                # With drop_deleted_chars, the sentinel recheck below stops counting them as still clearing;
+                # other characters sharing the sentinel settle normally.
                 logger.warning("visit forget replay: character of %s has no name, kept", record["id"])
                 clean = False
                 continue
             try:
                 await _refuse_pending_rename(config_dir, [name])
             except (RenamePending, RosterCorruptError) as exc:
-                # 改名没对账完：按新名重放会对着空条目把日志关掉，留到下次启动
+                # Unreconciled rename: replay under the new name would settle an empty entry's journal. Defer until next startup.
                 logger.warning("visit forget replay: %s deferred: %r", record["id"], exc)
                 clean = False
                 continue
@@ -680,8 +680,8 @@ async def replay_forgets(
         if sentinel["op_id"] in unexpanded:
             clean = False
             continue
-        # 最后的复查与删除也在该哨兵的守卫里：否则端点在这之间复用同一个哨兵、
-        # 开始展开新日志时，这里按旧快照把哨兵删掉，准入就看不见「正在清除」
+        # Guard the final recheck/deletion with the sentinel's lock too; otherwise an endpoint could reuse it and
+        # begin expanding new journals while this code deletes it from an old snapshot, hiding active clearing from admission.
         async with guarded(sentinel["own_char_uids"]):
             try:
                 remaining = await RevocationLog.list_all_open(config_dir)
@@ -694,7 +694,7 @@ async def replay_forgets(
                 ):
                     continue
                 if drop_deleted_chars and not await resolve_char_name(log["own_char_uid"]):
-                    # 已删角色留下的日志交给退役对账，不挡这个哨兵结清
+                    # Retired-character journals await retirement reconciliation without blocking this sentinel's settlement.
                     continue
                 busy = True
                 break

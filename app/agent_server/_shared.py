@@ -111,8 +111,8 @@ class Modules:
     }
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
-    # 使用统一的速率限制日志记录器（业务逻辑层面）
-    throttled_logger: "ThrottledLogger" = None  # 延迟初始化
+    # Use the shared rate-limited logger at the business-logic layer.
+    throttled_logger: "ThrottledLogger" = None  # Lazy initialization.
     agent_bridge: AgentServerEventBridge | None = None
     state_revision: int = 0
     # Serialize analysis+dispatch to prevent duplicate tasks from concurrent analyze_request events
@@ -136,9 +136,9 @@ class Modules:
     task_async_handles: ClassVar[Dict[str, asyncio.Task]] = {}
 
 
-PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
-TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
-DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
+PLUGIN_NAME_CACHE_TTL: float = 30.0  # Cache for 30 seconds.
+TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # Retain completed tasks for 5 minutes.
+DEFERRED_TASK_TIMEOUT: float = 3600.0  # Deferred tasks time out after 1 hour.
 OPENCLAW_ENABLE_CHECK_ATTEMPTS: int = 24
 OPENCLAW_ENABLE_CHECK_INTERVAL: float = 1.0
 

@@ -1,18 +1,18 @@
 """
-插件 UI 静态文件代理路由
+Plugin UI static-file proxy routes
 
-允许插件注入自定义前端界面，通过 iframe 嵌入到主应用中。
+Allow plugins to inject custom frontend interfaces embedded into the main app via iframe.
 
-插件目录结构：
+Plugin directory structure:
     my_plugin/
     ├── __init__.py
     ├── plugin.toml
-    └── static/           # 静态文件目录
-        ├── index.html    # 入口文件
+    └── static/           # Static-file directory
+        ├── index.html    # Entry file
         ├── main.js
         └── style.css
 
-访问路径：
+Access paths:
     GET /plugin/{plugin_id}/ui/          -> static/index.html
     GET /plugin/{plugin_id}/ui/main.js   -> static/main.js
     GET /plugin/{plugin_id}/ui/style.css -> static/style.css
@@ -53,52 +53,52 @@ _I18N_LOCALE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,15}$")
 # the parsed bytes in process memory and revalidate via mtime on each hit.
 _I18N_BUNDLE_CACHE: dict[Path, tuple[float, bytes]] = {}
 
-# ---- 插件静态 UI 的 SSE 实时推送通道（强化后端 → 前端通信）----
-# plugin_id -> list[asyncio.Queue]；每个 SSE 连接一个队列，POST /ui-api/push 广播。
-# 任意插件/后端往 /ui-api/push 推送，前端页面连 /ui-api/events 即时接收实时更新。
+# ---- Plugin static UI SSE push channel (enhanced backend → frontend communication) ----
+# plugin_id -> list[asyncio.Queue]; one queue per SSE connection, broadcast via POST /ui-api/push.
+# Plugins/backends push to /ui-api/push; frontend pages connect to /ui-api/events for immediate updates.
 _sse_clients: dict[str, list[asyncio.Queue]] = {}
 _sse_clients_lock = asyncio.Lock()
-# 每个客户端队列的最大缓冲（慢/阻塞客户端不使其无限膨胀）；满时丢弃新消息
+# Maximum per-client queue buffer (slow/blocked clients cannot grow it indefinitely); discard new messages when full.
 _SSE_QUEUE_MAX = 100
-# push 请求体大小上限（字节）：1MB，足够 catgirl 带头像弹幕，同时限制本机恶意分块请求占内存
+# Push body limit (bytes): 1MB, enough for catgirl avatar chat overlays while bounding memory from malicious local chunked requests.
 _PUSH_MAX_BODY = 1024 * 1024
-# 可信 Origin 主机（本机回环）：push 广播只接受无 Origin（插件后端/非浏览器）或本机页面
+# Trusted Origin hosts (loopback): push broadcasts accept absent Origin (plugin backend/non-browser) or local pages only.
 _TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
-# ---- runs bus → SSE 桥：把 run 状态迁移事件推给对应插件的 SSE 客户端 ----
-# run 协议本就通过 state.bus_change_hub（bus "runs"）在每次迁移发出事件
-# （plugin/runs/manager.py _emit_runs）。这里订阅它并桥接进 _sse_clients，
-# 让前端 call() 不必紧轮询 /runs/{id}。只桥接终端状态（succeeded/failed/
-# canceled/timeout），前端只关心这些。
+# ---- runs bus → SSE bridge: forward run-state transitions to the corresponding plugin's SSE clients ----
+# The run protocol already emits every transition through state.bus_change_hub (bus 'runs')
+# (plugin/runs/manager.py _emit_runs). Subscribe here and bridge to _sse_clients,
+# letting frontend call() avoid tight polling of /runs/{id}. Bridge terminal states only (succeeded/failed/
+# canceled/timeout), which are all the frontend needs.
 _SSE_RUNS_BRIDGE_INSTALLED = False
 _SSE_RUNS_BRIDGE_SUB = None
 _SSE_RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "timeout"})
 
 
 def _sse_queue_put_best_effort(queue: asyncio.Queue, frame: str) -> bool:
-    """往一个 SSE 客户端队列塞一帧；满了丢弃**最旧**、让新帧入队。
+    """Enqueue a frame for an SSE client; when full, discard the **oldest** and enqueue the new frame.
 
-    慢客户端读不过来时，保留的是**最新**的帧（丢队首最旧），符合「实时流」直觉 ——
-    而不是丢刚产生的新帧。``asyncio.Queue`` 为 FIFO，``get_nowait()`` 取/删队首。
-    返回 True 表示该帧最终已入队（直接入队，或 drop-oldest 后入队）。
+    Slow clients retain the **latest** frames (drop the oldest head item), matching a real-time stream,
+    instead of discarding newly generated frames. ``asyncio.Queue`` is FIFO; ``get_nowait()`` removes the head.
+    Return True if the frame was ultimately enqueued (directly or after dropping the oldest).
     """
     try:
         queue.put_nowait(frame)
         return True
     except asyncio.QueueFull:
         try:
-            queue.get_nowait()      # 丢弃最旧（队首）一条
-            queue.put_nowait(frame)  # 新帧入队
+            queue.get_nowait()      # Drop the oldest item (queue head).
+            queue.put_nowait(frame)  # Enqueue the new frame.
             return True
         except (asyncio.QueueEmpty, asyncio.QueueFull):
-            return False  # 极端竞态：别崩，尽力而为
+            return False  # Extreme race: do not crash; best effort.
 
 
 def _bridge_runs_event(op: str, payload: object) -> None:
-    """runs bus 事件 → 对应 plugin_id 的 SSE 队列（仅终端状态）。
+    """runs bus event → SSE queues for the corresponding plugin_id (terminal states only).
 
-    run 在事件循环内执行（asyncio.create_task），emit 也发生在事件循环线程，
-    因此这里直接 put_nowait 是线程安全的。
+    Runs execute on the event loop (asyncio.create_task), and emits also occur on its thread,
+    so direct put_nowait here is thread-safe.
     """
     try:
         if not isinstance(payload, dict):
@@ -125,7 +125,7 @@ def _bridge_runs_event(op: str, payload: object) -> None:
 
 
 def _ensure_runs_sse_bridge() -> None:
-    """懒安装：首个 SSE 客户端连接时订阅 runs bus。幂等。"""
+    """Lazy installation: subscribe to runs bus on the first SSE client connection. Idempotent."""
     global _SSE_RUNS_BRIDGE_INSTALLED, _SSE_RUNS_BRIDGE_SUB
     if _SSE_RUNS_BRIDGE_INSTALLED:
         return
@@ -137,9 +137,9 @@ def _ensure_runs_sse_bridge() -> None:
 
 
 def _origin_is_trusted(origin: str) -> bool:
-    """push 广播的 Origin 校验：无 Origin（插件后端/curl）或本机回环放行。
+    """Push-broadcast Origin check: allow absent Origin (plugin backend/curl) or local loopback.
 
-    防止恶意网站通过浏览器表单 POST（no-cors）向 loopback 注入 SSE 消息。
+    Prevent malicious websites from injecting SSE messages into loopback via browser form POST (no-cors).
     """
     origin = (origin or "").strip()
     if not origin:
@@ -152,25 +152,25 @@ def _origin_is_trusted(origin: str) -> bool:
 
 
 def _is_loopback_host(host: str) -> bool:
-    """判断对端主机是否本机回环：localhost、整个 IPv4 回环网段 127.0.0.0/8、
-    IPv6 ::1，以及 IPv4-mapped IPv6 形式 ::ffff:127.x.x.x。
+    """Check whether the peer is loopback: localhost, the full IPv4 loopback subnet 127.0.0.0/8,
+    IPv6 ::1, and IPv4-mapped IPv6 ::ffff:127.x.x.x.
 
-    push 移除共享密钥后，以此作为「仅本机回环可推送」的边界：不信任
-    X-Forwarded-For 等转发头，直接看直连对端 request.client.host。
+    After removing the push shared secret, this enforces loopback-only pushing: distrust
+    forwarding headers such as X-Forwarded-For and inspect the direct peer request.client.host.
     """
     host = (host or "").strip().lower()
     if host in ("localhost", "::1"):
         return True
-    if host.startswith("127."):  # 整个 127.0.0.0/8 都是 IPv4 回环（本机后端可能绑 127.0.0.2 等）
+    if host.startswith("127."):  # All of 127.0.0.0/8 is IPv4 loopback (local backends may bind 127.0.0.2, etc.).
         return True
     return host.startswith("::ffff:127.")
 
 
 def _parse_push_payload(body: bytes) -> dict:
-    """POST /ui-api/push 入参解析：支持 {"type":..., "text":..., ...} 或纯文本。
+    """Parse POST /ui-api/push input: support {\"type\":..., \"text\":..., ...} or plain text.
 
-    type 为调用方（插件）自定义的消息类别，server 原样透传、不预设分类；
-    text 为必填正文；style / avatar 等为可选扩展元数据。返回空 dict 表示无内容。
+    type is a caller/plugin-defined message category passed through without preset server categories;
+    text is required; style / avatar are optional metadata. An empty dict means no content.
     """
     raw = body.decode("utf-8", "replace").strip()
     if not raw:
@@ -179,17 +179,17 @@ def _parse_push_payload(body: bytes) -> dict:
         try:
             payload = json.loads(raw)
         except Exception:
-            return {"text": raw}  # 非合法 JSON → 回退纯文本
+            return {"text": raw}  # Invalid JSON → fall back to plain text.
         if not isinstance(payload, dict):
-            return {}  # JSON 但不是对象 → 拒绝
+            return {}  # JSON but not an object → reject.
         text = str(payload.get("text") or "").strip()
         if not text:
-            return {}  # 缺 text / 空 text → 拒绝（不回退纯文本，避免原始 JSON 被当正文）
+            return {}  # Missing / empty text → reject (no plain-text fallback, lest raw JSON become the body).
         result: dict = {"text": text}
         msg_type = str(payload.get("type") or "").strip()
         if msg_type:
             result["type"] = msg_type
-        # 可选的结构化数据透传（如 qq_message 的 qq_inbound），供 SSE 订阅者直接取用。
+        # Pass optional structured data through (e.g. qq_message's qq_inbound) for direct consumption by SSE subscribers.
         data = payload.get("data")
         if isinstance(data, (dict, list)):
             result["data"] = data
@@ -243,31 +243,31 @@ async def _await_action_or_disconnect(
 
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
-    """获取插件的静态文件目录
+    """Get the plugin's static-file directory.
     
-    只有插件显式调用 register_static_ui() 后才会返回静态目录。
+    Return it only after the plugin explicitly calls register_static_ui().
     
     Args:
-        plugin_id: 插件 ID
+        plugin_id: Plugin ID
     
     Returns:
-        静态文件目录路径，如果未注册或不存在则返回 None
+        Static-file directory path, or None if unregistered or absent.
     """
     return await plugin_ui_query_service.get_static_dir(plugin_id)
 
 
 async def _get_static_ui_config(plugin_id: str) -> dict[str, object] | None:
-    """获取插件的静态 UI 配置"""
+    """Get the plugin's static UI configuration."""
     return await plugin_ui_query_service.get_static_ui_config(plugin_id)
 
 
 def _get_mime_type(file_path: Path) -> str:
-    """获取文件的 MIME 类型"""
+    """Get the file MIME type."""
     mime_type, _ = mimetypes.guess_type(str(file_path))
     if mime_type:
         return mime_type
     
-    # 默认类型映射
+    # Default type mapping.
     suffix = file_path.suffix.lower()
     mime_map = {
         ".html": "text/html",
@@ -293,7 +293,7 @@ def _get_mime_type(file_path: Path) -> str:
 @router.get("/plugin/{plugin_id}/ui")
 @router.get("/plugin/{plugin_id}/ui/")
 async def plugin_ui_index(plugin_id: str):
-    """获取插件 UI 入口页面"""
+    """Get the plugin UI entry page."""
     try:
         static_dir = await _get_plugin_static_dir(plugin_id)
     except ServerDomainError as error:
@@ -326,11 +326,11 @@ async def plugin_ui_index(plugin_id: str):
 
 @router.get("/plugin/{plugin_id}/ui-api/locale")
 async def plugin_ui_api_locale(plugin_id: str) -> JSONResponse:
-    """返回当前生效的全局 UI 语言。
+    """Return the currently effective global UI language.
 
-    通用接口，所有静态 UI 插件均可调用：i18n.js 在 init() 时取一次以决定
-    要 fetch 哪份翻译 bundle。返回完整 locale（如 `zh-TW`、`en-US`），交给
-    前端的 _localeCandidates 自行 fallback。
+    Generic endpoint for all static UI plugins: i18n.js fetches it once during init() to choose
+    a translation bundle. Return the full locale (e.g. `zh-TW`, `en-US`) and let the
+    frontend's _localeCandidates handle fallback.
     """
     try:
         from utils.language_utils import get_global_language_full
@@ -346,14 +346,14 @@ async def plugin_ui_api_locale(plugin_id: str) -> JSONResponse:
 
 @router.get("/plugin/{plugin_id}/ui-api/i18n/{locale}.json")
 async def plugin_ui_api_i18n_bundle(plugin_id: str, locale: str) -> Response:
-    """从插件根目录 `i18n/<locale>.json` 提供翻译 bundle。
+    """Serve translation bundles from `i18n/<locale>.json` under the plugin root.
 
-    通用接口，与 `register_static_ui()` 解耦：只要插件目录下有 `i18n/`
-    文件夹即可。i18n.js 通常按 `_localeCandidates` 顺序尝试多个 locale，
-    fallback 命中前每个都会发一次 HTTP，因此这里：
-      - 用 `_I18N_BUNDLE_CACHE`（按文件 mtime）避免重复读盘；
-      - 给 200 响应加 `max-age=300`，让 iframe 之间走浏览器缓存；
-      - locale 用正则白名单挡 path-traversal。
+    Generic endpoint independent of `register_static_ui()`; only an `i18n/` directory
+    is needed. i18n.js usually tries several locales in `_localeCandidates` order,
+    making an HTTP request for each until fallback succeeds. Therefore:
+      - Use `_I18N_BUNDLE_CACHE` (by file mtime) to avoid repeated disk reads;
+      - Add `max-age=300` to 200 responses for browser cache sharing across iframes;
+      - Regex-allowlist locale to block path traversal.
     """
     if not _I18N_LOCALE_PATTERN.match(locale):
         raise HTTPException(status_code=404, detail=f"Invalid locale: {locale!r}")
@@ -410,14 +410,14 @@ async def plugin_ui_api_i18n_bundle(plugin_id: str, locale: str) -> Response:
 
 @router.get("/plugin/{plugin_id}/ui-api/events")
 async def plugin_ui_sse_events(plugin_id: str):
-    """插件静态 UI 的 SSE 事件流（后端 → 前端实时推送）。
+    """Plugin static UI SSE stream (real-time backend → frontend push).
 
-    前端页面用 EventSource 连这里，即时接收 /ui-api/push 广播的实时更新；
-    同时订阅 runs bus，run 完成后台推送 ``type:run`` 事件，替代前端紧轮询。
+    Frontend pages connect via EventSource for immediate /ui-api/push broadcast updates;
+    also subscribe to runs bus, pushing ``type:run`` on completion instead of tight frontend polling.
     """
-    # 有界队列：慢/阻塞客户端不被无限缓冲（满时由 push 侧丢弃新消息）
+    # Bounded queue: do not buffer indefinitely for slow/blocked clients (push discards new messages when full).
     queue_obj: asyncio.Queue = asyncio.Queue(maxsize=_SSE_QUEUE_MAX)
-    # 首个客户端连接时安装 runs bus → SSE 桥（幂等）
+    # Install runs bus → SSE bridge when the first client connects (idempotent).
     _ensure_runs_sse_bridge()
 
     async def event_stream():
@@ -440,7 +440,7 @@ async def plugin_ui_sse_events(plugin_id: str):
                 clients = _sse_clients.get(plugin_id)
                 if clients and queue_obj in clients:
                     clients.remove(queue_obj)
-                # 列表空则删除 plugin_id，避免任意路径参数留下永久空条目
+                # Delete plugin_id when its list empties, preventing arbitrary path parameters from leaving permanent empty entries.
                 if clients is not None and not clients:
                     _sse_clients.pop(plugin_id, None)
             finally:
@@ -459,13 +459,13 @@ async def plugin_ui_sse_events(plugin_id: str):
 
 @mutation_router.post("/plugin/{plugin_id}/ui-api/push")
 async def plugin_ui_push(plugin_id: str, request: Request):
-    """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
+    """Broadcast a real-time message to all plugin static UI SSE clients (backend → frontend).
 
-    入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
-    返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
+    Input: {\"text\": \"...\"} or plain text. Any plugin/backend may push to subscribed frontend pages.
+    Return ``queued``: count of successful client-buffer enqueues, not confirmed client deliveries.
 
-    鉴权：仅本机回环客户端可直接推送（不再要求共享密钥；对端非回环一律拒绝，
-    伪造 Origin / 转发头均无法绕过；Origin 校验仍防跨站注入）。
+    Authentication: only direct loopback clients may push (no shared secret required; reject every
+    non-loopback peer, regardless of forged Origin / forwarding headers; Origin still prevents cross-site injection).
     """
     # Proxy middleware may rewrite client.host to a loopback upstream address.
     # Push is a native local operation, so reject forwarding metadata before
@@ -475,11 +475,11 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host):
         return JSONResponse({"ok": False, "error": "non-loopback push rejected"}, status_code=403)
-    # Origin 校验：浏览器跨站表单 POST（no-cors）可向 loopback 注入 SSE；
-    # 只接受无 Origin（插件后端/curl）或本机回环 Origin
+    # Origin validation: cross-site browser form POST (no-cors) can inject SSE into loopback;
+    # accept only absent Origin (plugin backend/curl) or loopback Origin.
     if not _origin_is_trusted(request.headers.get("origin", "")):
         return JSONResponse({"ok": False, "error": "invalid origin"}, status_code=403)
-    # 流式读取请求体：累计字节数，超过固定上限立即 413，避免本机恶意分块请求占内存
+    # Stream the request body, counting bytes and immediately returning 413 over the fixed limit to bound malicious local chunked-request memory.
     chunks: list[bytes] = []
     total = 0
     async for chunk in request.stream():
@@ -491,11 +491,11 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     payload = _parse_push_payload(body)
     if not payload.get("text"):
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
-    # type 由插件自定义并原样透传（server 不预设分类）；未指定则不带 type 字段
+    # Plugins define type, passed through unchanged (server has no preset categories); omit the type field if unspecified.
     event: dict = {"text": payload["text"]}
     if payload.get("type"):
         event["type"] = payload["type"]
-    if "data" in payload:  # 空容器([]/{})常代表清空/重置状态，按 key 存在而非 truthiness 保留
+    if "data" in payload:  # Empty containers ([]/{}) often mean clear/reset; preserve based on key presence rather than truthiness.
         event["data"] = payload["data"]
     if payload.get("style"):
         event["style"] = payload["style"]
@@ -510,9 +510,9 @@ async def plugin_ui_push(plugin_id: str, request: Request):
         clients = _sse_clients.get(plugin_id, [])
         for c in list(clients):
             try:
-                if _sse_queue_put_best_effort(c, data):  # 满了丢最旧、新帧保留
+                if _sse_queue_put_best_effort(c, data):  # When full, drop the oldest item and retain the new frame.
                     queued += 1
-            except Exception as exc:  # 其他运行时故障（如队列已关闭）记录，不阻断其它客户端
+            except Exception as exc:  # Record other runtime failures (e.g. closed queues) without blocking other clients.
                 logger.warning("[plugin-ui] SSE push 队列写入失败: %s", exc)
     finally:
         _sse_clients_lock.release()
@@ -521,9 +521,9 @@ async def plugin_ui_push(plugin_id: str, request: Request):
 
 @router.get("/plugin/{plugin_id}/ui/{file_path:path}")
 async def plugin_ui_file(plugin_id: str, file_path: str):
-    """获取插件 UI 静态文件"""
+    """Get plugin UI static files."""
     if not file_path:
-        # 重定向到 index
+        # Redirect to index.
         return await plugin_ui_index(plugin_id)
     
     try:
@@ -537,10 +537,10 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
             detail=f"Plugin '{plugin_id}' not found or has no static directory"
         )
     
-    # 解析文件路径
+    # Resolve file path.
     target_file = (static_dir / file_path).resolve()
     
-    # 安全检查：确保文件在 static 目录内
+    # Security check: ensure the file is within the static directory.
     try:
         target_file.relative_to(static_dir.resolve())
     except ValueError:
@@ -563,7 +563,7 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
     
     mime_type = _get_mime_type(target_file)
     
-    # 获取缓存控制配置
+    # Get cache-control configuration.
     try:
         ui_config = await _get_static_ui_config(plugin_id)
     except ServerDomainError as error:
@@ -586,9 +586,9 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
 
 @router.get("/plugin/{plugin_id}/ui-info")
 async def plugin_ui_info(plugin_id: str):
-    """获取插件 UI 信息
+    """Get plugin UI information.
     
-    返回插件是否有 UI、UI 入口路径等信息。
+    Return whether the plugin has a UI, its entry path, etc.
     """
     try:
         ui_info = await plugin_ui_query_service.get_ui_info(plugin_id)
@@ -599,10 +599,10 @@ async def plugin_ui_info(plugin_id: str):
 
 @router.get("/plugin/{plugin_id}/surfaces")
 async def plugin_ui_surfaces(plugin_id: str, locale: str | None = None):
-    """获取插件统一 UI Surface 列表。
+    """Get the plugin's unified UI Surface list.
 
     LEGACY_STATIC_UI_COMPAT:
-    Existing static UI is normalized as a mode="static" panel surface.
+    Existing static UI is normalized as a mode=\"static\" panel surface.
     """
     try:
         surfaces = await plugin_ui_query_service.get_surfaces(plugin_id, locale=locale)
@@ -618,11 +618,11 @@ async def plugin_hosted_ui_source(
     id: str = "main",
     locale: str | None = None,
 ):
-    """读取 hosted surface 源码。
+    """Read hosted surface source.
 
-    用于 hosted-tsx / markdown 的只读 source MVP。`locale` 参数让 markdown
-    教程按当前 UI 语言挑同名的 `<entry>.<locale>.md` 兄弟文件，命中失败
-    时回退到默认（不带 locale 后缀）的 entry 文件。
+    Read-only source MVP for hosted-tsx / markdown. `locale` lets markdown
+    tutorials select the sibling `<entry>.<locale>.md` for the current UI language, falling back
+    to the default entry without a locale suffix when no sibling matches.
     """
     try:
         source = await plugin_ui_query_service.get_surface_source(
@@ -638,7 +638,7 @@ async def plugin_hosted_ui_source(
 
 @router.get("/plugin/{plugin_id}/hosted-ui/context")
 async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str = "main", locale: str | None = None):
-    """获取 hosted surface 只读上下文。"""
+    """Get read-only hosted surface context."""
     try:
         context = await plugin_ui_query_service.get_surface_context(
             plugin_id,
@@ -658,7 +658,7 @@ async def plugin_hosted_ui_action(
     http_request: Request,
     request: HostedUiActionRequest,
 ):
-    """执行 hosted surface 动作；第一版复用本插件 plugin_entry。"""
+    """Execute a hosted surface action; version one reuses this plugin's plugin_entry."""
     try:
         result = await _await_action_or_disconnect(
             http_request,

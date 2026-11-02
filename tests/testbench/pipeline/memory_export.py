@@ -404,7 +404,7 @@ def _dumps(value: Any) -> str:
 MEMORY_EXPORT_FILENAME_PREFIX = "NEKO testbench_记忆导出"
 
 #: Characters that are illegal in Windows/macOS/Linux filenames (plus control
-#: chars). We deliberately KEEP Unicode letters so a Chinese 角色名 survives in
+#: chars). We deliberately KEEP Unicode letters so a Chinese character name survives in
 #: the friendly download name.
 _FILENAME_ILLEGAL_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
 
@@ -425,10 +425,10 @@ def memory_export_filename(
 ) -> str:
     """Friendly ZIP name: ``NEKO testbench_记忆导出_<角色标识>_<YYYY-MM-DD>.zip``.
 
-    角色标识 is **tier-aware** to stay consistent with the in-ZIP redaction
-    (L65 跨层一致): ``minimal`` keeps the real display name (nothing is
+    The character identifier is **tier-aware** to stay consistent with the in-ZIP redaction
+    (L65 cross-tier consistency): ``minimal`` keeps the real display name (nothing is
     pseudonymised at that tier anyway), while ``standard`` / ``strict`` use a
-    neutral ``角色`` placeholder so the *filename itself* does not leak the
+    neutral ``角色`` ('character') placeholder so the *filename itself* does not leak the
     identity that the bundle contents just pseudonymised.
     """  # noqa: DOCSTRING_CJK
     date = (now or datetime.now()).strftime("%Y-%m-%d")

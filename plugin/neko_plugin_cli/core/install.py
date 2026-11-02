@@ -13,21 +13,28 @@ _SAFE_PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class PackageInstaller:
-    """Extract packaged plugins into the runtime plugin directory safely."""
+    """Deploy plugin code; package-level profiles are only exported by unpack."""
 
     def install_package(
         self,
         package_path: str | Path,
         *,
         plugins_root: str | Path,
-        profiles_root: str | Path,
+        profiles_root: str | Path | None = None,
         on_conflict: str = "fail",
     ) -> InstallResult:
+        """Install code without exporting package-level profiles.
+
+        ``profiles_root`` is a deprecated compatibility argument and is ignored.
+        The result's ``profiles_root`` and ``profile_dir`` are always ``None``.
+        Use ``unpack_package()`` to explicitly export the complete package.
+        """
+        # Retained for callers using the old install signature. Complete
+        # profile exports belong to unpack_package(), not runtime deployment.
+        del profiles_root
         package_path = Path(package_path).expanduser().resolve()
         plugins_root_path = Path(plugins_root).expanduser().resolve()
-        profiles_root_path = Path(profiles_root).expanduser().resolve()
         plugins_root_path.mkdir(parents=True, exist_ok=True)
-        profiles_root_path.mkdir(parents=True, exist_ok=True)
         on_conflict = self.normalize_conflict_strategy(on_conflict)
 
         with zipfile.ZipFile(package_path) as archive:
@@ -61,29 +68,17 @@ class PackageInstaller:
                 plugins_root_path,
                 on_conflict=on_conflict,
             )
-            # Preflight profile target before extracting anything so that
-            # on_conflict='fail' aborts without leaving partial installs.
-            profile_dir = self.preflight_profile_target(
-                archive,
-                profiles_root=profiles_root_path,
-                package_id=package_id,
-                on_conflict=on_conflict,
-            )
+            # Inspection still validates and hashes the entire payload,
+            # including package profiles. Runtime configuration comes from
+            # plugin files and the independent state root, not these exports.
             self.extract_plugins(archive, folder_mapping)
-            profile_dir = self.extract_profiles(
-                archive,
-                profiles_root=profiles_root_path,
-                package_id=package_id,
-                on_conflict=on_conflict,
-                preflighted_target=profile_dir,
-            )
 
         return InstallResult(
             package_path=package_path,
             package_type=inspected.package_type,
             package_id=package_id,
             plugins_root=plugins_root_path,
-            profiles_root=profiles_root_path,
+            profiles_root=None,
             installed_plugins=[
                 InstalledPlugin(
                     source_folder=source_folder,
@@ -93,7 +88,7 @@ class PackageInstaller:
                 )
                 for source_folder, target_dir in sorted(folder_mapping.items())
             ],
-            profile_dir=profile_dir,
+            profile_dir=None,
             metadata_found=inspected.metadata_found,
             payload_hash=inspected.payload_hash,
             payload_hash_verified=inspected.payload_hash_verified,
@@ -143,50 +138,6 @@ class PackageInstaller:
             target_path = target_root.joinpath(*relative_parts)
             self.extract_member(archive, name, target_path)
 
-    def preflight_profile_target(
-        self,
-        archive: zipfile.ZipFile,
-        *,
-        profiles_root: Path,
-        package_id: str,
-        on_conflict: str,
-    ) -> Path | None:
-        """Check profile target feasibility without writing anything."""
-        profile_names = [
-            name for name in archive.namelist()
-            if len(safe_archive_path(name).parts) >= 3 and safe_archive_path(name).parts[:2] == ("payload", "profiles")
-        ]
-        if not profile_names:
-            return None
-        # This will raise FileExistsError early if on_conflict='fail' and target exists.
-        return self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
-
-    def extract_profiles(
-        self,
-        archive: zipfile.ZipFile,
-        *,
-        profiles_root: Path,
-        package_id: str,
-        on_conflict: str,
-        preflighted_target: Path | None = None,
-    ) -> Path | None:
-        profile_names = [
-            name for name in archive.namelist()
-            if len(safe_archive_path(name).parts) >= 3 and safe_archive_path(name).parts[:2] == ("payload", "profiles")
-        ]
-        if not profile_names:
-            return None
-
-        target_dir = preflighted_target or self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
-        for name in profile_names:
-            path = safe_archive_path(name)
-            relative_parts = path.parts[2:]
-            if not relative_parts:
-                continue
-            target_path = target_dir.joinpath(*relative_parts)
-            self.extract_member(archive, name, target_path)
-        return target_dir
-
     def extract_member(self, archive: zipfile.ZipFile, member_name: str, target_path: Path) -> None:
         info = archive.getinfo(member_name)
         if info.is_dir():
@@ -195,32 +146,6 @@ class PackageInstaller:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with archive.open(info) as src, target_path.open("wb") as dst:
             shutil.copyfileobj(src, dst, length=1024 * 1024)
-
-    def resolve_target_dir(
-        self,
-        desired: Path,
-        *,
-        on_conflict: str,
-        reserved_names: set[str] | None = None,
-    ) -> Path:
-        if on_conflict == "fail":
-            if desired.exists() or (reserved_names is not None and desired.name in reserved_names):
-                raise FileExistsError(f"target already exists: {desired}")
-            return desired.resolve()
-        if on_conflict == "rename":
-            return self.resolve_unique_dir(desired, reserved_names=reserved_names)
-        raise ValueError(f"unsupported conflict strategy: {on_conflict}")
-
-    def resolve_unique_dir(self, desired: Path, *, reserved_names: set[str] | None = None) -> Path:
-        reserved_names = reserved_names or set()
-        if desired.name not in reserved_names and not desired.exists():
-            return desired.resolve()
-        counter = 1
-        while True:
-            candidate = desired.with_name(f"{desired.name}_{counter}")
-            if candidate.name not in reserved_names and not candidate.exists():
-                return candidate.resolve()
-            counter += 1
 
     def validate_package_id(self, package_id: str) -> str:
         if (
@@ -251,7 +176,7 @@ def install_package(
     package_path: str | Path,
     *,
     plugins_root: str | Path,
-    profiles_root: str | Path,
+    profiles_root: str | Path | None = None,
     on_conflict: str = "fail",
 ) -> InstallResult:
     """Public convenience wrapper for archive extraction into runtime directories."""

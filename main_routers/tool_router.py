@@ -115,12 +115,12 @@ def _validate_local_callback_url(url: str) -> str:
     host = parsed.hostname
     if not host:
         raise ValueError("callback_url 缺少 host")
-    host = host.strip("[]")  # IPv6 字面量
-    # 直接比对 localhost 字面量
+    host = host.strip("[]")  # IPv6 literal.
+    # Compare literal localhost directly.
     if host.lower() == "localhost":
         return url
-    # 解析为 IP 后用 ipaddress 模块判断是否 loopback —— 同时正确处理
-    # IPv4 / IPv6 / IPv4-mapped IPv6（::ffff:127.0.0.1）等情况。
+    # Parse IP then use ipaddress loopback checks, correctly handling
+    # IPv4 / IPv6 / IPv4-mapped IPv6 (::ffff:127.0.0.1).
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
@@ -128,10 +128,10 @@ def _validate_local_callback_url(url: str) -> str:
             f"callback_url host 必须是 loopback 地址（127.0.0.0/8、::1、"
             f"localhost），实际是非 IP 域名：{host!r}"
         ) from None
-    # is_loopback 对 IPv4-mapped IPv6 不穿透映射的行为 CPython 3.11.11
-    # 才修（gh-117566 backport，::ffff:127.0.0.1 在此前版本返回 False）。
-    # 项目允许 ==3.11.* 且不钉 patch（Debian 12 系统 Python 是 3.11.2），
-    # 需手动解包 ipv4_mapped 再判一次。
+    # is_loopback following IPv4-mapped IPv6 was fixed only in CPython 3.11.11
+    # (gh-117566 backport; earlier ::ffff:127.0.0.1 returns False).
+    # Project allows ==3.11.* without patch pin (Debian 12 uses 3.11.2),
+    # requiring manual ipv4_mapped unwrapping and recheck.
     mapped = getattr(ip, "ipv4_mapped", None)
     if not (ip.is_loopback or (mapped is not None and mapped.is_loopback)):
         raise ValueError(
@@ -139,10 +139,10 @@ def _validate_local_callback_url(url: str) -> str:
         )
     return url
 
-# 这些端点能改运行时状态（注册/卸载工具、配置 callback_url），如果服务被
-# 暴露到 LAN 上不加保护就成了任意远程工具转发器。复用 cookies_login_router
-# 里已有的 verify_local_access：仅允许 loopback 地址或 localhost，本地之外
-# 的请求一律 403；IPv4-mapped IPv6 仍按其映射后的地址判断。
+# These endpoints mutate runtime (register/unregister tools, configure callback_url); exposed
+# unprotected on LAN they'd become arbitrary remote tool forwarders. Reuse cookies_login_router's
+# verify_local_access: localhost/loopback only; all other
+# requests 403; mapped IPv6 checked by mapped IPv4 address.
 router = APIRouter(
     prefix="/api/tools",
     tags=["tools"],
@@ -177,9 +177,9 @@ class ToolRegisterRequest(BaseModel):
     callback_url: str = Field(..., min_length=1)
     role: Optional[str] = None  # None = global
     source: str = "external"
-    # 上下界保护：误填超大值会让单次工具调用阻塞整条 tool-call 路径，
-    # 模型轮也会被卡住；超过 5 分钟的同步工具应该改成 plugin 自己拆任务
-    # 而不是把 main_server 长期 hold 住。
+    # Bound values: huge timeouts block entire tool-call path and model turns;
+    # synchronous tools longer than five minutes should be split into plugin tasks,
+    # never hold main_server long-term.
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
     reply_tail: bool = False
 
@@ -192,9 +192,9 @@ class ToolRegisterRequest(BaseModel):
 class ToolUnregisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     role: Optional[str] = None  # None = remove from all roles
-    # 设置时校验该名字当前归属的 source，不匹配的 role 拒绝删除（响应记入
-    # refused_roles）。用于插件注销自己的工具时防止误删其它 source 占用的
-    # 同名工具（例如本插件的注册从未生效、名字实际归属别的插件的场景）。
+    # If set, verify current name's owning source; refuse mismatched roles, reporting
+    # refused_roles. Prevent plugin self-unregistration deleting same-name tools owned
+    # by others (e.g. its registration never succeeded and another plugin owns name).
     expected_source: Optional[str] = None
 
 
@@ -207,23 +207,23 @@ class ToolClearRequest(BaseModel):
 # Remote dispatcher — issued when ToolRegistry.execute() runs a remote tool
 # ---------------------------------------------------------------------------
 
-# 死插件自动驱逐：插件进程崩了之后，main_server 的 registry 里还挂着指向
-# 死端点的工具，model 还能在 schema 里看到它们并调用，每次都会撞 connection
-# refused。优雅 shutdown 走 /api/tools/clear，崩溃（kill -9）没机会触发，
-# 所以这里在 dispatch 路径上做反应式清理。
+# Evict dead plugins automatically: crashes leave tools pointing at dead endpoints in
+# main_server registry, visible/callable in model schemas, always connection
+# refused. Graceful shutdown uses /api/tools/clear; kill -9 cannot,
+# so clean reactively during dispatch.
 #
-# 按 ``(source, callback_origin)`` 而不是单按 ``source`` 聚合失败计数——
-# ``/api/tools/register`` 允许同一 plugin source 下每个工具有不同 callback_url，
-# 单按 source 累计会把"一个端点死了"误升级成"整个 plugin 全死"，扫掉同 source
-# 其他健康端点的工具。按 (source, origin) 双维聚合后，单端点不可达只清掉
-# 该端点的工具，sibling endpoints 不受影响。
-# （Codex review on PR #1382 提出的 endpoint-local outage 风险。）
+# Count failures by ``(source, callback_origin)``, never source alone:
+# ``/api/tools/register`` permits different callback_url per tool under one plugin source;
+# source-only counting turns one endpoint outage into whole-plugin outage, removing
+# healthy sibling endpoint tools. (source, origin) confines cleanup to tools on
+# failed endpoint, leaving siblings unaffected.
+# (Endpoint-local outage risk from Codex review PR #1382.)
 #
-# 只算"端点不可达"——ReadTimeout（插件慢）、HTTP 4xx/5xx（插件活着但有 bug）、
-# body 解析失败、callback 业务上回 ``is_error=True``，这些都是工具/插件 bug，
-# 不是 lifecycle 问题，不计入也不会触发驱逐。任何一次 HTTP 交换成功（不管
-# 业务结果）就重置该 (source, origin) 的计数器，所以"偶发 connection refused"
-# 不会在长期里累积成误杀。
+# Count unreachable endpoints only: ReadTimeout (slow plugin), HTTP 4xx/5xx (live but buggy),
+# body parsing errors, and callback ``is_error=True`` are tool/plugin bugs,
+# not lifecycle issues, never count or evict. Any successful HTTP exchange regardless
+# of business result resets (source, origin), preventing occasional connection refused
+# accumulating into false eviction over time.
 _EVICTION_FAILURE_THRESHOLD = 3
 _consecutive_connect_failures: Dict[Tuple[str, str], int] = {}
 
@@ -246,7 +246,7 @@ def _callback_origin(url: str) -> str:
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.hostname:
             return url
-        port = parsed.port  # 可能抛 ValueError（非数字端口）
+        port = parsed.port  # May raise ValueError for nonnumeric ports.
         if port is None:
             port = 443 if parsed.scheme == "https" else 80
         return f"{parsed.scheme}://{parsed.hostname}:{port}"
@@ -298,8 +298,8 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
     one callback_url origin → swept together) while avoiding collateral damage
     to other healthy endpoints when a single endpoint is misconfigured."""
     _consecutive_connect_failures.pop((source, origin), None)
-    # 台账也要一起扫，否则下一次角色重建会把死端点的工具重放回来。放在取
-    # session_manager 之前：拿不到 manager 时台账照样得清。
+    # Sweep ledger too, or character rebuild replays dead tools. Before obtaining
+    # session_manager, so cleanup works even when manager unavailable.
     _ledger_forget(
         lambda entry: entry.tool.metadata.get("source") == source
         and _callback_origin(entry.tool.metadata.get("callback_url") or "") == origin,
@@ -308,8 +308,8 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
     try:
         session_manager = get_session_manager()
     except Exception as e:
-        # session_manager 未初始化（极早期 dispatch / 单测裸调用）。
-        # 静默 return —— 没有 manager 就没法 sweep，下次再试。
+        # session_manager uninitialized (very early dispatch / direct unit calls).
+        # Return silently; no manager means no sweep, retry next time.
         logger.debug(
             "auto-eviction skipped (session_manager unavailable): %s: %s",
             type(e).__name__, e,
@@ -332,16 +332,16 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
             holder = holder_of() if callable(holder_of) else None
             for name in to_drop:
                 mgr.tool_registry.unregister(name)
-            # 被驱逐的工具可能占着内置工具的名字（query_public_knowledge），
-            # 让出后把内置版本补回来。
+            # Evicted tools may shadow builtin query_public_knowledge;
+            # restore builtin after name becomes free.
             refill = getattr(mgr, "_refill_vacated_builtins", None)
             if callable(refill):
                 refill(holder)
-            # 复用 mgr 已有的 fire-and-forget sync 通道（与 register_tool /
-            # clear_tools 同一条路径），把 fresh session.update 推到 wire。
-            # 直接访问 ``_fire_task`` / ``_sync_tools_to_active_session`` 是
-            # 因为没有"按谓词过滤"的公共 API；新加一个只服务于本驱逐通道
-            # 的方法属于过度抽象。
+            # Reuse manager fire-and-forget sync channel (same as register_tool /
+            # clear_tools), sending fresh session.update onto wire.
+            # Access ``_fire_task`` / ``_sync_tools_to_active_session`` directly because
+            # no public predicate-filter API exists; adding one solely
+            # for eviction overabstracts.
             mgr._fire_task(mgr._sync_tools_to_active_session())  # noqa: SLF001
         except Exception as e:
             logger.warning(
@@ -422,11 +422,11 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
     if not isinstance(body, dict):
         body = {"output": body}
     if not looks_like_tool_envelope(body):
-        # 普通业务字典。以前这里是 body.get("output", body)，原样透传；换成
-        # tool_result_from_envelope 之后，一个返回 {"images": [...urls...]} 的
-        # 搜索类工具会被当成像素信封拆掉——images 从模型可见输出里被摘走，再
-        # 按 base64 校验失败变成一串警告。插件回调那条路（llm_tools.py）本来
-        # 就做了这个判别，这里少了一份。
+        # Ordinary business dictionary. Former body.get("output", body) passed unchanged;
+        # tool_result_from_envelope would dismantle search-tool
+        # {"images": [...urls...]} as pixel envelope, removing images from model-visible output
+        # then turning invalid base64 into warning strings. Plugin callback path (llm_tools.py)
+        # already distinguishes this; missing counterpart here.
         body = {"output": body}
     return await asyncio.to_thread(tool_result_from_envelope, call, body)
 
@@ -495,25 +495,25 @@ def _resolve_target_managers(role: Optional[str]) -> List[Any]:
 # Remote registration ledger — replayed into rebuilt session managers
 # ---------------------------------------------------------------------------
 
-# 远端工具只登记在各角色 ``LLMSessionManager`` 自己的 ToolRegistry 里，而角色
-# 重载（保存 API 配置、改 voice_id 等）在该角色没有活跃会话时会整个重建 manager
-# （app/main_server/character_runtime.py 的重建分支），新 registry 只有内置工具。
-# 插件只在自己进程启动时注册一次，于是重建之后插件工具静默消失、模型再也看不到
-# （2026-09-12：保存 API 配置后 minecraft_task 一整晚没进过任何会话的工具列表）。
+# Remote tools live only in each character's ``LLMSessionManager`` ToolRegistry. Character
+# reload (API save/voice_id change) without active session rebuilds whole manager
+# (app/main_server/character_runtime.py), whose fresh registry contains builtins only.
+# Plugins register once on process start, so rebuild silently loses tools from model schemas
+# (2026-09-12: API save left minecraft_task absent from every session all night).
 #
-# 这里记下每次被接受的注册，新建 manager 时由 ``replay_remote_tools`` 重放。
-# 各写入口必须同步维护它，语义与各 manager registry 上发生的事逐条对偶
-# （registry 每个名字只存一份定义，register 是覆盖）：
-#   register 全局 → 记下 (None, name)，并删掉同名的 scoped 记录（各 registry 里已被覆盖）
-#   register X    → 记下 (X, name)，同名全局记录改为跳过 X（X 的那份全局副本已被覆盖）
-#                   同名重注册挪到队尾，重放时仍是后写者胜
-#   unregister → role=None 删该名字的全部记录；role=X 删 (X, name)，全局记录改为跳过 X
-#   clear      → 同 unregister，按 source 匹配
-#   死插件驱逐 → 删 (source, callback origin) 匹配的全部记录
-#   角色槽位删除（删角色 / 改名）→ ``forget_role``：manager 连同 registry 一起没了
-# 进程内状态：main_server 自身重启时台账一起清空，那种情况仍要靠插件重新注册。
-# 已知边界：所有目标都同步失败的注册仍会记账（registry 已写入），插件那边却按
-# ok=false 不跟踪它；这类工具会一直跨重建保留，直到对应 source 的 clear 成功。
+# Record each accepted registration here; ``replay_remote_tools`` restores on manager creation.
+# Every mutation maintains ledger synchronously, matching each registry operation
+# (one definition per name; register overwrites):
+#   Global register → record (None, name), remove same-name scoped records already overwritten in registries.
+#   Register X → record (X, name), global same-name record skips X, whose global copy was overwritten.
+#                Reregistered names move to tail, preserving last-writer-wins replay.
+#   unregister → role=None removes all name records; role=X removes (X,name), global record skips X.
+#   clear → same as unregister, matched by source.
+#   Dead-plugin eviction → remove all matching (source, callback origin).
+#   Character slot delete/rename → ``forget_role``: manager/registry gone together.
+# Process-local: main_server restart clears ledger, still requiring plugin reregistration.
+# Known edge: all-target wire-sync failures still record (registries already written), but plugins receive
+# ok=false and do not track; tools survive rebuilds until source clear succeeds.
 @dataclass
 class _LedgerEntry:
     tool: ToolDefinition
@@ -644,9 +644,9 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
         logger.warning("register_tool refused cross-source overwrite: name='%s' incoming='%s'", req.name, req.source)
         return {"ok": False, "registered": req.name, "affected_roles": [], "failed_roles": conflicts}
 
-    # 先记台账再逐个注册：registry.register 在同步 wire 之前就已生效（同步失败
-    # 也留在 registry 里），而循环中途被重建的 manager 不在 targets 里，只能靠
-    # 台账重放拿到。一个 manager 都没有时 registry 什么也没发生，不记。
+    # Record ledger before registering targets: registry.register takes effect before wire sync, even if
+    # sync fails. Managers rebuilt mid-loop are outside targets and rely on
+    # ledger replay. With no managers, no registry changed, so record nothing.
     if targets:
         _ledger_record(tool, req.role)
     affected: List[str] = []
@@ -654,10 +654,10 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
-            # 跨 source 重名拒绝：registry 以名字为键、replace=True 无条件覆盖，
-            # 若不设防，后注册的插件会把其它 source 已有的同名工具静默挤掉
-            # （模型调用被重定向到新 callback，原插件还能把别人的工具注销）。
-            # 同 source 重注册（插件重启刷新 callback_url / 更新 schema）不受影响。
+            # Reject cross-source name collisions: name-keyed registry replace=True overwrites unconditionally;
+            # without protection, later plugins silently displace existing same-name tools from other sources,
+            # rerouting model calls to new callback and permitting original plugin to unregister another's tool.
+            # Same-source refresh (restart callback_url / schema updates) unaffected.
             existing = mgr.tool_registry.get(req.name)
             if existing is not None:
                 existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
@@ -674,19 +674,19 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
                         ),
                     })
                     continue
-            # 用 _and_sync 版本：注册后等 session.update 推送完成再返回，
-            # 这样调用方拿到 ok=True 的瞬间，active/pending session 上的
-            # tools 已经是最新 —— 不会出现"返回成功但下一次 model 调用
-            # 还看不到工具"的窗口。
+            # Use _and_sync: await session.update push after registration,
+            # so when caller gets ok=True, active/pending session tools
+            # are current, avoiding success responses followed by model calls
+            # unable to see tools.
             await mgr.register_tool_and_sync(tool, replace=True)
             affected.append(role_name)
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"
             logger.warning("register_tool to %s failed: %s", role_name, err_text)
             failed.append({"role": role_name, "error": err_text})
-    # 全失败 → ok=False，让插件知道注册没生效（之前永远 ok=True 会让插件
-    # 误以为工具已经可用，下次 model 调用工具才会运行时报错）。
-    # 部分成功 → ok=True 但带 failed_roles，让调用方按需处理（比如重试该 role）。
+    # All failed → ok=False informs plugins registration failed (former always-True
+    # made plugins assume availability until next model tool call failed at runtime).
+    # Partial success → ok=True plus failed_roles for caller handling, e.g. retry role.
     if not affected:
         return {
             "ok": False,
@@ -706,8 +706,8 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
 @router.post("/unregister")
 async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
-    # 解析成功之后、第一个 await 之前删台账：404 的请求不能改台账；而循环中途
-    # 重建的 manager 也不能再从台账里把它重放回来（两者之间没有 await）。
+    # After successful resolution, remove ledger before first await: 404 requests cannot mutate it, while managers
+    # rebuilt mid-loop must not replay removed tools; no await separates these operations.
     _ledger_forget(
         lambda entry: entry.tool.name == req.name and (
             req.expected_source is None or entry.tool.metadata.get("source") == req.expected_source
@@ -720,10 +720,10 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
-            # 所有权校验：expected_source 与现属 source 不匹配时拒绝删除。
-            # 与 /register 的跨 source 拒绝对偶——注销也只能删自己的工具。
-            # tool_registry 用 getattr 兼容鸭子类型的 manager（如测试桩），
-            # 没有 registry 的 manager 跳过校验，保持原有注销行为。
+            # Ownership check: reject removal if expected_source differs from current source.
+            # Symmetric with /register cross-source rejection: unregister only own tools.
+            # getattr tool_registry supports duck-typed managers/test stubs;
+            # managers without registries skip validation, retaining previous unregister behavior.
             registry = getattr(mgr, "tool_registry", None)
             existing = registry.get(req.name) if registry is not None else None
             if req.expected_source is not None and existing is not None:
@@ -738,13 +738,13 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
                         "owned_by": existing_source or "unknown",
                     })
                     continue
-            # _and_sync 版本：等 session 同步完成再返回，与 register 端点对偶。
+            # _and_sync awaits session synchronization before return, symmetric with register.
             if await mgr.unregister_tool_and_sync(req.name):
                 removed_any = True
                 affected.append(role_name)
         except Exception as e:
-            # 单角色 sync 失败不能让整个跨角色请求 500 —— 调用方需要拿到
-            # 已成功的 role 列表来推断状态。
+            # One role's sync failure must not 500 the whole cross-role request; callers need
+            # successful-role lists to infer state.
             err_text = f"{type(e).__name__}: {e}"
             logger.warning("unregister_tool on %s failed: %s", role_name, err_text)
             failed.append({"role": role_name, "error": err_text})
@@ -761,7 +761,7 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
 @router.post("/clear")
 async def clear_tools(req: ToolClearRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
-    # 与 unregister 对偶：解析成功后、第一个 await 之前删台账，再清各 manager。
+    # Symmetric unregister: resolve, remove ledger before first await, then clear managers.
     _ledger_forget(
         lambda entry: entry.tool.metadata.get("source") == req.source, req.role
     )

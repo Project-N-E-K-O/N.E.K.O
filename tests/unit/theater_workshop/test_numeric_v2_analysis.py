@@ -35,7 +35,7 @@ def test_full_story_analysis_distinguishes_priority_shadow_and_numeric_unreachab
     compiled = NumericV2Compiler(InProcessPackageGateway()).compile(story)
     codes = {warning.code for warning in compiled.warnings}
 
-    # 低优先级路线的全部条件空间被覆盖，但这仍是作者诊断，不把合法包变成编译失败。
+    # The lower-priority route's entire condition space is covered, but this remains an author diagnostic rather than a compilation failure for a valid package.
     assert "route_priority_shadowed" in codes
     assert "ending_numeric_unreachable" in codes
     assert "route_condition_gap" in codes
@@ -153,7 +153,7 @@ def test_full_story_analysis_does_not_call_unknown_downstream_unreachable():
     warnings = NumericV2Compiler(InProcessPackageGateway()).compile(story).warnings
     codes = {warning.code for warning in warnings}
 
-    # 状态组合超过精确枚举上限时只能标 unknown，不能把结构下游反断言为不可达。
+    # When state combinations exceed the exact-enumeration limit, mark only unknown; do not infer that structurally downstream nodes are unreachable.
     assert "route_analysis_unknown" in codes
     assert "node_numeric_unreachable" not in codes
     assert "ending_numeric_unreachable" not in codes
@@ -213,7 +213,7 @@ def test_full_story_analysis_suppresses_pacing_claims_across_cycles():
 
     codes = {warning.code for warning in NumericV2Compiler(InProcessPackageGateway()).compile(story).warnings}
 
-    # 两次循环各自不超过三回合即可达到阈值，因此不能按首次访问猜成“需要额外回合”。
+    # Both loops can reach the threshold within three turns each, so the first visit must not imply 'extra turns required'.
     assert "route_analysis_unknown" in codes
     assert "route_pacing_difficult" not in codes
     assert "route_pacing_partial" not in codes
@@ -275,13 +275,13 @@ def test_full_story_analysis_keeps_non_convex_entry_bounds_unknown():
     warnings = NumericV2Compiler(InProcessPackageGateway()).compile(story).warnings
     codes = {warning.code for warning in warnings}
 
-    # <=10 与 >=90 是两个不连续入口，不能用 0..100 包围盒虚构中间数值并继续传播。
+    # <=10 and >=90 are disjoint entry ranges; a 0..100 bounding box must not invent intermediate values and propagate them.
     assert "route_analysis_unknown" in codes
     assert "ending_pacing_difficult" not in codes
 
 
 def test_recommended_budget_flags_branch_that_requires_near_maximum_changes():
-    # 十二轮各+5可达，但普通强度每轮+2仍不够；不能把理论极限当作日常体验。
+    # Twelve rounds at +5 can reach it, but ordinary +2 rounds cannot; do not equate theoretical extremes with everyday experience.
     story = numeric_v2_story()
     story["nodes"][0]["recommended_turns"] = 12
     original = deepcopy(story)
@@ -292,7 +292,7 @@ def test_recommended_budget_flags_branch_that_requires_near_maximum_changes():
 
 
 def test_normal_budget_does_not_warn_when_branch_is_within_normal_range():
-    # 阈值降至普通强度预算内后提示消失；诊断只算可能区间，不给剧情自动加分。
+    # The hint disappears when the threshold falls within the normal-intensity budget; diagnostics compute possible intervals without automatically awarding story points.
     story = numeric_v2_story()
     story["nodes"][0]["recommended_turns"] = 12
     for route in story["nodes"][0]["route_gates"]:
@@ -302,7 +302,7 @@ def test_normal_budget_does_not_warn_when_branch_is_within_normal_range():
 
 
 def test_normal_budget_accumulates_upstream_but_never_future_turns():
-    # 两幕各三轮共可增加12点；不能只算入口幕，也不能把结局后的回合借给入口。
+    # Three rounds in each of two acts can add 12 points total; count more than the entry act, but never borrow post-ending rounds for entry.
     story = numeric_v2_story()
     start = story["nodes"][0]
     middle = deepcopy(start)
@@ -322,7 +322,7 @@ def test_normal_budget_accumulates_upstream_but_never_future_turns():
 
 
 def test_two_point_estimate_does_not_follow_model_strength_mapping():
-    # 声明上限3仍允许每轮2点；预算不能因模型normal档位可能映射为1而擅自加倍。
+    # A declared cap of 3 still allows 2 points per round; do not arbitrarily double the budget because the model's normal tier might map to 1.
     story = numeric_v2_story()
     story["metric_schema"]["trust"]["per_turn_limit"] = {"increase": 3, "decrease": 3}
     story["nodes"][0]["recommended_turns"] = 12

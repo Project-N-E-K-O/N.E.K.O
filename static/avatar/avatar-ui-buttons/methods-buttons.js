@@ -246,6 +246,67 @@
     };
 })();
 
+// 「隐藏喵宇宙入口」：只收起角色旁按钮栏里的喵宇宙按钮，让按钮栏更简洁；社区功能本身不受影响。
+// 偏好由本模块独占一个 localStorage 键（与自动变猫等猫咪设置同一做法），
+// 不进 project_neko_settings，避免其他窗口带着旧值保存时把它覆盖回去。
+// 开关入口：设置弹窗「动画设置」最后一行，以及桌面端聚合设置页「通用 → 喵宇宙」
+// （经 NEKO-PC pet-preference-actions 调用 setHidden）。
+(function setupCommunityEntryVisibility() {
+    const STORAGE_KEY = 'neko.communityEntry.hidden';
+    const CHANGE_EVENT = 'neko-community-entry-visibility-changed';
+    let hidden = false;
+
+    try {
+        hidden = window.localStorage && window.localStorage.getItem(STORAGE_KEY) === 'true';
+    } catch (_) {
+        hidden = false;
+    }
+
+    function isHidden() {
+        return hidden === true;
+    }
+
+    function apply() {
+        document.querySelectorAll('[data-community-entry="true"]').forEach((wrapper) => {
+            wrapper.style.display = hidden ? 'none' : 'flex';
+        });
+    }
+
+    function update(next, { persist }) {
+        const changed = hidden !== next;
+        hidden = next;
+        if (persist) {
+            try {
+                if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, next ? 'true' : 'false');
+            } catch (_) {}
+        }
+        apply();
+        if (!changed) return;
+        try {
+            window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { hidden: next } }));
+        } catch (_) {}
+    }
+
+    function setHidden(next) {
+        update(next === true, { persist: true });
+        return isHidden();
+    }
+
+    // 其他窗口改了偏好时同步（storage 事件只在别的窗口写入时触发）。
+    window.addEventListener('storage', (event) => {
+        if (event.key !== STORAGE_KEY) return;
+        update(event.newValue === 'true', { persist: false });
+    });
+
+    window.nekoCommunityEntry = window.nekoCommunityEntry || {
+        STORAGE_KEY,
+        CHANGE_EVENT,
+        isHidden,
+        setHidden,
+        apply
+    };
+})();
+
 Object.assign(AvatarButtonMixin.methods, {
     buttons(ManagerPrototype, prefix, options) {
         ManagerPrototype.getDefaultButtonConfigs = function() {
@@ -330,6 +391,9 @@ Object.assign(AvatarButtonMixin.methods, {
             if (config.mobileOnly) {
                 btnWrapper.dataset.mobileOnly = 'true';
             }
+            if (config.id === 'social') {
+                btnWrapper.dataset.communityEntry = 'true';
+            }
             Object.assign(btnWrapper.style, {
                 position: 'relative',
                 display: 'flex',
@@ -341,6 +405,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 flex: '0 0 48px',
                 boxSizing: 'border-box'
             });
+            if (btnWrapper.dataset.communityEntry === 'true'
+                && window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden()) {
+                btnWrapper.style.display = 'none';
+            }
 
             const stopWrapperEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
@@ -501,6 +569,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 : window.innerWidth <= 768;
             buttonsContainer.querySelectorAll('[data-mobile-only="true"]').forEach((wrapper) => {
                 wrapper.style.display = isMobile ? 'flex' : 'none';
+            });
+            const communityHidden = !!(window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden());
+            buttonsContainer.querySelectorAll('[data-community-entry="true"]').forEach((wrapper) => {
+                wrapper.style.display = communityHidden ? 'none' : 'flex';
             });
         };
 

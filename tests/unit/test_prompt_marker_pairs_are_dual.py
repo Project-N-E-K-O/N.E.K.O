@@ -14,8 +14,8 @@
 
 """A `======...======` block must open and close in the same wording family.
 
-Project convention is below/above duality: `以下为X` closes with `以上为X`, never
-with `以上是X`, and an English `Below is X` never closes with a Chinese footer.
+# deliberately tests that drift, as the project convention requires below/above duality: `以下为X` closes with `以上为X`, never
+# with `以上是X`, and an English `Below is X` never closes with a Chinese footer.
 The drift is invisible in review because opener and closer sit dozens of lines
 apart inside one template, so it is checked mechanically instead.
 
@@ -27,8 +27,8 @@ pairing them would be a guess. Those are the `_INJECTION_*` header/footer dicts
 in prompts_proactive.py.
 
 Only the wording *family* is asserted, not the name after it. Several blocks
-deliberately re-word the closer (`以下为近期搭话记录（你应该避免雷同…）` closes with
-`以上为近期搭话记录（不可重复…）`, re-stating the constraint at both ends), so a
+# deliberately re-word the closer (`以下为近期搭话记录（你应该避免雷同…）` closes with
+# `以上为近期搭话记录（不可重复…）`, restating the constraint at both ends), so a
 name-equality assertion would fight the prompt design rather than catch drift.
 
 One closer is exempt: see `_WATERMARK_CLOSERS`.
@@ -79,7 +79,7 @@ _CLOSERS = sorted(
 #
 # The exemption is narrow: a foreign-language opener against such a closer is
 # accepted, but a *Chinese* opener is still checked, because there the two ends
-# do read as a pair and 以下是 against 以上为 is exactly the drift this module
+# The convention about pairs is: do read as a pair; the following "以下是" must match the preceding "以上为" exactly. This module
 # exists to catch. Script may differ (the zh-TW row opens Traditional against
 # the Simplified watermark); the wording may not.
 _CHINESE_OPENERS = frozenset({"以下为", "以下是", "以下為"})

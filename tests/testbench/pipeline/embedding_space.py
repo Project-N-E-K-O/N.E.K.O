@@ -1,6 +1,6 @@
 """P28.1 — read-only memory **embedding space** aggregator (single chokepoint).
 
-Builds the analysis payloads behind the "向量空间" sub-page of the 记忆系统分析
+Builds the analysis payloads behind the \"Vector Space\" sub-page of the Memory System Analysis
 workspace. Like :mod:`memory_lineage`, this is the **only** place the embedding
 analysis shape is assembled; the frontend renders the returned coordinates /
 scores verbatim and never re-derives them from raw vectors (blueprint §3.1).
@@ -20,7 +20,7 @@ What it does (all read-only, no model load):
 Honest gating (blueprint §2.4): a character whose memory has never been
 backfilled simply has 0 embedded entries — every endpoint returns a valid,
 empty-but-described payload (health counts) rather than an error. The UI turns
-that into a "import an already-embedded character" prompt.
+that into a \"import an already-embedded character\" prompt.
 
 Discipline: read only, soft errors (a bad file → warning + partial result),
 lazy-imports ``memory.embeddings`` pure helpers only (never the runtime
@@ -59,7 +59,7 @@ DUP_THRESHOLD_DEFAULT = 0.95   # cosine ≥ this ⇒ flagged as a near-duplicate
 DUP_MAX_PAIRS = 500            # cap the returned pair list (sorted by score desc)
 MATRIX_MAX_N = 80              # ⑤ heatmap only renders a subset this large
 
-#: P28.5 自动聚类 + 簇标签 (blueprint §11). Clustering runs on the **original
+#: P28.5 automatic clustering + cluster labels (blueprint §11). Clustering runs on the **original
 #: high-dim** primary vector space (cosine), never the 2D projection.
 CLUSTER_CC_THRESHOLD = 0.55    # numpy-fallback: cosine ≥ this links two points
 CLUSTER_MIN_SIZE_FLOOR = 2     # HDBSCAN min_cluster_size lower bound
@@ -441,7 +441,7 @@ def _tail(text: str, limit: int = 4000) -> str:
 
 
 def build_space_view(character: str, *, reducer: str = "pca") -> dict[str, Any]:
-    """``GET /api/memory/embedding/space`` — ②散点 + ①体检 合一.
+    """``GET /api/memory/embedding/space`` — combined ②scatter plot + ①health check.
 
     Returns 2D points for the primary vector space plus health meta. ``reducer``
     is ``pca`` (default, always available) or ``umap`` (P28.4, only when
@@ -535,7 +535,7 @@ def build_neighbors(character: str, node_id: str, *, k: int = 10) -> dict[str, A
 def build_bridges(
     character: str, *, top_k: int = 3, space: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """``GET /api/memory/embedding/bridges`` — ⑥语义源 vs 结构源 (P27 联动).
+    """``GET /api/memory/embedding/bridges`` — ⑥semantic vs structural sources (P27 integration).
 
     For each embedded reflection, compute its top-k semantically nearest
     **facts** (cosine) and compare against the declared ``source_fact_ids``.
@@ -623,7 +623,7 @@ def build_duplicates(
     character: str, *, threshold: float = DUP_THRESHOLD_DEFAULT,
     max_pairs: int = DUP_MAX_PAIRS, space: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """``GET /api/memory/embedding/duplicates`` — ④近重复对 (cosine ≥ 阈值).
+    """``GET /api/memory/embedding/duplicates`` — ④near-duplicate pairs (cosine ≥ threshold).
 
     Upper-triangle cosine over the primary vector space; returns every pair at
     or above ``threshold`` (sorted by score desc, capped at ``max_pairs``).
@@ -713,7 +713,7 @@ def _seriate(sub) -> list[int]:
 def build_matrix(
     character: str, *, ids: list[str] | None = None, max_n: int = MATRIX_MAX_N,
 ) -> dict[str, Any]:
-    """``GET /api/memory/embedding/matrix`` — ⑤相似度矩阵 (子集下钻).
+    """``GET /api/memory/embedding/matrix`` — ⑤similarity matrix (subset drilldown).
 
     Takes a subset of entry ids (defaults to the whole primary space), keeps the
     ones present & embedded in the primary vector space, caps at ``max_n``, and
@@ -763,7 +763,7 @@ def build_matrix(
     }
 
 
-# ── P28.5 自动聚类 + 簇标签 (blueprint §11) ──────────────────────────────
+# ── P28.5 automatic clustering + cluster labels (blueprint §11) ──────────────────────────────
 #
 # Cluster the **original high-dim** primary vector space (NOT the 2D projection,
 # which distorts distance). Vectors are L2-normalized so euclidean distance is
@@ -948,9 +948,9 @@ async def build_cluster_labels(session, character: str) -> dict[str, Any]:
 
     Recomputes :func:`build_clusters` server-side (trust the backend, not the
     client's view), hands every cluster's sample texts to the memory model in a
-    **single** call, and asks for a short 概括 per cluster. Reuses the P27
+    **single** call, and asks for a short summary per cluster. Reuses the P27
     ``memory.llm`` wire-stamp discipline. On any failure (LLM error / no model /
-    unparsable reply) it degrades to ``method="medoid"`` with the medoid labels —
+    unparsable reply) it degrades to ``method=\"medoid\"`` with the medoid labels —
     never raises, never 500s the click.
     """  # noqa: DOCSTRING_CJK
     # build_clusters() is sync HDBSCAN/numpy work; offload it so this async
@@ -1033,7 +1033,7 @@ async def build_cluster_labels(session, character: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — degrade, never 500 the click
         # Surface the *actionable* reason. A missing/blank memory-model config
         # raises MemoryOpError whose message already names what to fill (e.g.
-        # "请先在 Settings → Models → memory 填好 base_url 与 model。"); pass it
+        # 'Please fill base_url and model in Settings → Models → memory first.'); pass it
         # through verbatim so the UI can tell the tester exactly which API to set.
         reason = str(exc).strip() or type(exc).__name__
         warnings.append(f"LLM 概括失败, 已回退到每簇代表记忆作标签。原因: {reason}")

@@ -1,4 +1,4 @@
-"""验证 Numeric v2 HTTP 纵向链路和失败不提交边界。"""  # noqa: DOCSTRING_CJK
+"""Verify the Numeric v2 HTTP vertical flow and no-commit-on-failure boundary."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ from utils.llm_client.messages import _normalize_messages
 
 
 def test_numeric_v2_router_idle_request_locks_are_reclaimed():
-    """请求锁只覆盖并发执行窗口，完成后不能随幂等请求 ID 无限增长。"""  # noqa: DOCSTRING_CJK
+    """Request locks cover only concurrent execution and cannot grow indefinitely with completed idempotency IDs."""  # noqa: DOCSTRING_CJK
 
     request_id = "router_lock_reclaim_test"
     lock = numeric_theater_router._request_lock(
@@ -57,14 +57,14 @@ def test_numeric_v2_router_idle_request_locks_are_reclaimed():
         request_id,
     ) is lock
 
-    # 调用方不再持有锁时，弱引用表应自行删除空闲请求条目。
+    # Weak-reference tables remove idle request entries after callers release references.
     del lock
     gc.collect()
     assert request_id not in numeric_theater_router._speak_request_locks
 
 
 def test_numeric_v2_public_performance_hides_route_identifiers():
-    """公开演绎只保留展示内容，内部节点和路线标识不能送到浏览器。"""  # noqa: DOCSTRING_CJK
+    """Public performances retain only display content; internal node/route identifiers must not reach browsers."""  # noqa: DOCSTRING_CJK
 
     projected = numeric_theater_router._public_performance({
         "from_node_id": "start",
@@ -133,7 +133,7 @@ def test_numeric_v2_turn_payload_keeps_runtime_projections_server_side(tmp_path,
 
 
 def test_llm_role_dict_normalization_strips_internal_metadata():
-    """角色字典发送到模型供应商前必须剥离 N.E.K.O 内部元数据。"""  # noqa: DOCSTRING_CJK
+    """Strip N.E.K.O internal metadata from character dictionaries before sending to model providers."""  # noqa: DOCSTRING_CJK
     normalized = _normalize_messages([{
         "role": "user",
         "content": "继续。",
@@ -145,7 +145,7 @@ def test_llm_role_dict_normalization_strips_internal_metadata():
 
 @pytest.mark.asyncio
 async def test_numeric_v2_router_uses_cloudsave_write_fence(tmp_path, monkeypatch):
-    """剧场写操作必须在云存档维护态命中共享写栅栏。"""  # noqa: DOCSTRING_CJK
+    """Theater writes must hit the shared write fence during cloud-save maintenance."""  # noqa: DOCSTRING_CJK
     calls = []
 
     def _blocked(_config_manager, *, operation: str, target: str):
@@ -168,7 +168,7 @@ async def test_numeric_v2_router_uses_cloudsave_write_fence(tmp_path, monkeypatc
 
 
 def test_numeric_v2_story_import_holds_story_lifecycle_lock(tmp_path, monkeypatch):
-    """独占写入剧本包时必须与同 ID 删除事务串行。"""  # noqa: DOCSTRING_CJK
+    """Exclusive story-package writes must serialize with same-ID deletion transactions."""  # noqa: DOCSTRING_CJK
 
     story_guard_depth = {"value": 0}
     import_lock_states = []
@@ -214,7 +214,7 @@ def test_numeric_v2_story_import_holds_story_lifecycle_lock(tmp_path, monkeypatc
 
 
 def test_numeric_v2_story_import_requires_v22_upgrade(tmp_path, monkeypatch):
-    """导入只接受 v2.2；旧包不会再通过查询参数或原合同绕过门禁。"""  # noqa: DOCSTRING_CJK
+    """Import accepts only v2.2; query parameters and old contracts cannot bypass legacy-package gates."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     legacy = numeric_v2_story()
@@ -280,11 +280,11 @@ def test_numeric_v2_story_import_rejects_oversized_package(tmp_path, monkeypatch
 
 
 def test_numeric_v2_story_list_reuses_compiled_summary_intro():
-    """列表投影只能消费注册表已经编译的摘要，不能为显示简介再次加载整包。"""  # noqa: DOCSTRING_CJK
+    """List projection consumes compiled registry summaries, without reloading entire packages for descriptions."""  # noqa: DOCSTRING_CJK
 
     class _SummaryOnlyRegistry:
         def list_packages(self):
-            # 故意不提供 load_engine；若列表实现退回二次加载，本测试会直接失败。
+            # Deliberately omit load_engine; reverting list rendering to a second load immediately fails this test.
             return [{
                 "story_id": "summary_only_story",
                 "title": "摘要剧本",
@@ -321,7 +321,7 @@ class _ConfigManager:
         }
 
     def load_root_state(self) -> dict:
-        # 路由测试默认处于可写态；维护态行为由云存档栅栏测试单独覆盖。
+        # Route tests default writable; cloud-save fence tests separately cover maintenance mode.
         return {"mode": "normal"}
 
 
@@ -397,7 +397,7 @@ def _client(
                 and isinstance(payload, dict)
                 and "character_id" not in payload
             ):
-                # 路由回归默认模拟新版选剧页；需要测试旧/错角色令牌时由用例显式传入。
+                # Route regressions simulate the new story-selection page by default; cases explicitly provide stale/wrong-character tokens.
                 payload = dict(payload)
                 payload["character_id"] = numeric_theater_router._current_catgirl_binding(
                     manager
@@ -1407,7 +1407,7 @@ def test_numeric_v2_confirmed_body_violation_cannot_be_erased_by_later_review_dr
         unsafe_body = "三架侦察机" in text
         suggestions = candidate.get("suggested_inputs") or []
         if unsafe_body and not suggestions:
-            # 模拟真实 Qwen 在下一次纯正文复核中漂移成安全；新协议不应再调用到这里。
+            # Simulate Qwen drifting to safe on another body-only review; the new protocol must never call here.
             unsafe_body_only_reviews += 1
             return NumericV2TransitionOfferReview(
                 offer_present=False,
@@ -1527,7 +1527,7 @@ def test_numeric_v2_played_transition_is_rewritten_once(
     tmp_path,
     monkeypatch,
 ):
-    """Judge 确认已经抵达时须走唯一一次 Actor 改写。"""  # noqa: DOCSTRING_CJK
+    """Judge-confirmed arrival must take the single Actor rewrite."""  # noqa: DOCSTRING_CJK
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -1605,7 +1605,7 @@ def test_numeric_v2_mixed_route_offer_is_rewritten_once(
     monkeypatch,
     failure_reason,
 ):
-    """Judge 拒绝多方向提议后应改写一次，不能锁存错误选择。"""  # noqa: DOCSTRING_CJK
+    """After Judge rejects multi-direction proposals, rewrite once instead of latching invalid choices."""  # noqa: DOCSTRING_CJK
 
     actor_calls = 0
     client = _client(tmp_path, monkeypatch)
@@ -1759,7 +1759,7 @@ def test_numeric_v2_filters_only_unsafe_suggestions_after_body_retry(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
     assert review_calls == 3
     assert submitted.json()["performance"]["performance"] == "（收好照片）目前只能确认这是一处模糊痕迹。"
     assert submitted.json()["performance"]["suggested_inputs"] == []
@@ -1800,7 +1800,7 @@ def test_numeric_v2_body_violation_with_unsafe_suggestion_requires_rewrite(
         candidate = kwargs["actor_performance"]
         unsafe_body = candidate["performance"] == unsafe_performance
         if review_calls == 1:
-            # 正文证据与推荐索引分开报告；删除推荐不能解除正文的修稿要求。
+            # Report body evidence separately from recommendation indices; deleting recommendations cannot remove body rewrite requirements.
             return NumericV2TransitionOfferReview(
                 offer_present=False,
                 valid=False,
@@ -1809,7 +1809,7 @@ def test_numeric_v2_body_violation_with_unsafe_suggestion_requires_rewrite(
                 body_violations=("player_action", "author_boundary"),
             )
         if unsafe_body and not candidate.get("suggested_inputs"):
-            # 模拟再次只看正文时随机改判安全；该调用不应发生。
+            # Simulate random safe reclassification on another body-only check; this call must never occur.
             unsafe_body_only_reviews += 1
             unsafe_body = False
         return NumericV2TransitionOfferReview(
@@ -1845,7 +1845,7 @@ def test_numeric_v2_body_violation_with_unsafe_suggestion_requires_rewrite(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
     assert review_calls == 3
     assert unsafe_body_only_reviews == 0
     assert submitted.json()["performance"]["performance"] == safe_performance
@@ -1901,7 +1901,7 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
             assert candidate["scene_narration"] == unsafe_update
         unsafe = candidate["performance"] == unsafe_performance
         if unsafe and not candidate.get("suggested_inputs"):
-            # 模拟对原文再次做纯正文复核时随机放行；新链路禁止走到这里。
+            # Simulate random approval on another body-only review of the original; the new chain must never reach it.
             unsafe_body_only_reviews += 1
             unsafe = False
         if unsafe and remaining_violation and actor_calls == 1:
@@ -1960,7 +1960,7 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
         )
 
     assert actor_calls == 2
-    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
     assert review_calls == 3
     assert unsafe_body_only_reviews == 0
     if remaining_violation == "scene_boundary":
@@ -1972,7 +1972,7 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
         assert session_path.read_bytes() != before_bytes
         saved = json.loads(session_path.read_text(encoding="utf-8"))["session"]["performance_history"][-1]
         assert saved["performance"] == submitted.json()["performance"]["performance"]
-        # 末稿正文仍按兜底提交，但复核无效的新邀请不能进入可接受状态。
+        # Final-draft body still commits via fallback, but an invalidly reviewed new invitation cannot become acceptable.
         assert saved["transition_offered"] is False
     else:
         assert submitted.status_code == 200
@@ -2096,7 +2096,7 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
         review_calls += 1
         candidate = kwargs["actor_performance"]
         assert candidate["performance"] == performance
-        # 仅未来推荐中按快门不是已发生事实；违规来自场景更新的成片结果。
+        # Pressing a shutter in future recommendations is not an occurred fact; violations come from completed scene-update results.
         unsafe = bool(candidate.get("scene_narration"))
         return NumericV2TransitionOfferReview(
             offer_present=False,
@@ -2133,7 +2133,7 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
             },
         )
     assert actor_calls == 2
-    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
     assert review_calls == 3
     after = json.loads(session_path.read_bytes())
     assert submitted.status_code == 200
@@ -2197,7 +2197,7 @@ def test_numeric_v2_unsafe_button_does_not_override_body_offer_validity(
     async def review(*args, **kwargs):
         nonlocal review_calls
         review_calls += 1
-        # 复查不改变首稿的无效邀请；只有真实改写后才返回安全。
+        # Rechecking does not change the initial draft's invalid invitation; only an actual rewrite returns safe.
         if actor_calls == 2:
             return NumericV2TransitionOfferReview(
                 offer_present=False,
@@ -2451,7 +2451,7 @@ def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
         nonlocal review_calls
         review_calls += 1
         candidate = kwargs["actor_performance"]
-        # 首稿复查保持原旁白；不能先删掉违规字段再要求放行。
+        # Initial-draft recheck retains original narration; do not delete violating fields before requesting approval.
         assert review_calls == (actor_calls + 1 if review_calls > 1 else 1)
         if actor_calls == 1:
             assert candidate["scene_narration"] == "时间已经推进到第二天清晨。"
@@ -2489,7 +2489,7 @@ def test_numeric_v2_premature_scene_update_requires_the_single_actor_rewrite(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
     assert review_calls == 3
     assert submitted.json()["performance"]["performance"].startswith("（把毛毯递给你）")
     assert "scene_narration" not in submitted.json()["performance"]
@@ -2567,7 +2567,7 @@ def test_numeric_v2_rewrites_fact_boundary_without_structured_field_scope(
 
     assert submitted.status_code == 200
     assert actor_calls == 2
-    # 首稿快速与争议复查各一次，改写稿仅快速复核一次。
+    # Initial draft gets one fast check and one disputed recheck; rewritten draft gets only one fast check.
     assert review_calls == 3
     assert "scene_narration" not in submitted.json()["performance"]
     assert "只能确认外面仍有不明嗡鸣" in submitted.json()["performance"]["performance"]
@@ -2596,7 +2596,7 @@ def test_numeric_v2_router_passes_budget_profile_to_opening(tmp_path, monkeypatc
 
     async def opening(_self, *, engine, actor_budget_profile, allow_suggestion_fill=True):
         captured["profile"] = actor_budget_profile
-        # 补推荐模块开关随开场调用下发；本用例只核对档位透传，因此不记入 captured。
+        # Pass recommendation-module switches with opening calls; this test checks tier forwarding only, excluding them from captured.
         return _performance("按精简档生成的开场。", opening=True)
 
     monkeypatch.setattr(
@@ -2621,7 +2621,7 @@ def test_numeric_v2_router_passes_budget_profile_to_opening(tmp_path, monkeypatc
 
 
 def test_numeric_v2_router_removed_legacy_evidence_migration_endpoint(tmp_path, monkeypatch):
-    """旧证据迁移接口不再存在，旧 Session 不通过 HTTP 迁移回运行时。"""  # noqa: DOCSTRING_CJK
+    """Legacy evidence-migration endpoints no longer exist; old Sessions cannot migrate into runtime through HTTP."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     with client:
@@ -2629,7 +2629,7 @@ def test_numeric_v2_router_removed_legacy_evidence_migration_endpoint(tmp_path, 
             "/api/theater-numeric/session/migrate-evidence",
             json={"story_id": "numeric_v2_contract", "session_id": "legacy"},
         )
-    # 路径已不再注册 POST；FastAPI 对未知方法返回 405，等价于接口删除。
+    # POST is no longer registered; FastAPI returns 405 for unknown methods, equivalent to endpoint removal.
     assert response.status_code == 405
 
 
@@ -2751,7 +2751,7 @@ def test_numeric_v2_router_starts_restores_and_submits_free_input(tmp_path, monk
         )
         result = submitted.json()
         assert submitted.status_code == 200
-        # 新状态机不再以 min_turns 阻断普通演绎；没有可见转场提议时保持 playing。
+        # The new state machine no longer blocks ordinary performance using min_turns; stay playing without visible transition proposals.
         # route_status ("conditions_blocked" etc.) would reveal hidden route gating.
         assert result["resolved_turn"] == {"route_changed": False}
         assert result["session"]["performance_history"][0]["input_text"] == "我先听你说。"
@@ -2848,7 +2848,7 @@ def test_forget_prepared_during_generation_blocks_the_commit(tmp_path, monkeypat
 
 
 def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
-    """主动退出只离开演绎界面，继续时必须恢复原 Session、revision 和历史。"""  # noqa: DOCSTRING_CJK
+    """Voluntary exit leaves only the performance UI; continuation restores the same Session, revision, and history."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     with client:
@@ -2915,7 +2915,7 @@ def test_numeric_v2_user_exit_can_resume_same_session(tmp_path, monkeypatch):
 
 
 def test_numeric_v2_can_end_session_after_story_package_upgrade(tmp_path, monkeypatch):
-    """剧本更新后旧 Session 不可继续，但仍必须能够原子结束。"""  # noqa: DOCSTRING_CJK
+    """Old Sessions cannot continue after story updates, but must still end atomically."""  # noqa: DOCSTRING_CJK
 
     from types import SimpleNamespace
     async def cache(*args, **kwargs):
@@ -2995,7 +2995,7 @@ def test_numeric_v2_resume_rechecks_catgirl_inside_lifecycle_locks(
     tmp_path,
     monkeypatch,
 ):
-    """恢复前的角色复验必须与 Session 状态变更处于同一锁区间。"""  # noqa: DOCSTRING_CJK
+    """Character revalidation before recovery shares a lock interval with Session state changes."""  # noqa: DOCSTRING_CJK
 
     class _MutableConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -3078,7 +3078,7 @@ def test_numeric_v2_end_rechecks_catgirl_inside_lifecycle_locks(
     tmp_path,
     monkeypatch,
 ):
-    """结束 Session 的角色复验、状态提交和回执创建必须处于同一双锁区间。"""  # noqa: DOCSTRING_CJK
+    """Ending character revalidation, state commit, and receipt creation share one dual-lock interval."""  # noqa: DOCSTRING_CJK
 
     story_guard_depth = {"value": 0}
     check_states = []
@@ -3147,7 +3147,7 @@ def test_numeric_v2_end_rechecks_catgirl_inside_lifecycle_locks(
 
 
 def test_numeric_v2_ended_retries_rebuild_missing_receipt(tmp_path, monkeypatch):
-    """结束状态已提交后，结束重试和回合幂等重放都应补建缺失回执。"""  # noqa: DOCSTRING_CJK
+    """After end-state commit, ending retries and idempotent turn replays both recreate missing receipts."""  # noqa: DOCSTRING_CJK
 
     story_guard_depth = {"value": 0}
     receipt_lock_states = []
@@ -3249,7 +3249,7 @@ def test_numeric_v2_restore_creates_receipts_inside_lifecycle_locks(
     tmp_path,
     monkeypatch,
 ):
-    """两个恢复入口补建结束回执时都必须持有角色锁和故事锁。"""  # noqa: DOCSTRING_CJK
+    """Both recovery entry points hold character/story locks while recreating ending receipts."""  # noqa: DOCSTRING_CJK
 
     story_guard_depth = {"value": 0}
     receipt_lock_states = []
@@ -3329,7 +3329,7 @@ def test_numeric_v2_session_restore_rejects_cross_story_session_id(
     tmp_path,
     monkeypatch,
 ):
-    """指定 Session 恢复入口不能用另一个剧本的 Runtime 投影节点。"""  # noqa: DOCSTRING_CJK
+    """Specified-Session recovery cannot project nodes through another story's Runtime."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     other_story = numeric_v2_story()
@@ -3358,7 +3358,7 @@ def test_numeric_v2_session_restore_rejects_cross_story_session_id(
 
 
 def test_numeric_v2_archive_skip_holds_lifecycle_locks(tmp_path, monkeypatch):
-    """跳过归档的校验与提交必须位于角色和剧本生命周期锁内。"""  # noqa: DOCSTRING_CJK
+    """Skip-archive validation and commit stay inside character/story lifecycle locks."""  # noqa: DOCSTRING_CJK
 
     story_guard_active = {"value": False}
     observed = {}
@@ -3682,7 +3682,7 @@ def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_ses
             / "packages"
             / "numeric_v2_contract.json"
         )
-        # 损坏包会从列表隐藏，但删除恢复入口仍须绕过 Engine 编译并完成原子级联。
+        # Corrupt packages disappear from lists, but recovery deletion must bypass Engine compilation and cascade atomically.
         package_path.write_text("{invalid-json", encoding="utf-8")
         assert client.get("/api/theater-numeric/stories").json()["stories"] == []
 
@@ -3926,7 +3926,7 @@ def test_numeric_v2_start_rejects_selector_character_after_switch(
     tmp_path,
     monkeypatch,
 ):
-    """选剧页属于旧角色时，开始请求不能为新当前角色创建或替换 Session。"""  # noqa: DOCSTRING_CJK
+    """An old-character selection page cannot create/replace a Session for the new current character."""  # noqa: DOCSTRING_CJK
 
     class _MutableConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -3977,7 +3977,7 @@ def test_numeric_v2_start_rejects_selector_character_after_switch(
 
 
 def test_numeric_v2_router_rechecks_package_after_opening(tmp_path, monkeypatch):
-    """开场生成期间剧本被删除后，迟到结果不能重建孤儿 Session。"""  # noqa: DOCSTRING_CJK
+    """If stories are deleted during opening generation, late results cannot recreate orphan Sessions."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     package_path = (
@@ -4010,7 +4010,7 @@ def test_numeric_v2_router_rechecks_package_after_opening(tmp_path, monkeypatch)
 
 
 def test_numeric_v2_router_locks_final_session_creation_only(tmp_path, monkeypatch):
-    """开场生成不长占锁，最终复验与 Session 创建必须同时持有两层生命周期锁。"""  # noqa: DOCSTRING_CJK
+    """Opening generation does not hold locks long; final revalidation and Session creation hold both lifecycle locks."""  # noqa: DOCSTRING_CJK
 
     story_guard_depth = {"value": 0}
     actor_lock_states = []
@@ -4254,7 +4254,7 @@ def test_numeric_v2_restart_stays_successful_when_old_receipt_cleanup_fails(
     monkeypatch,
     cleanup_error,
 ):
-    """新 Session 提交后的旧回执清理失败不能反转成功结果。"""  # noqa: DOCSTRING_CJK
+    """Failed old-receipt cleanup after new Session commit cannot reverse success."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     with client:
@@ -4567,7 +4567,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
             },
         )
         archive_store = NumericV2ArchiveStore(tmp_path / "theater")
-        # 模拟进程在 written 回执落盘后、Session 水位指针写入前中断。
+        # Simulate interruption after persisting the written receipt but before writing the Session watermark pointer.
         archive_store._write(
             archive_store._session_path("archive_session"),
             {
@@ -4644,7 +4644,7 @@ def test_numeric_end_receipt_archives_public_performance_once(tmp_path, monkeypa
     assert "suggested_inputs" not in memory_text
     assert "mainline_" not in memory_text
 
-    # 单集胶囊经过统一消息转换后仍是 system，且内部来源元数据不丢失。
+    # Episode capsules remain system messages after shared conversion, preserving internal provenance metadata.
     persisted_messages = messages_to_dict(convert_to_messages(memory_messages))
     assert [message["type"] for message in persisted_messages] == ["system"]
     assert all(
@@ -4668,7 +4668,7 @@ def test_numeric_archive_written_retry_respects_cloudsave_write_fence(
     tmp_path,
     monkeypatch,
 ):
-    """维护态不得借 written 回执重试隐式修复 Session 归档水位。"""  # noqa: DOCSTRING_CJK
+    """Maintenance mode cannot implicitly repair Session archive watermarks through written-receipt retries."""  # noqa: DOCSTRING_CJK
 
     client = _client(tmp_path, monkeypatch)
     with client:
@@ -4699,7 +4699,7 @@ def test_numeric_archive_written_retry_respects_cloudsave_write_fence(
             archive_request_id=ended["archive_request_id"],
         )
         session_pointer_path = archive_store._session_path("archive_fence_replay")
-        # 模拟 written 回执已落盘但 Session 水位尚未提交的进程中断窗口。
+        # Simulate interruption between persisting a written receipt and committing the Session watermark.
         archive_store._write(
             session_pointer_path,
             {
@@ -4740,7 +4740,7 @@ def test_numeric_archive_written_retry_respects_cloudsave_write_fence(
 
 
 def test_numeric_story_memory_can_be_pinned_and_forgotten(tmp_path, monkeypatch):
-    """显式忘记应清理热记忆、冷档案与旧回执，但保留 Session。"""  # noqa: DOCSTRING_CJK
+    """Explicit forgetting clears hot memories, cold archives, and old receipts, retaining the Session."""  # noqa: DOCSTRING_CJK
 
     captured = {"forgotten": False}
     pin_lock_states = []
@@ -4871,7 +4871,7 @@ def test_numeric_story_memory_forget_aborts_before_partial_delete_on_receipt_rea
     monkeypatch,
     read_failure,
 ):
-    """回执无法读取或解析时必须在删除记忆摘要前中止遗忘。"""  # noqa: DOCSTRING_CJK
+    """Unreadable/unparseable receipts abort forgetting before memory-digest deletion."""  # noqa: DOCSTRING_CJK
 
     memory_calls = []
 
@@ -4937,7 +4937,7 @@ def test_numeric_story_memory_can_be_forgotten_after_package_deletion(
     tmp_path,
     monkeypatch,
 ):
-    """剧本包删除后仍应按稳定 story_id 清理残留记忆。"""  # noqa: DOCSTRING_CJK
+    """After package deletion, stable story_id still clears residual memories."""  # noqa: DOCSTRING_CJK
 
     captured = {}
 
@@ -4997,7 +4997,7 @@ def test_numeric_story_memory_forget_rejects_switched_character(
     tmp_path,
     monkeypatch,
 ):
-    """确认弹窗属于旧角色时，服务端不能删除新当前角色的记忆。"""  # noqa: DOCSTRING_CJK
+    """Old-character confirmation dialogs cannot delete the new current character's memories."""  # noqa: DOCSTRING_CJK
 
     class _MutableConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -5041,7 +5041,7 @@ def test_numeric_story_memory_forget_rejects_switched_character(
 
 
 def test_numeric_memory_projection_builds_one_compact_episode_summary():
-    """完整换场留在 Session；日常记忆只接收一条有序单集摘要。"""  # noqa: DOCSTRING_CJK
+    """Full performances remain in Session; daily memory receives one ordered episode summary."""  # noqa: DOCSTRING_CJK
 
     session = SimpleNamespace(
         story_package_id="numeric_v2_contract",
@@ -5105,7 +5105,7 @@ def test_numeric_memory_projection_builds_one_compact_episode_summary():
 
 
 def test_sql_history_serialization_preserves_theater_and_allowed_runtime_metadata():
-    """剧场元数据与运行时白名单字段必须能在同一条时间索引消息中共存。"""  # noqa: DOCSTRING_CJK
+    """Theater metadata and allowlisted runtime fields coexist in one time-indexed message."""  # noqa: DOCSTRING_CJK
 
     history = SQLChatMessageHistory.__new__(SQLChatMessageHistory)
     serialized = json.loads(history._serialize(HumanMessage(
@@ -5159,7 +5159,7 @@ def test_numeric_archive_retries_transient_windows_permission_error(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_numeric_end_receipt_concurrent_creation_converges(tmp_path):
-    """同一结束事实的并发读取必须得到同一个回执和归档请求 ID。"""  # noqa: DOCSTRING_CJK
+    """Concurrent reads of one ending fact obtain the same receipt and archive request ID."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     session = SimpleNamespace(
@@ -5180,7 +5180,7 @@ async def test_numeric_end_receipt_concurrent_creation_converges(tmp_path):
     assert len({item["archive_request_id"] for item in receipts}) == 1
     assert receipts[0]["archive_request_id"].startswith("theater_archive_")
 
-    # 同一 Session 继续演绎并产生新 revision 后再次退出，必须生成新的记忆回执。
+    # Continuing a Session produces a new revision; exiting again must create a new memory receipt.
     later_session = SimpleNamespace(
         story_package_id=session.story_package_id,
         session_id=session.session_id,
@@ -5193,7 +5193,7 @@ async def test_numeric_end_receipt_concurrent_creation_converges(tmp_path):
 
 
 def test_numeric_archive_receipt_advances_incremental_watermark_after_success(tmp_path):
-    """继续演绎再次退出时，只归档上次成功写入之后的新公开回合。"""  # noqa: DOCSTRING_CJK
+    """Exiting after continuation archives only new public turns since the last successful write."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     binding = {
@@ -5226,7 +5226,7 @@ def test_numeric_archive_receipt_advances_incremental_watermark_after_success(tm
 
 
 def test_numeric_archive_forget_watermark_excludes_previous_transcript(tmp_path):
-    """继续旧 Session 后归档时，只能写入显式遗忘之后的新回合。"""  # noqa: DOCSTRING_CJK
+    """Archiving a continued old Session writes only turns after explicit forgetting."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     session = SimpleNamespace(
@@ -5271,7 +5271,7 @@ def test_numeric_archive_forget_watermark_excludes_previous_transcript(tmp_path)
 
 
 def test_numeric_archive_receipt_repairs_watermark_before_next_revision(tmp_path):
-    """没有发生接口重试时，下一次退出也必须先从 written 回执修复水位。"""  # noqa: DOCSTRING_CJK
+    """Even without endpoint retries, the next exit repairs watermarks from written receipts first."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     binding = {
@@ -5286,7 +5286,7 @@ def test_numeric_archive_receipt_repairs_watermark_before_next_revision(tmp_path
     )
     first_receipt = store.create_or_get(first_session)
     interrupted_written = {**first_receipt, "status": "written"}
-    # 只写回执，不写 Session 指针，精确模拟两次原子写之间掉电。
+    # Write the receipt without the Session pointer, simulating power loss between atomic writes.
     store._write(
         store._receipt_path(first_receipt["receipt_id"]),
         interrupted_written,
@@ -5304,7 +5304,7 @@ def test_numeric_archive_receipt_repairs_watermark_before_next_revision(tmp_path
 
 
 def test_numeric_receipt_gc_preserves_legacy_written_receipt_until_cold_archive_exists(tmp_path):
-    """升级前已写入记忆但未生成冷档案的回执不能被 GC 提前销毁。"""  # noqa: DOCSTRING_CJK
+    """GC cannot prematurely destroy pre-upgrade receipts written to memory but not cold archives."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     binding = {
@@ -5339,7 +5339,7 @@ def test_numeric_receipt_gc_aborts_on_transient_receipt_read_failure(
     tmp_path,
     monkeypatch,
 ):
-    """回执暂时不可读时必须中止 GC，不能删除其指针或兼容证据。"""  # noqa: DOCSTRING_CJK
+    """Temporarily unreadable receipts abort GC, preserving pointers and compatibility evidence."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     session = SimpleNamespace(
@@ -5375,7 +5375,7 @@ def test_numeric_receipt_gc_aborts_on_transient_receipt_read_failure(
 
 
 def test_numeric_public_archives_keep_latest_five_plus_pinned(tmp_path):
-    """冷档案默认有界，用户收藏的旧周目不参与自动淘汰。"""  # noqa: DOCSTRING_CJK
+    """Cold archives are bounded by default; user-favorited old playthroughs bypass automatic eviction."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
 
@@ -5433,7 +5433,7 @@ def test_numeric_public_archives_keep_latest_five_plus_pinned(tmp_path):
 
 
 def test_numeric_public_archive_stage_can_commit_or_discard(tmp_path):
-    """记忆请求失败时只留待提交副本，用户改选不记录后必须可销毁。"""  # noqa: DOCSTRING_CJK
+    """Memory-request failures retain only pending copies, destroyable if users choose no recording afterward."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     session = SimpleNamespace(
@@ -5473,7 +5473,7 @@ def test_numeric_public_archive_stage_can_commit_or_discard(tmp_path):
 
 
 def test_numeric_public_archive_detail_rejects_other_character(tmp_path):
-    """完整演绎详情不能因知道 Session ID 而跨角色读取。"""  # noqa: DOCSTRING_CJK
+    """Knowing a Session ID cannot grant cross-character access to full performance details."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
     session = SimpleNamespace(
@@ -5503,7 +5503,7 @@ def test_numeric_public_archive_detail_rejects_other_character(tmp_path):
 
 
 def test_numeric_receipt_gc_keeps_only_active_session_pointer(tmp_path):
-    """冷启动回执 GC 只保留仍可恢复 Session 的最新指针。"""  # noqa: DOCSTRING_CJK
+    """Cold-start receipt GC retains only latest pointers for still-recoverable Sessions."""  # noqa: DOCSTRING_CJK
 
     store = NumericV2ArchiveStore(tmp_path)
 
@@ -5529,7 +5529,7 @@ def test_numeric_receipt_gc_keeps_only_active_session_pointer(tmp_path):
 
 
 def test_numeric_session_survives_current_catgirl_rename(tmp_path, monkeypatch):
-    """角色改名只改变展示名称，不能让相同 character_id 的进度失效。"""  # noqa: DOCSTRING_CJK
+    """Character renaming changes display names only, preserving progress for the same character_id."""  # noqa: DOCSTRING_CJK
 
     class _RenamableConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -5579,7 +5579,7 @@ def test_numeric_session_survives_current_catgirl_rename(tmp_path, monkeypatch):
 
 
 def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monkeypatch):
-    """模型等待期间的同角色改名必须随本轮提交保留，不能被旧候选状态覆盖。"""  # noqa: DOCSTRING_CJK
+    """Same-character renaming during model waits survives this turn's commit, never overwritten by stale candidates."""  # noqa: DOCSTRING_CJK
 
     class _RenamableConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -5656,7 +5656,7 @@ def test_numeric_turn_preserves_catgirl_rename_during_model_wait(tmp_path, monke
 
 
 def test_numeric_turn_rejects_profile_edit_during_actor_wait(tmp_path, monkeypatch):
-    """Actor 使用旧人格生成时，同名角色的新资料不能被错误标记为本轮版本。"""  # noqa: DOCSTRING_CJK
+    """Actor generation with an old persona cannot mislabel newer same-name character data as this turn's version."""  # noqa: DOCSTRING_CJK
 
     class _EditableConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -5718,7 +5718,7 @@ def test_numeric_turn_preserves_player_address_fact_during_model_wait(
     tmp_path,
     monkeypatch,
 ):
-    """本轮称呼事实生成后即被冻结，配置并发变化不能破坏 Ledger 重放。"""  # noqa: DOCSTRING_CJK
+    """This turn's address facts freeze after generation; concurrent config changes cannot break Ledger replay."""  # noqa: DOCSTRING_CJK
 
     class _MutableAddressConfigManager(_ConfigManager):
         def __init__(self, root: Path):
@@ -5809,7 +5809,7 @@ def test_numeric_v2_review_fallback_replay_and_next_turn_keep_same_history(tmp_p
 
     async def review(*args, **kwargs):
         calls["review"] += 1
-        # 精确模拟第一回合持续误拦；第二回合正常，避免把概率采样冒充流程覆盖。
+        # Precisely simulate persistent false rejection in turn one and normal turn two, never substituting random samples for flow coverage.
         bad = kwargs["message"] == "我把毛巾递给你。"
         return NumericV2TransitionOfferReview(False, False, ("author_boundary",) if bad else (), (),
                                              "待修正的语义问题。" if bad else "")

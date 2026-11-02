@@ -41,7 +41,7 @@ def _is_mimo_token_plan_url(url: str) -> bool:
         parts = urllib.parse.urlsplit((url or "").strip())
     except ValueError:
         return False
-    # Token Plan 的 Key 不能走明文：主机名对上但不是 https 的地址同样拒绝。
+    # Token Plan keys must not be sent in plaintext: reject matching hostnames when the URL is not HTTPS as well.
     return parts.scheme.lower() == "https" and (parts.hostname or "").lower() in _MIMO_TOKEN_PLAN_HOSTS
 
 
@@ -157,7 +157,7 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
         status = e.status_code
         if status in (401, 403):
             return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
-        # 免费版 API：400 = 服务可达，Key 未被拒绝
+        # Free-tier API: 400 means the service is reachable and the key was not rejected.
         if is_free and status == 400:
             return {"success": True}
         return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
@@ -356,8 +356,8 @@ async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
     """
     import websockets
 
-    # 兼容旧版 websockets：<12 用 extra_headers，>=12 用 additional_headers
-    # 与 vllm_omni_tts_worker._connect_and_config 保持一致 (#1764 review 第六轮+)
+    # Backward compatibility with older websockets: <12 uses extra_headers; >=12 uses additional_headers.
+    # Keep in sync with vllm_omni_tts_worker._connect_and_config (#1764, sixth review round+).
     ws_kwargs = {"open_timeout": 10, "close_timeout": 5}
     if api_key:
         ws_kwargs["additional_headers"] = {"Authorization": f"Bearer {api_key}"}
@@ -366,7 +366,7 @@ async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
         async with asyncio.timeout(10):
             try:
                 async with websockets.connect(url, **ws_kwargs) as ws:
-                    _ = ws  # 防止未使用告警
+                    _ = ws  # Prevent an unused-variable warning.
                     return {"success": True}
             except TypeError:
                 if "additional_headers" in ws_kwargs:
@@ -387,7 +387,7 @@ async def _test_vllm_omni_ws_handshake(url: str, api_key: str) -> dict:
             return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
     except Exception as e:
-        # websockets 15.0.1: 401/403 走 e.response.status_code；与 _test_websocket 对齐。
+        # websockets 15.0.1: 401/403 uses e.response.status_code; align with _test_websocket.
         status_code = getattr(e, "status_code", None)
         if status_code is None:
             _resp = getattr(e, "response", None)
@@ -628,14 +628,14 @@ def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: s
         return provider_key_value
     if provider_key == core_provider and core_key:
         return core_key
-    # 不能把 coreApiKey 当成 assist provider 的 fallback：core/assist 是不同
-    # provider 时（比如 coreApi=openai + assistApi=qwen_intl），coreApiKey 是
-    # OpenAI 的 key，拿去打 qwen_intl 的 candidate URL 必然 401 →
-    # _auto_resolve_provider_urls_for_save 误判连通性失败 → 把之前测通的
-    # qwen_intl 区域 pin 顺手 pop 掉 (Codex P2 #3258802582)。
-    # 唯一应该回退 coreApiKey 的 case 是 provider_key == core_provider，
-    # 上面那条已经处理；这里返回空字符串让 _build_save_connectivity_targets
-    # 把这个 target 过滤掉，跳过本次 probe，保留 resolvedProviderUrls 旧值。
+    # Do not use coreApiKey as a fallback for the assist provider: when core/assist use different
+    # providers (for example, coreApi=openai + assistApi=qwen_intl), coreApiKey is
+    # OpenAI's key, and using it against the qwen_intl candidate URL will always return 401 →
+    # _auto_resolve_provider_urls_for_save incorrectly reports a connectivity failure → it removes
+    # the previously verified qwen_intl region pin (Codex P2 #3258802582).
+    # The only case that should fall back to coreApiKey is provider_key == core_provider,
+    # already handled above; return an empty string here so _build_save_connectivity_targets
+    # filters out this target, skips this probe, and preserves the previous resolvedProviderUrls value.
     return ""
 
 
@@ -665,7 +665,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
             model = profile.get("conversation_model", "")
             provider_type = _normalize_provider_type(profile, urls[0] if urls else profile.get("openrouter_url", ""))
 
-        # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
+        # A single URL does not need candidate-region resolution; the page-wide check handles normal connectivity status.
         if len(urls) < 2:
             return
 
@@ -685,9 +685,9 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
         }
 
     core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
-    # 显式选择的 assistApi 一律被尊重（free 与付费可双向组合）；
-    # 仅在缺失时沿用 coreApi 偏好做默认：core=free 默认 free，其他默认 qwen。
-    # 与 ConfigManager.get_core_config() 的解析规则保持一致。
+    # Always respect an explicitly selected assistApi (free and paid tiers can be combined in either direction);
+    # use the coreApi preference as the default only when missing: core=free defaults to free, all others default to qwen.
+    # Keep this consistent with the resolution rules in ConfigManager.get_core_config().
     assist_provider = str(core_cfg.get("assistApi") or "").strip()
     if not assist_provider:
         assist_provider = "free" if core_provider == "free" else "qwen"
@@ -743,11 +743,11 @@ async def _auto_resolve_provider_urls_for_save(
         "resolved_urls": {},
         "results": {},
     }
-    # 起点用 core_cfg 里已经存的 resolved 快照（前端这一次保存连带传上来的
-    # _resolvedProviderUrls + 上一次落盘的值），auto-resolve 只动本次 targets
-    # 里的 provider。其它 provider 之前测通的 URL 留着别扔——比如核心用 GPT
-    # 但 CosyVoice intl 还在用 assist:qwen_intl 的 US 端点，保存非 Qwen 设置
-    # 不该顺手清掉 intl 的地域记忆。
+    # Start from the resolved snapshot already stored in core_cfg (the _resolvedProviderUrls
+    # passed along by the frontend in this save, plus the value persisted last time); auto-resolve changes only providers in the current targets.
+    # Keep previously verified URLs for other providers; for example, the core may use GPT
+    # while CosyVoice intl still uses the US endpoint for assist:qwen_intl, so saving non-Qwen settings
+    # must not also clear the intl region memory.
     existing_resolved: dict[str, str] = {
         str(k): str(v)
         for k, v in (core_cfg.get("resolvedProviderUrls") or {}).items()
@@ -813,9 +813,9 @@ async def _auto_resolve_provider_urls_for_save(
             summary["resolved_urls"][target_key] = result["resolved_url"]
         else:
             summary["failed"] += 1
-            # 本次测失败的 target 必须把旧 resolved 也丢掉，避免下次继续打不通的旧 URL
-            # (CodeRabbit #3258131687 已要求过的语义)。其它没被 test 到的 provider
-            # 由 existing_resolved 保留，互不影响。
+            # A target that failed this time must also discard its old resolved value, to avoid continuing to call an old URL that is not reachable
+            # (semantics previously requested by CodeRabbit #3258131687). Other providers not tested
+            # are retained by existing_resolved and remain unaffected.
             resolved_urls.pop(target_key, None)
             summary["resolved_urls"].pop(target_key, None)
 
@@ -912,9 +912,9 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
-    # sub_type 仅 Mode 2 (custom URL) 允许使用；Mode 1 built-in provider 由
-    # api_providers.json 决定 provider_type，不应被前端 sub_type 覆盖
-    # (#1764 review 第六轮)。
+    # sub_type is allowed only for Mode 2 (custom URL); for Mode 1 built-in providers,
+    # api_providers.json determines provider_type, which must not be overridden by the frontend's sub_type
+    # (#1764, sixth review round).
     sub_type = ""
     if not (req.provider_key and req.provider_scope):
         sub_type = (req.sub_type or "").strip().lower()
@@ -933,7 +933,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         logger.exception("[ConnectivityTest] 未预期的异常")
         result = {"success": False, "error": str(e), "error_code": "unknown"}
 
-    # 单条结果日志：供应商/自定义 + 成功/失败
+    # Per-result log: provider/custom + success/failure.
     if result.get("success"):
         logger.info("[ConnectivityTest] %s 连通", _source_label)
     else:
@@ -969,7 +969,7 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
             if is_free:
                 return f"{name}(免费)"
             return name
-    # 自定义 URL：脱敏后显示（移除敏感 query 参数）
+    # Custom URL: display after redaction (remove sensitive query parameters).
     return f"自定义({_redact_url_for_log(url)})"
 
 

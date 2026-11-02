@@ -32,7 +32,7 @@ class FakeServers:
         self.limit = 1024 * 1024
         self.transcript_mode = "ok"         # ok | 503 | 429 | budget | parts | not_participant | unknown_visit | not_started | not_started_final
         self.report_mode = "ok"             # ok | 503 | 429 | network | 404
-        self.fail_parts: set[int] = set()   # 这些块回 503（模拟中途断）
+        self.fail_parts: set[int] = set()   # Return 503 for these chunks (simulate an interrupted transfer)
         self.groups: dict[tuple[str, str], dict] = {}
         self.complete: dict[tuple[str, str], list] = {}
         self.reports: list[dict] = []
@@ -41,7 +41,7 @@ class FakeServers:
         self.history_mode = "ok"            # ok | 401 | 503
         self.details_mode = "ok"            # ok | 401 | 403 | 404 | 503
         self.details_lines: list[dict] = []
-        self.details_pages_extra = 0        # 在真实页之后再多给几页 next_cursor（模拟永远翻不完）
+        self.details_pages_extra = 0        # Supply next_cursor for a few pages beyond the real pages (simulate endless pagination)
         self.details_fail_page: int | None = None
 
     def handler(self, request: httpx.Request) -> httpx.Response:

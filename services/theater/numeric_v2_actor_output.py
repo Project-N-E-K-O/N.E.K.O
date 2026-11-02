@@ -1,4 +1,4 @@
-"""Numeric v2 Actor 的纯文本比较与输出合同校验。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 Actor plain-text comparison and output-contract validation."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -11,25 +11,25 @@ from .numeric_v2_performance import mixed_performance_blocks
 
 
 def _strip_inline_markdown(value: str) -> str:
-    """可见演绎是纯文本协议，移除模型偶发输出的行内 Markdown 标记。"""  # noqa: DOCSTRING_CJK
+    """Visible performance is a plain-text protocol; remove incidental inline Markdown markers from model output."""  # noqa: DOCSTRING_CJK
 
     return value.replace("**", "").replace("__", "").replace("`", "")
 
 
 class NumericV2ActorError(RuntimeError):
-    """Actor 无法提供可提交的演绎正文。"""  # noqa: DOCSTRING_CJK
+    """The Actor could not provide performance text that can be submitted."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2ActorUnavailableError(NumericV2ActorError):
-    """Actor 的模型配置当前不可用。"""  # noqa: DOCSTRING_CJK
+    """The Actor's model configuration is currently unavailable."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2ActorOutputError(NumericV2ActorError):
-    """Actor 返回内容没有通过确定性输出合同。"""  # noqa: DOCSTRING_CJK
+    """The Actor's response failed deterministic output-contract validation."""  # noqa: DOCSTRING_CJK
 
 
 def _sentence_units(value: Any) -> list[str]:
-    """按完整句拆分表现文本，避免工作记忆留下诱导模型补全的半句话。"""  # noqa: DOCSTRING_CJK
+    """Split performance text into complete sentences so working memory does not leave a half-sentence that could prompt the model to continue it."""  # noqa: DOCSTRING_CJK
 
     text = str(value or "").strip()
     if not text:
@@ -49,7 +49,7 @@ def _sentence_units(value: Any) -> list[str]:
 
 
 def _normalized_comparison_text(value: Any) -> str:
-    """去掉不影响语义比较的空白和标点，保留否定词与正文。"""  # noqa: DOCSTRING_CJK
+    """Remove whitespace and punctuation that do not affect semantic comparison; preserve negation and body text."""  # noqa: DOCSTRING_CJK
 
     return "".join(
         character
@@ -66,7 +66,7 @@ def _text_is_covered(
     common_span: int = 0,
     strong_common_span: int = 0,
 ) -> bool:
-    """判断一条文本是否已经被任一完整参考句覆盖。"""  # noqa: DOCSTRING_CJK
+    """Check whether any complete reference sentence already covers a text."""  # noqa: DOCSTRING_CJK
 
     candidate = _normalized_comparison_text(value)
     if not candidate:
@@ -98,7 +98,7 @@ def _require_block_types(
     narration: bool = False,
     dialogue: bool = False,
 ) -> None:
-    """校验混合正文是否包含当前阶段要求的动作与对白。"""  # noqa: DOCSTRING_CJK
+    """Check whether mixed body text includes the action and dialogue required by the current stage."""  # noqa: DOCSTRING_CJK
 
     types = {block["type"] for block in blocks}
     if narration and "action" not in types:
@@ -113,7 +113,7 @@ def _parse_mixed_performance(
     require_narration: bool,
     dialogue_policy: str = "required",
 ) -> str:
-    """校验模型的单字段混合正文；Session 只保存校验后的原始顺序。"""  # noqa: DOCSTRING_CJK
+    """Validate the model's single mixed-body field; Session stores only the validated original order."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, str) or not value.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_performance_invalid")
@@ -141,14 +141,14 @@ def _parse_transition_performance(
     *,
     dialogue_policy: str = "required",
 ) -> str:
-    """兼容模型在换场分段中偶发返回的旧式 action/dialogue 对象。"""  # noqa: DOCSTRING_CJK
+    """Support the legacy action/dialogue object that the model occasionally returns for a split scene transition."""  # noqa: DOCSTRING_CJK
 
     if isinstance(value, Mapping) and set(value) == {"action", "dialogue"}:
         action = value.get("action")
         dialogue = value.get("dialogue")
         if not isinstance(action, str) or not isinstance(dialogue, str):
             raise NumericV2ActorOutputError("numeric_v2_actor_performance_invalid")
-        # 这里只做确定性的旧形状归一化，不补写正文，也不增加第二次 Actor 调用。
+        # Normalize only deterministic legacy shapes here; do not rewrite body text or make a second Actor call.
         normalized_action = action.strip()
         if normalized_action.startswith("(") and normalized_action.endswith(")"):
             normalized_action = "（" + normalized_action[1:-1] + "）"
@@ -163,7 +163,7 @@ def _parse_transition_performance(
 
 
 def _parse_scene_narration(value: Any, *, allow_empty: bool = False) -> str:
-    """只有运行合同明确许可的桥段可为空；开场和其他旁白仍须非空。"""  # noqa: DOCSTRING_CJK
+    """Only beats explicitly permitted by the runtime contract may be empty; openings and other narration must remain non-empty."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, str) or (not allow_empty and not value.strip()):
         raise NumericV2ActorOutputError("numeric_v2_actor_scene_narration_invalid")
@@ -171,7 +171,7 @@ def _parse_scene_narration(value: Any, *, allow_empty: bool = False) -> str:
 
 
 def _parse_scene_update(value: Any) -> str:
-    """普通回合的场景更新沿用旁白存储；空字符串等价于省略可选字段。"""  # noqa: DOCSTRING_CJK
+    """Ordinary-turn scene updates continue to use narration storage; an empty string is equivalent to omitting the optional field."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, str):
         raise NumericV2ActorOutputError("numeric_v2_actor_scene_narration_invalid")
@@ -179,7 +179,7 @@ def _parse_scene_update(value: Any) -> str:
 
 
 def _normalize_suggestion_quotes(value: str) -> str:
-    """把成对英文双引号规范成中文引号，避免推荐输入视觉格式漂移。"""  # noqa: DOCSTRING_CJK
+    """Normalize paired English double quotes to Chinese quotation marks to prevent visual drift in suggested input formatting."""  # noqa: DOCSTRING_CJK
 
     if not value or value.count('"') == 0 or value.count('"') % 2:
         return value
@@ -199,7 +199,7 @@ def _parse_actor_suggestions(
     *,
     diagnostics: dict[str, int] | None = None,
 ) -> list[str]:
-    """解析 Actor 同次生成的玩家输入；格式异常时只降级推荐，不丢弃合法正文。"""  # noqa: DOCSTRING_CJK
+    """Parse player inputs generated in the same Actor response; on malformed formatting, fall back only for recommendations and preserve valid body text."""  # noqa: DOCSTRING_CJK
 
     parse_counts = {
         "container_invalid": 0,
@@ -220,15 +220,15 @@ def _parse_actor_suggestions(
             diagnostics.update(parse_counts)
         return []
     if len(value) > 3:
-        # 推荐合同是 2—3 条。超出时保留前三条，而不是整份丢弃：这些都是演员自己写出的
-        # 合法按钮，丢弃只会白白触发一次补推荐调用（或让按钮全空）。只做确定性裁剪，
-        # 不替模型新增内容。
+        # The recommended contract is 2–3 items. If there are more, keep the first three instead of discarding the entire result: these are valid buttons written by the actor,
+        # and discarding them would needlessly trigger another recommendation call (or leave all buttons empty). Only trim deterministically;
+        # do not invent content for the model.
         parse_counts["too_many_items"] = 1
         value = value[:3]
     parsed: list[str] = []
     for item in value:
         text = _normalize_suggestion_quotes(str(item or "").strip())
-        # 推荐会直接显示并可一键发送，模板占位符不能泄漏给玩家；正文仍由调用方保留。
+        # Recommendations are shown directly and can be sent with one click, so template placeholders must not leak to the player; the caller retains the body text.
         if not text:
             parse_counts["empty_item"] += 1
             continue
@@ -249,8 +249,8 @@ def _parse_actor_suggestions(
         if action in {"玩家动作", "玩家对白", "动作", "对白"}:
             parse_counts["placeholder_item"] += 1
             continue
-        # suggested_inputs 后续会由程序作为 player_input/input_text 存储，
-        # 中文动作可以自然省略“我”；只拒绝明确把第三方写成动作主体。
+        # suggested_inputs will later be stored by the program as player_input/input_text,
+        # so Chinese actions may naturally omit "I"; reject only cases that explicitly make a third party the action's subject.
         explicit_nonplayer_prefixes = (
             "你",
             "您",
@@ -266,8 +266,8 @@ def _parse_actor_suggestions(
             continue
         parsed.append(text)
         parse_counts["accepted_items"] += 1
-    # 少于两条时仍保留已通过格式和主体校验的推荐；是否补齐由 Actor 层决定。
-    # 否则开场关闭补推荐时，模型返回的唯一合法选项会被误清空。
+    # If there are fewer than two items, keep recommendations that pass format and subject validation; the Actor layer decides whether to fill the rest.
+    # Otherwise, when opening without additional recommendations, the model's only valid option would be incorrectly cleared.
     if len(parsed) not in {2, 3}:
         parse_counts["insufficient_valid_items"] = 1
     if diagnostics is not None:
@@ -277,7 +277,7 @@ def _parse_actor_suggestions(
 
 
 def _parse_transition_offered(value: Any) -> bool:
-    """校验 Actor 是否在可见正文中声明了具体下一步；不在此处猜测自然语言。"""  # noqa: DOCSTRING_CJK
+    """Validate whether the Actor declares a concrete next step in visible body text; do not infer natural language here."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, bool):
         raise NumericV2ActorOutputError("numeric_v2_actor_transition_offered_invalid")
@@ -290,7 +290,7 @@ def _parse_actor_fact_candidates(
     expected: bool = False,
     diagnostics: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """保留 Actor 候选；缺失或坏格式只降级并记数，不为辅助字段重跑正文。"""  # noqa: DOCSTRING_CJK
+    """Preserve Actor candidates; missing or malformed values only trigger fallback and increment a counter, without rerunning the body for auxiliary fields."""  # noqa: DOCSTRING_CJK
 
     parse_counts = {
         "expected": int(expected),
@@ -331,21 +331,21 @@ def _parse_output(
     fact_candidates_expected: bool = False,
     fact_candidate_diagnostics: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """把单次 Actor 返回解析为唯一合法的开场、普通回合或换场形状。"""  # noqa: DOCSTRING_CJK
+    """Parse one Actor response into the only valid opening, ordinary-turn, or scene-transition shape."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(content, str) or not content.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_empty_output")
     try:
-        # 与 Evaluator 一致：只解包完整单个 JSON 围栏，不提取或修补夹杂说明的片段。
+        # As with the Evaluator, only unwrap one complete JSON fence; do not extract or repair fragments mixed with explanatory prose.
         payload = json.loads(strip_single_json_fence(content))
     except (TypeError, ValueError) as exc:
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
-    # 正文形状兼容旧 narrative_events 字段，但不解析或采纳；补推荐的严格形状不变。
+    # Accept the legacy narrative_events field shape for body text, but do not parse or use it; the strict shape for supplemental recommendations is unchanged.
     if transition_suggestions_only:
-        # 转场补推荐把接受路径独立成字段，代码再确定性放到第一位；
-        # 这样模型不能把“先核对/再看看”等暂缓选项误排为默认接受路径。
+        # Supplemental transition recommendations return an accepted path in its own field, and code deterministically places it first;
+        # this prevents the model from sorting a deferment such as "check first / look again" as the default accepted path.
         if set(payload) != {"accept_input", "alternative_inputs"}:
             raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
         alternatives = payload.get("alternative_inputs")
@@ -360,7 +360,7 @@ def _parse_output(
         )
         return {"suggested_inputs": suggestions}
     if suggestions_only:
-        # 补推荐调用只允许返回推荐字段，任何正文都不会覆盖前一次合法结果。
+        # The supplemental recommendation call may return only recommendation fields; body text never overwrites the previous valid result.
         if set(payload) != {"suggested_inputs"}:
             raise NumericV2ActorOutputError("numeric_v2_actor_suggestions_invalid")
         return {
@@ -371,7 +371,7 @@ def _parse_output(
         }
     if opening_required:
         expected_fields = {"scene_narration", "performance"}
-        # 推荐或转场字段缺失时交给一次轻量补推荐；已合法的正文不会被丢弃。
+        # If recommendation or transition fields are missing, make one lightweight supplemental recommendation call; keep any valid body text.
         tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered", "narrative_events"}
         # Optional fields degrade independently (missing suggestions == an invalid
         # container, missing transition_offered == False), so any subset is safe.
@@ -394,7 +394,7 @@ def _parse_output(
         )
         return result
     if transition_required:
-        # Runtime 仍确定段位和顺序；旁白按真实历史生成，缺字段不能退回会复演的作者原文。
+        # Runtime still determines stages and order; narration is generated from real history, and a missing field must not fall back to author text that could replay a scene.
         expected_fields = {"source_performance", "target_performance",
                            "bridge_scene_narration", "target_scene_narration"}
         tolerated_fields = {*expected_fields, "suggested_inputs", "source_scene_narration", "narrative_events"}
@@ -414,7 +414,7 @@ def _parse_output(
                 dialogue_policy=target_dialogue_policy,
             ),
         }
-        # 来源旁白与普通 scene_update 一样可省略；保留 NPC 原话，不转成猫娘对白。
+        # Source narration, like ordinary scene_update, may be omitted; preserve NPC wording rather than turning it into catgirl dialogue.
         if "source_scene_narration" in payload:
             narration = _parse_scene_update(payload["source_scene_narration"])
             if narration:
@@ -440,7 +440,7 @@ def _parse_output(
     result = {
         "performance": _parse_mixed_performance(
             payload.get("performance"),
-            # 普通回合允许纯对白；只有对白是必需项，括号微动作不应被格式层强制生成。
+            # Ordinary turns allow dialogue only; dialogue is required, and the formatting layer should not force generation of parenthetical micro-actions.
             require_narration=False,
             dialogue_policy=dialogue_policy,
         ),
@@ -453,7 +453,7 @@ def _parse_output(
         ),
     }
     if "scene_update" in payload:
-        # Runtime 继续使用既有 scene_narration 字段保存，前端与旧 Session 无需新增协议分支。
+        # Runtime continues to use the existing scene_narration field, so the frontend and older Sessions need no new protocol branch.
         scene_update = _parse_scene_update(payload.get("scene_update"))
         if scene_update:
             result["scene_narration"] = scene_update

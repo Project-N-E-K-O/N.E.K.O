@@ -1,13 +1,13 @@
 """Multi-format / multi-scope session export (P23).
 
-PLAN §P23 约定: 把一份正在进行的 testbench session 根据用户选择的
-**scope** (裁剪范围) 和 **format** (格式) 落成可分享的产物. 这一层是
-纯 Python, 不拿 ``asyncio.Lock`` 也不 import ``session_store`` — 与
-:mod:`judge_export` / :mod:`persistence` 保持同样的 "session-agnostic"
-风格 (§3A A11). router 层 (:mod:`session_router`) 负责锁定 + 把
-``Response`` 按 ``Content-Disposition: attachment`` 发回浏览器.
+PLAN §P23: turn an ongoing testbench session into a shareable artifact according to
+user-selected **scope** (included content) and **format** (output format). This layer is
+pure Python, without acquiring ``asyncio.Lock`` or importing ``session_store``, matching
+:mod:`judge_export` / :mod:`persistence` in their \"session-agnostic\"
+style (§3A A11). The router (:mod:`session_router`) handles locking and sends the
+``Response`` to the browser with ``Content-Disposition: attachment``.
 
-Scope × Format 矩阵
+Scope × Format matrix
 -------------------
 
 ::
@@ -20,72 +20,72 @@ Scope × Format 矩阵
     conversation_eval  │  ✓    │    ✓     │       ✗         │
     evaluations        │  ✓    │    ✓     │       ✗         │
 
-(共 **11 种合法组合**.) ``dialog_template`` 故意只对 ``conversation``
-scope 开放, 因为它的语义是 "把已发生的对话回流成可重复的 script schema"
-— 带 eval_results 的版本无意义 (script 不跑 judger), 带 persona_memory
-的版本也与 script 的 turn-level 语义不符.
+(**11 valid combinations** total.) ``dialog_template`` intentionally supports only
+``conversation`` because it converts an existing conversation into a repeatable script schema.
+Including eval_results is meaningless (scripts do not run judgers), and including persona_memory
+would also conflict with scripts' turn-level semantics.
 
-Scope 裁剪语义
+Scope inclusion semantics
 --------------
 
-* ``full`` — 完整序列化 (复用 :func:`persistence.serialize_session`
-  的结果), 给 "我要离线分析整条测试会话" 用. JSON 输出结构与
-  ``<name>.json`` 存档 **一致** (schema_version 对齐), 这样 P23 导出
-  payload 可以用 ``/api/session/import`` 逆向加载回来 (需要配套的
-  tarball — 后续 "include_memory" 选项会把 tarball base64 内嵌到
-  payload 里, 用法同 :func:`persistence.export_to_payload`).
+* ``full`` — complete serialization (reuse :func:`persistence.serialize_session`
+  output) for offline analysis of an entire test session. The JSON output structure
+  **matches** the ``<name>.json`` archive (aligned schema_version), allowing P23 export
+  payloads to be loaded back via ``/api/session/import`` (requires the matching
+  tarball; the later \"include_memory\" option embeds it as base64 in the
+  payload, matching :func:`persistence.export_to_payload`).
 
-* ``persona_memory`` — 只保留 persona + clock + model_config (脱敏).
-  用途: 复用同一套人设在另一组 session 里起测. memory tar.gz 仍可通过
-  ``include_memory=True`` 附带.
+* ``persona_memory`` — retain only persona + clock + model_config (redacted).
+  Reuse the same persona to start another set of test sessions. A memory tar.gz
+  may still be attached via ``include_memory=True``.
 
-* ``conversation`` — 只保留 messages + 必要的 clock/persona 元信息
-  (character_name/master_name), 无 eval_results. 用途: 把对话过程分享
-  给评审, 或作为下一轮脚本的输入 (配 ``format=dialog_template``).
+* ``conversation`` — retain only messages + essential clock/persona metadata
+  (character_name/master_name), without eval_results. Share dialogue with reviewers
+  or use it as the next script's input (with ``format=dialog_template``).
 
-* ``conversation_evaluations`` — 同 ``conversation`` + 全部 eval_results
-  + aggregate 统计. 用途: 一份"对话 + 评分"报告, 给 reviewer 对照看.
+* ``conversation_evaluations`` — ``conversation`` + all eval_results
+  + aggregate statistics: a dialogue + scoring report for reviewers to compare.
 
-* ``evaluations`` — 只保留 eval_results + aggregate + 对话元信息
-  (session name/persona 头部), 不展开 messages. 用途: 只关心评分结果
-  的批量对比场景 (跨会话).
+* ``evaluations`` — retain only eval_results + aggregate + dialogue metadata
+  (session name/persona header), without expanding messages, for bulk comparisons
+  across sessions concerned only with scoring.
 
-Format 契约
+Format contracts
 -----------
 
-* ``json`` — pretty-printed UTF-8, ``ensure_ascii=False`` (CJK 直出),
-  根节点 ``{kind, scope, format, generated_at, session_ref, payload}``.
-  ``kind="testbench_session_export"`` 在所有 scope 下相同, 前端/下游
-  识别只看 ``scope`` 字段. 对 ``scope=full`` 而言, ``payload`` 兼容
-  :meth:`persistence.SessionArchive.to_json_dict` 的结构.
+* ``json`` — pretty-printed UTF-8, ``ensure_ascii=False`` (literal CJK),
+  root ``{kind, scope, format, generated_at, session_ref, payload}``.
+  ``kind=\"testbench_session_export\"`` is identical for every scope; frontend/downstream
+  identification uses only ``scope``. For ``scope=full``, ``payload`` matches
+  the structure of :meth:`persistence.SessionArchive.to_json_dict`.
 
-* ``markdown`` — 按 scope 拼接不同 section (见 :func:`build_export_markdown`).
-  **Comparative 差距表** 通过复用 :func:`judge_export.build_report_markdown`
-  的 "gap_trajectory" + "By schema" 块呈现, 不在本模块重复实现.
+* ``markdown`` — assemble scope-specific sections (see :func:`build_export_markdown`).
+  The **Comparative gap table** reuses :func:`judge_export.build_report_markdown`'s
+  \"gap_trajectory\" + \"By schema\" blocks instead of duplicating their implementation.
 
-* ``dialog_template`` — 直接落 :mod:`script_runner` 认的 JSON schema
-  (name / description / bootstrap / turns), UTF-8 + 双空格缩进.
-  ``turns`` 按 session.messages 逆推: assistant 消息保留其 content 作为
-  ``expected``, user 消息的 ``time.advance`` 字段从与前一条消息的
-  ``timestamp`` 差分得到 (只在 >= 60 秒时写入, 小于的忽略, 与
-  :mod:`script_runner._parse_duration_text` 的语义对齐).
+* ``dialog_template`` — emit the JSON schema understood by :mod:`script_runner`
+  (name / description / bootstrap / turns), UTF-8 with two-space indentation.
+  Derive ``turns`` from session.messages: retain assistant content as
+  ``expected``; derive each user message's ``time.advance`` from the difference
+  between its ``timestamp`` and the previous message's (write only >= 60 seconds,
+  ignoring shorter intervals, matching :mod:`script_runner._parse_duration_text`).
 
-API Key 脱敏
+API Key redaction
 ------------
 
-默认 ``redact_api_keys=True`` 与 :mod:`persistence` 对齐; 并且在 P23
-层面作为**硬约束**导出到 ``redact_api_keys`` 字段永远 ``True`` —
-export 是主动共享行为, 不给"明文导出"选项. router 层 Pydantic body 里
-甚至不暴露这个开关 (§3A A5 "只允许放宽契约, 不允许放宽安全").
+Default ``redact_api_keys=True`` matches :mod:`persistence`; P23 also imposes a
+**hard constraint** that exported ``redact_api_keys`` is always ``True``:
+export deliberately shares data, so there is no plaintext-export option. The router's Pydantic body
+does not even expose the switch (§3A A5: contracts may relax, security may not).
 
-export -> import 的往返性
+export -> import round trip
 -------------------------
 
-只有 ``scope=full`` + ``format=json`` + ``include_memory=True`` 的输出
-与 :func:`persistence.import_from_payload` 完全兼容 (三条都满足才能做
-无损导入). 其它 scope 故意不对齐 import 格式, 因为它们的 payload 按
-"可读性 / 小体积" 优化, 不包含 import 路径必需的 ``archive_kind`` 等
-字段.
+Only ``scope=full`` + ``format=json`` + ``include_memory=True`` output is
+fully compatible with :func:`persistence.import_from_payload` (all three conditions
+are required for lossless import). Other scopes intentionally do not match import format;
+their payloads optimize readability / small size and omit fields such as
+``archive_kind`` required by the import path.
 """
 from __future__ import annotations
 
@@ -119,8 +119,8 @@ SESSION_EXPORT_SCOPES: Final[tuple[str, ...]] = (
 )
 EXPORT_FORMATS: Final[tuple[str, ...]] = ("json", "markdown", "dialog_template")
 
-#: ``(scope, format)`` 白名单. router 层用 :func:`is_valid_combination`
-#: 做入口校验; 非白名单组合直接 400, 避免走进 builder 产出一堆半残输出.
+#: ``(scope, format)`` allowlist. The router uses :func:`is_valid_combination`
+#: for input validation; reject unsupported combinations with 400 before builders produce incomplete output.
 VALID_COMBINATIONS: Final[frozenset[tuple[str, str]]] = frozenset({
     ("full", "json"),
     ("full", "markdown"),
@@ -192,8 +192,8 @@ def ensure_valid_combination(scope: str, fmt: str) -> None:
 _FORMAT_EXT: Final[dict[str, str]] = {
     "json": "json",
     "markdown": "md",
-    # dialog_template 是 JSON 结构, 但扩展名用 .json, 前缀标 "dialog_template"
-    # 让用户一眼看出它是 script schema 而不是普通 JSON.
+    # dialog_template uses JSON with .json extension and a 'dialog_template' prefix
+    # so users can distinguish a script schema from ordinary JSON immediately.
     "dialog_template": "json",
 }
 
@@ -207,19 +207,19 @@ def session_export_filename(
 ) -> str:
     """Return ``tbsession_<session>_<scope>_<YYYYMMDD_HHMMSS>.<ext>``.
 
-    ``session_name`` 经 :data:`_SAFE_FILENAME_RE` 过滤, 保证 Windows/
-    macOS/Linux 三端下载不会因为冒号 / 空格 / 中文冲突出错 (中文在 HTTP
-    ``Content-Disposition`` 里要额外 encode, 过滤成 ASCII 最简单).
-    dialog_template 前缀用 ``tbscript`` 以区分 (下游 script_runner 的
-    user template 目录会自动识别).
+    Filter ``session_name`` with :data:`_SAFE_FILENAME_RE` so downloads on Windows/
+    macOS/Linux avoid colon / space / Chinese-character conflicts (Chinese needs extra encoding in HTTP
+    ``Content-Disposition``, so ASCII filtering is simplest).
+    dialog_template uses the ``tbscript`` prefix for distinction (automatically recognized by
+    downstream script_runner's user template directory).
     """
     prefix = "tbscript" if fmt == "dialog_template" else "tbsession"
     ts = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     safe_name = _SAFE_FILENAME_RE.sub("_", session_name or "session") or "session"
     safe_scope = _SAFE_FILENAME_RE.sub("_", scope) or scope
     ext = _FORMAT_EXT.get(fmt, "txt")
-    # dialog_template 不带 scope 段 (它隐含 scope=conversation), 文件名
-    # 更简短也避免冗余.
+    # dialog_template omits the scope segment (implicitly conversation), keeping filenames
+    # shorter and avoiding redundancy.
     if fmt == "dialog_template":
         return f"{prefix}_{safe_name}_{ts}.{ext}"
     return f"{prefix}_{safe_name}_{safe_scope}_{ts}.{ext}"
@@ -284,10 +284,10 @@ def _parse_ts(raw: Any) -> datetime | None:
 def _format_advance(seconds: int) -> str:
     """Pretty-print an integer second count as ``script_runner`` duration text.
 
-    Mirror of :func:`script_runner._parse_duration_text` 的逆向: the
-    parser 接受 ``Ns / Nm / Nh / Nd``; 我们选就近的单位以减少小数损失,
-    并且优先选 script JSON 里人最常写的 ``m`` / ``h`` / ``d``. 秒级精度
-    的对话间隔在测试里几乎没有, 无需支持带小数的 "1.5h".
+    Inverse of :func:`script_runner._parse_duration_text`: the
+    parser accepts ``Ns / Nm / Nh / Nd``; choose a nearby unit to minimize fractional loss,
+    preferring ``m`` / ``h`` / ``d`` commonly written in script JSON. Second-precision
+    dialogue intervals are rare in tests, so fractional \"1.5h\" support is unnecessary.
     """
     if seconds <= 0:
         return "0s"
@@ -308,7 +308,7 @@ def _build_json_full(session: Any) -> dict[str, Any]:
     archive = persistence.serialize_session(
         session,
         name=getattr(session, "name", "export"),
-        # 硬约束: export 永远脱敏 (前文 §"API Key 脱敏" 决策).
+        # Hard constraint: always redact exports (earlier API Key redaction decision).
         redact_api_keys=True,
     )
     return archive.to_json_dict()
@@ -323,8 +323,8 @@ def _build_json_persona_memory(session: Any) -> dict[str, Any]:
         "persona": copy.deepcopy(getattr(session, "persona", {}) or {}),
         "model_config": model_cfg,
         "clock": clock.to_dict() if clock is not None else {},
-        # stage_state 跟 persona 编辑流程强关联 (P14), 保持一起导出;
-        # 大小可控 (固定 current + history list).
+        # stage_state is tightly coupled to persona editing (P14), so export together;
+        # its size is bounded (fixed current + history list).
         "stage_state": copy.deepcopy(
             getattr(session, "stage_state", {}) or {},
         ),
@@ -480,8 +480,8 @@ def build_dialog_template(
 
         if role == "user":
             turn: dict[str, Any] = {"role": "user", "content": content}
-            # 首条 user turn 的 time 字段省略 (bootstrap 已承担首轮时间锚).
-            # 后续 user turn 用 "与上一条消息的差值" 填 time.advance.
+            # Omit time from the first user turn (bootstrap already supplies its initial time anchor).
+            # Later user turns populate time.advance with the difference from the preceding message.
             # P24 §12.5 L3 defensive: clamp negative deltas to 0. The
             # `append_message` chokepoint should guarantee monotonicity
             # at the write path, but archives saved before Day 2 / hand-
@@ -501,8 +501,8 @@ def build_dialog_template(
             turns.append({"role": "assistant", "expected": content})
             prev_ts = ts or prev_ts
         else:
-            # system / other roles: 跳过但更新 prev_ts, 这样后续 user turn
-            # 的 time.advance 不会把 inject 之间的沉默时间一起塞给下一条.
+            # system / other roles: skip but update prev_ts so later user turns
+            # do not assign silence between injections to the next turn's time.advance.
             prev_ts = ts or prev_ts
 
     bootstrap: dict[str, Any] = {}
@@ -624,7 +624,7 @@ def _md_model_config_block(session: Any) -> list[str]:
         for k in ("provider", "model", "base_url", "temperature", "max_tokens", "timeout"):
             if k in cfg and cfg[k] not in (None, ""):
                 lines.append(f"- `{k}`: `{cfg[k]}`")
-        # api_key 永远 redacted, 单独列一行避免被误以为没填.
+        # api_key is always redacted; list it separately so it is not mistaken for an empty value.
         lines.append(f"- `api_key`: `{cfg.get('api_key', '-')}`")
         lines.append("")
     return lines
@@ -637,8 +637,8 @@ def _md_memory_sizes_block(session: Any) -> list[str]:
     app_docs = getattr(sandbox, "_app_docs", None)
     if app_docs is None or not app_docs.exists():
         return []
-    # 只报顶层 memory/ 目录下每个文件的尺寸, 不递归 (避免几千个 snapshot
-    # 把报告撑爆).
+    # Report only sizes of top-level memory/ files, without recursion, preventing thousands of snapshots
+    # from bloating the report.
     try:
         mem_dir = app_docs / "memory"
         if not mem_dir.exists() or not mem_dir.is_dir():
@@ -676,8 +676,8 @@ def _md_messages_block(session: Any, *, include_wire: bool = False) -> list[str]
         ts = m.get("timestamp") or "-"
         source = m.get("source") or "-"
         content = (m.get("content") or "").rstrip()
-        # Markdown 尊重原文换行: blockquote 每行前缀 "> ", 空行保留为 ">"
-        # 以保证连续段落显示.
+        # Markdown preserves original newlines: prefix each blockquote line with '> ', retaining empty lines as '>'
+        # to preserve consecutive paragraphs.
         lines.append(
             f"### {idx}. `{role}` · `{ts}` · source=`{source}`",
         )
@@ -726,8 +726,8 @@ def _md_evaluations_block(session: Any) -> list[str]:
         aggregate=agg,
         metadata=metadata,
     )
-    # 原报告首行是 "# Evaluation Report" + "_Generated at_" 两行 —
-    # 替换成 session export 的 "## Evaluations" 以避免 H1 冲突.
+    # Original report starts with '# Evaluation Report' and '_Generated at_' on two lines;
+    # replace with session export's '## Evaluations' to avoid conflicting H1 headings.
     body = full.split("\n", 3)[-1] if full.count("\n") >= 3 else full
     lines = ["## Evaluations", ""]
     lines.extend(body.splitlines())

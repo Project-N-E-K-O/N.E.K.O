@@ -1,7 +1,7 @@
 """
-消息系统模块
+Messaging module.
 
-提供消息平面、总线订阅等消息传递功能。
+Provides messaging-plane, bus-subscription, and related messaging functionality.
 """
 from plugin.server.messaging.plane_bridge import (
     build_frame_record,

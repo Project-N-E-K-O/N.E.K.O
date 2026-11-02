@@ -38,7 +38,7 @@ def test_record_projection_omits_unselected_text_and_preserves_revocation():
 
 
 def test_lookup_pages_keep_complete_original_fields_and_stable_ids():
-    # 人为小容量验证分页；长字段不裁掉尾部否定，也不谎称已扫描完整历史。
+    # Use a small capacity to verify pagination: preserve trailing negation in long fields and never falsely claim all history was scanned.
     rows = [{'revision': i, 'text': '记录。' * 35 + '没有同意。'} for i in range(5)]
     pages, omitted = history._pages(rows, '是否同意？', 400)
     assert len(pages) > 1 and not omitted
@@ -137,7 +137,7 @@ def test_evaluator_only_requests_lookup_when_enabled(enabled):
     messages = evaluator._build_messages(_engine(), _session(), '那项许可还有效吗？',
                                          allow_history_lookup=enabled)
     assert ('history_query' in messages[0].content) == enabled
-    # 关闭额外查询不移除已有历史，也不改变当前玩家输入。
+    # Disabling extra queries must not remove existing history or change current player input.
     assert '许可撤回，日记保密。' in messages[1].content
     assert '那项许可还有效吗？' in messages[1].content
 

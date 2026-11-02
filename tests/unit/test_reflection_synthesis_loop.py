@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Reflection synthesis 后端循环 - regression test.
+"""Reflection-synthesis backend-loop regression test.
 
-Pin 两条不变量：
+Pin two invariants:
 
-1. ``_periodic_reflection_synthesis_loop`` 存在，且按 ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS``
-   每轮对所有 catgirl 调一次 ``reflection_engine.synthesize_reflections(name)``。
-   单角色失败不阻塞其余 + 不让循环退出。
+1. ``_periodic_reflection_synthesis_loop`` exists and calls ``reflection_engine.synthesize_reflections(name)``
+   for every catgirl each ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` interval.
+   One character's failure neither blocks others nor terminates the loop.
 
-2. ``main_routers/system_router.py`` 的 ``proactive_chat`` handler 不再
-   ``POST /reflect/{name}``。这条 mutation 之前挂在 frontend-driven 关键路径
-   上（PR #1015 顺手塞的），会让"前端关 / proactive 不触发 → reflection 永
-   不增长"。现在合成只在后端循环里走，**任何**把 ``/reflect`` POST 加回
-   ``proactive_chat`` handler 的 refactor 都会被这里抓到——前端解耦是设计意图。
+2. ``main_routers/system_router.py``'s proactive_chat handler no longer
+   POSTs /reflect/{name}. That mutation previously sat on the frontend-driven critical path,
+   introduced alongside PR #1015, making reflection growth stop whenever frontend/proactive triggers
+   were absent. Synthesis now runs only in backend loops; any refactor restoring /reflect POSTs
+   to proactive_chat is caught here because frontend decoupling is intentional.
 
-测不到的部分（留 manual / e2e）：
-- 实际 LLM 是否生成 valid reflection（``synthesize_reflections`` 自身已有
-  ``tests/unit/test_reflection_*`` 覆盖）
-- frontend ``/api/proactive_chat`` setTimeout 是否触发（本来就是 frontend issue，
-  不在本 PR scope；本 PR 的 fix 是"即使 proactive 永远不触发，reflection 也
-  会持续生长"）
+Not tested here; leave for manual/e2e:
+- Whether the real LLM generates valid reflections; synthesize_reflections already has
+  ``tests/unit/test_reflection_*`` coverage.
+- Whether frontend /api/proactive_chat setTimeout fires, a frontend concern
+  outside this PR. This fix guarantees reflection keeps growing even when proactive
+  chat never triggers.
 """
 from __future__ import annotations
 
@@ -66,11 +66,11 @@ def _missing_reason_code_action_dicts(fn):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
-    """每轮循环对所有 catgirl 各调一次 synthesize_reflections。
+    """Call synthesize_reflections once per catgirl in each loop round.
 
-    用 patched asyncio.sleep 做开关：第二次 sleep（loop tail）被 raise CancelledError
-    打断，让 loop 只跑一轮就退出。第一次 sleep（_INITIAL_DELAY_REFLECTION_SYNTHESIS）
-    立即返回。
+    Patch asyncio.sleep as a switch: the second call at loop tail raises CancelledError,
+    ending after one round; the first _INITIAL_DELAY_REFLECTION_SYNTHESIS sleep
+    returns immediately.
     """
     from app import memory_server
 
@@ -87,7 +87,7 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        # 首次 (initial delay) + tail sleep 都让出，第二次 tail sleep 砍掉 loop
+        # Initial delay and tail sleep both yield; the second tail sleep ends the loop.
         if len(sleep_calls) >= 2:
             raise asyncio.CancelledError
 
@@ -97,7 +97,7 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
         with pytest.raises(asyncio.CancelledError):
             await memory_server._periodic_reflection_synthesis_loop()
 
-    # 每个 catgirl 各被调一次
+    # Each catgirl is called once.
     assert fake_engine.synthesize_reflections.await_count == 3
     assert fake_engine.synthesize_scoped_reflections.await_count == 3
     called_names = {call.args[0] for call in fake_engine.synthesize_reflections.await_args_list}
@@ -149,7 +149,7 @@ async def test_reflection_synthesis_loop_uses_character_prompt_locale():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_reflection_synthesis_loop_single_character_failure_does_not_abort_others():
-    """悠怡 synthesize 抛异常，喵酱 / 小八 仍然各被调一次。"""
+    """If 悠怡 synthesis raises, 喵酱 / 小八 are still each called once."""  # noqa: DOCSTRING_CJK
     from app import memory_server
 
     fake_engine = MagicMock()
@@ -189,7 +189,7 @@ async def test_reflection_synthesis_loop_single_character_failure_does_not_abort
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_reflection_synthesis_loop_load_characters_failure_skips_round_does_not_abort():
-    """aload_characters 抛异常时本轮跳过、loop 不挂；下一轮 sleep 后再试。"""
+    """aload_characters exceptions skip the round without killing the loop; retry after the next sleep."""
     from app import memory_server
 
     fake_engine = MagicMock()
@@ -210,7 +210,7 @@ async def test_reflection_synthesis_loop_load_characters_failure_skips_round_doe
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
-        # 让 loop 跑两轮（initial delay + 第一轮失败后 sleep + 第二轮成功后 sleep）
+        # Run two rounds: initial delay, postfailure sleep, then postsuccess sleep.
         if len(sleep_calls) >= 3:
             raise asyncio.CancelledError
 
@@ -220,20 +220,20 @@ async def test_reflection_synthesis_loop_load_characters_failure_skips_round_doe
         with pytest.raises(asyncio.CancelledError):
             await memory_server._periodic_reflection_synthesis_loop()
 
-    # 第一轮 aload_characters 失败 → 0 次 synthesize
-    # 第二轮成功 → 悠怡 被调 1 次
+    # First-round aload_characters failure -> zero synthesize calls.
+    # Second-round success -> one call for 悠怡.
     assert fake_engine.synthesize_reflections.await_count == 1
     assert fake_engine.synthesize_reflections.await_args.args[0] == '悠怡'
 
 
 @pytest.mark.unit
 def test_reflection_synthesis_loop_registered_in_background_tasks():
-    """``ensure_memory_server_runtime_initialized`` 必须把
-    ``_periodic_reflection_synthesis_loop`` 注册到 ``_spawn_background_task``。
+    """ensure_memory_server_runtime_initialized must register
+    _periodic_reflection_synthesis_loop through _spawn_background_task.
 
-    用源码扫描而非 runtime instrumentation：这里要钉的是"loop 被挂上去"这件事
-    本身（regression：删除注册行是单字符级别的、容易疏漏的退化），不需要也不
-    应该跑完整 server startup。
+    Scan source rather than instrument runtime: pin registration itself, since removing the line is a tiny,
+    easily missed regression; complete server startup is unnecessary and
+    inappropriate here.
     """
     import inspect
 
@@ -248,13 +248,13 @@ def test_reflection_synthesis_loop_registered_in_background_tasks():
 
 @pytest.mark.unit
 def test_proactive_chat_handler_no_longer_posts_reflect():
-    """``main_routers/system_router.proactive_chat`` 必须不再 POST /reflect。
+    """main_routers/system_router.proactive_chat must no longer POST /reflect.
 
-    在 PR #1015 之后，reflection 合成 + auto_transitions 都迁到了 memory_server
-    自己的两条后端循环（synthesis loop + auto_promote loop），proactive_chat
-    关键路径上保留这条 mutation 只会拖响应时间 + 让 reflection 生命周期与
-    frontend setTimeout 强耦合。任何把这行加回去的 refactor 必须先解释为
-    什么 backend loop 不够。
+    After PR #1015, reflection synthesis and auto_transitions moved into memory_server's
+    two backend loops, synthesis and auto_promote. Keeping this mutation in proactive_chat's
+    critical path only increases latency and tightly couples reflection lifecycle to
+    frontend setTimeout. Any refactor restoring it must first explain
+    why backend loops are insufficient.
     """
     import inspect
     import re
@@ -262,9 +262,9 @@ def test_proactive_chat_handler_no_longer_posts_reflect():
     from main_logic.proactive_chat import service as proactive_service
 
     src = inspect.getsource(proactive_service.handle_proactive_chat)
-    # 精确匹配 "POST 到 /reflect 端点" 这件事——而不是单纯出现 "/reflect/" 字面，
-    # 因为说明 backend 已经迁走的注释里允许有路径名（历史 trace）。
-    # 任何能形成 HTTP POST 到 /reflect 的代码会包含 .post(...reflect...)。
+    # Match actual HTTP POSTs to /reflect precisely, not mere "/reflect/" literals,
+    # because historical comments explaining backend migration may retain paths.
+    # Any HTTP POST code to /reflect contains .post(...reflect...).
     post_to_reflect = re.search(
         r"""\.post\s*\(\s*[^)]*?["']\S*?/reflect/""",
         src,
@@ -273,10 +273,10 @@ def test_proactive_chat_handler_no_longer_posts_reflect():
         "proactive_chat handler 里不能再 POST /reflect/{name} —— 合成已迁到 "
         "_periodic_reflection_synthesis_loop 后端循环；这条 mutation 放在 "
         "proactive 关键路径上会拖延 ~15s + 让 reflection 增长依赖前端。"
-        # 显式括号让 !r 应用范围一眼可见，省 reader 心算 conditional-expr +
-        # conversion-spec 的 precedence（PEP 498 已经定义了行为，但 future
-        # reader 一眼看不出来——CodeRabbit PR #1401 误报为 SyntaxError 就是
-        # 因为这个直觉负担，加括号杜绝同类困惑）
+        # Explicit parentheses show !r's scope without making readers calculate conditional-expression/
+        # conversion-spec precedence. PEP 498 defines it, but future readers
+        # may not see it immediately; this intuition burden caused CodeRabbit PR #1401's SyntaxError false positive,
+        # so parentheses prevent similar confusion.
         f"匹配到: {(post_to_reflect.group(0) if post_to_reflect else '')!r}"
     )
 
@@ -418,19 +418,19 @@ def test_end_proactive_rewrites_body_after_reason_stage_fallback():
 
 @pytest.mark.unit
 def test_proactive_chat_concurrent_rejection_returns_http_409():
-    """``proactive_chat`` handler 因 ``try_start_proactive`` 拒绝时必须返回
-    HTTP 409，且 response body 是 ``{"success": False, "error": <str>}``——
-    这是前端 ``app-proactive.js`` ``triggerProactiveChat`` 用来识别"server
-    并发忙、本次 attempt 不消耗 backoff"的 wire 契约。
+    """When try_start_proactive rejects, the proactive_chat handler must return
+    HTTP 409 with body {"success": False, "error": <str>},
+    the wire contract app-proactive.js triggerProactiveChat uses to recognize server
+    concurrency contention without consuming this attempt's backoff.
 
-    任何把这条改成 status_code=200 / 不同 body shape 的 refactor 都会让前端
-    的 ``if (response.status === 409) return false`` guard 失效，server 一忙
-    就被前端误判成一次有效 attempt → 升级 backoff → 节奏整体往后拉，跟 server
-    实际状态正交。
+    Changing to status_code=200 or another body shape breaks frontend
+    ``if (response.status === 409) return false``, making busy responses count as
+    valid attempts, escalating backoff and delaying cadence independently of actual
+    server state.
 
-    用源码扫描而非 runtime call：handler 太重（依赖 MEMORY_SERVER_PORT / WS
-    / activity tracker / async LLM client 等等），跑完整 startup 不划算。这里
-    只钉静态保证。
+    Scan source rather than call runtime: the handler depends heavily on MEMORY_SERVER_PORT / WS
+    / activity tracking / async LLM clients, making full startup unnecessarily costly.
+    Pin only the static guarantee here.
     """
     import inspect
 
@@ -438,13 +438,13 @@ def test_proactive_chat_concurrent_rejection_returns_http_409():
 
     src = inspect.getsource(proactive_service.handle_proactive_chat)
 
-    # try_start_proactive 失败那一段必须有 status_code=409
+    # The try_start_proactive failure branch must specify status_code=409.
     assert "try_start_proactive" in src, (
         "proactive_chat 必须用 try_start_proactive 做并发占坑（PR #1015 引入的"
         "原子 check+claim）；refactor 改成无锁 can_start_proactive 双查会重新"
         "引入 PR #1015 修过的双进 PHASE1 race"
     )
-    # 拒绝路径必须继续使用领域决策给出的 409 + success=False（前端契约）。
+    # Rejection retains the domain decision's 409 + success=False frontend contract.
     assert "status_code=entry_result.status_code" in src
     from main_logic.proactive_chat.decisions import _decide_busy_entry_guard
 

@@ -299,8 +299,8 @@ def test_routine_recompression_never_toasts_the_user():
         _run_turn(client.stream_text("看看这个"))
 
     assert _attached_b64(captured), "no turn was built"
-    # 这条流以 RuntimeError 收场，finally 会补一条 LLM_NO_RESPONSE —— 断言必须
-    # 只盯裁剪提示，否则它测的是"这一轮完全没发过状态消息"，与本条主张无关。
+    # This stream ends with RuntimeError, so finally appends LLM_NO_RESPONSE. Assertions must
+    # inspect only trimming notices, or they test 'no status messages at all this round', unrelated to this claim.
     codes = [
         json.loads(call.args[0]).get("code")
         for call in client.on_status_message.await_args_list
@@ -351,7 +351,7 @@ def test_each_frame_is_labelled_with_the_queue_it_came_from():
         _run_turn(client.stream_text("这几张图"))
 
     assert spy.sources == ["screen", "plugin", "user"]
-    # 标签是按位对齐的，不是"恰好三条"：颜色能把每一条钉回它自己的来源。
+    # Labels align positionally, rather than merely numbering three: colors tie each entry to its own source.
     assert spy.images == _attached_b64(captured)
     assert _decode(spy.images[0]).getpixel((0, 0))[1] > 150   # proactive: green
     assert _decode(spy.images[1]).getpixel((0, 0))[2] > 150   # plugin: blue
@@ -456,7 +456,7 @@ def test_a_dropped_proactive_screenshot_never_reaches_the_bus():
     """
     client, captured = _make_client()
     client.set_proactive_screenshot(_png_b64(300, 200))
-    # 一次后来的 AI 回合：staging 时记下的 history 长度不再成立 => superseded。
+    # A later AI turn: history length recorded during staging no longer holds => superseded.
     client._conversation_history.append(SystemMessage(content="a later turn"))
 
     spy = _Spy()
@@ -510,7 +510,7 @@ def test_a_turn_that_dies_between_fitting_and_committing_publishes_nothing():
             _run_turn(client.stream_text("看看这个"))
 
     assert spy.calls == []
-    # 回滚仍然完整，两条队列都原样还了回来。
+    # Rollback remains complete; both queues are restored unchanged.
     assert client._pending_images == ["user-frame"]
     assert client._pending_plugin_images == ["plugin-frame"]
     assert len(client._conversation_history) == 1
@@ -531,7 +531,7 @@ def test_a_failing_bus_never_costs_the_user_the_turn():
     with patch(_PUBLISHER, _explode):
         _run_turn(client.stream_text("这是什么"))
 
-    # 回合照常构建、照常提交。
+    # The turn builds and commits normally.
     assert len(_attached_b64(captured)) == 2
     assert captured[0][-1] is client._conversation_history[-1]
 
@@ -714,7 +714,7 @@ def test_a_stalled_bus_does_not_hold_up_the_reply():
 
     async def _turn():
         await asyncio.wait_for(client.stream_text("这是什么"), timeout=5)
-        # 抄送确实被排上了，而且确实卡住了——否则本用例什么都没证明。
+        # The mirror operation was actually scheduled and actually blocked; otherwise this test proves nothing.
         for _ in range(50):
             await _REAL_SLEEP(0)
         assert entered.is_set(), "前提没成立：publish 根本没被调用"
@@ -722,7 +722,7 @@ def test_a_stalled_bus_does_not_hold_up_the_reply():
     with patch(_PUBLISHER, _never_returns):
         asyncio.run(_turn())
 
-    # 回合照常构建、照常提交，尽管那次抄送到现在都没返回。
+    # The turn builds and commits normally even though that mirror operation still has not returned.
     assert len(_attached_b64(captured)) == 1
     assert captured[0][-1] is client._conversation_history[-1]
 
@@ -814,7 +814,7 @@ def test_a_retried_turn_still_shows_the_tool_image_to_the_model():
         seen_slots.append(slots)
         attempts.append(len(attempts) + 1)
         if len(attempts) == 1:
-            # 第一次 attempt：注入一张图（真实实现会这么做），然后可重试地失败。
+            # First attempt: inject an image as the real implementation does, then fail retryably.
             messages.append({
                 "role": "user",
                 "content": [
@@ -826,7 +826,7 @@ def test_a_retried_turn_still_shows_the_tool_image_to_the_model():
             assert slots is not None, "stream_text 没有接管槽位"
             slots.append((messages, len(messages) - 1, messages[-1], "[占位符]"))
             raise _connection_error()
-        # 第二次 attempt：模型看到的历史里，那张图还在吗？
+        # Second attempt: is that image still in the history seen by the model?
         client._retry_saw_image = any(
             isinstance(m, dict) and isinstance(m.get("content"), list)
             and any(p.get("type") == "image_url" for p in m["content"])
@@ -843,7 +843,7 @@ def test_a_retried_turn_still_shows_the_tool_image_to_the_model():
     assert getattr(client, "_retry_saw_image", False), (
         "重试那一轮看不到像素——模型会当作自己已经看过那张图"
     )
-    # 回合结束后必须清干净：base64 留在历史里会跟着之后每一次请求走。
+    # Clean everything at turn end: base64 left in history would travel with every subsequent request.
     assert not any(
         isinstance(m, dict) and isinstance(m.get("content"), list)
         and any(p.get("type") == "image_url" for p in m["content"])
@@ -875,10 +875,10 @@ def test_a_retried_turn_still_copies_its_tool_image_to_the_bus():
         attempts.append(len(attempts) + 1)
         assert staged is not None, "stream_text 没有接管待抄送帧"
         if len(attempts) == 1:
-            # attempt 1：工具图被注入并暂存，然后这次请求可重试地失败。
+            # Attempt 1: inject and stage a tool image, then fail this request retryably.
             staged.append(("IMGDATA", "image/jpeg", "demo_tool"))
             raise _connection_error()
-        # attempt 2：工具循环不会再跑，暂存必须还在，否则永远没人抄送。
+        # Attempt 2: the tool loop will not run again, so staging must survive or mirroring never occurs.
         client._retry_had_staged = list(staged)
         yield SimpleNamespace(content="看到了")
 
@@ -945,7 +945,7 @@ def test_an_attachment_keeps_its_own_label_on_a_channelled_turn():
             source="camera",
         ))
 
-    # 顺序即契约：本轮抽样帧在前、用户附件在后（见 _media.py 的排序说明）。
+    # Order is contractual: this turn's sampled frames first, user attachments last (see _media.py ordering notes).
     assert spy.sources == ["camera", "user"], (
         f"通道标签串到附件上了: {spy.sources}"
     )
@@ -1016,7 +1016,7 @@ def test_a_ladder_max_tool_image_survives_the_frame_publish():
 
     with patch.object(agent_event_bus, "publish_session_event_threadsafe", _capture):
         async def _go():
-            # 阶梯允许产出的最大一张，配上这条路会带的全部字段。
+            # The largest image allowed by the ladder, with every field this path includes.
             return await agent_event_bus.publish_provider_frame_observed_best_effort(
                 "a-character-with-a-long-name",
                 image_base64="A" * _TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
@@ -1050,7 +1050,7 @@ def test_the_image_budget_is_the_event_ceiling_minus_its_envelope():
         PROVIDER_FRAME_MAX_B64_BYTES - PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
     )
     assert _TOOL_IMAGE_DELIVER_MAX_B64_BYTES == PROVIDER_FRAME_MAX_IMAGE_B64_BYTES
-    # 事件整体仍要装得进 plane 的记录界（那一侧按 msgpack 量整条记录）。
+    # The complete event must still fit the plane's record limit (which measures entire msgpack records).
     assert PROVIDER_FRAME_MAX_B64_BYTES < MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
 

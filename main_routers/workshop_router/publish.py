@@ -52,7 +52,7 @@ from utils.workshop_utils import (
 )
 
 
-# 全局互斥锁，用于序列化创意工坊发布操作，防止并发回调混乱
+# Global mutex serializes workshop publication, preventing concurrent callback confusion.
 publish_lock = threading.Lock()
 
 
@@ -104,67 +104,67 @@ async def _validate_existing_workshop_item(steamworks, item_id: int) -> tuple[bo
 @router.get('/check-upload-status')
 async def check_upload_status(item_path: str = None):
     try:
-        # 验证路径参数
+        # Validate path parameters.
         if not item_path:
             return JSONResponse(content={
                 "success": False,
                 "error": "未提供物品文件夹路径"
             }, status_code=400)
         
-        # 安全检查：使用get_workshop_path()作为基础目录
+        # Security: use get_workshop_path() as the base directory.
         base_workshop_folder = os.path.abspath(
             os.path.normpath(await get_workshop_path_async())
         )
         
-        # Windows路径处理：确保路径分隔符正确
-        if os.name == 'nt':  # Windows系统
-            # 解码并处理Windows路径
+        # Windows paths: ensure correct separators.
+        if os.name == 'nt':  # Windows.
+            # Decode and process Windows paths.
             decoded_item_path = unquote(item_path)
-            # 替换斜杠为反斜杠，确保Windows路径格式正确
+            # Replace forward slashes with backslashes for Windows path format.
             decoded_item_path = decoded_item_path.replace('/', '\\')
-            # 处理可能的双重编码问题
+            # Handle possible double encoding.
             if decoded_item_path.startswith('\\\\'):
-                decoded_item_path = decoded_item_path[2:]  # 移除多余的反斜杠前缀
+                decoded_item_path = decoded_item_path[2:]  # Remove redundant leading backslashes.
         else:
             decoded_item_path = unquote(item_path)
         
-        # 将相对路径转换为基于基础目录的绝对路径
+        # Resolve relative paths against the base directory.
         if not os.path.isabs(decoded_item_path):
             full_path = os.path.join(base_workshop_folder, decoded_item_path)
         else:
             full_path = decoded_item_path
             full_path = os.path.normpath(full_path)
         
-        # 安全检查：验证路径是否在基础目录内
+        # Security: verify the path is within the base directory.
         if not full_path.startswith(base_workshop_folder):
             logger.warning(f'路径遍历尝试被拒绝: {item_path}')
             return JSONResponse(content={"success": False, "error": "访问被拒绝: 路径不在允许的范围内"}, status_code=403)
         
-        # 验证路径存在性
+        # Verify path existence.
         if not os.path.exists(full_path) or not os.path.isdir(full_path):
             return JSONResponse(content={
                 "success": False,
                 "error": "无效的物品文件夹路径"
             }, status_code=400)
         
-        # 搜索以steam_workshop_id_开头的txt文件
+        # Search for txt files starting with steam_workshop_id_.
         import glob
         import re
         
         upload_files = glob.glob(os.path.join(full_path, "steam_workshop_id_*.txt"))
         
-        # 提取第一个找到的物品ID
+        # Extract the first discovered item ID.
         published_file_id = None
         if upload_files:
-            # 获取第一个文件
+            # Get the first file.
             first_file = upload_files[0]
             
-            # 从文件名提取ID
+            # Extract ID from filename.
             match = re.search(r'steam_workshop_id_(\d+)\.txt', os.path.basename(first_file))
             if match:
                 published_file_id = match.group(1)
         
-        # 返回检查结果
+        # Return check results.
         return JSONResponse(content={
             "success": True,
             "is_published": published_file_id is not None,
@@ -199,9 +199,9 @@ async def prepare_workshop_upload(request: Request):
         data = await request.json()
         chara_data = data.get('charaData')
         model_name = data.get('modelName')
-        model_type = data.get('modelType', 'live2d')  # 新增：模型类型 live2d/vrm/mmd
+        model_type = data.get('modelType', 'live2d')  # Added: model type live2d/vrm/mmd.
         chara_file_name = data.get('fileName', 'character.chara.json')
-        character_card_name = data.get('character_card_name')  # 新增：角色卡名称
+        character_card_name = data.get('character_card_name')  # Added: character-card name.
         
         if not chara_data or not model_name:
             return JSONResponse({
@@ -209,14 +209,14 @@ async def prepare_workshop_upload(request: Request):
                 "error": "缺少必要参数"
             }, status_code=400)
         
-        # 验证 modelType 白名单
+        # Validate modelType against its whitelist.
         if model_type not in ('live2d', 'vrm', 'mmd'):
             return JSONResponse({
                 "success": False,
                 "error": f"不支持的模型类型: {model_type}"
             }, status_code=400)
         
-        # 防路径穿越:只允许文件名,不允许携带路径或上级目录喵
+        # Prevent path traversal: permit filenames only, with no paths or parent directories.
         safe_chara_name = os.path.basename(chara_file_name)
         if safe_chara_name != chara_file_name or ".." in safe_chara_name or safe_chara_name.startswith(("/", "\\")):
             logger.warning(f"检测到非法文件名尝试: {chara_file_name}")
@@ -225,37 +225,37 @@ async def prepare_workshop_upload(request: Request):
                 "error": "非法文件名"
             }, status_code=400)
         
-        # 如果没有传递 character_card_name，尝试从文件名提取
+        # If character_card_name is absent, try extracting it from the filename.
         if not character_card_name and safe_chara_name:
             if safe_chara_name.endswith('.chara.json'):
-                character_card_name = safe_chara_name[:-11]  # 去掉 .chara.json 后缀
+                character_card_name = safe_chara_name[:-11]  # Remove the .chara.json suffix.
         
-        # 获取workshop基础路径
+        # Get the workshop base path.
         base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
         
-        # 确保WorkshopExport目录存在
+        # Ensure WorkshopExport exists.
         os.makedirs(workshop_export_dir, exist_ok=True)
         
-        # 创建临时目录 item_xxx
-        item_id = str(uuid.uuid4())[:8]  # 使用UUID的前8位作为item标识
+        # Create temporary item_xxx directory.
+        item_id = str(uuid.uuid4())[:8]  # Identify the item by the UUID's first eight characters.
         temp_item_dir = os.path.join(workshop_export_dir, f'item_{item_id}')
         os.makedirs(temp_item_dir, exist_ok=True)
         
         logger.info(f"创建临时上传目录: {temp_item_dir}")
         
-        # 1. 复制角色卡JSON到临时目录(已验证为安全文件名)喵
+        # 1. Copy character-card JSON into the temporary directory, using the validated safe filename.
         chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
         await atomic_write_json_async(chara_file_path, chara_data, ensure_ascii=False, indent=2)
         logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
         
-        # 2. 根据模型类型查找并复制模型文件
+        # 2. Find and copy model files by model type.
         if model_type in ('vrm', 'mmd'):
-            # VRM/MMD 模型：model_name 是文件路径如 /user_vrm/model.vrm 或 /user_mmd/folder/model.pmx
+            # VRM/MMD: model_name is a file path such as /user_vrm/model.vrm or /user_mmd/folder/model.pmx.
             model_copied = False
             config_mgr = get_config_manager()
             
-            # 安全检查：防止路径穿越
+            # Security: prevent path traversal.
             if '..' in model_name:
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
@@ -264,7 +264,7 @@ async def prepare_workshop_upload(request: Request):
                 }, status_code=400)
             
             if model_type == 'vrm':
-                # VRM 模型是单文件，解析实际路径
+                # VRM is a single file; resolve its actual path.
                 from pathlib import Path as PathLib
                 vrm_filename = os.path.basename(model_name)
                 
@@ -274,7 +274,7 @@ async def prepare_workshop_upload(request: Request):
                 elif model_name.startswith('/static/vrm/'):
                     source_file = config_mgr.project_root / "static" / "vrm" / vrm_filename
                 elif model_name.startswith('/workshop/'):
-                    # Workshop VRM 模型：通过 item_id 查找安装目录
+                    # Workshop VRM: locate the installation directory by item_id.
                     source_file = None
                     ws_parts = model_name.lstrip('/').split('/')
                     if len(ws_parts) >= 3:
@@ -298,14 +298,14 @@ async def prepare_workshop_upload(request: Request):
                     model_copied = True
                     
             elif model_type == 'mmd':
-                # MMD 模型可能在子目录中（包含PMX+纹理等），复制整个模型目录
+                # MMD can occupy a subdirectory (PMX, textures, etc.); copy the entire model directory.
                 from pathlib import Path as PathLib
                 
-                # 从路径中提取模型目录名（如 /user_mmd/folder/model.pmx -> folder）
+                # Extract the model directory name, e.g. /user_mmd/folder/model.pmx -> folder.
                 path_parts = model_name.lstrip('/').split('/')
                 
                 if model_name.startswith('/user_mmd/') and len(path_parts) >= 3:
-                    # 有子目录：/user_mmd/subfolder/model.pmx
+                    # Subdirectory present: /user_mmd/subfolder/model.pmx.
                     mmd_dir_name = path_parts[1]  # subfolder
                     mmd_base = getattr(config_mgr, 'mmd_dir', config_mgr.project_root / "user_mmd")
                     source_dir = mmd_base / mmd_dir_name
@@ -315,7 +315,7 @@ async def prepare_workshop_upload(request: Request):
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
                 elif model_name.startswith('/user_mmd/') and len(path_parts) == 2:
-                    # 直接在 user_mmd 根目录下的文件
+                    # File directly under user_mmd.
                     mmd_filename = path_parts[1]
                     mmd_base = getattr(config_mgr, 'mmd_dir', config_mgr.project_root / "user_mmd")
                     source_file = mmd_base / mmd_filename
@@ -325,11 +325,11 @@ async def prepare_workshop_upload(request: Request):
                         logger.info(f"MMD模型文件已复制到临时目录: {mmd_dest}")
                         model_copied = True
                 elif model_name.startswith('/static/mmd/'):
-                    # static 目录下的 MMD
+                    # MMD under static.
                     rel_path = model_name[len('/static/mmd/'):]
                     source_file = config_mgr.project_root / "static" / "mmd" / rel_path
                     if source_file.exists():
-                        # 复制包含该文件的目录
+                        # Copy the directory containing the file.
                         source_dir = source_file.parent
                         dest_name = source_dir.name
                         model_dest_dir = os.path.join(temp_item_dir, dest_name)
@@ -337,7 +337,7 @@ async def prepare_workshop_upload(request: Request):
                         logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
                         model_copied = True
                 elif model_name.startswith('/workshop/'):
-                    # Workshop MMD 模型：通过 item_id 查找安装目录，复制模型所在目录
+                    # Workshop MMD: find the installation by item_id and copy the directory containing the model.
                     ws_parts = model_name.lstrip('/').split('/')
                     if len(ws_parts) >= 3:
                         ws_item_id = ws_parts[1]
@@ -350,7 +350,7 @@ async def prepare_workshop_upload(request: Request):
                                     if installed_folder:
                                         source_file = PathLib(installed_folder) / ws_rel_path
                                         if source_file.exists():
-                                            # MMD 需要复制整个模型目录（包含纹理等资源）
+                                            # MMD requires its entire model directory, including textures and other resources.
                                             source_dir = source_file.parent
                                             dest_name = source_dir.name
                                             model_dest_dir = os.path.join(temp_item_dir, dest_name)
@@ -366,22 +366,22 @@ async def prepare_workshop_upload(request: Request):
                     "error": f"模型文件不存在: {model_name}"
                 }, status_code=404)
         else:
-            # Live2D 模型：使用原有逻辑
+            # Live2D: use existing behavior.
             model_dir, _ = find_model_directory(model_name)
             if not model_dir or not os.path.exists(model_dir):
-                # 清理临时目录
+                # Clean up temporary directories.
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": f"模型目录不存在: {model_name}"
                 }, status_code=404)
             
-            # 复制整个模型目录到临时目录
+            # Copy the entire model directory to the temporary directory.
             model_dest_dir = os.path.join(temp_item_dir, model_name)
             await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
             logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
         
-        # 如果角色卡已有卡面，则默认复制为 Workshop 预览图；没有卡面时保持原逻辑不变。
+        # If the character card has cover art, copy it as the workshop preview by default; otherwise retain existing behavior.
         preview_image_path = None
         if character_card_name:
             try:
@@ -395,7 +395,7 @@ async def prepare_workshop_upload(request: Request):
                 preview_image_path = None
                 logger.warning(f"复制角色卡卡面作为默认预览图失败，将保持预览图不变: {preview_error}")
         
-        # 读取 .workshop_meta.json（如果存在）
+        # Read .workshop_meta.json if present.
         workshop_item_id = None
         if character_card_name:
             meta_data = await asyncio.to_thread(read_workshop_meta, character_card_name)
@@ -407,7 +407,7 @@ async def prepare_workshop_upload(request: Request):
             "success": True,
             "temp_folder": temp_item_dir,
             "item_id": item_id,
-            "workshop_item_id": workshop_item_id,  # 如果存在，返回已存在的物品ID
+            "workshop_item_id": workshop_item_id,  # Return an existing item ID if found.
             "message": "上传准备完成"
         }
         if preview_image_path:
@@ -445,15 +445,15 @@ async def cleanup_temp_folder(request: Request):
                 "error": "缺少临时目录路径"
             }, status_code=400)
         
-        # 安全检查：确保临时目录在WorkshopExport下
+        # Security: ensure the temporary directory is under WorkshopExport.
         base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
         
-        # 规范化路径（使用realpath处理符号链接和相对路径）
+        # Normalize with realpath to resolve symlinks and relative paths.
         temp_folder = os.path.realpath(os.path.normpath(temp_folder))
         workshop_export_dir = os.path.realpath(os.path.normpath(workshop_export_dir))
         
-        # 验证临时目录在WorkshopExport下（使用commonpath更可靠）
+        # Verify containment under WorkshopExport using the more reliable commonpath.
         try:
             common_path = os.path.commonpath([temp_folder, workshop_export_dir])
             if common_path != workshop_export_dir:
@@ -462,13 +462,13 @@ async def cleanup_temp_folder(request: Request):
                     "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir}"
                 }, status_code=403)
         except ValueError:
-            # 如果路径不在同一驱动器上，commonpath会抛出ValueError
+            # commonpath raises ValueError for paths on different drives.
             return JSONResponse({
                 "success": False,
                 "error": "临时目录路径不在允许的范围内（路径验证失败）"
             }, status_code=403)
         
-        # 删除临时目录
+        # Delete the temporary directory.
         if os.path.exists(temp_folder):
             await asyncio.to_thread(_delete_content_folder, temp_folder)
             logger.info(f"临时目录已删除: {temp_folder}")
@@ -501,7 +501,7 @@ async def publish_to_workshop(request: Request):
     steamworks = get_steamworks()
     from steamworks.exceptions import SteamNotLoadedException
     
-    # 检查Steamworks是否初始化成功
+    # Check successful Steamworks initialization.
     if steamworks is None:
         return JSONResponse(content={
             "success": False,
@@ -512,13 +512,13 @@ async def publish_to_workshop(request: Request):
     try:
         data = await request.json()
         
-        # 验证必要的字段
+        # Validate required fields.
         required_fields = ['title', 'content_folder', 'visibility']
         for field in required_fields:
             if field not in data:
                 return JSONResponse(content={"success": False, "error": f"缺少必要字段: {field}"}, status_code=400)
         
-        # 提取数据
+        # Extract data.
         title = data['title']
         content_folder = data['content_folder']
         visibility = int(data['visibility'])
@@ -526,11 +526,11 @@ async def publish_to_workshop(request: Request):
         description = data.get('description', '')
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
-        character_card_name = data.get('character_card_name')  # 新增：角色卡名称
+        character_card_name = data.get('character_card_name')  # Added: character-card name.
         
-        # 规范化路径处理 - 改进版，确保在所有情况下都能正确处理路径
+        # Improved path normalization handles paths correctly in all cases.
         content_folder = unquote(content_folder)
-        # 安全检查：验证content_folder是否在允许的范围内
+        # Security: verify content_folder is in the allowed area.
         try:
             content_folder = _assert_under_base(
                 content_folder, await get_workshop_path_async()
@@ -542,18 +542,18 @@ async def publish_to_workshop(request: Request):
                 "message": "指定的内容文件夹不在允许的范围内"
             }, status_code=403)
 
-        # 处理Windows路径，确保使用正确的路径分隔符
+        # Use correct separators for Windows paths.
         if os.name == 'nt':
-            # 将所有路径分隔符统一为反斜杠
+            # Normalize all separators to backslashes.
             content_folder = content_folder.replace('/', '\\')
-            # 清理可能的错误前缀
+            # Remove potentially invalid prefixes.
             if content_folder.startswith('\\\\'):
                 content_folder = content_folder[2:]
         else:
-            # 非Windows系统使用正斜杠
+            # Non-Windows systems use forward slashes.
             content_folder = content_folder.replace('\\', '/')
         
-        # 验证内容文件夹存在并是一个目录
+        # Verify the content folder exists and is a directory.
         if not os.path.exists(content_folder):
             return JSONResponse(content={
                 "success": False,
@@ -568,7 +568,7 @@ async def publish_to_workshop(request: Request):
                 "message": f"指定的路径不是有效的文件夹: {content_folder}"
             }, status_code=400)
         
-        # 增加内容文件夹检查：确保文件夹中至少有文件，验证文件夹是否包含内容
+        # Also verify the folder contains at least one file to upload.
         if not any(os.scandir(content_folder)):
             return JSONResponse(content={
                 "success": False,
@@ -576,7 +576,7 @@ async def publish_to_workshop(request: Request):
                 "message": f"内容文件夹为空，请确保包含要上传的文件: {content_folder}"
             }, status_code=400)
         
-        # 检查文件夹权限
+        # Check folder permissions.
         if not os.access(content_folder, os.R_OK):
             return JSONResponse(content={
                 "success": False,
@@ -610,7 +610,7 @@ async def publish_to_workshop(request: Request):
                             "workshop_item_id": str(existing_item_id),
                         }, status_code=409)
         
-        # 处理预览图片路径
+        # Process the preview-image path.
         if preview_image:
             preview_image = unquote(preview_image)
             if os.name == 'nt':
@@ -620,9 +620,9 @@ async def publish_to_workshop(request: Request):
             else:
                 preview_image = preview_image.replace('\\', '/')
             
-            # 验证预览图片存在
+            # Verify preview-image existence.
             if not os.path.exists(preview_image):
-                # 如果指定的预览图不存在，尝试在内容文件夹中查找默认预览图
+                # If the specified preview is missing, search for a default preview in the content folder.
                 logger.warning(f'指定的预览图片不存在，尝试在内容文件夹中查找: {preview_image}')
                 auto_preview = find_preview_image_in_folder(content_folder)
                 if auto_preview:
@@ -639,36 +639,36 @@ async def publish_to_workshop(request: Request):
                     "message": f"预览图片路径不是有效的文件: {preview_image}"
                 }, status_code=400)
             
-            # 确保预览图片复制到内容文件夹并统一命名为preview.*
+            # Copy the preview into the content folder with canonical name preview.*.
             if preview_image:
-                # 获取原始文件扩展名
+                # Get the original file extension.
                 file_extension = os.path.splitext(preview_image)[1].lower()
-                # 在内容文件夹中创建统一命名的预览图片路径
+                # Build the canonical preview path within the content folder.
                 new_preview_path = os.path.join(content_folder, f'preview{file_extension}')
                 
-                # 复制预览图片到内容文件夹
+                # Copy the preview into the content folder.
                 try:
                     import shutil
                     await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
                     logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
-                    # 使用新的统一命名的预览图片路径
+                    # Use the new canonical preview path.
                     preview_image = new_preview_path
                 except Exception as e:
                     logger.error(f'复制预览图片到内容文件夹失败: {e}')
-                    # 如果复制失败，继续使用原始路径
+                    # If copying fails, continue with the original path.
                     logger.warning(f'继续使用原始预览图片路径: {preview_image}')
         else:
-            # 如果未指定预览图片，尝试自动查找
+            # If no preview is specified, try automatic discovery.
             auto_preview = find_preview_image_in_folder(content_folder)
             if auto_preview:
                 logger.info(f'自动找到预览图片: {auto_preview}')
                 preview_image = auto_preview
                 
-                # 确保自动找到的预览图片也统一命名为preview.*
+                # Ensure automatically discovered previews also use preview.*.
                 if preview_image:
-                    # 获取原始文件扩展名
+                    # Get the original file extension.
                     file_extension = os.path.splitext(preview_image)[1].lower()
-                    # 如果不是统一命名，重命名
+                    # Rename if not already canonical.
                     if not os.path.basename(preview_image).startswith('preview.'):
                         new_preview_path = os.path.join(content_folder, f'preview{file_extension}')
                         try:
@@ -678,10 +678,10 @@ async def publish_to_workshop(request: Request):
                             preview_image = new_preview_path
                         except Exception as e:
                             logger.error(f'重命名自动预览图片失败: {e}')
-                            # 如果重命名失败，继续使用原始路径
+                            # If renaming fails, continue with the original path.
                             logger.warning(f'继续使用原始预览图片路径: {preview_image}')
 
-        # 记录将要上传的内容信息
+        # Record information about the upload content.
         logger.info(f"准备发布创意工坊物品: {title}")
         logger.info(f"内容文件夹: {content_folder}")
         logger.info(f"预览图片: {preview_image or '无'}")
@@ -700,7 +700,7 @@ async def publish_to_workshop(request: Request):
                 "message": "macOS Apple Silicon 环境下的 SteamworksPy 上传回调会导致主进程崩溃，请改用 Windows/Linux 环境或等待底层库修复。"
             }, status_code=503)
         
-        # 使用线程池执行Steamworks API调用（因为这些是阻塞操作）
+        # Run blocking Steamworks API calls in the thread pool.
         loop = asyncio.get_event_loop()
         try:
             published_file_id = await loop.run_in_executor(
@@ -725,13 +725,13 @@ async def publish_to_workshop(request: Request):
         
         logger.info(f"成功发布创意工坊物品，ID: {published_file_id}")
         
-        # 上传成功后，更新 .workshop_meta.json 并保存快照
+        # After successful upload, update .workshop_meta.json and save a snapshot.
         if character_card_name and published_file_id:
             try:
-                # 计算内容哈希
+                # Calculate the content hash.
                 content_hash = calculate_content_hash(content_folder)
                 
-                # 构建上传快照
+                # Build the upload snapshot.
                 uploaded_snapshot = {
                     'description': description,
                     'tags': tags,
@@ -739,7 +739,7 @@ async def publish_to_workshop(request: Request):
                     'visibility': visibility
                 }
                 
-                # 尝试从临时文件夹中读取角色卡数据
+                # Try reading character-card data from the temporary folder.
                 try:
                     import glob
                     chara_files = glob.glob(os.path.join(content_folder, "*.chara.json"))
@@ -748,11 +748,11 @@ async def publish_to_workshop(request: Request):
                         uploaded_snapshot['character_data'] = chara_data
                         logger.info(f"已从临时文件夹读取角色卡数据")
                     
-                    # 获取模型名称（从文件夹中查找模型目录）
+                    # Get the model name by finding the model directory.
                     for item in os.listdir(content_folder):
                         item_path = os.path.join(content_folder, item)
                         if os.path.isdir(item_path) and not item.startswith('.'):
-                            # 检查是否是 Live2D 模型目录（包含 .model3.json 或 model.json）
+                            # Detect Live2D directories containing .model3.json or model.json.
                             model_files = glob.glob(os.path.join(item_path, "*.model3.json")) + \
                                          glob.glob(os.path.join(item_path, "*.model.json")) + \
                                          glob.glob(os.path.join(item_path, "model.json"))
@@ -763,7 +763,7 @@ async def publish_to_workshop(request: Request):
                 except Exception as read_error:
                     logger.warning(f"读取角色卡数据时出错: {read_error}")
                 
-                # 写入元数据文件（包含快照）
+                # Write metadata including the snapshot.
                 await asyncio.to_thread(
                     write_workshop_meta,
                     character_card_name,
@@ -774,7 +774,7 @@ async def publish_to_workshop(request: Request):
                 logger.info(f"已更新角色卡 {character_card_name} 的 .workshop_meta.json（包含快照）")
             except Exception as e:
                 logger.error(f"更新 .workshop_meta.json 失败: {e}")
-                # 不阻止成功响应，只记录错误
+                # Log errors without blocking the successful response.
         
         return JSONResponse(content={
             "success": True,
@@ -841,15 +841,15 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
     """
     with publish_lock:
         try:
-            # 在函数内部添加导入语句，确保枚举在函数作用域内可用
+            # Import inside the function so enums are available in its scope.
             from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
     
-            # 优先从 .workshop_meta.json 读取物品ID
+            # Prefer the item ID from .workshop_meta.json.
             item_id = None
             if character_card_name:
                 try:
-                    # 注意：_publish_workshop_item 是 sync def，在 worker 线程里跑，不能用 await。
-                    # 其它 async 调用点已全部走 asyncio.to_thread，lint 已覆盖。
+                    # _publish_workshop_item is synchronous and runs in a worker thread; await is unavailable here.
+                    # Other async call sites all use asyncio.to_thread, enforced by lint.
                     meta_data = read_workshop_meta(character_card_name)
                     if meta_data and meta_data.get('workshop_item_id'):
                         item_id = int(meta_data.get('workshop_item_id'))
@@ -857,19 +857,19 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 except Exception as e:
                     logger.warning(f"从 .workshop_meta.json 读取物品ID失败: {e}")
             
-            # 如果 .workshop_meta.json 中没有，尝试从旧标记文件读取（向后兼容）
+            # If metadata lacks the ID, try legacy marker files for backward compatibility.
             if item_id is None:
                 try:
                     if os.path.exists(content_folder) and os.path.isdir(content_folder):
-                        # 查找以steam_workshop_id_开头的txt文件
+                        # Find txt files starting with steam_workshop_id_.
                         import glob
                         marker_files = glob.glob(os.path.join(content_folder, "steam_workshop_id_*.txt"))
                         
                         if marker_files:
-                            # 使用第一个找到的标记文件
+                            # Use the first discovered marker file.
                             marker_file = marker_files[0]
                             
-                            # 从文件名中提取物品ID
+                            # Extract the item ID from the filename.
                             import re
                             match = re.search(r'steam_workshop_id_([0-9]+)\.txt', marker_file)
                             if match:
@@ -877,14 +877,14 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                                 logger.info(f"检测到物品已上传，找到标记文件: {marker_file}，物品ID: {item_id}")
                 except Exception as e:
                     logger.error(f"检查上传标记文件时出错: {e}")
-            # 即使检查失败，也继续尝试上传，不阻止功能
+            # Continue attempting upload even if checking fails.
         
             try:
-                # 再次验证内容文件夹，确保在多线程环境中仍然有效
+                # Revalidate the content folder to ensure validity under multithreading.
                 if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
                     raise Exception(f"内容文件夹不存在或无效: {content_folder}")
             
-                # 统计文件夹内容，确保有文件可上传
+                # Count folder contents to ensure files are available for upload.
                 file_count = 0
                 for root, dirs, files in os.walk(content_folder):
                     file_count += len(files)
@@ -894,12 +894,12 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
                 logger.info(f"内容文件夹验证通过，包含 {file_count} 个文件")
             
-                # 获取当前应用ID
+                # Get the current application ID.
                 app_id = steamworks.app_id
                 logger.info(f"使用应用ID: {app_id} 进行创意工坊上传")
             
-                # 增强的Steam连接状态验证
-                # 基础连接状态检查
+                # Enhanced Steam connection-state validation.
+                # Basic connection-state check.
                 is_steam_running = steamworks.IsSteamRunning()
                 try:
                     is_overlay_enabled = steamworks.IsOverlayEnabled()
@@ -909,12 +909,12 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 is_logged_on = steamworks.Users.LoggedOn()
                 steam_id = steamworks.Users.GetSteamID()
             
-                # 应用相关权限检查
+                # Application-related permission check.
                 app_owned = steamworks.Apps.IsAppInstalled(app_id)
                 app_owned_license = steamworks.Apps.IsSubscribedApp(app_id)
                 app_subscribed = steamworks.Apps.IsSubscribed()
             
-                # 记录详细的连接状态
+                # Record detailed connection state.
                 logger.info(f"Steam客户端运行状态: {is_steam_running}")
                 logger.info(
                     "Steam覆盖层启用状态: "
@@ -926,7 +926,7 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 logger.info(f"应用ID {app_id} 订阅许可状态: {app_owned_license}")
                 logger.info(f"当前应用订阅状态: {app_subscribed}")
             
-                # 预检查连接状态，如果存在问题则提前报错
+                # Preflight connection checks report problems early.
                 if not is_steam_running:
                     raise Exception("Steam客户端未运行，请先启动Steam客户端")
                 if not is_logged_on:
@@ -934,10 +934,10 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
         
             except Exception as e:
                 logger.error(f"Steam连接状态验证失败: {e}")
-                # 即使验证失败也继续执行，但提供警告
+                # Continue despite failed validation, but warn.
                 logger.warning("继续尝试创意工坊上传，但可能会因为Steam连接问题而失败")
         
-            # 错误映射表，根据错误码提供更具体的错误信息
+            # Error-code mapping supplies more specific messages.
             error_codes = {
                 1: "成功",
                 10: "权限不足 - 可能需要登录Steam客户端或缺少创意工坊上传权限",
@@ -948,18 +948,18 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 116: "请求超时 - 与Steam服务器通信超时"
             }
         
-            # 如果没有找到现有物品ID，则创建新物品
+            # Create a new item if no existing ID is found.
             if item_id is None:
-                # 对于新物品，先创建一个空物品
-                # 使用回调来处理创建结果
+                # For new items, create an empty item first.
+                # Handle creation results with callbacks.
                 created_item_id = [None]
                 created_event = threading.Event()
-                create_result = [None]  # 用于存储创建结果
+                create_result = [None]  # Store creation results.
             
                 def onCreateItem(result):
                     nonlocal created_item_id, create_result
                     create_result[0] = result.result
-                    # 直接从结构体读取字段而不是字典
+                    # Read struct fields directly, not as a dictionary.
                     if result.result == 1:  # k_EResultOK
                         created_item_id[0] = result.publishedFileId
                         logger.info(f"成功创建创意工坊物品，ID: {created_item_id[0]}")
@@ -969,42 +969,42 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                         logger.error(f"创建创意工坊物品失败，错误码: {result.result} ({error_msg})")
                         created_event.set()
             
-                # 设置创建物品回调
+                # Set the item-creation callback.
                 steamworks.Workshop.SetItemCreatedCallback(onCreateItem)
             
-                # 创建新的创意工坊物品（使用文件类型枚举表示UGC）
+                # Create a workshop item using the UGC file-type enum.
                 logger.info(f"开始创建创意工坊物品: {title}")
                 logger.info(f"调用SteamWorkshop.CreateItem({app_id}, {EWorkshopFileType.COMMUNITY})")
                 steamworks.Workshop.CreateItem(app_id, EWorkshopFileType.COMMUNITY)
             
-                # 等待创建完成或超时，增加超时时间并添加调试信息
+                # Wait for creation or timeout, with increased timeout and diagnostics.
                 logger.info("等待创意工坊物品创建完成...")
-                # 使用循环等待，定期调用run_callbacks处理回调
+                # Wait in a loop, periodically processing callbacks via run_callbacks.
                 start_time = time.time()
-                timeout = 60  # 超时时间60秒
+                timeout = 60  # 60-second timeout.
                 while time.time() - start_time < timeout:
                     if created_event.is_set():
                         break
-                    # 定期调用run_callbacks处理Steam API回调
+                    # Periodically process Steam API callbacks via run_callbacks.
                     try:
                         steamworks.run_callbacks()
                     except Exception as e:
                         logger.error(f"执行Steam回调时出错: {str(e)}")
-                    # noqa: BLOCKING-OK - _publish_workshop_item 是同步函数，上层通过
-                    # loop.run_in_executor(None, lambda: _publish_workshop_item(...)) 调度到线程池，
-                    # 因此此处 time.sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
-                    time.sleep(0.1)  # 每100毫秒检查一次
+                    # noqa: BLOCKING-OK - _publish_workshop_item is synchronous; its caller schedules
+                    # loop.run_in_executor(None, lambda: _publish_workshop_item(...)) in the thread pool,
+                    # so time.sleep blocks only the executor worker, never the main event loop.
+                    time.sleep(0.1)  # Check every 100 milliseconds.
             
                 if not created_event.is_set():
                     logger.error("创建创意工坊物品超时，可能是网络问题或Steam服务暂时不可用")
                     raise TimeoutError("创建创意工坊物品超时")
             
                 if created_item_id[0] is None:
-                    # 提供更具体的错误信息
+                    # Supply more specific error messages.
                     error_msg = error_codes.get(create_result[0], f"未知错误码: {create_result[0]}")
                     logger.error(f"创建创意工坊物品失败: {error_msg}")
                 
-                    # 针对错误码10（权限不足）提供更详细的错误信息和解决方案
+                    # Provide detailed explanations and remedies for error 10 (insufficient permissions).
                     detailed_error = error_msg
                     if create_result[0] == 10:
                         detailed_error = f"""权限不足 - 请确保:
@@ -1021,33 +1021,33 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                     logger.error(f"- 用户登录状态: {steamworks.Users.LoggedOn()}")
                     logger.error(f"- 应用订阅状态: {steamworks.Apps.IsSubscribedApp(app_id)}")
                     raise Exception(f"创建创意工坊物品失败: {detailed_error} (错误码: {create_result[0]})")
-                # 将新创建的物品ID赋值给item_id变量
+                # Assign the new item ID to item_id.
                 item_id = created_item_id[0]
             else:
                 logger.info(f"使用现有物品ID进行更新: {item_id}")       
         
-            # 开始更新物品
+            # Begin updating the item.
             logger.info(f"开始更新物品内容: {title}")
             update_handle = steamworks.Workshop.StartItemUpdate(app_id, item_id)
         
-            # 设置物品属性
+            # Set item properties.
             logger.info("设置物品基本属性...")
             steamworks.Workshop.SetItemTitle(update_handle, title)
             if description:
                 steamworks.Workshop.SetItemDescription(update_handle, description)
         
-            # 设置物品内容 - 这是文件上传的核心步骤
+            # Set item content, the central file-upload step.
             logger.info(f"设置物品内容文件夹: {content_folder}")
             content_set_result = steamworks.Workshop.SetItemContent(update_handle, content_folder)
             logger.info(f"内容设置结果: {content_set_result}")
             
-            # 设置预览图片（如果提供）
+            # Set the preview image if supplied.
             if preview_image:
                 logger.info(f"设置预览图片: {preview_image}")
                 preview_set_result = steamworks.Workshop.SetItemPreview(update_handle, preview_image)
                 logger.info(f"预览图片设置结果: {preview_set_result}")
         
-            # 导入枚举类型并将整数值转换为枚举对象
+            # Import enums and convert integer values to enum objects.
             if visibility == 0:
                 visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
             elif visibility == 1:
@@ -1055,26 +1055,26 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             elif visibility == 2:
                 visibility_enum = ERemoteStoragePublishedFileVisibility.PRIVATE
             else:
-                # 默认设为公开
+                # Default to public.
                 visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
                 
-            # 设置物品可见性
+            # Set item visibility.
             logger.info(f"设置物品可见性: {visibility_enum}")
             steamworks.Workshop.SetItemVisibility(update_handle, visibility_enum)
             
-            # 设置标签（如果有）
+            # Set tags if any.
             if tags:
                 logger.info(f"设置物品标签: {tags}")
                 steamworks.Workshop.SetItemTags(update_handle, tags)
             
-            # 提交更新，使用回调来处理结果
+            # Submit updates and handle results via callback.
             updated = [False]
             error_code = [0]
             update_event = threading.Event()
             
             def onSubmitItemUpdate(result):
                 nonlocal updated, error_code
-                # 直接从结构体读取字段而不是字典
+                # Read struct fields directly, not as a dictionary.
                 error_code[0] = result.result
                 if result.result == 1:  # k_EResultOK
                     updated[0] = True
@@ -1083,27 +1083,27 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                     logger.error(f"提交创意工坊物品更新失败，错误码: {result.result}")
                 update_event.set()
             
-            # 设置更新物品回调
+            # Set the item-update callback.
             steamworks.Workshop.SetItemUpdatedCallback(onSubmitItemUpdate)
             
-            # 提交更新
+            # Submit the update.
             logger.info(f"开始提交物品更新，更新说明: {change_note}")
             steamworks.Workshop.SubmitItemUpdate(update_handle, change_note)
             
-            # 等待更新完成或超时，增加超时时间并添加调试信息
+            # Wait for update completion or timeout, with increased timeout and diagnostics.
             logger.info("等待创意工坊物品更新完成...")
-            # 使用循环等待，定期调用run_callbacks处理回调
+            # Wait in a loop, periodically processing callbacks via run_callbacks.
             start_time = time.time()
-            timeout = 180  # 超时时间180秒
+            timeout = 180  # 180-second timeout.
             last_progress = -1
             
             while time.time() - start_time < timeout:
                 if update_event.is_set():
                     break
-                # 定期调用run_callbacks处理Steam API回调
+                # Periodically process Steam API callbacks via run_callbacks.
                 try:
                     steamworks.run_callbacks()
-                    # 记录上传进度（更详细的进度报告）
+                    # Record upload progress with more detailed reporting.
                     if update_handle:
                         progress = steamworks.Workshop.GetItemUpdateProgress(update_handle)
                         if 'status' in progress:
@@ -1117,22 +1117,22 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                             
                             if 'progress' in progress:
                                 current_progress = int(progress['progress'] * 100)
-                                # 只有进度有明显变化时才记录日志
+                                # Log only substantial progress changes.
                                 if current_progress != last_progress:
                                     logger.info(f"上传状态: {status_text}, 进度: {current_progress}%")
                                     last_progress = current_progress
                 except Exception as e:
                     logger.error(f"执行Steam回调时出错: {str(e)}")
-                # noqa: BLOCKING-OK - 同 Site 2，_publish_workshop_item 在 run_in_executor
-                # 线程池中运行，此 sleep 只阻塞 executor 工作线程，不阻塞主事件循环。
-                time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
+                # noqa: BLOCKING-OK - As at Site 2, _publish_workshop_item runs in the run_in_executor
+                # thread pool, so this sleep blocks only its worker, not the main event loop.
+                time.sleep(0.5)  # Check every 500 milliseconds to reduce logs.
             
             if not update_event.is_set():
                 logger.error("提交创意工坊物品更新超时，可能是网络问题或Steam服务暂时不可用")
                 raise TimeoutError("提交创意工坊物品更新超时")
             
             if not updated[0]:
-                # 根据错误码提供更详细的错误信息
+                # Supply more detailed messages by error code.
                 if error_code[0] == 25:  # LIMIT_EXCEEDED
                     error_msg = "提交创意工坊物品更新失败：内容超过Steam限制（错误码25）。请检查内容大小、文件数量或其他限制。"
                 else:
@@ -1142,7 +1142,7 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
             logger.info(f"创意工坊物品上传成功完成！物品ID: {item_id}")
             
-            # 在原文件夹创建带物品ID的txt文件，标记为已上传
+            # Create an item-ID txt marker in the original folder to mark successful upload.
             try:
                 marker_file_path = os.path.join(content_folder, f"steam_workshop_id_{item_id}.txt")
                 with open(marker_file_path, 'w', encoding='utf-8') as f:
@@ -1152,7 +1152,7 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 logger.info(f"已在原文件夹创建上传标记文件: {marker_file_path}")
             except Exception as e:
                 logger.error(f"创建上传标记文件失败: {e}")
-                # 即使创建标记文件失败，也不影响物品上传的成功返回
+                # Failure to create the marker must not change the successful upload result.
 
             return item_id
         except Exception as e:

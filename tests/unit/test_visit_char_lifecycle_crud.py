@@ -50,7 +50,7 @@ def env(tmp_path, monkeypatch):
     cm, path = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"},
                                               "Other": {"昵称": "Other"}})
     config_dir = Path(cm.config_dir)
-    # 串门人设按 uid 存在 config_dir/visit_persona 下：指向同一个 tmp 配置目录
+    # Visit personas are stored by uid under config_dir/visit_persona; point to the same temporary configuration directory
     monkeypatch.setattr(persona._hooks, "config_dir", lambda: config_dir)
     with patch("utils.config_manager._config_manager", cm):
         yield cm, path, config_dir
@@ -104,7 +104,7 @@ async def _seed(cm, config_dir, name="Old"):
     return roster, uid, persona_path
 
 
-# ── 改名 ──────────────────────────────────────────────────────────────
+# ── Renaming ──────────────────────────────────────────────────────────────
 
 
 async def test_rename_without_visit_data_is_unchanged(env):
@@ -124,13 +124,13 @@ async def test_rename_migrates_roster_and_spools(env):
     assert (await VisitSpool(config_dir, vid(1)).read_state())["own_char"] == "New"
     assert (await VisitSpool(config_dir, vid(1)).read_header())["own_char"] == "New"
     assert "pending_rename" not in _peers(config_dir)
-    assert persona_path.exists()                                   # 人设按 uid 存，改名不动
+    assert persona_path.exists()                                   # Personas are stored by uid and unchanged by rename
 
 
 async def test_rename_migrates_while_another_character_is_visiting(env):
     cm, _path, config_dir = env
     roster, _old_uid, _persona = await _seed(cm, config_dir)
-    # 另一个角色的串门正在写 spool（#3372 之后日常就会碰到）
+    # Another character's visit is writing spool, a normal occurrence after #3372
     from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id
     from tests.unit.visit_memory_test_helpers import OWN_A, TAG_X
 
@@ -144,7 +144,7 @@ async def test_rename_migrates_while_another_character_is_visiting(env):
         status, body = await _rename(cm, "Old", "New")
     finally:
         await live.close()
-    # 变异：别的角色在写时迁移报 busy → partial_success、标记残留，必红
+    # Mutation: reporting busy during another character's write causes partial_success and leftover markers, which must fail
     assert status == 200 and body["success"] is True and "partial_success" not in body
     assert await roster.get_char_entry(PEER_X, "New") is not None
     assert (await VisitSpool(config_dir, vid(1)).read_state())["own_char"] == "New"
@@ -197,9 +197,9 @@ async def test_cancellation_during_settlement_is_propagated(env, monkeypatch, op
         await asyncio.wait_for(entered.wait(), 3)
         task.cancel()
         await asyncio.sleep(0.02)
-        assert not task.done()                     # 收尾照常做完
+        assert not task.done()                     # Finalization still completes normally
         release.set()
-        # 变异：丢掉取消标志、正常返回必红
+        # Mutation: dropping cancellation and returning normally must fail
         with pytest.raises(asyncio.CancelledError):
             await task
     data = _peers(config_dir)
@@ -209,7 +209,7 @@ async def test_cancellation_during_settlement_is_propagated(env, monkeypatch, op
 async def test_rename_refused_while_an_earlier_rename_cannot_be_reconciled(env):
     cm, path, config_dir = env
     await _seed(cm, config_dir)
-    # 上一次改名的两个名字都在、又没有 uid：方向判不出来（变异：直接覆盖旧标记必红）
+    # Both names from the prior rename exist without uid, so direction is ambiguous; directly overwriting the old marker must fail
     stale = {"old": "Old", "new": "Other"}
     await set_roster_marker(config_dir, "pending_rename", stale)
     before = path.read_bytes()
@@ -233,7 +233,7 @@ async def test_rename_into_a_name_still_being_retired_is_refused(env, monkeypatc
     assert path.read_bytes() == before
 
 
-# ── 删除 ──────────────────────────────────────────────────────────────
+# ── Deletion ──────────────────────────────────────────────────────────────
 
 
 async def test_delete_without_visit_data_is_unchanged(env):
@@ -277,15 +277,15 @@ async def test_failed_retirement_blocks_the_name_until_it_is_finished(env, monke
 
     monkeypatch.setattr(character_hooks, "retire_persona", locked)
     status, body = await _delete(cm, "Old")
-    # 删除已提交、不回滚；退役没做完：标记保留
+    # Deletion committed without rollback, but retirement incomplete: retain the marker
     assert status == 200 and body["success"] is True and body["visit_data_retire_pending"] is True
     assert "Old" not in cm.load_characters()["猫娘"]
     assert _peers(config_dir)["pending_retire"] == [{"name": "Old", "character_uid": uid, "roster_done": True}]
-    # 标记在时同名新建一律 409（变异：去掉 add_catgirl 的检查必红）
+    # While marked, creating the same name always returns 409; removing add_catgirl's check must fail mutation testing
     status, body = await _add(cm, "Old")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
     assert "Old" not in cm.load_characters()["猫娘"]
-    # 退役能做完了：新建时先补完退役，再放行
+    # Retirement can now finish: complete it before allowing creation
     monkeypatch.setattr(character_hooks, "retire_persona", real)
     status, body = await _add(cm, "Old")
     assert status == 200 and body["success"] is True
@@ -300,7 +300,7 @@ async def test_add_without_visit_data_is_unchanged(env):
     assert not (config_dir / "visit_peers.json").exists()
 
 
-# ── 角色卡保存 ────────────────────────────────────────────────────────
+# ── Character-card saving ────────────────────────────────────────────────────────
 
 
 async def _save_card(cm, name):
@@ -327,7 +327,7 @@ async def test_card_save_of_a_new_character_honours_a_pending_retirement(env, mo
     status, body = await _save_card(cm, "Gone")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
     assert "Gone" not in cm.load_characters()["猫娘"]
-    # 已有角色的保存不受影响；没有标记时新建照常
+    # Existing-character saves remain unaffected; without markers, creation proceeds normally
     status, body = await _save_card(cm, "Other")
     assert status == 200 and body["success"] is True
     status, body = await _save_card(cm, "Fresh")
@@ -335,7 +335,7 @@ async def test_card_save_of_a_new_character_honours_a_pending_retirement(env, mo
 
 
 
-# ── 工坊退订 ──────────────────────────────────────────────────────────
+# ── Workshop unsubscribe ──────────────────────────────────────────────────────────
 
 LAN_UID = "a1" * 16
 OTHER_UID = "b2" * 16
@@ -410,7 +410,7 @@ async def test_unsubscribe_whose_config_write_fails_keeps_the_visit_data(tmp_pat
     assert status == 500 and body["code"] == "LOCAL_CONFIG_CLEANUP_FAILED" and steam_calls == []
     assert await VisitSpool(config.config_dir, vid(1)).read_state() is not None
     assert await roster.get_char_entry(PEER_X, "Lan") is not None and persona_path.exists()
-    # 删除没提交：标记按配置撤掉（变异：失败路径不收口标记必红）
+    # Deletion uncommitted: remove markers according to configuration; failing to finalize markers on failure must fail mutation testing
     assert "pending_retire" not in _peers(config.config_dir)
 
 
@@ -420,13 +420,13 @@ async def test_unsubscribe_aborts_when_the_retire_marker_cannot_be_written(tmp_p
     (config.config_dir / "visit_peers.json").write_text("{broken", encoding="utf-8")
     before = json.loads(json.dumps(config.characters))
     (status, body), steam_calls = await _unsubscribe(monkeypatch, config)
-    # 记不上标记就不提交删除（否则串门残留没人认领），也不发 Steam 退订
+    # If markers cannot persist, do not commit deletion or send Steam unsubscribe, or visit residue loses its owner
     assert status == 500 and body["code"] == "LOCAL_CONFIG_CLEANUP_FAILED"
     assert steam_calls == [] and config.saved == [] and config.characters == before
     assert await VisitSpool(config.config_dir, vid(1)).read_state() is not None
 
 
-# ── 工坊同步新建角色 ──────────────────────────────────────────────────
+# ── New character creation during Workshop synchronization ──────────────────────────────────────────────────
 
 
 async def _sync_card(cm, tmp_path, name):
@@ -455,13 +455,13 @@ async def test_workshop_sync_waits_for_a_pending_retirement_of_the_name(env, tmp
 
         monkeypatch.setattr(character_hooks, "retire_persona", locked)
     result = await _sync_card(cm, tmp_path, "Synced")
-    # 没有退役标记时照常添加、也不建串门文件；有标记时这轮跳过（变异：去掉检查必红）
+    # Without retirement markers, add normally without creating visit files; with markers, skip this round (removing the check must fail)
     assert result["added"] == (0 if retiring else 1)
     assert ("Synced" in cm.load_characters()["猫娘"]) is not retiring
     assert (config_dir / "visit_peers.json").exists() is retiring
 
 
-# ── 导入角色卡 ────────────────────────────────────────────────────────
+# ── Character-card import ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("retiring", [False, True])
@@ -507,12 +507,12 @@ async def test_a_crashing_retry_answers_409_not_500(env, monkeypatch):
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(lc, "replay_retires", broken)
-    # 变异：重试不兜底 → 新建接口 500、工坊同步整个循环中断，必红
+    # Mutation: unguarded retry produces 500 in creation and aborts the Workshop-sync loop; must fail
     status, body = await _add(cm, "Gone")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
 
 
-# ── 改名迁移没做完时的同名新建 / 删除 ─────────────────────────────────
+# ── Same-name creation/deletion during incomplete rename migration ─────────────────────────────────
 
 
 async def _failed_rename(cm, config_dir, monkeypatch):
@@ -537,14 +537,14 @@ async def _failed_rename(cm, config_dir, monkeypatch):
 async def test_creating_the_old_name_of_an_unsettled_rename_is_refused(env, monkeypatch):
     cm, _path, config_dir = env
     roster, uid, _persona, unlock = await _failed_rename(cm, config_dir, monkeypatch)
-    # 迁移仍做不完：旧名不能被新角色占用（变异：name_blocked 不看改名标记必红）
+    # Migration still incomplete: new characters cannot occupy the old name; name_blocked ignoring rename markers must fail
     status, body = await _add(cm, "Old")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
     assert "Old" not in cm.load_characters()["猫娘"]
     status, body = await _rename(cm, "Other", "Old")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
     assert "Other" in cm.load_characters()["猫娘"]
-    # 迁移能做完了：新建前先在锁内对完账，旧对端跟着 New 走，新的 Old 不继承
+    # Migration can now finish: reconcile under lock before creation; old peers follow New, while a new Old inherits none
     unlock()
     status, body = await _add(cm, "Old")
     assert status == 200 and body["success"] is True
@@ -553,7 +553,7 @@ async def test_creating_the_old_name_of_an_unsettled_rename_is_refused(env, monk
     assert await roster.get_char_entry(PEER_X, "New") is not None
     assert (await VisitSpool(config_dir, vid(1)).read_state())["own_char"] == "New"
     assert _uid(cm, "Old") != uid
-    # 之后的改名不再被这个标记挡住
+    # This marker no longer blocks later renames
     status, body = await _rename(cm, "Other", "Other2")
     assert status == 200 and body["success"] is True
 
@@ -561,7 +561,7 @@ async def test_creating_the_old_name_of_an_unsettled_rename_is_refused(env, monk
 async def test_deleting_the_new_name_of_an_unsettled_rename_retires_both_names(env, monkeypatch):
     cm, _path, config_dir = env
     roster, _uid_old, persona_path, unlock = await _failed_rename(cm, config_dir, monkeypatch)
-    # 迁移仍做不完：删除 New 会把 Old 名下的条目留下来，先拒绝（变异：删除不先对账必红）
+    # Migration still incomplete: deleting New would leave Old entries, so reject first; deletion without prior reconciliation must fail
     status, body = await _delete(cm, "New")
     assert status == 409 and body["error_code"] == "VISIT_DATA_BUSY"
     assert "New" in cm.load_characters()["猫娘"]
@@ -576,7 +576,7 @@ async def test_deleting_the_new_name_of_an_unsettled_rename_retires_both_names(e
     assert await roster.get_char_entry(PEER_X, "New") is None
     assert await VisitSpool(config_dir, vid(1)).read_state() is None
     assert not persona_path.exists()
-    # 之后新建 Old 不继承旧对端
+    # Subsequent creation of Old inherits no old peers
     status, body = await _add(cm, "Old")
     assert status == 200 and await roster.get_char_entry(PEER_X, "Old") is None
 
@@ -600,10 +600,10 @@ async def _queue_behind(config_dir, slot):
 async def test_a_queued_rename_is_reconciled_before_its_name_is_reused(env, monkeypatch):
     cm, _path, config_dir = env
     roster, _uid_old, _persona, unlock = await _failed_rename(cm, config_dir, monkeypatch)
-    # 云快照一次改了几个角色：Old -> New 排在一笔已删除角色的改名之后
+    # Cloud snapshot renamed several characters: Old -> New follows a rename for an already-deleted character
     await _queue_behind(config_dir, {"old": "Gone", "new": "Gone2", "uid": "f" * 32})
     unlock()
-    # 变异：只对账位置上那一笔必红（Old 一直被队列占着）
+    # Mutation: reconciling only the front entry must fail, since the queue keeps Old occupied
     status, body = await _add(cm, "Old")
     assert status == 200 and body["success"] is True
     data = _peers(config_dir)
@@ -615,12 +615,12 @@ async def test_a_queued_rename_is_reconciled_before_its_name_is_reused(env, monk
 async def test_a_name_queued_behind_an_ambiguous_rename_is_busy_not_ambiguous(env, monkeypatch):
     cm, _path, config_dir = env
     _roster, _uid_old, _persona, unlock = await _failed_rename(cm, config_dir, monkeypatch)
-    # 位置上是一笔永久歧义的改名（Other、New 都被别的角色占着），Old -> New 排在它后面、共用 New：
-    # 得等那笔（先迁会把两个角色的条目混到一起）
+    # The front rename is permanently ambiguous (Other and New belong to different characters); Old -> New follows it sharing New:
+    # wait for that entry, since migrating first would mix both characters' data
     ambiguous = {"old": "Other", "new": "New", "uid": _uid(cm, "Current")}
     await _queue_behind(config_dir, ambiguous)
     unlock()
-    # 挡住 Old 的不是它自己的歧义：答「稍后再试」，不能让用户去删 Other / New（变异：不看名字必红）
+    # Old is blocked by someone else's ambiguity: respond 'retry later', not advice to delete Other/New; ignoring names must fail
     assert await character_hooks.name_block_reason(cm, "Old") == (character_hooks.NAME_BUSY, frozenset())
     assert await character_hooks.name_block_reason(cm, "Other") == (
         character_hooks.NAME_AMBIGUOUS, frozenset({"Other", "New"}))
@@ -629,11 +629,11 @@ async def test_a_name_queued_behind_an_ambiguous_rename_is_busy_not_ambiguous(en
 async def test_a_rename_queued_behind_an_unrelated_ambiguous_rename_still_settles(env, monkeypatch):
     cm, _path, config_dir = env
     roster, _uid_old, _persona, unlock = await _failed_rename(cm, config_dir, monkeypatch)
-    # 位置上是另一个角色永久歧义的改名（Other 被别的角色占着），跟 Old -> New 不共用名字
+    # The front rename belongs to another character and is permanently ambiguous (Other occupied), sharing no names with Old -> New
     ambiguous = {"old": "Other", "new": "Current", "uid": _uid(cm, "Current")}
     await _queue_behind(config_dir, ambiguous)
     unlock()
-    # 歧义那笔挪到队尾，Old -> New 照常迁完（变异：位置卡住就停必红）
+    # Move that ambiguous entry to the tail and finish Old -> New normally; stopping at a blocked head must fail
     assert await character_hooks.name_block_reason(cm, "Old") is None
     assert await roster.get_char_entry(PEER_X, "New") is not None
     assert await roster.get_char_entry(PEER_X, "Old") is None
@@ -649,14 +649,14 @@ async def test_deleting_a_character_whose_rename_is_stuck_in_the_queue_retires_i
     roster, uid, _persona, unlock = await _failed_rename(cm, config_dir, monkeypatch)
     await _queue_behind(config_dir, {"old": "Other", "new": "New", "uid": _uid(cm, "Current")})
     unlock()
-    # 排队的改名轮不到（位置上的歧义改名同样占着 New）：删 New 不能被永远挡住，旧名 Old 随它一起退役（变异：不退役 Old 必红）
+    # The queued rename cannot proceed because the ambiguous head also occupies New; deletion of New must not block forever, retiring old Old with it (omitting Old retirement must fail)
     status, body = await _delete(cm, "New")
     assert status == 200 and body["success"] is True
     assert "New" not in cm.load_characters()["猫娘"]
     assert _peers(config_dir)["pending_retire"] == [lc.retire_item("Old", uid)]
     assert await roster.get_char_entry(PEER_X, "New") is None
     assert await VisitSpool(config_dir, vid(1)).read_state() is None
-    # 新建 Old 前先补完它的退役：不继承任何条目
+    # Complete Old retirement before recreating it; inherit no entries
     status, body = await _add(cm, "Old")
     assert status == 200 and await roster.get_char_entry(PEER_X, "Old") is None
     assert "pending_retire" not in _peers(config_dir)
@@ -668,10 +668,10 @@ async def test_reconciling_on_demand_refuses_a_fallback_character_config(env, mo
     unlock()
     marker = _peers(config_dir)["pending_rename"]
     original = Path(path).read_text(encoding="utf-8")
-    # 配置文件坏了：普通读取会退回缓存 / 默认角色，拿它对账可能把 New 当成已删除、清掉标记不迁移
+    # Corrupt configuration: ordinary reads fall back to cache/defaults, potentially treating New as deleted and removing markers without migration
     Path(path).write_text("{broken", encoding="utf-8")
     try:
-        # 变异：不先严格读取必红（按退回的配置对完账、放行）
+        # Mutation: reconciling fallback configuration and allowing progress without a strict read must fail
         assert await character_hooks.name_block_reason(cm, "Old") == (character_hooks.NAME_BUSY, frozenset())
         assert _peers(config_dir)["pending_rename"] == marker
         assert (await VisitSpool(config_dir, vid(1)).read_state())["own_char"] == "Old"
@@ -688,8 +688,8 @@ async def test_reconciling_on_demand_refuses_a_missing_runtime_character_config(
     original = runtime_path.read_text(encoding="utf-8")
     runtime_path.unlink()
     try:
-        # 有标记就说明这台机器有过角色：运行时文件不在不是全新安装，退回的种子角色不能拿来对账
-        # （变异：不在也放过必红）
+        # Markers prove this machine previously had characters; missing runtime files do not mean fresh installation, and fallback seed characters cannot reconcile state
+        # Mutation: allowing absent runtime files must fail
         assert await character_hooks.name_block_reason(cm, "Old") == (character_hooks.NAME_BUSY, frozenset())
         assert _peers(config_dir)["pending_rename"] == marker
     finally:
@@ -699,14 +699,14 @@ async def test_reconciling_on_demand_refuses_a_missing_runtime_character_config(
 async def test_deleting_a_character_whose_rename_waits_for_a_retirement_retires_its_other_name(env):
     cm, _path, config_dir = env
     uid = _uid(cm, "Old")
-    # Prev -> Old 已提交、迁移在等 Old 下一个已删除角色的退役补完；条目还在 Prev 下
+    # Prev -> Old committed; migration awaits retirement of a deleted character under Old, while entries remain under Prev
     roster = await seed_roster(config_dir, own_char="Prev")
     await make_visit(config_dir, vid(1), [ln(1)], own_char="Prev", own_char_uid=uid)
     await set_roster_marker(config_dir, "pending_rename", {"old": "Prev", "new": "Old", "uid": uid})
     await add_roster_marker_item(config_dir, "pending_retire", lc.retire_item("Old", "f" * 32))
     status, body = await _delete(cm, "Old")
     assert status == 200 and body["success"] is True
-    # 不是永久歧义：Prev 没被别的角色占着，随角色一起退役（变异：只看队列必红，Prev 下的对端留给将来的 Prev）
+    # Not permanent ambiguity: Prev is unoccupied by other characters, so retire it too; looking only at the queue leaves Prev peers for future Prev and must fail
     assert lc.retire_item("Prev", uid) in _peers(config_dir)["pending_retire"]
     status, body = await _add(cm, "Prev")
     assert status == 200 and await roster.get_char_entry(PEER_X, "Prev") is None
@@ -724,8 +724,8 @@ async def test_a_rename_waiting_for_a_retirement_is_busy_not_ambiguous(env, monk
         return False
 
     monkeypatch.setattr(lc, "replay_retires", still_failing)
-    # 改名在等目标名的退役补完（与永久歧义同样留着标记）：只是还没轮到，答「稍后再试」，
-    # 不能让用户去删角色（变异：不看退役必红）；判定前先试着补一次退役（变异：不补必红）
+    # Rename awaits target-name retirement completion, retaining markers like permanent ambiguity; it is merely waiting its turn, so respond 'retry later',
+    # not advice to delete a character (ignoring retirement must fail); attempt retirement completion before deciding (omitting that attempt must fail)
     assert await character_hooks.name_block_reason(cm, "Gone") == (character_hooks.NAME_BUSY, frozenset())
     assert replays
 
@@ -733,7 +733,7 @@ async def test_a_rename_waiting_for_a_retirement_is_busy_not_ambiguous(env, monk
 async def test_unsubscribe_refuses_a_character_whose_rename_cannot_be_settled(tmp_path, monkeypatch):
     config = _unsubscribe_config(tmp_path)
     await _seed_lan(config.config_dir, monkeypatch)
-    # Lan 是上一次 Lan0 -> Lan 改名的结果，迁移没做完
+    # Lan results from an earlier Lan0 -> Lan rename whose migration remains incomplete
     marker = {"old": "Lan0", "new": "Lan", "uid": LAN_UID}
     await set_roster_marker(config.config_dir, "pending_rename", marker)
 
@@ -743,7 +743,7 @@ async def test_unsubscribe_refuses_a_character_whose_rename_cannot_be_settled(tm
     monkeypatch.setattr(VisitSpool, "rename_own_char", locked)
     before = json.loads(json.dumps(config.characters))
     (status, body), steam_calls = await _unsubscribe(monkeypatch, config)
-    # 与「标记写不进去」同一条路径：整体中止，不写 characters.json、不发 Steam 退订
+    # Same path as marker-write failure: abort entirely without writing characters.json or sending Steam unsubscribe
     assert status == 500 and body["code"] == "LOCAL_CONFIG_CLEANUP_FAILED"
     assert steam_calls == [] and config.saved == [] and config.characters == before
     assert _peers(config.config_dir)["pending_rename"] == marker
@@ -754,12 +754,12 @@ async def test_an_ambiguous_rename_reports_only_its_own_names(env, monkeypatch):
     await _seed(cm, config_dir)
     status, _body = await _add(cm, "Extra")
     assert status == 200
-    # 两笔互不相干的改名都永久歧义（各自的另一个名字被别的角色占着）
+    # Two unrelated renames are permanently ambiguous because their other names belong to different characters
     first = {"old": "Other", "new": "Current", "uid": _uid(cm, "Current")}
     second = {"old": "Extra", "new": "Old", "uid": _uid(cm, "Old")}
     await set_roster_marker(config_dir, "pending_rename", first)
     await add_roster_marker_item(config_dir, "pending_rename_queue", second)
-    # 只报挂着这个名字的那一笔：提示不能让用户去删另一笔里不相干的角色（变异：报全部未决名字必红）
+    # Report only the entry involving this name, never advise deleting unrelated characters in the other entry; reporting all pending names must fail
     assert await character_hooks.name_block_reason(cm, "Old") == (
         character_hooks.NAME_AMBIGUOUS, frozenset({"Extra", "Old"}))
     assert await character_hooks.name_block_reason(cm, "Current") == (
@@ -771,13 +771,13 @@ async def test_an_ambiguous_rename_is_reported_while_its_name_also_has_a_roster_
     await _seed(cm, config_dir)
     ambiguous = {"old": "Other", "new": "Current", "uid": _uid(cm, "Current")}
     await set_roster_marker(config_dir, "pending_rename", ambiguous)
-    # Current 下还有一条已清完名册的退役项，按 uid 的步骤一直补不完
+    # Current has a retirement entry with cleared roster but repeatedly failing uid-based steps
     await add_roster_marker_item(config_dir, "pending_retire", {**lc.retire_item("Current", "e" * 32), "roster_done": True})
 
     async def stuck(*_a, **_k):
         return False
 
     monkeypatch.setattr(lc, "settle_retire", stuck)
-    # 名字照样挡住，但永久歧义要答「请先删除其中一个」，不能一直「稍后再试」（变异：先判退役就停必红）
+    # Still block the name, but permanent ambiguity requires 'delete one first', not endless 'retry later'; stopping after the retirement check must fail
     assert await character_hooks.name_block_reason(cm, "Current") == (
         character_hooks.NAME_AMBIGUOUS, frozenset({"Other", "Current"}))

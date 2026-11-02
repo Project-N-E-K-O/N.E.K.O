@@ -8,7 +8,7 @@ from .test_numeric_v2_generation import _quality_story_context, _generation_setu
 
 
 def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples():
-    # 五个入口必须采用同一语义，防止事实复核纠正后，文学或修订阶段重新猜测框架。
+    # All five entry points must use the same semantics so literary/revision stages cannot reinterpret the framework after factual review corrects it.
     from theater_workshop.sdk.generation.runtime_rules import SCORING_RUNTIME_RULES
     from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
     from theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
@@ -16,7 +16,7 @@ def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples(
     from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
     for prompt in (FACT_REVIEW_PROMPT, EVIDENCE_REVIEW_PROMPT, _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT, PLAN_REVIEW_PROMPT):
         assert prompt.count(SCORING_RUNTIME_RULES) == 1
-        # 创作取向不应被事实检查升级为运行禁令，改稿也须保留已有因果。
+        # Fact checking must not promote creative preferences into runtime prohibitions; revisions must preserve existing causality.
         assert "不因配角少而扣分或建议增加配角戏份" in prompt
         assert "不能仅因出现配角或配角说话就报告事实错误" in prompt
         assert "不删除既有因果必需的配角回应" in prompt
@@ -36,7 +36,7 @@ def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples(
 
 
 def review_payload(issues, verdict="supported", keep=()):
-    # 测试模型显式逐字段作答，模拟复核而非在生产中默认同意原报告。
+    # The test model explicitly answers field by field to simulate review, rather than approving the original report by default in production.
     return {"checks": [{"issue_id": i["issue_id"], "verdict": verdict, "reason": "原文核对结论",
         "target_checks": [{**t, "requires_change": verdict == "supported" and t["field"] not in keep,
                            "reason": "此处保留或改动的依据"} for t in review_targets(i)]} for i in issues]}
@@ -54,7 +54,7 @@ def wire_fact(request):
 
 @pytest.mark.parametrize("case", ["missing", "duplicate", "unknown", "field_missing", "field_duplicate", "field_new", "truthy", "unknown_verdict", "contradictory", "empty_reason"])
 def test_evidence_review_rejects_incomplete_or_expanded_results(case):
-    # 不能靠缺项、字符串布尔或添一个新字段扩大允许修订范围；失败不改原报告。
+    # Missing entries, string booleans, or new fields cannot expand revision permissions; failure leaves the original report unchanged.
     issues = [{"issue_id": "f1", "problem": "保留原问题", "repair_targets": [{"node_id": "n", "field": "/opening_scene"}]}]
     before = deepcopy(issues);payload = review_payload(issues);check = payload["checks"][0]
     if case == "missing": payload["checks"] = []
@@ -87,7 +87,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
             return _plan_review_reply(messages)
         facts = request["fact_review"]
         assert len(facts["issues"]) == (1 if verdict == "supported" else 0)
-        # 真实压测中，已否定的完整问题诱使文学模型再次扣分；仅传禁止关联的ID，不重放指控。
+        # In real stress testing, replaying a fully rejected issue made the literary model deduct points again; pass only IDs forbidden for association, without replaying accusations.
         assert "excluded_issues" not in facts
         assert len(facts["excluded_issue_ids"]) == (1 if verdict in ("unsupported", "uncertain") else 0)
         if verdict in ("unsupported", "uncertain"):
@@ -107,7 +107,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
     assert issue["modification_plan"] == "原方案：同时修改状态和开场"
     assert len(issue["repair_targets"]) == 2
     assert issue["repairable"] is (verdict == "supported")
-    # 即使原方案仍要求改开场，复核保留要求也必须进入真实修订请求，且越界不返回候选。
+    # Even if the original plan still requests an opening change, preservation requirements from review must reach the actual revision request; return no candidate on scope violations.
     def patch(messages, **kwargs):
         request = json.loads(messages[1]["content"])
         assert request["accepted_suggestions"][0]["repair_targets"] == [{"node_id": "mainline_01", "field": "/character_state/catgirl"}]
@@ -119,7 +119,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
 
 
 def test_rejected_fact_id_cannot_supply_literary_deduction():
-    # 非支持问题不能通过文学的事实ID关联重新扣分。
+    # Unsupported issues must not cause renewed deductions through literary associations with fact IDs.
     story, authoring = _quality_story_context();assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)
     raw = _quality_payload();raw["scores"]["plot"].update(score=60, fact_issue_ids=["rejected"])
@@ -132,7 +132,7 @@ def test_rejected_fact_id_cannot_supply_literary_deduction():
 
 def test_protected_field_blocks_literary_parent_and_unnecessary_node():
     from theater_workshop.sdk.generation.repair import classify_repair
-    # 保留数组某项时，文学方案不能通过改整个数组绕过；同问题中无须修改的节点不开放执行。
+    # When an array item is preserved, literary plans cannot bypass that by replacing the whole array; nodes requiring no change within the same issue remain non-executable.
     story, authoring = _quality_story_context();assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)
     first, second = context["mainline"][:2]
@@ -156,7 +156,7 @@ def test_protected_field_blocks_literary_parent_and_unnecessary_node():
 
 @pytest.mark.parametrize("version", [None, 1, 2])
 def test_pre_evidence_reports_need_reassessment_before_model_call(version):
-    # 旧无字段报告与上一版有字段但无复核的报告同样保持可读，不能直接执行。
+    # Both old fieldless reports and previous-version reports with fields but no review remain readable, but cannot execute directly.
     story, authoring = _quality_story_context();assessor = NumericV2QualityAssessor()
     assessor.call_llm = lambda *args, **kwargs: pytest.fail("旧报告不能调用模型")
     with pytest.raises(QualityAssessmentError, match="quality_reassessment_required"):

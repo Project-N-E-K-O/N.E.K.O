@@ -1032,9 +1032,9 @@ class ComputerUseAdapter:
                     extra_body=extra or None,
                     timeout=timeout_s,
                 )
-                # 连通性检测只关心 HTTP 层是否通、响应结构是否合法；某些上游
-                # （如 free-agent-model）会返回 choices 非空但 message=None
-                # 的合法 200，message 为空也视为成功。
+                # Connectivity checks care only about HTTP reachability and valid response structure. Some upstreams
+                # (such as free-agent-model) return valid 200 responses with nonempty choices but message=None;
+                # an empty message still counts as success.
                 _extract_raw_llm_text(resp)
                 self.init_ok = True
                 self.last_error = None
@@ -1275,7 +1275,7 @@ class ComputerUseAdapter:
 
         print(
             f"[CUA] Step {step_num}, {action[:120]}"
-        )  # 敏感日志使用print而不是logger，用于脱敏
+        )  # Use print rather than logger for sensitive logs, for privacy handling.
 
         # ── Update agent state ───────────────────────────────────────
         self.observations.append(screenshot_bytes)
@@ -1381,8 +1381,8 @@ class ComputerUseAdapter:
                 if self._cancelled:
                     logger.info("[CUA] Task cancelled after capture at step %d", step)
                     return {"success": False, "error": "Task cancelled by user"}
-                # CUA 自己抓屏做 agent 控制，需要更高分辨率读清小字 UI；不随 vision 分析
-                # 一起降到 720p，显式锁定在 1080p（quality 仍走默认）。
+                # CUA captures its own screen for agent control and needs higher resolution to read small UI text; explicitly
+                # fix it at 1080p rather than following vision analysis down to 720p (quality keeps its default).
                 jpg_bytes = compress_screenshot(shot, target_h=1080)
                 t_capture = time.monotonic() - t0
 

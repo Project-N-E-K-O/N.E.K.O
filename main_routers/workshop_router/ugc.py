@@ -37,39 +37,39 @@ from ..shared_state import ensure_steamworks as get_steamworks
 from utils.file_utils import read_json_async
 
 
-# ─── UGC 查询结果缓存 ──────────────────────────────────────────────────
-# Steam 的 k_UGCQueryHandleInvalid = 0xFFFFFFFFFFFFFFFF
+# ─── UGC query-result cache ──────────────────────────────────────────────────
+# Steam k_UGCQueryHandleInvalid =0xFFFFFFFFFFFFFFFF.
 _INVALID_UGC_QUERY_HANDLE = 0xFFFFFFFFFFFFFFFF
 
 
-# 缓存 { publishedFileId(int): { title, description, ..., _cache_ts: float } }
-# 每个条目带有独立的 _cache_ts 时间戳，用于按条目粒度判断 TTL
+# Cache {publishedFileId(int): {title, description, ..., _cache_ts: float}}.
+# Each entry has its own _cache_ts for per-entry TTL checks.
 _ugc_details_cache: dict[int, dict] = {}
 
 
-_UGC_CACHE_TTL = 300  # 缓存有效期 5 分钟
+_UGC_CACHE_TTL = 300  # Cache lifetime: five minutes.
 
 
-_ugc_warmup_task = None  # 后台预热任务
+_ugc_warmup_task = None  # Background warm-up task.
 
 
-_ugc_sync_task = None    # 后台角色卡同步任务
+_ugc_sync_task = None    # Background character-card synchronization task.
 
 
-# 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
-# 避免并发调用 override_callback=True 导致回调覆盖竞态
+# Global mutex serializes UGC batch queries (CreateQuery -> SendQuery -> callback),
+# avoiding callback-overwrite races from concurrent override_callback=True calls.
 _ugc_query_lock = asyncio.Lock()
 
 
-# ─── 创意工坊下载触发 ─────────────────────────────────────────────────
-# SteamworksPy 包装库未导出 Workshop_DownloadItem，仅订阅不会触发 Steam
-# 实际下载文件。我们通过 steamworks._native_ugc 桥到 libsteam_api 的
-# SteamAPI_ISteamUGC_DownloadItem。这里只记录"已请求过下载"的物品集合，
-# 避免每次列表刷新都重复打 INFO 日志；Steam 自己会去重。
+# ─── Trigger Workshop downloads ─────────────────────────────────────────────────
+# SteamworksPy does not export Workshop_DownloadItem; subscription alone does not make Steam
+# download files. Bridge through steamworks._native_ugc to libsteam_api's
+# SteamAPI_ISteamUGC_DownloadItem. Track only items already requested,
+# avoiding repeated INFO logs on list refreshes; Steam handles deduplication.
 _workshop_download_requested: set[int] = set()
 
 
-# EItemState 位标志（与 steamworks/enums.py 的 EItemState 一致）
+# EItemState bit flags, matching steamworks/enums.py.
 _ITEM_STATE_SUBSCRIBED = 1
 
 
@@ -145,12 +145,12 @@ def _request_workshop_item_download(
     """
     if steamworks is None or item_id <= 0:
         return False
-    # 仅订阅状态才允许下载；未订阅时 Steam 会拒绝。
+    # Download only subscribed items; Steam rejects unsubscribed downloads.
     if not (item_state & _ITEM_STATE_SUBSCRIBED):
         return False
     if _is_workshop_item_install_complete(item_state, installed_folder):
         return False
-    # 已经在下载或排队 → 不重复请求（除非显式 high_priority 提升优先级）。
+    # Already downloading/queued: no duplicate request, unless explicit high_priority elevates priority.
     already_active = bool(item_state & (_ITEM_STATE_DOWNLOADING | _ITEM_STATE_DOWNLOAD_PENDING))
     if already_active and not high_priority:
         return False
@@ -169,7 +169,7 @@ def _request_workshop_item_download(
                 item_id, item_state, high_priority,
             )
             _workshop_download_requested.add(item_id)
-        # 立即泵一次回调，让 Steam 尽快开始处理。
+        # Pump callbacks immediately so Steam starts processing promptly.
         try:
             steamworks.run_callbacks()
         except Exception:
@@ -270,18 +270,18 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     
     for attempt in range(max_retries):
         try:
-            # 在发送查询前先泵一次回调，清除可能的残留状态
+            # Pump callbacks before querying to clear residual state.
             try:
                 steamworks.run_callbacks()
             except Exception as e:
                 logger.debug(f"run_callbacks (pre-query pump) 异常: {e}")
             
-            # 序列化整个查询流程：CreateQuery → SendQuery(override_callback) → 等待回调 → 读取结果
-            # 避免并发调用时 override_callback=True 导致前一次的回调被覆盖
+            # Serialize full queries: CreateQuery -> SendQuery(override_callback) -> await callback -> read results.
+            # Prevent concurrent override_callback=True calls from replacing earlier callbacks.
             async with _ugc_query_lock:
                 query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(item_ids)
                 
-                # 检查无效 handle（0 或 k_UGCQueryHandleInvalid）
+                # Check invalid handles (0 or k_UGCQueryHandleInvalid).
                 if not query_handle or query_handle == _INVALID_UGC_QUERY_HANDLE:
                     logger.warning(f"UGC 批量查询: CreateQueryUGCDetailsRequest 返回无效 handle "
                                   f"(attempt {attempt + 1}/{max_retries})")
@@ -289,7 +289,7 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                         await asyncio.sleep(1.5 * (attempt + 1))
                     continue
                 
-                # 回调+轮询机制（每次迭代创建独立的 Event 和 dict，通过默认参数绑定避免闭包晚绑定）
+                # Callback + polling: create independent Events/dicts each iteration, binding default arguments to avoid late-bound closures.
                 query_completed = threading.Event()
                 query_result_info = {"success": False, "num_results": 0}
                 
@@ -309,7 +309,7 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                     query_handle, callback=_make_callback(), override_callback=True
                 )
                 
-                # 轮询等待（10ms 间隔，最多 15 秒）
+                # Poll every 10ms for at most 15 seconds.
                 start_time = time.time()
                 timeout = 15
                 while time.time() - start_time < timeout:
@@ -334,7 +334,7 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                     await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             
-            # 提取结果
+            # Extract results.
             num_results = query_result_info["num_results"]
             results = {}
             for i in range(num_results):
@@ -351,7 +351,7 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
             logger.info(f"UGC 批量查询成功: {len(results)}/{len(item_ids)} 个物品 "
                         f"(attempt {attempt + 1})")
             
-            # 查询完成后泵一次回调，让 Steam 缓存 persona 数据
+            # Pump callbacks after queries so Steam caches persona data.
             try:
                 steamworks.run_callbacks()
             except Exception as e:
@@ -368,8 +368,8 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     return {}
 
 
-# 本地 Steam 用户身份缓存：(steam_id, persona_name)，TTL 5 分钟
-# 用于检测 GetFriendPersonaName 返回值是否被 fallback 成本地用户名。
+# Local Steam identity cache: (steam_id, persona_name), five-minute TTL.
+# Detect GetFriendPersonaName falling back to the local username.
 _local_steam_identity_cache: tuple[int | None, str | None] | None = None
 
 
@@ -379,26 +379,26 @@ _local_steam_identity_cache_ts: float = 0.0
 _LOCAL_IDENTITY_TTL = 300
 
 
-# Steam Community 公开 XML 接口的 persona name 缓存
+# Persona-name cache for Steam Community's public XML endpoint.
 # { steam_id(int): (name_or_empty, _cache_ts) }
-# 缓存值用空串表示「200 OK 但没解析出名字」的 negative-hit；
-# 瞬时失败（超时 / 非 200 / 异常）不写入此缓存。
+# Empty strings mark negative hits: 200 OK without a parsed name;
+# transient failures (timeout / non-200 / exceptions) are not cached.
 _persona_web_cache: dict[int, tuple[str, float]] = {}
 
 
 _PERSONA_WEB_TTL = 3600
 
 
-# Steam Community Web 兜底的并发上限。订阅一多就一次性 fan-out 容易把
-# 自己打超时或被对端限流，限制并发到 8 个比较稳。
+# Bound Steam Community web fallback concurrency: many subscriptions fan out at once,
+# risking local timeouts or remote throttling. Eight concurrent requests is steadier.
 _PERSONA_WEB_CONCURRENCY = 8
 
 
-# Web 兜底整轮的总耗时上限（秒）。Steam Community 慢 / 抖动时，几十个
-# 非好友 owner × 5s 单请求 × 8 并发批次会让 /subscribed-items 阻塞几十
-# 秒。这里给整轮 fan-out 设个硬墙：超时直接收割已完成的结果，剩下的
-# task 全部 cancel，让接口尽快返回；没补回来的下次刷新会重试（因为
-# transient failure 不写缓存）。
+# Whole-round web fallback deadline in seconds. Slow/flaky Steam Community with dozens of
+# nonfriend owners ×5s per request ×eight-request batches could block /subscribed-items for tens
+# of seconds. Set a hard fan-out deadline: harvest completed results and cancel remaining
+# tasks so the endpoint returns promptly; missing results retry on next refresh because
+# transient failures are not cached.
 _PERSONA_WEB_TOTAL_DEADLINE = 8.0
 
 
@@ -462,10 +462,10 @@ def _resolve_author_name(steamworks, owner_id: int) -> str | None:
     persona_name = (persona_name or '').strip()
     if not persona_name:
         return None
-    # 占位符与纯数字 ID 串
+    # Placeholders and all-digit ID strings.
     if persona_name == '[unknown]' or persona_name == str(owner_id):
         return None
-    # 伪造检测：返回值等于本地 persona，但 owner_id 不是本地 Steam ID
+    # Detect impostors: result equals local persona, but owner_id is not the local Steam ID.
     local_id, local_name = _get_local_steam_identity(steamworks)
     if local_name and persona_name == local_name and local_id and owner_id != local_id:
         logger.debug(
@@ -569,7 +569,7 @@ async def _resolve_missing_author_names(items_info: list[dict]) -> None:
     if pending:
         for t in pending:
             t.cancel()
-        # 把取消的 task 收割掉，避免 "Task was destroyed but it is pending!"
+        # Reap cancelled tasks, avoiding "Task was destroyed but it is pending!".
         await asyncio.gather(*pending, return_exceptions=True)
         logger.info(
             f"Web 兜底超过 {_PERSONA_WEB_TOTAL_DEADLINE}s 总预算，"
@@ -634,7 +634,7 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
             item_info['title'] = _safe_text(result.title)
         if hasattr(result, 'description') and result.description:
             item_info['description'] = _safe_text(result.description)
-        # timeAddedToUserList 是用户订阅时间，timeCreated 是物品创建时间，分开存储避免语义混淆
+        # timeAddedToUserList is subscription time; timeCreated is item creation time. Store separately to preserve semantics.
         if hasattr(result, 'timeCreated') and result.timeCreated:
             item_info['timeCreated'] = int(result.timeCreated)
         if hasattr(result, 'timeAddedToUserList') and result.timeAddedToUserList:
@@ -649,7 +649,7 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
                 item_info['authorName'] = author_name
         if hasattr(result, 'fileSize') and result.fileSize:
             item_info['fileSizeOnDisk'] = int(result.fileSize)
-        # 提取标签
+        # Extract tags.
         if hasattr(result, 'tags') and result.tags:
             try:
                 tags_str = _safe_text(result.tags)
@@ -660,7 +660,7 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
         if hasattr(result, 'previewImageUrl') and result.previewImageUrl:
             item_info['previewImageUrl'] = _safe_text(result.previewImageUrl)
 
-        # 更新缓存
+        # Update cache.
         cache_entry = {}
         for key in ('title', 'description', 'timeCreated', 'timeAdded', 'timeUpdated',
                      'steamIDOwner', 'authorName', 'tags', 'previewImageUrl'):
@@ -714,7 +714,7 @@ async def warmup_ugc_cache() -> None:
             return
         
         if ugc_results:
-            # 将结果写入缓存
+            # Write results to cache.
             for item_id_int, result in ugc_results.items():
                 dummy_info = {"publishedFileId": str(item_id_int),
                               "title": f"未知物品_{item_id_int}", "description": ""}
@@ -761,7 +761,7 @@ async def get_subscribed_workshop_items():
     """
     steamworks = get_steamworks()
     
-    # 检查Steamworks是否初始化成功
+    # Check successful Steamworks initialization.
     if steamworks is None:
         return JSONResponse({
             "success": False,
@@ -770,10 +770,10 @@ async def get_subscribed_workshop_items():
         }, status_code=503)
     
     try:
-        # 获取订阅物品数量
+        # Get subscribed-item count.
         num_subscribed_items = steamworks.Workshop.GetNumSubscribedItems()
         
-        # 如果没有订阅物品，返回空列表
+        # Return empty list without subscriptions.
         if num_subscribed_items == 0:
             return {
                 "success": True,
@@ -781,16 +781,16 @@ async def get_subscribed_workshop_items():
                 "total": 0
             }
         
-        # 获取订阅物品ID列表
+        # Get subscribed-item IDs.
         subscribed_items = steamworks.Workshop.GetSubscribedItems()
         
-        # 存储处理后的物品信息
+        # Store processed item information.
         items_info = []
         
-        # 批量查询所有物品的详情（带重试+缓存）
+        # Batch-query all item details with retry and caching.
         ugc_results = {}
         try:
-            # 转换所有ID为整数
+            # Convert all IDs to integers.
             all_item_ids = []
             for sid in subscribed_items:
                 try:
@@ -799,11 +799,11 @@ async def get_subscribed_workshop_items():
                     continue
             
             if all_item_ids:
-                # 优先使用缓存（如果所有条目都存在且各自在有效期内）
+                # Prefer cache when every entry exists and its individual TTL remains valid.
                 if _all_items_cache_valid(all_item_ids):
                     logger.debug(f"使用 UGC 缓存（{len(all_item_ids)} 个物品）")
                 elif _ugc_warmup_task is not None and not _ugc_warmup_task.done():
-                    # 预热任务仍在运行，等待它完成而非发起重复查询
+                    # Await ongoing warm-up rather than launching duplicate queries.
                     logger.info("等待 UGC 缓存预热任务完成...")
                     try:
                         await asyncio.wait_for(asyncio.shield(_ugc_warmup_task), timeout=20)
@@ -811,7 +811,7 @@ async def get_subscribed_workshop_items():
                         logger.info("等待 UGC 缓存预热超时（20s），将回退到直接查询")
                     except Exception as e:
                         logger.warning(f"UGC 缓存预热任务异常: {e}", exc_info=True)
-                    # 预热完成后按条目粒度检查缓存
+                    # After warm-up, check cache per entry.
                     if not _all_items_cache_valid(all_item_ids):
                         logger.info(f'预热后缓存不完整，重新批量查询 {len(all_item_ids)} 个物品')
                         ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
@@ -823,10 +823,10 @@ async def get_subscribed_workshop_items():
         except Exception as batch_error:
             logger.warning(f"批量查询物品详情失败: {batch_error}")
         
-        # 为每个物品获取基本信息和状态
+        # Get each item's basic information and state.
         for item_id in subscribed_items:
             try:
-                # 确保item_id是整数类型
+                # Ensure integer item_id.
                 if isinstance(item_id, str):
                     try:
                         item_id = int(item_id)
@@ -836,12 +836,12 @@ async def get_subscribed_workshop_items():
                 
                 logger.debug(f'正在处理物品ID: {item_id}')
                 
-                # 获取物品状态
+                # Get item state.
                 item_state = steamworks.Workshop.GetItemState(item_id)
                 logger.debug(f'物品 {item_id} 状态: {item_state}')
                 
-                # 初始化基本物品信息（确保所有字段都有默认值）
-                # 确保publishedFileId始终为字符串类型，避免前端toString()错误
+                # Initialize basic item information with defaults for every field.
+                # Keep publishedFileId a string, preventing frontend toString() errors.
                 item_info = {
                     "publishedFileId": str(item_id),
                     "title": f"未知物品_{item_id}",
@@ -863,20 +863,20 @@ async def get_subscribed_workshop_items():
                         "bytesTotal": 0,
                         "percentage": 0
                     },
-                    # 添加额外的时间戳信息 - 使用datetime替代time模块避免命名冲突
+                    # Add extra timestamps with datetime rather than time to avoid naming conflicts.
                     "timeAdded": int(datetime.now().timestamp()),
                     "timeUpdated": int(datetime.now().timestamp())
                 }
                 
-                # 尝试获取物品安装信息（如果已安装）
+                # Try installation information for installed items.
                 try:
                     logger.debug(f'获取物品 {item_id} 的安装信息')
                     result = steamworks.Workshop.GetItemInstallInfo(item_id)
                     
-                    # 检查返回值的结构 - 支持字典格式（根据日志显示）
-                    # GetItemInstallInfo 即使在物品已被退订后仍可能短暂返回成功，
-                    # 必须用 os.path.isdir(folder) 二次确认目录仍存在才能标记
-                    # installed=True，否则前端会展示"已安装但目录不存在"的幽灵态。
+                    # Check return structure; support dict format as observed in logs.
+                    # GetItemInstallInfo may briefly succeed after unsubscribe;
+                    # recheck os.path.isdir(folder) before marking
+                    # installed=True, avoiding a ghost installed-but-missing-directory frontend state.
                     if result and isinstance(result, dict):
                         logger.debug(f'物品 {item_id} 安装信息字典: {result}')
 
@@ -898,7 +898,7 @@ async def get_subscribed_workshop_items():
                                 f'按未安装处理: {folder_path!r}'
                             )
                         logger.debug(f'物品 {item_id} 的安装路径: {item_info["installedFolder"]}')
-                    # 也支持元组格式作为备选
+                    # Also support tuple format as fallback.
                     elif isinstance(result, tuple) and len(result) >= 3:
                         installed, folder, size = result
                         logger.debug(f'物品 {item_id} 安装状态: 已安装={installed}, 路径={folder}, 大小={size}')
@@ -918,50 +918,50 @@ async def get_subscribed_workshop_items():
                         logger.warning(f'物品 {item_id} 的安装信息返回格式未知: {type(result)} - {result}')
                         item_info["state"]["installed"] = False
                 except (FileNotFoundError, OSError) as e:
-                    # 取消订阅后的短窗内 Steam 仍可能返回该 item，但本地 install
-                    # folder 已被删 → 预期的 race，降级为 debug 避免日志噪音。
+                    # Steam may briefly return unsubscribed items whose local installation
+                    # directory is gone: an expected race, logged at debug to avoid noise.
                     logger.debug(f'获取物品 {item_id} 安装信息失败（可能刚取消订阅）: {e}')
                     item_info["state"]["installed"] = False
                 except Exception as e:
                     logger.warning(f'获取物品 {item_id} 安装信息失败: {e}')
                     item_info["state"]["installed"] = False
                 
-                # 尝试获取物品下载信息（如果正在下载）
+                # Try download information for downloading items.
                 try:
                     logger.debug(f'获取物品 {item_id} 的下载信息')
                     result = steamworks.Workshop.GetItemDownloadInfo(item_id)
                     
-                    # 检查返回值的结构 - 支持字典格式（与安装信息保持一致）
+                    # Check return structure; support dict format consistently with installation info.
                     if isinstance(result, dict):
                         logger.debug(f'物品 {item_id} 下载信息字典: {result}')
                         
-                        # 使用正确的键名获取下载信息
+                        # Read download information using correct keys.
                         downloaded = result.get('downloaded', 0)
                         total = result.get('total', 0)
                         progress = result.get('progress', 0.0)
                         
-                        # 根据total和downloaded确定是否正在下载
+                        # Determine downloading status from total/downloaded.
                         item_info["state"]["downloading"] = total > 0 and downloaded < total
                         
-                        # 设置下载进度信息
+                        # Set download progress.
                         if downloaded > 0 or total > 0:
                             item_info["downloadProgress"] = {
                                 "bytesDownloaded": int(downloaded),
                                 "bytesTotal": int(total),
                                 "percentage": progress * 100 if isinstance(progress, (int, float)) else 0
                             }
-                    # 也支持元组格式作为备选
+                    # Also support tuple format as fallback.
                     elif isinstance(result, tuple) and len(result) >= 3:
-                        # 元组中应该包含下载状态、已下载字节数和总字节数
+                        # Tuples should contain download status, downloaded bytes, and total bytes.
                         downloaded, total, progress = result if len(result) >= 3 else (0, 0, 0.0)
                         logger.debug(f'物品 {item_id} 下载状态: 已下载={downloaded}, 总计={total}, 进度={progress}')
                         
-                        # 根据total和downloaded确定是否正在下载
+                        # Determine downloading status from total/downloaded.
                         item_info["state"]["downloading"] = total > 0 and downloaded < total
                         
-                        # 设置下载进度信息
+                        # Set download progress.
                         if downloaded > 0 or total > 0:
-                            # 处理可能的类型转换
+                            # Handle possible type conversion.
                             try:
                                 downloaded_value = int(downloaded.value) if hasattr(downloaded, 'value') else int(downloaded)
                                 total_value = int(total.value) if hasattr(total, 'value') else int(total)
@@ -981,12 +981,12 @@ async def get_subscribed_workshop_items():
                     logger.warning(f'获取物品 {item_id} 下载信息失败: {e}')
                     item_info["state"]["downloading"] = False
                 
-                # 从批量查询结果或缓存中提取物品详情
+                # Extract item details from batch results or cache.
                 item_id_int = int(item_id)
                 if item_id_int in ugc_results:
                     _extract_ugc_item_details(steamworks, item_id_int, ugc_results[item_id_int], item_info)
                 elif _is_item_cache_valid(item_id_int):
-                    # 使用缓存数据填充（仅在该条目 TTL 有效时）
+                    # Populate using cache only while that entry's TTL is valid.
                     cached = _ugc_details_cache[item_id_int]
                     for key in ('title', 'description', 'timeCreated', 'timeAdded', 'timeUpdated',
                                 'steamIDOwner', 'authorName', 'tags', 'previewImageUrl'):
@@ -994,12 +994,12 @@ async def get_subscribed_workshop_items():
                             item_info[key] = cached[key]
                     logger.debug(f"从缓存填充物品 {item_id} 详情: title={item_info.get('title', '?')}")
                 
-                # 作为备选方案，如果本地有安装路径，尝试从本地文件获取信息
+                # Fallback: if locally installed, try reading information from local files.
                 if item_info['title'].startswith('未知物品_') or not item_info['description']:
                     install_folder = item_info.get('installedFolder')
                     if install_folder and os.path.exists(install_folder):
                         logger.debug(f'尝试从安装文件夹获取物品信息: {install_folder}')
-                        # 查找可能的配置文件来获取更多信息
+                        # Find possible config files for more information.
                         config_files = [
                             os.path.join(install_folder, "config.json"),
                             os.path.join(install_folder, "package.json"),
@@ -1014,42 +1014,42 @@ async def get_subscribed_workshop_items():
                                 try:
                                     if config_path.endswith('.json'):
                                         config_data = await read_json_async(config_path)
-                                        # 尝试从配置文件中提取标题和描述
+                                        # Try extracting title/description from config.
                                         if "title" in config_data and config_data["title"]:
                                             item_info["title"] = config_data["title"]
                                         elif "name" in config_data and config_data["name"]:
                                             item_info["title"] = config_data["name"]
-                                        # description 作为 title/name 的同级分支，不应嵌在 elif name 下
+                                        # description is a sibling of title/name, not nested under elif name.
                                         if "description" in config_data and config_data["description"]:
                                             item_info["description"] = config_data["description"]
                                     else:
-                                        # README.md / README.txt：把首行当标题（offload sync IO）
+                                        # README.md / README.txt: use first line as title, offloading synchronous I/O.
                                         first_line = (await asyncio.to_thread(_read_first_line, config_path)).strip()
                                         if first_line and item_info['title'].startswith('未知物品_'):
-                                            item_info['title'] = first_line[:100]  # 限制长度
+                                            item_info['title'] = first_line[:100]  # Limit length.
                                     logger.debug(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
                                     break
                                 except Exception as file_error:
                                     logger.warning(f"读取配置文件 {config_path} 时出错: {file_error}")
-                # 移除了没有对应try块的except语句
+                # Removed except without a corresponding try block.
                 
-                # 确保publishedFileId是字符串类型
+                # Ensure publishedFileId is a string.
                 item_info['publishedFileId'] = str(item_info['publishedFileId'])
                 
-                # 尝试获取预览图信息 - 优先从本地文件夹查找
-                # 多道防御：先用 isdir 双重检查（比 exists 更明确排除"存在但不是目录"），
-                # 再吞 FileNotFoundError（取消订阅后遍历期间目录被删的 race）。
+                # Try preview images, preferring local folders.
+                # Defense in depth: recheck isdir (more explicit than exists for excluding nondirectories),
+                # then swallow FileNotFoundError if unsubscribe deletes directories during traversal.
                 preview_url = None
                 install_folder = item_info.get('installedFolder')
                 if install_folder and os.path.isdir(install_folder):
                     try:
-                        # 使用辅助函数查找预览图
+                        # Find previews with the helper.
                         preview_image_path = find_preview_image_in_folder(install_folder)
                         if preview_image_path:
-                            # 为前端提供代理访问的路径格式
-                            # 需要将路径标准化，确保可以通过proxy-image API访问
+                            # Provide frontend proxy-access path format.
+                            # Normalize paths for proxy-image API access.
                             if os.name == 'nt':
-                                # Windows路径处理
+                                # Windows path handling.
                                 proxy_path = preview_image_path.replace('\\', '/')
                             else:
                                 proxy_path = preview_image_path
@@ -1062,13 +1062,13 @@ async def get_subscribed_workshop_items():
                     except Exception as preview_error:
                         logger.warning(f'查找物品 {item_id} 预览图时出错: {preview_error}')
                 
-                # 添加预览图URL到物品信息
+                # Add preview URL to item information.
                 if preview_url:
                     item_info['previewUrl'] = preview_url
 
-                # 若该订阅物品尚未安装（或需要更新），主动触发 Steam 下载。
-                # 这是修复"订阅后模型列表显示但点击无法切换"的关键：
-                # SteamworksPy 未导出 DownloadItem，仅订阅不会让 Steam 下载文件。
+                # Request Steam downloads for subscribed items not installed or needing updates.
+                # Key fix for models appearing after subscription but failing to switch on click:
+                # SteamworksPy lacks DownloadItem; subscription alone does not download files.
                 try:
                     _request_workshop_item_download(
                         steamworks,
@@ -1098,16 +1098,16 @@ async def get_subscribed_workshop_items():
                 if voice_reference_summary:
                     item_info['voiceReference'] = voice_reference_summary
                 
-                # 添加物品信息到结果列表
+                # Append item information to results.
                 items_info.append(item_info)
                 logger.debug(f'物品 {item_id} 信息已添加到结果列表: {item_info["title"]}')
                 
             except Exception as item_error:
                 logger.error(f"获取物品 {item_id} 信息时出错: {item_error}")
-                # 即使出错，也添加一个最基本的物品信息到列表中
+                # Even on error, append minimal item information.
                 try:
                     basic_item_info = {
-                        "publishedFileId": str(item_id),  # 确保是字符串类型
+                        "publishedFileId": str(item_id),  # Ensure string type.
                         "title": f"未知物品_{item_id}",
                         "description": "无法获取详细信息",
                         "state": {
@@ -1123,13 +1123,13 @@ async def get_subscribed_workshop_items():
                     logger.debug(f'已添加物品 {item_id} 的基本信息到结果列表')
                 except Exception as basic_error:
                     logger.error(f"添加基本物品信息也失败了: {basic_error}")
-                # 继续处理下一个物品
+                # Continue with the next item.
                 continue
 
-        # 对于 Friends API 没能解析出 authorName 的物品（典型是
-        # GetFriendPersonaName 把非好友 owner 误回成本地用户名，被
-        # _resolve_author_name 判伪丢弃），走 Steam Community 公开 XML
-        # 接口兜底，并发查询并写回 items / 缓存。
+        # Items whose authorName Friends API cannot resolve (typically GetFriendPersonaName
+        # returning the local username for a nonfriend owner, rejected by
+        # _resolve_author_name) fall back to Steam Community's public XML
+        # endpoint, querying concurrently and updating items/cache.
         try:
             await _resolve_missing_author_names(items_info)
         except Exception as fallback_err:

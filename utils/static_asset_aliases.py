@@ -13,7 +13,7 @@ from __future__ import annotations
 _CAT_APPEARANCE = "assets/cat-resources/appearance/dev_neko"
 _CAT_VOICE = "assets/cat-resources/voice/dev_neko"
 
-# 旧路径 -> 新路径，均相对 static/ 根、POSIX 分隔符。只登记确实被删掉的文件。
+# Old -> new paths, relative to static/ with POSIX separators. Register only files actually removed.
 LEGACY_STATIC_ASSET_ALIASES: dict[str, str] = {
     "assets/neko-idle/cat-idle-cat1.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat1.gif",
     "assets/neko-idle/cat-idle-cat2.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat2.gif",

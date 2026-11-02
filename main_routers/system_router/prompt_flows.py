@@ -67,13 +67,13 @@ async def _run_serialized_in_worker(lock: asyncio.Lock, func, /, *args, **kwargs
     try:
         return await asyncio.shield(operation)
     except asyncio.CancelledError:
-        # 但只有「worker 已经在跑」才值得保住。还排在锁上的那些没有任何不可取消的
-        # 东西，留着它们只会在客户端早就走了之后再去做一次陈旧的读/写；前面一次慢
-        # 文件操作 + 客户端反复超时重试，就能攒出一条无界队列挡住还活着的请求。
+        # But only work already running is worth preserving. The tasks still waiting on the lock have nothing uncancellable,
+        # and keeping them would only perform stale reads/writes after the client has already left; one slow
+        # file operation plus repeated client timeouts/retries can build an unbounded queue that blocks live requests.
         #
-        # 这个判断是原子的：submitted.set() 和它后面那个 await 之间没有让出点，所以
-        # 此刻子任务要么挂在 `async with lock`（没 set，取消安全），要么挂在
-        # to_thread（已 set，取消会提前放锁 —— 正是 shield 要防的）。不存在中间态。
+        # This check is atomic: there is no yield between submitted.set() and the await after it, so
+        # at this point the child task is either waiting at `async with lock` (not set, safe to cancel), or waiting in
+        # to_thread (set, cancellation would release the lock early — exactly what shield must prevent). There is no intermediate state.
         if not submitted.is_set():
             operation.cancel()
         operation.add_done_callback(_consume_detached_operation_result)
@@ -83,14 +83,14 @@ async def _run_serialized_in_worker(lock: asyncio.Lock, func, /, *args, **kwargs
 @router.get("/seven-day-tutorial/state")
 async def get_seven_day_tutorial_state():
     """Return the authoritative Day 1-7 tutorial progress."""
-    # 这个 GET 也要挪出循环，两个理由：
-    # 1) 它不是纯读 —— load_seven_day_tutorial_store 在 store 还没 initialized 时会
-    #    走 _migrate_legacy_tutorial_state，那里面是一次带 fsync 的 atomic_write_json
-    #    （老用户升级后第一次拉进度必然命中）。
-    # 2) 更要紧的是它在循环线程上 acquire 与下面 PUT 相同的 _STATE_LOCK。PUT 已经挪进
-    #    worker，而 file_utils 的「事件循环上绝不退避」保护是**按线程**判断的：worker
-    #    里撞上 Windows busy 会重新启用那 155ms 退避，且是持着 RLock 睡的。只要循环
-    #    线程还会去抢这把锁，退避就会经由锁重新传回循环。两边都挪走，这条路径才真的断。
+    # This GET also needs to move out of the loop, for two reasons:
+    # 1) It is not read-only — if the store is not initialized, load_seven_day_tutorial_store calls
+    #    _migrate_legacy_tutorial_state, which performs an atomic_write_json with fsync
+    #    (the first progress fetch after an upgrade by an existing user will always hit it).
+    # 2) More importantly, it acquires _STATE_LOCK on the loop thread, the same lock as the PUT below. The PUT has already moved to a
+    #    worker, and file_utils' protection against backoff on the event loop is checked **per thread**: the worker
+    #    retries the 155 ms backoff on Windows busy, while holding the RLock. As long as the loop
+    #    thread also tries to acquire this lock, the backoff flows back through the lock to the event loop. Move both operations to break this path.
     return await _run_serialized_in_worker(
         _SEVEN_DAY_SUBMIT_LOCK,
         get_seven_day_tutorial_state_response,
@@ -106,9 +106,9 @@ async def put_seven_day_tutorial_state(request: Request):
     if validation_error is not None:
         return validation_error
     try:
-        # 整个「读 revision — 比对 — 落盘」都在 helper 内部的 _STATE_LOCK（threading.RLock）
-        # 里完成，临界区不跨 await，所以把整次调用挪进线程不会引入竞态；并发请求由那把
-        # RLock 在工作线程上排队，事件循环不再被 atomic_write_json 的 fsync 堵住。
+        # The entire "read revision — compare — persist" operation runs under the helper's _STATE_LOCK (threading.RLock)
+        # internally, and the critical section does not cross an await, so moving the whole call to a thread introduces no race; concurrent requests queue on that
+        # RLock in the worker thread, and the event loop is no longer blocked by atomic_write_json's fsync.
         store = await _run_serialized_in_worker(
             _SEVEN_DAY_SUBMIT_LOCK,
             replace_seven_day_tutorial_state,
@@ -153,10 +153,10 @@ async def post_click_guide(request: Request):
 @router.get("/autostart-prompt/state")
 async def get_autostart_prompt_state():
     """Return a snapshot of the autostart prompt state."""
-    # 与 seven-day 的 GET 同因同治：load_autostart_prompt_state 在只剩 legacy 文件时
-    # 会落一次 save_autostart_prompt_state（utils/prompt_state/autostart.py:236），
-    # 而且它在循环线程上持 _AUTOSTART_STATE_LOCK —— 下面三个 POST 已挪进 worker，
-    # 这一条不挪，退避就会经由这把锁把 155ms 传回事件循环。
+    # Same reason and fix as the seven-day GET: when only the legacy file remains, load_autostart_prompt_state
+    # writes once via save_autostart_prompt_state (utils/prompt_state/autostart.py:236),
+    # and holds _AUTOSTART_STATE_LOCK on the loop thread — the three POSTs below have moved to a worker,
+    # but if this one does not move, the backoff will flow through this lock and block the event loop for 155 ms.
     return await _run_serialized_in_worker(
         _AUTOSTART_SUBMIT_LOCK,
         get_autostart_prompt_state_response,
@@ -172,9 +172,9 @@ async def post_autostart_prompt_heartbeat(request: Request):
     if validation_error is not None:
         return validation_error
 
-    # 同上：读状态、算 eligibility、落盘全在 _AUTOSTART_STATE_LOCK（threading.RLock）
-    # 内部完成，临界区不跨 await。这个端点是前端轮询的，每次可能触发一次 atomic_write_json，
-    # 必须挪出事件循环。
+    # Same as above: reading state, computing eligibility, and persisting all happen under _AUTOSTART_STATE_LOCK (threading.RLock)
+    # internally, and the critical section does not cross an await. The frontend polls this endpoint, and each request may trigger an atomic_write_json,
+    # so it must move out of the event loop.
     return await _run_serialized_in_worker(
         _AUTOSTART_SUBMIT_LOCK,
         process_autostart_prompt_heartbeat,
@@ -193,7 +193,7 @@ async def post_autostart_prompt_shown(request: Request):
     payload = await _read_json_object(request)
 
     try:
-        # 同上：读—改—写整段在 _AUTOSTART_STATE_LOCK 内，挪进线程安全。
+        # Same as above: the entire read-modify-write runs under _AUTOSTART_STATE_LOCK, so moving it to a thread is safe.
         return await _run_serialized_in_worker(
             _AUTOSTART_SUBMIT_LOCK,
             record_autostart_prompt_shown,
@@ -214,7 +214,7 @@ async def post_autostart_prompt_decision(request: Request):
     payload = await _read_json_object(request)
 
     try:
-        # 同上：读—改—写整段在 _AUTOSTART_STATE_LOCK 内，挪进线程安全。
+        # Same as above: the entire read-modify-write runs under _AUTOSTART_STATE_LOCK, so moving it to a thread is safe.
         return await _run_serialized_in_worker(
             _AUTOSTART_SUBMIT_LOCK,
             record_autostart_prompt_decision,

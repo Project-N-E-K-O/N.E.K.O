@@ -39,7 +39,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
     async def review(self, **kwargs):
         calls.append(kwargs)
         if kwargs.get('dispute_review'):
-            # 同一个候选、同一份历史独立判断，不传初判理由，避免复查被它牵引。
+            # Independently assess the same candidate/history without passing the initial verdict's reasoning, to avoid biasing review.
             assert {k: v for k, v in kwargs.items() if k not in {'dispute_review', 'timeout_seconds'}} == {
                 k: v for k, v in calls[-2].items() if k != 'timeout_seconds'
             }
@@ -48,7 +48,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
             if mode == 'protocol':
                 raise evaluator.NumericV2EvaluatorOutputError('invalid_output')
         bad = mode in ('reject', 'timeout', 'protocol') or (mode == 'release' and len(calls) == 1)
-        # 无效邀请只适用于普通回合；正式转场的两个邀请布尔量不决定正文是否可交付。
+        # Invalid invitations apply only to normal turns; the two invitation booleans do not decide whether an official transition body is deliverable.
         if formal and mode == 'invalid_offer':
             bad = True
         return evaluator.NumericV2TransitionOfferReview(
@@ -71,7 +71,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
     assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert result.stored.session.current_node_id == ('ending_leave' if formal else 'start')
-    # 第一版必须被末稿替代，末稿进入唯一正式历史；不能只显示在界面或同时提交两稿。
+    # The final draft must replace the first and become the sole official history entry, not merely display in UI or submit both drafts.
     saved = result.stored.session.performance_history[-1]
     assert f'第{2 if rejected or offer_repaired_before_dispute else 1}版回应' in str(saved)
     if rejected or offer_repaired_before_dispute:
@@ -82,10 +82,10 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
     assert diagnostics['semantic_review_fallback'] is rejected
     assert diagnostics['semantic_review_fallback_phase'] == (('transition' if formal else 'ordinary') if rejected else '')
     if mode == 'invalid_offer' and not formal:
-        # 末稿可提交，但复核无效的新邀请不能锁存到会话，也不能在后续回合被接受。
+        # The final draft is submittable, but a newly invalidated invitation must not latch into the session or be accepted later.
         assert not result.stored.session.transition_offered
     assert 'semantic_review_fallback' not in str(result.stored.session.to_dict())
-    # 正式转场只核对三段正文；按钮本身的 valid=false 不再触发争议复查。
+    # Official transitions check only three body sections; valid=false on the button itself no longer triggers dispute review.
     disputed = mode not in ('safe', 'buttons') and not (formal and mode == 'offer')
     assert len(calls) == (3 if rejected or offer_repaired_before_dispute else 2 if disputed else 1)
     assert len(generations) == (2 if rejected or offer_repaired_before_dispute else 1)
@@ -98,7 +98,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_path):
-    """普通回合仅邀请无效时先改写；改写已通过就不再等待争议复查。"""  # noqa: DOCSTRING_CJK
+    """On normal turns, rewrite first if only the invitation is invalid; once rewriting passes, do not wait for dispute review."""  # noqa: DOCSTRING_CJK
 
     engine = _engine()
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -155,7 +155,7 @@ async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_review_cannot_call_the_same_explicit_movement_unauthorized(monkeypatch, tmp_path):
-    """复核理由承认移动来自本轮明确要求时，零调用清除矛盾枚举并保留正文。"""  # noqa: DOCSTRING_CJK
+    """If review reasoning acknowledges movement as explicitly requested this turn, clear contradictory enums without calls and retain the body."""  # noqa: DOCSTRING_CJK
 
     engine = _engine()
     runtime = NumericV2Runtime(engine, tmp_path)
@@ -200,7 +200,7 @@ async def test_review_cannot_call_the_same_explicit_movement_unauthorized(monkey
             player_action_kind='requested_movement',
         )
     ) is True
-    # 真正的额外操作和目的地错配由结构化 unauthorized 或缺省值保留否决。
+    # Real additional actions and destination mismatches retain veto power through structured unauthorized or its default.
     for kind in ('unauthorized', ''):
         assert workflow._review_mislabels_explicit_player_movement(
             evaluator.NumericV2TransitionOfferReview(
@@ -242,7 +242,7 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
     safe_reply,
     violations,
 ):
-    """玩家已明确离场时，只删除被定位为冲突的场景更新，不再整稿重写。"""  # noqa: DOCSTRING_CJK
+    """When the player explicitly leaves, remove only the identified conflicting scene update rather than rewriting the entire draft."""  # noqa: DOCSTRING_CJK
 
     engine = _engine()
     engine.nodes['start']['story_beat']['fixed_narrations'] = [{
@@ -317,7 +317,7 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
 
 
 def test_confirmed_departure_does_not_trim_conflict_outside_scene_update():
-    """冲突涉及猫娘对白时不能假装只删场景更新就安全。"""  # noqa: DOCSTRING_CJK
+    """Conflicts involving catgirl dialogue cannot be made safe merely by deleting scene updates."""  # noqa: DOCSTRING_CJK
 
     review = evaluator.NumericV2TransitionOfferReview(
         offer_present=False,
@@ -438,7 +438,7 @@ def test_guard_parser_reads_offer_kind_fail_closed():
         review = parse(payload(offer_kind=bad), offer_evidence_text=quote)
         assert review.offer_kind == ''
         assert review.offer_present is True
-    # 引文无法在正文中核验时邀请本身被撤销，结构化码也不能单独存活。
+    # Revoke an invitation when its citation cannot be verified in the body; a structured code cannot survive alone either.
     assert parse(payload(offer_kind='exit_mention_only'), offer_evidence_text='别的正文').offer_kind == ''
     assert parse(payload(offer_present=False, offer_quote='', offer_kind='exit_mention_only')).offer_kind == ''
     formal = parse(payload(offer_kind='exit_mention_only', delivery_matches_route=True, pending_invitation_invalid=False,
@@ -498,11 +498,11 @@ async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatc
     assert factories[0]['max_completion_tokens'] == 190
     assert factories[1]['extra_body'] == {'enable_thinking': True}
     assert factories[1]['max_completion_tokens'] == 4096
-    # 争议时限按复核预算重定后仍须与快检区分，不能与普通时限混用。
+    # After resetting dispute timeouts to the review budget, keep them distinct from quick-check and ordinary timeouts.
     assert factories[1]['timeout'] == evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS
     assert factories[1]['timeout'] > factories[0]['timeout']
     assert evidence[0] == evidence[1] == evidence[2]
-    # 不支持思考的模型明确失败，不能悄悄重复一次相同的快速请求。
+    # Models without thinking support fail explicitly instead of silently repeating the same quick request.
     monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: None)
     with pytest.raises(evaluator.NumericV2EvaluatorUnavailableError):
         await worker.validate_transition_offer(**kwargs, dispute_review=True)

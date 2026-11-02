@@ -44,7 +44,7 @@ TUTORIAL_CHOICES_STATE_FILENAME = "tutorial_choices.json"
 TUTORIAL_CHOICES_STATE_KIND = "tutorial_choices"
 TUTORIAL_CHOICES_SCHEMA_VERSION = 1
 
-# 防御性上限：单棵破冰二叉树满打满算 5 跳/天 × 7 天 = 35 条，留足冗余即可，不需要无限增长。
+# Defensive cap: a full icebreaker binary tree yields 5 hops/day × 7 days = 35 entries; allow ample margin, not unlimited growth.
 MAX_CHARACTERS = 32
 MAX_DAYS_PER_CHARACTER = 64
 MAX_CHOICES_PER_DAY = 128
@@ -84,8 +84,8 @@ def _normalize_choice(raw_choice: Any) -> dict[str, Any] | None:
         "label": _clean_str(raw_choice.get("label"), limit=_LABEL_LIMIT),
         "handoff": bool(raw_choice.get("handoff")),
         "session_id": _clean_str(raw_choice.get("session_id"), limit=_SESSION_LIMIT),
-        # 客户端自增步序：消费侧按 seq 还原点击顺序，不依赖数组到达顺序（fire-and-forget
-        # 写入可能被网络打乱）。0 表示调用方未提供。
+        # Client-incremented sequence: consumers reconstruct click order by seq, independent of arrival order (fire-and-forget
+        # writes can reorder in transit). Zero means caller omitted it.
         "seq": _clamp_int(raw_choice.get("seq")),
         "at": _clamp_int(raw_choice.get("at")),
     }
@@ -166,8 +166,8 @@ def load_tutorial_choices_state(config_manager=None) -> dict[str, Any]:
 def save_tutorial_choices_state(state: dict[str, Any], config_manager=None) -> dict[str, Any]:
     normalized = _normalize_state(state)
     path = get_tutorial_choices_state_path(config_manager)
-    # 通用 safe dump：原子写（写临时文件再 rename，绝不留半截文件），显式 utf-8、
-    # ensure_ascii=False 保留中文 label 原文。读侧 _load_state_file 同样显式 utf-8 打开。
+    # Generic safe dump: atomic temp-file/rename writes, never partial files; explicit UTF-8,
+    # ensure_ascii=False preserves Chinese labels. _load_state_file likewise reads explicitly as UTF-8.
     atomic_write_json(path, normalized, encoding="utf-8", ensure_ascii=False, indent=2)
     return normalized
 
@@ -188,11 +188,11 @@ def _character_last_updated(character: Any) -> int:
 
 
 def _is_duplicate_choice(existing: list[dict[str, Any]], candidate: dict[str, Any], session_id: str) -> bool:
-    # 只挡「同一 session 内的精确重放」（网络重试 / 重复事件把同一次点击重发）：
-    # 按 (session_id, node_id, choice, handoff) 比较。session_id 入了比较键，所以
-    # 用户刷新后用新 session 重走同一天会照常落盘（视作新信号，不静默丢弃），而同一
-    # session 改投不同选项也不受影响（choice 字段不同）。session_id 为空则不去重，
-    # 让无 session 的调用方无损写入。
+    # Block exact replay within one session only (network retries / duplicate events resending one click):
+    # compare (session_id, node_id, choice, handoff). Including session_id means
+    # refreshed users repeating a day under a new session persist normally as new signals;
+    # different choices within one session also remain distinct. Empty session_id disables deduplication,
+    # preserving writes from sessionless callers.
     if not session_id:
         return False
     for item in existing:
@@ -244,8 +244,8 @@ def record_tutorial_choice(
         character = characters.get(lanlan_name)
         if not isinstance(character, dict):
             if len(characters) >= MAX_CHARACTERS:
-                # 已到角色上限：淘汰最久未更新的一个给当前写入腾位。否则 _normalize_state 会在
-                # save 时把新角色静默截掉，却仍返回 ok=True（单用户本地几乎不可触发，但不能谎报成功）。
+                # Character cap reached: evict least recently updated to accommodate this write; otherwise _normalize_state
+                # silently drops new characters on save yet returns ok=True (rare locally, but cannot falsely report success).
                 oldest = min(characters, key=lambda n: _character_last_updated(characters.get(n)))
                 characters.pop(oldest, None)
             character = {"days": {}}
@@ -288,8 +288,8 @@ def get_tutorial_choices_for_character(
     config_manager=None,
 ) -> dict[str, Any]:
     name = _clean_str(lanlan_name, limit=_NAME_LIMIT)
-    # 持锁读：load→save 在写路径里是临界区，atomic_write_json 已保证读不到撕裂的
-    # JSON，但持锁能让读到的恒为最近一次完整提交后的快照，未来消费侧上线也不必再补。
+    # Read under lock: load→save is a write critical section. atomic_write_json prevents torn JSON,
+    # while locking guarantees the latest complete committed snapshot, ready for future consumers.
     with _STATE_LOCK:
         state = load_tutorial_choices_state(config_manager)
     character = state["characters"].get(name) if name else None

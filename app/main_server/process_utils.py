@@ -32,7 +32,7 @@ def _format_size(size_bytes):
     return f"{size_bytes:.2f} TB"
 
 
-# 辅助函数
+# Helper functions
 def get_folder_size(folder_path):
     """Get folder size (in bytes)"""
     total_size = 0
@@ -48,7 +48,7 @@ def get_folder_size(folder_path):
 
 def find_preview_image_in_folder(folder_path):
     """Look for a preview image in the folder, checking only the 8 designated image names"""
-    # 按优先级顺序查找指定的图片文件列表
+    # Search the specified image-file list in priority order
     preview_image_names = [
         "preview.jpg",
         "preview.png",
@@ -65,7 +65,7 @@ def find_preview_image_in_folder(folder_path):
         if os.path.exists(image_path) and os.path.isfile(image_path):
             return image_path
 
-    # 如果找不到指定的图片名称，返回None
+    # Return None if the specified image name cannot be found
     return None
 
 

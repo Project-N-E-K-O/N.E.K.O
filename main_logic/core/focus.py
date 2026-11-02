@@ -64,8 +64,8 @@ class FocusMixin:
             # badge this turn rather than waiting for the next one.
             await self._reconcile_focus_indicator()
             return False
-        # Per-user master switch (对话设置 → focusCognitionEnabled): the user can
-        # turn 凝神 off entirely while the global config flag stays on. Defaults on
+        # Per-user master switch (conversation settings → focusCognitionEnabled): the user can
+        # turn Focus off entirely while the global config flag stays on. Defaults on
         # when unset. The master emotion read is independent (its own pipeline) and
         # is NOT affected by this gate.
         try:
@@ -79,7 +79,7 @@ class FocusMixin:
             # update_focus only DECAYS by retention, leaving residual charge and a
             # FOCUS mode lingering for a turn or two — so the badge/glow wouldn't
             # drop until the charge bled below exit. clear_focus zeroes everything
-            # silently (no FOCUS_EXIT) so 凝神 turns off at once when the user asks.
+            # silently (no FOCUS_EXIT) so Focus turns off at once when the user asks.
             await self.state.clear_focus()
             await self._reconcile_focus_indicator()
             return False
@@ -96,13 +96,13 @@ class FocusMixin:
             # they typed is core to an AI companion. Privacy mode governs only
             # SCREEN / app-state visibility (see docs/contributing/
             # developer-notes.md rule 6). Hence no snapshot fetch here.
-            # emotion 信号读 master 情绪画像的最近读数（异步算、滞后一拍，与
-            # cadence 用历史一脉相承）。画像关 / 还没算过时 latest 为 None，
-            # FocusScorer 让 emotion 信号自动退出加权、退回 keyword+cadence。
-            # 读 _note_user_turn 在「本轮 analyze 启动前」存的快照，保证 emotion
-            # 信号确定性地滞后一拍——当前 turn 不消费它自己即将算出的读数（否则快
-            # tier / 中途 await 让 fire-and-forget analyze 抢先更新 latest，同一条
-            # 消息会时而读旧读数时而读自己的，违反 scorer 的 lag-one-turn 契约）。
+            # emotion reads the latest master emotion-profile reading (computed asynchronously, one turn behind,
+            # consistent with cadence using history). latest is None when profiling is disabled or not yet computed;
+            # FocusScorer then removes emotion from weighting and falls back to keyword+cadence.
+            # Read _note_user_turn's snapshot saved before this turn's analyze starts, ensuring emotion
+            # deterministically lags one turn. The current turn must not consume its own upcoming reading:
+            # a fast tier or intervening await could let fire-and-forget analyze update latest first, making the same
+            # message sometimes read old data and sometimes its own, violating the scorer's lag-one-turn contract.
             emotion_reading = getattr(self, '_focus_emotion_reading', None)
             scored = self._focus_scorer.score(
                 user_text=user_text, emotion_reading=emotion_reading,
@@ -113,15 +113,15 @@ class FocusMixin:
             )
             if mode is CognitionMode.FOCUS:
                 if not self._focus_artifacts_pending:
-                    # 首次进入本 episode：记下历史长度，退出时只清这之后（episode
-                    # 期间）产生的闭合 tool call，不动 Focus 之前的普通工具调用。
+                    # First entry into this episode: record history length; on exit clear only closed tool calls
+                    # produced afterward during the episode, preserving ordinary pre-Focus tool calls.
                     hist = getattr(
                         getattr(self, "session", None), "_conversation_history", None
                     )
                     self._focus_artifacts_history_start = (
                         len(hist) if isinstance(hist, list) else None
                     )
-                # arm：本 episode 的 thinking/tool 残留，退出时要清（见下）。
+                # Arm cleanup of this episode's thinking/tool residue on exit (see below).
                 self._focus_artifacts_pending = True
             # Log every turn (incl. REGULAR) so tuning can watch the charge
             # accumulate toward FOCUS_CHARGE_ENTER, not just the entry moment.
@@ -132,9 +132,9 @@ class FocusMixin:
             )
             # Stream the post-turn charge for the frontend edge glow.
             await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
-            # 退出边沿同步清理（此刻在 stream_text 之前、无并发）：inline 自然退出
-            # （decayed / hard_cap / topic_switch）都在此命中并清；FOCUS 维持时是
-            # no-op（仍在 episode 内）。silent early-return 路径由 reconcile 兜底。
+            # Synchronous exit-edge cleanup (before stream_text, with no concurrency): inline natural exits
+            # (decayed / hard_cap / topic_switch) all clear here. Remaining in FOCUS
+            # is a no-op within the episode. Reconcile covers silent early-return paths.
             await self._maybe_purge_focus_artifacts()
             return mode is CognitionMode.FOCUS
         except Exception as e:
@@ -164,7 +164,7 @@ class FocusMixin:
         if not FOCUS_MODE_ENABLED:
             return False
         # Honor the per-user master switch here too (defense in depth): if the
-        # user turned 凝神 off mid-episode, a proactive turn must not keep running
+        # user turned Focus off mid-episode, a proactive turn must not keep running
         # thinking-on before the next inline turn clears the episode.
         try:
             if not bool(_core_facade.load_global_conversation_settings().get('focusCognitionEnabled', True)):
@@ -207,7 +207,7 @@ class FocusMixin:
         if not self._focus_artifacts_pending:
             return
         if self.state.mode is CognitionMode.FOCUS:
-            return  # 仍在 focus，残留还在用，不能清
+            return  # Still in focus: residue remains in use and must not be cleared.
         self._focus_artifacts_pending = False
         start = self._focus_artifacts_history_start or 0
         self._focus_artifacts_history_start = None
@@ -511,10 +511,10 @@ class FocusMixin:
                 self.state.snapshot().get("focus_charge"), mode.value,
             )
             await self._push_focus_charge(self.state.snapshot().get("focus_charge"))
-            # 若这次 cooldown 把 Focus 衰减出去(→REGULAR)，立即清 episode 残留：
-            # proactive/greeting 的 prompt_ephemeral 会在下个 inline turn 之前就从
-            # _conversation_history 构建、且不走 reconcile，必须赶在它前面清掉，否则
-            # 会把刚结束的 Focus tool-call/reasoning 残留带进随后的 REGULAR 轮。
+            # If this cooldown decays Focus to REGULAR, immediately clear episode residue:
+            # proactive/greeting prompt_ephemeral builds from _conversation_history before the next inline turn
+            # and bypasses reconcile. Clear first, or the just-ended Focus tool-call/reasoning
+            # residue leaks into the following REGULAR turn.
             await self._maybe_purge_focus_artifacts()
         except Exception as e:
             logger.warning("[%s] focus idle cooldown failed (degrading to regular): %s",

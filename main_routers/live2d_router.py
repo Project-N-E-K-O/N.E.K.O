@@ -25,7 +25,7 @@ Handles Live2D model-related endpoints including:
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (§\"No trailing slash in API URLs\") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -55,46 +55,46 @@ router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
 
 
-# 同一个 .model3.json 会被三个 POST 改写：/model_config/{name}、
-# /model_config_by_id/{id}、/emotion_mapping/{name}。三者都是「读盘→改→整覆盖」，
-# 不做 merge，所以无锁并发时后写者会静默丢掉前写者的整段编辑；而且 Windows 上
-# 两个并发 os.replace 打同一个目标会互相 PermissionError(WinError 5)。
-# 因此临界区必须从「读」之前开始 —— 只把写包起来是没用的，丢写窗口是读到写的整段。
+# Three POSTs rewrite the same .model3.json: /model_config/{name},
+# /model_config_by_id/{id}, /emotion_mapping/{name}. All read/modify/replace whole file,
+# without merges; unlocked concurrent writers silently erase earlier edits. Concurrent
+# os.replace on same Windows target also produces PermissionError(WinError 5).
+# Thus critical section starts before read; locking writes only misses full read-to-write race.
 #
-# 按「解析后的文件路径」分桶而不是按 model_name / model_id：by-name 与 by-id
-# 两条路由可以落到同一个文件上，按入参分桶等于没互斥。
+# Bucket by resolved file path, not model_name/model_id: by-name/by-ID routes
+# can target same file, so argument-based locks fail mutual exclusion.
 #
-# 为什么这里用 asyncio.Lock 而不是 threading.Lock（本仓库另几处同型修复选的是后者）：
-# 判据是「所有写者是否都在事件循环上」。这里成立 —— 三个写者全是 async 端点，而两个
-# 同步 GET（跑在 anyio 线程池里）已经不再落盘。反过来说，只要 GET 还要写盘，就必须整体
-# 切到 threading.Lock + asyncio.to_thread：在 worker 线程里 acquire 一把 asyncio.Lock
-# 是不允许的（它不是线程安全的），混用两种锁是伪修复。
-# ⚠️ 代价：模块级 asyncio.Lock 一旦被争用就绑死在当时的事件循环上。生产上只有一个
-# 循环（merged 单进程），但测试要制造争用就必须在用例之间清掉这个字典，否则
-# function-scope 的 loop 换掉之后第二个用例会 RuntimeError。
+# Why asyncio.Lock rather than threading.Lock used in similar repository fixes?
+# All writers must run on event loop: true here for three async POSTs; both
+# synchronous GETs in anyio thread pools no longer persist. Any writing GET requires switching
+# entirely to threading.Lock + asyncio.to_thread: workers cannot acquire asyncio.Lock,
+# which is not thread-safe. Mixing locks is a false fix.
+# ⚠️ Cost: contended module asyncio.Lock binds to current loop. Production has one
+# loop (merged single process), but contention tests must clear dictionary between cases,
+# or replacement function-scoped loops raise RuntimeError on second case.
 #
-# 锁活在模块级而不是挂在 router 实例上：模块只 import 一次，重建 APIRouter /
-# 重新 include_router 都不会造出第二套互斥域。字典只在事件循环线程上被读写，
-# 从查找到插入之间没有 await，所以 get-or-create 是原子的，不需要额外 guard 锁。
+# Module-level locks outlive router instances: imported once, rebuilding APIRouter /
+# include_router never creates another exclusion domain. Dictionary accessed only on loop thread,
+# with no await between lookup/insertion, so get-or-create is atomic without extra guard.
 _MODEL_CONFIG_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 async def _persist_model_config(model_json_path, config, *, indent: int) -> None:
     """Write the config out without letting cancellation release the caller's lock early."""
-    # to_thread 一旦交出去就取消不掉 —— 线程会一直跑到 os.replace 结束。直接 await 的话，
-    # 这个请求被 cancel（客户端断开、超时中间件）时 async with 会在 CancelledError 穿过的
-    # 一刻就把 per-file 锁放掉，而那次 os.replace 还在飞：两个 handler 就又可能同时
-    # replace 同一个目标（Windows 上互相 WinError 5），也就是这个 PR 要修的东西本身。
-    # shield 让取消落在外层、写盘任务照跑，再显式等它收尾之后才让 CancelledError 上浮。
+    # to_thread cannot cancel dispatched work; thread runs through os.replace. Direct await cancellation
+    # (disconnect/timeout middleware) lets async with release per-file lock as CancelledError
+    # passes, while os.replace still runs; concurrent handlers can again replace
+    # same target, producing WinError 5, precisely the issue this PR fixes.
+    # shield contains cancellation outside writer; explicitly await completion before propagating CancelledError.
     writer = asyncio.ensure_future(
         atomic_write_json_async(model_json_path, config, ensure_ascii=False, indent=indent)
     )
     try:
         await asyncio.shield(writer)
     except asyncio.CancelledError:
-        # 循环而不是等一次：第二次取消（超时取消之后再来一次应用退出）会把这次
-        # asyncio.wait 本身也打断，锁又提前放了。writer 是 to_thread，线程一定会跑完，
-        # 所以这个循环必然终止。
+        # Loop, not single wait: second cancellation (shutdown after timeout) interrupts
+        # asyncio.wait too, releasing lock early. Writer thread necessarily completes,
+        # so loop terminates.
         while not writer.done():
             with suppress(asyncio.CancelledError):
                 await asyncio.wait({writer})
@@ -103,8 +103,8 @@ async def _persist_model_config(model_json_path, config, *, indent: int) -> None
 
 def _model_config_write_lock(model_json_path: str | os.PathLike) -> asyncio.Lock:
     """Return the per-file write lock for a resolved ``.model3.json``."""
-    # realpath 折掉 junction/symlink 与 "." 之类的写法差异，normcase 折掉 Windows 的大小写，
-    # 让同一个文件的不同拼法落到同一把锁上。
+    # realpath folds junction/symlink/dot spellings; normcase folds Windows case,
+    # giving every spelling of one file the same lock.
     key = os.path.normcase(os.path.realpath(os.fspath(model_json_path)))
     lock = _MODEL_CONFIG_WRITE_LOCKS.get(key)
     if lock is None:
@@ -336,25 +336,25 @@ async def get_live2d_models(simple: bool = False):
         simple: if True, return only the list of model names; if False, return full model info
     """
     try:
-        # 先获取本地模型
+        # Fetch local models first.
         models = find_models()
         
-        # 再获取Steam创意工坊模型
+        # Then Steam Workshop models.
         try:
             workshop_items_result = await get_subscribed_workshop_items()
             
-            # 处理响应结果
+            # Process response.
             if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
                 items = workshop_items_result.get('items', [])
                 
-                # 遍历所有物品，提取已安装的模型
+                # Iterate items, extracting installed models.
                 for item in items:
-                    # 直接使用get_subscribed_workshop_items返回的installedFolder；从publishedFileId字段获取物品ID，而不是item_id
+                    # Use get_subscribed_workshop_items installedFolder directly; item ID comes from publishedFileId, not item_id.
                     installed_folder = item.get('installedFolder')
                     item_id = item.get('publishedFileId')
                     
                     if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
-                        # 检查安装目录下是否有.model3.json文件
+                        # Check installation directory for .model3.json.
                         for filename in os.listdir(installed_folder):
                             if filename.endswith('.model3.json'):
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
@@ -368,7 +368,7 @@ async def get_live2d_models(simple: bool = False):
                                     merge_by_name=False,
                                 )
                             
-                        # 检查安装目录下的子目录
+                        # Check installation subdirectories.
                         for subdir in os.listdir(installed_folder):
                             subdir_path = os.path.join(installed_folder, subdir)
                             if os.path.isdir(subdir_path):
@@ -390,11 +390,11 @@ async def get_live2d_models(simple: bool = False):
         models = _dedupe_live2d_models_for_display(models)
         
         if simple:
-            # 只返回模型名称列表
+            # Return model names only.
             model_names = [model["name"] for model in models]
             return {"success": True, "models": model_names}
         else:
-            # 返回完整的模型信息（保持向后兼容）
+            # Return full model information, preserving backward compatibility.
             for model in models:
                 if isinstance(model, dict) and isinstance(model.get('path'), str):
                     model['path'] = _normalize_model_path(model['path'])
@@ -412,12 +412,12 @@ def get_model_config(model_name: str):
     Get the model3.json config of the specified Live2D model.
     """
     try:
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         model_dir, url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find .model3.json.
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -430,16 +430,16 @@ def get_model_config(model_name: str):
         with open(model_json_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
         
-        # 检查并自动添加缺失的配置。只补在内存里、随 response 返回，不写盘。
+        # Add missing config in memory/response only, never persist.
         #
-        # 这个端点是同步 def，跑在 anyio 线程池里；在这儿落盘就等于让读流量变成写流量，
-        # 而且它和三个 POST 的 asyncio 锁不在同一个互斥域里（asyncio.Lock 非线程安全，
-        # worker 线程不能碰）。两个窗口同时首次拉同一个老模型，就是两个线程 os.replace
-        # 同一个目标 → Windows 上互相 PermissionError(WinError 5)。落盘归 POST。
+        # Synchronous endpoint runs in anyio workers; writing converts read traffic to writes,
+        # outside three POSTs' asyncio lock domain (not thread-safe, inaccessible to workers).
+        # Two windows first-reading old model concurrently would os.replace same target,
+        # triggering Windows PermissionError(WinError 5). POST owns persistence.
         #
-        # 补的全是空默认值，仓库里每个消费者都已按可缺省读取（本文件 get_emotion_mapping、
-        # app/monitor.py 的 `.get('FileReferences', {}) or {}`、三个 POST 的 setdefault），
-        # 没有任何一处依赖它们在盘上存在；docs/api/rest/live2d.md 也把本端点写成只读。
+        # Defaults are empty; all consumers already read optionally (get_emotion_mapping here,
+        # app/monitor.py's `.get('FileReferences', {}) or {}`, POST setdefault),
+        # none requires disk presence; docs/api/rest/live2d.md also declares GET read-only.
         file_refs = config_data.setdefault('FileReferences', {})
         file_refs.setdefault('Motions', {})
         file_refs.setdefault('Expressions', [])
@@ -458,12 +458,12 @@ async def update_model_config(model_name: str, request: Request):
     try:
         data = await request.json()
         
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         model_dir, url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find .model3.json.
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -473,9 +473,9 @@ async def update_model_config(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
-        # 为了安全，只允许修改 Motions 和 Expressions。
-        # 读→改→写整段在锁内：只把写包起来，两个并发请求照样读到同一份底稿，
-        # 后写者整篇覆盖、静默丢掉前写者的编辑。
+        # Safety: modify Motions/Expressions only.
+        # Lock entire read/modify/write; write-only locks let both requests read same base,
+        # then last writer overwrites whole file, silently losing earlier edits.
         async with _model_config_write_lock(model_json_path):
             current_config = await read_json_async(model_json_path)
 
@@ -486,7 +486,7 @@ async def update_model_config(model_name: str, request: Request):
             if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
                 file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 保持格式
+            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 preserves formatting.
 
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
@@ -500,12 +500,12 @@ def get_emotion_mapping(model_name: str):
     Get the emotion mapping config of the specified Live2D model.
     """
     try:
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         model_dir, url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find .model3.json.
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -518,13 +518,13 @@ def get_emotion_mapping(model_name: str):
         with open(model_json_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
 
-        # 优先使用 EmotionMapping；若不存在则从 FileReferences 推导
+        # Prefer EmotionMapping; derive from FileReferences if absent.
         emotion_mapping = config_data.get('EmotionMapping')
         if not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
             file_refs = config_data.get('FileReferences', {}) or {}
 
-            # 从标准 Motions 结构推导
+            # Derive from standard Motions structure.
             motions = file_refs.get('Motions', {}) or {}
             for group_name, items in motions.items():
                 files = []
@@ -537,7 +537,7 @@ def get_emotion_mapping(model_name: str):
                         continue
                 derived_mapping["motions"][group_name] = files
 
-            # 从标准 Expressions 结构推导（按 Name 的前缀进行分组，如 happy_xxx）
+            # Derive standard Expressions, grouping by Name prefixes such as happy_xxx.
             expressions = file_refs.get('Expressions', []) or []
             for item in expressions:
                 if not isinstance(item, dict):
@@ -547,11 +547,11 @@ def get_emotion_mapping(model_name: str):
                 if not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
-                # 根据第一个下划线拆分分组
+                # Split groups at first underscore.
                 if '_' in name:
                     group = name.split('_', 1)[0]
                 else:
-                    # 无前缀的归入 neutral 组，避免丢失
+                    # Unprefixed entries go neutral, avoiding losses.
                     group = 'neutral'
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
@@ -574,12 +574,12 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not data:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的数据"})
 
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         model_dir, url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find .model3.json.
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -589,19 +589,19 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
-        # 读→改→写整段在锁内，同 update_model_config。下面那段 Cubism 结构变换是纯 CPU、
-        # 内部没有 await，整块套进锁不改变任何逻辑（评审用 git diff -w 看，是纯缩进）。
+        # Lock entire read/modify/write as update_model_config. Cubism transformation below is pure CPU
+        # with no await; enclosing it changes no logic (git diff -w shows indentation-only changes).
         async with _model_config_write_lock(model_json_path):
             config_data = await read_json_async(model_json_path)
 
-            # 统一写入到标准 Cubism 结构（FileReferences.Motions / FileReferences.Expressions）
+            # Write standard Cubism structure (FileReferences.Motions / FileReferences.Expressions).
             file_refs = config_data.setdefault('FileReferences', {})
 
-            # 处理 motions: data 结构为 { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }
+            # Motions input: { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }.
             motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
             motions_output = {}
             for group_name, files in motions_input.items():
-                # 禁止在"常驻"组配置任何motion
+                # Forbid motions in "常驻" group.
                 if group_name == '常驻':
                     logger.info("忽略常驻组中的motion配置（只允许expression）")
                     continue
@@ -619,10 +619,10 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 motions_output[group_name] = items
             file_refs['Motions'] = motions_output
 
-            # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
+            # Flatten expressions by emotion prefix, with Name convention "{emotion}_{basename}".
             expressions_input = (data.get('expressions') if isinstance(data, dict) else None) or {}
 
-            # 先保留不属于我们情感前缀的原始表达（避免覆盖用户自定义）
+            # Preserve original expressions outside our emotion prefixes, avoiding custom-data overwrites.
             existing_expressions = file_refs.get('Expressions', []) or []
             emotion_prefixes = set(expressions_input.keys())
             preserved_expressions = []
@@ -653,10 +653,10 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
             file_refs['Expressions'] = preserved_expressions + new_expressions
 
-            # 同时保留一份 EmotionMapping（供管理器读取与向后兼容）
+            # Retain EmotionMapping copy for manager reads/backward compatibility.
             config_data['EmotionMapping'] = data
 
-            # 保存配置到文件
+            # Save configuration file.
             await _persist_model_config(model_json_path, config_data, indent=2)
 
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
@@ -672,7 +672,7 @@ def get_model_files(model_name: str):
     Get the motion and expression file lists of the specified Live2D model.
     """
     try:
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         model_dir, url_prefix = find_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
@@ -693,7 +693,7 @@ def get_model_files(model_name: str):
         motion_files = []
         expression_files = []
 
-        # 递归搜索所有子文件夹
+        # Recursively search all subfolders.
         def search_files_recursive(directory, target_ext, result_list):
             """
             Recursively search for files with the given extension.
@@ -707,21 +707,21 @@ def get_model_files(model_name: str):
                     item_path = os.path.join(directory, item)
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
-                            # 计算相对于模型根目录的路径
+                            # Calculate path relative to model root.
                             relative_path = os.path.relpath(item_path, model_dir)
-                            # 转换为正斜杠格式（跨平台兼容）
+                            # Normalize forward slashes across platforms.
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
                     elif os.path.isdir(item_path):
-                        # 递归搜索子目录
+                        # Search subdirectories recursively.
                         search_files_recursive(item_path, target_ext, result_list)
             except Exception as e:
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         
-        # 搜索动作文件
+        # Search motion files.
         search_files_recursive(model_dir, '.motion3.json', motion_files)
         
-        # 搜索表情文件
+        # Search expression files.
         search_files_recursive(model_dir, '.exp3.json', expression_files)
         
         logger.debug(f"模型 {model_name} 文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
@@ -747,13 +747,13 @@ def get_model_parameters(model_name: str):
     - parameter_groups: parameter group list; each group contains id and name
     """
     try:
-        # 查找模型目录
+        # Find model directory.
         model_dir, url_prefix = find_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
-        # 查找.cdi3.json文件
+        # Find .cdi3.json.
         cdi3_file = None
         for file in os.listdir(model_dir):
             if file.endswith('.cdi3.json'):
@@ -763,11 +763,11 @@ def get_model_parameters(model_name: str):
         if not cdi3_file or not os.path.exists(cdi3_file):
             return {"success": False, "error": "未找到.cdi3.json文件"}
         
-        # 读取.cdi3.json文件
+        # Read .cdi3.json.
         with open(cdi3_file, 'r', encoding='utf-8') as f:
             cdi3_data = json.load(f)
         
-        # 提取参数信息
+        # Extract parameter information.
         parameters = []
         if 'Parameters' in cdi3_data and isinstance(cdi3_data['Parameters'], list):
             for param in cdi3_data['Parameters']:
@@ -778,7 +778,7 @@ def get_model_parameters(model_name: str):
                         'name': param.get('Name', param.get('Id'))
                     })
         
-        # 提取参数组信息
+        # Extract parameter groups.
         parameter_groups = {}
         if 'ParameterGroups' in cdi3_data and isinstance(cdi3_data['ParameterGroups'], list):
             for group in cdi3_data['ParameterGroups']:
@@ -807,20 +807,20 @@ async def save_model_parameters(model_name: str, request: Request):
     - request: request body containing the parameter info
     """
     try:
-        # 查找模型目录
+        # Find model directory.
         model_dir, url_prefix = find_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         
-        # 获取请求体中的参数
+        # Get request-body parameters.
         body = await request.json()
         parameters = body.get('parameters', {})
         
         if not isinstance(parameters, dict):
             return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
         
-        # 保存到parameters.json文件
+        # Save parameters.json.
         parameters_file = os.path.join(model_dir, 'parameters.json')
         await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
@@ -842,17 +842,17 @@ def load_model_parameters(model_name: str):
     - parameters: loaded parameter dict
     """
     try:
-        # 查找模型目录
+        # Find model directory.
         model_dir, url_prefix = find_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
-        # 读取parameters.json文件
+        # Read parameters.json.
         parameters_file = os.path.join(model_dir, 'parameters.json')
         
         if not os.path.exists(parameters_file):
-            return {"success": True, "parameters": {}}  # 文件不存在时返回空参数
+            return {"success": True, "parameters": {}}  # Missing file returns empty parameters.
         
         with open(parameters_file, 'r', encoding='utf-8') as f:
             parameters = json.load(f)
@@ -878,7 +878,7 @@ def get_model_config_by_id(model_id: str):
     - config: model config dict
     """
     try:
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
@@ -889,7 +889,7 @@ def get_model_config_by_id(model_id: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find .model3.json.
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -902,9 +902,9 @@ def get_model_config_by_id(model_id: str):
         with open(model_json_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
         
-        # 检查并自动添加缺失的配置。只补在内存里、随 response 返回，不写盘，理由同
-        # get_model_config。这条尤其急：它原先连 try/except 都没有，创意工坊安装目录只读
-        # 或被反勒索防护挡住时，一个「读」端点会因为写不进去而整个 500。
+        # Add missing config in memory/response only, never persist, as get_model_config.
+        # Especially urgent: previously lacked try/except, so read-only Workshop directories/CFA
+        # made a read endpoint return 500 for failed writes.
         file_refs = config_data.setdefault('FileReferences', {})
         file_refs.setdefault('Motions', {})
         file_refs.setdefault('Expressions', [])
@@ -929,7 +929,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
     try:
         data = await request.json()
         
-        # 查找模型目录（可能在static或用户文档目录）
+        # Find model directory under static or user documents.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
@@ -940,7 +940,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find .model3.json.
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -950,9 +950,9 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
-        # 为了安全，只允许修改 Motions 和 Expressions。读→改→写整段在锁内，
-        # 与 update_model_config 对偶；锁键是解析后的文件路径，所以 by-name 与 by-id
-        # 打到同一个创意工坊模型时共用同一把锁。
+        # Safety: modify Motions/Expressions only, locking entire read/modify/write,
+        # symmetric with update_model_config. Resolved-file lock keys let by-name/by-ID
+        # routes share one lock for the same Workshop model.
         async with _model_config_write_lock(model_json_path):
             current_config = await read_json_async(model_json_path)
 
@@ -963,7 +963,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
             if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
                 file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 保持格式
+            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 preserves formatting.
 
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
@@ -983,23 +983,23 @@ def get_model_files_by_id(model_id: str):
     - expression_files: expression file list
     """
     try:
-        # 直接拒绝无效的model_id
+        # Reject invalid model_id directly.
         if not model_id or model_id.lower() == 'undefined':
             logger.warning("接收到无效的model_id请求，返回失败")
             return {"success": False, "error": "无效的模型ID"}
         
-        # 尝试通过model_id查找模型
+        # Try model lookup by model_id.
         model_dir = None
         url_prefix = None
         
-        # 首先尝试通过workshop item_id查找
+        # First try Workshop item_id.
         try:
             model_dir, url_prefix = find_workshop_item_by_id(model_id)
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
         except Exception as e:
             logger.warning(f"通过model_id查找失败: {e}")
         
-        # 如果通过model_id找不到有效的目录，尝试将model_id当作model_name回退查找
+        # If model_id yields no valid directory, fall back treating it as model_name.
         if not model_dir or not os.path.exists(model_dir):
             logger.info(f"尝试将 {model_id} 作为模型名称回退查找")
             try:
@@ -1008,7 +1008,7 @@ def get_model_files_by_id(model_id: str):
             except Exception as e:
                 logger.warning(f"作为模型名称查找失败: {e}")
         
-        # 添加额外的错误检查
+        # Additional error checks.
         if not model_dir:
             logger.error("获取模型目录失败: 目录路径为空")
             return {"success": False, "error": "获取模型目录失败: 无效的路径"}
@@ -1026,7 +1026,7 @@ def get_model_files_by_id(model_id: str):
         motion_files = []
         expression_files = []
         
-        # 递归搜索所有子文件夹
+        # Recursively search all subfolders.
         def search_files_recursive(directory, target_ext, result_list):
             """
             Recursively search for files with the given extension.
@@ -1040,33 +1040,33 @@ def get_model_files_by_id(model_id: str):
                     item_path = os.path.join(directory, item)
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
-                            # 计算相对于模型根目录的路径
+                            # Calculate path relative to model root.
                             relative_path = os.path.relpath(item_path, actual_model_dir)
-                            # 转换为正斜杠格式（跨平台兼容）
+                            # Normalize forward slashes across platforms.
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
                     elif os.path.isdir(item_path):
-                        # 递归搜索子目录
+                        # Search subdirectories recursively.
                         search_files_recursive(item_path, target_ext, result_list)
             except Exception as e:
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         
-        # 搜索动作文件
+        # Search motion files.
         search_files_recursive(actual_model_dir, '.motion3.json', motion_files)
 
-        # 搜索表情文件
+        # Search expression files.
         search_files_recursive(actual_model_dir, '.exp3.json', expression_files)
         
-        # 构建模型配置文件的URL
+        # Build model-config URL.
         model_config_url = None
         if url_prefix:
-            # 对于workshop模型，需要根据实际路径结构构建URL
+            # Workshop model URLs follow actual directory structure.
             if url_prefix == '/workshop':
                 if model_name_subdir:
-                    # 模型在子目录中：workshop/{item_id}/{model_name}/{model_name}.model3.json
+                    # Model in subdirectory: workshop/{item_id}/{model_name}/{model_name}.model3.json.
                     model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_name_subdir}/{model_config_file}")
                 else:
-                    # 模型直接在item目录中：workshop/{item_id}/{model_name}.model3.json
+                    # Model directly in item directory: workshop/{item_id}/{model_name}.model3.json.
                     model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
             else:
                 model_config_url = encode_url_path(f"{url_prefix}/{model_config_file}")
@@ -1084,8 +1084,8 @@ def get_model_files_by_id(model_id: str):
         return {"success": False, "error": str(e)}
 
 
-# Steam 创意工坊管理相关API路由
-# 确保这个路由被正确注册
+# Steam Workshop management API routes.
+# Ensure route registered correctly.
 
 @router.post('/upload_model')
 async def upload_live2d_model(files: list[UploadFile] = File(...)):
@@ -1100,15 +1100,15 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         if not files:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
         
-        # 创建临时目录来处理上传的文件
+        # Create temporary directory for uploaded files.
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = pathlib.Path(temp_dir)
             
-            # 保存所有上传的文件到临时目录，保持目录结构
+            # Save all uploads there, preserving directory layout.
             for file in files:
-                # 从文件的相对路径中提取目录结构
+                # Extract directory layout from file-relative paths.
                 file_path = file.filename
-                # 确保路径安全，移除可能的危险路径字符
+                # Ensure safe paths, removing dangerous components.
                 file_path = file_path.replace('\\', '/').lstrip('/')
                 if not file_path or file_path.startswith(("/", "../")) or "/../" in f"/{file_path}":
                     return JSONResponse(status_code=400, content={"success": False, "error": "非法文件路径"})
@@ -1116,12 +1116,12 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                 target_file_path = temp_path / file_path
                 target_file_path.parent.mkdir(parents=True, exist_ok=True)
                 
-                # 保存文件
+                # Save file.
                 with open(target_file_path, 'wb') as f:
                     content = await file.read()
                     f.write(content)
             
-            # 在临时目录中递归查找.model3.json文件
+            # Recursively find .model3.json in temp directory.
             model_json_files = list(temp_path.rglob('*.model3.json'))
             
             if not model_json_files:
@@ -1132,21 +1132,21 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             model_json_file = model_json_files[0]
             
-            # 确定模型根目录（.model3.json文件的父目录）
+            # Determine model root, parent of .model3.json.
             model_root_dir = model_json_file.parent
             model_name = model_root_dir.name
             
-            # 获取用户文档的live2d目录
+            # Get user-documents live2d directory.
             config_mgr = get_config_manager()
             config_mgr.ensure_live2d_directory()
             user_live2d_dir = config_mgr.live2d_dir
             
-            # 目标目录
+            # Target directory.
             target_model_dir = user_live2d_dir / model_name
             
-            # 如果目标目录已存在，返回错误或覆盖（这里选择返回错误）
+            # Existing target: error or overwrite; choose error here.
             if target_model_dir.exists():
-                # 检查是否包含有效模型文件，若无则为残留空目录，自动清理
+                # Check valid model file; absent means empty residue, automatically clean.
                 has_valid_model = any(target_model_dir.rglob('*.model3.json'))
                 if has_valid_model:
                     return JSONResponse(status_code=400, content={
@@ -1157,36 +1157,36 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
                     await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
 
-            # 复制模型根目录到用户文档的live2d目录
+            # Copy model root to user-documents live2d directory.
             await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
 
-            # 上传后：遍历模型目录中的所有动作文件（*.motion3.json），
-            # 将官方白名单参数及模型自身在 .model3.json 中声明为 LipSync 的参数的 Segments 清空为 []。
-            # 这样可以兼顾官方参数与模型声明的口型参数，同时忽略未声明的作者自定义命名（避免误伤）。
+            # After upload iterate all *.motion3.json files,
+            # empty Segments=[] for official whitelist and model-declared .model3.json LipSync parameters.
+            # Covers official/model-declared lip sync while ignoring undeclared custom names, avoiding false matches.
             try:
                 import json as _json
 
-                # 官方口型参数白名单（尽量全面列出常见和官方命名的嘴部/口型相关参数）
-                # 仅包含与嘴巴形状、发音帧（A/I/U/E/O）、下颚/唇动作直接相关的参数，
-                # 明确排除头部/身体/表情等其它参数（例如 ParamAngleZ、ParamAngleX 等不应在此）。
+                # Official mouth/lip-sync whitelist, covering common and official names thoroughly.
+                # Only mouth shape, phoneme A/I/U/E/O, jaw/lip movement parameters;
+                # explicitly exclude head/body/expression parameters, e.g. ParamAngleZ/ParamAngleX.
                 official_mouth_params = {
-                    # 五个基本发音帧（A/I/U/E/O）
+                    # Five basic phonemes A/I/U/E/O.
                     'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO',
-                    # 常见嘴部上下/开合/形状参数
+                    # Common mouth vertical/open/shape parameters.
                     'ParamMouthUp', 'ParamMouthDown', 'ParamMouthOpen', 'ParamMouthOpenY',
                     'ParamMouthForm', 'ParamMouthX', 'ParamMouthY', 'ParamMouthSmile', 'ParamMouthPucker',
                     'ParamMouthStretch', 'ParamMouthShrug', 'ParamMouthLeft', 'ParamMouthRight',
                     'ParamMouthCornerUpLeft', 'ParamMouthCornerUpRight',
                     'ParamMouthCornerDownLeft', 'ParamMouthCornerDownRight',
-                    # 唇相关（部分模型/官方扩展中可能出现）
+                    # Lip-related (some models/official extensions).
                     'ParamLipA', 'ParamLipI', 'ParamLipU', 'ParamLipE', 'ParamLipO', 'ParamLipThickness',
-                    # 下颚（部分模型以下颚控制口型）
+                    # Jaw (some models control lip sync through jaw).
                     'ParamJawOpen', 'ParamJawForward', 'ParamJawLeft', 'ParamJawRight',
-                    # 其它口型相关（保守列入）
+                    # Other lip-sync parameters, conservatively included.
                     'ParamMouthAngry', 'ParamMouthAngryLine'
                 }
 
-                # 尝试读取模型的 .model3.json，提取 Groups -> Name == "LipSync" && Target == "Parameter" 的 Ids
+                # Read .model3.json Groups IDs where Name=="LipSync" and Target=="Parameter".
                 model_declared_mouth_params = set()
                 try:
                     local_model_json = target_model_dir / model_json_file.name
@@ -1200,7 +1200,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                                         try:
                                             if not isinstance(grp, dict):
                                                 continue
-                                            # 仅考虑官方 Group Name 为 LipSync 且 Target 为 Parameter 的条目
+                                            # Consider official LipSync groups targeting Parameter only.
                                             if grp.get('Name') == 'LipSync' and grp.get('Target') == 'Parameter':
                                                 ids = grp.get('Ids') or []
                                                 for pid in ids:
@@ -1209,12 +1209,12 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                                         except Exception:
                                             continue
                             except Exception:
-                                # 解析失败则视为未找到 groups，继续使用官方白名单
+                                # Parse failure means no groups found; continue official whitelist.
                                 pass
                 except Exception:
                     pass
 
-                # 合并白名单（官方 + 模型声明）
+                # Merge official/model-declared whitelists.
                 mouth_param_whitelist = set(official_mouth_params)
                 mouth_param_whitelist.update(model_declared_mouth_params)
 
@@ -1224,7 +1224,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                             try:
                                 motion_data = _json.load(mf)
                             except Exception:
-                                # 非 JSON 或解析失败则跳过
+                                # Skip non-JSON/parse failures.
                                 continue
 
                         modified = False
@@ -1237,9 +1237,9 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                                     cid = curve.get('Id')
                                     if not cid:
                                         continue
-                                    # 严格按白名单匹配（避免模糊匹配误伤）
+                                    # Exact whitelist matches only, avoiding fuzzy false positives.
                                     if cid in mouth_param_whitelist:
-                                        # 清空 Segments（若存在）
+                                        # Clear Segments if present.
                                         if 'Segments' in curve and curve['Segments']:
                                             curve['Segments'] = []
                                             modified = True
@@ -1251,7 +1251,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                                 await atomic_write_json_async(motion_path, motion_data, ensure_ascii=False, indent=4)
                                 logger.info(f"已清除口型参数：{motion_path}")
                             except Exception:
-                                # 写入失败则记录但不阻止上传
+                                # Log write failures without blocking upload.
                                 logger.exception(f"写入 motion 文件失败: {motion_path}")
                     except Exception:
                         continue
@@ -1268,7 +1268,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             })
             
     except Exception as e:
-        # 清理可能的残留目录
+        # Clean possible leftover directory.
         try:
             if target_model_dir and target_model_dir.exists():
                 await asyncio.to_thread(shutil.rmtree, target_model_dir)
@@ -1292,7 +1292,7 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         if not file:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
         
-        # 限制文件大小 (例如 50MB)
+        # File-size limit, e.g. 50MB.
         MAX_UPLOAD_SIZE = 50 * 1024 * 1024
         chunk_size = 64 * 1024
         file_content = bytearray()
@@ -1307,7 +1307,7 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         finally:
             await file.close()
         
-        # 验证文件类型和 JSON 格式
+        # Validate file type/JSON format.
         filename = file.filename
         if file_type == "motion":
             if not filename or not filename.lower().endswith('.motion3.json'):
@@ -1320,22 +1320,22 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         else:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的文件类型，必须是motion或expression"})
         
-        # 验证 JSON 格式
+        # Validate JSON.
         try:
             json.loads(file_content.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse(status_code=400, content={"success": False, "error": "文件内容不是有效的 JSON 格式"})
 
-        # 查找模型目录
+        # Find model directory.
         model_dir, _url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 创建目标子目录（如果不存在）
+        # Create target subdirectory if absent.
         target_dir = pathlib.Path(model_dir) / target_subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         
-        # 只取文件名，避免路径穿越
+        # Basename only, avoiding traversal.
         safe_filename = pathlib.Path(filename).name
         
         target_file_path = target_dir / safe_filename
@@ -1368,13 +1368,13 @@ def open_model_directory(model_name: str):
     """
     try:
         import sys
-        # 查找模型目录
+        # Find model directory.
         model_dir, url_prefix = find_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型目录不存在: {model_dir}"})
         
-        # 使用os.startfile在Windows上打开目录
+        # Open Windows directory with os.startfile.
         if os.name == 'nt':  # Windows
             os.startfile(model_dir)
         elif os.name == 'posix':  # macOS or Linux
@@ -1395,17 +1395,17 @@ def delete_model(model_name: str):
     - model_name: model name (without path or extension)
     """
     try:
-        # 查找模型目录
+        # Find model directory.
         model_dir, _url_prefix = find_model_directory(model_name)
         
-        # 如果 find_model_directory 找不到，尝试直接在用户导入目录下查找（作为删除的降级路径）
+        # If find_model_directory fails, search user-import directory directly as deletion fallback.
         if not model_dir or not os.path.exists(model_dir):
             try:
                 config_mgr = get_config_manager()
                 config_mgr.ensure_live2d_directory()
                 fallback_dir = config_mgr.live2d_dir / model_name
                 if fallback_dir.exists():
-                    # 验证路径安全（防止路径遍历）
+                    # Validate path safety against traversal.
                     fallback_real = os.path.realpath(str(fallback_dir))
                     live2d_real = os.path.realpath(str(config_mgr.live2d_dir))
                     if os.path.commonpath([fallback_real, live2d_real]) == live2d_real:
@@ -1418,17 +1418,17 @@ def delete_model(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         
-        # 检查是否是用户导入的模型（只能删除用户导入的模型，不能删除内置模型）
+        # Only user-imported models deletable, never builtins.
         is_user_model = False
-        _model_in_readonly_dir = False  # CFA 场景：模型在受保护的只读目录中
+        _model_in_readonly_dir = False  # CFA: model inside protected read-only directory.
 
-        # 检查是否在用户文档目录下（包括 CFA 回退路径和原始 Documents 路径）
+        # Check user documents, including CFA fallback/original Documents.
         try:
             config_mgr = get_config_manager()
             config_mgr.ensure_live2d_directory()
             model_dir_real = os.path.realpath(model_dir)
 
-            # 检查可写路径（live2d_dir，可能是 AppData 回退）
+            # Check writable live2d_dir, possibly AppData fallback.
             user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             try:
                 common = os.path.commonpath([user_live2d_dir, model_dir_real])
@@ -1437,7 +1437,7 @@ def delete_model(model_name: str):
             except ValueError:
                 pass
 
-            # CFA 场景：也检查原始 Documents 下的 live2d 目录
+            # CFA: also check original Documents live2d.
             if not is_user_model:
                 readable_live2d = config_mgr.readable_live2d_dir
                 if readable_live2d:
@@ -1446,7 +1446,7 @@ def delete_model(model_name: str):
                         common = os.path.commonpath([readable_live2d_real, model_dir_real])
                         if common == readable_live2d_real:
                             is_user_model = True
-                            _model_in_readonly_dir = True  # 在 CFA 保护的只读目录中
+                            _model_in_readonly_dir = True  # Inside CFA-protected read-only directory.
                     except ValueError:
                         pass
         except Exception as e:
@@ -1455,23 +1455,23 @@ def delete_model(model_name: str):
         if not is_user_model:
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除内置模型"})
 
-        # CFA 场景：模型在受保护目录中，无法删除
+        # CFA: protected model cannot be deleted.
         if _model_in_readonly_dir:
             return JSONResponse(status_code=403, content={
                 "success": False,
                 "error": f"模型 {model_name} 位于受Windows安全策略保护的目录中，无法自动删除。请在文件资源管理器中手动删除: {model_dir}"
             })
 
-        # 再次检查路径是否存在
+        # Recheck path existence.
         if not os.path.exists(model_dir):
             logger.info(f"模型目录不存在，视为已删除: {model_name}")
             return {"success": True, "message": f"模型 {model_name} 已成功删除"}
 
-        # 递归删除模型目录
+        # Recursively delete model directory.
         import shutil
         shutil.rmtree(model_dir, ignore_errors=True)
 
-        # 验证删除是否成功
+        # Verify deletion succeeded.
         if os.path.exists(model_dir):
             logger.warning(f"删除后文件夹仍存在: {model_dir}，可能被占用或权限不足")
             return JSONResponse(status_code=500, content={"success": False, "error": f"删除模型失败，文件夹仍存在: {model_dir}"})
@@ -1491,36 +1491,36 @@ def get_user_models():
     try:
         user_models = []
         
-        # 获取用户文档目录下的live2d模型
-        # CFA (反勒索防护) 感知：扫描可写路径和原始 Documents 路径
+        # Get user-documents Live2D models.
+        # CFA-aware: scan writable and original Documents paths.
         try:
             config_mgr = get_config_manager()
             config_mgr.ensure_live2d_directory()
             readable_live2d = config_mgr.readable_live2d_dir
 
-            # 构建需要扫描的目录列表: (目录路径, URL前缀)
+            # Build scan list: (directory path, URL prefix).
             _scan_dirs = []
             if readable_live2d:
-                # CFA 场景：原始 Documents 用 /user_live2d，可写回退用 /user_live2d_local
+                # CFA: original Documents uses /user_live2d; writable fallback /user_live2d_local.
                 _scan_dirs.append((str(readable_live2d), '/user_live2d'))
                 docs_live2d_dir = str(config_mgr.live2d_dir)
                 if docs_live2d_dir != str(readable_live2d):
                     _scan_dirs.append((docs_live2d_dir, '/user_live2d_local'))
             else:
-                # 正常场景
+                # Normal case.
                 _scan_dirs.append((str(config_mgr.live2d_dir), '/user_live2d'))
 
             existing_keys = set()
             for scan_dir, url_prefix in _scan_dirs:
                 if not os.path.exists(scan_dir):
                     continue
-                found_dirs = set()  # 记录已识别为有效模型的目录
+                found_dirs = set()  # Record directories recognized as valid models.
                 for root, dirs, files in os.walk(scan_dir):
                     for file in files:
                         if file.endswith('.model3.json'):
                             model_name = os.path.basename(root)
-                            # 使用 (model_name, url_prefix) 作为去重键，
-                            # 避免 CFA 场景下同名模型在不同目录中互相覆盖
+                            # Deduplicate by (model_name, url_prefix),
+                            # avoiding same-name models overwriting across CFA directories.
                             dedup_key = (model_name, url_prefix)
                             if dedup_key in existing_keys:
                                 dirs[:] = []
@@ -1537,7 +1537,7 @@ def get_user_models():
                                 path = f'{url_prefix}/{rel_path_posix}/{file}'
                             else:
                                 path = f'{url_prefix}/{file}'
-                            # 记录顶层目录名
+                            # Record top-level directory name.
                             top_dir = rel_path.split(os.sep)[0] if rel_path != '.' else model_name
                             found_dirs.add(top_dir)
                             user_models.append({
@@ -1548,8 +1548,8 @@ def get_user_models():
                             # Prune deeper traversal after finding a .model3.json
                             dirs[:] = []
                 
-                # 查找残缺模型目录（有目录但无 .model3.json 的顶层子目录）
-                # 这些通常是导入失败后留下的残留，需要显示在列表中以便用户删除
+                # Find incomplete top-level directories lacking .model3.json.
+                # Usually failed-import residue; list for user deletion.
                 for item in os.listdir(scan_dir):
                     item_path = os.path.join(scan_dir, item)
                     if os.path.isdir(item_path) and item not in found_dirs:
@@ -1562,7 +1562,7 @@ def get_user_models():
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
 
-        # 扫描用户导入的 VRM 模型
+        # Scan user-imported VRM models.
         try:
             config_mgr = get_config_manager()
             config_mgr.ensure_vrm_directory()

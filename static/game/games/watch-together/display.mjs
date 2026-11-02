@@ -1,8 +1,18 @@
 // Fullscreen the composition, so both avatar providers remain over the video.
+// Maximize and fullscreen are always the viewer's choice; selecting or playing never forces them.
+// Returns restore(), which leaves either mode so the page around the stage is reachable again.
 export function initializeDisplay() {
   const stage=document.getElementById('stage'), video=document.getElementById('video');
   const size=document.getElementById('stage-size'), fullscreen=document.getElementById('stage-fullscreen');
-  let expanded=false, selected=false, wasFullscreen=false;
+  let expanded=false, wasFullscreen=false, idleTimer=0;
+  const immersive=()=>expanded || document.fullscreenElement===stage;
+  // While playing immersively, the title row and dock fade out after a short pause in pointer/keyboard use.
+  const wake=()=>{
+    stage.classList.remove('idle');clearTimeout(idleTimer);
+    idleTimer=setTimeout(()=>{
+      if(immersive() && !video.paused && !stage.querySelector('.stage-head:hover,.dock:hover,.dock:focus-within'))stage.classList.add('idle');
+    },2500);
+  };
   const setExpanded=value=>{
     expanded=value;
     stage.classList.toggle('expanded',value);
@@ -10,6 +20,7 @@ export function initializeDisplay() {
     const key=value?'common.restore':'common.maximize';
     size.dataset.i18n=key;size.textContent=window.i18n?.t(key) || key;
     size.setAttribute('aria-expanded',String(value));
+    wake();
   };
   const enterFullscreen=()=>{
     setExpanded(true);
@@ -25,19 +36,20 @@ export function initializeDisplay() {
     if(document.fullscreenElement)await document.exitFullscreen();
     else await enterFullscreen();
   };
-  document.getElementById('play').addEventListener('click',()=>{
-    if(expanded && !document.fullscreenElement)void enterFullscreen();
-  });
   document.addEventListener('fullscreenchange',()=>{
     if(!document.fullscreenElement && wasFullscreen)setExpanded(false);
     wasFullscreen=document.fullscreenElement===stage;
+    wake();
   });
   document.addEventListener('keydown',event=>{
-    if(event.key==='Escape' && !document.fullscreenElement)setExpanded(false);
+    // Escape inside the confirmation dialog only closes the dialog.
+    if(event.key==='Escape' && !document.fullscreenElement && !document.querySelector('dialog[open]'))setExpanded(false);
   });
-  const observeSelection=()=>{
-    if(!selected && video.getAttribute('poster')){selected=true;setExpanded(true);}
+  for(const type of ['pointermove','pointerdown','keydown','focusin'])stage.addEventListener(type,wake,{passive:true});
+  for(const type of ['play','pause','ended'])video.addEventListener(type,wake);
+  const restore=async()=>{
+    if(document.fullscreenElement)await document.exitFullscreen().catch(()=>{});
+    setExpanded(false);
   };
-  new MutationObserver(observeSelection).observe(video,{attributes:true,attributeFilter:['poster']});
-  observeSelection();
+  return {restore};
 }

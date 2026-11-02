@@ -46,7 +46,7 @@ async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: 
 
     try:
         api_cfg = await get_config_manager().aget_model_api_config(model_type)
-    except Exception as exc:  # noqa: BLE001 - 配置读不出与没配同样处理
+    except Exception as exc:  # noqa: BLE001 - Treat unreadable configuration as unconfigured.
         raise VisitLLMUnavailable(f"model config unavailable: {type(exc).__name__}") from None
     model = (api_cfg or {}).get("model")
     if not model:
@@ -61,19 +61,19 @@ async def one_shot(prompt: str, *, max_tokens: int, timeout: float, model_type: 
             timeout=timeout,
             max_retries=1,
         )
-    except Exception as exc:  # noqa: BLE001 - 客户端建不起来与没配同样处理：调用方只认 VisitLLMUnavailable
+    except Exception as exc:  # noqa: BLE001 - Treat client construction failure as unconfigured; callers recognize only VisitLLMUnavailable.
         raise VisitLLMUnavailable(f"client unavailable: {type(exc).__name__}") from None
     try:
-        # 调用方已按 token 预算截断输入（角色卡 / 记录块）
+        # The caller already truncated inputs (character cards / record blocks) to the token budget.
         resp = await llm.ainvoke([HumanMessage(content=prompt)])  # noqa: LLM_INPUT_BUDGET
     except Exception as exc:  # noqa: BLE001
         logger.warning("visit llm: call failed: %s", type(exc).__name__)
         raise VisitLLMUnavailable("call failed") from None
     finally:
         try:
-            # 限时：调用超时被取消后还卡在关闭上，外层的 wait_for 会一直等这段清理
+            # Bound cleanup: after timeout cancellation, an outer wait_for still waits for stuck close operations.
             await asyncio.wait_for(llm.aclose(), _ACLOSE_TIMEOUT_S)
-        except Exception as exc:  # noqa: BLE001 - 关闭失败 / 超时不影响已拿到的结果
+        except Exception as exc:  # noqa: BLE001 - Closing failure / timeout must not affect an already obtained result.
             logger.debug("visit llm: aclose failed: %s", type(exc).__name__)
     content = getattr(resp, "content", None)
     text = content if isinstance(content, str) else ""

@@ -1,16 +1,16 @@
 """
-App Launcher Plugin (应用启动器)
+App Launcher Plugin
 
-允许用户在前端录入电脑上软件的快捷方式路径或可执行文件路径。
-猫娘可以通过此插件准确识别并打开用户注册的软件。
+Allows users to enter desktop software shortcut or executable paths through the frontend.
+The catgirl uses this plugin to identify and open registered software accurately.
 
-功能：
-- 添加/删除/列出软件
-- 通过路径启动软件
-- 支持 .exe、.lnk、.url 等类型
-- 支持别名设置，方便猫娘识别
-- 支持开机自启功能（通过 Windows 注册表实现）
-- 猫娘可以通过插件调用来管理软件的开机自启状态
+Features:
+- Add/delete/list software
+- Launch software by path
+- Support .exe, .lnk, .url, and other file types
+- Support aliases for easier catgirl recognition
+- Support startup autostart through the Windows registry
+- Let the catgirl manage software autostart through plugin calls
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _now() -> str:
 
 
 def _get_default_categories() -> List[Dict[str, Any]]:
-    """获取默认分类列表"""
+    """Get the default category list"""
     return [
         {"id": "games", "name": "游戏", "icon": "🎮", "color": "#667eea"},
         {"id": "work", "name": "工作", "icon": "💼", "color": "#4facfe"},
@@ -60,18 +60,18 @@ def _get_default_categories() -> List[Dict[str, Any]]:
 
 
 def _is_windows() -> bool:
-    """检查是否在 Windows 平台"""
+    """Check whether the platform is Windows"""
     return sys.platform == "win32"
 
 
 def _is_valid_path(path: str) -> bool:
-    """检查路径是否看起来有效"""
+    """Check whether a path looks valid"""
     if not path or not isinstance(path, str):
         return False
     path = path.strip()
     if not path:
         return False
-    # 先去除引号，支持 Windows 资源管理器复制的带引号路径
+    # Strip quotes first to support quoted paths copied from Windows Explorer
     if (path.startswith('"') and path.endswith('"')) or (path.startswith("'") and path.endswith("'")):
         path = path[1:-1]
     path = os.path.expandvars(path)
@@ -81,9 +81,9 @@ def _is_valid_path(path: str) -> bool:
 
 
 def _resolve_path(path: str) -> str:
-    """解析路径，展开环境变量"""
+    """Resolve a path, expanding environment variables"""
     path = path.strip()
-    # 先去除引号，与 _is_valid_path 保持一致
+    # Strip quotes first, matching _is_valid_path
     if (path.startswith('"') and path.endswith('"')) or (path.startswith("'") and path.endswith("'")):
         path = path[1:-1]
     path = os.path.expandvars(path)
@@ -91,7 +91,7 @@ def _resolve_path(path: str) -> str:
 
 
 def _get_file_type(path: str) -> str:
-    """获取文件类型"""
+    """Get the file type"""
     ext = Path(path).suffix.lower()
     if ext == ".lnk":
         return "lnk"
@@ -106,7 +106,7 @@ def _get_file_type(path: str) -> str:
 
 
 def _file_exists(path: str) -> bool:
-    """检查文件是否存在"""
+    """Check whether a file exists"""
     try:
         return os.path.isfile(path)
     except Exception:
@@ -114,7 +114,7 @@ def _file_exists(path: str) -> bool:
 
 
 def _launch_file(path: str) -> tuple[bool, str]:
-    """启动文件，返回 (是否成功, 错误信息)"""
+    """Launch a file and return (success, error message)"""
     try:
         path = _resolve_path(path)
         if not _file_exists(path):
@@ -150,10 +150,10 @@ def _launch_file(path: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-# ===== 开机自启功能 (Windows Registry) =====
+# ===== Startup autostart functionality (Windows Registry) =====
 
 def _get_autostart_reg_name(app_id: str) -> str:
-    """生成注册表项名称"""
+    """Generate a registry-entry name"""
     return f"{_AUTORUN_PREFIX}{app_id}"
 
 
@@ -190,16 +190,16 @@ def _normalize_aliases(aliases: Optional[List[str]]) -> List[str]:
 
 def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> tuple[bool, str]:
     """
-    设置开机自启（Windows 注册表）
+    Configure startup autostart (Windows registry)
     
     Args:
-        app_id: 应用 ID
-        name: 应用名称
-        path: 可执行文件路径
-        enabled: True=启用, False=禁用
+        app_id: Application ID
+        name: Application name
+        path: Executable path
+        enabled: True=enable, False=disable
         
     Returns:
-        (是否成功, 错误信息)
+        (success, error message)
     """
     if not _is_windows():
         if not enabled:
@@ -253,7 +253,7 @@ def _set_autostart_windows(app_id: str, name: str, path: str, enabled: bool) -> 
 
 
 def _get_autostart_status_windows(app_id: str) -> bool:
-    """获取开机自启状态"""
+    """Get startup autostart status"""
     if not _is_windows():
         return False
     
@@ -279,7 +279,7 @@ def _get_autostart_status_windows(app_id: str) -> bool:
 
 
 def _get_all_autostart_status_windows() -> Dict[str, bool]:
-    """获取所有应用的开机自启状态"""
+    """Get startup autostart status for all applications"""
     if not _is_windows():
         return {}
     
@@ -315,7 +315,7 @@ def _get_all_autostart_status_windows() -> Dict[str, bool]:
 
 @neko_plugin
 class AppLauncherPlugin(NekoPluginBase):
-    """应用启动器插件"""
+    """Application launcher plugin"""
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
@@ -323,10 +323,10 @@ class AppLauncherPlugin(NekoPluginBase):
         self.logger = self.file_logger
         self._apps_lock = threading.Lock()
         self._recent_lock = threading.Lock()
-        # i18n 已通过 SDK 自动加载（plugin.toml 中的 [plugin.i18n] 配置）
+        # SDK automatically loads i18n from [plugin.i18n] in plugin.toml
 
     def _load_apps_unlocked(self) -> List[Dict[str, Any]]:
-        """从存储加载应用列表（无锁）"""
+        """Load the application list from storage without locking"""
         try:
             if not self.store.enabled:
                 return []
@@ -337,7 +337,7 @@ class AppLauncherPlugin(NekoPluginBase):
             return []
 
     def _save_apps_unlocked(self, apps: List[Dict[str, Any]]) -> None:
-        """保存应用列表到存储（无锁）"""
+        """Save the application list to storage without locking"""
         try:
             if not self.store.enabled:
                 raise SdkError("PluginStore is disabled")
@@ -361,7 +361,7 @@ class AppLauncherPlugin(NekoPluginBase):
         return None
 
     def _find_apps_by_name_or_alias(self, apps: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
-        """通过名称或别名分阶段查找应用，保留歧义结果给调用方处理。"""
+        """Find applications in stages by name or alias, preserving ambiguous results for callers."""
         query = query.lower().strip()
         if not query:
             return []
@@ -385,7 +385,7 @@ class AppLauncherPlugin(NekoPluginBase):
         return []
 
     def _update_app_autostart_field(self, app_id: str, autostart: bool) -> None:
-        """更新应用记录中的 autostart 字段"""
+        """Update the autostart field in an application record"""
         try:
             with self._apps_lock:
                 apps = self._load_apps_unlocked()
@@ -399,7 +399,7 @@ class AppLauncherPlugin(NekoPluginBase):
             self.logger.warning("Failed to update autostart field for {}: {}", app_id, exc)
 
     def _load_categories(self) -> List[Dict[str, Any]]:
-        """加载分类列表"""
+        """Load the category list"""
         try:
             if not self.store.enabled:
                 return _get_default_categories()
@@ -409,7 +409,7 @@ class AppLauncherPlugin(NekoPluginBase):
             return _get_default_categories()
 
     def _save_categories(self, categories: List[Dict[str, Any]]) -> None:
-        """保存分类列表"""
+        """Save the category list"""
         try:
             if not self.store.enabled:
                 return
@@ -418,7 +418,7 @@ class AppLauncherPlugin(NekoPluginBase):
             self.logger.warning("Failed to save categories: {}", exc)
 
     def _load_recent(self) -> List[Dict[str, Any]]:
-        """加载最近使用记录"""
+        """Load recently used records"""
         try:
             if not self.store.enabled:
                 return []
@@ -428,7 +428,7 @@ class AppLauncherPlugin(NekoPluginBase):
             return []
 
     def _save_recent(self, recent: List[Dict[str, Any]]) -> None:
-        """保存最近使用记录"""
+        """Save recently used records"""
         try:
             if not self.store.enabled:
                 return
@@ -437,19 +437,19 @@ class AppLauncherPlugin(NekoPluginBase):
             self.logger.warning("Failed to save recent: {}", exc)
 
     def _add_to_recent(self, app_id: str, app_name: str) -> None:
-        """添加到最近使用记录"""
+        """Add to recently used records"""
         try:
             with self._recent_lock:
                 recent = self._load_recent()
-                # 移除已存在的记录
+                # Remove an existing record
                 recent = [r for r in recent if r.get("app_id") != app_id]
-                # 添加到开头
+                # Add to the beginning
                 recent.insert(0, {
                     "app_id": app_id,
                     "app_name": app_name,
                     "launched_at": _now(),
                 })
-                # 只保留最近10条
+                # Retain only the 10 most recent records
                 recent = recent[:10]
                 self._save_recent(recent)
         except Exception as exc:
@@ -480,7 +480,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["apps", "count"],
     )
     async def list_apps(self, **_):
-        """列出所有已注册的软件"""
+        """List all registered software"""
         apps = self._load_apps()
         
         autostart_status = _get_all_autostart_status_windows()
@@ -538,7 +538,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["app_id", "name", "path", "message"],
     )
     async def add_app(self, name: str, path: str, aliases: Optional[List[str]] = None, description: str = "", autostart: bool = False, **_):
-        """添加软件"""
+        """Add software"""
         name = name.strip()
         path = path.strip()
         try:
@@ -579,7 +579,7 @@ class AppLauncherPlugin(NekoPluginBase):
 
         self.logger.info("App added: id={} name={} path={}", app_id, name, path)
 
-        # 处理开机自启
+        # Handle startup autostart
         autostart_msg = ""
         if autostart and file_type == "exe":
             success, msg = _set_autostart_windows(app_id, name, resolved_path, True)
@@ -621,7 +621,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["deleted", "name"],
     )
     async def remove_app(self, app_id: str, **_):
-        """删除软件"""
+        """Delete software"""
         app_id = app_id.strip()
         if not app_id:
             return Err(SdkError("app_id 不能为空"))
@@ -632,7 +632,7 @@ class AppLauncherPlugin(NekoPluginBase):
             if not target:
                 return Err(SdkError(f"未找到软件: {app_id}"))
 
-            # 清理开机自启注册表项
+            # Clean up autostart registry entries
             if target.get("autostart", False):
                 _set_autostart_windows(app_id, target.get("name", ""), target.get("path", ""), False)
 
@@ -667,7 +667,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["success", "message", "app_name"],
     )
     async def launch_app(self, app_id: str = "", name: str = "", **_):
-        """启动软件"""
+        """Launch software"""
         apps = self._load_apps()
         if not apps:
             return Err(SdkError("当前没有注册的软件，请先通过 UI 添加软件"))
@@ -722,7 +722,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["available_apps", "count"],
     )
     async def get_available_apps(self, **_):
-        """获取可用软件列表（文件存在）"""
+        """Get available software whose files exist"""
         apps = self._load_apps()
         
         autostart_status = _get_all_autostart_status_windows()
@@ -799,7 +799,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["app_id", "name", "message"],
     )
     async def update_app(self, app_id: str, name: str = "", path: str = "", aliases: Optional[List[str]] = None, description: Optional[str] = None, **_):
-        """更新软件信息"""
+        """Update software information"""
         app_id = app_id.strip()
         if not app_id:
             return Err(SdkError("app_id 不能为空"))
@@ -826,7 +826,7 @@ class AppLauncherPlugin(NekoPluginBase):
                 if not _is_valid_path(new_path):
                     return Err(SdkError(f"路径无效: {new_path}"))
                 new_resolved = _resolve_path(new_path)
-                # 检查是否与其他应用的路径重复
+                # Check for duplicate paths among other applications
                 for other in apps:
                     if other.get("id") != app_id and _resolve_path(other.get("path", "")).lower() == new_resolved.lower():
                         return Err(SdkError(f"该路径已被其他软件注册: {other.get('name')}"))
@@ -846,7 +846,7 @@ class AppLauncherPlugin(NekoPluginBase):
             apps[target_idx] = app
             self._save_apps_unlocked(apps)
 
-            # 路径改变时刷新开机自启命令
+            # Refresh the autostart command when the path changes
             autostart_msg = ""
             if path_changed and app.get("autostart", False):
                 if app.get("type") != "exe":
@@ -903,7 +903,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["success", "message", "app_name", "enabled"],
     )
     async def set_autostart(self, app_id: str, enabled: bool, **_):
-        """设置开机自启"""
+        """Configure startup autostart"""
         app_id = app_id.strip()
         try:
             enabled = _coerce_bool_param(enabled, field_name="enabled")
@@ -958,7 +958,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["app_id", "app_name", "enabled", "message"],
     )
     async def get_autostart_status(self, app_id: str, **_):
-        """获取开机自启状态"""
+        """Get startup autostart status"""
         app_id = app_id.strip()
         if not app_id:
             return Err(SdkError("app_id 不能为空"))
@@ -990,7 +990,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["autostart_apps", "count", "message"],
     )
     async def get_all_autostart_status(self, **_):
-        """获取所有软件开机自启状态"""
+        """Get startup autostart status for all software"""
         apps = self._load_apps()
         
         autostart_status = _get_all_autostart_status_windows()
@@ -1026,11 +1026,11 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["recent_apps", "count"],
     )
     async def get_recent_apps(self, **_):
-        """获取最近使用记录"""
+        """Get recently used records"""
         recent = self._load_recent()
         apps = self._load_apps()
         
-        # 过滤掉已删除的应用
+        # Filter out deleted applications
         valid_recent = []
         for r in recent:
             app_id = r.get("app_id")
@@ -1055,7 +1055,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["categories", "count"],
     )
     async def get_categories(self, **_):
-        """获取分类列表"""
+        """Get the category list"""
         categories = self._load_categories()
         return Ok({
             "categories": categories,
@@ -1069,7 +1069,7 @@ class AppLauncherPlugin(NekoPluginBase):
         llm_result_fields=["apps", "count", "export_data"],
     )
     async def export_apps(self, **_):
-        """导出软件配置"""
+        """Export software configuration"""
         apps = self._load_apps()
         categories = self._load_categories()
         autostart_status = _get_all_autostart_status_windows()
