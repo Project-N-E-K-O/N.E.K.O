@@ -18,6 +18,8 @@
 
 [![Docs](https://img.shields.io/badge/📖_開発者ドキュメント-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online/ja/)
 [![Website](https://img.shields.io/badge/🐾_Website-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
+[![プラグインマーケット](https://img.shields.io/badge/🔌_プラグインマーケット-market.project--neko.cn-7C5CFF?style=for-the-badge)](https://market.project-neko.cn)
+[![Nekoverse](https://img.shields.io/badge/🃏_Nekoverse-community.project--neko.cn-FF8A3D?style=for-the-badge)](https://community.project-neko.cn)
 
 </div>
 
@@ -27,26 +29,59 @@
 
 ## N.E.K.O. とは
 
-OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を求めていることを示しました。自分のマシンで動き、自分を覚え、代わりに作業し、長く使うほど良くなる AI です。N.E.K.O. はこの考え方をコンパニオンに持ち込みました。1 つのランタイムに次のものを統合しています。
+OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を求めていることを示しました。自分のマシンで動き、自分を覚え、代わりに作業し、長く使うほど良くなる AI です。N.E.K.O. はこの考え方をコンパニオンに持ち込みました。リアルタイム音声と視覚、生物に倣った長期記憶、アバター、自発的な振る舞い、Agent ツール、プラグイン SDK を 1 つのローカルランタイムに統合し、Apache 2.0 で公開しています。このランタイムの周りには、すでにプラグインを作り、ストーリーカードを鍛え、コンパニオン同士を訪問させているコミュニティがあります。
 
-- リアルタイム音声と視覚、
-- 生物に倣った長期記憶、
-- Live2D / VRM / MMD / PNGTuber のアバター、
-- 自発的な振る舞い、
-- Agent ツール、
-- プラグイン SDK。
+## ハイライト
 
-コアはローカルで動作し、Apache 2.0 で公開されています。
+### 🎮 一緒にゲームをする
+
+- **内蔵の 2 人用ゲーム**：エアバスケットボール、バドミントン、お絵かき当て、サッカー、一緒に視聴。ミニゲーム SDK とゲーム視覚サービスで開発者が追加できます。
+- **コミュニティのゲーム向けプラグイン**：
+  - War Thunder 猫娘副操縦士：ゲームのリアルタイムテレメトリーを戦闘イベントに変え、彼女が反応します（読み取り専用：チートなし、自動操作なし）；
+  - 東方リトルメイド連携：Minecraft の Touhou Little Maid MOD でメイドを自然言語で指示します；
+  - 内蔵の Minecraft Agent：一緒に遊び、音声で実況します。
+- **画面認識**：何を遊んでいても、彼女が見て話しかけてきます。
+
+### 🐾 彼女にも交友関係がある
+
+- **お出かけ（Visit）**：2 人のユーザーのコンパニオンが共有ルームで会って話し、それぞれが思い出を持ち帰ります。
+- **[Nekoverse](https://community.project-neko.cn)**（コンパニオンコミュニティ）：
+  - **ストーリーカード**：アプリ内で、あなたと過ごした日々についてのコンパニオンの記憶から鍛え、集め、育て、共有できます；
+  - YUI が選ぶフィード、毎週の隠れた名作ピックアップ、クリエイターランキング、ポイントストア。
+- **人・グループごとの記憶**：コンパニオンは人ごと・グループごとに記憶を分けて持てます。お出かけ機能がすでに使っており、グループチャット系プラグインもこれを土台にできます。
+
+### 🔌 すでににぎわっているプラグインマーケット
+
+**[market.project-neko.cn](https://market.project-neko.cn)** には、2026 年 11 月時点で 134 個のプラグイン、9.8K 回のダウンロード、51 人のアクティブ開発者がいます。コミュニティの人気プラグインの一部：
+
+| プラグイン | できること |
+|---|---|
+| **War Thunder Catgirl Copilot** | ゲームのローカルテレメトリーを読み、戦闘中のリマインドと付き添いに変える |
+| **Wine Fox** | Minecraft の Touhou Little Maid MOD と連携し、ゲーム内のメイドを指示できる |
+| **Eternal Companionship** | 自律的な感情、体のリズム、長期記憶を扱う継続状態型のコア |
+| **Live Streaming Assistant** | 配信プラットフォームでコメント、視聴者プロフィール、ツッコミを扱う |
+| **Catgirl Diary** | 彼女が毎日の小さな出来事と気分を日記に残す |
+| **Music Playlist Management** | NetEase Cloud Music、QQ Music、Bilibili のプレイリストに対応。曲を頼めば再生される |
+
+誰でもプラグイン SDK と `neko-plugin` CLI で公開できます。
+
+### 📱 スマホ、PC、デバイスをまたぐ 1 体のコンパニオン
+
+- **現在**：
+  - デバイス間のチャットと長期記憶の同期（オプトイン）；
+  - Steam クラウドセーブ；
+  - モバイルアプリはクローズドベータ中。
+- **計画中**：連携スマートハードウェア（鏡、ぬいぐるみ、ドローン、ロボットなど）。同じコンパニオンと記憶を各デバイスに引き継ぐことを目指しています。
+
+### 動作環境
 
 | | |
 |---|---|
-| **リアルタイム音声プロバイダー** | 8 社。API キー不要の無料ホスト経路を含む |
-| **テキスト / 視覚プロバイダー** | 21 社（OpenAI、Claude、Gemini、Qwen、DeepSeek、Kimi、GLM、Doubao、MiniMax、Grok、OpenRouter など） |
-| **TTS バックエンド** | 15 種。ローカルの CosyVoice と GPT-SoVITS を含む |
-| **ASR バックエンド** | 8 種。ローカルの faster-whisper を含む |
-| **アバター形式** | Live2D、VRM、MMD、PNGTuber、加えてデスクトップウィジェットモード |
-| **UI 言語** | 8 言語（en、zh-CN、zh-TW、ja、ko、ru、es、pt） |
-| **配布形態** | Windows / macOS / Linux 向けデスクトップパッケージ（Steam でも配信）、Docker、ソース |
+| **モデル** | 主要な Realtime API と ChatCompletion 互換 API、キー不要の無料ホスト経路、ローカル / セルフホスト環境 |
+| **音声** | 主要なクラウド TTS / ASR と、ローカルエンジン（CosyVoice、GPT-SoVITS、faster-whisper）、音声クローン |
+| **アバター** | Live2D、VRM、MMD、PNGTuber、デスクトップウィジェットモード |
+| **プラットフォーム** | Windows / macOS / Linux デスクトップ（Steam でも配信）、Docker、ソース。モバイルはクローズドベータ |
+| **UI 言語** | 英語、簡体字中国語、繁体字中国語、日本語、韓国語、ロシア語、スペイン語、ポルトガル語 |
 
 ## 機能
 
@@ -56,7 +91,7 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
 - **リアルタイム音声**：Realtime API（OpenAI プロトコルと Gemini の 2 系統）で動作します。テキストチャットは標準 ChatCompletion を使う別のモードで、音声セッションの開始に失敗した場合はエラーを報告し、自動ではテキストモードに切り替わりません。
 - **画面とウィンドウの理解**：専用の視覚モデルが担当します。
 - **音声スタック**：
-  - TTS バックエンド 15 種、ASR バックエンド 8 種；
+  - 主要なクラウド TTS / ASR と、ローカルエンジン（CosyVoice、GPT-SoVITS、faster-whisper）；
   - 音声クローン（MiniMax、Qwen / CosyVoice）；
   - CAM++ による話者照合；
   - オプションのオフライン・ウェイクワード（sherpa-onnx）。
@@ -111,16 +146,6 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
   - プラグインマーケットとナレッジパックマーケット；
   - Web 検索、MCP、音楽、リマインダー、WeChat、Minecraft などの内蔵プラグイン。
 - **クラウド**：無料のホスト経路で、リアルタイム音声、テキスト、視覚、Agent モデル、TTS を利用できます。キーは不要です。
-
-</details>
-
-<details open>
-<summary><b>同期とソーシャル</b></summary>
-
-- **マルチデバイス同期**：チャット同期と長期記憶の同期（オプトイン）、Steam クラウドセーブ。モバイルアプリはクローズドベータ中です。
-- **お出かけ（Visit）**：2 人のユーザーのコンパニオンが共有の LiveKit ルームで会い、終了後はそれぞれが振り返りを自分の記憶に持ち帰ります。
-- **コミュニティ**：[community.project-neko.cn](https://community.project-neko.cn)。アプリ内から開けます。
-- **ゲーム**：2 人用ミニゲーム（エアバスケットボール、バドミントン、お絵かき当て、サッカー）、一緒に視聴、カード作成、インタラクティブシアター。
 
 </details>
 

@@ -19,6 +19,8 @@
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 [![Website](https://img.shields.io/badge/🐾_官网-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
+[![插件市场](https://img.shields.io/badge/🔌_插件市场-market.project--neko.cn-7C5CFF?style=for-the-badge)](https://market.project-neko.cn)
+[![喵宇宙社区](https://img.shields.io/badge/🃏_喵宇宙社区-community.project--neko.cn-FF8A3D?style=for-the-badge)](https://community.project-neko.cn)
 
 </div>
 
@@ -28,26 +30,59 @@
 
 ## 这是什么
 
-OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己的 AI。它运行在自己的机器上，记得自己，能替自己做事，而且养得越久越好用。N.E.K.O. 把这套思路带进了情感陪伴，在同一个运行时里集成了：
+OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己的 AI。它运行在自己的机器上，记得自己，能替自己做事，而且养得越久越好用。N.E.K.O. 把这套思路带进了情感陪伴：实时语音与视觉、仿生长期记忆、有形象的化身、主动行为、Agent 工具和插件 SDK，都集成在同一个本地运行时里，基于 Apache 2.0 开源。围绕这个运行时，已经有一个社区在写插件、锻造故事卡、让伙伴们互相串门。
 
-- 实时语音与视觉，
-- 仿生长期记忆，
-- Live2D / VRM / MMD / PNGTuber 形象，
-- 主动行为，
-- Agent 工具，
-- 插件 SDK。
+## 亮点
 
-核心本地运行，基于 Apache 2.0 开源。
+### 🎮 陪你打游戏
+
+- **内置双人游戏**：空气篮球、羽毛球、你画我猜、足球，还有一起看。开发者可以用小游戏 SDK 和游戏视觉服务继续扩展。
+- **社区里的游戏陪玩插件**：
+  - 战争雷霆猫娘副驾：读取游戏的实时遥测，转成战斗事件让她提醒、陪你打（只读：不作弊、不自动操作）；
+  - 车万女仆联动：在 Minecraft 的 Touhou Little Maid 模组里，用自然语言指挥女仆；
+  - 内置 Minecraft Agent：和你一起玩，并用语音解说。
+- **屏幕感知**：你玩什么，她都能看着、随时搭话。
+
+### 🐾 她有自己的社交圈
+
+- **串门**：两位用户的伙伴在共享房间里见面聊天，结束后各自把这段经历带回自己的记忆。
+- **[喵宇宙社区](https://community.project-neko.cn)**：
+  - **故事卡**：在应用里，从伙伴记得的你们相处的日常中锻造出来，可以收集、养成、分享；
+  - YUI 精选的信息流、每周遗珠精选、创作者榜、积分商城。
+- **按人、按群分开的记忆**：伙伴可以为每个人、每个群分别保存记忆。串门已经在用，群聊类插件也可以基于它来做。
+
+### 🔌 已经很热闹的插件市场
+
+截至 2026 年 11 月，**[插件市场 market.project-neko.cn](https://market.project-neko.cn)** 共有 134 个插件、9.8K 次下载、51 位活跃开发者。几个社区热门：
+
+| 插件 | 能做什么 |
+|---|---|
+| **战争雷霆猫娘副驾** | 读取游戏本地遥测，转成战斗提醒和陪伴 |
+| **酒狐（车万女仆联动）** | 桥接 Minecraft 的 Touhou Little Maid 模组，让她指挥游戏里的女仆 |
+| **永恒陪伴** | 持续状态的陪伴核心：自主情绪、身体节律、长期记忆 |
+| **直播助手** | 在直播平台上处理弹幕、观众画像和吐槽互动 |
+| **猫娘日记** | 她每天记下小事和心情 |
+| **歌单管理** | 支持网易云音乐、QQ 音乐、B 站收藏；跟她说想听哪首就能播 |
+
+任何开发者都可以用插件 SDK 和 `neko-plugin` 命令行工具发布插件。
+
+### 📱 一个伙伴，跨手机、电脑和设备
+
+- **现在**：
+  - 设备之间同步聊天和长期记忆（需手动开启）；
+  - Steam 云存档；
+  - 手机端正在内测。
+- **规划中**：配套智能硬件，包括但不限于镜子、玩偶、无人机、机器人。目标是让同一个伙伴、同一份记忆在每台设备上延续。
+
+### 运行环境
 
 | | |
 |---|---|
-| **实时语音服务商** | 8 家，含无需 API Key 的免费托管线路 |
-| **文本 / 视觉服务商** | 21 家（OpenAI、Claude、Gemini、通义千问、DeepSeek、Kimi、智谱、豆包、MiniMax、Grok、OpenRouter 等） |
-| **TTS 后端** | 15 个，含本地 CosyVoice 与 GPT-SoVITS |
-| **ASR 后端** | 8 个，含本地 faster-whisper |
-| **形象格式** | Live2D、VRM、MMD、PNGTuber，另有桌面挂件模式 |
-| **界面语言** | 8 种（en、zh-CN、zh-TW、ja、ko、ru、es、pt） |
-| **分发方式** | Windows / macOS / Linux 桌面包（Steam 同步上架）、Docker、源码 |
+| **模型** | 主流 Realtime API 与兼容 ChatCompletion 的 API、无需 Key 的免费托管线路，以及本地或自托管部署 |
+| **语音** | 主流云端 TTS / ASR，加上本地引擎（CosyVoice、GPT-SoVITS、faster-whisper），支持声音克隆 |
+| **形象** | Live2D、VRM、MMD、PNGTuber，另有桌面挂件模式 |
+| **平台** | Windows / macOS / Linux 桌面（Steam 同步上架）、Docker、源码；手机端内测中 |
+| **界面语言** | 英语、简体中文、繁体中文、日语、韩语、俄语、西班牙语、葡萄牙语 |
 
 ## 功能
 
@@ -57,7 +92,7 @@ OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己�
 - **实时语音**：走 Realtime API（OpenAI 协议与 Gemini 两套）。文字聊天是另一种独立模式，基于标准 ChatCompletion；语音会话启动失败时会报错，不会自动切换到文字模式。
 - **屏幕与窗口理解**：由专用视觉模型完成。
 - **语音栈**：
-  - 15 个 TTS 后端、8 个 ASR 后端；
+  - 主流云端 TTS / ASR，以及本地引擎（CosyVoice、GPT-SoVITS、faster-whisper）；
   - 声音克隆（MiniMax、通义 / CosyVoice）；
   - CAM++ 声纹验证；
   - 可选的离线唤醒词（sherpa-onnx）。
@@ -112,16 +147,6 @@ OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己�
   - 插件市场与知识包市场；
   - 内置插件覆盖网络搜索、MCP、音乐、提醒、微信、Minecraft 等。
 - **云服务**：免费托管线路覆盖实时语音、文本、视觉、Agent 模型与 TTS，无需填写 Key。
-
-</details>
-
-<details open>
-<summary><b>同步与社交</b></summary>
-
-- **多端同步**：聊天同步与长期记忆同步（需手动开启），以及 Steam 云存档。手机端正在内测。
-- **串门**：两位用户的伙伴在共享的 LiveKit 房间里见面，结束后各自把复盘带回自己的记忆。
-- **社区**：[喵宇宙社区](https://community.project-neko.cn)，可从应用内直接进入。
-- **游戏**：双人小游戏（空气篮球、羽毛球、你画我猜、足球）、一起看、卡片锻造、互动小剧场。
 
 </details>
 

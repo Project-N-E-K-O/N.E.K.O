@@ -19,6 +19,8 @@
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 [![Website](https://img.shields.io/badge/🐾_Website-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
+[![Plugin Market](https://img.shields.io/badge/🔌_Plugin_Market-market.project--neko.cn-7C5CFF?style=for-the-badge)](https://market.project-neko.cn)
+[![Nekoverse](https://img.shields.io/badge/🃏_Nekoverse-community.project--neko.cn-FF8A3D?style=for-the-badge)](https://community.project-neko.cn)
 
 </div>
 
@@ -28,26 +30,59 @@ This README is for developers. If you just want to use N.E.K.O., get it free on 
 
 ## What it is
 
-Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and gets better the longer they keep it. N.E.K.O. takes that idea into companionship. In one integrated runtime it combines:
+Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and gets better the longer they keep it. N.E.K.O. takes that idea into companionship. It combines realtime voice and vision, a biomimetic long-term memory, embodied avatars, proactive behavior, agent tools and a plugin SDK in one runtime that runs locally and is licensed under Apache 2.0. Around that runtime sits a community that already builds plugins, forges story cards and sends companions to visit each other.
 
-- realtime voice and vision,
-- a biomimetic long-term memory,
-- Live2D / VRM / MMD / PNGTuber avatars,
-- proactive behavior,
-- agent tools,
-- and a plugin SDK.
+## Highlights
 
-The core runs locally and is licensed under Apache 2.0.
+### 🎮 Plays games with you
+
+- **Built-in two-player games**: air basketball, badminton, drawing guess, soccer, and watch-together. A mini-game SDK and a game-vision service let developers add more.
+- **Game companions from the community**:
+  - a War Thunder copilot that turns live in-game telemetry into combat events she reacts to (read-only: no cheats, no automation);
+  - a Touhou Little Maid bridge that lets her command the maid in Minecraft in natural language;
+  - a built-in Minecraft agent that plays alongside you and comments by voice.
+- **Screen awareness**: she can watch whatever you are playing and chime in.
+
+### 🐾 Has a social life
+
+- **Visits**: two users' companions meet in a shared room, talk, and each brings the memory home.
+- **[Nekoverse](https://community.project-neko.cn)**, the companion community:
+  - **story cards** forged in the app from your companion's memories of your days together, then collected, nurtured and shared;
+  - a feed curated by YUI, weekly picks of hidden gems, creator rankings, and a points store.
+- **Group-aware memory**: the companion can keep separate memories per person and per group. Visits use this today, and group-chat plugins can build on it.
+
+### 🔌 A plugin market that is already busy
+
+**[market.project-neko.cn](https://market.project-neko.cn)** had 134 plugins, 9.8K downloads and 51 active developers as of November 2026. A few community favorites:
+
+| Plugin | What it adds |
+|---|---|
+| **War Thunder Catgirl Copilot** | Reads the game's local telemetry and turns it into battle reminders and company |
+| **Wine Fox** | Bridges the Touhou Little Maid Minecraft mod so she can direct the in-game maid |
+| **Eternal Companionship** | A continuous-state core for autonomous emotions, bodily rhythms and long-term memory |
+| **Live Streaming Assistant** | Handles live comments, viewer profiles and commentary on streaming platforms |
+| **Catgirl Diary** | She keeps a daily diary of small moments and moods |
+| **Music Playlist Management** | NetEase Cloud Music, QQ Music and Bilibili playlists; ask her for a song and it plays |
+
+Any developer can publish with the plugin SDK and the `neko-plugin` CLI.
+
+### 📱 One companion across phone, desktop and devices
+
+- **Today**:
+  - chat and long-term memory sync between devices (opt-in);
+  - Steam Cloud saves;
+  - the mobile app is in closed beta.
+- **Planned**: companion smart hardware, including but not limited to mirrors, plush dolls, drones and robots. The goal is for the same companion and memory to carry over to each device.
+
+### Runs on
 
 | | |
 |---|---|
-| **Realtime voice providers** | 8, including a free hosted route that needs no API key |
-| **Text / vision providers** | 21 (OpenAI, Claude, Gemini, Qwen, DeepSeek, Kimi, GLM, Doubao, MiniMax, Grok, OpenRouter, …) |
-| **TTS backends** | 15, including local CosyVoice and GPT-SoVITS |
-| **ASR backends** | 8, including local faster-whisper |
-| **Avatar formats** | Live2D, VRM, MMD, PNGTuber, plus a desktop widget mode |
-| **UI languages** | 8 (en, zh-CN, zh-TW, ja, ko, ru, es, pt) |
-| **Distribution** | Desktop packages for Windows / macOS / Linux (also on Steam), Docker, source |
+| **Models** | Mainstream Realtime APIs and ChatCompletion-compatible APIs, a free hosted route that needs no key, and local or self-hosted deployment |
+| **Voice** | Mainstream cloud TTS / ASR plus local engines (CosyVoice, GPT-SoVITS, faster-whisper), with voice cloning |
+| **Avatars** | Live2D, VRM, MMD, PNGTuber, plus a desktop widget mode |
+| **Platforms** | Windows / macOS / Linux desktop (also on Steam), Docker, source; mobile in closed beta |
+| **UI languages** | English, Simplified and Traditional Chinese, Japanese, Korean, Russian, Spanish, Portuguese |
 
 ## Features
 
@@ -57,7 +92,7 @@ The core runs locally and is licensed under Apache 2.0.
 - **Realtime voice** over Realtime APIs (OpenAI-protocol and Gemini profiles). Text chat is a separate mode built on standard ChatCompletion; a failed voice session reports an error rather than switching modes on its own.
 - **Screen and window understanding** through a dedicated vision model.
 - **Voice stack**:
-  - 15 TTS backends and 8 ASR backends;
+  - mainstream cloud TTS / ASR plus local engines (CosyVoice, GPT-SoVITS, faster-whisper);
   - voice cloning (MiniMax, Qwen / CosyVoice);
   - CAM++ speaker verification;
   - an optional offline wake word (sherpa-onnx).
@@ -112,16 +147,6 @@ Supporting machinery:
   - a plugin market and a knowledge-pack market;
   - built-in plugins for web search, MCP, music, reminders, WeChat, Minecraft and more.
 - **Cloud**: a free hosted route covers realtime voice, text, vision, agent models and TTS, with no key required.
-
-</details>
-
-<details open>
-<summary><b>Sync and social</b></summary>
-
-- **Multi-device sync**: chat sync and long-term memory sync (opt-in), plus Steam Cloud saves. The mobile app is in closed beta.
-- **Visits**: two users' companions meet in a shared LiveKit room, and each one brings a debrief back into its own memory.
-- **Community hub**: [community.project-neko.cn](https://community.project-neko.cn), reachable from inside the app.
-- **Games**: two-player mini-games (air basketball, badminton, drawing guess, soccer), watch-together, a card forge, and an interactive theater.
 
 </details>
 
