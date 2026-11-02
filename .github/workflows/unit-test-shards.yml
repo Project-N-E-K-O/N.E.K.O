@@ -115,7 +115,7 @@ jobs:
         run: |
           $revisions = @(
             '16a48f711f6842e3fbd181c41675459bb3c025bc',
-            '299c0b4b8c14eb386c645ad180241c6756e0b5c1'
+            '52556bde9a824ad25354ad15ab3ffbff4b1ed9c4'
           )
           foreach ($revision in $revisions) {
             git fetch --no-tags origin $revision
