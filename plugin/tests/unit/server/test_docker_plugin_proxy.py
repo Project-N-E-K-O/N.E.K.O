@@ -34,11 +34,12 @@ def test_official_nginx_routes_token_to_plugin_and_preserves_public_origin(varia
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_official_proxy_routes_preserve_chain_except_token_bootstrap(variant):
     branch = official_server_block(variant)
-    locations = re.findall(r"location[^\n]*\{(.*?)\n    \}", branch, re.DOTALL)
-    proxy_locations = [block for block in locations if "proxy_pass" in block]
+    locations = re.findall(r"location([^\n]*)\{(.*?)\n    \}", branch, re.DOTALL)
+    proxy_locations = [(route.strip(), block) for route, block in locations if "proxy_pass" in block]
     assert len(proxy_locations) == 6
-    for block in proxy_locations:
-        if "proxy_set_header X-Real-IP" in block:
-            assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;" in block
-        else:
+    # Key on the route itself: only the token bootstrap overwrites the chain.
+    for route, block in proxy_locations:
+        if route == "= /security/csrf-token":
             assert "proxy_set_header X-Forwarded-For $remote_addr;" in block
+        else:
+            assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;" in block
