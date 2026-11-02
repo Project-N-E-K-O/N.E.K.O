@@ -139,10 +139,9 @@ const hasUpdate = computed<boolean>(() => {
 </script>
 
 <style scoped>
-/* Two stacked layers on the same box, so a grid reflow can stretch the card
- * without squashing its text (see motion/grid.ts): the surface paints the
- * border, fill and shadow; the content repaints the fill inside the border
- * (so contrast resolves against its own ancestors) and lays out the text. */
+/* The surface owns the rounded fill, border and shadow. A transparent content
+ * layer can be clipped during reflow without painting a second rounded fill
+ * or scaling the text (see motion/grid.ts). */
 .plugin-card {
   --plugin-card-control-height: 22px;
   --plugin-card-radius: var(--plugin-entry-radius, var(--radius-card));
@@ -178,6 +177,7 @@ const hasUpdate = computed<boolean>(() => {
 /* Positioned so it stays above the surface while the surface is transformed. */
 .plugin-card__content {
   position: relative;
+  background: transparent;
   display: grid;
   grid-template-rows: auto 1fr auto;
 }
