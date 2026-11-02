@@ -404,6 +404,15 @@ class FactsMixin:
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
+    # Card sections (filled from characters.json: the character card into
+    # "neko", the master profile into "master") that a private fact of each
+    # entity is checked against; see acontradicts_character_card.
+    _CARD_SECTIONS_BY_ENTITY = {
+        'master': ('master',),
+        'neko': ('neko',),
+        'relationship': ('master', 'neko'),
+    }
+
     async def acontradicts_character_card(
         self, name: str, text: str, *, entity: str | None = None,
     ) -> bool:
@@ -413,19 +422,23 @@ class FactsMixin:
         entries live outside persona.json (memory/pinned_facts.py). The
         rejection log line records lengths only.
 
-        ``entity`` limits the scan to that section's card entries, which is
-        what an entity-tagged private fact should be held against: the overlap
-        test strips the master and character names first, so without it "the
-        master's birthday is ..." would collide with the character's own
-        birthday on the card. None scans every section, like the scoped branch
-        of ``aadd_fact``.
+        ``entity`` picks the card sections a private fact is held against
+        (``_CARD_SECTIONS_BY_ENTITY``). Both cards carry fields such as
+        birthday or age, and the overlap test cannot tell whose they are, so
+        "the master's birthday is ..." against the character card's own
+        birthday is a false conflict. A relationship fact has no card section
+        of its own (relationship fields live in either card), so it is held
+        against both. None, or an unknown entity, scans every section, like
+        the scoped branch of ``aadd_fact``.
         """
         persona = await self.aensure_persona(name)
-        if entity is None:
+        sections = self._CARD_SECTIONS_BY_ENTITY.get(entity) if entity else None
+        if sections is None or not isinstance(persona, dict):
             card_facts = self._collect_card_facts(persona)
         else:
-            section = persona.get(entity) if isinstance(persona, dict) else None
-            card_facts = self._collect_card_facts({entity: section} if section else {})
+            card_facts = self._collect_card_facts({
+                key: persona[key] for key in sections if key in persona
+            })
         if not card_facts:
             return False
         stop_names = await self._aget_entity_stop_names(name)

@@ -515,7 +515,8 @@ class PinnedFactStore:
 
         A candidate's ``noted_at`` (when it was said; defaults to ``now``) dates
         its text and starts its lifetime; ``now`` is when the change is made.
-        Returns per-action counts.
+        A candidate flagged ``outdated`` (its lifetime ended before admission)
+        may only remove. Returns per-action counts.
         """
         counts = dict.fromkeys(
             ("added", "replaced", "renewed", "removed", "expired", "evicted",
@@ -549,6 +550,9 @@ class PinnedFactStore:
                         continue
                     if target is None:
                         action = None if action == ACTION_REMOVE else ACTION_ADD
+                if candidate.get("outdated") and action != ACTION_REMOVE:
+                    # Its own lifetime is over: it may only retract an entry.
+                    action = None
                 if action == ACTION_ADD:
                     action, target = self._renew_instead_of_duplicate(candidate, live)
                 noted = min(_as_float(candidate.get("noted_at")) or ts, ts)
@@ -665,7 +669,9 @@ class PinnedFactStore:
         replayed after a restart), and entry texts are often relative ("my
         exam is tomorrow"), so the entry is dated and its lifetime counted from
         the conversation, not from the admission. A candidate whose lifetime
-        already ran out by then is dropped.
+        already ran out by then may still remove an entry it shows to be no
+        longer true ("the exam was cancelled", replayed days later) but never
+        adds, replaces or renews anything.
 
         Decisions are made on a snapshot. When another admission changes an
         entry a decision targets before it is applied, the affected candidates
@@ -682,12 +688,12 @@ class PinnedFactStore:
             return {}
         ts = float(now if now is not None else _now())
         noted = min(_as_float(noted_at) or ts, ts)
-        fresh = [
-            dict(c, noted_at=noted) for c in candidates
-            if noted + c["ttl_days"] * _DAY_SECONDS > ts
+        candidates = [
+            dict(c, noted_at=noted, outdated=noted + c["ttl_days"] * _DAY_SECONDS <= ts)
+            for c in candidates
         ]
-        outdated = len(candidates) - len(fresh)
-        candidates, card_rejected = await self._afilter_card_conflicts(name, fresh)
+        outdated = sum(1 for c in candidates if c["outdated"])
+        candidates, card_rejected = await self._afilter_card_conflicts(name, candidates)
         totals: Dict[str, int] = {"card_rejected": card_rejected, "outdated": outdated}
         pending = list(range(len(candidates)))
         rounds = 0

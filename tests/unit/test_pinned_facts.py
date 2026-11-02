@@ -506,7 +506,7 @@ def test_mutation_holds_the_cloudsave_fence_across_read_and_write(tmp_path, monk
     assert events == ["fence-enter", "read", "write", "fence-exit"]
 
 
-def test_entries_are_dated_by_the_conversation_not_the_admission(tmp_path):
+def test_entries_are_dated_by_the_conversation_not_the_admission(tmp_path, monkeypatch):
     # Greptile #3598: a retried window or a replayed turn is admitted later
     # than it was said; "tomorrow" must keep pointing at the right day.
     store = _store(tmp_path)
@@ -523,12 +523,48 @@ def test_entries_are_dated_by_the_conversation_not_the_admission(tmp_path):
     assert exam["expire_at"] == pytest.approx(said + 14 * _DAY)
     assert "记于 2026-10-31" in store.render_prompt_block(_NAME, "zh", now=_T0)
 
-    # Said five days ago with a 3-day lifetime: already over, not admitted.
+    # Said five days ago with a 3-day lifetime: already over. Even when the
+    # model says add, it is not admitted.
+    _install_model(monkeypatch, _Model([{"candidate": 1, "action": "add", "target": None}]))
     counts = asyncio.run(store.aadmit_extracted(
         _NAME, [_pin("主人头疼", 3)], noted_at=_T0 - 5 * _DAY, now=_T0,
     ))
-    assert counts["outdated"] == 1
+    assert (counts["outdated"], counts["added"], counts["skipped"]) == (1, 0, 1)
     assert "主人头疼" not in [e["text"] for e in store.get_active(_NAME, now=_T0)]
+
+
+def test_an_outdated_correction_still_retracts_a_live_entry(tmp_path, monkeypatch):
+    # Greptile #3598: "the exam was cancelled" (3-day tier) replayed four days
+    # later must still remove the 14-day exam entry it cancels.
+    store = _store(tmp_path)
+    asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人下周三考试", 14)], noted_at=_T0 - 6 * _DAY, now=_T0 - 6 * _DAY,
+    ))
+    [exam] = store.get_active(_NAME, now=_T0)
+    model = _install_model(monkeypatch, _Model([
+        {"candidate": 1, "action": "remove", "target": exam["id"]},
+    ]))
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人的考试取消了", 3)], noted_at=_T0 - 4 * _DAY, now=_T0,
+    ))
+
+    assert len(model.prompts) == 1
+    assert (counts["outdated"], counts["removed"]) == (1, 1)
+    assert store.get_active(_NAME, now=_T0) == []
+
+
+def test_outdated_candidates_into_an_empty_section_do_nothing(tmp_path, monkeypatch):
+    model = _install_model(monkeypatch, _Model(error=AssertionError("no model call")))
+    store = _store(tmp_path)
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人今晚加班", 3)], noted_at=_T0 - 4 * _DAY, now=_T0,
+    ))
+
+    assert model.prompts == []
+    assert (counts["outdated"], counts.get("added", 0)) == (1, 0)
+    assert not os.path.exists(os.path.join(str(tmp_path), _NAME, PINNED_FACTS_FILENAME))
 
 
 def test_model_add_of_a_live_text_renews_instead_of_duplicating(tmp_path, monkeypatch):
@@ -634,6 +670,10 @@ def test_persona_card_check_reuses_the_contradiction_rule(monkeypatch):
     assert asyncio.run(
         pm.acontradicts_character_card("Neko", "她不讨厌咖啡", entity="master")
     ) is False
+    # A relationship fact has no card section of its own: both cards count.
+    assert asyncio.run(
+        pm.acontradicts_character_card("Neko", "她不讨厌咖啡", entity="relationship")
+    ) is True
 
 
 # ── 6. rendering ─────────────────────────────────────────────────────
