@@ -217,7 +217,7 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 | Model name and call type (conversation / memory, etc.) | User name, API keys, GitHub ID |
 | Call and error counts | IP address, location, MAC, hardware serials |
 | App version, A/B branch, locale, time zone, distribution channel (source / release / steam) | File paths, cookies, browser fingerprints |
-| Pseudonymous device ID (see note below) | Any PII that can identify a person |
+| Pseudonymous device ID (see note below) | Any other PII that can identify a person (apart from the Steam64 ID below) |
 | Device hardware profile: OS, CPU architecture, RAM tier, CPU tier | |
 | Usage metrics: feature-use counts, latency and session-length histograms, error classes, crash fingerprints (a hash of the traceback), coarse settings state (on / off, bucketed intervals) and avatar type | |
 | **Only in release builds, when the Steamworks SDK initializes and you are logged in to the Steam client**: your Steam64 user ID | Any other account ID (GitHub / Google / OpenAI, etc.) |
