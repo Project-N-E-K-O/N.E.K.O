@@ -398,7 +398,8 @@ def test_ci_audit_job_fetches_every_pinned_revision():
     job = workflow.split("  historical-review-audit:", 1)[1].split("\n  frontend-node:", 1)[0]
     block = re.search(r"\$revisions\s*=\s*@\((.*?)\)", job, re.S)
     assert block, "historical-review-audit has no $revisions list"
-    pinned = re.findall(r"'([0-9a-f]{40})'", block.group(1))
+    entries = "\n".join(line.split("#", 1)[0] for line in block.group(1).splitlines())
+    pinned = re.findall(r"'([0-9a-f]{40})'", entries)
     for revision in (BASE, HEAD):
         assert revision in pinned, f"historical-review-audit does not fetch {revision}"
 
