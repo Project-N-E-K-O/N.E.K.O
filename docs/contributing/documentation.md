@@ -51,7 +51,7 @@ When changing a mirrored guide:
 
 The runtime UI's eight-locale rule is separate and remains mandatory for user-visible locale keys.
 
-`docs/README_en.md`, `docs/README_ja.md`, and `docs/README_ru.md` are repository README translations linked from the root README. They are intentionally excluded from the VitePress build and should not be used as site navigation pages.
+The root `README.MD` is the English repository README. `docs/README_zh-CN.md`, `docs/README_ja.md`, and `docs/README_ru.md` are its translations, and `docs/README_en.md` only redirects old links to the root README. Update all translations in the same change as the root README. They are intentionally excluded from the VitePress build and should not be used as site navigation pages.
 
 `docs/zh-CN/guide/openclaw_guide*.md` and its adjacent assets are localized runtime content served by the application. Keep their paths stable and keep the page files excluded from VitePress; the public integration contract belongs in the Agent and plugin documentation.
 
