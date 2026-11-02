@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugin.neko_plugin_cli.core.project import ProjectCreationError
+from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN, ProjectCreationError
 from plugin.server.application.plugin_projects import create_or_preview
 from plugin.server.infrastructure.development_access import require_development_access
-from plugin.server.infrastructure.directory_picker import (
+from plugin.server.infrastructure.native_directory import (
     DirectoryPickerCancelled,
-    DirectoryPickerUnavailable,
+    NativeDirectoryError,
+    open_directory,
     pick_directory,
 )
 
@@ -25,7 +25,7 @@ router = APIRouter(
 
 class ProjectIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    plugin_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=64)
+    plugin_id: str = Field(pattern=PLUGIN_ID_PATTERN, max_length=64)
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=250)
     author: str = Field(default="", max_length=80)
@@ -36,6 +36,11 @@ class ProjectRequest(ProjectIdentity):
     parent_dir: str = Field(min_length=1, max_length=4096)
 
 
+def _coded_error(status: int, code: str, exc: Exception) -> NoReturn:
+    # The UI localizes by ``code``; ``message`` is an English diagnostic.
+    raise HTTPException(status, {"code": code, "message": str(exc)}) from exc
+
+
 async def _project(body: ProjectRequest, *, create: bool):
     try:
         return await asyncio.to_thread(
@@ -44,18 +49,11 @@ async def _project(body: ProjectRequest, *, create: bool):
             **body.model_dump(),
         )
     except FileExistsError as exc:
-        raise HTTPException(
-            409, {"code": "PROJECT_EXISTS", "message": str(exc)}
-        ) from exc
+        _coded_error(409, "PROJECT_EXISTS", exc)
     except ProjectCreationError as exc:
-        raise HTTPException(
-            409 if exc.code == "PROJECT_EXISTS" else 400,
-            {"code": exc.code, "message": str(exc)},
-        ) from exc
+        _coded_error(409 if exc.code == "PROJECT_EXISTS" else 400, exc.code, exc)
     except OSError as exc:
-        raise HTTPException(
-            400, {"code": "PROJECT_IO_FAILED", "message": str(exc)}
-        ) from exc
+        _coded_error(400, "PROJECT_IO_FAILED", exc)
 
 
 @router.post("/preview")
@@ -74,6 +72,7 @@ class DirectoryRequest(BaseModel):
 
 class PickDirectoryRequest(BaseModel):
     start_path: str = Field(default="", max_length=4096)
+    title: str = Field(default="", max_length=200)
 
 
 @router.post("/pick-directory")
@@ -81,32 +80,20 @@ async def pick_project_directory(body: PickDirectoryRequest):
     # The dialog opens on the machine running this server; development access
     # is limited to local requests, so that is the user's own desktop.
     try:
-        selected = await asyncio.to_thread(pick_directory, start_path=body.start_path)
+        selected = await asyncio.to_thread(
+            pick_directory, start_path=body.start_path, title=body.title
+        )
     except DirectoryPickerCancelled:
         return {"ok": True, "cancelled": True, "selected_root": ""}
-    except DirectoryPickerUnavailable as exc:
-        raise HTTPException(
-            400, {"code": exc.error_code, "message": exc.message}
-        ) from exc
+    except NativeDirectoryError as exc:
+        _coded_error(400, exc.code, exc)
     return {"ok": True, "cancelled": False, "selected_root": selected}
 
 
 @router.post("/open-directory")
 async def open_project_directory(body: DirectoryRequest):
-    from plugin.server.infrastructure.directory_opener import (
-        DirectoryOpenError,
-        open_directory,
-    )
-
-    path = Path(body.path).expanduser()
-    if not path.is_absolute():
-        raise HTTPException(
-            400, {"code": "INVALID_PARENT", "message": "Use an absolute directory"}
-        )
     try:
-        await asyncio.to_thread(open_directory, path)
-        return {"ok": True}
-    except DirectoryOpenError as exc:
-        raise HTTPException(
-            400, {"code": exc.error_code, "message": exc.message}
-        ) from exc
+        await asyncio.to_thread(open_directory, body.path)
+    except NativeDirectoryError as exc:
+        _coded_error(400, exc.code, exc)
+    return {"ok": True}

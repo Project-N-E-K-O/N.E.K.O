@@ -2,7 +2,7 @@
   <el-dialog
     align-center
     :model-value="visible"
-    :title="t(`authoring.${mode === 'create' ? 'dialogCreate' : 'dialogImport'}`)"
+    :title="t('authoring.dialogCreate')"
     width="min(800px, 94vw)"
     :close-on-click-modal="!busy"
     :close-on-press-escape="!busy"
@@ -10,9 +10,7 @@
     class="authoring-dialog"
     @update:model-value="emit('update:visible', $event)"
   >
-    <p class="authoring-muted authoring-dialog-intro">
-      {{ t(`authoring.${mode === 'create' ? 'dialogHint' : 'importHint'}`) }}
-    </p>
+    <p class="authoring-muted authoring-dialog-intro">{{ t('authoring.dialogHint') }}</p>
     <div class="authoring-wizard-steps" :aria-label="t('authoring.review')">
       <span :class="{ active: step === 0 }"><b>1</b>{{ t('authoring.basics') }}</span
       ><span class="authoring-step-line" /><span :class="{ active: step === 1 }"
@@ -37,7 +35,7 @@
     />
     <div class="authoring-create-grid">
       <form id="authoring-project-form" class="authoring-form" @submit.prevent="advance">
-        <div v-if="mode === 'create'">
+        <div>
           <label class="authoring-field-label" for="authoring-parent">{{
             t('authoring.parentDirectory')
           }}</label>
@@ -139,15 +137,7 @@
               form="authoring-project-form"
               :loading="busy"
               :disabled="busy"
-              >{{
-                t(
-                  step === 0
-                    ? 'authoring.next'
-                    : mode === 'create'
-                      ? 'authoring.createPlugin'
-                      : 'authoring.addDemo'
-                )
-              }}</el-button
+              >{{ t(step === 0 ? 'authoring.next' : 'authoring.createPlugin') }}</el-button
             >
           </template>
         </div>
@@ -161,24 +151,24 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { FolderOpened } from '@element-plus/icons-vue'
-import { authoringEntry } from '@/utils/authoringEntry'
 import {
   createPluginProject,
   previewPluginProject,
   openProjectDirectory,
   pickProjectDirectory,
+  projectErrorCode,
+  PLUGIN_ID_PATTERN,
+  PROJECT_ERROR_MESSAGES,
   type PluginProjectResult,
   type PluginProjectIdentity,
   type PluginProjectRequest,
 } from '@/api/pluginProjects'
 import { formatHttpError } from '@/utils/request'
 import { mountDevelopment } from '@/api/development'
-import type { AuthoringProjectDraft } from '@/types/authoring'
 
-const props = defineProps<{ visible: boolean; mode: 'create' | 'import'; existingIds: string[] }>()
+const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
   'update:visible': [value: boolean]
-  create: [draft: AuthoringProjectDraft]
   created: [result: PluginProjectResult, key: string]
 }>()
 const { t } = useI18n()
@@ -192,7 +182,13 @@ const preview = ref<PluginProjectResult | null>(null)
 const created = ref<PluginProjectResult | null>(null)
 const creationKey = ref('')
 const mounted = ref(false)
-const draft = reactive<AuthoringProjectDraft>({
+const draft = reactive<{
+  id: string
+  name: string
+  description: string
+  author: string
+  type: PluginProjectIdentity['plugin_type']
+}>({
   id: '',
   name: '',
   description: '',
@@ -219,36 +215,27 @@ watch([draft, parentDir], () => {
     backendError.value = ''
   }
 })
-const validId = computed(() => /^[a-z][a-z0-9_]*$/.test(draft.id))
+const validId = computed(() => PLUGIN_ID_PATTERN.test(draft.id))
 // POSIX root, Windows drive or UNC; the server resolves and validates the rest.
 const ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|\\\\|\/|~)/
 const error = computed(() => {
-  if (props.mode === 'import' && props.existingIds.includes(draft.id))
-    return t('authoring.duplicateId')
   if (draft.id && !validId.value) return t('authoring.invalidId')
   if (attempted.value && (!draft.name.trim() || !validId.value)) return t('authoring.required')
-  if (attempted.value && props.mode === 'create' && !ABSOLUTE_PATH.test(parentDir.value.trim()))
+  if (attempted.value && !ABSOLUTE_PATH.test(parentDir.value.trim()))
     return t('authoring.invalidParent')
   return ''
 })
-const entry = computed(() =>
-  props.mode === 'create'
-    ? preview.value?.entry || '—'
-    : authoringEntry(validId.value ? draft.id : 'hello_world')
-)
+const entry = computed(() => preview.value?.entry || created.value?.entry || '—')
 const fileTree = computed(() => {
-  if (props.mode === 'create') {
-    const result = created.value || preview.value
-    return result
-      ? [
-          result.project_dir + '/',
-          ...result.files.map(
-            (file, index) => `${index === result.files.length - 1 ? '└' : '├'}── ${file}`
-          ),
-        ].join('\n')
-      : '—'
-  }
-  return `plugin/plugins/${validId.value ? draft.id : 'hello_world'}/\n├── plugin.toml\n├── config.example.toml\n├── __init__.py\n├── pyproject.toml\n├── README.md\n├── tests/test_smoke.py\n├── .github/workflows/\n│   ├── verify.yml\n│   └── release.yml\n└── .git/`
+  const result = created.value || preview.value
+  return result
+    ? [
+        result.project_dir + '/',
+        ...result.files.map(
+          (file, index) => `${index === result.files.length - 1 ? '└' : '├'}── ${file}`
+        ),
+      ].join('\n')
+    : '—'
 })
 const identity = (): PluginProjectIdentity => ({
   plugin_id: draft.id,
@@ -259,20 +246,10 @@ const identity = (): PluginProjectIdentity => ({
 })
 const request = (): PluginProjectRequest => ({ parent_dir: parentDir.value.trim(), ...identity() })
 function failure(error: unknown) {
-  const detail = (error as { response?: { data?: { detail?: { code?: string } } } }).response?.data
-    ?.detail
-  const keys: Record<string, string> = {
-    PROJECT_EXISTS: 'directoryExists',
-    INVALID_PARENT: 'invalidParent',
-    GIT_NOT_FOUND: 'gitMissing',
-    directory_picker_unavailable: 'pickerUnavailable',
-    directory_picker_failed: 'pickerUnavailable',
-  }
-  const code = detail?.code
-  backendError.value =
-    code && keys[code]
-      ? t(`authoring.${keys[code]}`)
-      : formatHttpError(error) || t('authoring.creationFailed')
+  const key = PROJECT_ERROR_MESSAGES[projectErrorCode(error) ?? '']
+  backendError.value = key
+    ? t(`authoring.${key}`)
+    : formatHttpError(error) || t('authoring.creationFailed')
 }
 async function pickParent() {
   if (busy.value) return
@@ -294,17 +271,6 @@ async function advance() {
   if (busy.value || created.value) return
   attempted.value = true
   if (error.value || !draft.name.trim() || !validId.value) return
-  if (props.mode === 'import') {
-    if (step.value === 0) step.value = 1
-    else
-      emit('create', {
-        ...draft,
-        name: draft.name.trim(),
-        description: draft.description.trim(),
-        author: draft.author.trim(),
-      })
-    return
-  }
   busy.value = true
   backendError.value = ''
   try {

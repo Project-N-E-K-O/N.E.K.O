@@ -12,6 +12,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from plugin.neko_plugin_cli.templates.generator import PluginSpec
 
+# Market-compatible plugin ID; the workbench API and UI validate against this.
+PLUGIN_ID_PATTERN = r"^[a-z][a-z0-9_]*$"
+
 
 class ProjectCreationError(ValueError):
     def __init__(self, code: str, message: str):
@@ -24,7 +27,7 @@ def prepare_project(
 ) -> dict[Path, str]:
     from plugin.neko_plugin_cli.templates.generator import render_plugin_files
 
-    if not re.fullmatch(r"[a-z][a-z0-9_]*", spec.plugin_id):
+    if re.fullmatch(PLUGIN_ID_PATTERN, spec.plugin_id) is None:
         raise ProjectCreationError(
             "INVALID_PLUGIN_ID", "Use a lowercase plugin ID starting with a letter"
         )

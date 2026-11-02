@@ -31,12 +31,29 @@ afterEach(() => {
 })
 
 describe('created plugin project records', () => {
+  it('starts empty without inserting sample projects', () => {
+    expect(collection().projects.value).toEqual([])
+  })
+
+  it('restores legacy real records but excludes simulated records', () => {
+    const projects = collection()
+    projects.remember(result(), 'real-project')
+    const record = projects.projects.value[0]!
+    localStorage.setItem(
+      'neko.pluginAuthoring.projects.v1',
+      JSON.stringify([
+        { ...record, kind: 'created' },
+        { ...record, key: 'sample', kind: 'demo' },
+      ])
+    )
+    expect(collection().projects.value.map((project) => project.key)).toEqual(['real-project'])
+  })
+
   it('immediately lists real creation metadata and restores it in a new workbench instance', () => {
     const projects = collection()
     projects.remember(result(), 'created-key')
     expect(projects.projects.value).toEqual([
       {
-        kind: 'created',
         key: 'created-key',
         id: 'hello_world',
         name: 'My real project',

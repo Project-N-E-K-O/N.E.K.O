@@ -1,4 +1,5 @@
 import { post } from './index'
+import { openLocalPath } from '@/utils/openExternal'
 
 export interface PluginProjectRequest {
   parent_dir: string
@@ -41,10 +42,33 @@ export interface PickedDirectory {
 
 interface DirectoryHost {
   pickDirectory?: (options: { title: string; startPath?: string }) => Promise<PickedDirectory>
-  openPath?: (options: { path: string }) => Promise<{ ok: boolean; error?: string }>
+  openPath?: unknown
 }
-export const projectDirectoryHost = () =>
-  (window as unknown as { nekoHost?: DirectoryHost }).nekoHost
+const projectDirectoryHost = () => (window as unknown as { nekoHost?: DirectoryHost }).nekoHost
+
+/** Mirrors PLUGIN_ID_PATTERN in plugin/neko_plugin_cli/core/project.py; the server is authoritative. */
+export const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9_]*$/
+
+/** Server error codes mapped to `authoring.*` message keys. */
+export const PROJECT_ERROR_MESSAGES: Record<string, string> = {
+  INVALID_PARENT: 'invalidParent',
+  INVALID_PLUGIN_ID: 'invalidId',
+  PROJECT_EXISTS: 'directoryExists',
+  PROJECT_IO_FAILED: 'projectIoFailed',
+  GIT_NOT_FOUND: 'gitMissing',
+  GIT_INIT_FAILED: 'gitInitFailed',
+  DIRECTORY_PICKER_UNAVAILABLE: 'pickerUnavailable',
+  DIRECTORY_PICKER_FAILED: 'pickerUnavailable',
+  DIRECTORY_UNAVAILABLE: 'directoryUnavailable',
+  OPEN_DIRECTORY_UNAVAILABLE: 'openFolderFailed',
+  OPEN_DIRECTORY_FAILED: 'openFolderFailed',
+}
+
+export function projectErrorCode(error: unknown): string | undefined {
+  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  const code = (detail as { code?: unknown } | undefined)?.code
+  return typeof code === 'string' ? code : undefined
+}
 
 /**
  * Choose a directory and return its absolute path, or null when cancelled.
@@ -61,18 +85,13 @@ export async function pickProjectDirectory(
     ? await bridge.pickDirectory({ title, startPath })
     : await post(
         '/plugin-projects/pick-directory',
-        { start_path: startPath },
+        { start_path: startPath, title },
         { ...config, timeout: 130_000 }
       )
   return picked.cancelled ? null : picked.selected_root?.trim() || null
 }
 
 export async function openProjectDirectory(path: string): Promise<void> {
-  const bridge = projectDirectoryHost()
-  if (bridge?.openPath) {
-    const result = await bridge.openPath({ path })
-    if (!result.ok) throw new Error(result.error || 'Cannot open directory')
-  } else {
-    await post('/plugin-projects/open-directory', { path }, config)
-  }
+  if (typeof projectDirectoryHost()?.openPath === 'function') return openLocalPath(path)
+  await post('/plugin-projects/open-directory', { path }, config)
 }

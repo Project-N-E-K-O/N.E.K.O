@@ -220,14 +220,15 @@ def test_failed_git_initialization_rolls_back_only_the_new_directory(tmp_path):
 async def test_pick_directory_returns_the_native_selection(app, tmp_path, monkeypatch):
     seen = {}
 
-    def pick(*, start_path):
-        seen["start_path"] = start_path
+    def pick(*, start_path, title):
+        seen.update(start_path=start_path, title=title)
         return str(tmp_path)
 
     monkeypatch.setattr(routes, "pick_directory", pick)
     async with client(app) as http:
         result = await http.post(
-            "/plugin-projects/pick-directory", json={"start_path": "C:/start"}
+            "/plugin-projects/pick-directory",
+            json={"start_path": "C:/start", "title": "Parent directory"},
         )
     assert result.status_code == 200
     assert result.json() == {
@@ -235,18 +236,18 @@ async def test_pick_directory_returns_the_native_selection(app, tmp_path, monkey
         "cancelled": False,
         "selected_root": str(tmp_path),
     }
-    assert seen == {"start_path": "C:/start"}
+    assert seen == {"start_path": "C:/start", "title": "Parent directory"}
 
 
 @pytest.mark.asyncio
 async def test_pick_directory_reports_cancellation_and_unavailable_dialogs(
     app, monkeypatch
 ):
-    def cancel(*, start_path):
+    def cancel(*, start_path, title):
         raise routes.DirectoryPickerCancelled()
 
-    def unavailable(*, start_path):
-        raise routes.DirectoryPickerUnavailable("directory_picker_unavailable", "no dialog")
+    def unavailable(*, start_path, title):
+        raise routes.NativeDirectoryError("DIRECTORY_PICKER_UNAVAILABLE", "no dialog")
 
     async with client(app) as http:
         monkeypatch.setattr(routes, "pick_directory", cancel)
@@ -255,5 +256,48 @@ async def test_pick_directory_reports_cancellation_and_unavailable_dialogs(
         monkeypatch.setattr(routes, "pick_directory", unavailable)
         failed = await http.post("/plugin-projects/pick-directory", json={})
     assert failed.status_code == 400
-    assert failed.json()["detail"]["code"] == "directory_picker_unavailable"
+    assert failed.json()["detail"] == {
+        "code": "DIRECTORY_PICKER_UNAVAILABLE",
+        "message": "no dialog",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path_kind", ["relative", "missing"])
+async def test_open_directory_rejects_unusable_paths_with_a_stable_code(
+    app, tmp_path, path_kind
+):
+    path = "relative/dir" if path_kind == "relative" else str(tmp_path / "missing")
+    async with client(app) as http:
+        result = await http.post("/plugin-projects/open-directory", json={"path": path})
+    assert result.status_code == 400
+    assert result.json()["detail"]["code"] == "DIRECTORY_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("plugin_id", ["Example", "1example", "has-dash", ""])
+def test_creator_and_route_share_the_plugin_id_rule(tmp_path, plugin_id):
+    from pydantic import ValidationError
+
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec
+
+    with pytest.raises(creator.ProjectCreationError) as caught:
+        creator.prepare_project(
+            PluginSpec(plugin_id, quick_start=True),
+            tmp_path / "target",
+            repo_root=None,
+        )
+    assert caught.value.code == "INVALID_PLUGIN_ID"
+    with pytest.raises(ValidationError):
+        routes.ProjectIdentity(plugin_id=plugin_id, name="Example")
+
+
+def test_creator_rejects_a_trailing_newline_that_dollar_would_accept(tmp_path):
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec
+
+    with pytest.raises(creator.ProjectCreationError):
+        creator.prepare_project(
+            PluginSpec("example\n", quick_start=True),
+            tmp_path / "target",
+            repo_root=None,
+        )
 

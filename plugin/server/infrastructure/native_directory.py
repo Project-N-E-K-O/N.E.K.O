@@ -1,7 +1,8 @@
-"""Native directory selection for local, loopback-only application features.
+"""Native directory selection and opening for the local plugin workbench.
 
 Only platform-native bridges are used (osascript / PowerShell / zenity, kdialog
 and yad). Tk/Tcl is excluded by project policy; see scripts/check_no_tkinter.py.
+Error messages are English diagnostics; the UI localizes by ``code``.
 """
 
 from __future__ import annotations
@@ -15,22 +16,17 @@ from pathlib import Path
 from utils.storage_policy import normalize_runtime_root
 
 _PICKER_TIMEOUT_SECONDS = 120
-_PICK_TITLE = "请选择目录"
-_MANUAL_HINT = "当前环境暂不支持系统目录选择，请手动输入路径。"
+_DEFAULT_TITLE = "Choose a folder"
+
+
+class NativeDirectoryError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class DirectoryPickerCancelled(Exception):
     pass
-
-
-class DirectoryPickerUnavailable(RuntimeError):
-    def __init__(self, error_code: str, message: str):
-        super().__init__(message)
-        self.error_code = (
-            str(error_code or "directory_picker_unavailable").strip()
-            or "directory_picker_unavailable"
-        )
-        self.message = str(message or _MANUAL_HINT).strip() or _MANUAL_HINT
 
 
 def normalize_start_path(raw_value: str) -> str:
@@ -66,6 +62,16 @@ def _find_executable(*candidates: str) -> str | None:
     return None
 
 
+def _picker_failed(detail: object) -> NativeDirectoryError:
+    return NativeDirectoryError(
+        "DIRECTORY_PICKER_FAILED", f"Native folder picker failed: {detail}"
+    )
+
+
+def _picker_unavailable(message: str) -> NativeDirectoryError:
+    return NativeDirectoryError("DIRECTORY_PICKER_UNAVAILABLE", message)
+
+
 def _run_picker(command: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -76,13 +82,9 @@ def _run_picker(command: list[str]) -> subprocess.CompletedProcess[str]:
             timeout=_PICKER_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
-        raise DirectoryPickerUnavailable(
-            "directory_picker_unavailable", _MANUAL_HINT
-        ) from exc
+        raise _picker_unavailable("Native folder picker is not installed") from exc
     except Exception as exc:
-        raise DirectoryPickerUnavailable(
-            "directory_picker_failed", f"打开系统目录选择器失败: {exc}"
-        ) from exc
+        raise _picker_failed(exc) from exc
 
 
 def _selected_or_cancelled(completed: subprocess.CompletedProcess[str]) -> str:
@@ -92,27 +94,25 @@ def _selected_or_cancelled(completed: subprocess.CompletedProcess[str]) -> str:
     return selected
 
 
-def _pick_via_osascript(*, start_path: str) -> str:
+def _applescript_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _pick_via_osascript(*, start_path: str, title: str) -> str:
     command = [_find_executable("/usr/bin/osascript", "osascript") or "osascript"]
     command.extend(["-e", 'tell application "Finder" to activate'])
+    prompt = f'choose folder with prompt "{_applescript_string(title)}"'
     if start_path:
-        safe_start_path = start_path.replace("\\", "\\\\").replace('"', '\\"')
         command.extend(
             [
                 "-e",
-                f'set defaultLocation to POSIX file "{safe_start_path}"',
+                f'set defaultLocation to POSIX file "{_applescript_string(start_path)}"',
                 "-e",
-                f'set selectedFolder to choose folder with prompt "{_PICK_TITLE}" '
-                "default location defaultLocation",
+                f"set selectedFolder to {prompt} default location defaultLocation",
             ]
         )
     else:
-        command.extend(
-            [
-                "-e",
-                f'set selectedFolder to choose folder with prompt "{_PICK_TITLE}"',
-            ]
-        )
+        command.extend(["-e", f"set selectedFolder to {prompt}"])
     command.extend(["-e", "POSIX path of selectedFolder"])
 
     completed = _run_picker(command)
@@ -120,10 +120,7 @@ def _pick_via_osascript(*, start_path: str) -> str:
         stderr = str(completed.stderr or "").strip()
         if "User canceled" in stderr or "(-128)" in stderr:
             raise DirectoryPickerCancelled()
-        raise DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {stderr or completed.returncode}",
-        )
+        raise _picker_failed(stderr or completed.returncode)
     return _selected_or_cancelled(completed)
 
 
@@ -157,7 +154,11 @@ exit 2
 """.strip()
 
 
-def _pick_via_powershell(*, start_path: str) -> str:
+def _powershell_string(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _pick_via_powershell(*, start_path: str, title: str) -> str:
     executable = _find_executable(
         os.path.join(
             os.environ.get("SystemRoot", r"C:\Windows"),
@@ -170,59 +171,49 @@ def _pick_via_powershell(*, start_path: str) -> str:
         "pwsh.exe",
     )
     if not executable:
-        raise DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前系统未找到 PowerShell，无法打开目录选择器。",
-        )
+        raise _picker_unavailable("PowerShell is required for the native folder picker")
 
     script = _POWERSHELL_SCRIPT.format(
-        title=_PICK_TITLE, start_path=start_path.replace("'", "''")
+        title=_powershell_string(title), start_path=_powershell_string(start_path)
     )
     completed = _run_picker([executable, "-NoProfile", "-STA", "-Command", script])
     if completed.returncode == 2:
         raise DirectoryPickerCancelled()
     if completed.returncode != 0:
-        stderr = str(completed.stderr or "").strip()
-        raise DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {stderr or completed.returncode}",
-        )
+        raise _picker_failed(str(completed.stderr or "").strip() or completed.returncode)
     return _selected_or_cancelled(completed)
 
 
-def _pick_via_linux_dialog(*, start_path: str) -> str:
+def _pick_via_linux_dialog(*, start_path: str, title: str) -> str:
     commands: list[list[str]] = []
     zenity = _find_executable("/usr/bin/zenity", "/bin/zenity", "zenity")
     if zenity:
-        command = [zenity, "--file-selection", "--directory", f"--title={_PICK_TITLE}"]
+        command = [zenity, "--file-selection", "--directory", f"--title={title}"]
         if start_path:
             command.append(f"--filename={start_path.rstrip('/')}/")
         commands.append(command)
     kdialog = _find_executable("/usr/bin/kdialog", "/bin/kdialog", "kdialog")
     if kdialog:
-        command = [kdialog, "--getexistingdirectory"]
+        command = [kdialog, "--title", title, "--getexistingdirectory"]
         if start_path:
             command.append(start_path)
         commands.append(command)
     yad = _find_executable("/usr/bin/yad", "/bin/yad", "yad")
     if yad:
-        command = [yad, "--file-selection", "--directory", f"--title={_PICK_TITLE}"]
+        command = [yad, "--file-selection", "--directory", f"--title={title}"]
         if start_path:
             command.append(f"--filename={start_path.rstrip('/')}/")
         commands.append(command)
 
     if not commands:
-        raise DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前系统未安装可用的图形目录选择器。",
-        )
+        raise _picker_unavailable("No graphical folder picker is installed")
 
     last_error: object = None
     for command in commands:
         try:
             completed = _run_picker(command)
-        except DirectoryPickerUnavailable as exc:
-            last_error = exc.message
+        except NativeDirectoryError as exc:
+            last_error = exc
             continue
         if completed.returncode == 0:
             return _selected_or_cancelled(completed)
@@ -230,20 +221,57 @@ def _pick_via_linux_dialog(*, start_path: str) -> str:
             raise DirectoryPickerCancelled()
         last_error = str(completed.stderr or "").strip() or completed.returncode
 
-    raise DirectoryPickerUnavailable(
-        "directory_picker_failed", f"打开系统目录选择器失败: {last_error}"
-    )
+    raise _picker_failed(last_error)
 
 
-def pick_directory(*, start_path: str = "") -> str:
+def pick_directory(*, start_path: str = "", title: str = "") -> str:
     """Show the native folder dialog and return the selected absolute path.
 
     Raises ``DirectoryPickerCancelled`` when the user dismisses the dialog and
-    ``DirectoryPickerUnavailable`` when no native dialog can be shown.
+    ``NativeDirectoryError`` when no native dialog can be shown.
     """
     normalized = normalize_start_path(start_path)
+    dialog_title = str(title or "").strip() or _DEFAULT_TITLE
     if sys.platform == "darwin":
-        return _pick_via_osascript(start_path=normalized)
+        return _pick_via_osascript(start_path=normalized, title=dialog_title)
     if sys.platform == "win32":
-        return _pick_via_powershell(start_path=normalized)
-    return _pick_via_linux_dialog(start_path=normalized)
+        return _pick_via_powershell(start_path=normalized, title=dialog_title)
+    return _pick_via_linux_dialog(start_path=normalized, title=dialog_title)
+
+
+def open_directory(path: Path | str) -> None:
+    """Open an existing absolute directory in the platform file manager."""
+    raw = Path(path).expanduser()
+    if not raw.is_absolute():
+        raise NativeDirectoryError(
+            "DIRECTORY_UNAVAILABLE", "Use an absolute directory path"
+        )
+    target_path = normalize_runtime_root(raw)
+    if not target_path.is_dir():
+        raise NativeDirectoryError(
+            "DIRECTORY_UNAVAILABLE", "Directory does not exist or is not accessible"
+        )
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target_path))  # type: ignore[attr-defined]
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(target_path)])
+            return
+
+        opener = shutil.which("xdg-open") or shutil.which("gio")
+        if not opener:
+            raise NativeDirectoryError(
+                "OPEN_DIRECTORY_UNAVAILABLE", "No file manager opener is installed"
+            )
+        if os.path.basename(opener) == "gio":
+            subprocess.Popen([opener, "open", str(target_path)])
+        else:
+            subprocess.Popen([opener, str(target_path)])
+    except NativeDirectoryError:
+        raise
+    except Exception as exc:
+        raise NativeDirectoryError(
+            "OPEN_DIRECTORY_FAILED", f"Could not open directory: {exc}"
+        ) from exc

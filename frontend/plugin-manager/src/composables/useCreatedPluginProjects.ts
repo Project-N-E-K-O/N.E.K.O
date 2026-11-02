@@ -9,7 +9,7 @@ function isProject(value: unknown): value is CreatedAuthoringProject {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
   return (
-    item.kind === 'created' &&
+    (item.kind === undefined || item.kind === 'created') &&
     (item.type === 'plugin' || item.type === 'adapter') &&
     typeof item.createdAt === 'number' &&
     ['key', 'id', 'name', 'description', 'version', 'author', 'source', 'entry'].every(
@@ -27,7 +27,7 @@ function readProjects(): CreatedAuthoringProject[] {
   }
 }
 
-/** Persist project metadata only; these records never enter the demo runtime. */
+/** Persist metadata returned by successful project creation. */
 export function useCreatedPluginProjects() {
   const projects = ref(readProjects())
   useEventListener(window, 'storage', (event) => {
@@ -38,7 +38,6 @@ export function useCreatedPluginProjects() {
     if (!result.created) return
     const existing = projects.value.find((project) => project.key === key)
     const project: CreatedAuthoringProject = {
-      kind: 'created',
       key,
       id: result.plugin_id,
       name: result.name,
