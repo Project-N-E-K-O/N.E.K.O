@@ -77,3 +77,43 @@ async def test_malformed_pages_cannot_claim_completeness(payload):
         )
     assert status == 502
     assert "items" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page_size,total", [(0, 1), (1, 2), (100, 101)])
+async def test_terminal_page_cannot_contradict_a_larger_total(page_size, total):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={
+            "items": [{"id": str(i)} for i in range(page_size)],
+            "next_cursor": None, "total_count": total,
+        }),
+    )) as client:
+        status, body = await proxy._community_notifications(
+            client, {"base_url": "https://synthetic.example", "access": "synthetic"},
+        )
+    assert status == 502 and "items" not in body
+    snapshot = proxy._visit_invitation_snapshot("https://synthetic.example", status, body)
+    assert snapshot["notifications_ok"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("total,expected", [(99, 200), (100, 200), (101, 502), (None, 200)])
+async def test_terminal_total_is_checked_against_all_collected_pages(total, expected):
+    seen = []
+
+    async def upstream(request):
+        seen.append(request.url.params.get("cursor"))
+        if len(seen) == 1:
+            return httpx.Response(200, json={"items": [{"id": str(i)} for i in range(100)],
+                                            "next_cursor": "next", "total_count": 101})
+        return httpx.Response(200, json={"items": [], "next_cursor": None, "total_count": total})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        status, body = await proxy._community_notifications(
+            client, {"base_url": "https://synthetic.example", "access": "synthetic"},
+        )
+    assert status == expected and seen == [None, "next"]
+    if status == 200:
+        assert len(body["items"]) == 100
+    else:
+        assert "items" not in body

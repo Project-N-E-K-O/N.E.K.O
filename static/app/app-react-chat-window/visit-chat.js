@@ -2404,7 +2404,8 @@
     var realtimeInvitationFlight = false;
     var realtimeInvitationWake = false;
     var legacyInvitationTimer = 0;
-    var invitationBridgeReady = !(window.nekoSocial && typeof window.nekoSocial.getInvitations === 'function');
+    var invitationBridgeReady = !(window.nekoSocial && typeof window.nekoSocial.getInvitations === 'function'
+        && typeof window.nekoSocial.onInvitationsChanged === 'function');
 
     function realtimePayload(item, snapshot) {
         return { invitation_id: item.id, notification_id: item.notification_id || '',
@@ -3499,7 +3500,8 @@
         setTimeout(pollDirectInvitations, 500);
         if (invitationBridgeReady) legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
         var socialNotifications = window.nekoSocial;
-        if (socialNotifications && typeof socialNotifications.onInvitationsChanged === 'function') {
+        if (socialNotifications && typeof socialNotifications.onInvitationsChanged === 'function'
+                && typeof socialNotifications.getInvitations === 'function') {
             socialNotifications.onInvitationsChanged(receiveRealtimeInvitations);
             socialNotifications.getInvitations().then(receiveRealtimeInvitations).catch(function () {
                 invitationBridgeReady = true;

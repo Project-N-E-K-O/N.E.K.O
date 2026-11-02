@@ -120,6 +120,9 @@ async def _community_notifications(client: httpx.AsyncClient, session: dict):
         if cursor is None:
             if len(page) == 100 and "next_cursor" not in body:
                 return 502, {"detail": "community_invalid_response"}
+            total = body.get("total_count")
+            if isinstance(total, int) and total > len(items):
+                return 502, {"detail": "community_invalid_response"}
             return 200, {**body, "items": items}
         if not page or not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
             return 502, {"detail": "community_invalid_response"}

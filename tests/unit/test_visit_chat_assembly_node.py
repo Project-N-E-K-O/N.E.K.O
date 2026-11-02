@@ -217,12 +217,34 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, listeners };
 }
 
 const report = {};
 
 (async () => {
+  report.partial_invitation_bridges = [];
+  for (const mode of [{ name: 'web', pathname: '/' },
+      { name: 'chat', pathname: '/chat', multiWindow: true },
+      { name: 'chat_full', pathname: '/chat_full', multiWindow: true }]) {
+    for (const missing of ['getter', 'listener', 'both']) {
+      let subscriptions = 0, gets = 0;
+      const social = {};
+      if (missing === 'getter') social.onInvitationsChanged = () => { subscriptions++; };
+      if (missing === 'listener') social.getInvitations = async () => { gets++; return {}; };
+      const h = createHarness(Object.assign({}, mode, { social, routes: {
+        '/api/community/visit-invitations': async () => ({ status: 200, body: {
+          notifications_ok: true, incoming_invite_ids: [] } }),
+      } }));
+      h.chat.applyState({ enabled: true, active: false });
+      h.advance(500); await h.settle(); h.advance(4500); await h.settle();
+      report.partial_invitation_bridges.push({ mode: mode.name, missing, subscriptions, gets,
+        statusListener: h.listeners.has('neko-visit-status-change'),
+        boundListener: h.listeners.has('neko-visit-bound'),
+        reads: h.fetches.filter((entry) => entry.url === '/api/community/visit-invitations').length,
+        pollTimers: h.timers.filter((timer) => timer.every === 5000).length });
+    }
+  }
   report.realtime_pages = [];
   report.realtime_failures = [];
   for (const scenario of ['question_failure', 'uncertain_delivery', 'connect_invalid', 'connect_invalid_raw', 'peer_blocked', 'character_switch', 'hung_question']) {
@@ -2065,6 +2087,14 @@ def report() -> dict:
     return _run(HARNESS.replace("__CHAT_PATH__", json.dumps(str(CHAT_PATH)))
                 .replace("__PACER_PATH__", json.dumps(str(PACER_PATH)))
                 .replace("__RELAY_SAMPLES__", json.dumps(RELAY_SAMPLES)))
+
+
+def test_partial_invitation_bridges_keep_initialization_and_legacy_recovery(report):
+    assert len(report["partial_invitation_bridges"]) == 9
+    for case in report["partial_invitation_bridges"]:
+        assert case["subscriptions"] == case["gets"] == 0
+        assert case["statusListener"] and case["boundListener"]
+        assert case["reads"] == 2 and case["pollTimers"] == 1
 
 
 def test_realtime_pages_use_owner_once_and_have_no_invitation_poll_over_ten_minutes(report):
