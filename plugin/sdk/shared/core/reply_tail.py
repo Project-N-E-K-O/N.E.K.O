@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import os
 from typing import Any
 from urllib.parse import quote
 
@@ -41,14 +40,14 @@ class ReplyTailClient:
         Register images before returning; the host submits them independently
         of the model's tool choices. Subscribe during startup and reload.
         """
-        from config import USER_PLUGIN_SERVER_PORT
+        # Same resolver as the media proxy: tolerates a malformed launcher port.
+        from config.network import resolve_user_plugin_base
 
-        port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT") or USER_PLUGIN_SERVER_PORT)
         plugin_id = quote(str(self._host_ctx.plugin_id), safe="")
         entry = quote(entry_id, safe="")
         return await self._post("subscribe", {
             "entry_id": entry_id, "role": role, "timeout_seconds": handler_timeout,
-            "callback_url": f"http://127.0.0.1:{port}/api/llm-tools/reply-completed/{plugin_id}/{entry}",
+            "callback_url": f"{resolve_user_plugin_base()}/api/llm-tools/reply-completed/{plugin_id}/{entry}",
         }, timeout)
 
     async def unsubscribe(self, entry_id: str, *, timeout: float = 5.0) -> dict:
