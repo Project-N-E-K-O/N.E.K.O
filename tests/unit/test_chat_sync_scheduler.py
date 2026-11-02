@@ -23,7 +23,7 @@ def test_next_wake_retains_retry_and_origin_deadlines_without_one_second_ticks(t
     assert scheduler.next_wake_at() is None
     scheduler.claim('role', 'pull', 1, 'session')
     scheduler.failure('role', 'pull', 1, 'session', ValueError('chat_sync_unavailable'))
-    assert scheduler.next_wake_at() == 4_000
+    assert scheduler.next_wake_at() == 6_000
     with closing(scheduler._connect()) as conn, conn:
         conn.execute('UPDATE scheduler_device SET origin_retry_at=20000')
     assert scheduler.next_wake_at() == 20_000
@@ -70,15 +70,16 @@ def test_retired_media_deadline_does_not_wake_current_sync_or_reset_origin_retry
 
 
 @pytest.mark.parametrize('channel', ['pull', 'profile'])
-@pytest.mark.parametrize('attempts', [1, 8])
-def test_new_transport_retry_uses_three_second_cap_without_periodic_poll(tmp_path, channel, attempts):
+@pytest.mark.parametrize('attempts', [1, 2, 3, 4, 8])
+def test_new_transport_retry_backs_off_to_thirty_seconds_without_periodic_poll(tmp_path, channel, attempts):
     """Pure transport failures retry after jitter without the ordinary poll due."""
     clock = [1000]
     scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db', clock=lambda: clock[0], uniform=lambda lo, hi: hi)
     assert scheduler.claim('a', channel, 1, 'session')
     for _ in range(attempts):
         scheduler.failure('a', channel, 1, 'session', ValueError('chat_sync_unavailable'))
-    clock[0] += 2999
+    delay = min(30_000, 6250 * 2 ** (attempts - 1))
+    clock[0] += delay - 1
     assert not scheduler.ready('a', channel, 1, 'session')
     clock[0] += 1
     assert scheduler.ready('a', channel, 1, 'session')
@@ -86,7 +87,7 @@ def test_new_transport_retry_uses_three_second_cap_without_periodic_poll(tmp_pat
 
 @pytest.mark.parametrize("attempts", [1, 8])
 def test_pull_timeout_retry_and_safe_error_survive_restart(tmp_path, attempts):
-    """A bounded download timeout remains a three-second retry after restart."""
+    """The progressive bounded download retry survives restart."""
     clock = [1000]
     path = tmp_path / "scheduler.db"
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda lo, hi: hi)
@@ -96,11 +97,11 @@ def test_pull_timeout_retry_and_safe_error_survive_restart(tmp_path, attempts):
     scheduler = ChatSyncScheduler(path, clock=lambda: clock[0], uniform=lambda *_: 0)
     with closing(scheduler._connect()) as conn:
         task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain='a' AND channel='pull'").fetchone()
-    assert task["retry_at"] == 4000 and task["failures"] == attempts
+    assert task["retry_at"] == 1000 + min(30_000, 6250 * 2 ** (attempts - 1)) and task["failures"] == attempts
     assert task["due_at"] == 0
     assert task["blocked_generation"] is None and task["blocked_session"] is None
     assert scheduler.last_error("a") == "chat_sync_pull_timeout"
-    clock[0] = 3999
+    clock[0] = task["retry_at"] - 1
     assert not scheduler.ready("a", "pull", 3, "session", manual=True)
     clock[0] += 1
     assert scheduler.ready("a", "pull", 3, "session")
@@ -119,7 +120,7 @@ def test_notification_and_verified_login_cannot_bypass_pull_timeout_retry(tmp_pa
     with closing(scheduler._connect()) as conn:
         after = dict(conn.execute("SELECT * FROM scheduler_tasks WHERE domain='a' AND channel='pull'").fetchone())
     assert after == before
-    clock[0] = 3999
+    clock[0] = before["retry_at"] - 1
     assert not scheduler.claim("a", "pull", 3, "session")
     assert not scheduler.claim("a", "pull", 3, "session", manual=True)
     clock[0] += 1

@@ -22,6 +22,85 @@ class ModelService(SyntheticService):
                 "record": self.model, "recordHash": hashlib.sha256(encode(self.model)).hexdigest()})
         return await super().request(request)
 
+
+@pytest.mark.asyncio
+async def test_inactive_model_bindings_read_the_current_selection_only_once(tmp_path):
+    from unittest.mock import AsyncMock
+    runtime, service, _ = setup_runtime(tmp_path)
+    runtime.current_character_uid_provider = AsyncMock(return_value=None)
+    bindings = [{'enabled': True, 'binding_id': 'c' * 32, 'character_uid': f'{index:032x}'} for index in range(100)]
+    try:
+        await runtime._automatic_models(bindings, 'synthetic-presence')
+        runtime.current_character_uid_provider.assert_awaited_once()
+        assert service.requests == []
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_model_pass_checks_only_the_selected_role_and_catches_up_on_switch(tmp_path):
+    from tests.unit.test_chat_sync_runtime import OTHER_UID
+
+    class RolesService(ModelService):
+        capabilities = 0
+
+        def __init__(self):
+            super().__init__()
+            self.heads = []
+
+        async def request(self, request):
+            path = request.url.path
+            if path.endswith('/models/capabilities'):
+                self.capabilities += 1
+            if path.endswith('/model-binding'):
+                uid = path.split('/')[-2]
+                self.heads.append(uid)
+                return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': uid, 'revision': 1,
+                    'record': self.model, 'recordHash': hashlib.sha256(encode(self.model)).hexdigest()})
+            body = json.loads(request.content) if request.content else {}
+            if path.endswith('/bindings'):
+                return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': path.split('/')[-2],
+                    'deviceId': body['deviceId'], 'bindingId': BINDING})
+            if path.split('/')[-1] in (UID, OTHER_UID):
+                return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': path.split('/')[-1], **body})
+            return await super().request(request)
+
+    runtime, service, _ = setup_runtime(tmp_path, RolesService())
+    selected = [UID]
+
+    async def current_character():
+        return selected[0]
+
+    runtime.current_character_uid_provider = current_character
+
+    class Adapter:
+        async def read(self, uid):
+            return {'name': uid, 'kind': 'live2d', 'path': '', 'selection': '["live2d",""]'}
+
+    runtime.models.adapter = Adapter()
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'First')
+        await runtime.enable(OTHER_UID, 'Second')
+        service.requests.clear()
+        presence = await runtime.session_presence_provider()
+        await runtime._automatic_models(runtime.state.bindings(), presence)
+        assert service.capabilities == 1
+        assert set(service.heads) == {UID}
+        assert sum(request.url.path.endswith('/identity') for request in service.requests) == 1
+        selected[0] = OTHER_UID
+        await runtime.request_catchup()
+        await runtime._automatic_models(runtime.state.bindings(), presence)
+        assert service.capabilities == 2
+        assert set(service.heads) == {UID, OTHER_UID}
+        selected[0] = UID
+        await runtime.request_catchup()
+        await runtime._automatic_models(runtime.state.bindings(), presence)
+        assert service.capabilities == 3
+    finally:
+        await runtime.close()
+
+
 @pytest.mark.asyncio
 async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(tmp_path):
     runtime, service, _ = setup_runtime(tmp_path, ModelService())
@@ -173,8 +252,7 @@ async def test_model_download_failures_remove_only_their_own_partial_file(tmp_pa
 
     monkeypatch.setattr(httpx, 'AsyncClient', Client)
     sync = SimpleNamespace(store=SimpleNamespace(path=tmp_path / 'profiles.sqlite3'))
-    error = asyncio.CancelledError if failure == 'cancel' else (httpx.ReadError if failure == 'network'
-            else OSError if failure == 'http' else ValueError)
+    error = asyncio.CancelledError if failure == 'cancel' else OSError if failure == 'http' else ValueError
     for _ in range(2):
         guard_calls = 0
         with pytest.raises(error):
@@ -290,6 +368,215 @@ async def pending_model_runtime(tmp_path, *, uploaded=False, large=False):
     await commit(runtime.models.store.put, DOMAIN.key(), {'revision': 1, 'selection': '["live2d","/A.model3.json"]',
                  'remote': service.model, 'pending': pending})
     return runtime, service, adapter, pending
+
+
+@pytest.mark.asyncio
+async def test_oss_transport_failure_uses_bounded_retry_without_the_idle_model_poll(tmp_path, monkeypatch):
+    from contextlib import closing
+    from services.chat_sync.writer import store_connection
+    runtime, service, _, _ = await pending_model_runtime(tmp_path)
+    service.ready = False
+
+    async def disconnected(request):
+        raise httpx.ConnectError('synthetic transport loss', request=request)
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: client_type(transport=httpx.MockTransport(disconnected), **kwargs))
+    try:
+        presence = await runtime.session_presence_provider()
+        for attempt in range(1, 11):
+            await runtime._automatic_models(runtime.state.bindings(), presence)
+            with closing(store_connection(runtime.scheduler.path)) as connection:
+                retry, due = connection.execute("SELECT retry_at,due_at FROM scheduler_tasks WHERE domain=? AND channel='model'", (DOMAIN.key(),)).fetchone()
+            assert due == 0
+            assert retry - runtime.test_clock[0] == min(30_000, 5000 * 2 ** (attempt - 1))
+            assert runtime.models.store.get(DOMAIN.key())['pending']
+            runtime.test_clock[0] = retry
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_completed_model_checks_only_metadata_and_accepts_older_full_responses(tmp_path, legacy):
+    runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        paths = []
+        async def observed(request):
+            result = await service.request(request)
+            if request.url.path.endswith('/model-binding'):
+                paths.append(str(request.url))
+                if request.url.params.get('metadataOnly') == 'true' and not legacy:
+                    value = result.json(); value.pop('record')
+                    return httpx.Response(200, json=value)
+            return result
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+        await runtime.models.step(UID)
+        assert len(paths) == 1 and paths[0].endswith('?metadataOnly=true')
+        assert runtime.models.store.get(DOMAIN.key())['revision'] == 2
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['owner', 'role', 'hash', 'rollback'])
+async def test_completed_model_metadata_keeps_owner_role_hash_and_revision_fences(tmp_path, change):
+    runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        async def observed(request):
+            result = await service.request(request)
+            if request.url.params.get('metadataOnly') == 'true':
+                value = result.json(); value.pop('record')
+                value.update({'ownerId': '00000000-0000-4000-8000-000000000002'} if change == 'owner'
+                             else {'characterSyncId': 'b' * 32} if change == 'role'
+                             else {'recordHash': '0' * 64} if change == 'hash' else {'revision': 1})
+                return httpx.Response(200, json=value)
+            return result
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+        with pytest.raises(ValueError, match='^invalid_model_response$'):
+            await runtime.models.step(UID)
+        assert runtime.models.store.get(DOMAIN.key())['revision'] == 2
+        assert len(service.puts) == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [None, 429, 503])
+async def test_model_download_distinguishes_transport_loss_from_server_rejection(tmp_path, monkeypatch, status):
+    from types import SimpleNamespace
+    from services.chat_sync.model_sync import DesktopModelSync
+
+    async def response(request):
+        if status is None:
+            raise httpx.ReadError('synthetic transport loss', request=request)
+        return httpx.Response(status)
+
+    async def guard():
+        pass
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: client_type(transport=httpx.MockTransport(response), **kwargs))
+    model = SimpleNamespace(store=SimpleNamespace(path=tmp_path / 'profiles.sqlite3'))
+    package = {'sha256': 'f' * 64, 'size': 4, 'resource': {'url': 'https://oss.example/model.zip'}}
+    error = ValueError if status is None else OSError
+    message = 'chat_sync_unavailable' if status is None else 'cloud_model_download_unavailable'
+    with pytest.raises(error, match='^' + message + '$'):
+        await DesktopModelSync.download(model, DOMAIN, None, package, guard)
+    assert not list((tmp_path / 'model-packages').glob('*.part'))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('boundary', ['success', 'lost-ack', 'local-save'])
+async def test_uploaded_archive_is_removed_only_after_cloud_and_local_receipts(tmp_path, monkeypatch, boundary):
+    import shutil
+    from pathlib import Path
+    runtime, service, adapter, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    directory = runtime.models.store.path.parent / 'model-packages'
+    directory.mkdir()
+    archive = directory / (pending['file']['resourceId'] + '.zip')
+    shutil.copyfile(pending['file']['path'], archive)
+    state = runtime.models.store.get(DOMAIN.key())
+    state['pending']['file']['path'] = str(archive)
+    runtime.models.store.put(DOMAIN.key(), state)
+    save = runtime.models.store.put
+    fail = [boundary == 'local-save']
+
+    def guarded_save(domain, state):
+        if fail[0] and state['revision'] == 2 and not state.get('pending'):
+            fail[0] = False
+            raise OSError('synthetic local receipt failure')
+        save(domain, state)
+
+    monkeypatch.setattr(runtime.models.store, 'put', guarded_save)
+    service.lose_ack = boundary == 'lost-ack'
+    try:
+        if boundary != 'success':
+            with pytest.raises((ValueError, OSError)):
+                await runtime.models.step(UID)
+            assert archive.is_file()
+            if boundary == 'local-save':
+                from services.chat_sync.writer import WriterQuarantined
+                with pytest.raises(WriterQuarantined):
+                    await runtime.models.step(UID)
+                assert archive.is_file() and adapter.source(adapter.path).is_file()
+                return
+        await runtime.models.step(UID)
+        assert not archive.exists()
+        assert runtime.models.store.get(DOMAIN.key())['revision'] == 2
+        assert not runtime.models.store.get(DOMAIN.key()).get('pending')
+        assert adapter.source(adapter.path).is_file()
+        assert Path(pending['file']['path']).is_file()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_upload_cleanup_protects_another_pending_task_and_retries_later(tmp_path):
+    import shutil
+    runtime, _, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    directory = runtime.models.store.path.parent / 'model-packages'
+    directory.mkdir()
+    archive = directory / (pending['file']['resourceId'] + '.zip')
+    shutil.copyfile(pending['file']['path'], archive)
+    runtime.models.store.put('other-task', {'pending': {'file': {'path': str(archive)}}})
+    try:
+        await runtime.models.step(UID)
+        assert archive.is_file()
+        runtime.models.store.put('other-task', {})
+        await runtime.models.step(UID)
+        assert not archive.exists()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_cache_cleanup_failure_does_not_quarantine_the_sync_writer(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+    runtime, _, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    directory = runtime.models.store.path.parent / 'model-packages'
+    directory.mkdir()
+    archive = directory / (pending['file']['resourceId'] + '.zip')
+    shutil.copyfile(pending['file']['path'], archive)
+    unlink = Path.unlink
+    fail = [True]
+
+    def remove(path, *args, **kwargs):
+        if path == archive and fail[0]:
+            fail[0] = False
+            raise OSError('synthetic cache deletion failure')
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'unlink', remove)
+    try:
+        await runtime.models.step(UID)
+        assert archive.is_file()
+        runtime.writer.check()
+        assert not runtime.models.store.get(DOMAIN.key()).get('pending')
+        await runtime.models.step(UID)
+        assert not archive.exists()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_upload_cleanup_never_unlinks_an_external_archive_symlink(tmp_path):
+    from pathlib import Path
+    runtime, _, _, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    directory = runtime.models.store.path.parent / 'model-packages'
+    directory.mkdir()
+    archive = directory / (pending['file']['resourceId'] + '.zip')
+    archive.symlink_to(pending['file']['path'])
+    try:
+        await runtime.models.step(UID)
+        assert archive.is_symlink() and Path(pending['file']['path']).is_file()
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -466,6 +753,87 @@ async def test_selection_changes_during_pending_requests_use_the_current_model_n
         assert service.model['model']['modelFile'] == 'C.model3.json'
         assert adapter.path == '/C.model3.json'
         assert not (await runtime.models.status(UID))['failed']
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['none', 'corrupt-before', 'corrupt-during'])
+async def test_model_upload_streams_bounded_file_chunks_and_verifies_both_passes(tmp_path, monkeypatch, change):
+    from pathlib import Path
+    from services.chat_sync.model_sync import DesktopModelSync
+
+    raw = b'PK\x03\x04' + b'synthetic transfer bytes' * 10_000
+    path = tmp_path / 'model.zip'
+    path.write_bytes(raw)
+    file = {'resourceId': 'a' * 32, 'purpose': 'model', 'size': len(raw),
+            'sha256': hashlib.sha256(raw).hexdigest(), 'contentType': 'application/zip', 'path': str(path)}
+    if change == 'corrupt-before':
+        path.write_bytes(b'x' * len(raw))
+    uploaded, completed = [], []
+
+    async def request(method, route, body):
+        if route.endswith('/complete'):
+            completed.append(route)
+            return {'resourceId': file['resourceId'], 'ready': True}
+        return {'resourceId': file['resourceId'], 'ready': False,
+                'upload': {'url': 'https://oss.example/model.zip', 'method': 'PUT', 'headers': {}}}
+
+    class UploadTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async for chunk in request.stream:
+                uploaded.append(chunk)
+                if change == 'corrupt-during' and len(uploaded) == 1:
+                    with path.open('r+b') as stream:
+                        stream.seek(131072)
+                        stream.write(b'changed')
+            return httpx.Response(204)
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: client_type(transport=UploadTransport(), **kwargs))
+    monkeypatch.setattr(Path, 'read_bytes', lambda self: pytest.fail('model upload must not read the entire archive'))
+    if change == 'none':
+        await DesktopModelSync.upload_file(None, request, '/models', file)
+        assert b''.join(uploaded) == raw and completed
+        assert max(map(len, uploaded)) <= 65536
+    else:
+        with pytest.raises(ValueError, match='invalid_cloud_model_resource'):
+            await DesktopModelSync.upload_file(None, request, '/models', file)
+        assert completed == []
+        if change == 'corrupt-before':
+            assert uploaded == []
+
+
+@pytest.mark.asyncio
+async def test_switching_roles_stops_automatic_model_upload_without_failing_or_losing_pending_bytes(tmp_path, monkeypatch):
+    from pathlib import Path
+    from tests.unit.test_chat_sync_runtime import OTHER_UID
+    runtime, service, _, pending = await pending_model_runtime(tmp_path, large=True)
+    service.ready = False
+    selected, sent = [UID], []
+
+    async def current_character():
+        return selected[0]
+
+    runtime.current_character_uid_provider = current_character
+
+    class UploadTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async for chunk in request.stream:
+                sent.append(chunk)
+                selected[0] = OTHER_UID
+            return httpx.Response(204)
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: client_type(transport=UploadTransport(), **kwargs))
+    original = Path(pending['file']['path']).read_bytes()
+    try:
+        await runtime._automatic_models(runtime.state.bindings(), await runtime.session_presence_provider())
+        assert len(sent) == 1 and service.puts == []
+        assert Path(pending['file']['path']).read_bytes() == original
+        state = await runtime.models.status(UID)
+        assert runtime.models.store.get(DOMAIN.key())['pending'] and not state['failed']
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
     finally:
         await runtime.close()
 

@@ -712,17 +712,20 @@ class DesktopChatSyncRuntime:
             self._track(task)
 
     async def _automatic_models(self, bindings, presence):
+        current_uid = await self._current_character_uid()
         for binding in bindings:
-            if not binding["enabled"] or not binding["binding_id"]:
+            if not binding["enabled"] or not binding["binding_id"] or binding["character_uid"] != current_uid:
                 continue
             uid = binding["character_uid"]
             domain = ChatDomain(binding["owner_id"], uid).key()
             if not await asyncio.to_thread(self.scheduler.claim, domain, "model", binding["generation"], presence):
                 continue
             try:
-                await self.models.step(uid)
+                await self.models.step(uid, automatic_only=True)
                 await asyncio.to_thread(self.scheduler.success, domain, "model")
-            except (AutomaticRoleInactive, OSError, ValueError, sqlite3.Error) as exc:
+            except AutomaticRoleInactive:
+                continue
+            except (OSError, ValueError, sqlite3.Error) as exc:
                 if getattr(exc, "status_code", None) == 404:
                     await asyncio.to_thread(self.scheduler.success, domain, "model")
                 else:
@@ -737,7 +740,7 @@ class DesktopChatSyncRuntime:
         context = await asyncio.to_thread(_load_local_ca_context, self._local_ca_file) if self._local_ca_file else ssl.create_default_context()
         async with connect("wss" + service_url[5:] + "/v1/chat-sync/notifications", ssl=context,
                            proxy=None, open_timeout=3, close_timeout=1, max_size=4096,
-                           ping_interval=2, ping_timeout=2) as socket:
+                           ping_interval=10, ping_timeout=5) as socket:
             yield socket
 
     async def _stop_notifications(self):
@@ -866,12 +869,12 @@ class DesktopChatSyncRuntime:
                 self._notification_blocked_key = key
             self._notification_failures += 1
             retry = min(60_000, 5_000 * 2 ** min(self._notification_failures - 1, 4))
-            # Only transport loss gets a short reconnect deadline. Rejected
+            # Only transport loss gets the thirty-second reconnect cap. Rejected
             # grants and invalid protocol responses retain their existing gates.
             transport = isinstance(exc, OSError) or (isinstance(exc, ConnectionClosed)
                          and ((exc.rcvd is None and (exc.sent is None or exc.sent.code in {1000, 1001, 1011}))
                               or (exc.rcvd is not None and exc.rcvd.code in {1000, 1001})))
-            self._notification_retry_at = self.scheduler.clock() + (min(retry, 3000) if transport else retry)
+            self._notification_retry_at = self.scheduler.clock() + (min(retry, 30_000) if transport else retry)
             # A dropped hint channel asks for a normal fenced check. It cannot
             # bypass HTTP errors, and exceptions contain no logged token/body.
             if not self._closing:
@@ -2537,6 +2540,13 @@ async def close_desktop_chat_sync_runtimes() -> None:
     _runtimes.clear()
     for runtime in runtimes:
         await runtime.close()
+
+
+def wake_desktop_chat_sync_scheduler(config_manager) -> None:
+    """A local character switch wakes an existing host without starting sync or doing I/O."""
+    runtime = _runtimes.get(Path(config_manager.app_docs_dir) / 'chat_sync')
+    if runtime is not None:
+        runtime.wake_scheduler()
 
 
 async def start_desktop_chat_sync_scheduler(config_manager=None) -> None:

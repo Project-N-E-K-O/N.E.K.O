@@ -203,9 +203,9 @@ class ChatSyncScheduler:
             if transient:
                 base = min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** min(failures - 1, 20))
                 delay = min(RETRY_CAP_MS, base + int(self.uniform(0, base / 4)))
-                # New pure HTTP transport failures recover promptly; server
+                # Pure HTTP transport loss backs off to thirty seconds; server
                 # status codes, Retry-After and older persisted deadlines stay.
-                retry = self.clock() + (min(delay, 3000) if code in {"chat_sync_unavailable", "chat_sync_pull_timeout"} else delay)
+                retry = self.clock() + (min(delay, 30_000) if code in {"chat_sync_unavailable", "chat_sync_pull_timeout"} else delay)
             else:
                 blocked, blocked_session = generation, session if auth else None
             if status == 429:

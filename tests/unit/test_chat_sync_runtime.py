@@ -902,7 +902,7 @@ async def test_notification_production_transport_uses_verified_wss_and_closes(tm
 
 
 @pytest.mark.asyncio
-async def test_established_silent_wss_automatically_wakes_pull_within_eight_seconds(tmp_path, local_tls_files):
+async def test_established_silent_wss_wakes_pull_after_approved_heartbeat_deadline(tmp_path, local_tls_files):
     """Use production keepalive against a TLS peer that silently stops reading."""
     from websockets.asyncio.server import serve
     ca_path, _, cert_path, key_path = local_tls_files
@@ -937,7 +937,7 @@ async def test_established_silent_wss_automatically_wakes_pull_within_eight_seco
                 before = sum(x.url.path.endswith('/changes') for x in service.requests)
                 pause.set()
                 await paused.wait()
-                async with asyncio.timeout(7.5):
+                async with asyncio.timeout(18.5):
                     while sum(x.url.path.endswith('/changes') for x in service.requests) == before:
                         await asyncio.sleep(.02)
                 assert runtime.ledger.cursor(DOMAIN) == 1
@@ -951,7 +951,8 @@ async def test_established_silent_wss_automatically_wakes_pull_within_eight_seco
 
 
 @pytest.mark.asyncio
-async def test_transport_disconnect_reconnect_deadline_is_at_most_three_seconds(tmp_path):
+@pytest.mark.parametrize('failures', [0, 4])
+async def test_transport_disconnect_reconnect_deadline_backs_off_to_thirty_seconds(tmp_path, failures):
     """A new network failure stays bounded independently of HTTP and auth gates."""
     runtime, _, _ = setup_runtime(tmp_path)
     try:
@@ -962,16 +963,17 @@ async def test_transport_disconnect_reconnect_deadline_is_at_most_three_seconds(
         presence = await runtime.session_presence_provider()
         await runtime._manage_notifications(runtime.state.bindings(), presence)
         await wait_notification(lambda: socket.receives >= 3)
+        runtime._notification_failures = failures
         await socket.incoming.put(OSError("synthetic disconnected"))
         await wait_notification(lambda: runtime._notification_task.done())
-        assert 0 < runtime._notification_retry_at - runtime.scheduler.clock() <= 3000
+        assert runtime._notification_retry_at - runtime.scheduler.clock() == min(30_000, 5000 * 2 ** failures)
     finally:
         await runtime.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sent_code", [1002, 1007, 1008, 1009, 1011, None])
-async def test_sent_only_close_keeps_protocol_backoff_and_fast_transport_recovery(tmp_path, sent_code):
+async def test_sent_only_close_keeps_protocol_backoff_and_progressive_transport_recovery(tmp_path, sent_code):
     """A missing close reply must not turn local protocol rejection into transport loss."""
     from websockets.exceptions import ConnectionClosedError
     from websockets.frames import Close
@@ -985,15 +987,16 @@ async def test_sent_only_close_keeps_protocol_backoff_and_fast_transport_recover
         presence = await runtime.session_presence_provider()
         await runtime._manage_notifications(runtime.state.bindings(), presence)
         await wait_notification(lambda: socket.receives >= 3)
+        runtime._notification_failures = 3
         sent = Close(sent_code, "") if sent_code is not None else None
         await socket.incoming.put(ConnectionClosedError(None, sent))
         await wait_notification(lambda: runtime._notification_task.done())
         delay = runtime._notification_retry_at - runtime.scheduler.clock()
         if sent_code in {1002, 1007, 1008, 1009}:
-            assert delay == 5000
+            assert delay == 40000
         else:
             # Native keepalive expiry sends 1011; a broken network may send nothing.
-            assert 0 < delay <= 3000
+            assert delay == 30000
     finally:
         await runtime.close()
 
@@ -3195,7 +3198,7 @@ async def test_pull_budget_is_shared_and_external_cancel_stays_cancelled(tmp_pat
                 await asyncio.wait_for(changes_cancelled.wait(), 1)
                 with pytest.raises(ValueError, match="^chat_sync_pull_timeout$"):
                     await asyncio.wait_for(task, 5)
-                runtime.test_clock[0] += 3001
+                runtime.test_clock[0] += 5001
                 identity_entered.clear()
                 release_identity.clear()
                 task = asyncio.create_task(runtime._channel_pass(UID, "pull", manual=True))

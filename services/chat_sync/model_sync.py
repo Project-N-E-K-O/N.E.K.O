@@ -8,6 +8,8 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
+import sqlite3
 from uuid import uuid4
 
 from services.chat_sync import host
@@ -89,11 +91,18 @@ class DesktopModelSync:
         if not any(isinstance(item, _PrivateModelLogFilter) for item in logger.filters):
             logger.addFilter(_PrivateModelLogFilter())
 
-    async def _head(self, domain, request):
-        value = await request("GET", f"/v1/chat-sync/characters/{domain.character_uid}/model-binding", None)
+    async def _head(self, domain, request, *, metadata_only=False):
+        path = f"/v1/chat-sync/characters/{domain.character_uid}/model-binding"
+        value = await request("GET", path + ('?metadataOnly=true' if metadata_only else ''), None)
         if (not isinstance(value, dict) or value.get("ownerId") != domain.owner_id
                 or value.get("characterSyncId") != domain.character_uid or type(value.get("revision")) is not int or value["revision"] < 0):
             raise ValueError("invalid_model_response")
+        if metadata_only and 'record' not in value:
+            digest = value.get('recordHash')
+            if (value['revision'] == 0 and digest is not None
+                    or value['revision'] > 0 and (not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest))):
+                raise ValueError('invalid_model_response')
+            return value
         record = value.get("record")
         if record is None:
             if value["revision"] != 0 or value.get("recordHash") is not None:
@@ -104,6 +113,7 @@ class DesktopModelSync:
 
     async def _supersede_pending(self, domain, request, commit, state):
         pending = state["pending"]
+        confirmed = False
         latest = await self._head(domain, request)
         if latest["revision"] < max(state["revision"], state.get("seen_revision", 0)):
             raise ValueError("invalid_model_response")
@@ -114,16 +124,51 @@ class DesktopModelSync:
             if (latest["revision"] == pending["baseRevision"] + 1
                     and latest["recordHash"] == hashlib.sha256(encode(pending["record"])).hexdigest()):
                 state.update(revision=latest["revision"], selection=pending["selection"], remote=latest["record"])
+                confirmed = True
             else:
                 state["conflict"] = latest
         state.pop("pending")
         await commit(self.store.put, domain.key(), state)
+        if confirmed:
+            await self._cleanup_uploaded_package(pending['record'], commit)
         if not state.get("conflict"):
             await commit(self.runtime.scheduler.retry_model, domain.key())
 
-    async def step(self, uid, *, manual=False):
+    async def _cleanup_uploaded_package(self, record, commit):
+        model = record.get('model') if record else None
+        resource_id = model['package']['resource'].get('resourceId') if model else None
+        if not isinstance(resource_id, str) or not re.fullmatch(r'[0-9a-f]{32}', resource_id):
+            return
+
+        def remove():
+            try:
+                directory = self.store.path.parent / 'model-packages'
+                path = directory / (resource_id + '.zip')
+                if directory.is_symlink() or path.is_symlink() or not path.is_file():
+                    return
+                with closing(store_connection(self.store.path)) as connection:
+                    for row in connection.execute('SELECT state FROM model_state'):
+                        pending = json.loads(row[0]).get('pending')
+                        file = pending.get('file') if pending else None
+                        if file and Path(file['path']).resolve() == path.resolve():
+                            return
+                path.unlink(missing_ok=True)
+            except (OSError, ValueError, sqlite3.Error):
+                # Optional file cleanup must not enter the writer's failed-mutation path.
+                logging.getLogger(__name__).warning('chat_sync_model_upload_cache_cleanup_retry')
+
         try:
-            await self._step(uid, manual=manual)
+            # Only generated upload archives with a durable cloud receipt are expendable.
+            await commit(remove)
+        except (OSError, ValueError, sqlite3.Error):
+            logging.getLogger(__name__).warning('chat_sync_model_upload_cache_cleanup_retry')
+
+    async def step(self, uid, *, manual=False, automatic_only=False):
+        from services.chat_sync.runtime import AutomaticRoleInactive
+        try:
+            await self._step(uid, manual=manual, automatic_only=automatic_only)
+        except AutomaticRoleInactive:
+            raise
         except Exception:
             # Persist a safe retry affordance without exposing signed URLs or provider errors.
             async with self.lock:
@@ -137,27 +182,45 @@ class DesktopModelSync:
                     pass
             raise
 
-    async def _step(self, uid, *, manual=False):
+    async def _step(self, uid, *, manual=False, automatic_only=False):
         if self.adapter is None:
             return
         async with self.lock:
             runtime, adapter = self.runtime, self.adapter
             authenticated = await runtime._session()
-            domain, request, commit = await runtime._bound_transport(uid, authenticated=authenticated)
+            domain, request, commit = await runtime._bound_transport(uid, authenticated=authenticated, automatic_only=automatic_only)
             binding = await asyncio.to_thread(runtime.state.binding, uid)
             async def guard():
                 await runtime._guard(binding, authenticated[1])
+                if automatic_only:
+                    await runtime._require_automatic_character(uid)
             caps = await request("GET", "/v1/chat-sync/models/capabilities", None)
             if caps.get("schemaVersion") != 1 or caps.get("modelBinding") != 1:
                 return
             current = await adapter.read(uid)
-            head = await self._head(domain, request)
             key = domain.key()
             state = await asyncio.to_thread(self.store.get, key)
+            minimum = max(state['revision'], state.get('seen_revision', 0)) if state else 0
+            if (state and state['revision'] > 0 and state.get('remote') and state['selection'] == current['selection']
+                    and not any(state.get(field) for field in ('pending', 'candidate', 'conflict'))):
+                metadata = await self._head(domain, request, metadata_only=True)
+                if metadata['revision'] < minimum:
+                    raise ValueError('invalid_model_response')
+                minimum = metadata['revision']
+                if metadata['revision'] == state['revision']:
+                    if metadata['recordHash'] != hashlib.sha256(encode(state['remote'])).hexdigest():
+                        raise ValueError('invalid_model_response')
+                    await self._cleanup_uploaded_package(state['remote'], commit)
+                    return
+            head = await self._head(domain, request)
+            if head['revision'] < minimum:
+                raise ValueError('invalid_model_response')
             had_state = state is not None
             if state is None:
                 state = {"revision": 0, "selection": current["selection"] if head["record"] else ""}
                 await commit(self.store.put, key, state)
+            if state['revision'] > 0 and state.get('remote'):
+                await self._cleanup_uploaded_package(state['remote'], commit)
             state.pop("error", None)
             if head["revision"] < max(state["revision"], state.get("seen_revision", 0)):
                 raise ValueError("invalid_model_response")
@@ -238,6 +301,7 @@ class DesktopModelSync:
                 state.update(revision=receipt["revision"], selection=pending["selection"], remote=pending["record"])
                 state.pop("pending")
                 await commit(self.store.put, key, state)
+                await self._cleanup_uploaded_package(pending['record'], commit)
                 if (await adapter.read(uid))["selection"] != pending["selection"]:
                     await commit(runtime.scheduler.retry_model, key)
                 return
@@ -282,18 +346,21 @@ class DesktopModelSync:
         part = target.with_suffix("." + uuid4().hex + ".part")
         digest, count = hashlib.sha256(), 0
         try:
-            async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
-                async with client.stream("GET", url) as response:
-                    if response.status_code != 200:
-                        raise OSError("cloud_model_download_unavailable")
-                    with part.open("xb") as output:
-                        async for chunk in response.aiter_raw():
-                            await guard()
-                            count += len(chunk)
-                            if count > package["size"]:
-                                raise ValueError("invalid_cloud_model_hash")
-                            digest.update(chunk)
-                            output.write(chunk)
+            try:
+                async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
+                    async with client.stream("GET", url) as response:
+                        if response.status_code != 200:
+                            raise OSError("cloud_model_download_unavailable")
+                        with part.open("xb") as output:
+                            async for chunk in response.aiter_raw():
+                                await guard()
+                                count += len(chunk)
+                                if count > package["size"]:
+                                    raise ValueError("invalid_cloud_model_hash")
+                                digest.update(chunk)
+                                output.write(chunk)
+            except httpx.HTTPError:
+                raise ValueError("chat_sync_unavailable") from None
             if count != package["size"] or digest.hexdigest() != package["sha256"]:
                 raise ValueError("invalid_cloud_model_hash")
             await guard()
@@ -373,21 +440,37 @@ class DesktopModelSync:
         if not web_url(signed["url"]).startswith("https://") or signed["method"] != "PUT" or any(
                 key.lower() not in {"content-type", "content-length"} for key in signed["headers"]):
             raise ValueError("invalid_cloud_model_response")
-        raw = await asyncio.to_thread(Path(file["path"]).read_bytes)
-        if len(raw) != file["size"] or hashlib.sha256(raw).hexdigest() != file["sha256"]:
-            raise ValueError("invalid_cloud_model_resource")
-        async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
-            async def chunks():
-                for offset in range(0, len(raw), 65536):
-                    if guard:
-                        await guard()
-                    yield raw[offset:offset + 65536]
-            try:
-                response = await client.put(signed["url"], headers=signed["headers"], content=chunks())
-            except httpx.HTTPError:
-                raise OSError("cloud_model_upload_unavailable") from None
-            if response.status_code not in {200, 201, 204}:
-                raise OSError("cloud_model_upload_unavailable")
+        with await asyncio.to_thread(Path(file["path"]).open, "rb") as stream:
+            size = await asyncio.to_thread(stream.seek, 0, 2)
+            await asyncio.to_thread(stream.seek, 0)
+            digest = await asyncio.to_thread(hashlib.file_digest, stream, "sha256")
+            if size != file["size"] or digest.hexdigest() != file["sha256"]:
+                raise ValueError("invalid_cloud_model_resource")
+            await asyncio.to_thread(stream.seek, 0)
+            sent, sent_hash = 0, hashlib.sha256()
+            async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
+                async def chunks():
+                    nonlocal sent
+                    while True:
+                        if guard:
+                            await guard()
+                        chunk = await asyncio.to_thread(stream.read, 65536)
+                        if not chunk:
+                            break
+                        sent += len(chunk)
+                        if sent > file["size"]:
+                            raise ValueError("invalid_cloud_model_resource")
+                        sent_hash.update(chunk)
+                        yield chunk
+                try:
+                    response = await client.put(signed["url"], headers=signed["headers"], content=chunks())
+                except httpx.HTTPError:
+                    raise ValueError("chat_sync_unavailable") from None
+                if response.status_code not in {200, 201, 204}:
+                    raise OSError("cloud_model_upload_unavailable")
+            # A mutable cache file must not publish bytes changed after the preflight hash.
+            if sent != file["size"] or sent_hash.hexdigest() != file["sha256"]:
+                raise ValueError("invalid_cloud_model_resource")
         if guard:
             await guard()
         receipt = await request("POST", base + "/resources/" + file["resourceId"] + "/complete", None)

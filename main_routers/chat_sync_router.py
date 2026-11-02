@@ -173,7 +173,7 @@ async def configure(body: ServiceConfiguration, runtime: Runtime):
 
 @router.post("/wake")
 async def wake(runtime: Runtime, body: None = Body(default=None)):
-    """Wake all opted-in roles without exposing OAuth or awaiting remote I/O."""
+    """Wake the selected opted-in role without exposing OAuth or awaiting remote I/O."""
     try:
         await runtime.request_catchup()
     except ValueError as exc:
