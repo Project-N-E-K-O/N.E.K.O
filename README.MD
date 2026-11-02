@@ -250,7 +250,7 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 > **Pseudonymous device ID**: a one-way SHA-256 hash. The raw inputs (machine ID, MAC, install path) are never sent.
 > - Primary path: `SHA256(OS_machine_id ‖ namespace)`.
 > - Fallback path: `SHA256(uuid.getnode() ‖ install path ‖ namespace)`.
-> - During migration both the new and the old ID are sent, so the server can merge them into one user cohort.
+> - Every report carries both IDs (the current one and the one from the older algorithm), so the server can link them to the same device.
 >
 > The primary ID stays the same as long as the OS machine ID does; the fallback ID can change if the network adapter (`uuid.getnode()`) or the install path changes. Because it is stable, under GDPR / PIPL it is pseudonymous data, not fully anonymous data. The server uses it to group reports from the same device: active-device counts (DAU / WAU / MAU), retention, version-compatibility attribution, and per-device attributes such as the hardware profile and, when reported, the Steam64 ID.
 >
@@ -266,7 +266,7 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 Implementation:
 
 - Client metadata and reporting: [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) and [`utils/token_tracker/reporting.py`](utils/token_tracker/reporting.py).
-- Server transport and storage: [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md). Requests are HMAC-SHA256 signed, accepted only within ±5 minutes to block replays, and rate-limited to 120 per hour per device. Storage is append-only.
+- Server transport and storage: [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md). Requests are HMAC-SHA256 signed, accepted only within ±5 minutes to block replays, and rate-limited to 120 per hour per device. Raw events are append-only and pruned after 180 days; device and aggregate tables are updated over time, and aggregates are kept indefinitely. Deleting an account puts its Steam64 ID on a denylist and removes the stored Steam64 links.
 - Reporting runs from the same 60 s background loop that saves token data locally (each process also saves once at shutdown), and a separate interval check keeps each server process to at most about one report every 60 s.
 
 ## License

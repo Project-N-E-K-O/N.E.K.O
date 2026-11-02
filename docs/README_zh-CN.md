@@ -250,7 +250,7 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 > **假名化设备标识**：单向 SHA-256 哈希，原始输入（机器 ID、MAC、安装路径）不会上报。
 > - 主路径：`SHA256(OS_machine_id ‖ namespace)`。
 > - 回退路径：`SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`。
-> - 迁移期间新旧两个标识会同时上报，方便服务端把同一台设备的两个标识归并为一个用户。
+> - 每次上报都会同时带上两个标识（当前算法的和旧算法的），方便服务端把它们关联到同一台设备。
 >
 > 只要系统的 machine ID 不变，主标识就不变；回退标识会在网卡（`uuid.getnode()`）或安装路径变化时改变。因为它是稳定的，按 GDPR / PIPL 口径属于假名化数据，而不是完全匿名的数据。服务端用它把同一台设备的上报归到一起：统计活跃设备数（日活 / 周活 / 月活）、留存、版本兼容性归因，以及按设备保存硬件档位、Steam64 ID（如有上报）等属性。
 >
@@ -266,7 +266,7 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 实现位置：
 
 - 客户端元数据与上报：[`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) 和 [`utils/token_tracker/reporting.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/reporting.py)。
-- 服务端传输与存储：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。请求用 HMAC-SHA256 签名防篡改，只接受 ±5 分钟内的请求以防重放，每台设备每小时最多 120 次，存储只追加不修改。
+- 服务端传输与存储：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。请求用 HMAC-SHA256 签名防篡改，只接受 ±5 分钟内的请求以防重放，每台设备每小时最多 120 次。原始事件只追加写入，180 天后清理；设备表和聚合表会随时间更新，聚合数据长期保留。删除账号时，其 Steam64 ID 会被列入黑名单，已存的 Steam64 关联也会被删除。
 - 上报由本地保存 Token 数据的那个 60 秒后台循环顺带触发（进程退出时也会单独保存一次本地数据）；另有一道独立的间隔检查，保证每个服务进程大约最多每 60 秒上报一次。
 
 ## 许可证

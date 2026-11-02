@@ -249,7 +249,7 @@ N.E.K.O. は**トークン使用量テレメトリーをデフォルトで有効
 > **仮名化されたデバイス ID**：一方向の SHA-256 ハッシュです。元の入力（マシン ID、MAC、インストールパス）は送信しません。
 > - 主経路：`SHA256(OS_machine_id ‖ namespace)`。
 > - 代替経路：`SHA256(uuid.getnode() ‖ インストールパス ‖ namespace)`。
-> - 移行期間中は新旧両方の ID を送り、サーバー側で同じデバイスとしてまとめられるようにしています。
+> - 送信のたびに両方の ID（現行アルゴリズムのものと旧アルゴリズムのもの）を送り、サーバー側で同じデバイスに関連付けられるようにしています。
 >
 > 主 ID は OS の machine ID が変わらない限り同じです。代替 ID はネットワークアダプター（`uuid.getnode()`）やインストールパスが変わると変わることがあります。安定した ID なので、GDPR / PIPL の基準では完全な匿名データではなく仮名化データにあたります。サーバーはこの ID で同じデバイスからの送信をまとめ、アクティブデバイス数（DAU / WAU / MAU）、リテンション、バージョン互換性の分析、およびハードウェア区分や（送信された場合の）Steam64 ID などのデバイス属性の保存に使います。
 >
@@ -265,7 +265,7 @@ N.E.K.O. は**トークン使用量テレメトリーをデフォルトで有効
 実装の場所：
 
 - クライアントのメタデータと送信：[`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) と [`utils/token_tracker/reporting.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/reporting.py)。
-- サーバー側の通信と保存：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。リクエストは HMAC-SHA256 で署名され、リプレイ防止のため ±5 分以内のものだけを受け付け、デバイスごとに 1 時間 120 回までに制限されます。保存は追記のみです。
+- サーバー側の通信と保存：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。リクエストは HMAC-SHA256 で署名され、リプレイ防止のため ±5 分以内のものだけを受け付け、デバイスごとに 1 時間 120 回までに制限されます。生のイベントは追記のみで、180 日後に削除されます。デバイステーブルと集計テーブルは随時更新され、集計データは無期限に保持されます。アカウントを削除すると、その Steam64 ID は拒否リストに入り、保存済みの Steam64 の関連付けも削除されます。
 - 送信は、トークンデータをローカル保存する 60 秒間隔のバックグラウンドループから行われます（各プロセスは終了時にもローカル保存を 1 回行います）。別の間隔チェックにより、各サーバープロセスの送信は最大でおよそ 60 秒に 1 回に抑えられます。
 
 ## ライセンス
