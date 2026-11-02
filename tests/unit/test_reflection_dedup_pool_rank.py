@@ -220,6 +220,32 @@ async def test_promotion_pool_keeps_newest_similar_entry_under_budget(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_promotion_pool_skips_a_row_larger_than_the_whole_budget(tmp_path):
+    """No truncated copy: merge_into would rewrite the target from it."""
+    from utils.tokenize import count_tokens
+
+    _fs, _pm, re = _install(str(tmp_path))
+    giant = ("relationship", _persona_entry(
+        "giant", "主人睡前说晚安。" + "很长的导入备注" * 400, rein=1.0,
+    ))
+    near = ("relationship", _persona_entry("near", "主人每晚对小天说晚安", rein=1.0))
+    other = ("relationship", _persona_entry("other", "主人喜欢咖啡", rein=1.0))
+    R = _reflection("ref_R", "主人睡前总会跟小天道晚安", rein=2.5)
+    captured: list[str] = []
+    with _patch_vectors(_FakeEmbeddingService()), \
+         patch("config.PERSONA_MERGE_POOL_MAX_TOKENS", 300), \
+         _llm({"action": "promote_fresh"}, captured):
+        await re._allm_call_promotion_merge(
+            R, [giant, near, other], [], CHAR, "主人",
+        )
+    lines = _pool_lines(captured[0])
+    assert [line.split("]")[0] for line in lines] == [
+        "[persona.relationship.near", "[persona.relationship.other",
+    ]
+    assert count_tokens("\n".join(lines)) <= 300
+
+
+@pytest.mark.asyncio
 async def test_promotion_pool_falls_back_to_evidence_order_without_vectors(tmp_path):
     _fs, _pm, re = _install(str(tmp_path))
     persona_pool = [
@@ -478,6 +504,10 @@ async def test_existing_impressions_stay_inside_subject_and_active(tmp_path):
     _write_json(tmpdir, "persona.json", {
         group.persona_section_key: {"facts": [
             _persona_entry("p_same", "群友睡前总说晚安", **group.as_entry_fields()),
+            # The live copy that promoting ref_promoted wrote; it stands in
+            # for the historical reflection row.
+            _persona_entry("p_promoted_copy", "群里每晚有人道晚安",
+                           source_id="ref_promoted", **group.as_entry_fields()),
             _persona_entry("p_card", "设定：睡前说晚安", protected=True,
                            **group.as_entry_fields()),
         ]},
@@ -499,13 +529,60 @@ async def test_existing_impressions_stay_inside_subject_and_active(tmp_path):
         )
     assert set(candidates) == {
         "reflection.ref_same",
-        "reflection.ref_promoted",
         f"persona.{group.persona_section_key}.p_same",
+        f"persona.{group.persona_section_key}.p_promoted_copy",
     }
     assert block.startswith("======以下为已有印象======\n")
     assert set(legacy_candidates) == {
         "reflection.ref_legacy", "persona.relationship.p_legacy",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reflection", "persona"])
+async def test_synthesis_skip_falls_back_when_target_rewritten_meanwhile(tmp_path, kind):
+    """Refinement may rewrite the target while the LLM judges the old text."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    if kind == "reflection":
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_old", "主人每晚睡前都会对小天说晚安"),
+        ])
+        key = "reflection.ref_old"
+    else:
+        _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+            _persona_entry("prom_night", "主人睡前会对小天说晚安"),
+        ]}})
+        key = "persona.relationship.prom_night"
+    _fs, pm, re = _install(tmpdir)
+    answer = {
+        "skip": True, "covered_by": key,
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": "主人连着几晚睡前对小天说晚安",
+        "temporal_scope": "pattern", "event_when": None,
+    }
+
+    async def _llm_rewrites_target(api_config, prompt, **_kw):
+        if kind == "reflection":
+            rows = _read_json(tmpdir, "reflections.json")
+            rows[0]["text"] = "主人只在周末对小天说晚安"
+            _write_json(tmpdir, "reflections.json", rows)
+        else:
+            persona = await pm.aget_persona(CHAR)
+            persona["relationship"]["facts"][0]["text"] = "主人只在周末对小天说晚安"
+        return SimpleNamespace(content=json.dumps(answer, ensure_ascii=False)), 0
+
+    with _patch_vectors(_FakeEmbeddingService()), \
+         patch("memory.thinking_llm.ainvoke_thinking", _llm_rewrites_target), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    if kind == "reflection":
+        old = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}["ref_old"]
+    else:
+        old = (await pm.aget_persona(CHAR))["relationship"]["facts"][0]
+    assert "covered_fact_ids" not in old
 
 
 @pytest.mark.asyncio

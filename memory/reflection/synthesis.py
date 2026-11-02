@@ -63,8 +63,12 @@ from .similarity import ascore_against_queries, vectors_ready
 
 
 # Reflection statuses that still count as an existing impression for the
-# pre-synthesis duplicate check (and may receive covered_fact_ids).
-_IMPRESSION_REFLECTION_STATUSES = ('pending', 'confirmed', 'promoted')
+# pre-synthesis duplicate check (and may receive covered_fact_ids). A promoted
+# reflection is represented by its persona copy instead: every promotion path
+# writes one through aadd_fact, and that copy is what renders. The reflection
+# row is history; once the copy is rewritten or archived it must not absorb
+# new facts.
+_IMPRESSION_REFLECTION_STATUSES = ('pending', 'confirmed')
 
 
 def _detect_synthesis_prompt_language(text: str) -> str:
@@ -696,11 +700,12 @@ class SynthesisMixin:
     ) -> tuple[str, dict[str, dict]]:
         """Show the batch's nearest existing impressions so the LLM can skip.
 
-        Candidates are active reflections (pending / confirmed / promoted) and
+        Candidates are active reflections (pending / confirmed) and
         non-protected persona entries of the same subject, ranked by max
         cosine against the batch. Returns ``(block, candidates)``, where
-        ``candidates`` maps every id shown in the block to its target. Without
-        usable vectors both are empty, so the prompt is unchanged.
+        ``candidates`` maps every id shown in the block to its target, which
+        also records the text the model saw. Without usable vectors both are
+        empty, so the prompt is unchanged.
         """
         from config import (
             REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS,
@@ -726,7 +731,7 @@ class SynthesisMixin:
             ):
                 pool.append((
                     f"reflection.{r['id']}",
-                    {'kind': 'reflection', 'id': r['id']},
+                    {'kind': 'reflection', 'id': r['id'], 'text': r['text']},
                     r,
                 ))
         for section_key, section in (persona or {}).items():
@@ -744,7 +749,10 @@ class SynthesisMixin:
                 ):
                     pool.append((
                         f"persona.{section_key}.{e['id']}",
-                        {'kind': 'persona', 'section': section_key, 'id': e['id']},
+                        {
+                            'kind': 'persona', 'section': section_key,
+                            'id': e['id'], 'text': e['text'],
+                        },
                         e,
                     ))
         if not pool:
@@ -760,8 +768,8 @@ class SynthesisMixin:
             key=lambda i: scores[i],
             reverse=True,
         ):
-            # A promoted reflection and its persona entry usually share text;
-            # one copy is enough and leaves the slot to another impression.
+            # Identical lines (e.g. one sentence in two persona sections) take
+            # one slot; the rest go to other impressions.
             text = str(pool[i][2].get('text') or '').strip()
             if text in seen_texts:
                 continue
@@ -819,12 +827,14 @@ class SynthesisMixin:
         Caller MUST hold ``self._get_alock(lanlan_name)``. A persona target
         also takes the persona lock (reflection -> persona, the order the
         promotion path already uses). Audit only: evidence is untouched.
-        Returns False when the target is no longer an eligible impression.
+        Returns False when the target is no longer an eligible impression,
+        including when refinement or a correction rewrote its text while the
+        LLM was judging the old wording.
         """
         if target['kind'] == 'persona':
             return await self._persona_manager.arecord_covered_facts(
                 lanlan_name, target['section'], target['id'], fact_ids,
-                subject=subject,
+                expected_text=target['text'], subject=subject,
             )
         from memory.scopes import entry_matches_subject
         reflections = await self._aload_reflections_full(lanlan_name)
@@ -832,6 +842,7 @@ class SynthesisMixin:
         if (
             entry is None
             or entry.get('status') not in _IMPRESSION_REFLECTION_STATUSES
+            or entry.get('text') != target['text']
             or not entry_matches_subject(entry, subject)
         ):
             return False

@@ -534,14 +534,15 @@ class FactsMixin:
 
     async def arecord_covered_facts(
         self, name: str, section_key: str, entry_id: str,
-        fact_ids: list[str], *, subject=None,
+        fact_ids: list[str], *, expected_text: str, subject=None,
     ) -> bool:
         """Record facts that reflection synthesis skipped as already covered
         by one persona entry.
 
         Audit only: evidence stays untouched, so restating an entry never
         raises its render priority. Returns False when the entry is gone,
-        protected, or outside ``subject``'s isolation domain.
+        protected, outside ``subject``'s isolation domain, or no longer
+        reads ``expected_text`` (the wording the skip decision was made on).
         """
         from memory._reflection.schema import merge_covered_fact_ids
         from memory.scopes import entry_matches_subject
@@ -555,6 +556,7 @@ class FactsMixin:
             if (
                 entry is None
                 or entry.get('protected')
+                or entry.get('text') != expected_text
                 or not entry_matches_subject(entry, subject)
             ):
                 return False
