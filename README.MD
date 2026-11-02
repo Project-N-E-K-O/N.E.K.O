@@ -236,7 +236,7 @@ N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation 
 > - `_get_telemetry_metadata()` in [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) reads the ID only in a release build, when the SDK is available and `Users.GetSteamID()` returns a non-zero value.
 > - Source runs never send it: for any non-release build the function returns `("source", "")`, even with the Steam client open.
 >
-> **To prevent it**, set `DO_NOT_TRACK=1`; that is the only switch that turns telemetry off. Quitting the Steam client only leaves the Steam64 field empty for that run: the rest of the payload is still sent, and a Steam64 ID reported earlier stays on the server.
+> **To prevent it**, set `DO_NOT_TRACK=1` or `NEKO_DO_NOT_TRACK=1`; these variables are the only way to turn telemetry off. Quitting the Steam client only leaves the Steam64 field empty for that run: the rest of the payload is still sent, and a Steam64 ID reported earlier stays on the server.
 
 Implementation:
 
