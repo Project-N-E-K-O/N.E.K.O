@@ -48,7 +48,7 @@ DEFAULT_LIVE2D_MODEL_PATH = f"{DEFAULT_LIVE2D_MODEL_NAME}/{DEFAULT_LIVE2D_MODEL_
 
 # Bundled built-in Live2D models (assets/<name>.tar.gz → static/<name>/). Character-card export/
 # Workshop uploads use this set to recognize models that are not user imports and need not be packaged.
-BUILTIN_LIVE2D_MODEL_NAMES = ("yui-lolita", "yui-origin")
+BUILTIN_LIVE2D_MODEL_NAMES = ("yui-lolita", "yui-origin", "yui-sister")
 
 DEFAULT_LANLAN_TEMPLATE = {
     "test": {

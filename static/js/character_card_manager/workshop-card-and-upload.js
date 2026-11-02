@@ -536,7 +536,7 @@ function expandCharacterCardSection(card) {
     } else if (live2d) {
         hasModel = true;
         // Live2D：原有逻辑
-        const modelInfo = availableModels.find(m => m.name === live2d);
+        const modelInfo = findCardLive2DModelInfo(availableModels, live2d, rawData);
         isModelUploadable = modelInfo !== undefined;
     }
 
@@ -593,7 +593,7 @@ function expandCharacterCardSection(card) {
         }
         const live2dControls = document.getElementById('live2d-preview-controls');
         if (live2dControls) live2dControls.style.display = '';
-        const modelInfoForPreview = availableModels.find(model => model.name === live2d);
+        const modelInfoForPreview = findCardLive2DModelInfo(availableModels, live2d, rawData);
         loadLive2DModelByName(live2d, modelInfoForPreview);
     } else {
         // 角色未设置模型，清除现有预览并显示提示
@@ -933,7 +933,7 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除内置的 yui-lolita / yui-origin）- 仅限 Live2D 模型类型
+        // 设置默认模型（排除内置的 yui-lolita / yui-origin / yui-sister）- 仅限 Live2D 模型类型
         if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
             const validModels = availableModels.filter(model =>
                 model

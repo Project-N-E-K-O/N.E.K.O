@@ -93,6 +93,23 @@ def _strip_local_character_identity(character_payload: dict) -> dict:
     return character_payload
 
 
+def _is_bound_to_builtin_live2d(catgirl_data: dict, live2d_name: str, live2d_path: str) -> bool:
+    """Return True when the character's Live2D binding points at a bundled built-in model.
+
+    A user-imported model may share a built-in's name; the saved asset_source (or a
+    /user_live2d prefix on legacy bindings) tells which one the character displays.
+    """
+    if live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
+        return False
+    asset_source = str(get_reserved(catgirl_data, 'avatar', 'asset_source', default='') or '').strip().lower()
+    if asset_source in ('local', 'local_imported'):
+        return False
+    if asset_source:
+        return True
+    normalized_path = str(live2d_path or '').strip().replace('\\', '/')
+    return not normalized_path.startswith(('/user_live2d/', '/user_live2d_local/'))
+
+
 def _embed_zip_in_png_chunk(png_data: bytes, zip_data: bytes) -> bytes:
     """Embed ZIP data into a PNG ancillary private chunk (the neKo chunk), inserted before IEND.
 
@@ -366,7 +383,8 @@ async def export_catgirl_card(name: str):
     3. Append the archive data to the PNG image
     4. Return the PNG image for download
 
-    Note: built-in models (BUILTIN_LIVE2D_MODEL_NAMES) are never included in the export.
+    Note: built-in models (BUILTIN_LIVE2D_MODEL_NAMES) are never included in the export,
+    but a user-imported model that shadows a built-in name is.
     """
     import zipfile
     import tempfile
@@ -436,7 +454,7 @@ async def export_catgirl_card(name: str):
                             live2d_name = live2d_name.split('/')[-1]
 
                         # Check bundled built-ins, which recipients already have and need not include
-                        if live2d_name in BUILTIN_LIVE2D_MODEL_NAMES:
+                        if _is_bound_to_builtin_live2d(catgirl_data, live2d_name, live2d_path):
                             logger.info(
                                 f'猫娘 {name} 使用的是内置模型 '
                                 f'{live2d_name}，跳过模型打包'
@@ -1040,6 +1058,10 @@ async def import_character_card(
                         character_data['_reserved']['avatar']['live2d'] = character_data['_reserved']['avatar'].get('live2d', {})
                         character_data['_reserved']['avatar']['live2d']['model_path'] = f'{model_name}/{model3_filename}'
                         character_data['_reserved']['avatar']['model_type'] = 'live2d'
+                        # The files now live in the user import directory; bind there explicitly so a
+                        # same-named built-in is neither displayed nor assumed on re-export.
+                        character_data['_reserved']['avatar']['asset_source'] = 'local_imported'
+                        character_data['_reserved']['avatar']['asset_source_id'] = ''
                         logger.info(f'已自动为角色 {character_name} 设置Live2D模型: {model_name}, 文件: {model3_filename}')
 
                     elif imported_model_info['type'] == 'vrm':
@@ -1605,8 +1627,13 @@ async def export_catgirl_with_portrait(
                 if model_type == 'live2d':
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
-                        live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
+                        relative_path = live2d_path.strip().replace('\\', '/')
+                        for user_prefix in ('/user_live2d_local/', '/user_live2d/'):
+                            if relative_path.startswith(user_prefix):
+                                relative_path = relative_path[len(user_prefix):]
+                                break
+                        live2d_name = relative_path.split('/')[0] if '/' in relative_path else relative_path.replace('.model3.json', '')
+                        if live2d_name and not _is_bound_to_builtin_live2d(catgirl_data, live2d_name, live2d_path):
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):
