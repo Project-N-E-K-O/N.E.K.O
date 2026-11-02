@@ -230,7 +230,7 @@ AGENT_EXTERNAL_GATE_THRESHOLD = 0.2
   more aggressively but increases missed-task risk."""
 
 # -- Proactive-chat-triggered agent (descent layer, enabled by default) --
-# With the Agent master switch enabled, spontaneous catgirl speech can run the analyzer once so she can initiate
+# With the Agent master switch enabled, spontaneous neko speech can run the analyzer once so she can initiate
 # tool use/information lookup, e.g. checking weather, strictly throttled by per-session limits to prevent frequent calls.
 # With Agent disabled, analyze_request is blocked before the proactive path, performing neither analysis
 # nor task dispatch.
@@ -239,7 +239,7 @@ AGENT_PROACTIVE_ANALYZE_ENABLED = True
 - Disabled: proactive speech never runs analyzer; analyze only new user turns.
 - Enabled: proactive turns carry a proactive marker into agent_server's separate path: assistant-dialogue
   fingerprint deduplication + per-session count limit (AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION) jointly throttle,
-  invoking analyzer once only after passing, treating the catgirl's proactive line as intent.
+  invoking analyzer once only after passing, treating the neko's proactive line as intent.
 - The overall Agent toggle is a higher-priority hard gate; disabled Agent never analyzes or dispatches.
 - Upstream: cross_server marks proactive on had_user_input=False turn_end;
   agent_server analyze-handler branching."""

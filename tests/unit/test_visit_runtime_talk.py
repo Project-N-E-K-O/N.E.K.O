@@ -437,7 +437,7 @@ async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, mon
     try:
         for i in range(200):
             seq += 1
-            # Peer human lines do not count toward the 80-catgirl-line violation guard, only text buckets and visit totals.
+            # Peer human lines do not count toward the 80-neko-line violation guard, only text buckets and visit totals.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": f"g:{100 + i}", "lp": 10 + i, "seq": seq, "sp": "h", "ad": "gh",
                 "rt": "", "wu": False, "final": True, "txt": f"第{i}条", "truncated": False, "i_done": 0},
@@ -813,7 +813,7 @@ async def test_repeated_line_meta_mismatches_end_the_visit(tmp_path, monkeypatch
                 "ad": "hc", "rt": "", "wu": False}, nbytes=200)
         for i in range(n):
             ln, lp = f"g:{400 + i}", 400 + i
-            # Closing as catgirl contradicts the same line's type; discard as protocol error and end on repeated violations.
+            # Closing as neko contradicts the same line's type; discard as protocol error and end on repeated violations.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": ln, "lp": lp, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
                 "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,

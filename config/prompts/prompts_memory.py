@@ -1517,8 +1517,8 @@ PROFILE_RENAME_EVENT_TEXT = {
     "pt": "Antes eu me chamava \"{old_name}\"; agora me chamo \"{new_name}\". Trate \"{new_name}\" como meu nome atual de agora em diante.",
 }
 
-# User rename records live in catgirl persona/master sections; the catgirl reads them,
-# while users renamed. First-person wording suggests catgirl renames, and second person sounds
+# User rename records live in neko persona/master sections; the neko reads them,
+# while users renamed. First-person wording suggests neko renames, and second person sounds
 # awkward; omit personal pronouns and use neutral statements matching other impersonal
 # master fields such as nicknames/gender.
 PROFILE_RENAME_EVENT_FIELD_MASTER = {
@@ -1563,11 +1563,11 @@ def render_profile_rename_event_context(
 ) -> tuple[str, str]:
     """Render a rename record; returns (field_name, content).
 
-    entity="neko": written into the catgirl's own section, in the first person, I.
-    entity="master": written into the master section of the catgirl's persona — the
-    reader is the catgirl while the renamer is the user, so person markers are dropped
+    entity="neko": written into the neko's own section, in the first person, I.
+    entity="master": written into the master section of the neko's persona — the
+    reader is the neko while the renamer is the user, so person markers are dropped
     in favor of a neutral statement, lest the first person make the user's rename look
-    like the catgirl's own.
+    like the neko's own.
     """  # noqa: DOCSTRING_CJK
     lang_key = _normalize_memory_prompt_lang(lang)
     if str(entity or "").strip().lower() == "master":
@@ -4281,7 +4281,7 @@ FORGE_SCOPE_HINT = {
     },
     "en": {
         "visit_group_chat": "[Visit memory: from a visit with a neighbor; \"the other side\" means the neighbor] ",
-        "visit_group_participant": "[Visit memory: about the neighbor's catgirl] ",
+        "visit_group_participant": "[Visit memory: about the neighbor's neko] ",
         "visit_participant": "[Visit memory: about the neighbor's human] ",
         "group_chat": "[Group chat memory: from a group chat] ",
         "group_participant": "[Group chat memory: about a group member] ",

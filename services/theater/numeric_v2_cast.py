@@ -1,4 +1,4 @@
-"""Project the author's two protagonist names onto the current player and catgirl."""  # noqa: DOCSTRING_CJK
+"""Project the author's two protagonist names onto the current player and neko."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _identity_name(identity: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NumericV2CastProjection:
-    """Fixed at runtime: the player plays the male lead and the current catgirl plays the female lead."""  # noqa: DOCSTRING_CJK
+    """Fixed at runtime: the player plays the male lead and the current neko plays the female lead."""  # noqa: DOCSTRING_CJK
 
     source_player_name: str
     source_catgirl_name: str

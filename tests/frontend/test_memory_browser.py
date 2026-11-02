@@ -270,7 +270,7 @@ def seed_memory_file(clean_user_data_dir, running_server):
     catgirl_dir = memory_dir / "测试猫娘"
     catgirl_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create a minimal recent memory file for a test catgirl
+    # Create a minimal recent memory file for a test neko
     test_data = [
         {
             "type": "system",
@@ -449,10 +449,10 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     )
 
     # Wait for the file list to populate (the JS fetches /api/memory/recent_files on load)
-    # We should see a button with the catgirl name in the list
+    # We should see a button with the neko name in the list
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
 
-    # The list should show our seeded catgirl
+    # The list should show our seeded neko
     expect(mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘")).to_have_count(1, timeout=5000)
 
     # Stage 1 storage-location entry is read-only and must not auto-start migration.

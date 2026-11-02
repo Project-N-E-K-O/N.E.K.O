@@ -379,7 +379,7 @@ def test_a_proactive_turn_can_never_authorize(wired):
     # ⚠ Even literal explicit magic words fail. Proactive-always-reject and explicit-command
     # exemption are adjacent branches whose order defines this case, previously untested:
     # moving exemptions before proactive rejection leaves the whole gate file green. Proactive
-    # turns have no user input, so explicit commands cannot exist; catgirl lines resembling commands get no exemption.
+    # turns have no user input, so explicit commands cannot exist; neko lines resembling commands get no exemption.
     _dispatch(
         "/daemon approve",
         proactive=True,
@@ -1006,7 +1006,7 @@ def test_replies_that_can_carry_a_prompt_open_the_gate(wired, reply):
 
 
 def test_stop_needs_a_running_task_when_the_phrasing_is_ambiguous(wired):
-    """⚠ 停下来 in roleplay may address the catgirl herself, not background tasks.
+    """⚠ 停下来 in roleplay may address the neko herself, not background tasks.
 
     Whole-clause matching kills the narration cases (雨停下来了) but cannot tell
     these apart — the sentence is identical either way. So this tier asks for

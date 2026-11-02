@@ -627,7 +627,7 @@ class NumericV2ArchiveStore:
                     archived_through_revision = raw_archived_revision
                 elif pointer.get("receipt_id"):
                     # Legacy pointers lack archive watermarks; treat successful old receipts as archived through their revision,
-                    # avoiding duplicate catgirl-memory writes of the same public performance after an upgrade.
+                    # avoiding duplicate neko-memory writes of the same public performance after an upgrade.
                     previous = self.load(str(pointer["receipt_id"]))
                     if previous is not None and previous.get("status") == "written":
                         previous_revision = previous.get("revision")

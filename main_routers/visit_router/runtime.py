@@ -332,7 +332,7 @@ def apply_voice_setting(enabled: bool) -> int:
     line; the home-coming line and debrief summary follow it as well. The
     one-way TTS fallback (``voice.fallen_back``) is kept. The voice audio
     tracks follow at once (OD-15 v4): a fresh ``media`` snapshot is sent so
-    the transport page stops / resumes sending and playing catgirl audio.
+    the transport page stops / resumes sending and playing neko audio.
     Returns how many runtimes were updated.
     """
     runtimes = live_runtimes()
@@ -1486,7 +1486,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         and play the peer's, only after ``ready``, only while
         ``visitVoiceEnabled`` is on and only when the current credentials carry
         Servers' ``publish.audio`` as a literal true (latched, see
-        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays catgirl audio. A
+        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays neko audio. A
         TTS fallback keeps the track published but silent. Voice is off from
         the moment the visit starts ending: the tap carries the shared TTS
         chain, so once private chat is back nothing more may reach the room.
