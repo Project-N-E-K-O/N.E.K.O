@@ -62,6 +62,7 @@ test('maps VitePress Markdown source paths to clean production URLs', () => {
   )
   assert.equal(documentationPathToUrl('docs/public/example.md'), null)
   assert.equal(documentationPathToUrl('docs/README_en.md'), null)
+  assert.equal(documentationPathToUrl('docs/README_zh-CN.md'), null)
   assert.equal(documentationPathToUrl('docs/design/index.md'), null)
   assert.equal(documentationPathToUrl('docs/design/live2d.md'), null)
   assert.equal(documentationPathToUrl('docs/live2d_motion_plan.md'), null)

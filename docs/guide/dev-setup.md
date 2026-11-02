@@ -8,7 +8,7 @@ cd N.E.K.O
 uv sync
 ```
 
-`uv` selects the Python 3.11 environment pinned by `pyproject.toml`. Run modules, scripts, pytest, and temporary Python commands through `uv run`.
+`uv` selects the Python 3.11 environment pinned by `pyproject.toml`. Run modules, scripts, pytest, and temporary Python commands through `uv run`. Rebuilding the frontends needs Node.js `^22.12.0 || >=24.0.0` (the overlap of both frontend `engines` fields; CI builds with Node 22).
 
 ## Build frontend assets
 
@@ -20,7 +20,7 @@ uv sync
 ./build_frontend.sh
 ```
 
-The scripts verify/unpack `assets/yui-lolita.tar.gz` and `assets/yui-origin.tar.gz`, run `npm ci`, build the Vue plugin manager to `frontend/plugin-manager/dist/`, and build React chat to `static/react/neko-chat/`.
+The scripts unpack the built-in PNGTuber packs, verify/unpack `assets/yui-lolita.tar.gz` and `assets/yui-origin.tar.gz`, run `npm ci`, build the Vue plugin manager to `frontend/plugin-manager/dist/`, and build React chat to `static/react/neko-chat/`.
 
 For iterative work, run `npm ci && npm run dev` in the owning frontend directory. Plugin manager uses port 5173 and proxies to `VITE_BACKEND_URL` or `http://localhost:48916`; React chat uses port 5174. Its production bundle is mounted by both `templates/index.html` and `templates/chat.html`.
 
