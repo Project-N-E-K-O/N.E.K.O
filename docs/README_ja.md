@@ -39,7 +39,7 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
 - **コミュニティのゲーム向けプラグイン**：
   - War Thunder 猫娘副操縦士：ゲームのリアルタイムテレメトリーを戦闘イベントに変え、彼女が反応します（読み取り専用：チートなし、自動操作なし）；
   - 東方リトルメイド連携：Minecraft の Touhou Little Maid MOD でメイドを自然言語で指示します；
-  - 内蔵の Minecraft Agent：一緒に遊び、音声で実況します。
+  - 同梱の Minecraft プラグイン：別途起動したローカルの Minecraft Agent サーバーに接続し、それが一緒に遊んで、彼女が音声で実況します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
 - **画面認識**：何を遊んでいても、彼女が見て話しかけてきます。
 
 ### 🐾 彼女にも交友関係がある

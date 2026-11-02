@@ -40,7 +40,7 @@ OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己�
 - **社区里的游戏陪玩插件**：
   - 战争雷霆猫娘副驾：读取游戏的实时遥测，转成战斗事件让她提醒、陪你打（只读：不作弊、不自动操作）；
   - 车万女仆联动：在 Minecraft 的 Touhou Little Maid 模组里，用自然语言指挥女仆；
-  - 内置 Minecraft Agent：和你一起玩，并用语音解说。
+  - 自带的 Minecraft 插件：连接单独启动的本地 Minecraft Agent 服务器，由它陪你玩、她用语音解说（[启用步骤](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
 - **屏幕感知**：你玩什么，她都能看着、随时搭话。
 
 ### 🐾 她有自己的社交圈

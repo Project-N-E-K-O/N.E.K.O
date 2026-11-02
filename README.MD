@@ -40,7 +40,7 @@ Personal agents such as OpenClaw showed that people want an AI of their own: one
 - **Game companions from the community**:
   - a War Thunder copilot that turns live in-game telemetry into combat events she reacts to (read-only: no cheats, no automation);
   - a Touhou Little Maid bridge that lets her command the maid in Minecraft in natural language;
-  - a built-in Minecraft agent that plays alongside you and comments by voice.
+  - a bundled Minecraft plugin that connects to a separately started local Minecraft agent server, which plays alongside you while she comments by voice ([setup](plugin/plugins/game_agent_minecraft/README.md)).
 - **Screen awareness**: she can watch whatever you are playing and chime in.
 
 ### 🐾 Has a social life
