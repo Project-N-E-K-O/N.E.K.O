@@ -143,13 +143,6 @@ const en = {
   projectRecordSaveFailed:
     'Project created, but its list record could not be saved. It may disappear after refreshing.',
   goDevelopment: 'Open development mode',
-  projectPath: 'Project full path',
-  projectPathHint: 'Paste the full path of the plugin you just created from your file manager.',
-  invalidProjectPath: 'Enter the full absolute path of the plugin project.',
-  projectMismatch: 'This path belongs to a different plugin.',
-  writeDenied: 'Allow folder write access to create the project.',
-  projectWriteFailed:
-    'Writing was interrupted. The project folder may be incomplete; check it before retrying.',
 }
 
 type Messages = Record<keyof typeof en, string>
@@ -296,12 +289,6 @@ export const authoringMessages = {
     mountFailed: '挂载失败：{reason}',
     projectRecordSaveFailed: '项目已创建，但项目列表记录未能保存，刷新后可能丢失。',
     goDevelopment: '前往开发模式',
-    projectPath: '插件完整路径',
-    projectPathHint: '从文件管理器地址栏复制刚创建的插件完整路径。',
-    invalidProjectPath: '请输入插件项目的完整绝对路径。',
-    projectMismatch: '该路径下的插件 ID 与刚创建的项目不一致。',
-    writeDenied: '请允许写入所选文件夹后再创建项目。',
-    projectWriteFailed: '文件写入中断，项目文件夹可能不完整，请检查后重试。',
   },
   'zh-TW': {
     title: '外掛製作工作台',
@@ -441,12 +428,6 @@ export const authoringMessages = {
     mountFailed: '掛載失敗：{reason}',
     projectRecordSaveFailed: '專案已建立，但專案清單紀錄未能儲存，重新整理後可能遺失。',
     goDevelopment: '前往開發模式',
-    projectPath: '外掛完整路徑',
-    projectPathHint: '從檔案總管網址列複製剛建立的外掛完整路徑。',
-    invalidProjectPath: '請輸入外掛專案的完整絕對路徑。',
-    projectMismatch: '此路徑下的外掛 ID 與剛建立的專案不一致。',
-    writeDenied: '請允許寫入所選資料夾後再建立專案。',
-    projectWriteFailed: '檔案寫入中斷，專案資料夾可能不完整，請檢查後重試。',
   },
   ja: {
     title: 'プラグイン制作',
@@ -590,12 +571,6 @@ export const authoringMessages = {
     mountFailed: '登録できませんでした：{reason}',
     projectRecordSaveFailed: '專案已建立，但專案清單紀錄未能儲存，重新整理後可能遺失。',
     goDevelopment: '開発モードを開く',
-    projectPath: '外掛完整路徑',
-    projectPathHint: '從檔案總管網址列複製剛建立的外掛完整路徑。',
-    invalidProjectPath: '請輸入外掛專案的完整絕對路徑。',
-    projectMismatch: '此路徑下的外掛 ID 與剛建立的專案不一致。',
-    writeDenied: '請允許寫入所選資料夾後再建立專案。',
-    projectWriteFailed: '檔案寫入中斷，專案資料夾可能不完整，請檢查後重試。',
   },
   ko: {
     title: '플러그인 제작실',
@@ -739,12 +714,6 @@ export const authoringMessages = {
     mountFailed: '등록 실패: {reason}',
     projectRecordSaveFailed: '專案已建立，但專案清單紀錄未能儲存，重新整理後可能遺失。',
     goDevelopment: '개발 모드 열기',
-    projectPath: '外掛完整路徑',
-    projectPathHint: '從檔案總管網址列複製剛建立的外掛完整路徑。',
-    invalidProjectPath: '請輸入外掛專案的完整絕對路徑。',
-    projectMismatch: '此路徑下的外掛 ID 與剛建立的專案不一致。',
-    writeDenied: '請允許寫入所選資料夾後再建立專案。',
-    projectWriteFailed: '檔案寫入中斷，專案資料夾可能不完整，請檢查後重試。',
   },
   ru: {
     title: 'Мастерская плагинов',
@@ -889,12 +858,6 @@ export const authoringMessages = {
     mountFailed: 'Не удалось подключить плагин: {reason}',
     projectRecordSaveFailed: '專案已建立，但專案清單紀錄未能儲存，重新整理後可能遺失。',
     goDevelopment: 'Открыть режим разработки',
-    projectPath: '外掛完整路徑',
-    projectPathHint: '從檔案總管網址列複製剛建立的外掛完整路徑。',
-    invalidProjectPath: '請輸入外掛專案的完整絕對路徑。',
-    projectMismatch: '此路徑下的外掛 ID 與剛建立的專案不一致。',
-    writeDenied: '請允許寫入所選資料夾後再建立專案。',
-    projectWriteFailed: '檔案寫入中斷，專案資料夾可能不完整，請檢查後重試。',
   },
   es: {
     title: 'Taller de plugins',
@@ -1041,12 +1004,6 @@ export const authoringMessages = {
     mountFailed: 'No se pudo vincular el plugin: {reason}',
     projectRecordSaveFailed: '專案已建立，但專案清單紀錄未能儲存，重新整理後可能遺失。',
     goDevelopment: 'Abrir modo de desarrollo',
-    projectPath: '外掛完整路徑',
-    projectPathHint: '從檔案總管網址列複製剛建立的外掛完整路徑。',
-    invalidProjectPath: '請輸入外掛專案的完整絕對路徑。',
-    projectMismatch: '此路徑下的外掛 ID 與剛建立的專案不一致。',
-    writeDenied: '請允許寫入所選資料夾後再建立專案。',
-    projectWriteFailed: '檔案寫入中斷，專案資料夾可能不完整，請檢查後重試。',
   },
   pt: {
     title: 'Oficina de plugins',
@@ -1192,11 +1149,5 @@ export const authoringMessages = {
     mountFailed: 'Não foi possível vincular o plugin: {reason}',
     projectRecordSaveFailed: '專案已建立，但專案清單紀錄未能儲存，重新整理後可能遺失。',
     goDevelopment: 'Abrir modo de desenvolvimento',
-    projectPath: '外掛完整路徑',
-    projectPathHint: '從檔案總管網址列複製剛建立的外掛完整路徑。',
-    invalidProjectPath: '請輸入外掛專案的完整絕對路徑。',
-    projectMismatch: '此路徑下的外掛 ID 與剛建立的專案不一致。',
-    writeDenied: '請允許寫入所選資料夾後再建立專案。',
-    projectWriteFailed: '檔案寫入中斷，專案資料夾可能不完整，請檢查後重試。',
   },
 } satisfies Record<'en-US' | 'zh-CN' | 'zh-TW' | 'ja' | 'ko' | 'ru' | 'es' | 'pt', Messages>
