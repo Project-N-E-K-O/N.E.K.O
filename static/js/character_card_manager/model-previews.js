@@ -69,6 +69,7 @@ async function ensureVrmModulesLoaded() {
         '/static/vrm/vrm-core.js',
         '/static/vrm/vrm-expression.js',
         '/static/vrm/vrm-animation.js',
+        '/static/vrm/vrm-physics-profile.js',
         '/static/avatar/avatar-touch-gestures.js',
         '/static/vrm/vrm-interaction.js',
         '/static/vrm/vrm-cursor-follow.js',
