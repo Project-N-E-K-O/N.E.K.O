@@ -1145,23 +1145,47 @@ VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {
     const canvasRect = this.renderer.domElement.getBoundingClientRect();
     const viewWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
     const viewHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
-    if (viewWidth <= 0 || viewHeight <= 0) return;
+    if (!(viewWidth > 0) || !(viewHeight > 0)
+        || !Number.isFinite(screenDx) || !Number.isFinite(screenDy)) return;
 
-    const cameraDistance = camera.position.distanceTo(scene.position);
-    if (cameraDistance < 0.001) return;
-
-    const fov = camera.fov * (Math.PI / 180);
-    const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-    const worldWidth = worldHeight * camera.aspect;
-
-    const pixelToWorldX = worldWidth / viewWidth;
-    const pixelToWorldY = worldHeight / viewHeight;
-
-    const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-    const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-    scene.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
-    scene.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+    // 在同一投影深度上平移。直线距离会随横向/纵向偏移增长，导致来回拖猫时越移越远。
+    camera.updateWorldMatrix(true, false);
+    const worldPosition = scene.getWorldPosition(new window.THREE.Vector3());
+    const depth = -worldPosition.clone().applyMatrix4(camera.matrixWorldInverse).z;
+    if (!Number.isFinite(depth)) return;
+    const anchor = worldPosition.clone();
+    const near = Math.max(camera.near, 0.001);
+    if (depth < near) {
+        // 大模型旋转后，原点可在相机后方而身体仍可见；以可见深度区间的中点换算位移。
+        const box = new window.THREE.Box3().setFromObject(scene);
+        if (box.isEmpty()) return;
+        let minDepth = Infinity, maxDepth = -Infinity;
+        for (const x of [box.min.x, box.max.x]) {
+            for (const y of [box.min.y, box.max.y]) {
+                for (const z of [box.min.z, box.max.z]) {
+                    const point = new window.THREE.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+                    minDepth = Math.min(minDepth, -point.z);
+                    maxDepth = Math.max(maxDepth, -point.z);
+                }
+            }
+        }
+        // 参考深度限定在相机 near/far 内，避免选到远裁剪面之外的锚点。
+        const visibleNear = Math.max(near, minDepth);
+        const visibleFar = Math.min(camera.far, maxDepth);
+        if (!Number.isFinite(visibleNear) || !Number.isFinite(visibleFar) || visibleFar < visibleNear) return;
+        box.getCenter(anchor).applyMatrix4(camera.matrixWorldInverse);
+        anchor.z = -(visibleNear + visibleFar) / 2;
+        anchor.applyMatrix4(camera.matrixWorld);
+    }
+    const target = anchor.clone().project(camera);
+    target.x += screenDx * 2 / viewWidth;
+    target.y -= screenDy * 2 / viewHeight;
+    target.unproject(camera);
+    // 锚点仅决定换算深度；世界位移仍应用到原始模型原点。
+    target.sub(anchor).add(worldPosition);
+    if (scene.parent) scene.parent.worldToLocal(target);
+    if (![target.x, target.y, target.z].every(Number.isFinite)) return;
+    scene.position.copy(target);
 
     if (options.clamp !== false && this.interaction && typeof this.interaction.clampModelPosition === 'function') {
         const clamped = this.interaction.clampModelPosition(scene.position.clone());
