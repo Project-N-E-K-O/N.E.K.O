@@ -32,6 +32,81 @@
   var presencePushRevision = 0;
   var presencePushRevisions = new Map();
   var dismissedRecommendationIds = new Set();
+  var invitationOwnerSnapshot = null;
+  var ownerAccountLoadPending = false;
+  var recommendationCachedAt = 0;
+  var correctedPresenceGeneration = -1;
+  var legacyTimers = [];
+  var invitationExpiryTimer = 0;
+  function realtimeInvitations() { return !!(invitationOwnerSnapshot && invitationOwnerSnapshot.realtimeEnabled); }
+  function scheduleInvitationExpiry() {
+    clearTimeout(invitationExpiryTimer);
+    if (!realtimeInvitations()) return;
+    var deadlines = Array.from(state.invitations.values()).map(function (i) { return Number(i.expiresAt) * 1000; })
+      .filter(function (time) { return time > Date.now(); });
+    if (!deadlines.length) return;
+    invitationExpiryTimer = setTimeout(function () {
+      state.invitations.forEach(function (i, id) { if (invitationExpired(i)) state.invitations.delete(id); });
+      saveInvitations(); render(); scheduleInvitationExpiry();
+    }, Math.min(2147483647, Math.min.apply(null, deadlines) - Date.now() + 1));
+  }
+  function applyOwnerSnapshot(snapshot) {
+    if (!snapshot || !Number.isSafeInteger(snapshot.generation)
+        || invitationOwnerSnapshot && snapshot.generation < invitationOwnerSnapshot.generation) return;
+    var accountChanged = invitationOwnerSnapshot && (snapshot.accountKey !== invitationOwnerSnapshot.accountKey
+      || invitationOwnerSnapshot.realtimeEnabled && !snapshot.realtimeEnabled && !snapshot.replicaValid);
+    invitationOwnerSnapshot = snapshot;
+    if (accountChanged) {
+      ownerAccountLoadPending = true;
+      ++openGeneration; ++hubRefreshRevision; appliedRefreshRevision = hubRefreshRevision;
+      state.incoming = null; state.invitations.clear(); state.friends = []; state.recommendations = [];
+      state.accountId = ''; state.account = null; state.loggedIn = false;
+      state.restoredAccountId = ''; recommendationCachedAt = 0; correctedPresenceGeneration = -1;
+    }
+    if (!realtimeInvitations()) { startLegacyTimers(); return; }
+    legacyTimers.forEach(function (id) { clearInterval(id); }); legacyTimers = [];
+    clearTimeout(incomingDeliveryTimer); incomingDeliveryKey = '';
+    var items = Array.isArray(snapshot.items) ? snapshot.items : [];
+    var incoming = items.find(function (i) { return i.actionable; });
+    state.incoming = incoming ? normalizeIncoming({ id: incoming.id, visit_id: incoming.visit_id,
+      actor_id: incoming.sender_id, actor_display_name: incoming.sender_display_name,
+      actor_avatar_url: incoming.sender_avatar_url, expires_at: new Date(incoming.expires_at).getTime() / 1000 }) : null;
+    state.invitations.forEach(function (invitation, id) {
+      // An invitation deadline cannot end an already connected visit. Those
+      // rows belong to the visit lifecycle until its ended event arrives.
+      if (invitation.invitationId && ['joining', 'awaiting_accept', 'active', 'wrap_up', 'ending'].indexOf(invitation.phase) === -1
+          && !items.some(function (i) { return i.id === invitation.invitationId; })) state.invitations.delete(id);
+    });
+    items.filter(function (i) { return i.sender_id === snapshot.accountId; }).forEach(function (i) {
+      var old = state.invitations.get(i.recipient_id);
+      if (['declined', 'cancelled', 'expired'].indexOf(i.status) !== -1) {
+        if (old && old.visitId === i.visit_id) {
+          state.invitations.delete(i.recipient_id);
+          window.dispatchEvent(new CustomEvent('neko-social-invite-response', {
+            detail: { visitId: i.visit_id, accepted: false }
+          }));
+        }
+      } else if (i.status === 'pending' || i.status === 'accepted' && old) {
+        if (old && old.visitId !== i.visit_id) return;
+        state.invitations.set(i.recipient_id, Object.assign({}, old || {}, {
+          invitationId: i.id, visitId: i.visit_id,
+          phase: i.status === 'accepted' && (!old || old.phase === 'invite_ready') ? 'joining' : old && old.phase || 'invite_ready',
+          expiresAt: new Date(i.expires_at).getTime() / 1000,
+          displayName: i.recipient_display_name || old && old.displayName || '', avatarUrl: i.recipient_avatar_url || ''
+        }));
+      }
+    });
+    saveInvitations(); scheduleInvitationExpiry(); render();
+    if (ownerAccountLoadPending && state.open) {
+      ownerAccountLoadPending = false;
+      void refresh();
+    }
+    else if (state.open && snapshot.synced && correctedPresenceGeneration !== snapshot.generation && state.loggedIn) {
+      // Presence deltas cannot add/remove mutuals. Reconcile the roster once
+      // per stream generation, without invitations or recommendation ranking.
+      correctedPresenceGeneration = snapshot.generation; void refresh(true);
+    }
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -238,6 +313,7 @@
         if (!friendId || !phase || !restoredVisitId || invitationExpired(item)) return;
         state.invitations.set(friendId, {
           visitId: restoredVisitId, phase: phase,
+          ...(typeof item.invitationId === 'string' ? { invitationId: item.invitationId } : {}),
           expiresAt: Number(item.expiresAt) || 0,
           displayName: String(item.displayName || ''),
           avatarUrl: String(item.avatarUrl || '')
@@ -252,6 +328,7 @@
     if (!invitation) state.invitations.delete(friendId);
     else state.invitations.set(friendId, invitation);
     saveInvitations();
+    scheduleInvitationExpiry();
   }
 
   function activeInvitation(exceptFriendId) {
@@ -315,6 +392,7 @@
     });
     if (changed) {
       saveInvitations();
+      scheduleInvitationExpiry();
       render();
     }
   }
@@ -370,6 +448,7 @@
   }
 
   function deliverIncomingToChat(attempt) {
+    if (!social() || realtimeInvitations()) return;
     if (standalone || !state.incoming || !state.incoming.visitId) return;
     var incoming = state.incoming;
     var key = incoming.id + ':' + incoming.visitId;
@@ -406,6 +485,8 @@
   }
 
   function applyInvitationSnapshot(body, revision) {
+    if (!social()) return false;
+    if (realtimeInvitations()) return false;
     if (revision < invitationSnapshotRevision) return false;
     invitationSnapshotRevision = revision;
     body = body || {};
@@ -432,14 +513,22 @@
     var refreshGeneration = openGeneration;
     var refreshRevision = ++hubRefreshRevision;
     var presenceRevisionAtStart = presencePushRevision;
+    var ownerAccountAtStart = invitationOwnerSnapshot && invitationOwnerSnapshot.accountKey;
+    var realtime = realtimeInvitations();
+    if (realtime) ownerAccountLoadPending = false;
+    // Follow/dismiss and presence correction never recalculate recommendations.
+    var requestRecommendations = !realtime || state.open && !silent
+      && (!recommendationCachedAt || Date.now() - recommendationCachedAt >= 300000);
     if (!silent) {
       loadingRefreshRevision = refreshRevision;
       state.loading = true;
       render();
     }
     try {
-      var response = await fetch('/api/community/visit-hub', { credentials: 'same-origin' });
+      var response = await fetch('/api/community/visit-hub' + (realtime
+        ? '?include_recommendations=' + requestRecommendations + '&include_invitations=false' : ''), { credentials: 'same-origin' });
       var body = await json(response);
+      if (invitationOwnerSnapshot && invitationOwnerSnapshot.accountKey !== ownerAccountAtStart) return;
       // 登录态失效按“未登录”处理，引导重新登录，而不是显示成加载失败。
       if (!response.ok && body && body.detail === 'community_login_required') body = { logged_in: false };
       else if (!response.ok) {
@@ -462,7 +551,7 @@
       // 只拒绝早于最近已应用资料的响应；较新的请求失败时，较早的成功响应仍可兜底。
       if (refreshRevision < appliedRefreshRevision) {
         // 推荐替换有独立版本：后发的普通静默刷新不能吞掉打开读取或关注补位。
-        if ((replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId) {
+        if (requestRecommendations && (replaceRecommendationsRequested || !silent) && nextAccountId === state.accountId) {
           applyRecommendationSnapshot(body, refreshRevision);
         }
         applyInvitationSnapshot(body, refreshRevision);
@@ -477,8 +566,9 @@
         state.presenceMenuOpen = false;
         dismissedRecommendationIds.clear();
         state.recommendationBusy.clear();
+        if (realtime) { state.recommendations = []; recommendationCachedAt = 0; }
       }
-      var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged;
+      var shouldReplaceRecommendations = requestRecommendations && (replaceRecommendationsRequested || !silent || accountChanged);
       state.accountId = nextAccountId;
       state.account = normalizeAccount(body.account);
       var nextFriends = Array.isArray(body.friends)
@@ -496,9 +586,16 @@
         });
       }
       state.friends = nextFriends;
-      if (shouldReplaceRecommendations) applyRecommendationSnapshot(body, refreshRevision);
+      if (shouldReplaceRecommendations) {
+        applyRecommendationSnapshot(body, refreshRevision);
+        recommendationCachedAt = Date.now();
+      }
       restoreInvitations();
       applyInvitationSnapshot(body, refreshRevision);
+      if (realtimeInvitations()) {
+        if (state.open && invitationOwnerSnapshot.synced) correctedPresenceGeneration = invitationOwnerSnapshot.generation;
+        applyOwnerSnapshot(invitationOwnerSnapshot);
+      }
       if (!silent) {
         state.toast = '';
         state.toastError = false;
@@ -743,6 +840,7 @@
     }
   }
   async function inviteFriend(friendId) {
+    if (!social()) return;
     var friend = state.friends.find(function (item) { return item.id === friendId; });
     if (!friend || state.invitations.has(friendId)) return;
     if (activeInvitation(friendId)) return showToast(tr('visit.socialHub.activeInvite', '请先结束当前的邀请或串门，再邀请其他喵友'), true);
@@ -972,7 +1070,7 @@
     row.appendChild(copy);
     // 离线好友只展示身份与最近在线信息。已有邀请状态仍可显示状态按钮，
     // 但普通离线行不能从 DOM 中触发新的串门邀请。
-    if (view || friend.online) {
+    if (social() && (view || friend.online)) {
       var action = button(view ? view.action : (busyElsewhere ? tr('visit.socialHub.inviteLater', '稍后再邀') : tr('visit.socialHub.invite', '邀请来玩')),
         'neko-social-hub-button' + (!view && !busyElsewhere ? ' primary' : ''), function () {
         if (view && view.canCancel) cancelInvitation(friend.id, invitation);
@@ -1086,6 +1184,7 @@
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
       presenceRefreshInFlight = false;
+      if (realtimeInvitations()) applyOwnerSnapshot(invitationOwnerSnapshot);
     }
   }
   function renderFriendGroup(title, friends, target) {
@@ -1376,7 +1475,7 @@
     // 快速请求一次性展示完整内容；慢请求超过短暂防闪窗口后才显示 loading。
     // 这样不会先闪出上次的推荐，也不会在上游变慢时长时间毫无反馈。
     layer.hidden = true;
-    state.recommendations = [];
+    if (!realtimeInvitations()) state.recommendations = [];
     state.recommendationBusy.clear();
     var loadingRevealTimer = setTimeout(function () {
       revealOpenPanel(generation);
@@ -1459,7 +1558,9 @@
     window.visualViewport.addEventListener('resize', positionPanel);
     window.visualViewport.addEventListener('scroll', positionPanel);
   }
-  setInterval(function () {
+  function startLegacyTimers() {
+    if (legacyTimers.length) return;
+    legacyTimers.push(setInterval(function () {
     var changed = false;
     state.invitations.forEach(function (invitation, friendId) {
       if (invitationExpired(invitation)) {
@@ -1472,19 +1573,35 @@
       render();
     }
     reconcileCurrentVisit();
-  }, 5000);
+  }, 5000));
   // 推送负责即时变化；短轮询只在面板打开时兜底断线和 presence 租约自然过期。
   // 它只拉好友状态，不刷新推荐、通知或整个浮窗。
-  setInterval(function () { refreshPresence(); }, 3000);
+  legacyTimers.push(setInterval(function () { refreshPresence(); }, 3000));
   // 面板关着时也维持社区 presence；静默刷新不会清空现有好友或制造 loading 闪烁。
-  setInterval(function () { refresh(true); }, 60000);
+  legacyTimers.push(setInterval(function () { refresh(true); }, 60000));
+  }
+  startLegacyTimers();
   var socialApi = social();
   if (socialApi && typeof socialApi.onNotifyIncoming === 'function') {
     socialApi.onNotifyIncoming(function (notification) {
       var payload = notification && notification.payload;
       var kind = String(notification && notification.kind || payload && payload.type || '');
       if (kind === 'presence_changed') applyPresenceChanged(notification);
-      else if (kind === 'visit_invite' || kind === 'visit_invite_response') refresh(true);
+      // Chat owns the compact invitation read. Apply the event locally here:
+      // rebuilding the hub in every window repeats profile/friend/ranking reads.
+      // Existing periodic reconciliation remains until the rev rollout.
+      else if (!realtimeInvitations() && kind === 'visit_invite' && payload) {
+        var incoming = normalizeIncoming(Object.assign({}, payload, { id: notification.id }));
+        if (incoming && incoming.id && (!incoming.expiresAt || incoming.expiresAt > Date.now() / 1000)) {
+          invitationSnapshotRevision = ++hubRefreshRevision;
+          state.incoming = incoming;
+          render();
+        }
+      } else if (!realtimeInvitations() && kind === 'visit_invite_response' && payload && notification.id) {
+        invitationSnapshotRevision = ++hubRefreshRevision;
+        applyInviteResponses([Object.assign({}, payload, { id: notification.id })]);
+        render();
+      }
     });
   }
 
@@ -1498,6 +1615,13 @@
     _dismissRecommendation: dismissRecommendation,
     _followRecommendation: followRecommendation
   };
-  if (standalone) requestAnimationFrame(open);
+  if (socialApi && typeof socialApi.onInvitationsChanged === 'function' && typeof socialApi.getInvitations === 'function') {
+    socialApi.onInvitationsChanged(applyOwnerSnapshot);
+    socialApi.getInvitations().then(function (snapshot) {
+      applyOwnerSnapshot(snapshot);
+      if (standalone) requestAnimationFrame(open);
+      else if (!snapshot.rolloutEnabled) requestAnimationFrame(refresh);
+    }).catch(function () { if (standalone) open(); else refresh(); });
+  } else if (standalone) requestAnimationFrame(open);
   else requestAnimationFrame(refresh);
 })();

@@ -30,6 +30,32 @@ def test_anonymous_never_opens_upstream(proxy, monkeypatch):
     assert proxy.post("/api/forge/credits/grant", content="invalid").status_code == 401
 
 
+@pytest.mark.parametrize("recommendations", [True, False])
+def test_realtime_hub_can_omit_invitation_and_cached_recommendation_reads(proxy, monkeypatch, recommendations):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "synthetic", "local_user_id": owner_id}}
+
+    async def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        return httpx.Response(200, json={"items": [], "status": "online"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs))
+    response = proxy.get("/api/community/visit-hub", params={
+        "include_invitations": "false", "include_recommendations": str(recommendations).lower(),
+    })
+    assert response.status_code == 200
+    assert "/api/notifications" not in seen
+    assert ("/api/users/me/recommendations" in seen) is recommendations
+
+
 @pytest.mark.parametrize("endpoint", [
     "/api/community/visit-hub", "/api/community/friend-presence", "/api/community/visit-invitations",
 ])
@@ -632,14 +658,15 @@ def test_invitation_reads_page_all_unread_invitation_ids(proxy, monkeypatch, pat
         if request.url.path == "/api/users/me/presence":
             return httpx.Response(200, json={"status": "online"})
         if request.url.path == "/api/notifications":
-            offset = int(request.url.params["offset"])
+            offset = 100 if request.url.params.get("cursor") == "page-2" else 0
             ids = notification_ids[offset:offset + 100]
             return httpx.Response(200, json={
                 "items": [{
                     "id": notification_id,
                     "payload": {"type": "visit_invite", "visit_id": "A" * 22},
                 } for notification_id in ids],
-                "total": len(notification_ids),
+                "next_cursor": "page-2" if offset == 0 else None,
+                "total_count": len(notification_ids),
             })
         return httpx.Response(404, json={"detail": "not_found"})
 
@@ -672,7 +699,9 @@ def test_visit_invitations_skips_hub_reads_and_keeps_presence_and_invitation_pro
         if request.url.path == "/api/users/me/presence":
             return httpx.Response(200, json={"status": "invisible"})
         assert request.url.path == "/api/notifications", "Invitation polling must not rebuild the hub"
-        assert dict(request.url.params) == {"unread": "true", "limit": "100", "offset": "0"}
+        assert dict(request.url.params) == {
+            "unread": "true", "visit_invitations": "true", "limit": "100",
+        }
         return httpx.Response(200, json={"items": [
             {"id": "expired", "payload": {"type": "visit_invite", "expires_at": 999}},
             {"id": "unrelated", "payload": {"type": "like", "private_text": "not-an-invitation"}},
@@ -751,7 +780,7 @@ def test_visit_invitations_transport_failure_is_not_an_empty_authoritative_snaps
 
 @pytest.mark.parametrize("late_response", [httpx.Response(503), httpx.Response(200, json={"items": None})])
 def test_visit_invitations_does_not_publish_partial_pages_as_a_complete_snapshot(proxy, monkeypatch, late_response):
-    offsets = []
+    cursors = []
 
     async def status():
         return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
@@ -760,14 +789,14 @@ def test_visit_invitations_does_not_publish_partial_pages_as_a_complete_snapshot
         if request.url.path == "/api/users/me/presence":
             return httpx.Response(200, json={"status": "online"})
         assert request.url.path == "/api/notifications"
-        offset = int(request.url.params["offset"])
-        offsets.append(offset)
-        if offset:
+        cursor = request.url.params.get("cursor")
+        cursors.append(cursor)
+        if cursor:
             return late_response
         return httpx.Response(200, json={"items": [
             {"id": f"invite-{index}", "payload": {"type": "visit_invite", "visit_id": "A" * 22}}
             for index in range(100)
-        ], "total": 101})
+        ], "next_cursor": "page-2", "total_count": 101})
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
@@ -779,7 +808,7 @@ def test_visit_invitations_does_not_publish_partial_pages_as_a_complete_snapshot
     response = proxy.get("/api/community/visit-invitations")
     body = response.json()
     assert response.status_code == 200
-    assert offsets == [0, 100]
+    assert cursors == [None, "page-2"]
     assert body["notifications_ok"] is False
     assert body["incoming_invite_ids"] == []
     assert body["incoming_invite"] is None

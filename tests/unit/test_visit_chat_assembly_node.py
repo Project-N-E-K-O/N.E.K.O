@@ -142,6 +142,7 @@ function createHarness(opts) {
     showStatusToast(text) { toasts.push(text); },
     nekoRelayVisitStateToDisplay(frame) { relayFrames.push(JSON.parse(JSON.stringify(frame))); },
     visitEnabled: true,
+    nekoSocial: opts.social === null ? null : opts.social || {},
     nekoLocalMutationSecurity: { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'tok' }) },
     appChat: {
       renderVisitLine(spec) {
@@ -182,7 +183,7 @@ function createHarness(opts) {
     navigator: { clipboard: { writeText: async () => {} } },
     Blob: function (parts) { this.text = parts.join(''); },
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
-    Date: { now: () => wall },
+    Date: class extends Date { static now() { return wall; } },
     setTimeout(fn, ms) { const id = nextId++; timers.push({ id, at: wall + (ms || 0), fn, every: 0 }); return id; },
     clearTimeout(id) { const i = timers.findIndex((t) => t.id === id); if (i >= 0) timers.splice(i, 1); },
     setInterval(fn, ms) { const id = nextId++; timers.push({ id, at: wall + ms, fn, every: ms }); return id; },
@@ -222,6 +223,101 @@ function createHarness(opts) {
 const report = {};
 
 (async () => {
+  report.realtime_pages = [];
+  report.realtime_failures = [];
+  for (const scenario of ['question_failure', 'uncertain_delivery', 'connect_invalid', 'connect_invalid_raw', 'peer_blocked', 'character_switch', 'hung_question']) {
+    let changed, claims = 0, releases = 0, invalid = 0, decisions = 0, delivery = 0, questions = 0;
+    const snapshot = { generation: 2, accountKey: 'account-a', accountId: 'recipient', realtimeEnabled: true, synced: true,
+      items: [{ id: '33333333-3333-4333-8333-333333333333', sender_id: 'sender', visit_id: VID,
+        expires_at: '2023-11-14T22:23:20Z', actionable: true, promptEligible: true }] };
+    const social = { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot,
+      claimInvitation: async () => { claims++; snapshot.items[0].promptEligible = false; changed(snapshot); return { ok: true, token: 'claim' }; },
+      beginInvitationDelivery: async () => ({ ok: true }), completeInvitationDelivery: async () => ({ ok: true }),
+      releaseInvitation: async () => { releases++; return { ok: true }; },
+      reportInvitationDecision: async () => { decisions++; return { ok: true }; },
+      markInvitationInvalid: async () => { invalid++; snapshot.items[0].actionable = false; changed(snapshot); return { ok: true }; },
+    };
+    let previews = 0;
+    const h = createHarness({ pathname: '/chat', multiWindow: true, social, routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ++previews > 1 && ['connect_invalid', 'connect_invalid_raw', 'peer_blocked'].includes(scenario)
+        ? { status: 409, body: scenario === 'connect_invalid_raw' ? { code: 'invite_invalid' }
+          : { code: 'VISIT_INVITE_INVALID', reason: scenario === 'peer_blocked' ? 'peer_blocked' : 'invite_invalid' } }
+        : { status: 200, body: { visit_id: VID } },
+      ['/api/visit/direct/' + VID + '/question*']: async () => {
+        questions++;
+        if (scenario === 'hung_question') return new Promise(() => {});
+        return questions === 1 && scenario === 'question_failure'
+          ? { status: 503, body: {} } : { status: 200, body: { question: 'Question' } };
+      },
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => { delivery++; return scenario === 'uncertain_delivery'
+        ? { status: 503, body: {} } : { status: 200, body: { delivered: true } }; },
+    } });
+    h.chat.applyState({ enabled: true, active: false }); await h.settle();
+    if (scenario === 'question_failure') {
+      h.advance(500); await h.settle();
+      snapshot.items[0].promptEligible = true; changed(snapshot); await h.settle();
+    } else if (['connect_invalid', 'connect_invalid_raw', 'peer_blocked'].includes(scenario)) {
+      h.I.handleVisitBarAction('direct_accept'); await h.settle();
+    } else if (scenario === 'character_switch') {
+      h.win.lanlan_config.lanlan_name = 'New character'; changed(snapshot); await h.settle();
+    }
+    changed(snapshot); h.advance(20000); await h.settle();
+    report.realtime_failures.push({ scenario, claims, releases, invalid, decisions, delivery, questions });
+  }
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    let changed, claims = 0, begun = 0, completed = 0;
+    const snapshot = { generation: 2, accountKey: 'account-a', accountId: 'recipient', realtimeEnabled: true, synced: true,
+      items: [{ id: '33333333-3333-4333-8333-333333333333', sender_id: 'sender', visit_id: VID,
+        expires_at: '2023-11-14T22:23:20Z', actionable: true, promptEligible: true }] };
+    const social = { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot,
+      claimInvitation: async () => { claims++; snapshot.items[0].promptEligible = false; changed(snapshot); return { ok: true, token: 'claim' }; },
+      beginInvitationDelivery: async () => { begun++; return { ok: true }; },
+      completeInvitationDelivery: async () => { completed++; return { ok: true }; }, releaseInvitation: async () => ({ ok: true }) };
+    const h = createHarness({ pathname, multiWindow: true, social, routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID } }),
+      ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Question' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
+    } });
+    h.chat.applyState({ enabled: true, active: false }); await h.settle();
+    h.advance(600000); await h.settle();
+    if (changed) { changed(snapshot); changed(snapshot); await h.settle(); }
+    report.realtime_pages.push({ pathname, claims, begun, completed,
+      reads: h.fetches.filter((x) => x.url.startsWith('/api/community/')).length,
+      pollTimers: h.timers.filter((t) => t.every === 5000).length });
+  }
+  {
+    const h = createHarness({ social: null, routes: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {} }),
+    } });
+    h.chat.applyState({ enabled: true, active: false }); h.advance(20000); await h.settle();
+    await h.chat.presentDirectInvitation({ id: 'browser', visit_id: VID });
+    report.browser_invitation_reads = h.fetches.filter((x) => x.url.includes('visit-invitations') || x.url.includes('/direct/')).length;
+  }
+  // The chat window is the only compact read owner for invitation pushes.
+  report.invitation_push_windows = [];
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    let incoming;
+    let finish;
+    const h = createHarness({ pathname, multiWindow: true,
+      social: { onNotifyIncoming(callback) { incoming = callback; } },
+      routes: { '/api/community/visit-invitations': async () => {
+        await new Promise((resolve) => { finish = resolve; });
+        return { status: 200, body: { notifications_ok: true, incoming_invite_ids: [] } };
+      } },
+    });
+    h.chat.applyState({ enabled: true, active: false });
+    if (incoming) {
+      incoming({ kind: 'visit_invite', payload: {} });
+      incoming({ kind: 'visit_invite', payload: {} });
+      await h.settle();
+      finish();
+      await h.settle();
+    }
+    report.invitation_push_windows.push({ pathname,
+      compact: h.fetches.filter((x) => x.url === '/api/community/visit-invitations').length,
+      full: h.fetches.filter((x) => x.url === '/api/community/visit-hub').length,
+    });
+  }
   // ── 拼接：乱序落位、缺片留占位不补洞、final 覆盖 ──
   {
     const h = createHarness();
@@ -1971,6 +2067,27 @@ def report() -> dict:
                 .replace("__RELAY_SAMPLES__", json.dumps(RELAY_SAMPLES)))
 
 
+def test_realtime_pages_use_owner_once_and_have_no_invitation_poll_over_ten_minutes(report):
+    assert report["realtime_pages"] == [
+        {"pathname": "/", "claims": 0, "begun": 0, "completed": 0, "reads": 0, "pollTimers": 0},
+        {"pathname": "/chat", "claims": 1, "begun": 1, "completed": 1, "reads": 0, "pollTimers": 0},
+        {"pathname": "/chat_full", "claims": 1, "begun": 1, "completed": 1, "reads": 0, "pollTimers": 0},
+    ]
+    assert report["browser_invitation_reads"] == 0
+
+
+def test_realtime_question_failures_and_connect_invalid_keep_delivery_and_cloud_decisions_separate(report):
+    assert report["realtime_failures"] == [
+        {"scenario": "question_failure", "claims": 2, "releases": 1, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 2},
+        {"scenario": "uncertain_delivery", "claims": 1, "releases": 0, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "connect_invalid", "claims": 1, "releases": 0, "invalid": 1, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "connect_invalid_raw", "claims": 1, "releases": 0, "invalid": 1, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "peer_blocked", "claims": 1, "releases": 0, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "character_switch", "claims": 1, "releases": 0, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "hung_question", "claims": 1, "releases": 1, "invalid": 0, "decisions": 0, "delivery": 0, "questions": 1},
+    ]
+
+
 def test_invitation_fallback_poll_uses_compact_reads_in_web_and_electron_chat_windows(report):
     compact = "/api/community/visit-invitations"
     for case in report["invitation_poll_windows"]:
@@ -1999,6 +2116,14 @@ def test_invitation_poll_preserves_pending_state_on_failure_and_clears_on_author
 def test_invitation_poll_keeps_single_flight_and_allows_the_next_read(report):
     assert report["invitation_poll_concurrent_calls"] == 1
     assert report["invitation_poll_retry_calls"] == 2
+
+
+def test_invitation_push_has_one_compact_read_per_chat_route_and_none_in_pet(report):
+    assert report["invitation_push_windows"] == [
+        {"pathname": "/", "compact": 0, "full": 0},
+        {"pathname": "/chat", "compact": 1, "full": 0},
+        {"pathname": "/chat_full", "compact": 1, "full": 0},
+    ]
 
 
 def test_quota_reaches_invite_caller_in_web_and_electron_for_both_event_orders(report):
