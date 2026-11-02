@@ -1,6 +1,7 @@
 """Differential audit against PR #3078's actual base, without provider network I/O."""
 import ast
 import asyncio
+import functools
 import inspect
 import json
 import re
@@ -100,10 +101,12 @@ def revision_method(revision, path, class_name, method_name, namespace):
                 setattr(self, name, MethodType(helper, self))
 
     if inspect.iscoroutinefunction(target):
+        @functools.wraps(target)
         async def historical(self, *args, **kwargs):
             bind_missing_helpers(self)
             return await target(self, *args, **kwargs)
     else:
+        @functools.wraps(target)
         def historical(self, *args, **kwargs):
             bind_missing_helpers(self)
             return target(self, *args, **kwargs)
@@ -395,7 +398,9 @@ def test_ci_audit_job_fetches_every_pinned_revision():
     # dedicated CI job must fetch every pinned revision or the audit is
     # silently skipped there too (HEAD was once re-pinned without this).
     workflow = (REPO_ROOT / ".github" / "workflows" / "unit-test-shards.yml").read_text(encoding="utf-8")
-    job = workflow.split("  historical-review-audit:", 1)[1].split("\n  frontend-node:", 1)[0]
+    marker = "  historical-review-audit:"
+    assert marker in workflow, "historical-review-audit job not found in unit-test-shards.yml"
+    job = workflow.split(marker, 1)[1].split("\n  frontend-node:", 1)[0]
     # Strip YAML/PowerShell comments first: a ``)`` inside one would end the
     # array match early, and a SHA inside one must not count as fetched.
     job = "\n".join(line.split("#", 1)[0] for line in job.splitlines())
