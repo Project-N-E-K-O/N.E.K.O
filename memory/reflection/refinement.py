@@ -192,6 +192,12 @@ class RefinementMixin:
                 elif verb == ACTION_REWRITE:
                     self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
                 elif verb == ACTION_MERGE:
+                    if any(src.get('suppress') for src in srcs):
+                        # Same rule as persona: a source in mention cooldown
+                        # (it can enter one after the render) would come out
+                        # of the merge as a fresh, uncooled reflection.
+                        stale += 1
+                        continue
                     merged = self._build_merge_reflection(
                         srcs, [], {'text': act['text']},
                         srcs[0].get('entity') or 'master', now,

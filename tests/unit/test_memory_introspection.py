@@ -649,16 +649,28 @@ async def test_promotion_rechecks_suppression_after_the_model_returns(tmp_path):
 async def test_amerge_into_refuses_a_target_retired_after_the_callers_snapshot(tmp_path):
     """The promotion path checks the target on an unlocked snapshot; the
     persona lock is where the last word is."""
+    import asyncio
+
     env = _install(str(tmp_path))
     await env.pm.asave_persona(NAME, {'master': {'facts': [
-        dict(env.pm._normalize_entry('主人喜欢猫'), id='p1', **_retired()),
+        dict(env.pm._normalize_entry('主人喜欢猫'), id='p1'),
     ]}})
 
-    outcome = await env.pm.amerge_into(
+    # Retire the target while the merge is queued on the persona lock, so a
+    # check made before taking the lock would still see it unflagged.
+    lock = env.pm._get_alock(NAME)
+    await lock.acquire()
+    merge = asyncio.create_task(env.pm.amerge_into(
         NAME, 'p1', '主人养猫多年且很喜欢猫',
         reflection_evidence={'reinforcement': 2.5, 'disputation': 0.0},
         source_reflection_id='R1',
-    )
+    ))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not merge.done(), "夹具失效：合并没有在等人格锁"
+    env.pm._personas[NAME]['master']['facts'][0].update(_retired())
+    lock.release()
+    outcome = await asyncio.wait_for(merge, timeout=5)
 
     assert outcome == 'not_found'
     entry = await _persona_entry(env.pm, 'master', 'p1')
@@ -772,6 +784,31 @@ async def test_refine_merge_with_a_suppressed_source_is_rejected_whole(tmp_path)
         assert await _persona_entry(env.pm, 'master', i) is not None
     for i in 'yz':
         assert await _reflection_row(env.engine, i) is not None
+
+
+@pytest.mark.asyncio
+async def test_reflection_merge_with_a_source_entering_cooldown_is_stale(tmp_path):
+    """A reflection can enter mention cooldown after the render; merging it
+    then would hand back a fresh, uncooled reflection."""
+    env = _install(str(tmp_path))
+    await _seed_reflections(env.engine, [
+        _reflection('c1', '主人信任小天'),
+        _reflection('c2', '主人把烦心事讲给小天听'),
+    ])
+
+    def _cool_c1_then_merge(prompt):
+        rows = env.engine.load_reflections(NAME)
+        next(r for r in rows if r['id'] == 'c1').update(suppress=True, suppressed_at=_now_iso())
+        env.engine.save_reflections(NAME, rows)
+        return json.dumps([
+            {'action': 'merge', 'ids': [_number(prompt, '主人信任小天'), _number(prompt, '主人把烦心事讲给小天听')],
+             'text': '主人遇到烦心事会先告诉小天', 'reason': '同义'},
+        ], ensure_ascii=False)
+
+    result = await _run(env, _FakeThinking(_cool_c1_then_merge))
+
+    assert result.applied == 0 and result.rejected == {'stale': 1}
+    assert {r['id'] for r in await env.engine.aload_reflections(NAME)} == {'c1', 'c2'}
 
 
 @pytest.mark.asyncio
