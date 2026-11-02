@@ -266,7 +266,7 @@ N.E.K.O. **默认开启 Token 用量遥测**：不上报对话内容，设备只
 实现位置：
 
 - 客户端元数据与上报：[`utils/token_tracker/telemetry.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/telemetry.py) 和 [`utils/token_tracker/reporting.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker/reporting.py)。
-- 服务端传输与存储：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。请求用 HMAC-SHA256 签名防篡改，只接受 ±5 分钟内的请求以防重放，每台设备每小时最多 120 次。原始事件只追加写入；旧事件由管理员清理接口删除（默认清理 180 天前的数据），多久执行一次由服务端运维决定；设备表和聚合表会随时间更新，聚合数据长期保留。删除账号时，其 Steam64 ID 会被列入黑名单，已存的 Steam64 关联也会被删除。
+- 服务端传输与存储：[`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md)。请求用 HMAC-SHA256 签名防篡改，只接受 ±5 分钟内的请求以防重放，每台设备每小时最多 120 次。原始事件只追加写入；旧事件由管理员清理接口删除（默认清理 180 天前的数据），多久执行一次由服务端运维决定；同一个清理接口也会删除按日记录的使用指标；设备表和按日 Token 用量聚合表会随时间更新，按日聚合数据长期保留。删除账号时，其 Steam64 ID 会被列入黑名单，已存的 Steam64 关联也会被删除；但已经收到的原始事件不会被改写，里面的 ID 会保留到清理接口把这些事件删掉为止。
 - 上报由本地保存 Token 数据的那个 60 秒后台循环顺带触发（进程退出时也会单独保存一次本地数据）；另有一道独立的间隔检查，保证每个服务进程大约最多每 60 秒上报一次。
 
 ## 许可证
