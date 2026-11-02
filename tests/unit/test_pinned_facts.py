@@ -85,6 +85,11 @@ def _pin(text, ttl=14, **extra) -> dict:
             "pin_ttl_days": ttl, **extra}
 
 
+def _candidate(text, ttl, **extra) -> dict:
+    """A candidate as apply_decisions receives it."""
+    return {"text": text, "entity": "master", "ttl_days": ttl, **extra}
+
+
 class _Model:
     """Stands in for ``ainvoke_thinking``; records every prompt it is sent."""
 
@@ -372,9 +377,9 @@ def test_model_failure_falls_back_to_renew_identical_or_add(tmp_path, monkeypatc
     assert live[0]["id"] == exam["id"]
 
 
-def test_targets_gone_before_apply_degrade(tmp_path):
-    # The model answered against a snapshot; another admission removed the
-    # entry before this one applied.
+def test_targets_gone_degrade_without_a_version_check(tmp_path):
+    # The last resolve round: the model answered against a snapshot and
+    # another admission removed the entry before this one applied.
     store = _store(tmp_path)
     candidates = [
         {"text": "主人周六去北京", "entity": "master", "ttl_days": 3},
@@ -385,6 +390,145 @@ def test_targets_gone_before_apply_degrade(tmp_path):
     )
     assert (counts["added"], counts["skipped"], counts["removed"]) == (1, 1, 0)
     assert [e["text"] for e in store.get_active(_NAME, now=_T0)] == ["主人周六去北京"]
+
+
+def test_version_check_reports_changed_targets_instead_of_applying(tmp_path):
+    store = _store(tmp_path)
+    [exam] = asyncio.run(_seed(store, [("主人下周三考试", 14)]))
+    snapshot_revs = {exam["id"]: exam["rev"]}
+    # Someone else renews the entry after our snapshot was taken.
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14)], [("renew", exam["id"])], now=_T0 + 1)
+
+    stale: list[int] = []
+    counts = store.apply_decisions(
+        _NAME,
+        [_candidate("主人的考试取消了", 3), _candidate("主人周六去北京", 3)],
+        [("remove", exam["id"]), ("add", None)],
+        now=_T0 + 2, expected_revs=snapshot_revs, stale_out=stale,
+    )
+
+    assert stale == [0]
+    assert (counts["stale"], counts["removed"], counts["added"]) == (1, 0, 1)
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 2)] == [
+        "主人下周三考试", "主人周六去北京",
+    ]
+
+
+def test_a_decision_on_a_changed_entry_is_made_again(tmp_path, monkeypatch):
+    # Greptile #3598: an older "exam cancelled" decision must not delete an
+    # entry a newer admission already changed to "exam moved to Friday".
+    store = _store(tmp_path)
+    [exam] = asyncio.run(_seed(store, [("主人下周三考试", 14)]))
+    prompts: list[str] = []
+
+    async def model(api_config, prompt, *, timeout, call_label):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            store.apply_decisions(
+                _NAME, [_candidate("主人的考试改到下周五", 14, noted_at=_T0 + 1)],
+                [("replace", exam["id"])], now=_T0 + 1,
+            )
+            answer = [{"candidate": 1, "action": "remove", "target": exam["id"]}]
+        else:
+            answer = [{"candidate": 1, "action": "renew", "target": exam["id"]}]
+        return SimpleNamespace(content=json.dumps(answer)), 0
+
+    monkeypatch.setattr("memory.thinking_llm.ainvoke_thinking", model)
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人的考试取消了", 3)], noted_at=_T0, now=_T0 + 2,
+    ))
+
+    assert len(prompts) == 2
+    assert "主人的考试改到下周五" in prompts[1]
+    assert (counts["removed"], counts["renewed"]) == (0, 1)
+    [entry] = store.get_active(_NAME, now=_T0 + 2)
+    assert entry["text"] == "主人的考试改到下周五"
+
+
+def test_resolve_rounds_are_bounded(tmp_path, monkeypatch):
+    from config import PINNED_FACT_RESOLVE_ATTEMPTS
+
+    store = _store(tmp_path)
+    [exam] = asyncio.run(_seed(store, [("主人下周三考试", 14)]))
+    calls = 0
+
+    async def model(api_config, prompt, *, timeout, call_label):
+        nonlocal calls
+        calls += 1
+        # Every round, another admission touches the target first.
+        store.apply_decisions(
+            _NAME, [_candidate("主人下周三考试", 14)], [("renew", exam["id"])], now=_T0 + calls,
+        )
+        answer = [{"candidate": 1, "action": "replace", "target": exam["id"]}]
+        return SimpleNamespace(content=json.dumps(answer)), 0
+
+    monkeypatch.setattr("memory.thinking_llm.ainvoke_thinking", model)
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人的考试改到下周五", 14)], now=_T0 + 10,
+    ))
+
+    assert calls == PINNED_FACT_RESOLVE_ATTEMPTS
+    # The last round applies without the check.
+    assert counts["replaced"] == 1
+    assert store.get_active(_NAME, now=_T0 + 10)[0]["text"] == "主人的考试改到下周五"
+
+
+def test_mutation_holds_the_cloudsave_fence_across_read_and_write(tmp_path, monkeypatch):
+    # Greptile #3598: a cloud restore between the read and the write must not
+    # be overwritten with the admission's copy of the old file.
+    from contextlib import contextmanager
+
+    store = _store(tmp_path)
+    events: list[str] = []
+
+    @contextmanager
+    def fence(config_manager, *, operation, target):
+        events.append("fence-enter")
+        yield
+        events.append("fence-exit")
+
+    real_read, real_write = store._read_unlocked, store._write_unlocked
+    monkeypatch.setattr(
+        "utils.cloudsave_runtime.cloudsave_writable_transaction", fence,
+    )
+    monkeypatch.setattr(
+        store, "_read_unlocked", lambda name: (events.append("read"), real_read(name))[1],
+    )
+    monkeypatch.setattr(
+        store, "_write_unlocked",
+        lambda name, facts, history: (events.append("write"), real_write(name, facts, history))[1],
+    )
+
+    store.apply_decisions(_NAME, [_candidate("主人周六去北京", 3)], [("add", None)], now=_T0)
+
+    assert events == ["fence-enter", "read", "write", "fence-exit"]
+
+
+def test_entries_are_dated_by_the_conversation_not_the_admission(tmp_path):
+    # Greptile #3598: a retried window or a replayed turn is admitted later
+    # than it was said; "tomorrow" must keep pointing at the right day.
+    store = _store(tmp_path)
+    said = _T0 - 2 * _DAY
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人明天考试", 14), _pin("主人感冒了", 3), _pin("主人今晚加班", 3)],
+        noted_at=said, now=_T0,
+    ))
+
+    assert counts["added"] == 3
+    exam = store.get_active(_NAME, now=_T0)[0]
+    assert exam["text_at"] == pytest.approx(said)
+    assert exam["expire_at"] == pytest.approx(said + 14 * _DAY)
+    assert "记于 2026-10-31" in store.render_prompt_block(_NAME, "zh", now=_T0)
+
+    # Said five days ago with a 3-day lifetime: already over, not admitted.
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人头疼", 3)], noted_at=_T0 - 5 * _DAY, now=_T0,
+    ))
+    assert counts["outdated"] == 1
+    assert "主人头疼" not in [e["text"] for e in store.get_active(_NAME, now=_T0)]
 
 
 def test_model_add_of_a_live_text_renews_instead_of_duplicating(tmp_path, monkeypatch):
@@ -448,7 +592,7 @@ def test_cap_evicts_the_soonest_expiring_untouched_entry(tmp_path, monkeypatch):
 
 def test_card_conflicts_are_rejected(tmp_path, monkeypatch):
     persona = SimpleNamespace(acontradicts_character_card=AsyncMock(
-        side_effect=lambda name, text: "讨厌咖啡" in text,
+        side_effect=lambda name, text, entity=None: "讨厌咖啡" in text,
     ))
     _install_model(monkeypatch, _Model(error=AssertionError("no model call")))
     store = _store(tmp_path, persona_manager=persona)
@@ -459,7 +603,9 @@ def test_card_conflicts_are_rejected(tmp_path, monkeypatch):
 
     assert counts["card_rejected"] == 1
     assert [e["text"] for e in store.get_active(_NAME, now=_T0)] == ["主人下周三考试"]
-    persona.acontradicts_character_card.assert_any_await(_NAME, "小天其实不讨厌咖啡")
+    persona.acontradicts_character_card.assert_any_await(
+        _NAME, "小天其实不讨厌咖啡", entity="master",
+    )
 
 
 def test_persona_card_check_reuses_the_contradiction_rule(monkeypatch):
@@ -481,6 +627,13 @@ def test_persona_card_check_reuses_the_contradiction_rule(monkeypatch):
     assert asyncio.run(pm.acontradicts_character_card("Neko", "主人下周三考试")) is False
     # A non-card entry never rejects, however close it is.
     assert asyncio.run(pm.acontradicts_character_card("Neko", "主人不讨厌下雨")) is False
+    # With an entity only that section's card entries count.
+    assert asyncio.run(
+        pm.acontradicts_character_card("Neko", "她不讨厌咖啡", entity="neko")
+    ) is True
+    assert asyncio.run(
+        pm.acontradicts_character_card("Neko", "她不讨厌咖啡", entity="master")
+    ) is False
 
 
 # ── 6. rendering ─────────────────────────────────────────────────────
@@ -649,10 +802,14 @@ def test_stage1_and_stage2_entry_feeds_the_raw_result(tmp_path):
     fs._apersist_new_facts = AsyncMock(return_value=[])
     fs.aload_facts = AsyncMock(return_value=[])
 
-    asyncio.run(fs.aextract_facts_and_detect_signals(_NAME, []))
+    window_end = datetime(2026, 11, 1, 21, 30)
+    asyncio.run(fs.aextract_facts_and_detect_signals(
+        _NAME, [], conversation_at=window_end,
+    ))
 
     recorder.aadmit_extracted.assert_awaited_once_with(
         _NAME, extracted, default_source="user_observation",
+        noted_at=window_end.timestamp(),
     )
 
 
@@ -666,7 +823,7 @@ def test_extract_facts_feeds_private_chat_only(tmp_path):
 
     assert asyncio.run(fs.extract_facts([], _NAME)) == [{"id": "f1"}]
     recorder.aadmit_extracted.assert_awaited_once_with(
-        _NAME, extracted, default_source="user_observation",
+        _NAME, extracted, default_source="user_observation", noted_at=None,
     )
 
     recorder.aadmit_extracted.reset_mock()
@@ -684,9 +841,13 @@ def test_path_b_feeds_private_chat_only_with_its_source_default(tmp_path):
     fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=extracted)
     fs._apersist_new_facts = AsyncMock(return_value=[])
 
-    asyncio.run(fs.aextract_facts_with_known_pool(_NAME, [], []))
+    window_end = datetime(2026, 11, 1, 21, 30)
+    asyncio.run(fs.aextract_facts_with_known_pool(
+        _NAME, [], [], conversation_at=window_end,
+    ))
     recorder.aadmit_extracted.assert_awaited_once_with(
         _NAME, extracted, default_source="ai_disclosure",
+        noted_at=window_end.timestamp(),
     )
 
     recorder.aadmit_extracted.reset_mock()
@@ -720,6 +881,64 @@ def test_end_to_end_legacy_output_through_fact_store(tmp_path, monkeypatch):
     fs._allm_extract_facts = AsyncMock(return_value=[_pin("主人下周三考试")])
     asyncio.run(fs.extract_facts([], _NAME))
     assert [e["text"] for e in store.get_active(_NAME)] == ["主人下周三考试"]
+
+
+def test_post_turn_payload_carries_the_turn_time_into_replay(monkeypatch):
+    """A turn replayed after a restart is extracted with the time it happened."""
+    from app.memory_server import post_turn, runtime
+    from utils.llm_client import convert_to_messages, messages_to_dict
+
+    messages = convert_to_messages([{"type": "human", "data": {"content": "记住我明天考试"}}])
+    captured: dict = {}
+
+    async def append_pending(name, op, payload):
+        captured.update(payload)
+        return "op-1"
+
+    async def run_op(name, op):
+        return None
+
+    monkeypatch.setattr(runtime, "outbox", SimpleNamespace(aappend_pending=append_pending))
+    monkeypatch.setattr(post_turn.outbox_infra, "_run_outbox_op", run_op)
+    monkeypatch.setattr(runtime, "_spawn_background_task", lambda coro: coro.close())
+    monkeypatch.setattr(post_turn, "_track_character_post_turn_task", lambda name, task: task)
+
+    before = pinned_mod._now()
+    asyncio.run(post_turn._spawn_outbox_post_turn_signals(_NAME, messages))
+    assert before <= captured["turn_at"] <= pinned_mod._now()
+
+    seen: dict = {}
+
+    async def run_signals(msgs, name, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(post_turn, "_run_post_turn_signals", run_signals)
+    asyncio.run(post_turn._outbox_post_turn_signals_handler(_NAME, {**captured, "turn_at": _T0}))
+    assert seen["conversation_at"] == datetime.fromtimestamp(_T0)
+
+    # Payloads written before this field existed replay as "now", unchanged.
+    seen.clear()
+    legacy = {k: v for k, v in captured.items() if k != "turn_at"}
+    asyncio.run(post_turn._outbox_post_turn_signals_handler(_NAME, legacy))
+    assert seen and "conversation_at" not in seen
+
+
+def test_extraction_callers_pass_the_conversation_time():
+    """Every app-layer call into a pinned-feeding extraction entry dates it."""
+    entries = {"aextract_facts_and_detect_signals", "aextract_facts_with_known_pool", "extract_facts"}
+    calls = []
+    for rel in ("app/memory_server/signal_extraction.py", "app/memory_server/post_turn.py"):
+        tree = ast.parse((_REPO_ROOT / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in entries):
+                calls.append((rel, node.func.attr, {k.arg for k in node.keywords}))
+    assert sorted((rel, attr) for rel, attr, _ in calls) == [
+        ("app/memory_server/post_turn.py", "extract_facts"),
+        ("app/memory_server/signal_extraction.py", "aextract_facts_and_detect_signals"),
+        ("app/memory_server/signal_extraction.py", "aextract_facts_with_known_pool"),
+    ]
+    assert all("conversation_at" in keywords for _, _, keywords in calls)
 
 
 def test_runtime_wires_the_store_on_startup_and_reload():

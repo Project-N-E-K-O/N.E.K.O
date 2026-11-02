@@ -68,6 +68,7 @@ import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -78,6 +79,7 @@ from config import (
     PINNED_FACT_MAX_ACTIVE,
     PINNED_FACT_MAX_CANDIDATES_PER_ROUND,
     PINNED_FACT_RENDER_MAX_TOKENS,
+    PINNED_FACT_RESOLVE_ATTEMPTS,
     PINNED_FACT_RESOLVE_MODEL_TIER,
     PINNED_FACT_TEXT_MAX_TOKENS,
     PINNED_FACT_TTL_TIERS_DAYS,
@@ -136,6 +138,15 @@ def _as_float(raw: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) and value > 0 else None
+
+
+def _as_count(raw: Any) -> int:
+    if isinstance(raw, bool):
+        return 0
+    try:
+        return max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _format_date(ts: float) -> str:
@@ -254,10 +265,6 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
         text_at = _as_float(raw.get("text_at")) or created_at
         updated_at = _as_float(raw.get("updated_at")) or text_at
         expire_at = _as_float(raw.get("expire_at")) or (text_at + ttl_days * _DAY_SECONDS)
-        try:
-            renew_count = max(0, int(raw.get("renew_count") or 0))
-        except (TypeError, ValueError):
-            renew_count = 0
         return {
             "id": entry_id.strip(),
             "text": text,
@@ -267,7 +274,8 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
             "text_at": text_at,
             "updated_at": updated_at,
             "expire_at": expire_at,
-            "renew_count": renew_count,
+            "renew_count": _as_count(raw.get("renew_count")),
+            "rev": _as_count(raw.get("rev")),
         }
     except Exception:
         return None
@@ -388,30 +396,40 @@ class PinnedFactStore:
         history = [h for h in (raw.get("history") or []) if isinstance(h, dict)]
         return facts, history[-PINNED_FACT_HISTORY_MAX:]
 
+    @contextmanager
+    def _mutating(self, name: str):
+        """Cloud-apply fence plus the file lock, held across read, change and write.
+
+        A cloud import replaces the whole memory/<name>/ tree. Fencing only the
+        final write would let an admission read the old file, wait out the
+        import, then write its changed copy of the old file over the imported
+        one. Raises MaintenanceModeError while an import is running.
+        """
+        from utils.cloudsave_runtime import cloudsave_writable_transaction
+
+        with cloudsave_writable_transaction(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/{PINNED_FACTS_FILENAME}",
+        ):
+            with _file_lock(name):
+                yield
+
     def _write_unlocked(
         self, name: str, facts: List[Dict[str, Any]], history: List[Dict[str, Any]],
     ) -> bool:
+        """Write the file; the caller is inside ``_mutating``."""
         payload = {
             "version": _SCHEMA_VERSION,
             "facts": facts,
             "history": history[-PINNED_FACT_HISTORY_MAX:],
         }
         try:
-            # A cloud import replaces the whole memory/<name>/ tree; holding the
-            # apply fence across the write keeps a decision computed before the
-            # import from landing on top of the imported file.
-            from utils.cloudsave_runtime import cloudsave_writable_transaction
-
-            with cloudsave_writable_transaction(
-                self._config_manager,
-                operation="save",
-                target=f"memory/{name}/{PINNED_FACTS_FILENAME}",
-            ):
-                target = self._write_file_path(name)
-                if target is None:
-                    logger.info("[PinnedFacts] %s: write fenced, update dropped", name)
-                    return False
-                atomic_write_json(target, payload, indent=2, ensure_ascii=False)
+            target = self._write_file_path(name)
+            if target is None:
+                logger.info("[PinnedFacts] %s: write fenced, update dropped", name)
+                return False
+            atomic_write_json(target, payload, indent=2, ensure_ascii=False)
             return True
         except Exception as exc:
             logger.warning(
@@ -482,22 +500,31 @@ class PinnedFactStore:
         decisions: List[Tuple[Optional[str], Optional[str]]],
         *,
         now: Optional[float] = None,
+        expected_revs: Optional[Dict[str, int]] = None,
+        stale_out: Optional[List[int]] = None,
     ) -> Dict[str, int]:
         """Apply one decision per candidate (same order) against the current file.
 
-        A targeted action whose entry has gone since the snapshot (another
-        admission or expiry got there first) degrades: remove is dropped,
-        replace / renew become add. An add whose text is already live renews
-        that entry instead, so the section never holds the same text twice.
+        ``expected_revs`` maps entry ids to their ``rev`` in the snapshot the
+        decisions were made on. With it, a targeted action whose entry another
+        admission has changed or removed since is NOT applied: its index goes to
+        ``stale_out`` and the caller decides again on fresh state. Without it,
+        such an action degrades: remove is dropped, replace / renew become add.
+        An add whose text is already live renews that entry instead, so the
+        section never holds the same text twice.
+
+        A candidate's ``noted_at`` (when it was said; defaults to ``now``) dates
+        its text and starts its lifetime; ``now`` is when the change is made.
         Returns per-action counts.
         """
         counts = dict.fromkeys(
-            ("added", "replaced", "renewed", "removed", "expired", "evicted", "skipped"), 0,
+            ("added", "replaced", "renewed", "removed", "expired", "evicted",
+             "skipped", "stale"), 0,
         )
         if not name or not candidates:
             return counts
         ts = float(now if now is not None else _now())
-        with _file_lock(name):
+        with self._mutating(name):
             facts, history = self._read_unlocked(name)
             live: List[Dict[str, Any]] = []
             for entry in facts:
@@ -507,16 +534,27 @@ class PinnedFactStore:
                     history.append(self._history_record(entry, "expire", ts))
                     counts["expired"] += 1
             touched: set[str] = set()
-            for candidate, (action, target_id) in zip(candidates, decisions):
+            for index, (candidate, (action, target_id)) in enumerate(zip(candidates, decisions)):
                 by_id = {e["id"]: e for e in live}
                 target = by_id.get(target_id) if target_id else None
-                if action in _TARGETED_ACTIONS and target is None:
-                    action = None if action == ACTION_REMOVE else ACTION_ADD
+                if action in _TARGETED_ACTIONS:
+                    if expected_revs is not None and (
+                        target is None
+                        or (target_id not in touched
+                            and target["rev"] != expected_revs.get(target_id))
+                    ):
+                        counts["stale"] += 1
+                        if stale_out is not None:
+                            stale_out.append(index)
+                        continue
+                    if target is None:
+                        action = None if action == ACTION_REMOVE else ACTION_ADD
                 if action == ACTION_ADD:
                     action, target = self._renew_instead_of_duplicate(candidate, live)
-                ttl_seconds = candidate["ttl_days"] * _DAY_SECONDS
+                noted = min(_as_float(candidate.get("noted_at")) or ts, ts)
+                lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
                 if action == ACTION_ADD:
-                    entry = self._new_entry(candidate, ts, {e["id"] for e in live})
+                    entry = self._new_entry(candidate, ts, noted, {e["id"] for e in live})
                     live.append(entry)
                     touched.add(entry["id"])
                     counts["added"] += 1
@@ -526,18 +564,20 @@ class PinnedFactStore:
                         "text": candidate["text"],
                         "entity": candidate["entity"],
                         "ttl_days": candidate["ttl_days"],
-                        "text_at": ts,
+                        "text_at": noted,
                         "updated_at": ts,
-                        "expire_at": ts + ttl_seconds,
+                        "expire_at": lifetime_end,
+                        "rev": target["rev"] + 1,
                     })
                     touched.add(target["id"])
                     counts["replaced"] += 1
                 elif action == ACTION_RENEW:
                     # Saying the same thing again never shortens what is left.
-                    target["expire_at"] = max(target["expire_at"], ts + ttl_seconds)
+                    target["expire_at"] = max(target["expire_at"], lifetime_end)
                     target["ttl_days"] = max(target["ttl_days"], candidate["ttl_days"])
                     target["updated_at"] = ts
                     target["renew_count"] += 1
+                    target["rev"] += 1
                     touched.add(target["id"])
                     counts["renewed"] += 1
                 elif action == ACTION_REMOVE:
@@ -555,7 +595,7 @@ class PinnedFactStore:
                 history.append(self._history_record(victim, "evict", ts))
                 live = [e for e in live if e["id"] != victim["id"]]
                 counts["evicted"] += 1
-            changed = any(counts[key] for key in counts if key != "skipped")
+            changed = any(counts[key] for key in counts if key not in ("skipped", "stale"))
             if changed:
                 self._write_unlocked(name, live, history)
         return counts
@@ -571,7 +611,9 @@ class PinnedFactStore:
         return ACTION_ADD, None
 
     @staticmethod
-    def _new_entry(candidate: Dict[str, Any], ts: float, taken: set[str]) -> Dict[str, Any]:
+    def _new_entry(
+        candidate: Dict[str, Any], ts: float, noted: float, taken: set[str],
+    ) -> Dict[str, Any]:
         entry_id = "pin_" + secrets.token_hex(4)
         while entry_id in taken:
             entry_id = "pin_" + secrets.token_hex(4)
@@ -581,10 +623,11 @@ class PinnedFactStore:
             "entity": candidate["entity"],
             "ttl_days": candidate["ttl_days"],
             "created_at": ts,
-            "text_at": ts,
+            "text_at": noted,
             "updated_at": ts,
-            "expire_at": ts + candidate["ttl_days"] * _DAY_SECONDS,
+            "expire_at": noted + candidate["ttl_days"] * _DAY_SECONDS,
             "renew_count": 0,
+            "rev": 0,
         }
 
     @staticmethod
@@ -601,7 +644,7 @@ class PinnedFactStore:
         """Entry point for tests / manual clearing; keeps nothing, history included."""
         if not name:
             return
-        with _file_lock(name):
+        with self._mutating(name):
             self._write_unlocked(name, [], [])
 
     # ── admission ─────────────────────────────────────────────
@@ -612,9 +655,23 @@ class PinnedFactStore:
         extracted: Any,
         *,
         default_source: str = "user_observation",
+        noted_at: Optional[float] = None,
         now: Optional[float] = None,
     ) -> Dict[str, int]:
-        """Admit the pinned candidates of one private-chat Stage-1 result."""
+        """Admit the pinned candidates of one private-chat Stage-1 result.
+
+        ``noted_at`` is when the extracted conversation took place (its latest
+        message). Extraction can run well after that (a retried window, a turn
+        replayed after a restart), and entry texts are often relative ("my
+        exam is tomorrow"), so the entry is dated and its lifetime counted from
+        the conversation, not from the admission. A candidate whose lifetime
+        already ran out by then is dropped.
+
+        Decisions are made on a snapshot. When another admission changes an
+        entry a decision targets before it is applied, the affected candidates
+        are decided again on fresh state, up to PINNED_FACT_RESOLVE_ATTEMPTS
+        rounds; the last round applies without the check.
+        """
         if not name or not extracted:
             return {}
         # Off the loop: candidate texts are token-truncated.
@@ -623,42 +680,60 @@ class PinnedFactStore:
         )
         if not candidates:
             return {}
-        candidates, card_rejected = await self._afilter_card_conflicts(name, candidates)
-        if not candidates:
-            logger.info(
-                "[PinnedFacts] %s: %d candidate(s) all contradict the character card",
-                name, card_rejected,
-            )
-            return {"card_rejected": card_rejected}
         ts = float(now if now is not None else _now())
-        active = await self.aget_active(name, now=ts)
+        noted = min(_as_float(noted_at) or ts, ts)
+        fresh = [
+            dict(c, noted_at=noted) for c in candidates
+            if noted + c["ttl_days"] * _DAY_SECONDS > ts
+        ]
+        outdated = len(candidates) - len(fresh)
+        candidates, card_rejected = await self._afilter_card_conflicts(name, fresh)
+        totals: Dict[str, int] = {"card_rejected": card_rejected, "outdated": outdated}
+        pending = list(range(len(candidates)))
+        rounds = 0
         resolved_by_model = False
-        if not active:
-            decisions: List[Tuple[Optional[str], Optional[str]]] = [
-                (ACTION_ADD, None) for _ in candidates
-            ]
-        else:
-            results = await self._aresolve_with_model(name, active, candidates, now=ts)
-            parsed = (
-                parse_resolve_decisions(results, len(candidates), {e["id"] for e in active})
-                if results is not None else {}
+        while pending and rounds < PINNED_FACT_RESOLVE_ATTEMPTS:
+            rounds += 1
+            batch = [candidates[i] for i in pending]
+            active = await self.aget_active(name, now=ts)
+            if not active:
+                decisions: List[Tuple[Optional[str], Optional[str]]] = [
+                    (ACTION_ADD, None) for _ in batch
+                ]
+            else:
+                results = await self._aresolve_with_model(name, active, batch, now=ts)
+                parsed = (
+                    parse_resolve_decisions(results, len(batch), {e["id"] for e in active})
+                    if results is not None else {}
+                )
+                resolved_by_model = resolved_by_model or bool(parsed)
+                # No usable answer for a candidate: add it. apply_decisions turns
+                # an add of a text that is already live into a renewal of that entry.
+                decisions = [parsed.get(i, (ACTION_ADD, None)) for i in range(len(batch))]
+            stale: List[int] = []
+            counts = await asyncio.to_thread(
+                self.apply_decisions, name, batch, decisions,
+                now=ts,
+                expected_revs=(
+                    {e["id"]: e["rev"] for e in active}
+                    if rounds < PINNED_FACT_RESOLVE_ATTEMPTS else None
+                ),
+                stale_out=stale,
             )
-            resolved_by_model = bool(parsed)
-            # No usable answer for a candidate: add it. apply_decisions turns an
-            # add of a text that is already live into a renewal of that entry.
-            decisions = [parsed.get(i, (ACTION_ADD, None)) for i in range(len(candidates))]
-        counts = await asyncio.to_thread(
-            self.apply_decisions, name, candidates, decisions, now=ts,
-        )
-        counts["card_rejected"] = card_rejected
+            for key, value in counts.items():
+                if key != "stale":
+                    totals[key] = totals.get(key, 0) + value
+            pending = [pending[i] for i in stale]
         logger.info(
-            "[PinnedFacts] %s: candidates=%d model=%s added=%d replaced=%d "
-            "renewed=%d removed=%d expired=%d evicted=%d skipped=%d card_rejected=%d",
-            name, len(candidates), resolved_by_model,
-            counts["added"], counts["replaced"], counts["renewed"], counts["removed"],
-            counts["expired"], counts["evicted"], counts["skipped"], card_rejected,
+            "[PinnedFacts] %s: candidates=%d rounds=%d model=%s added=%d replaced=%d "
+            "renewed=%d removed=%d expired=%d evicted=%d skipped=%d "
+            "card_rejected=%d outdated=%d",
+            name, len(candidates), rounds, resolved_by_model,
+            totals.get("added", 0), totals.get("replaced", 0), totals.get("renewed", 0),
+            totals.get("removed", 0), totals.get("expired", 0), totals.get("evicted", 0),
+            totals.get("skipped", 0), card_rejected, outdated,
         )
-        return counts
+        return totals
 
     async def _afilter_card_conflicts(
         self, name: str, candidates: List[Dict[str, Any]],
@@ -669,7 +744,10 @@ class PinnedFactStore:
         kept: List[Dict[str, Any]] = []
         for candidate in candidates:
             try:
-                if await checker(name, candidate["text"]):
+                # Same-entity card entries only: master and character names are
+                # stripped before the overlap test, so "the master's birthday is
+                # ..." would otherwise collide with the character's own birthday.
+                if await checker(name, candidate["text"], entity=candidate["entity"]):
                     continue
             except Exception as exc:
                 # An unreadable persona says nothing about this candidate; keep it.
@@ -756,8 +834,17 @@ class PinnedFactStore:
             )
             for entry in active[:PINNED_FACT_MAX_ACTIVE]
         )
+        # Candidates carry their own dates too: the model must be able to tell
+        # an older account of a matter from a newer one.
         listed = "\n".join(
-            f"{index}. {truncate_to_tokens(candidate['text'], PINNED_FACT_TEXT_MAX_TOKENS)}"
+            f"{index}. " + render_pinned_fact_line(
+                truncate_to_tokens(candidate["text"], PINNED_FACT_TEXT_MAX_TOKENS),
+                since=_format_date(candidate.get("noted_at", now)),
+                until=_format_date(
+                    candidate.get("noted_at", now) + candidate["ttl_days"] * _DAY_SECONDS
+                ),
+                lang=lang,
+            )
             for index, candidate in enumerate(candidates, 1)
         )
         return (

@@ -404,16 +404,28 @@ class FactsMixin:
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
-    async def acontradicts_character_card(self, name: str, text: str) -> bool:
+    async def acontradicts_character_card(
+        self, name: str, text: str, *, entity: str | None = None,
+    ) -> bool:
         """Whether ``text`` contradicts a protected character-card entry.
 
         The card half of ``aadd_fact``'s contradiction check, for stores whose
-        entries live outside persona.json (memory/pinned_facts.py). Like the
-        scoped branch there it scans every card entry, whatever section holds
-        it, and the rejection log line records lengths only.
+        entries live outside persona.json (memory/pinned_facts.py). The
+        rejection log line records lengths only.
+
+        ``entity`` limits the scan to that section's card entries, which is
+        what an entity-tagged private fact should be held against: the overlap
+        test strips the master and character names first, so without it "the
+        master's birthday is ..." would collide with the character's own
+        birthday on the card. None scans every section, like the scoped branch
+        of ``aadd_fact``.
         """
         persona = await self.aensure_persona(name)
-        card_facts = self._collect_card_facts(persona)
+        if entity is None:
+            card_facts = self._collect_card_facts(persona)
+        else:
+            section = persona.get(entity) if isinstance(persona, dict) else None
+            card_facts = self._collect_card_facts({entity: section} if section else {})
         if not card_facts:
             return False
         stop_names = await self._aget_entity_stop_names(name)

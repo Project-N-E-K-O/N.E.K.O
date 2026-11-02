@@ -160,6 +160,13 @@ PINNED_FACT_MAX_CANDIDATES_PER_ROUND = 8
 """Pinned candidates taken from one extraction round; bounds the resolve prompt
 together with PINNED_FACT_MAX_ACTIVE and PINNED_FACT_TEXT_MAX_TOKENS."""
 
+PINNED_FACT_RESOLVE_ATTEMPTS = 3
+"""Resolve rounds per admission. A round's targeted decision is not applied
+when another admission changed that entry after the snapshot the model saw;
+those candidates are decided again on fresh state. The last round applies
+without the check (a vanished target then degrades: remove is dropped,
+replace / renew become add)."""
+
 PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
 """Model tier of the add / replace / renew / remove decision, the same tier and
 thinking mode as persona correction resolution."""

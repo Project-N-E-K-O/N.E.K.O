@@ -348,12 +348,14 @@ class FactStore:
 
     async def _aadmit_pinned_candidates(
         self, lanlan_name: str, extracted, *, default_source: str = 'user_observation',
+        conversation_at: datetime | None = None,
     ) -> None:
         """Offer one private-chat Stage-1 result to the pinned-fact section.
 
         Best-effort and called only after the facts themselves persisted: a
         failure here leaves the ordinary pipeline untouched, and the fact still
-        reaches the prompt the slow way.
+        reaches the prompt the slow way. ``conversation_at`` (the latest
+        message of the extracted window; None means now) dates the entries.
         """
         store = self._pinned_fact_store
         if store is None or not extracted:
@@ -361,6 +363,10 @@ class FactStore:
         try:
             await store.aadmit_extracted(
                 lanlan_name, extracted, default_source=default_source,
+                noted_at=(
+                    conversation_at.timestamp()
+                    if isinstance(conversation_at, datetime) else None
+                ),
             )
         except Exception as e:
             logger.warning(
@@ -4848,6 +4854,7 @@ class FactStore:
     async def aextract_facts_and_detect_signals(
         self, lanlan_name: str, messages: list,
         reflection_engine=None, persona_manager=None,
+        *, conversation_at: datetime | None = None,
     ) -> tuple[list[dict], list[dict], list[str]]:
         """Two-stage extraction (RFC §3.4.2) with drain semantics.
 
@@ -4901,7 +4908,9 @@ class FactStore:
         persisted_this_round = await self._apersist_new_facts(lanlan_name, extracted)
         # The raw result, not the persisted rows: a fact that dedup folded into
         # an existing one still has to renew its pinned entry.
-        await self._aadmit_pinned_candidates(lanlan_name, extracted)
+        await self._aadmit_pinned_candidates(
+            lanlan_name, extracted, conversation_at=conversation_at,
+        )
 
         # Drain all signal_processed=False facts (historical tail + current additions).
         # Old facts lacking this field default True, avoiding months of historical facts
@@ -4999,6 +5008,7 @@ class FactStore:
         speaker_label: str | None = None,
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
+        conversation_at: datetime | None = None,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -5032,6 +5042,9 @@ class FactStore:
 
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this extraction reconciled.
+
+        ``conversation_at``: when the turn took place, for the pinned-fact
+        section (a turn replayed after a restart is older than now).
         """  # noqa: DOCSTRING_CJK
         memory_subject = coerce_subject(subject)
         expected_subject_generation = (
@@ -5076,7 +5089,9 @@ class FactStore:
         if memory_subject is None:
             # Private chat only: the pinned section renders into the private
             # prompt, so scoped (group / member) content must never enter it.
-            await self._aadmit_pinned_candidates(lanlan_name, extracted)
+            await self._aadmit_pinned_candidates(
+                lanlan_name, extracted, conversation_at=conversation_at,
+            )
         return created
 
     # ── external import state (sidecar) ──────────────────────────────
@@ -5721,6 +5736,7 @@ class FactStore:
         known_pool: list[dict],
         *,
         subject: MemorySubject | dict | None = None,
+        conversation_at: datetime | None = None,
     ) -> list[dict] | None:
         """AI-aware Stage-1 (path B) extraction — input is the role-tagged full
         user+ai message set; the prompt embeds ``known_pool`` (facts path A
@@ -5763,6 +5779,7 @@ class FactStore:
             # a fact without an explicit user_observation source is never pinned.
             await self._aadmit_pinned_candidates(
                 lanlan_name, extracted, default_source='ai_disclosure',
+                conversation_at=conversation_at,
             )
         return persisted
 

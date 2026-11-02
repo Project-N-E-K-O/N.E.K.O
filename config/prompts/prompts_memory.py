@@ -4694,6 +4694,7 @@ PINNED_FACT_RESOLVE_PROMPT = {
 - replace、renew、remove 必须在 target 里填常驻区条目方括号里的 id，只能填上面列出的 id。
 - add 的 target 写 null。
 - 拿不准是不是同一件事时选 add。
+- 候选的记录日期早于常驻区里同一件事的记录日期时，它是更早的说法：选 renew 指向那一条，不要 replace 或 remove。
 - 每条候选只输出一个动作。
 
 只返回 JSON 数组，不要输出其他内容：
@@ -4723,6 +4724,7 @@ PINNED_FACT_RESOLVE_PROMPT = {
 - replace、renew、remove 必須在 target 裡填常駐區條目方括號裡的 id，只能填上面列出的 id。
 - add 的 target 寫 null。
 - 拿不準是不是同一件事時選 add。
+- 候選的記錄日期早於常駐區裡同一件事的記錄日期時，它是更早的說法：選 renew 指向那一條，不要 replace 或 remove。
 - 每條候選只輸出一個動作。
 
 只回傳 JSON 陣列，不要輸出其他內容：
@@ -4752,6 +4754,7 @@ Rules:
 - replace, renew and remove must put the entry's id (the one in square brackets) in target, and only ids listed above are allowed.
 - add uses null as target.
 - When unsure whether it is the same matter, choose add.
+- If a candidate was noted earlier than the section's entry about the same matter, it is the older account: choose renew on that entry, never replace or remove.
 - Output exactly one action per candidate.
 
 Return only a JSON array and nothing else:
@@ -4781,6 +4784,7 @@ Return only a JSON array and nothing else:
 - replace・renew・remove は target に項目の角括弧内の id を入れること。上に挙げた id 以外は使わない。
 - add の target は null。
 - 同じ件かどうか迷ったら add を選ぶ。
+- 候補の記録日が、エリア内の同じ件の記録日より前なら、それは古い言い方なので、その項目に renew を選び、replace や remove は選ばない。
 - 候補一つにつき動作は一つだけ出力する。
 
 JSON 配列だけを返し、ほかには何も出力しないでください：
@@ -4810,6 +4814,7 @@ JSON 配列だけを返し、ほかには何も出力しないでください：
 - replace, renew, remove는 target에 항목의 대괄호 안 id를 넣어야 하며, 위에 나온 id만 쓸 수 있음.
 - add의 target은 null.
 - 같은 일인지 애매하면 add를 고름.
+- 후보의 기록일이 구역 안 같은 일의 기록일보다 이르면 그것은 예전의 말이므로, 그 항목에 renew를 고르고 replace나 remove는 고르지 않음.
 - 후보 하나당 동작은 하나만 출력.
 
 JSON 배열만 반환하고 다른 내용은 출력하지 마세요:
@@ -4839,6 +4844,7 @@ JSON 배열만 반환하고 다른 내용은 출력하지 마세요:
 - для replace, renew и remove в target нужно указать id записи (тот, что в квадратных скобках), и только из перечисленных выше.
 - для add в target пиши null.
 - если не уверен, то же ли это самое, выбирай add.
+- если кандидат записан раньше, чем запись раздела о том же самом, это более старая версия: выбери renew для той записи, но не replace и не remove.
 - на каждого кандидата выведи ровно одно действие.
 
 Верни только JSON-массив и больше ничего:
@@ -4868,6 +4874,7 @@ Reglas:
 - replace, renew y remove deben poner en target el id de la entrada (el que va entre corchetes), y solo se admiten los id listados arriba.
 - add lleva null en target.
 - Si dudas de si es el mismo asunto, elige add.
+- Si un candidato se anotó antes que la entrada de la sección sobre el mismo asunto, es la versión anterior: elige renew sobre esa entrada, nunca replace ni remove.
 - Da exactamente una acción por candidato.
 
 Devuelve solo un array JSON y nada más:
@@ -4897,6 +4904,7 @@ Regras:
 - replace, renew e remove devem colocar em target o id da entrada (o que está entre colchetes), e só os ids listados acima.
 - add usa null em target.
 - Na dúvida se é o mesmo assunto, escolha add.
+- Se um candidato foi anotado antes da entrada da seção sobre o mesmo assunto, é a versão mais antiga: escolha renew para essa entrada, nunca replace nem remove.
 - Dê exatamente uma ação por candidato.
 
 Retorne apenas um array JSON e nada mais:

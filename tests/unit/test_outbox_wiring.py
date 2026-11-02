@@ -747,7 +747,7 @@ async def test_concurrent_post_turn_tasks_keep_their_recorded_language():
     both_entered = asyncio.Event()
     observed: dict[str, list[str]] = {}
 
-    async def extract_facts(_messages, lanlan_name):
+    async def extract_facts(_messages, lanlan_name, **_kwargs):
         observed[lanlan_name] = [get_global_language_full()]
         if len(observed) == 2:
             both_entered.set()
