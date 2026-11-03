@@ -94,6 +94,14 @@ or network failure; the GitHub Release may already exist. `publish github`
 also supports the upgrade option; `publish market` does not modify repositories.
 Configuration upgrades do not create functional tests for plugins without them.
 
+If validation fails, inspect `git diff` and the generated configuration before
+retrying. Reconcile any changes made by the tests, then commit and push the
+configuration you want to keep and rerun `publish`. If you choose to discard it,
+review and restore only the generated files; do not reset the whole working tree.
+A failing commit hook or signing step leaves configuration staged and reports
+the Git error. Resolve the hook/Git configuration, inspect the index, then commit
+and push normally before retrying; the CLI has not pushed or created a release tag.
+
 ## Backend API Response Surface
 
 The plugin manager backend exposes the same package workflow with explicit response models:
