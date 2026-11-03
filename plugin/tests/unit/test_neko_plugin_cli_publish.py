@@ -1363,7 +1363,7 @@ def test_publish_market_rejects_malformed_review_receipts(
     assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
 
 
-@pytest.mark.parametrize("retry_after", ["3", "invalid", "nan"])
+@pytest.mark.parametrize("retry_after", ["3", "120", "invalid", "nan"])
 def test_publish_market_retries_only_pending_verification(
     monkeypatch: pytest.MonkeyPatch, retry_after: str,
 ) -> None:
@@ -1375,7 +1375,7 @@ def test_publish_market_retries_only_pending_verification(
     sleeps: list[float] = []
     patch_module_clock(monkeypatch, publish_cmd, sleep=sleeps.append)
     assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 0
-    assert sleeps == [3.0 if retry_after == "3" else 5.0]
+    assert sleeps == [float(retry_after) if retry_after in {"3", "120"} else 5.0]
     assert len(client.requests) == 2
     assert client.requests[0] == client.requests[1]
 

@@ -241,7 +241,7 @@ def _notify_market(release_url: str) -> int:
                     delay = 5.0
                 if not math.isfinite(delay):
                     delay = 5.0
-                time.sleep(min(remaining, max(1.0, min(delay, 60.0))))
+                time.sleep(min(remaining, max(1.0, delay)))
     except httpx.HTTPError as exc:
         print(
             f"[FAIL] {_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}",
