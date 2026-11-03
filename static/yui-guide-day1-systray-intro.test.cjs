@@ -166,7 +166,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
 
 test('Day1 systray intro menu labels match the desktop tray menu text', () => {
   // 弹窗教用户去托盘里找同名菜单项，所以这几项必须逐字等于桌面端托盘菜单的文字。
-  // 期望值抄自 N.E.K.O.-PC 的 src/main/tray-menu-locales.js
+  // 期望值抄自 N.E.K.O.-PC 8995de27f0cc 的 src/main/tray-menu-locales.js
   // （settings / resetModelPosition / openChatWindow / exit）；那边改了文字，这里要一起改。
   const trayMenuLabels = {
     en: { settings: 'Settings', resetPosition: 'Reset Avatar Position', openChat: 'Open Chat Window', exit: 'Exit' },
