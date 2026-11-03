@@ -1597,9 +1597,10 @@ FACT_EXTRACTION_PROMPT = {
 - 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
 - 每条事实必须是一个独立的原子陈述
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
+- 承诺/约定类事实的 text 必须保留"约定性"措辞（写"主人答应过带{LANLAN_NAME}去看海"，不要写成"主人说要去看海"——后者丢了承诺语义）
 
 importance 评分 1-10，评分指引（请按此打分，不要泛泛都打 7）：
-- **10**：关键长期信息——姓名、昵称、生日、身份、核心关系节点；用户明确表示"请{LANLAN_NAME}记住 X" / "这个你一定要记得"；或者 {LANLAN_NAME} 自己特别希望记住的重要相处细节。这些会被快速沉淀为长期记忆。
+- **10**：关键长期信息——姓名、昵称、生日、身份、核心关系节点；用户明确表示"请{LANLAN_NAME}记住 X" / "这个你一定要记得"；用户与{LANLAN_NAME}之间明确的承诺或约定（"答应过""说好要""以后会"等句式，如"说好要一起去看海"）；或者 {LANLAN_NAME} 自己特别希望记住的重要相处细节。这些会被快速沉淀为长期记忆。
 - **8-9**：长期稳定的核心偏好 / 固定习惯（不是一时兴起）
 - **6-7**：普通偏好、日常习惯、近期动态
 - **5**：次要但有记录价值的观察
@@ -1635,9 +1636,10 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 - 忽略 AI 幻覺、胡言亂語(gibberish)、無意義的編造內容，只擷取對話中有真實依據的事實
 - 每條事實必須是一個獨立的原子陳述
 - entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
+- 承諾/約定類事實的 text 必須保留「約定性」措辭（寫「主人答應過帶{LANLAN_NAME}去看海」，不要寫成「主人說要去看海」——後者丟了承諾語義）
 
 importance 評分 1-10，評分指引（請按此打分，不要泛泛都打 7）：
-- **10**：關鍵長期資訊——姓名、暱稱、生日、身分、核心關係節點；使用者明確表示「請{LANLAN_NAME}記住 X」/「這個你一定要記得」；或者 {LANLAN_NAME} 自己特別希望記住的重要相處細節。這些會被快速沉澱為長期記憶。
+- **10**：關鍵長期資訊——姓名、暱稱、生日、身分、核心關係節點；使用者明確表示「請{LANLAN_NAME}記住 X」/「這個你一定要記得」；使用者與{LANLAN_NAME}之間明確的承諾或約定（「答應過」「說好要」「以後會」等句式，如「說好要一起去看海」）；或者 {LANLAN_NAME} 自己特別希望記住的重要相處細節。這些會被快速沉澱為長期記憶。
 - **8-9**：長期穩定的核心偏好 / 固定習慣（不是一時興起）
 - **6-7**：普通偏好、日常習慣、近期動態
 - **5**：次要但有紀錄價值的觀察
@@ -1669,9 +1671,10 @@ Requirements:
 - Ignore AI hallucinations, gibberish, and meaningless fabricated content — only extract facts grounded in the actual conversation
 - Each fact must be an independent atomic statement
 - Mark entity as "master" (about {MASTER_NAME}), "neko" (about {LANLAN_NAME}), or "relationship" (about the relationship)
+- For promises/agreements, the fact text must keep the promissory wording (write "{MASTER_NAME} promised to take {LANLAN_NAME} to see the sea", not "{MASTER_NAME} said he wants to see the sea" — the latter loses the agreement semantics)
 
 Rate importance 1-10 using this rubric (please calibrate — don't default everyone to 7):
-- **10**: Critical long-term facts — real names, nicknames, birthdays, identity, core relationship markers; cases where the user explicitly says "please remember X, {LANLAN_NAME}" / "do NOT forget this"; or details {LANLAN_NAME} personally wants to remember about the user. These fast-track into long-term memory.
+- **10**: Critical long-term facts — real names, nicknames, birthdays, identity, core relationship markers; cases where the user explicitly says "please remember X, {LANLAN_NAME}" / "do NOT forget this"; explicit promises or agreements between the user and {LANLAN_NAME} ("I promise", "we agreed to", "I'll ... later" phrasings); or details {LANLAN_NAME} personally wants to remember about the user. These fast-track into long-term memory.
 - **8-9**: Long-term stable core preferences / established habits (not one-off whims)
 - **6-7**: Ordinary preferences, routine habits, recent happenings
 - **5**: Minor but worth-recording observations
@@ -2759,6 +2762,8 @@ REFLECTION_PROMPT = {
 - master 可用: preference(偏好) | trait(性格) | habit(习惯) | identity(身份) | emotional(情感) | boundary(边界)
 - neko 可用: self_awareness(自我认知) | learned(习得行为) | role_note(角色备注)
 - relationship 可用: dynamic(反复出现的具体互动) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
+- relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
+- **承诺/约定优先选 agreement**：事实含"答应""说好""约定""以后会"等承诺句式时，entity 选 relationship、relation_type 选 agreement、temporal_scope 选 pattern（承诺长期有效；选 state/episode 会让它几周内过期，属于误判）
 
 第三步：围绕已选定的 entity / relation_type 撰写 reflection 文本
 要求：
@@ -2806,6 +2811,8 @@ REFLECTION_PROMPT = {
 - master 可用: preference(偏好) | trait(性格) | habit(習慣) | identity(身分) | emotional(情感) | boundary(界線)
 - neko 可用: self_awareness(自我認知) | learned(習得行為) | role_note(角色備註)
 - relationship 可用: dynamic(反覆出現的具體互動) | milestone(里程碑) | tension(摩擦) | shared_memory(共同記憶) | agreement(約定)
+- relationship 可用: dynamic(互動模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同記憶) | agreement(約定)
+- **承諾/約定優先選 agreement**：事實含「答應」「說好」「約定」「以後會」等承諾句式時，entity 選 relationship、relation_type 選 agreement、temporal_scope 選 pattern（承諾長期有效；選 state/episode 會讓它幾週內過期，屬於誤判）
 
 第三步：圍繞已選定的 entity / relation_type 撰寫 reflection 文字
 要求：
@@ -2853,6 +2860,7 @@ Step 2: Choose a semantic relation_type (must match the entity)
 - master: preference | trait | habit | identity | emotional | boundary
 - neko: self_awareness | learned | role_note
 - relationship: dynamic | milestone | tension | shared_memory | agreement
+- **Promises/agreements must use agreement**: when a fact contains promissory phrasing ("promised", "agreed to", "we said we would", "I'll ... later"), choose entity=relationship, relation_type=agreement, and temporal_scope=pattern (promises are long-term; state/episode would wrongly expire them within weeks)
 
 Step 3: Write the reflection around the chosen entity / relation_type
 Requirements:

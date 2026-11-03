@@ -35,6 +35,7 @@ from config import (
     MEMORY_RECHECK_INTERVAL_SECONDS,
 )
 from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
+from memory.evidence import evidence_score
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
 from memory.message_sources import is_theater_memory_message
 
@@ -978,6 +979,18 @@ async def _periodic_archive_sweep_loop():
                         continue
                     rid = r.get('id')
                     if not rid:
+                        continue
+                    # 轻-1: 承诺/里程碑豁免归档（衰减分数照常——evidence 分数在召回侧
+                    # 按 rein_last_signal_at 实时计算，与本 loop 的 sub_zero 计数无关）。
+                    # 日志条件=真实负分（evidence_score read-time 判分）：承诺多数分数≥0
+                    # 不触发；真负分属异常状态，每小时一条 info 是有意义的持续告警。
+                    if r.get('relation_type') in ('agreement', 'milestone'):
+                        if evidence_score(r, now) < 0:
+                            logger.info(
+                                f"[ArchiveSweep] {name}: reflection {rid} "
+                                f"relation_type={r.get('relation_type')} 负分，"
+                                f"归档豁免（承诺/里程碑保留）"
+                            )
                         continue
                     pre_sz = int(r.get('sub_zero_days', 0) or 0)
                     will_increment = maybe_mark_sub_zero(dict(r), now)
