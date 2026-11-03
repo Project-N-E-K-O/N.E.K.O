@@ -1,0 +1,16 @@
+name: Restore patch branch
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create restore-patch branch from d6bef122
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs \
+            -d '{"ref":"refs/heads/restore-patch","sha":"d6bef1227f71b9a51f66f8b9f33197f2ebff98f2"}'
