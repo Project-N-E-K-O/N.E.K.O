@@ -836,3 +836,74 @@ def test_router_id_clashes_resolve_the_same_on_host_and_worker(isolated_registry
         assert state.event_handlers[f"contract.{eid}"].meta.timeout == runtime[eid].meta.timeout
     assert runtime["dup"].meta.timeout == 120
     assert runtime["probe"].meta.timeout == 5
+
+
+def test_router_entry_clashes_across_event_types_resolve_the_same_on_host_and_worker(isolated_registry):
+    """Host and worker share one id per plugin_entry; a same-id handler of another event type must not take it over."""
+    from unittest.mock import MagicMock
+
+    from plugin.sdk.plugin import NekoPluginBase, PluginRouter, message
+
+    class EntryRouter(PluginRouter):
+        @plugin_entry(id="sync", timeout=120)
+        async def sync(self):
+            pass
+
+        @plugin_entry(id="pull", timeout=90)
+        async def pull(self):
+            pass
+
+    class MessageRouter(PluginRouter):
+        @message(id="probe")
+        async def on_probe(self, **_):
+            pass
+
+        @message(id="pull")
+        async def on_pull(self, **_):
+            pass
+
+    class Plugin(ContractPlugin, NekoPluginBase):
+        __routers__ = [EntryRouter, MessageRouter]
+
+        def __init__(self, ctx):
+            super().__init__(ctx)
+            for router_cls in self.__routers__:
+                self.include_router(router_cls())
+
+        @message(id="sync")
+        async def on_sync(self, **_):
+            pass
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    runtime = Plugin(MagicMock()).collect_entries()
+    # class @message vs router entry, class entry vs router @message, earlier router entry vs later router @message
+    for eid in ("sync", "probe", "pull"):
+        assert runtime[eid].meta.event_type == "plugin_entry"
+        assert state.event_handlers[f"contract.{eid}"].meta.timeout == runtime[eid].meta.timeout
+    assert runtime["sync"].meta.timeout == 120
+    assert runtime["probe"].meta.timeout == 5
+    assert runtime["pull"].meta.timeout == 90
+
+
+def test_a_broken_router_does_not_drop_entries_of_other_routers(isolated_registry):
+    from plugin.sdk.plugin import PluginRouter
+
+    class Good(PluginRouter):
+        @plugin_entry(id="slow", timeout=120)
+        async def slow(self):
+            pass
+
+    class _Unlistable(type):
+        def __dir__(cls):
+            raise RuntimeError("broken router")
+
+    class Broken(metaclass=_Unlistable):
+        pass
+
+    class Plugin(ContractPlugin):
+        __routers__ = [Good, Broken]
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.slow"].meta.timeout == 120
+    preview_ids = {e["id"] for e in registry._extract_entries_preview("contract", Plugin, {}, {})}
+    assert "slow" in preview_ids
