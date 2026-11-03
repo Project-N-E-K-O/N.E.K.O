@@ -311,12 +311,13 @@ async def test_get_recent_history_returns_503_when_the_lock_wait_times_out():
     with patch.object(memory_server.runtime, "_config_manager", fake_config), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
          patch.object(memory_server.routes.logger, "warning") as warning, \
-         patch("utils.stall_report.report_stall"):
+         patch("utils.stall_report.report_stall") as report:
         response = await memory_server.get_recent_history("test_char")
 
     assert response.status_code == 503
-    # The lock's rate-limited stall report is the only log line; no per-request warning.
+    # The lock already reported this wait: no per-request warning and no second report.
     warning.assert_not_called()
+    report.assert_not_called()
     assert json.loads(response.body)["status"] == "error"
     kwargs = fake_recent.aget_recent_history.await_args.kwargs
     assert 0 < kwargs["lock_timeout"] < 5
@@ -357,3 +358,38 @@ def test_get_recent_history_budget_covers_the_character_check(captured_reports, 
     assert elapsed < 2
     message, kwargs = captured_reports[0]
     assert '/get_recent_history' in message and 'test_char' in message
+
+
+@pytest.mark.unit
+def test_worker_lock_wait_ends_at_the_callers_deadline(tmp_path, isolated_locks, captured_reports):
+    import re
+
+    from tests.unit.test_recent_file_lock import _make_manager
+
+    mgr, name, path = _make_manager(tmp_path)
+    config = mgr._config_manager
+    original = config.aget_character_data
+
+    async def slow_config():
+        # Spends most of the budget before the locked read starts.
+        await asyncio.sleep(0.4)
+        return await original()
+
+    config.aget_character_data = slow_config
+    lock = recent_file.recent_file_lock(path)
+    holder, release = _hold_in_thread(lock, 'slow-holder')
+    try:
+        with pytest.raises(recent_file.RecentFileLockTimeout):
+            asyncio.run(mgr.aget_recent_history(name, lock_timeout=0.5))
+        # Long enough for a worker given a fresh full budget to give up and report too.
+        time.sleep(1.0)
+    finally:
+        release.set()
+        holder.join(5)
+    waits = [
+        float(match.group(1))
+        for message, _ in captured_reports
+        if (match := re.search(r'进程内等待 ([0-9.]+)s', message))
+    ]
+    assert waits, captured_reports
+    assert max(waits) <= 0.3

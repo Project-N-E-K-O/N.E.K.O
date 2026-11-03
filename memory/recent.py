@@ -2546,10 +2546,19 @@ class CompressedRecentHistoryManager:
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )
+        deadline = None if lock_timeout is None else time.monotonic() + lock_timeout
+
+        def _read_before_deadline():
+            # Measured when the worker actually starts, so a read that queued or waited on
+            # the config first does not get a fresh full lock budget and outlive the caller.
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            return self._read_history_locked(
+                file_path, lanlan_name, admission_generation, remaining,
+            )
+
         try:
-            # With lock_timeout, one budget covers everything that can queue on the default
+            # With lock_timeout, one deadline covers everything that can queue on the default
             # executor (the config read and the locked read), not only the lock wait itself.
-            # A worker that already started still stops by itself within lock_timeout.
             async with asyncio.timeout(lock_timeout):
                 try:
                     _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
@@ -2557,13 +2566,7 @@ class CompressedRecentHistoryManager:
                 except Exception as e:
                     logger.error(f"获取角色配置失败: {e}")
 
-                history = await asyncio.to_thread(
-                    self._read_history_locked,
-                    file_path,
-                    lanlan_name,
-                    admission_generation,
-                    lock_timeout,
-                )
+                history = await asyncio.to_thread(_read_before_deadline)
         except recent_file.RecentFileDeletedError:
             history = []
         except recent_file.RecentFileLockTimeout:

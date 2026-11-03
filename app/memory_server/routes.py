@@ -51,6 +51,7 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.recent_file import RecentFileLockTimeout
 from utils.llm_tool_leak_filter import (
     strip_tool_call_leaks,
     strip_tool_call_leaks_from_parts,
@@ -2082,11 +2083,17 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
     # The only caller (game pregame) gives up after 5s and falls back to empty history.
-    # One budget covers every step that can queue on the default executor or the recent
-    # lock; lock_timeout below also stops the worker thread instead of leaving it waiting.
+    # One deadline covers every step that can queue on the default executor or the recent
+    # lock, and the worker thread's own lock wait ends at it too instead of outliving the 503.
+    deadline = time.monotonic() + _RECENT_HISTORY_LOCK_TIMEOUT_SECONDS
     try:
         async with asyncio.timeout(_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS):
-            return await _render_recent_history(lanlan_name, _lang)
+            return await _render_recent_history(lanlan_name, _lang, deadline)
+    except RecentFileLockTimeout:
+        # Already reported by the lock or the manager; one stuck wait counts once.
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
     except TimeoutError:
         from utils.stall_report import report_stall
         report_stall(
@@ -2098,7 +2105,7 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         )
 
 
-async def _render_recent_history(lanlan_name: str, _lang: str):
+async def _render_recent_history(lanlan_name: str, _lang: str, deadline: float):
     # Check whether character exists in configuration.
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -2111,7 +2118,7 @@ async def _render_recent_history(lanlan_name: str, _lang: str):
         return _loc(NO_RECENT_HISTORY, _lang)
 
     raw_history = await runtime.recent_history_manager.aget_recent_history(
-        lanlan_name, lock_timeout=_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS,
+        lanlan_name, lock_timeout=max(0.0, deadline - time.monotonic()),
     )
     history = _screen_guarded_recent_history(raw_history)
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
