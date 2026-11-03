@@ -586,7 +586,13 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
                 continue
 
         router_cls = router_item if isinstance(router_item, type) else type(router_item)
-        for name, member in inspect.getmembers(router_cls):
+        # One broken router must not drop the entries other routers already yielded.
+        try:
+            members = inspect.getmembers(router_cls)
+        except Exception as e:
+            logger.warning("Failed to scan router {} for entries: {}", router_cls, e)
+            continue
+        for name, member in members:
             if name.startswith("_"):  # runtime _collect_decorated_entries skips these too
                 continue
             event_meta = _member_event_meta(member)
