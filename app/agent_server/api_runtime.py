@@ -432,7 +432,7 @@ def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
         from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 
         payload = event.get("payload")
-        if get_conversation_service() is None or not isinstance(payload, dict):
+        if get_conversation_service(require_ready=False) is None or not isinstance(payload, dict):
             return False
         payload = dict(payload)
         payload["character"] = event.get("lanlan_name")

@@ -148,9 +148,11 @@ class ServerLifecycleService:
     def _accept_conversation_record(self, event: dict) -> None:
         bus_subscription_manager.accept_conversation_record(event)
 
-    def conversation_service(self) -> ConversationService | None:
-        """Expose this lifetime's service only after a successful health probe."""
-        return self._conversation_service if self._conversation_service_ready else None
+    def conversation_service(self, *, require_ready: bool = True) -> ConversationService | None:
+        """Gate reads on health while preserving retained fact ingress."""
+        if require_ready and not self._conversation_service_ready:
+            return None
+        return self._conversation_service
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -1088,9 +1090,9 @@ async def _ensure_plugin_router_started() -> None:
 _service = ServerLifecycleService()
 
 
-def get_conversation_service() -> ConversationService | None:
+def get_conversation_service(*, require_ready: bool = True) -> ConversationService | None:
     """Access the current delivery-path instance without constructing another."""
-    return _service.conversation_service()
+    return _service.conversation_service(require_ready=require_ready)
 
 
 def _final_log_flush() -> None:
