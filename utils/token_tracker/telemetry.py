@@ -191,7 +191,11 @@ def _get_anonymous_device_id() -> str:
 
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 
-_TELEMETRY_BRANCHES: tuple = ("main",)
+# proactive_interval_40s: true first launch defaults proactiveChatInterval to 40s instead of the
+# control 15s (all regions; frontend override in static/app/app-settings.js). Earlier 15s vs 20s/25s
+# arms were retired as underpowered (#1696); the much wider gap here is meant to give a readable effect.
+# Existing installs persisted as "main" stay valid, so only new installs are drawn into this split.
+_TELEMETRY_BRANCHES: tuple = ("main", "proactive_interval_40s")
 
 _telemetry_branch_cache: dict = {}
 
