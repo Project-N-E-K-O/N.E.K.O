@@ -479,6 +479,9 @@
     var drag = state.dragAuthority;
     if (!drag || drag.intentId !== frame.intent_id || drag.actor !== frame.actor) return false;
     var timestamp = intentTime(frame);
+    var previous = drag.samples[drag.samples.length - 1];
+    // Remembered on the drag: trimming may drop the samples from before the step.
+    if (previous && timestamp < previous.at) drag.clockStepped = true;
     drag.samples.push({ x: frame.x_q16, y: frame.y_q16, at: timestamp });
     while (drag.samples.length > 4 || (drag.samples[0] && drag.samples[0].at < timestamp - 180)) {
       drag.samples.shift();
@@ -494,6 +497,7 @@
   }
 
   function releaseVelocity(drag, point, at) {
+    if (drag && drag.clockStepped) return { x: 0, y: 0 };
     var samples = drag && drag.samples ? drag.samples.slice() : [];
     samples.push({ x: point.x_q16, y: point.y_q16, at: at });
     if (samples.length < 2) return { x: 0, y: 0 };

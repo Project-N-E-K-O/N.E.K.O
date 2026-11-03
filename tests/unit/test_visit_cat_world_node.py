@@ -697,6 +697,19 @@ async function main() {
   assert.equal(recovered.yarn_holder, 'none');
   assert.equal(recovered.yarn_vx_q12, 0);
   assert.equal(recovered.yarn_vy_q12, 0);
+  // Also when the samples from before the step were already trimmed away.
+  hostIntent('peer', 'yarn_grab', 106, 31000);
+  now -= 5000;
+  for (let step = 1; step <= 6; step += 1) {
+    now += 20;
+    hostIntent('peer', 'pointer', 106, 31000 + step * 800);
+  }
+  hostIntent('peer', 'yarn_release', 107, 36600);
+  now += 5000;
+  const trimmed = win.NekoVisitCatWorld.snapshot().world;
+  assert.equal(trimmed.yarn_holder, 'none');
+  assert.equal(trimmed.yarn_vx_q12, 0);
+  assert.equal(trimmed.yarn_vy_q12, 0);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   // A replay that grows too long gives up on the late saved world rather than
