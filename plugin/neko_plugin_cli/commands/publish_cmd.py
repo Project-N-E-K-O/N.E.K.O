@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 import math
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -17,7 +17,11 @@ import httpx
 from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
-from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..repo_action_migration import (
+    ActionFileChange,
+    ActionFileStatus,
+    migrate_github_actions,
+)
 from ..templates.generator import PluginSpec
 from . import deps_cmd, release_cmd
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
@@ -28,6 +32,7 @@ _MARKET_PUBLICATION_URL = (
 _RELEASE_CHECK_SUFFIX = ".market-release-check.txt"
 _MARKET_EVIDENCE_NAME = "market-evidence.json"
 _RELEASE_RUFF_TIMEOUT_SECONDS = 120
+_MARKET_WAIT_SECONDS = 75 * 60
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -99,6 +104,17 @@ def register(
         ),
     )
     parser.add_argument(
+        "--upgrade-github-actions",
+        action="store_true",
+        help=_tri(
+            "Upgrade standard workflows, validate, commit only generated configuration, "
+            "and push before publishing (requires a clean, pushed branch)",
+            "升级标准工作流，验证后仅提交生成的配置并推送，再继续发布（需要干净且已推送的分支）",
+            "標準ワークフローを更新・検証し、生成した設定のみコミット・push して公開します"
+            "（クリーンかつ push 済みのブランチが必要）",
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=_finite_timeout,
         default=900.0,
@@ -113,6 +129,13 @@ def register(
 
 def handle(args: argparse.Namespace) -> int:
     if args.mode_or_plugin == "market":
+        if args.upgrade_github_actions:
+            print("[FAIL] " + _tri(
+                "--upgrade-github-actions requires a plugin repository, not 'publish market'",
+                "--upgrade-github-actions 需要插件仓库，不能用于 publish market",
+                "--upgrade-github-actions はプラグインリポジトリが必要で、publish market では使えません",
+            ), file=sys.stderr)
+            return 1
         if not args.target:
             print(
                 "[FAIL] "
@@ -167,6 +190,7 @@ def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
             plugin,
             defaults=args._defaults,
             timeout=args.timeout,
+            upgrade_github_actions=args.upgrade_github_actions,
         )
     except (OSError, RuntimeError, ValueError, httpx.HTTPError) as exc:
         print(
@@ -177,12 +201,47 @@ def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
 
 
 def _notify_market(release_url: str) -> int:
+    deadline = time.monotonic() + _MARKET_WAIT_SECONDS
+    waiting_reported = False
     try:
         with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                _MARKET_PUBLICATION_URL,
-                json={"release_url": release_url},
-            )
+            while True:
+                response = client.post(
+                    _MARKET_PUBLICATION_URL,
+                    json={"release_url": release_url},
+                )
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                if response.status_code != 503 or payload.get("code") != "release_verification_pending":
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    print("[FAIL] " + _tri(
+                        "Market verification is still pending; check version management before retrying. "
+                        "The GitHub Release is already available.",
+                        "Market 核验仍未完成，请查看版本管理页后再重试；GitHub Release 已生成。",
+                        "Market の検証が未完了です。バージョン管理を確認してから再試行してください。"
+                        "GitHub Release は作成済みです。",
+                    ), file=sys.stderr)
+                    return 1
+                if not waiting_reported:
+                    print(_tri(
+                        "Waiting for Market verification; publication will be retried automatically.",
+                        "正在等待 Market 核验，将自动重试发布。",
+                        "Market の検証待ちです。公開を自動再試行します。",
+                    ))
+                    waiting_reported = True
+                try:
+                    delay = float(response.headers.get("Retry-After", "5"))
+                except ValueError:
+                    delay = 5.0
+                if not math.isfinite(delay):
+                    delay = 5.0
+                time.sleep(min(remaining, max(1.0, min(delay, 60.0))))
     except httpx.HTTPError as exc:
         print(
             f"[FAIL] {_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}",
@@ -190,12 +249,28 @@ def _notify_market(release_url: str) -> int:
         )
         return 1
 
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+    if response.status_code == 202:
+        candidate = payload.get("candidate")
+        status = payload.get("status")
+        if (isinstance(candidate, dict) and type(candidate.get("id")) is int and candidate["id"] > 0
+                and type(candidate.get("plugin_id")) is int and candidate["plugin_id"] > 0
+                and isinstance(candidate.get("version"), str) and candidate["version"]
+                and candidate.get("channel") in ("stable", "beta") and candidate.get("status") == status
+                and status in ("pending_review", "rejected", "superseded") and payload.get("version") is None):
+            reference = f"#{candidate['id']} (v{candidate['version']})"
+            if status == "pending_review":
+                print("[OK] " + _tri(
+                    f"Market received {reference}; awaiting human review, not yet published. Check version management.",
+                    f"Market 已收到 {reference}，等待人工审核，尚未发布；请查看插件版本管理页。",
+                    f"Market が {reference} を受け付けました。手動審査待ちで未公開です。バージョン管理を確認してください。",
+                ))
+                return 0
+            print("[FAIL] " + _tri(
+                f"Market candidate {reference} is {status}; check version management before submitting again.",
+                f"Market 申请 {reference} 已被拒绝或替代，请查看版本管理页后再提交。",
+                f"Market の申請 {reference} は {status} です。再送信前にバージョン管理を確認してください。",
+            ), file=sys.stderr)
+            return 1
 
     if response.status_code not in {200, 201}:
         code = payload.get("code") or f"http_{response.status_code}"
@@ -214,7 +289,7 @@ def _notify_market(release_url: str) -> int:
     status = payload.get("status")
     version = payload.get("version") or {}
     version_name = version.get("version") if isinstance(version, dict) else None
-    expected = (response.status_code, status) in {
+    expected = isinstance(status, str) and (response.status_code, status) in {
         (201, "published"),
         (200, "already_published"),
     }
@@ -248,13 +323,19 @@ def _publish_github(
     *,
     defaults: CliDefaults,
     timeout: float,
+    upgrade_github_actions: bool = False,
 ) -> str:
     plugin_dir = resolve_plugin_dir_candidate(plugin, defaults=defaults)
     source = load_plugin_source(plugin_dir)
     _ensure_clean_worktree(plugin_dir)
-    _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
     repository = _github_repository(plugin_dir)
     tag = f"v{source.version}"
+    upgrade: list[ActionFileChange] = []
+    original_head = _git(plugin_dir, "rev-parse", "HEAD")
+    if upgrade_github_actions:
+        _ensure_head_pushed(plugin_dir, head=original_head)
+        upgrade = _prepare_github_actions_upgrade(plugin_dir, plugin_id=source.plugin_id, tag=tag)
+    _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
 
     sync_args = argparse.Namespace(
         _defaults=defaults,
@@ -299,11 +380,15 @@ def _publish_github(
                     "リリースチェックに合格しませんでした",
                 )
             )
+    _ensure_release_ruff_passes(plugin_dir)
+    if upgrade:
+        _commit_github_actions_upgrade(
+            plugin_dir, changes=upgrade, original_head=original_head, repository=repository,
+        )
     _ensure_clean_worktree(plugin_dir)
 
     head = _git(plugin_dir, "rev-parse", "HEAD")
     _ensure_head_pushed(plugin_dir, head=head)
-    _ensure_release_ruff_passes(plugin_dir)
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
     return _wait_for_release(
         repository,
@@ -311,6 +396,102 @@ def _publish_github(
         tag=tag,
         timeout=timeout,
     )
+
+
+def _prepare_github_actions_upgrade(
+    plugin_dir: Path, *, plugin_id: str, tag: str,
+) -> list[ActionFileChange]:
+    spec = PluginSpec(plugin_id=plugin_id)
+    plan = migrate_github_actions(spec, plugin_dir, dry_run=True)
+    conflicts = [change.relative_path.as_posix() for change in plan if change.status is ActionFileStatus.CONFLICT]
+    if conflicts:
+        raise RuntimeError(_tri(
+            f"custom configuration conflicts; no files changed: {', '.join(conflicts)}",
+            f"自定义配置冲突，未修改文件：{', '.join(conflicts)}",
+            f"独自設定と競合したため変更しませんでした：{', '.join(conflicts)}",
+        ))
+    changes = [change for change in plan if change.status in {ActionFileStatus.ADD, ActionFileStatus.UPGRADE}]
+    if not changes:
+        return []
+    if _local_tag_commit(plugin_dir, tag) or _remote_tag_commit(plugin_dir, tag):
+        raise RuntimeError(_tri(
+            f"tag {tag} already exists; choose a new plugin version before upgrading and publishing",
+            f"tag {tag} 已存在；请先更新插件版本号，再升级配置并发布",
+            f"tag {tag} は既存です。プラグインのバージョンを更新してから設定更新・公開してください",
+        ))
+    migrate_github_actions(spec, plugin_dir)
+    for change in changes:
+        print(f"[{change.status}] {change.relative_path.as_posix()}")
+    print(_tri(
+        "Configuration updated; validation failures leave these changes for inspection without committing or pushing.",
+        "配置已更新；若验证失败，将保留改动供检查，不会提交或推送。",
+        "設定を更新しました。検証失敗時は確認用に変更を残し、コミット・push は行いません。",
+    ))
+    return changes
+
+
+def _commit_github_actions_upgrade(
+    plugin_dir: Path, *, changes: list[ActionFileChange], original_head: str, repository: str,
+) -> None:
+    paths = tuple(change.relative_path.as_posix() for change in changes)
+    _ensure_clean_worktree(plugin_dir, allowed_paths=paths)
+    if _git(plugin_dir, "rev-parse", "HEAD") != original_head or _github_repository(plugin_dir) != repository:
+        raise RuntimeError(_tri(
+            "Repository or HEAD changed during validation; inspect the configuration before retrying.",
+            "验证期间仓库或 HEAD 已变化，请检查配置后再重试。",
+            "検証中にリポジトリまたは HEAD が変わりました。設定を確認してから再試行してください。",
+        ))
+    branch = _ensure_head_pushed(plugin_dir, head=original_head)
+    for change in changes:
+        path = plugin_dir / change.relative_path
+        if (path.is_symlink() or not path.resolve().is_relative_to(plugin_dir.resolve())
+                or path.read_text(encoding="utf-8") != change.content):
+            name = change.relative_path.as_posix()
+            raise RuntimeError(_tri(
+                f"Generated configuration changed during validation: {name}",
+                f"生成的配置在验证期间被修改：{name}",
+                f"検証中に生成した設定が変更されました：{name}",
+            ))
+    _git(plugin_dir, "add", "--", *paths)
+    if set(_git(plugin_dir, "diff", "--cached", "--name-only", "-z").split("\0")) - {""} != set(paths):
+        raise RuntimeError(_tri(
+            "Staged files differ from the generated configuration; inspect the index before retrying.",
+            "暂存区与生成的配置不一致，请检查暂存区后再重试。",
+            "ステージしたファイルが生成した設定と異なります。インデックスを確認してから再試行してください。",
+        ))
+    _git(plugin_dir, "commit", "-m", "chore: update standard plugin publishing workflows", "--only", "--", *paths)
+    head = _git(plugin_dir, "rev-parse", "HEAD")
+    if (_git(plugin_dir, "rev-parse", "HEAD^") != original_head
+            or set(_git(plugin_dir, "diff", "--name-only", "-z", original_head, head).split("\0")) - {""} != set(paths)):
+        raise RuntimeError(_tri(
+            "Upgrade commit differs from the planned configuration; inspect it before pushing.",
+            "升级提交与计划配置不一致，请检查提交后再推送。",
+            "更新コミットが予定の設定と異なります。push 前にコミットを確認してください。",
+        ))
+    for change in changes:
+        if _git(plugin_dir, "show", f"HEAD:{change.relative_path.as_posix()}") != change.content.strip():
+            raise RuntimeError(_tri(
+                "Committed configuration changed; inspect the commit before pushing.",
+                "提交中的配置已变化，请检查提交后再推送。",
+                "コミットした設定が変更されました。push 前にコミットを確認してください。",
+            ))
+    _ensure_clean_worktree(plugin_dir)
+    try:
+        _git(plugin_dir, "push", "origin", f"HEAD:refs/heads/{branch}")
+    except RuntimeError as exc:
+        raise RuntimeError(_tri(
+            f"Configuration commit {head[:12]} is local, but push failed. Inspect and push the branch "
+            "normally before retrying publication; no release tag was created.",
+            f"配置提交 {head[:12]} 已保存在本地，但推送失败；请检查并正常推送分支后重试发布，尚未创建发布 tag。",
+            f"設定コミット {head[:12]} はローカルにありますが push に失敗しました。"
+            "ブランチを確認して通常の push 後に公開を再試行してください。公開 tag は未作成です。",
+        )) from exc
+    _ensure_head_pushed(plugin_dir, head=head)
+    print("[OK] " + _tri(
+        "Standard workflow configuration committed and pushed; continuing publication.",
+        "标准工作流配置已提交并推送，继续发布。",
+        "標準ワークフロー設定をコミット・push しました。公開を続行します。",
+    ))
 
 
 def _ensure_standard_release_workflow(
@@ -341,7 +522,7 @@ def _ensure_standard_release_workflow(
         )
 
 
-def _ensure_clean_worktree(plugin_dir: Path) -> None:
+def _ensure_clean_worktree(plugin_dir: Path, *, allowed_paths: tuple[str, ...] = ()) -> None:
     if not (plugin_dir / ".git").exists():
         raise RuntimeError(
             _tri(
@@ -352,8 +533,10 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
         )
     # Untracked sync work dirs are not plugin source. Keep checking tracked
     # changes (including accidentally committed sync work dirs).
-    if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
+    excluded = tuple(f":(top,exclude){path}" for path in allowed_paths)
+    if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no", "--", ".", *excluded) or _git(
         plugin_dir, "status", "--porcelain", "--", ".",
+        *excluded,
         # A wildcard pathspec matches whole paths: exclude each work dir
         # itself and everything under it.
         *(
@@ -371,7 +554,7 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
         )
 
 
-def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
+def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> str:
     upstream = _git(
         plugin_dir,
         "rev-parse",
@@ -398,6 +581,7 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
                 "HEAD が origin ブランチに push されていません。先にブランチを push してください",
             )
         )
+    return branch
 
 
 def _ensure_release_ruff_passes(plugin_dir: Path) -> None:

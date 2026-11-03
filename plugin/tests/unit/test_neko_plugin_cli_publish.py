@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -1179,3 +1179,269 @@ def test_publish_market_surfaces_stable_market_error(
     error = capsys.readouterr().err
     assert "release_verification_rejected" in error
     assert "未提供可验证的标准发布证据" in error
+
+
+@pytest.mark.parametrize("mode", [[], ["github"]])
+def test_publish_upgrade_commits_only_configuration_then_tags_and_notifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: list[str],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    original_head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    workflow = plugin_dir / ".github/workflows/release.yml"
+    # A recognized older template can be upgraded together with missing files.
+    workflow.write_text("\n".join(workflow.read_text(encoding="utf-8").splitlines()[2:]) + "\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", ".github/workflows/release.yml")
+    _run_git(plugin_dir, "commit", "-m", "older managed template")
+    _run_git(plugin_dir, "push", "origin", "main")
+    original_head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    release_url = "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
+    client = _RecordingClient(
+        _ready_release(release_url),
+        httpx.Response(201, json={"status": "published", "version": {"version": "1.2.0"}}),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    assert neko_plugin_cli.main(["publish", *mode, str(plugin_dir), "--upgrade-github-actions"]) == 0
+
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    assert _run_git(plugin_dir, "rev-parse", "HEAD^") == original_head
+    assert set(_run_git(plugin_dir, "diff", "--name-only", original_head, head).splitlines()) == {
+        "ruff.toml", ".github/workflows/verify.yml", ".github/workflows/release.yml",
+    }
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == head
+    assert _run_git(remote, "rev-parse", "refs/tags/v1.2.0") == head
+    assert _run_git(plugin_dir, "status", "--porcelain") == ""
+    assert len(client.requests) == (1 if mode else 2)
+
+
+def test_publish_upgrade_is_idempotent_when_configuration_is_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    client = _RecordingClient(*[_ready_release(
+        "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
+    ) for _ in range(2)])
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    for _ in range(2):
+        assert neko_plugin_cli.main(["publish", "github", str(plugin_dir), "--upgrade-github-actions"]) == 0
+    assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
+    assert _run_git(remote, "rev-parse", "refs/tags/v0.1.0") == head
+
+
+@pytest.mark.parametrize("path", ["ruff.toml", ".github/workflows/verify.yml", ".github/workflows/release.yml"])
+def test_publish_upgrade_conflict_does_not_change_any_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    (plugin_dir / path).write_text("# author's custom configuration\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "--", path)
+    _run_git(plugin_dir, "commit", "-m", "custom configuration")
+    _run_git(plugin_dir, "push", "origin", "main")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
+    assert "custom configuration conflicts" in capsys.readouterr().err
+    assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
+    assert _run_git(plugin_dir, "status", "--porcelain") == ""
+    assert _run_git(remote, "tag", "--list") == ""
+
+
+@pytest.mark.parametrize("state", ["untracked", "staged", "unpushed", "tagged"])
+def test_publish_upgrade_stops_before_writing_on_unready_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    if state == "tagged":
+        _run_git(plugin_dir, "tag", "v1.2.0")
+    else:
+        (plugin_dir / "README.md").write_text("author's change\n", encoding="utf-8")
+        if state in {"staged", "unpushed"}:
+            _run_git(plugin_dir, "add", "README.md")
+        if state == "unpushed":
+            _run_git(plugin_dir, "commit", "-m", "author's unpushed change")
+    status = _run_git(plugin_dir, "status", "--porcelain")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    remote_head = _run_git(remote, "rev-parse", "refs/heads/main")
+
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
+    assert not (plugin_dir / "ruff.toml").exists()
+    assert not (plugin_dir / ".github/workflows/verify.yml").exists()
+    assert _run_git(plugin_dir, "status", "--porcelain") == status
+    assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == remote_head
+    assert _run_git(remote, "tag", "--list") == ""
+
+
+@pytest.mark.parametrize("failure", ["sync", "tests", "ruff", "unrelated-write", "configuration-write"])
+def test_publish_upgrade_never_commits_or_pushes_failed_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, release_ruff_process: dict[str, Any],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    def check(_: object) -> int:
+        if failure == "unrelated-write":
+            (plugin_dir / "output.txt").write_text("test output\n", encoding="utf-8")
+        if failure == "configuration-write":
+            (plugin_dir / "ruff.toml").write_text("# changed during tests\n", encoding="utf-8")
+        return 1 if failure == "tests" else 0
+
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", check)
+    monkeypatch.setattr(publish_cmd.deps_cmd, "handle_sync", lambda _: 1 if failure == "sync" else 0)
+    if failure == "ruff":
+        release_ruff_process["returncode"] = 1
+
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
+    assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == head
+    assert _run_git(remote, "tag", "--list") == ""
+    assert _run_git(plugin_dir, "diff", "--cached", "--name-only") == ""
+    assert (plugin_dir / "ruff.toml").exists()
+
+
+def test_publish_market_rejects_workflow_upgrade_without_network_access(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _RecordingClient()
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    assert neko_plugin_cli.main([
+        "publish", "market", "https://github.com/neko/demo/releases/tag/v1.0.0", "--upgrade-github-actions",
+    ]) == 1
+    assert "requires a plugin repository" in capsys.readouterr().err
+    assert client.requests == []
+
+
+def test_publish_upgrade_runs_real_generated_plugin_checks_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "rm", ".github/workflows/verify.yml")
+    _run_git(plugin_dir, "commit", "-m", "missing verification workflow")
+    _run_git(plugin_dir, "push", "origin", "main")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    client = _RecordingClient(
+        _ready_release("https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"),
+        httpx.Response(202, json={"status": "pending_review", "version": None, "candidate": {
+            "id": 12, "plugin_id": 20, "version": "0.1.0", "channel": "stable", "status": "pending_review",
+        }}),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 0
+    new_head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    assert _run_git(plugin_dir, "diff", "--name-only", head, new_head) == ".github/workflows/verify.yml"
+    assert _run_git(remote, "rev-parse", "refs/tags/v0.1.0") == new_head
+
+
+@pytest.mark.parametrize("status", ["pending_review", "rejected", "superseded"])
+def test_publish_market_reports_valid_review_receipts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], status: str,
+) -> None:
+    client = _RecordingClient(httpx.Response(202, json={"status": status, "version": None, "candidate": {
+        "id": 12, "plugin_id": 20, "version": "1.2.0", "channel": "stable", "status": status,
+    }}))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    result = neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"])
+    captured = capsys.readouterr()
+    assert result == (0 if status == "pending_review" else 1)
+    assert "Market published" not in captured.out
+    assert "#12" in captured.out + captured.err
+
+
+@pytest.mark.parametrize("candidate", [None, {}, {"id": True}, {
+    "id": 12, "plugin_id": 20, "version": "1.2.0", "channel": [], "status": "pending_review",
+}])
+def test_publish_market_rejects_malformed_review_receipts(
+    monkeypatch: pytest.MonkeyPatch, candidate: object,
+) -> None:
+    client = _RecordingClient(httpx.Response(202, json={"status": "pending_review", "candidate": candidate}))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
+
+
+@pytest.mark.parametrize("retry_after", ["3", "invalid", "nan"])
+def test_publish_market_retries_only_pending_verification(
+    monkeypatch: pytest.MonkeyPatch, retry_after: str,
+) -> None:
+    client = _RecordingClient(
+        httpx.Response(503, headers={"Retry-After": retry_after}, json={"code": "release_verification_pending"}),
+        httpx.Response(201, json={"status": "published", "version": {"version": "1.2.0"}}),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    sleeps: list[float] = []
+    patch_module_clock(monkeypatch, publish_cmd, sleep=sleeps.append)
+    assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 0
+    assert sleeps == [3.0 if retry_after == "3" else 5.0]
+    assert len(client.requests) == 2
+    assert client.requests[0] == client.requests[1]
+
+
+def test_publish_market_pending_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _RecordingClient(*[httpx.Response(503, json={"code": "release_verification_pending"}) for _ in range(2)])
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(publish_cmd, "_MARKET_WAIT_SECONDS", 0)
+    assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
+    assert len(client.requests) == 1
+
+
+def test_publish_market_does_not_retry_unrelated_service_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _RecordingClient(httpx.Response(503, json={"code": "service_unavailable"}))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
+    assert len(client.requests) == 1
+
+
+def test_publish_upgrade_rejected_push_preserves_local_commit_without_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    _run_git(remote, "config", "receive.denyCurrentBranch", "refuse")
+    _run_git(remote, "config", "core.bare", "false")
+    _run_git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+    client = _RecordingClient()
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
+    assert "Configuration commit" in capsys.readouterr().err
+    new_head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    assert new_head != head
+    assert _run_git(plugin_dir, "rev-parse", "HEAD^") == head
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == head
+    assert _run_git(remote, "tag", "--list") == ""
+    assert client.requests == []
+    # The user can recover with a normal push, without resetting or re-running tests.
+    _run_git(remote, "config", "core.bare", "true")
+    _run_git(plugin_dir, "push", "origin", "main")
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == new_head
+
+
+def test_publish_upgrade_does_not_push_a_branch_advanced_during_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    # A real competing commit advances origin while the release checks run.
+    competitor = tmp_path / "competitor"
+    _run_git(tmp_path, "clone", str(remote), str(competitor))
+    _run_git(competitor, "checkout", "main")
+    _run_git(competitor, "config", "user.name", "Other Author")
+    _run_git(competitor, "config", "user.email", "other@example.com")
+
+    def check(_: object) -> int:
+        (competitor / "README.md").write_text("remote advanced\n", encoding="utf-8")
+        _run_git(competitor, "add", "README.md")
+        _run_git(competitor, "commit", "-m", "other author's change")
+        _run_git(competitor, "push", "origin", "main")
+        return 0
+
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", check)
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
+    assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == _run_git(competitor, "rev-parse", "HEAD")
+    assert _run_git(remote, "tag", "--list") == ""

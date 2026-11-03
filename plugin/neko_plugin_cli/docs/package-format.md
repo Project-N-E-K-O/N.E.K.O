@@ -69,6 +69,31 @@ Add `--dry-run` to preview the plan. The migration only manages `ruff.toml`,
 `.github/workflows/verify.yml`, and `.github/workflows/release.yml`. If any of
 those files contains unrecognized custom content, no files are changed.
 
+To upgrade the configuration and publish with one command:
+
+```bash
+uv run neko-plugin publish qq_auto_reply --upgrade-github-actions
+```
+
+This explicit option authorizes one ordinary commit containing only generated
+configuration and a push to the current branch's existing `origin` upstream.
+The repository must be clean and HEAD must already be pushed. Recognized old
+templates are upgraded; custom configuration conflicts stop before any writes.
+Dependency synchronization, plugin tests/package checks, and Ruff must pass
+before the configuration is committed or pushed. Failed checks leave the
+generated files for inspection; no release tag is created. An existing version
+tag requires choosing a new plugin version before changing the configuration.
+Current configuration needs no extra commit. Push failures leave the local
+commit for inspection and a normal retry of the push; no history is rewritten.
+
+The normal publication then creates/waits for the GitHub Release and notifies
+Market. A pending machine check is retried according to `Retry-After` for up to
+75 minutes. An accepted human-review candidate is reported as awaiting review,
+not as a published version. Check the version management page after a timeout
+or network failure; the GitHub Release may already exist. `publish github`
+also supports the upgrade option; `publish market` does not modify repositories.
+Configuration upgrades do not create functional tests for plugins without them.
+
 ## Backend API Response Surface
 
 The plugin manager backend exposes the same package workflow with explicit response models:
