@@ -1186,7 +1186,6 @@ def test_publish_upgrade_commits_only_configuration_then_tags_and_notifies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: list[str],
 ) -> None:
     plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
-    original_head = _run_git(plugin_dir, "rev-parse", "HEAD")
     workflow = plugin_dir / ".github/workflows/release.yml"
     # A recognized older template can be upgraded together with missing files.
     workflow.write_text("\n".join(workflow.read_text(encoding="utf-8").splitlines()[2:]) + "\n", encoding="utf-8")
