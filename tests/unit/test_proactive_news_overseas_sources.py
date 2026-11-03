@@ -944,3 +944,36 @@ def test_service_skips_unmatched_grounded_news_picks():
     )
     assert "matched is None" in ast.unparse(branch.test)
     assert "跳过" in ast.unparse(branch.body[0])
+
+
+@pytest.mark.unit
+def test_google_trends_tragedy_check_covers_headlines_with_skipped_links():
+    oversized = "https://news.example.com/b?" + "q=" + "y" * 2100
+    rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:ht="https://trends.google.com/trending/rss" version="2.0"><channel>
+  <item>
+    <title>main street</title>
+    <ht:news_item>
+      <ht:news_item_title>Man killed in Main Street crash</ht:news_item_title>
+      <ht:news_item_url>{oversized}</ht:news_item_url>
+    </ht:news_item>
+    <ht:news_item>
+      <ht:news_item_title>Main Street fair schedule</ht:news_item_title>
+      <ht:news_item_url>https://news.example.com/fair</ht:news_item_url>
+    </ht:news_item>
+  </item>
+  <item>
+    <title>river park</title>
+    <ht:news_item>
+      <ht:news_item_title>Two dead after river park shooting</ht:news_item_title>
+      <ht:news_item_url>javascript:void(0)</ht:news_item_url>
+    </ht:news_item>
+    <ht:news_item>
+      <ht:news_item_title>River park reopens</ht:news_item_title>
+      <ht:news_item_url>https://news.example.com/park</ht:news_item_url>
+    </ht:news_item>
+  </item>
+</channel></rss>
+"""
+
+    assert parse_google_trends_rss(rss, limit=5) == []

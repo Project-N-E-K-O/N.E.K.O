@@ -86,8 +86,13 @@ def parse_google_trends_rss(xml_text: str, *, limit: int = 10) -> list[dict[str,
         if not word:
             continue
         news: list[dict[str, str]] = []
+        # Every headline counts for the tragedy check, including ones whose
+        # link is skipped below (oversized, non-http, gambling, junk).
+        all_titles: list[str] = []
         for news_item in item.findall(f"{_HT_NS}news_item"):
             title = _plain(news_item.findtext(f"{_HT_NS}news_item_title"), 200)
+            if title:
+                all_titles.append(title)
             url = str(news_item.findtext(f"{_HT_NS}news_item_url") or "").strip()
             if len(url) > _MAX_URL_CHARS:
                 continue
@@ -106,7 +111,7 @@ def parse_google_trends_rss(xml_text: str, *, limit: int = 10) -> list[dict[str,
             # showed it either says nothing or guesses wrong (a stock ticker
             # described as a "mysterious number"), so skip it.
             continue
-        if is_tragic_news_text(word) or any(is_tragic_news_text(entry["title"]) for entry in news):
+        if is_tragic_news_text(word) or any(is_tragic_news_text(title) for title in all_titles):
             continue
         news = news[:_MAX_NEWS_PER_TREND]
         trends.append({
