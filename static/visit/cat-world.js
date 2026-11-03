@@ -21,6 +21,8 @@
   var OUTBOUND_RETRY_MAX_MS = 8000;
   var INTENT_RETRY_MIN_MS = 300;
   var INTENT_RETRY_MAX_MS = 4000;
+  var HELD_RELEASE_MIN_MS = 1500;
+  var HELD_RELEASE_MAX_MS = 8000;
   var INTENT_KINDS = {
     yarn_spawn: true,
     yarn_grab: true,
@@ -97,6 +99,8 @@
     collisionPulseTimer: 0,
     outboundRetryTimer: 0,
     outboundRetryMs: 0,
+    heldReleaseTimer: 0,
+    heldReleaseMs: 0,
     lastTickAt: 0,
     drag: null,
     dragAuthority: null,
@@ -311,6 +315,35 @@
     // Reliable intents use a strictly increasing id. Pointer samples retain
     // the grab id; release is authorized by the current holder actor.
     sendIntent('yarn_release', point);
+    watchHeldYarn();
+  }
+
+  function ownHolder() {
+    return state.side === 'host' || state.side === 'guest' ? state.side : '';
+  }
+
+  // The world still shows this side holding the yarn while nothing here is
+  // dragging it: a reload lost the drag, or the release never reached the
+  // host page. Release it again (with backoff) so neither cat stays locked out.
+  function watchHeldYarn() {
+    var held = state.active && !state.ending && !state.drag
+      && !!ownHolder() && state.world.yarn_holder === ownHolder();
+    if (!held) {
+      if (state.heldReleaseTimer) clearTimeout(state.heldReleaseTimer);
+      state.heldReleaseTimer = 0;
+      state.heldReleaseMs = 0;
+      return;
+    }
+    if (state.heldReleaseTimer) return;
+    state.heldReleaseMs = state.heldReleaseMs
+      ? Math.min(HELD_RELEASE_MAX_MS, state.heldReleaseMs * 2) : HELD_RELEASE_MIN_MS;
+    state.heldReleaseTimer = setTimeout(function () {
+      state.heldReleaseTimer = 0;
+      if (!state.drag && state.world.yarn_holder === ownHolder()) {
+        sendIntent('yarn_release', { x_q16: state.world.yarn_x_q16, y_q16: state.world.yarn_y_q16 });
+      }
+      watchHeldYarn();
+    }, state.heldReleaseMs);
   }
 
   function ensureLayer() {
@@ -471,6 +504,7 @@
     renderWorld();
     publish('commit');
     scheduleSettleCommit();
+    watchHeldYarn();
     return true;
   }
 
@@ -758,6 +792,7 @@
     if (frame.collision_seq !== previousCollision) pulseCollision('');
     renderWorld();
     if (releasedGrab && state.simulationStarted) publish('commit');
+    watchHeldYarn();
     return true;
   }
 
@@ -798,12 +833,15 @@
     if (state.settleTimer) clearTimeout(state.settleTimer);
     if (state.collisionPulseTimer) clearTimeout(state.collisionPulseTimer);
     if (state.outboundRetryTimer) clearTimeout(state.outboundRetryTimer);
+    if (state.heldReleaseTimer) clearTimeout(state.heldReleaseTimer);
     state.tickTimer = 0;
     state.startTimer = 0;
     state.settleTimer = 0;
     state.collisionPulseTimer = 0;
     state.outboundRetryTimer = 0;
     state.outboundRetryMs = 0;
+    state.heldReleaseTimer = 0;
+    state.heldReleaseMs = 0;
     if (state.layer) state.layer.classList.remove('is-collision');
   }
 

@@ -449,6 +449,20 @@ async function main() {
   assert.equal(snapshot.last_applied_world_seq, 5);
   assert.equal(snapshot.world.yarn_x_q16, 50000);
 
+  // A guest reload (or a release lost on the way to the host page) leaves the
+  // world showing this side holding the yarn with nothing dragging it here.
+  const beforeHeld = calls.intent.length;
+  emit('neko-visit-cat-world', Object.assign(worldFrame(6, 50000), { yarn_holder: 'guest' }));
+  await advance(1000);
+  assert.equal(calls.intent.length, beforeHeld);
+  await advance(600);
+  await flush();
+  assert.deepEqual(calls.intent.slice(beforeHeld).map((item) => item.kind), ['yarn_release']);
+  emit('neko-visit-cat-world', worldFrame(7, 50000));
+  await advance(20000);
+  await flush();
+  assert.equal(calls.intent.length, beforeHeld + 1);
+
   // Leaving removes shared objects and cancels all future computation.
   const statesBeforeExit = calls.state.length;
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
@@ -484,7 +498,7 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 13
+    assert result["guestIntentCount"] == 14
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False
