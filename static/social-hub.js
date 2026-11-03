@@ -117,6 +117,13 @@
     return node;
   }
 
+  // 好友行在邀请状态按钮与「模型 / 猫形态」按钮之间切换：原按钮消失时落到同一好友的另一种按钮。
+  function focusKeyCandidates(key) {
+    var match = /^friend-(.+?)(-model|-cat)?$/.exec(key);
+    if (!match) return [key];
+    return [key, match[2] ? 'friend-' + match[1] : 'friend-' + match[1] + '-model'];
+  }
+
   function avatarManagers() {
     return [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager]
       .filter(function (manager, index, managers) {
@@ -1243,10 +1250,12 @@
     if (activeKey) {
       var focusNodes = Array.from(panel.querySelectorAll('[data-neko-focus-key]'));
       if (presenceMenu) focusNodes = focusNodes.concat(Array.from(presenceMenu.querySelectorAll('[data-neko-focus-key]')));
-      restoredFocus = focusNodes.some(function (node) {
-        if (node.getAttribute('data-neko-focus-key') !== activeKey) return false;
-        try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
-        return true;
+      restoredFocus = focusKeyCandidates(activeKey).some(function (key) {
+        return focusNodes.some(function (node) {
+          if (node.getAttribute('data-neko-focus-key') !== key) return false;
+          try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
+          return true;
+        });
       });
     }
     if (!restoredFocus && pendingFocusFallback) {

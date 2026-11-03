@@ -577,7 +577,7 @@ async def create_room(request: Request):
     if crop not in _CROPS:
         return _error(400, "crop_format")
     visit_mode = payload.get("visit_mode", "model")
-    if visit_mode not in _VISIT_MODES:
+    if not isinstance(visit_mode, str) or visit_mode not in _VISIT_MODES:
         return _error(400, "visit_mode_format")
     if visit_mode == "cat" and not VISIT_CAT_SCENE_ENABLED:
         return _error(409, "VISIT_CAT_SCENE_UNAVAILABLE")
@@ -761,7 +761,7 @@ async def join_direct_room(request: Request, visit_id: str):
     if crop not in _CROPS:
         return _error(400, "crop_format")
     visit_mode = payload.get("visit_mode", "model")
-    if visit_mode not in _VISIT_MODES:
+    if not isinstance(visit_mode, str) or visit_mode not in _VISIT_MODES:
         return _error(400, "visit_mode_format")
     if visit_mode == "cat" and not VISIT_CAT_SCENE_ENABLED:
         return _error(409, "VISIT_CAT_SCENE_UNAVAILABLE")
@@ -1113,7 +1113,7 @@ async def current_host_room(request: Request, catgirl: str = ""):
 IDLE_STATE: Mapping[str, Any] = {
     "active": False, "role": None, "side": None, "visit_id": None, "phase": None, "transport": None,
     "visit_mode": None,
-    "cat_scene": None, "self_cat_asset": None, "peer_cat_asset": None, "cat_poses": None,
+    "cat_scene": None, "cat_started": False, "self_cat_asset": None, "peer_cat_asset": None, "cat_poses": None,
     "cat_world": None,
     "tier": None, "crop": None, "peer": None, "connected": False, "reconnecting": False, "rtt_ms": None,
     "rx_fps": None, "tx_fps": None, "reconnects": 0, "anomalies": 0, "invite_expires_at": None,

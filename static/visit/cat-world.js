@@ -17,6 +17,8 @@
   var REPLAY_WAIT_MS = 180;
   var COMMIT_SETTLE_MS = 360;
   var POINTER_SEND_MS = 60;
+  var OUTBOUND_RETRY_MIN_MS = 500;
+  var OUTBOUND_RETRY_MAX_MS = 8000;
   var INTENT_KINDS = {
     yarn_spawn: true,
     yarn_grab: true,
@@ -91,6 +93,8 @@
     startTimer: 0,
     settleTimer: 0,
     collisionPulseTimer: 0,
+    outboundRetryTimer: 0,
+    outboundRetryMs: 0,
     lastTickAt: 0,
     drag: null,
     dragAuthority: null,
@@ -486,10 +490,30 @@
           item.retried = true;
           state.outbound.unshift(item);
         }
+      } else if (!(result && result.ok === true) && item.phase === 'commit'
+          && !state.outbound.some(function (queued) { return queued.phase === 'commit'; })) {
+        // The commit is what the backend replays for recovery: keep the latest
+        // one until it lands. A failed frame is simply superseded by the next.
+        state.outbound.unshift(item);
+        state.outboundBusy = false;
+        scheduleOutboundRetry();
+        return;
+      } else {
+        state.outboundRetryMs = 0;
       }
       state.outboundBusy = false;
       drainOutbound();
     });
+  }
+
+  function scheduleOutboundRetry() {
+    if (state.outboundRetryTimer || !state.active || state.ending) return;
+    state.outboundRetryMs = Math.min(OUTBOUND_RETRY_MAX_MS,
+      state.outboundRetryMs ? state.outboundRetryMs * 2 : OUTBOUND_RETRY_MIN_MS);
+    state.outboundRetryTimer = setTimeout(function () {
+      state.outboundRetryTimer = 0;
+      drainOutbound();
+    }, state.outboundRetryMs);
   }
 
   function publish(phase) {
@@ -696,10 +720,20 @@
       question_y_q16: frame.question_y_q16,
       collision_seq: frame.collision_seq
     };
-    state.yarnGrounded = frame.yarn_holder === 'none' && frame.yarn_vy_q12 === 0
-      && frame.yarn_y_q16 >= Q16_MAX - state.settings.floorInsetQ16;
+    // A grab interrupted by a host reload has no drag authority left to move
+    // or release it; drop the yarn so either cat can grab it again.
+    var releasedGrab = state.side === 'host' && state.world.yarn_holder !== 'none'
+      && !state.dragAuthority;
+    if (releasedGrab) {
+      state.world.yarn_holder = 'none';
+      state.world.yarn_vx_q12 = 0;
+      state.world.yarn_vy_q12 = 0;
+    }
+    state.yarnGrounded = state.world.yarn_holder === 'none' && state.world.yarn_vy_q12 === 0
+      && state.world.yarn_y_q16 >= Q16_MAX - state.settings.floorInsetQ16;
     if (frame.collision_seq !== previousCollision) pulseCollision('');
     renderWorld();
+    if (releasedGrab && state.simulationStarted) publish('commit');
     return true;
   }
 
@@ -739,10 +773,13 @@
     if (state.startTimer) clearTimeout(state.startTimer);
     if (state.settleTimer) clearTimeout(state.settleTimer);
     if (state.collisionPulseTimer) clearTimeout(state.collisionPulseTimer);
+    if (state.outboundRetryTimer) clearTimeout(state.outboundRetryTimer);
     state.tickTimer = 0;
     state.startTimer = 0;
     state.settleTimer = 0;
     state.collisionPulseTimer = 0;
+    state.outboundRetryTimer = 0;
+    state.outboundRetryMs = 0;
     if (state.layer) state.layer.classList.remove('is-collision');
   }
 

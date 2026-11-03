@@ -887,14 +887,22 @@ test('cat visits keep local Playground gravity but register only the local cat b
   assert.equal(starts[0].button, r.button);
   assert.equal(starts[0].options.catOnly, true);
 
-  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
-  const register = source.slice(
-    source.indexOf('function _registerNekoIdleCat1PlaygroundPhysicsBodies'),
-    source.indexOf('function _setNekoIdleCat1PlaygroundBodyPosition')
-  );
-  assert.ok(register.indexOf('if (options.catOnly)') < register.indexOf(
-    'const target = _getNekoIdleCat1PairMoveChatTarget()'
-  ));
+  // Run the registration itself: catOnly keeps the cat body and skips the chat yarn.
+  const dropState = { bodies: new Map(), entryQuestionBlockElement: null };
+  [
+    '_NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS',
+    '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS',
+  ].forEach((name) => { if (!(name in r.context)) r.context[name] = 1; });
+  r.context._getNekoIdleCat1PlaygroundDropState = () => dropState;
+  r.context._getNekoIdleReturnContainerFromButton = () => r.container;
+  r.context._createNekoIdleCat1PlaygroundPhysicsBody = (_kind, _element, options) => ({ id: options.id });
+  r.context._captureNekoIdleCat1PlaygroundStartPositions = () => ({});
+  r.context._getNekoIdleCat1PairMoveChatTarget = () => ({ mode: 'dom', shell: {}, rect: {} });
+  const register = r.context._registerNekoIdleCat1PlaygroundPhysicsBodies;
+  assert.equal(register(r.button, { catOnly: true }), true);
+  assert.deepEqual(Array.from(dropState.bodies.keys()), ['cat']);
+  register(r.button, {});
+  assert.equal(dropState.bodies.has('yarn'), true);
 });
 
 test('gravity preference on an ordinary model waits for active CAT1 and ignores a late entry after OFF', () => {

@@ -2091,6 +2091,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if (not self.cat_scene_active or not self.activated or not self.ready_exchanged
                 or self.phase != PHASE_ACTIVE or self.finalizing):
             return 409, {"ok": False, "code": "VISIT_CAT_SCENE_NOT_ACTIVE"}
+        if not self.host.display_bound():
+            # The local echo would be dropped unbound while the peer still plays the action.
+            return 409, {"ok": False, "code": "VISIT_DISPLAY_UNBOUND"}
         payload = {
             "t": "cat_action",
             "v": 1,
@@ -2306,6 +2309,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if intent_id <= self._cat_world_intent_cursor["self"]:
             return 409, {"ok": False, "code": "VISIT_CAT_WORLD_INTENT_STALE",
                          "current_intent_id": self._cat_world_intent_cursor["self"]}
+        if self._display_backlogged():
+            # Intents are not droppable; a slow page must not queue lifecycle frames behind them.
+            return 429, {"ok": False, "code": "VISIT_E_BUSY"}
         seq = 0
         if self.side == "guest":
             payload = {"t": "cat_world_intent", "v": 1,
@@ -3250,6 +3256,8 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
             "visit_mode": self.visit_mode,
             "transport": creds.transport if creds else None,
             "cat_scene": VISIT_CAT_SCENE_VERSION if self.cat_scene_active else None,
+            # Cat scenes have no room or transcript; this tells a reloaded page an ending visit had started.
+            "cat_started": bool(self.cat_scene_active and self.activated),
             "self_cat_asset": self.cat_asset if self.cat_scene_active else None,
             "peer_cat_asset": peer.cat_asset if self.cat_scene_active and peer is not None else None,
             "cat_poses": None if not self.cat_scene_active else {

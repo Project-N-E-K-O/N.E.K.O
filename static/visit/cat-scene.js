@@ -70,7 +70,7 @@
       container: null,
       button: null,
       label: null,
-      frame: 0,
+      frame: null,
       entryRequested: false,
       lastGeometry: '',
       collisionTimer: 0,
@@ -87,7 +87,7 @@
       pending: [],
       inFlight: false
     },
-    geometry: { frame: 0, until: 0 },
+    geometry: { frame: null, until: 0 },
     slots: { self: emptySlot('self'), peer: emptySlot('peer') }
   };
 
@@ -255,29 +255,37 @@
       : Date.now();
   }
 
+  // Frames go through nekoFramePacing: a visit script scheduling its own rAF
+  // would pull an Electron pet that ticks on a timer back to the display rate.
+  function requestSceneFrame(callback) {
+    var pacing = global.nekoFramePacing;
+    if (!pacing || typeof pacing.requestPacedFrame !== 'function') return null;
+    try { return pacing.requestPacedFrame(callback); } catch (_) { return null; }
+  }
+
+  function cancelSceneFrame(cancel) {
+    if (typeof cancel !== 'function') return;
+    try { cancel(); } catch (_) { /* noop */ }
+  }
+
   function runGeometryPulse(timestamp) {
-    scene.geometry.frame = 0;
+    scene.geometry.frame = null;
     syncFloatingLabels();
     emitGeometryChanged();
-    if (!scene.active || Number(timestamp) >= scene.geometry.until
-        || typeof global.requestAnimationFrame !== 'function') return;
-    scene.geometry.frame = global.requestAnimationFrame(runGeometryPulse);
+    if (!scene.active || Number(timestamp) >= scene.geometry.until) return;
+    scene.geometry.frame = requestSceneFrame(runGeometryPulse);
   }
 
   function pulseGeometry(duration) {
     var now = geometryNow();
     scene.geometry.until = Math.max(scene.geometry.until, now + Math.max(0, Number(duration) || 0));
     emitGeometryChanged();
-    if (!scene.geometry.frame && typeof global.requestAnimationFrame === 'function') {
-      scene.geometry.frame = global.requestAnimationFrame(runGeometryPulse);
-    }
+    if (!scene.geometry.frame) scene.geometry.frame = requestSceneFrame(runGeometryPulse);
   }
 
   function stopGeometryPulse() {
-    if (scene.geometry.frame && typeof global.cancelAnimationFrame === 'function') {
-      global.cancelAnimationFrame(scene.geometry.frame);
-    }
-    scene.geometry.frame = 0;
+    cancelSceneFrame(scene.geometry.frame);
+    scene.geometry.frame = null;
     scene.geometry.until = 0;
     emitGeometryChanged();
   }
@@ -343,10 +351,8 @@
   }
 
   function clearNativeSelfBinding() {
-    if (scene.nativeSelf.frame && typeof global.cancelAnimationFrame === 'function') {
-      global.cancelAnimationFrame(scene.nativeSelf.frame);
-    }
-    scene.nativeSelf.frame = 0;
+    cancelSceneFrame(scene.nativeSelf.frame);
+    scene.nativeSelf.frame = null;
     dropNativeSelfBinding();
   }
 
@@ -490,7 +496,7 @@
   }
 
   function syncNativeSelf(timestamp) {
-    scene.nativeSelf.frame = 0;
+    scene.nativeSelf.frame = null;
     if (!scene.active) return;
     var nativeSelf = scene.nativeSelf;
     if (nativeSelf.container && (!nativeSelf.container.isConnected
@@ -516,9 +522,7 @@
       }
     }
     pumpNativePose(timestamp);
-    if (typeof global.requestAnimationFrame === 'function') {
-      scene.nativeSelf.frame = global.requestAnimationFrame(syncNativeSelf);
-    }
+    scene.nativeSelf.frame = requestSceneFrame(syncNativeSelf);
   }
 
   function requestNativeCatEntry() {
@@ -571,9 +575,7 @@
     forceCatAppearance();
     bindNativeSelf();
     if (!scene.nativeSelf.container) requestNativeCatEntry();
-    if (!scene.nativeSelf.frame && typeof global.requestAnimationFrame === 'function') {
-      scene.nativeSelf.frame = global.requestAnimationFrame(syncNativeSelf);
-    }
+    if (!scene.nativeSelf.frame) scene.nativeSelf.frame = requestSceneFrame(syncNativeSelf);
     setStatus(t('visit.catScene.active', '正在串门'));
     updateControls();
     emitGeometryChanged();

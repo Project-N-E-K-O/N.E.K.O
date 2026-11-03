@@ -92,6 +92,15 @@ frame({
 frame(started);
 assert.equal(window.nekoVisitCatPoseSnapshots().length, 1);
 assert.equal(window.nekoVisitCatWorldSnapshot().world_seq, 6);
+
+// A reload snapshot has no neko-visit-frame: a single window must apply it locally.
+const restored = [];
+window.addEventListener('neko-visit-display-state', (event) => restored.push(event.detail.visit_id));
+const recovered = { ...started, visit_id: 'BBBBBBBBBBBBBBBBBBBBBB' };
+assert.equal(window.nekoRelayVisitStateToDisplay(recovered), false);
+assert.equal(window.nekoRestoreVisitStateToDisplay(recovered), true);
+assert.deepEqual(restored, ['BBBBBBBBBBBBBBBBBBBBBB']);
+assert.equal(window.nekoVisitDisplayStateSnapshot().visit_id, 'BBBBBBBBBBBBBBBBBBBBBB');
 process.stdout.write(JSON.stringify({ received: received.length, retainedAfterDuplicateStart: true }));
 """
 

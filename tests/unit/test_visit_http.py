@@ -336,6 +336,21 @@ async def test_rooms_rejects_bad_fields_before_reserving(env):
     assert _no_slot()
 
 
+@pytest.mark.parametrize("visit_mode", [[], {}, ["cat"]])
+async def test_unhashable_visit_modes_are_format_errors(env, visit_mode):
+    rooms = await _rooms(env, visit_mode=visit_mode)
+    env.use(env.guest)
+    async with env.client() as c:
+        direct = await c.post(f"/api/visit/rooms/{VISIT_ID}/join-direct", headers=GOOD, json={
+            "catgirl": "Guest", "confirm": True, "crop": "full", "visit_mode": visit_mode,
+        })
+    assert [response.status_code for response in (rooms, direct)] == [400, 400]
+    assert [response.json()["code"] for response in (rooms, direct)] == [
+        "visit_mode_format", "visit_mode_format",
+    ]
+    assert _no_slot() and _no_slot("Guest")
+
+
 async def test_all_room_entry_paths_reject_an_unknown_cat_asset(env):
     host = await _rooms(env, cat_asset="pc-guessed-cat")
     guest = await _join(env, cat_asset="pc-guessed-cat")

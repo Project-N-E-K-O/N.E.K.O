@@ -286,8 +286,12 @@ function createHarness(options) {
       (listeners.get(event.type) || []).slice().forEach((fn) => fn(event));
       return true;
     },
-    requestAnimationFrame(fn) { return schedule('raf', fn, 16); },
-    cancelAnimationFrame(id) { cancel(id); },
+    nekoFramePacing: {
+      requestPacedFrame(fn) {
+        const id = schedule('raf', fn, 16);
+        return () => cancel(id);
+      },
+    },
     NekoCatResourceRegistry: {
       getAppearanceForGroup(groupId, slot, options) {
         const seed = Number(options && options.seed) || 0;

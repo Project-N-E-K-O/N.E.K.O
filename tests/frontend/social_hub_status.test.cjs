@@ -905,6 +905,35 @@ test('keyboard focus survives the busy follow render and recommendation refill',
   dom.window.close();
 });
 
+test('keyboard focus moves to the visit buttons when a friend invitation ends', async () => {
+  const { dom, hub, document } = loadMountedHub({
+    fetch: async () => ({ ok: true, json: async () => ({
+      logged_in: true,
+      account: { id: 'account-1', display_name: 'Current User' },
+      friends: [{ id: 'f1', display_name: 'Friend', presence_status: 'online', online: true }],
+      recommendations: [],
+    }) }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  hub._applyVisitStatus({
+    visitId: 'visit-1', phase: 'invite_ready', active: true, side: 'host', targetUserId: 'f1',
+  });
+  const cancelButton = document.querySelector('[data-neko-focus-key="friend-f1"]');
+  assert.ok(cancelButton, document.body.innerHTML);
+  cancelButton.focus();
+
+  hub._applyVisitStatus({ visitId: 'visit-1', action: 'ended', phase: 'ended' });
+  assert.equal(document.activeElement.getAttribute('data-neko-focus-key'), 'friend-f1-model');
+
+  // The reverse switch lands on the invitation's status button.
+  document.querySelector('[data-neko-focus-key="friend-f1-cat"]').focus();
+  hub._applyVisitStatus({
+    visitId: 'visit-2', phase: 'invite_ready', active: true, side: 'host', targetUserId: 'f1',
+  });
+  assert.equal(document.activeElement.getAttribute('data-neko-focus-key'), 'friend-f1');
+  dom.window.close();
+});
+
 test('an old follow response cannot mutate a new account panel', async () => {
   let resolveFollow;
   const { hub } = loadHub({

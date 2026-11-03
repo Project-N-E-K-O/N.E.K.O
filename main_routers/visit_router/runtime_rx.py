@@ -491,6 +491,10 @@ class ReceiveMixin:
             "ts": self.wall(), "paced": "audio",
         }, droppable=True)
 
+    def _display_backlogged(self) -> bool:
+        """Whether the display queue is full, so new reliable frames would only pile up."""
+        return len(self._display) >= _DISPLAY_QUEUE_MAX
+
     def _post_display(self, frame: dict, *, droppable: bool = False) -> None:
         """Queue a display frame in order without awaiting it on the receive path.
 

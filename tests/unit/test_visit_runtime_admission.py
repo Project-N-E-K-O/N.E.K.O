@@ -175,6 +175,8 @@ async def _bring_up_cat_pair(
         status, body = await host.rt.accept(True)
         assert (status, body) == (200, {"ok": True})
         await wait_for(lambda: host.rt.activated and guest.rt.activated)
+        # The guest activates before the host's ready arrives; cat requests wait for ready.
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
     return host, guest, wire, clock, wall
 
 
@@ -1077,7 +1079,12 @@ async def test_cat_actions_require_ready_and_reject_once_finalization_starts(tmp
                     if m.get("t") == "cat_action"]
 
         assert (await host.rt.accept(True))[0] == 200
-        await wait_for(lambda: host.rt.activated and guest.rt.activated)
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
+        host.host.bound = False                  # An unbound page would drop the local echo.
+        status, body = await host.rt.request_cat_action("rest")
+        assert status == 409 and body["code"] == "VISIT_DISPLAY_UNBOUND"
+        assert not [m for m in wire.sent["host"] if m.get("t") == "cat_action"]
+        host.host.bound = True
         assert host.rt.request_finalize("route_end")
         status, body = await host.rt.request_cat_action("rest")
         assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"

@@ -89,6 +89,7 @@ async function main() {
   const geometry = [];
   let staleIntentOnce = false;
   let stateResponses = 0;
+  let failStates = 0;
 
   function schedule(fn, delay, interval) {
     const id = nextTimer++;
@@ -169,9 +170,13 @@ async function main() {
       sendState(payload) {
         calls.state.push(JSON.parse(JSON.stringify(payload)));
         stateResponses += 1;
+        if (failStates > 0) {
+          failStates -= 1;
+          return Promise.resolve(false);
+        }
         return Promise.resolve(stateResponses === 1
           ? { stale: true, current_world_seq: 40 }
-          : { accepted: true });
+          : { ok: true });
       },
     },
   };
@@ -338,6 +343,42 @@ async function main() {
   assert.equal(calls.state[calls.state.length - 1].phase, 'commit');
   await advance(1000);
   assert.equal(calls.state.length, settledStateCount);
+
+  // The commit is the backend's recovery state: a failed one is retried with
+  // backoff until it lands, then publishing stops again.
+  failStates = 2;
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
+    intent_id: 12, x_q16: 34000, y_q16: 61000,
+  });
+  await flush();
+  await advance(8000);
+  const retried = calls.state.slice(settledStateCount);
+  assert.equal(failStates, 0);
+  assert.ok(retried.filter((item) => item.phase === 'commit').length >= 3);
+  assert.equal(retried[retried.length - 1].phase, 'commit');
+  const retriedStateCount = calls.state.length;
+  await advance(10000);
+  assert.equal(calls.state.length, retriedStateCount);
+
+  // A reload during a grab restores a holder with no drag authority behind it:
+  // the host drops the yarn instead of leaving it locked for both cats.
+  emit('neko-visit-cat-world', Object.assign(worldFrame(900, 30000, 'commit'), { yarn_holder: 'guest' }));
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'none');
+  await flush();
+  assert.equal(calls.state[calls.state.length - 1].phase, 'commit');
+  assert.equal(calls.state[calls.state.length - 1].yarn_holder, 'none');
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'self', kind: 'yarn_grab',
+    intent_id: 13, x_q16: 30000, y_q16: 20000,
+  });
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'host');
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'self', kind: 'yarn_release',
+    intent_id: 14, x_q16: 30000, y_q16: 20000,
+  });
+  await flush();
+  await advance(8000);
 
   // Ending immediately stops host calculation; it cannot start again behind
   // the exit confirmation flow.

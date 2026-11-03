@@ -411,6 +411,13 @@
     }
   };
 
+  // 重载恢复出的阶段帧没有对应的 neko-visit-frame：Chat 跟随窗照常转给 Pet，
+  // Pet / 单窗口只能在本窗口直接派发，否则猫形态场景停在未激活。
+  window.nekoRestoreVisitStateToDisplay = function restoreVisitStateToDisplay(frame) {
+    if (isChatFollower) return window.nekoRelayVisitStateToDisplay(frame);
+    return dispatchDisplayState(frame);
+  };
+
   function relayCatSceneToDisplay(frame) {
     if (!isChatFollower || !channel) return false;
     var normalized = safeCatFrame(frame);

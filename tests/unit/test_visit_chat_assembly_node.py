@@ -643,6 +643,19 @@ const report = {};
     report.stale_same_visit_ending_phase = h.chat._test.state().visit.phase;
     report.stale_same_visit_ending_relay = h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id);
   }
+  // ── 猫形态场次没有 room / 转录：已开始的 ending 快照靠 cat_started 判定，不能提前转发 ended ──
+  for (const catStarted of [true, false]) {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: {
+      active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true, room: null, transcript: [],
+      cat_scene: 2, cat_started: catStarted,
+    } }) };
+    const h = createHarness({ routes });
+    await h.chat.afterBind(h.socket, '咪咪');
+    report['cat_ending_started_' + catStarted] = {
+      phase: h.chat._test.state().visit.phase,
+      relay: h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id),
+    };
+  }
   // ── 被拒那句之后又提交过：不把旧文字塞回输入框，气泡照样标「未送达」 ──
   {
     const h = createHarness();
@@ -2158,6 +2171,15 @@ def test_stale_unstarted_ending_snapshot_closes_the_same_visit(report):
         "pending:AAAAAAAAAAAAAAAAAAAAAA",
         "ended:AAAAAAAAAAAAAAAAAAAAAA",
     ]
+
+
+def test_cat_ending_snapshot_uses_cat_started(report):
+    started = report["cat_ending_started_true"]
+    assert started["phase"] == "ending"
+    assert not [frame for frame in started["relay"] if frame.startswith("ended:")]
+    unstarted = report["cat_ending_started_false"]
+    assert unstarted["phase"] is None
+    assert unstarted["relay"] == ["ended:AAAAAAAAAAAAAAAAAAAAAA"]
 
 
 def test_a_later_submission_keeps_an_old_refused_text_out_of_the_composer(report):

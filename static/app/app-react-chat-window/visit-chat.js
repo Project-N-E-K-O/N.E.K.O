@@ -457,7 +457,8 @@
         if (state.phase === 'active' || state.phase === 'wrap_up') return true;
         if (state.phase !== 'ending') return false;
         return (!!state.room && typeof state.room === 'object')
-            || (Array.isArray(state.transcript) && state.transcript.length > 0);
+            || (Array.isArray(state.transcript) && state.transcript.length > 0)
+            || (state.cat_scene === 2 && state.cat_started === true);
     }
 
     function phaseOf(action) {
@@ -3267,7 +3268,9 @@
     }
 
     function relayStateSnapshotToDisplay(state, visitId) {
-        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
+        var restore = typeof window.nekoRestoreVisitStateToDisplay === 'function'
+            ? window.nekoRestoreVisitStateToDisplay : window.nekoRelayVisitStateToDisplay;
+        if (!visitId || typeof restore !== 'function') return;
         var phase = phaseFromState(state.phase);
         if (!phase) return;
         var frame = {
@@ -3289,7 +3292,7 @@
         if (state.peer_cat_asset === 'dev_neko' || state.peer_cat_asset === 'yui_neko') {
             frame.peer_cat_asset = state.peer_cat_asset;
         }
-        window.nekoRelayVisitStateToDisplay(frame);
+        restore(frame);
         if (state.cat_scene === 2 && state.cat_poses
                 && typeof window.nekoRelayVisitCatPoseToDisplay === 'function') {
             ['self', 'peer'].forEach(function (actor) {
@@ -3314,12 +3317,12 @@
         // 这一帧可能先于 Pet 窗自己的重载恢复建出 iframe，恢复随即作废，它本该套上的出门样式 / 对端显隐
         // 也就没了：按后端 started → departed 的顺序补上出门，再按快照同步对端显隐（建 iframe 会清掉这两样，必须排在阶段帧之后）
         if (frame.side === 'guest' && (phase === 'active' || phase === 'wrap_up')) {
-            window.nekoRelayVisitStateToDisplay({
+            restore({
                 type: 'visit_state_change', action: 'departed', side: frame.side, visit_id: visitId
             });
         }
         if (state.peer && typeof state.peer.hidden === 'boolean') {
-            window.nekoRelayVisitStateToDisplay({
+            restore({
                 type: 'visit_state_change', action: state.peer.hidden ? 'peer_hidden' : 'peer_visible',
                 side: frame.side, visit_id: visitId
             });
