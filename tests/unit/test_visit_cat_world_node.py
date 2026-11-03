@@ -658,6 +658,41 @@ async function main() {
   assert.equal(calls.state[gatedBefore].yarn_x_q16, 22000);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
+  // A recovery that replaces a world with a drag in progress drops that drag,
+  // so a saved holder from that world is released instead of locking the yarn.
+  const hostIntent = (actor, kind, intentId, x) => emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor, kind,
+    intent_id: intentId, x_q16: x, y_q16: 15000,
+  });
+  lifecycle('departed', 'host');
+  await advance(181);
+  await flush();
+  hostIntent('self', 'question_tap', 100, 20000);
+  hostIntent('self', 'yarn_grab', 101, 20000);
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'host');
+  await flush();
+  staleStateCursor = 600;
+  hostIntent('self', 'pointer', 101, 21000);
+  await flush();
+  emit('neko-visit-cat-world', Object.assign(worldFrame(590, 25000, 'commit'), { yarn_holder: 'guest' }));
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'none');
+  hostIntent('peer', 'yarn_grab', 102, 25000);
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'guest');
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+
+  // A replay that grows too long gives up on the late saved world rather than
+  // replaying a sequence with its oldest actions dropped.
+  lifecycle('departed', 'host');
+  staleStateCursor = 700;
+  await advance(181);
+  await flush();
+  await advance(1100);
+  await flush();
+  for (let index = 0; index < 260; index += 1) hostIntent('peer', 'pointer', 110, 30000);
+  emit('neko-visit-cat-world', Object.assign(worldFrame(690, 31000, 'commit'), { question_x_q16: 555 }));
+  assert.notEqual(win.NekoVisitCatWorld.snapshot().world.question_x_q16, 555);
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+
   process.stdout.write(JSON.stringify({
     guestIntentCount: calls.intent.length,
     hostStateCount: statesBeforeExit,

@@ -25,6 +25,7 @@
   var HELD_RELEASE_MAX_MS = 8000;
   var HELD_RELEASE_ATTEMPTS = 3;
   var RECOVERY_WAIT_MS = 1000;
+  var RECOVERY_REPLAY_MAX = 256;
   var INTENT_KINDS = {
     yarn_spawn: true,
     yarn_grab: true,
@@ -519,8 +520,14 @@
     if (state.recoveryCursor) {
       // A saved world may still arrive after the wait gave up: keep what was
       // applied meanwhile (pointer samples too) so it can be replayed on top of it.
-      state.recoveryReplay.push(Object.assign({ received_at: Date.now() }, frame));
-      while (state.recoveryReplay.length > 256) state.recoveryReplay.shift();
+      // Dropping the oldest would replay a broken sequence, so once it is too
+      // long stop waiting and keep the current world instead.
+      if (state.recoveryReplay.length >= RECOVERY_REPLAY_MAX) {
+        state.recoveryCursor = 0;
+        state.recoveryReplay = [];
+      } else {
+        state.recoveryReplay.push(Object.assign({ received_at: Date.now() }, frame));
+      }
     }
     if (frame.kind === 'pointer') return rememberPointer(frame);
     if (frame.kind === 'yarn_spawn' && world.yarn_active) return true;
@@ -873,7 +880,11 @@
     // world even if it arrived after the short replay wait.
     if (state.side === 'host' && state.simulationStarted
         && frame.world_seq <= previousPublished && !recovery) return true;
-    if (recovery) endRecoveryWait();
+    if (recovery) {
+      endRecoveryWait();
+      // Drags belong to the world being replaced; the replay re-establishes them.
+      state.dragAuthority = null;
+    }
     var settleRecovery = recovery && state.simulationStarted;
     state.world = {
       world_seq: frame.world_seq,
