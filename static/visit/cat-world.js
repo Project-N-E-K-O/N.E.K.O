@@ -497,10 +497,12 @@
     var samples = drag && drag.samples ? drag.samples.slice() : [];
     samples.push({ x: point.x_q16, y: point.y_q16, at: at });
     if (samples.length < 2) return { x: 0, y: 0 };
+    // A clock stepped back mid-drag has no usable duration: drop instead of flinging.
+    for (var index = 1; index < samples.length; index += 1) {
+      if (samples[index].at < samples[index - 1].at) return { x: 0, y: 0 };
+    }
     var first = samples[0];
     var last = samples[samples.length - 1];
-    // A clock stepped back mid-drag has no usable duration: drop instead of flinging.
-    if (last.at < first.at) return { x: 0, y: 0 };
     var seconds = Math.max(0.016, (last.at - first.at) / 1000);
     return {
       x: clampInt((last.x - first.x) / Q16_MAX / seconds * 4096, Q12_MIN, Q12_MAX),

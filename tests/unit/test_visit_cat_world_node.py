@@ -687,6 +687,16 @@ async function main() {
   assert.equal(dropped.yarn_holder, 'none');
   assert.equal(dropped.yarn_vx_q12, 0);
   assert.equal(dropped.yarn_vy_q12, 0);
+  // Also when the clock steps back and recovers before the release.
+  hostIntent('peer', 'yarn_grab', 104, 27000);
+  now -= 5000;
+  hostIntent('peer', 'pointer', 104, 29000);
+  now += 5000;
+  hostIntent('peer', 'yarn_release', 105, 31000);
+  const recovered = win.NekoVisitCatWorld.snapshot().world;
+  assert.equal(recovered.yarn_holder, 'none');
+  assert.equal(recovered.yarn_vx_q12, 0);
+  assert.equal(recovered.yarn_vy_q12, 0);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   // A replay that grows too long gives up on the late saved world rather than
