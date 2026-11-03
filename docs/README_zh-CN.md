@@ -15,7 +15,7 @@
 [![Commit](https://img.shields.io/github/last-commit/Project-N-E-K-O/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 ![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1092413003-00BFFF?style=flat&logo=tencent-qq)
-[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
+[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=badge_zh_cn)
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online/zh-CN/)
 [![Website](https://img.shields.io/badge/🐾_官网-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
@@ -24,7 +24,7 @@
 
 </div>
 
-本 README 面向开发者。只想使用 N.E.K.O. 的话，请在 [Steam](https://store.steampowered.com/app/4099310/__NEKO/) 免费下载，或访问官网 [project-neko.cn](https://project-neko.cn)。
+本 README 面向开发者。只想使用 N.E.K.O. 的话，请在 [Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=intro_zh_cn) 免费下载，或访问官网 [project-neko.cn](https://project-neko.cn)。
 
 ---
 
