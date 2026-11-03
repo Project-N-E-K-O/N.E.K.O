@@ -173,6 +173,18 @@ class _Transfer:
 
     async def _open_first(self) -> _Opened:
         """Open queued routes, staggered by hedge delay, until one answers acceptably."""
+        owned: list[_Opened] = []
+        try:
+            return await self._race_open(owned)
+        except BaseException:
+            if owned:
+                async def close_owned():
+                    await asyncio.gather(*(item.response.aclose() for item in owned), return_exceptions=True)
+                await await_cancellation_safe(asyncio.create_task(close_owned()))
+            raise
+
+    async def _race_open(self, owned: list[_Opened]) -> _Opened:
+        """Retain response ownership until losing attempts have finished cleanup."""
         pending: dict[asyncio.Task[_Opened], Route] = {}
         try:
             while True:
@@ -193,6 +205,7 @@ class _Transfer:
                     error = task.exception()
                     if error is None:
                         opened.append(task.result())
+                        owned.append(task.result())
                     elif isinstance(error, self.route_failures):
                         self.last_error = error
                         self.observations.append(RouteObservation(source_id, failed=True))
@@ -205,7 +218,10 @@ class _Transfer:
                 winner = None if fatal else next(iter(opened), None)
                 for loser in opened:
                     if loser is not winner:
-                        await loser.response.aclose()
+                        # HTTPX marks a response closed before its stream has
+                        # finished closing; retrying a cancelled close is a no-op.
+                        await await_cancellation_safe(asyncio.create_task(loser.response.aclose()))
+                        owned.remove(loser)
                         # It answered, so it can carry the rest if the winner fails.
                         self.queue.append((loser.source_id, loser.url))
                 if fatal is not None:

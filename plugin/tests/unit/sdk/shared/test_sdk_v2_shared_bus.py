@@ -778,6 +778,17 @@ class TestConversationRecord:
 
 
 class TestMemoryRecord:
+    def test_from_host_record_preserves_public_fields(self) -> None:
+        from plugin.core.bus.memory import MemoryRecord
+
+        payload = {"type": "user_message", "is_voice": True, "_ts": 123.0, "lanlan": "YUI"}
+        record = SdkBusMemoryRecord.from_raw(MemoryRecord.from_raw(payload, bucket_id="YUI"))
+        assert record.dump() == payload
+
+    def test_from_sdk_record_is_idempotent(self) -> None:
+        record = SdkBusMemoryRecord.from_raw({"type": "user_message"})
+        assert SdkBusMemoryRecord.from_raw(record) is record
+
     def test_from_raw_mapping(self) -> None:
         rec = SdkBusMemoryRecord.from_raw({"id": "mem1", "rev": 3, "data": "x"})
         assert rec.key() == "mem1"

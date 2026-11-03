@@ -352,6 +352,9 @@ class SdkBusMemoryRecord:
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusMemoryRecord":
+        if isinstance(raw, cls):
+            return raw
+        raw = raw if isinstance(raw, Mapping) else getattr(raw, "raw", raw)
         if isinstance(raw, Mapping):
             return cls(payload={str(key): value for key, value in raw.items()})
         return cls(payload={"value": raw})

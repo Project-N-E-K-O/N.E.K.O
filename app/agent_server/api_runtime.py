@@ -330,6 +330,47 @@ def _resolve_conversation_ts(event: Dict[str, Any]) -> float:
     return value if math.isfinite(value) else time.time()
 
 
+def _forward_user_context(event: Dict[str, Any]) -> None:
+    """Project user turns into the embedded plugin runtime's recent context.
+
+    Main and agent can be separate processes. Only update the plugin bucket:
+    redispatching all utterance sinks here would repeat memory side effects.
+    The local write and this relay share identity and producer time so merged
+    mode and repeated delivery cannot duplicate or refresh a user utterance.
+    """
+    if not _user_plugins_enabled() or event.get("turn_type") != "user_message":
+        return
+    content = event.get("content")
+    metadata = event.get("metadata")
+    if not isinstance(content, str) or not content.strip():
+        return
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("is_voice"), bool):
+        return
+    # Do not convert a malformed or missing producer time into fresh activity.
+    timestamp = event.get("ts")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+        return
+    try:
+        from plugin.core.state import state
+
+        character = event.get("lanlan_name")
+        payload = {
+            "type": "user_message",
+            "event_id": event.get("event_id"),
+            "_ts": timestamp,
+            "content": content.strip(),
+            "lanlan": character,
+            "is_voice": metadata["is_voice"],
+            "source": str(event.get("source") or "unknown"),
+        }
+        for bucket in dict.fromkeys(("default", character)):
+            if isinstance(bucket, str) and bucket:
+                state.add_user_context_event(bucket, payload)
+    except Exception:
+        # This observer must not interrupt the conversation bus or log text.
+        logger.debug("[UserContext] projection failed")
+
+
 def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
     """Copy one already-handled conversation message into the ``conversations`` store.
 
@@ -517,6 +558,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         _forward_provider_frame(event)
         return
     if event_type == "conversation_turn_observed":
+        _forward_user_context(event)
         _forward_conversation_turn(event)
         return
     if event_type == "analyze_request":
