@@ -532,3 +532,61 @@ async def test_stopped_router_releases_unprocessed_queue_payloads(monkeypatch):
     gc.collect()
     assert router._queue is None
     assert queue_ref() is None and payload_ref() is None
+
+
+async def test_start_recovers_after_owner_loop_closes_without_stop(monkeypatch):
+    monkeypatch.setattr(state, "_plugin_comm_queue", None)
+    monkeypatch.setattr(state, "plugin_control_ingress", None)
+    replies = asyncio.Queue()
+    monkeypatch.setattr(state, "get_downlink_sender", lambda _: replies.put)
+    router = module.PluginRouter()
+    old, errors = {}, []
+    cancelled = threading.Event()
+
+    async def echo(ctx, request):
+        return "new-owner"
+
+    async def old_owner():
+        entered = asyncio.Event()
+
+        async def held(ctx, request):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        router._handlers.update(HELD=held, ECHO=echo)
+        await router.start()
+        old.update(ingress=router._ingress, queue=router._queue, task=router._router_task)
+        await router._ingress.enqueue({"type": "HELD", "request_id": "old", "from_plugin": "probe"})
+        await asyncio.wait_for(entered.wait(), 1)
+        # Deliberately omit stop(): asyncio.run must cancel outstanding work
+        # and close this owner's loop before a different loop recovers it.
+
+    def run_old_owner():
+        try:
+            asyncio.run(old_owner())
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_old_owner, name="router-closed-owner")
+    thread.start()
+    await asyncio.to_thread(thread.join, 3)
+    assert not thread.is_alive() and not errors
+    assert old["ingress"].loop.is_closed() and old["task"].done()
+    assert cancelled.is_set()
+    try:
+        await router.start()
+        assert old["ingress"]._closed
+        assert router._ingress is not old["ingress"]
+        assert router._queue is not old["queue"]
+        assert state.plugin_control_ingress is router._ingress
+        # Concurrent recovery and late cleanup must not retire the new owner.
+        await asyncio.gather(router.start(), router._stop_ingress(old["ingress"]))
+        await router._ingress.enqueue({"type": "ECHO", "request_id": "new", "from_plugin": "probe"})
+        reply = await asyncio.wait_for(replies.get(), 1)
+        assert reply["request_id"] == "new" and reply["result"] == "new-owner"
+    finally:
+        if router._ingress is not old["ingress"]:
+            await router.stop()

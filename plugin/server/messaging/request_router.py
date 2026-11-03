@@ -104,6 +104,25 @@ class PluginRouter:
         if owner is asyncio.get_running_loop():
             await self._stop_on_owner(lease)
         else:
+            if owner.is_closed():
+                with self._start_lock:
+                    if lease is not self._ingress:
+                        return
+                    if self._router_task is not None and self._router_task.done():
+                        # asyncio.run may have cancelled the old generation
+                        # and closed its loop without calling our stop(). With
+                        # no owner left to schedule cleanup on, retire its
+                        # references under the generation lock before restart.
+                        lease.close()
+                        if state.plugin_control_ingress is lease:
+                            state.plugin_control_ingress = None
+                            state._plugin_comm_queue = None
+                        self._router_task = None
+                        self._ingress = None
+                        self._queue = None
+                        self._stop_task = None
+                        self._busy_replies.clear()
+                        return
             if owner.is_closed() or not owner.is_running():
                 if lease is not self._ingress:
                     return

@@ -136,6 +136,30 @@ def test_clock_rollback_does_not_reorder_producer_timestamps(context, monkeypatc
     assert context.get_user_context("YUI", limit=1)[0]["event_id"] == "newer"
 
 
+def test_clock_rollback_at_capacity_keeps_newest_occurrences(context, monkeypatch):
+    patch_module_clock(monkeypatch, state_module, time=lambda: 1000.0)
+    for index in range(3):
+        context.add_user_context_event(
+            "YUI", {"event_id": f"future-{index}", "_ts": 1100.0 + index}
+        )
+    # Arrival order must not evict a newer occurrence, including at capacity.
+    context.add_user_context_event("YUI", {"event_id": "late-old", "_ts": 1050.0})
+    records = context.get_user_context("YUI")
+    assert [record["event_id"] for record in records] == [
+        "future-0",
+        "future-1",
+        "future-2",
+    ]
+    assert [record["_ts"] for record in records] == [1100.0, 1101.0, 1102.0]
+    # A genuinely newer occurrence still replaces the oldest retained record.
+    context.add_user_context_event("YUI", {"event_id": "newest", "_ts": 1103.0})
+    assert [record["event_id"] for record in context.get_user_context("YUI")] == [
+        "future-1",
+        "future-2",
+        "newest",
+    ]
+
+
 def test_expired_replay_does_not_renew_activity(context, monkeypatch):
     patch_module_clock(monkeypatch, state_module, time=lambda: 10000.0)
     event = turn_event(timestamp=9990)
