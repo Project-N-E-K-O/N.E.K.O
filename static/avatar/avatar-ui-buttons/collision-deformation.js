@@ -93,9 +93,13 @@
 
     function applyCollisionDeformation(button, sample) {
         if (!button || !button.style || !button.classList) return false;
+        const shiftX = (1 - sample.scaleX) * (sample.originX - 50);
+        const shiftY = (1 - sample.scaleY) * (sample.originY - 50);
         button.classList.add(ACTIVE_CLASS);
         button.style.setProperty('--neko-collision-scale-x', sample.scaleX.toFixed(4));
         button.style.setProperty('--neko-collision-scale-y', sample.scaleY.toFixed(4));
+        button.style.setProperty('--neko-collision-shift-x', `${shiftX.toFixed(4)}%`);
+        button.style.setProperty('--neko-collision-shift-y', `${shiftY.toFixed(4)}%`);
         button.style.setProperty('--neko-collision-origin-x', `${sample.originX}%`);
         button.style.setProperty('--neko-collision-origin-y', `${sample.originY}%`);
         return true;
@@ -108,6 +112,8 @@
         if (button.style) {
             button.style.removeProperty('--neko-collision-scale-x');
             button.style.removeProperty('--neko-collision-scale-y');
+            button.style.removeProperty('--neko-collision-shift-x');
+            button.style.removeProperty('--neko-collision-shift-y');
             button.style.removeProperty('--neko-collision-origin-x');
             button.style.removeProperty('--neko-collision-origin-y');
         }

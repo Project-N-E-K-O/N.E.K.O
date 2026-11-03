@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   computeCollisionDeformation,
@@ -62,6 +64,21 @@ test('visible GIF hull anchors deformation on the painted contact edge', () => {
 
   assert.deepEqual([down.originX, down.originY], [48, 96]);
   assert.deepEqual([left.originX, left.originY], [18, 53]);
+});
+
+test('contact anchoring uses translate compensation without moving the facing pivot', () => {
+  const button = buttonFixture();
+  beginCollisionDeformation(button, {
+    direction: 'left', impactVelocityChange: 800, startedAt: 1000,
+    visibleInsetRatios: { left: 0.18, top: 0.10, right: 0.22, bottom: 0.04 },
+  });
+  assert.ok(Number.parseFloat(button.style.getPropertyValue('--neko-collision-shift-x')) < 0);
+  assert.notEqual(button.style.getPropertyValue('--neko-collision-shift-y'), '');
+
+  const css = fs.readFileSync(path.resolve(__dirname, '../../static/css/index.css'), 'utf8');
+  const block = css.match(/\.neko-idle-return-btn\.is-neko-collision-deforming[^}]+}/)?.[0] || '';
+  assert.match(block, /translate:\s*var\(--neko-collision-shift-x/);
+  assert.doesNotMatch(block, /transform-origin:/);
 });
 
 test('equal-speed impacts use the same amplitude on either axis', () => {
@@ -129,6 +146,7 @@ test('component integration survives art changes and clears itself after recover
   assert.equal(renderCollisionDeformation(button, 1160), false);
   assert.equal(button.classList.contains('is-neko-collision-deforming'), false);
   assert.equal(button.style.getPropertyValue('--neko-collision-scale-y'), '');
+  assert.equal(button.style.getPropertyValue('--neko-collision-shift-y'), '');
 });
 
 test('a new impact restarts from its own direction and reduced motion clears it', () => {

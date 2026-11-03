@@ -544,6 +544,21 @@ test('a Web Playground landing applies idle art geometry before its final animat
     assert.ok(Math.abs(placed.y + 122 * (1 - idle.bottom) - 900) <= 0.5);
     const visibleSide = side === 'left' ? placed.x + 122 * idle.left : placed.x + 122 * (1 - idle.right);
     assert.ok(Math.abs(visibleSide - (side === 'left' ? 0 : 1200)) <= 0.5);
+
+    const slideStartedAt = vm.runInContext('performance.now()', r.context);
+    Object.assign(body, { vx: 100, vy: 0, grounded: true });
+    Object.assign(state, { phase: 'settled', lastTickAt: slideStartedAt });
+    r.context._beginNekoIdleCat1PlaygroundCollisionDeformation(
+      r.button, body, 'down', 600, slideStartedAt
+    );
+    r.context._stepNekoIdleCat1PlaygroundPhysics(r.button, slideStartedAt);
+    for (let i = 0; i < 11; i++) r.frame();
+    assert.equal(
+      r.button.classList.contains('is-neko-collision-deforming'),
+      false,
+      'resting support while sliding must not restart floor deformation'
+    );
+    r.settle();
     assert.deepEqual(r.resources(), { frames: 0, observers: 0, subscribers: 0 });
   }
 });

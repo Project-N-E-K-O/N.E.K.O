@@ -1439,7 +1439,7 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                             body.vx = 0;
                         }
                     }
-                    if (beforeVy > 0) {
+                    if (beforeVy > 0 && wasAirborne) {
                         _beginNekoIdleCat1PlaygroundCollisionDeformation(
                             button, body, 'down', Math.abs(body.vy - beforeVy), now
                         );
