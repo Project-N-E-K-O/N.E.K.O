@@ -9,6 +9,71 @@ const start = source.indexOf('    I.handleModelReload = async function');
 const actualReload = source.slice(start, source.indexOf('\n    }', start) + 7).trim();
 assert.ok(start > 0 && actualReload.endsWith('}'));
 
+const commitStart = source.indexOf('await _waitForLive2DManagerIdle(30000);', source.indexOf('// Ensure PIXI app is initialised'));
+const commitEnd = source.indexOf('preparedLive2DModel = null;', commitStart) + 'preparedLive2DModel = null;'.length;
+const actualCommit = source.slice(commitStart, commitEnd);
+assert.ok(commitStart > start && actualCommit.includes('loadUserPreferences'));
+const rollbackStart = source.indexOf('            // 回滚提前写入的 config');
+const actualRollback = source.slice(rollbackStart, source.indexOf('            if (!suppressToast) {', rollbackStart));
+assert.ok(rollbackStart > commitEnd && actualRollback.includes('oldModelType'));
+
+for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'preferences', 'preferences-error', 'unchanged', 'load-error']) {
+    test(`cloud candidate rechecks its ${oldType} role after ${phase}`, async () => {
+        const current = {}, next = {}, candidate = {};
+        let loads = 0;
+        const context = {
+            console: { log() {}, warn() {}, error() {} },
+            reloadOptions: { preservePreviousUntilLoaded: true }, currentLanlanName: 'Synthetic',
+            newModelPath: '/candidate.model3.json', preparedLive2DModel: candidate,
+            typeChanged: true, oldModelType: oldType, oldLive3dSubType: 'mmd',
+            pngRestores: 0, loadPNGTuberAvatar: async () => { context.pngRestores++; },
+            skipIdleRestore: false, skipPersistentExpressions: false, innerWidth: 1280,
+            lanlan_config: { lanlan_name: 'Synthetic', model_type: 'live2d', live3d_sub_type: '', pngtuber: {} },
+            document: { getElementById() { return null; } },
+        };
+        function switchRole() {
+            context.lanlan_config.lanlan_name = 'Other';
+            context.live2dManager.currentModel = next;
+        }
+        context._waitForLive2DManagerIdle = async () => { if (phase === 'idle') switchRole(); };
+        context.live2dManager = {
+            currentModel: current,
+            loadUserPreferences: async () => {
+                if (phase.startsWith('preferences')) switchRole();
+                if (phase === 'preferences-error') throw new Error('preferences unavailable');
+                return [];
+            },
+            loadModel: async () => {
+                loads++;
+                if (phase === 'load-error') throw new Error('load_failed');
+                context.live2dManager.currentModel = candidate;
+            },
+        };
+        context.window = context;
+        vm.createContext(context);
+        vm.runInContext('async function commitCandidate(){try{' + actualCommit + '}catch(error){' + actualRollback + 'throw error;}}', context);
+        if (phase === 'unchanged') {
+            await context.commitCandidate();
+            assert.equal(loads, 1);
+            assert.equal(context.live2dManager.currentModel, candidate);
+        } else if (phase === 'load-error') {
+            await assert.rejects(context.commitCandidate(), /load_failed/);
+            assert.equal(loads, 1);
+            assert.equal(context.live2dManager.currentModel, current);
+            assert.equal(context.lanlan_config.model_type, oldType);
+            assert.equal(context.lanlan_config.live3d_sub_type, 'mmd');
+            assert.equal(context.pngRestores, oldType === 'pngtuber' ? 1 : 0);
+        } else {
+            await assert.rejects(context.commitCandidate(), /model_role_changed/);
+            assert.equal(loads, 0);
+            assert.equal(context.live2dManager.currentModel, next);
+            assert.equal(context.lanlan_config.model_type, 'live2d');
+            assert.equal(context.lanlan_config.live3d_sub_type, '');
+            assert.equal(context.pngRestores, 0);
+        }
+    });
+}
+
 for (const type of ['live2d', 'vrm']) for (const roleChanges of [false, true]) {
     test(`cloud candidate ${roleChanges ? 'role takeover' : 'load failure'} retains the existing ${type}`, async () => {
         const old = {};

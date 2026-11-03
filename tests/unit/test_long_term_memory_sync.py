@@ -20,7 +20,7 @@ from utils.long_term_memory_protocol import document, mutation
 from services.chat_sync.writer import store_connection
 from utils.file_utils import atomic_write_json
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
-from tests.unit.test_chat_sync_runtime import setup_runtime, OWNER, UID
+from tests.unit.test_chat_sync_runtime import setup_runtime, DOMAIN, OWNER, UID
 
 
 def learned(completed=2000, text='learned preference'):
@@ -32,6 +32,27 @@ def learned(completed=2000, text='learned preference'):
         {'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'text': 'confirmed impression',
          'metadata': {'createdAt': 1000, 'sourceFactIds': ['f1']}},
     ]}
+
+
+@pytest.mark.parametrize('active_count,dormant_id,accepted', [
+    (19999, 'dormant', True), (20000, 'f0', True), (20000, 'dormant', False), (20001, None, False),
+])
+def test_snapshot_capacity_counts_combined_unique_active_and_dormant_entries(active_count, dormant_id, accepted):
+    views = {'persona': {}, 'reflections': [], 'archive': [], 'facts': [
+        {'id': f'f{index}', 'entity': 'master', 'text': 'A learned preference'} for index in range(active_count)]}
+    if dormant_id:
+        views['sync'] = {'dormantEntries': [{'kind': 'fact', 'subject': 'master', 'id': dormant_id,
+                         'text': 'A retired preference', 'metadata': {'status': 'retracted', 'voidedAt': 1000}}]}
+    before = deepcopy(views)
+    if accepted:
+        result = export_document(views, 3000)
+        assert len(result['entries']) == 20000
+        if dormant_id == 'f0':
+            assert next(row for row in result['entries'] if row['id'] == 'f0')['text'] == 'A learned preference'
+    else:
+        with pytest.raises(ValueError, match='^long_term_memory_capacity_exceeded$'):
+            export_document(views, 3000)
+    assert views == before
 
 
 def test_source_projection_uses_original_chronology_without_mutating_full_proof():
@@ -363,6 +384,60 @@ async def test_native_owner_uses_default_service_for_capture_and_download(owner,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['rename', 'pause'])
+async def test_stale_capture_does_not_report_a_capacity_failure_for_a_changed_role(owner, monkeypatch, change):
+    import memory.long_term_sync as portable
+    monkeypatch.setattr(portable, 'MAX_ENTRIES', 1)
+    atomic_write_json(owner.directory / FILES['facts'], [
+        {'id': key, 'entity': 'master', 'text': 'A learned preference'} for key in ('one', 'two')])
+    original = owner.native.export_document
+    def changed(*args, **kwargs):
+        if change == 'rename':
+            owner.characters['猫娘']['Renamed'] = owner.characters['猫娘'].pop('Neko')
+        else:
+            owner.runtime.state.pause(UID)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(owner.native, 'export_document', changed)
+    assert owner.native._capture('Neko', True, UID) is None
+    assert owner.runtime.scheduler.last_error(DOMAIN.key()) is None
+
+
+@pytest.mark.asyncio
+async def test_over_capacity_capture_retains_memory_and_receipt_then_recovers_on_a_later_update(owner, monkeypatch):
+    import memory.long_term_sync as portable
+    monkeypatch.setattr(portable, 'MAX_ENTRIES', 1)
+    first = {'id': 'one', 'entity': 'master', 'text': 'First learned preference'}
+    atomic_write_json(owner.directory / FILES['facts'], [first])
+    assert owner.native._capture('Neko', True)
+    receipt = owner.adapter.local_path(owner.binding)
+    saved_receipt = receipt.read_bytes()
+    atomic_write_json(owner.directory / FILES['facts'], [first, {**first, 'id': 'two'}])
+    before = {name: (owner.directory / name).read_bytes() for name in FILES.values()}
+    captures = []
+    original = owner.native._capture
+    def observed(*args, **kwargs):
+        captures.append(args)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(owner.native, '_capture', observed)
+    owner.native.queue_capture('Neko')
+    await asyncio.wait_for(asyncio.shield(owner.native._capture_tasks['Neko']), 3)
+    assert len(captures) == 1
+    assert before == {name: (owner.directory / name).read_bytes() for name in FILES.values()}
+    assert receipt.read_bytes() == saved_receipt
+    assert owner.runtime.scheduler.last_error(DOMAIN.key()) == 'long_term_memory_capacity_exceeded'
+    binding, = (await owner.runtime.status())['bindings']
+    assert binding['lastSyncError'] == 'long_term_memory_capacity_exceeded'
+    atomic_write_json(owner.directory / FILES['facts'], [first])
+    owner.native.queue_capture('Neko')
+    await asyncio.wait_for(asyncio.shield(owner.native._capture_tasks['Neko']), 3)
+    assert receipt.read_bytes() == saved_receipt
+    assert (await owner.runtime.status())['bindings'][0]['lastSyncError'] is None
+    heads = owner.runtime.writer.check()['heads']
+    assert not original('Neko', False)
+    assert owner.runtime.writer.check()['heads'] == heads
+
+
+@pytest.mark.asyncio
 async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owner):
     import hashlib
     from memory.event_log import EVT_FACT_ADDED
@@ -377,7 +452,7 @@ async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owne
     assert not await owner.native.consume(UID)
     assert not (owner.directory / 'events.ndjson').exists()
     inbox = owner.adapter.incoming_path(UID)
-    payload = {'characterSyncId': UID, 'inboxSha256': hashlib.sha256(inbox.read_bytes()).hexdigest()}
+    payload = {'characterSyncId': UID, 'inboxSha256': hashlib.sha256(inbox.read_text(encoding='utf-8').encode('utf-8')).hexdigest()}
     log = owner.native.runtime.event_log
     log.append('Neko', 'memory.long_term_replaced', payload)
     final_id = log.append('Neko', EVT_FACT_ADDED, {'fact_id': 'later-local-fact'})
@@ -391,8 +466,12 @@ async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owne
 
 
 @pytest.mark.asyncio
-async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exact_snapshot(owner, monkeypatch):
+@pytest.mark.parametrize('windows_newlines', [False, True])
+async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exact_snapshot(owner, monkeypatch, windows_newlines):
     await stage(owner)
+    if windows_newlines:
+        inbox = owner.adapter.incoming_path(UID)
+        inbox.write_bytes(inbox.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
     before = {path.name: path.read_bytes() for path in owner.directory.iterdir()}
     original = owner.native.atomic_write_json
     failed = False
@@ -411,7 +490,7 @@ async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exac
     import hashlib
     event = json.loads((owner.directory / 'events.ndjson').read_text().splitlines()[-1])
     assert event['payload'] == {'characterSyncId': UID,
-                               'inboxSha256': hashlib.sha256(owner.adapter.incoming_path(UID).read_bytes()).hexdigest()}
+                               'inboxSha256': hashlib.sha256(owner.adapter.incoming_path(UID).read_text(encoding='utf-8').encode('utf-8')).hexdigest()}
     await owner.replay.areconcile('Neko')
     assert read_views(owner.directory)['facts'][0]['text'] == 'shared experience'
     assert await owner.native.consume(UID)

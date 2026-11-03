@@ -1481,6 +1481,7 @@ I.mod = window.appInterpage;
                             } catch (prefError) {
                                 console.warn('[Model] 读取 Live2D 用户偏好失败，将继续加载模型:', prefError);
                             }
+                            if (reloadOptions.preservePreviousUntilLoaded && (window.lanlan_config?.lanlan_name || '') !== currentLanlanName) throw new Error('model_role_changed');
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preparedModel: preparedLive2DModel,
@@ -1595,12 +1596,14 @@ I.mod = window.appInterpage;
                 activeMmdLoadingSessionId = '';
             }
             // 回滚提前写入的 config，防止残留错误的模型类型
-            if (typeChanged && window.lanlan_config) {
+            var canRestoreModelConfig = !reloadOptions.preservePreviousUntilLoaded ||
+                (window.lanlan_config?.lanlan_name || '') === currentLanlanName;
+            if (typeChanged && window.lanlan_config && canRestoreModelConfig) {
                 window.lanlan_config.model_type = oldModelType;
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
             }
-            if (typeChanged && oldModelType === 'pngtuber') {
+            if (typeChanged && oldModelType === 'pngtuber' && canRestoreModelConfig) {
                 try {
                     if (window.lanlan_config && window.lanlan_config.pngtuber && typeof window.loadPNGTuberAvatar === 'function') {
                         await window.loadPNGTuberAvatar(window.lanlan_config.pngtuber);

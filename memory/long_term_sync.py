@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from utils.long_term_memory_protocol import document, head
+from utils.long_term_memory_protocol import MAX_ENTRIES, document, head
 from utils.recent_memory_protocol import canonical
 
 
@@ -23,6 +23,13 @@ ARCHIVES = {'personaArchives': 'persona_archive', 'reflectionArchives': 'reflect
 class LongTermMemoryRecoveryRequired(RuntimeError):
     def __init__(self):
         super().__init__('long_term_memory_recovery_required')
+
+
+class LongTermMemoryCapacityExceeded(ValueError):
+    """The full snapshot cannot fit without discarding learned-memory records."""
+
+    def __init__(self):
+        super().__init__('long_term_memory_capacity_exceeded')
 
 
 class RetirementSubjectConflict(ValueError):
@@ -324,6 +331,8 @@ def export_document(views, completed_at, *, source_evidence=None):
     state = views.get('sync') or {}
     for entry in state.get('dormantEntries', []):
         rows.setdefault((entry['kind'], entry['subject'], entry['id']), deepcopy(entry))
+    if len(rows) > MAX_ENTRIES:
+        raise LongTermMemoryCapacityExceeded()
     return document({'schemaVersion': 2, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)],
                      'evidence': deepcopy(state.get('evidence') or {'retirements': [], 'confirmations': []})})
 

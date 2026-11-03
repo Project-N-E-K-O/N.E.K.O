@@ -25,6 +25,7 @@
             chat_sync_session_unavailable: 'errorSessionUnavailable',
             chat_sync_unavailable: 'errorNetwork',
             chat_sync_pull_timeout: 'errorNetwork',
+            long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
             chat_sync_retry_later: 'errorRetryLater',
             chat_sync_service_rejected: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',

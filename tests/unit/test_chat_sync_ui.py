@@ -468,6 +468,77 @@ def test_sync_settings_reports_pending_work():
     """)
 
 
+def test_sync_settings_explains_long_term_capacity_without_retrying():
+    run_script(r"""(async()=>{
+        const requests=[];
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,
+            binding:{lastSyncError:'long_term_memory_capacity_exceeded'}
+        }]})};};
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('chatSync.errorLongTermCapacity'));
+        assert(shown.includes('long_term_memory_capacity_exceeded'));
+        assert(!shown.includes('errorUnknown'));
+        assert.deepEqual(requests,['/api/chat-sync/status']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('preference_error', [False, True])
+@pytest.mark.parametrize('old_type', ['vrm', 'pngtuber'])
+def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(preference_error, old_type):
+    from playwright.sync_api import sync_playwright
+    source = (ROOT / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js').read_text(encoding='utf-8')
+    start = source.index('await _waitForLive2DManagerIdle(30000);', source.index('// Ensure PIXI app is initialised'))
+    end = source.index('preparedLive2DModel = null;', start) + len('preparedLive2DModel = null;')
+    rollback = source.index('            // 回滚提前写入的 config')
+    rollback_body = source[rollback:source.index('            if (!suppressToast) {', rollback)]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content('<canvas id="live2d-canvas"></canvas>')
+        page.evaluate(r"""oldType => {
+            window.reloadOptions={preservePreviousUntilLoaded:true};
+            window.currentLanlanName='Neko';
+            window.lanlan_config={lanlan_name:'Neko',model_type:'live2d',live3d_sub_type:'',pngtuber:{}};
+            window.typeChanged=true;
+            window.oldModelType=oldType;
+            window.oldLive3dSubType='mmd';
+            window.pngRestores=0;
+            window.loadPNGTuberAvatar=async()=>{pngRestores++;};
+            window.newModelPath='/candidate.model3.json';
+            window.preparedLive2DModel={id:'candidate'};
+            window.skipIdleRestore=false;
+            window.skipPersistentExpressions=false;
+            window._waitForLive2DManagerIdle=async()=>{};
+            window.loads=[];
+            window.live2dManager={
+                currentModel:'original-role-model',
+                loadUserPreferences:()=>new Promise((resolve,reject)=>{window.preferencesReady={resolve,reject};}),
+                loadModel:async(path)=>{loads.push(path);live2dManager.currentModel='candidate';}
+            };
+        }""", old_type)
+        page.add_script_tag(content='window.commitCandidate=async function(){try{' + source[start:end] +
+                            '}catch(error){' + rollback_body + 'throw error;}};')
+        page.evaluate('window.result=commitCandidate().then(()=>"loaded",error=>error.message); void 0')
+        page.wait_for_function('!!window.preferencesReady')
+        page.evaluate(r"""failed => {
+            lanlan_config.lanlan_name='Other';
+            live2dManager.currentModel='new-role-model';
+            if(failed)preferencesReady.reject(new Error('preferences unavailable'));
+            else preferencesReady.resolve([]);
+        }""", preference_error)
+        assert page.evaluate('result') == 'model_role_changed'
+        assert page.evaluate('loads') == []
+        assert page.evaluate('live2dManager.currentModel') == 'new-role-model'
+        assert page.evaluate('lanlan_config.model_type') == 'live2d'
+        assert page.evaluate('lanlan_config.live3d_sub_type') == ''
+        assert page.evaluate('pngRestores') == 0
+        browser.close()
+
+
 def test_current_socket_refreshes_recent_memory_without_backfilling_capsule_history():
     """Keep the new recent-memory notification and its socket replacement fence."""
     from tests.unit.test_app_websocket_static_routes import _block_after

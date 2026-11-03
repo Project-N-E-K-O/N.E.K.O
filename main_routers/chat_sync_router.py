@@ -215,7 +215,12 @@ async def model_sync_action(character_uid: str, body: dict, runtime: Runtime):
     await _character(character_uid)
     if set(body) != {"action"} or type(body["action"]) is not str or body["action"] not in {"cloud", "local", "retry"}:
         raise HTTPException(400, "invalid_model_response")
-    await runtime.models.resolve(character_uid, body["action"])
+    try:
+        await runtime.models.resolve(character_uid, body["action"])
+    except ValueError as exc:
+        raise _error(exc) from None
+    except OSError:
+        raise HTTPException(409, "chat_sync_binding_changed", headers={"Cache-Control": "no-store"}) from None
     runtime.wake_scheduler()
     return {"accepted": True}
 

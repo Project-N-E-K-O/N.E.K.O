@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager, closing, contextmanager
 from copy import deepcopy
+from functools import lru_cache
 import hashlib
 import json
 import re
@@ -12,7 +13,7 @@ import time
 from uuid import uuid4
 
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
-from memory.long_term_sync import RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
+from memory.long_term_sync import LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -148,6 +149,12 @@ def _snapshot_source_evidence(name, views, incoming=None):
     return index.get_original_source_evidence(name, ids) if ids and index is not None else {}
 
 
+@lru_cache(maxsize=1)
+def _capture_scheduler(directory):
+    from services.chat_sync.scheduler import ChatSyncScheduler
+    return ChatSyncScheduler(directory / 'scheduler.sqlite3')
+
+
 def _capture(name, force, expected_uid=None, require_consumed=False):
     _recover_snapshot(name)
     writer = _authority()
@@ -168,7 +175,17 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
         with runtime.fact_store._get_lock(name):
             views = read_views(Path(runtime._config_manager.memory_dir) / name)
         completed = max(time.time_ns() // 1_000_000, (previous['document']['completedAt'] if previous else 0) + 1)
-        document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
+        from services.chat_sync.ledger import ChatDomain
+        domain = ChatDomain(binding['owner_id'], uid).key()
+        scheduler = _capture_scheduler(writer.directory)
+        try:
+            document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
+        except LongTermMemoryCapacityExceeded:
+            if _uid(name) != uid or _binding(uid) != binding:
+                return None if expected_uid is not None else False
+            scheduler.record_long_term_capacity(domain, binding['generation'], True)
+            raise
+        scheduler.record_long_term_capacity(domain, binding['generation'], False)
         if not force and ((not previous and not document['entries'] and not document['evidence']['retirements'] and not document['evidence']['confirmations'])
                           or (previous and previous['nativeEntries'] == document['entries'] and (previous['document'].get('evidence') or {'retirements': [], 'confirmations': []}) == document['evidence'])):
             return False
@@ -214,6 +231,12 @@ def queue_capture(name, *, force=False):
                 async with _views_locked(name):
                     captured = await _complete_file_commit(_capture, name, requested, uid, True)
                 if captured is not None and name not in _capture_requests:
+                    _capture_intents.pop(uid, None)
+                delay = 0.2
+            except LongTermMemoryCapacityExceeded:
+                # The same unchanged views cannot succeed on a timer. A later
+                # memory update queues a fresh capture without trimming history.
+                if name not in _capture_requests:
                     _capture_intents.pop(uid, None)
                 delay = 0.2
             except Exception:

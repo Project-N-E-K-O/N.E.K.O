@@ -324,6 +324,25 @@ def test_model_action_resolves_valid_choice_once(local_client, action):
     assert runtime.calls == [('recent-changed',)]
 
 
+@pytest.mark.parametrize('error,status,code', [
+    (ValueError('chat_sync_not_enabled'), 409, 'chat_sync_not_enabled'),
+    (ValueError('chat_sync_login_required'), 401, 'chat_sync_login_required'),
+    (ValueError('chat_sync_session_changed'), 409, 'chat_sync_session_changed'),
+    (ValueError('chat_sync_writer_recovery_required'), 409, 'chat_sync_writer_recovery_required'),
+    (ValueError('chat_sync_unavailable'), 503, 'chat_sync_unavailable'),
+    (OSError('private local path'), 409, 'chat_sync_binding_changed'),
+])
+def test_model_action_reports_controlled_errors_without_waking(local_client, error, status, code):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(resolve=AsyncMock(side_effect=error))
+    response = client.post(f'/api/chat-sync/characters/{UID}/model-sync-action', json={'action': 'cloud'})
+    assert response.status_code == status
+    assert response.json() == {'detail': code}
+    assert response.headers['Cache-Control'] == 'no-store'
+    runtime.models.resolve.assert_awaited_once_with(UID, 'cloud')
+    assert runtime.calls == []
+
+
 @pytest.mark.parametrize('recent,enabled', [(None, 1), (object(), 0)])
 def test_recent_display_never_reads_legacy_archive_or_paused_role(local_client, recent, enabled):
     client, runtime = local_client

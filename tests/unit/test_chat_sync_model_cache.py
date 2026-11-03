@@ -182,14 +182,16 @@ async def test_failed_reference_read_keeps_all_cache_files(cache_runtime):
 
 
 @pytest.mark.asyncio
-async def test_another_process_lease_also_blocks_collection(cache_runtime):
+@pytest.mark.parametrize('line_ending', [b'\n', b'\r\n'])
+async def test_another_process_lease_also_blocks_collection(cache_runtime, line_ending):
     runtime, config = cache_runtime
     _, upload, _, _ = bundle(runtime, config)
-    script = "from filelock import FileLock; import sys\nwith FileLock(sys.argv[1]):\n print('ready',flush=True)\n sys.stdin.readline()\n"
+    script = ("from filelock import FileLock; import sys\nwith FileLock(sys.argv[1]):\n"
+              f" sys.stdout.buffer.write({b'ready' + line_ending!r}); sys.stdout.buffer.flush()\n sys.stdin.readline()\n")
     child = await asyncio.create_subprocess_exec(sys.executable, '-c', script, str(runtime.models.store.path.parent / 'model-cache.lock'),
                                                  stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
-        assert await asyncio.wait_for(child.stdout.readline(), 5) == b'ready\n'
+        assert (await asyncio.wait_for(child.stdout.readline(), 5)).rstrip(b'\r\n') == b'ready'
         await asyncio.to_thread(runtime.models.cleanup_cache, force=True)
         assert Path(upload['path']).exists()
     finally:

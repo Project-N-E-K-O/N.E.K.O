@@ -24,6 +24,31 @@ def test_next_wake_retains_retry_and_origin_deadlines_without_one_second_ticks(t
     assert scheduler.next_wake_at() is None
 
 
+def test_local_memory_capacity_error_is_durable_without_transport_retry_or_extra_writes(tmp_path):
+    path = tmp_path / 'scheduler.db'
+    scheduler = ChatSyncScheduler(path, clock=lambda: 1000)
+    scheduler.record_long_term_capacity('role', 3, True)
+    code = 'long_term_memory_capacity_exceeded'
+    assert scheduler.last_error('role') == code
+    assert scheduler.next_wake_at() is None
+    assert scheduler.ready('role', 'pull', 3, 'session')
+    assert scheduler.ready('role', 'model', 3, 'session')
+    assert scheduler.ready('role', 'long_term', 3, 'session')
+    from services.chat_sync.writer import registered_writer
+    writer = registered_writer(tmp_path)
+    before = writer.check()['heads']
+    scheduler.record_long_term_capacity('role', 3, True)
+    assert writer.check()['heads'] == before
+    scheduler = ChatSyncScheduler(path, clock=lambda: 2000)
+    assert scheduler.last_error('role') == code
+    scheduler.failure('role', 'profile', 3, 'session', ValueError('chat_sync_unavailable'))
+    scheduler.record_long_term_capacity('role', 3, False)
+    assert scheduler.last_error('role') == 'chat_sync_unavailable'
+    before = writer.check()['heads']
+    scheduler.record_long_term_capacity('role', 3, False)
+    assert writer.check()['heads'] == before
+
+
 @pytest.mark.parametrize('active_error', [None, 'chat_sync_unavailable'])
 def test_retired_media_error_does_not_mask_current_status_after_restart(tmp_path, active_error):
     path = tmp_path / 'scheduler.db'

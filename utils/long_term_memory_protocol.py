@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import math
 
 MAX_INTEGER = 9_007_199_254_740_991
+MAX_ENTRIES = 20_000
 SUBJECTS = frozenset(("master", "neko", "relationship"))
 KINDS = frozenset(("persona", "fact", "reflection"))
 _NUMBER_FIELDS = frozenset(("createdAt", "updatedAt", "eventAt", "sourceCreatedAt", "importance",
@@ -92,7 +93,7 @@ def document(value):
     if (not isinstance(value, dict) or set(value) != ({"schemaVersion", "completedAt", "entries", "evidence"} if value.get("schemaVersion") == 2 else {"schemaVersion", "completedAt", "entries"})
             or type(value["schemaVersion"]) is not int or value["schemaVersion"] not in (1, 2)
             or type(value["completedAt"]) is not int or not 0 < value["completedAt"] <= MAX_INTEGER
-            or not isinstance(value["entries"], list) or len(value["entries"]) > 20_000):
+            or not isinstance(value["entries"], list) or len(value["entries"]) > MAX_ENTRIES):
         raise ValueError("invalid_long_term_memory")
     try:
         datetime(1970, 1, 1) + timedelta(milliseconds=value['completedAt'])
