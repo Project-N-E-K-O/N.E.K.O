@@ -211,7 +211,12 @@ export function contrastFailures(page: Page, selectors: string[], minimum = 4.5)
         const color = rgba(getComputedStyle(element).backgroundColor)
         const alpha = color[3]! / 255
         if (alpha === 1) return color.slice(0, 3)
-        const parent = background(element.parentElement)
+        // Card content is painted over its sibling surface, which owns the
+        // fill during reflow. Resolve that layer before compositing children.
+        const surface = element.classList.contains('plugin-card__content')
+          ? element.parentElement!.querySelector(':scope > .plugin-card__surface')
+          : null
+        const parent = background(surface ?? element.parentElement)
         return color
           .slice(0, 3)
           .map((value, index) => value * alpha + parent[index]! * (1 - alpha))

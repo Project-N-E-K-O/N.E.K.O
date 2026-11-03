@@ -1,4 +1,4 @@
-"""Witness-source diagnostics for fixed-narration conditions: warn about self-triggering when based on the catgirl's own actions (issue 2.141 B1)."""  # noqa: DOCSTRING_CJK
+"""Witness-source diagnostics for fixed-narration conditions: warn about self-triggering when based on the neko's own actions (issue 2.141 B1)."""  # noqa: DOCSTRING_CJK
 
 from theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
 

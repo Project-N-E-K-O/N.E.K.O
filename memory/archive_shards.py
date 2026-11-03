@@ -52,10 +52,17 @@ from utils.file_utils import (
     atomic_write_json,
     atomic_write_json_async,
     read_json_async,
+    read_json_tolerating_replace,
 )
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Memory")
+
+# Archive directory names under memory/<char>/. The managers' getters and
+# the journal compaction's shard lookup both build paths from these, so the
+# two can never point at different directories.
+REFLECTION_ARCHIVE_DIRNAME = "reflection_archive"
+PERSONA_ARCHIVE_DIRNAME = "persona_archive"
 
 # Shard filename: <YYYY-MM-DD>_<uuid8>.json
 # uuid8 captured for migration uniqueness assertions; date captured to
@@ -438,6 +445,57 @@ def ensure_entry_in_named_shard_sync(
     merged = existing + [dict(entry)]
     atomic_write_json(shard_path, merged, indent=2, ensure_ascii=False)
     return True
+
+
+def archive_copy_fingerprint(entry: dict) -> str:
+    """Identify one archived COPY of an entry, not just the entry.
+
+    An entry id can be archived more than once: a subject restore brings it
+    back and a later sweep archives it again, and content-derived ids can
+    recur. Each archival stamps a fresh ``archived_at``, so (id,
+    archived_at) tells the copies apart. An entry without ``archived_at``
+    falls back to its whole canonical JSON.
+    """
+    archived_at = entry.get("archived_at")
+    if isinstance(archived_at, str) and archived_at:
+        return f"archived_at:{archived_at}"
+    return "entry:" + json.dumps(
+        entry, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
+    )
+
+
+def shard_entry_index_sync(archive_dir: str) -> dict[str, frozenset[str]] | None:
+    """Map entry id -> fingerprints of the copies held by this archive dir.
+
+    Reads every valid shard file (the same name filter the appenders use,
+    so the migration sentinel and stray files are ignored). Never creates
+    the directory; a missing directory is an empty index.
+
+    Returns None when any shard cannot be read or is not a JSON list: the
+    caller then cannot prove a copy exists and must keep its own. Read-only
+    -- repairing shards here would race the live archive path, which
+    appends after releasing the journal lock.
+    """
+    try:
+        shard_files = _list_shard_files(archive_dir)
+    except OSError:
+        return None
+    index: dict[str, set[str]] = {}
+    for fn, _, _ in shard_files:
+        try:
+            data = read_json_tolerating_replace(os.path.join(archive_dir, fn))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, list):
+            return None
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            entry_id = item.get("id")
+            if not isinstance(entry_id, str) or not entry_id:
+                continue
+            index.setdefault(entry_id, set()).add(archive_copy_fingerprint(item))
+    return {entry_id: frozenset(fps) for entry_id, fps in index.items()}
 
 
 def shard_filename_for(now: datetime) -> str:

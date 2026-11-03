@@ -18,7 +18,7 @@ GalGame Router
 
 POST /api/galgame/options — generate three reply candidates (A serious,
 B affectionate, C imaginative) for the player given recent dialogue. The
-React chat window calls this after each completed catgirl turn when the
+React chat window calls this after each completed neko turn when the
 GalGame mode toggle is on.
 
 URL convention: routes declared WITHOUT trailing slash. See the project

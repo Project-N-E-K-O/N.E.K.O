@@ -885,6 +885,7 @@ class VRMInteraction {
                 this._cancelGuidedMovement({ invalidateInteraction: true });
                 this.isDragging = true;
                 this.dragMode = 'pan';
+                this._clickShakeTap = window.NekoAvatarClickShake?.tapStart(e) || null;
                 // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
                 if (typeof this.manager._boostInteractiveFPS === 'function') this.manager._boostInteractiveFPS();
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -901,6 +902,7 @@ class VRMInteraction {
                 this._cancelGuidedMovement({ invalidateInteraction: true });
                 this.isDragging = true;
                 this.dragMode = 'orbit';
+                this._clickShakeTap = null;
                 if (typeof this.manager._boostInteractiveFPS === 'function') this.manager._boostInteractiveFPS();
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'crosshair';
@@ -964,6 +966,10 @@ class VRMInteraction {
                 this._rememberPanDragPointer(e);
                 this._rememberDragHintPanPointer(e);
                 void this._recordDragHintPointerEdgeApproach('vrm');
+                // 一旦拖出点击范围就不再算点击，拖回原处松手也不颤
+                if (this._clickShakeTap && !window.NekoAvatarClickShake?.isTap(this._clickShakeTap, e)) {
+                    this._clickShakeTap = null;
+                }
             }
 
             if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
@@ -1040,9 +1046,15 @@ class VRMInteraction {
             if (this.isDragging) {
                 e.preventDefault();
                 e.stopPropagation();
+                const clickShakeTap = this._clickShakeTap;
+                this._clickShakeTap = null;
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
                     this._rememberDragHintPanPointer(e);
+                    // 点一下（没拖动）给个原地颤动的即时反馈
+                    if (window.NekoAvatarClickShake?.isTap(clickShakeTap, e)) {
+                        window.NekoAvatarClickShake.play(canvas);
+                    }
                 }
                 await this._endDrag();
             }

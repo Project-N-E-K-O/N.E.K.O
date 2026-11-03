@@ -2,15 +2,15 @@
 App Launcher Plugin
 
 Allows users to enter desktop software shortcut or executable paths through the frontend.
-The catgirl uses this plugin to identify and open registered software accurately.
+The neko uses this plugin to identify and open registered software accurately.
 
 Features:
 - Add/delete/list software
 - Launch software by path
 - Support .exe, .lnk, .url, and other file types
-- Support aliases for easier catgirl recognition
+- Support aliases for easier neko recognition
 - Support startup autostart through the Windows registry
-- Let the catgirl manage software autostart through plugin calls
+- Let the neko manage software autostart through plugin calls
 """
 
 from __future__ import annotations

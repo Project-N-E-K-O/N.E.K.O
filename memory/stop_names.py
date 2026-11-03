@@ -29,7 +29,7 @@ Design notes:
   ``acollect_stop_names``, which read ``主人.档案名`` + ``主人.昵称`` from
   ``ConfigManager.get_character_data`` plus the given ``lanlan_name`` itself +
   that character's ``昵称``. ``lanlan_name`` defaults to the currently active
-  catgirl, since some call sites only care about the active character.
+  neko, since some call sites only care about the active character.
 - The ``昵称`` field is a comma-separated string (CJK or ASCII punctuation
   both fine); it is split into individual aliases.
 - The list is deduped and ordered longest-first — in substring replacement the
@@ -112,7 +112,7 @@ def _assemble_stop_names(
 def collect_stop_names(config_manager, lanlan_name: str | None = None) -> list[str]:
     """Sync: master + master_nicknames + lanlan + lanlan_nicknames.
 
-    ``lanlan_name`` defaults to the current catgirl when ``None``.
+    ``lanlan_name`` defaults to the current neko when ``None``.
     Failures (config corruption, etc.) degrade silently to ``[]`` so the
     caller's keyword layer keeps working — losing stop-name stripping is
     strictly less harmful than crashing the recall path.

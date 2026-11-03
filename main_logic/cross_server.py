@@ -1079,13 +1079,6 @@ async def run_sync_connector(
 
                     elif message["type"] == "system":
                         try:
-                            if message["data"] == "chat original tool":
-                                # Provenance only: keep the whole reply local,
-                                # without changing memory or forwarding a UI event.
-                                original_output.mark_tool(message.get("chat_original_id"))
-                                if text_output_proof and text_output_proof.get('recordId') == message.get('chat_original_id'):
-                                    text_output_proof['origin'] = 'tool'
-                                continue
                             if message["data"] == "google disconnected":
                                 original_output.discard()
                                 if len(text_output_cache) > 0:

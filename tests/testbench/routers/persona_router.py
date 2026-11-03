@@ -6,7 +6,7 @@ Scope (PLAN §Workspace 1 + §Setup workspace + P10 preset patch):
 - ``PUT   /api/persona``                              replace persona (whole body).
 - ``PATCH /api/persona``                              patch persona (partial body).
 - ``GET   /api/persona/effective_system_prompt``      resolve + placeholder-replace.
-- ``GET   /api/persona/real_characters``              list cat girls in the tester's
+- ``GET   /api/persona/real_characters``              list nekos in the tester's
                                                       *real* (un-sandboxed)
                                                       ``characters.json``.
 - ``POST  /api/persona/import_from_real/{name}``      copy memory/ files + persona
@@ -340,7 +340,7 @@ def _read_real_characters_json(config_dir: Path) -> dict[str, Any] | None:
 
 
 def _extract_catgirl_entry(data: dict[str, Any], name: str) -> dict[str, Any] | None:
-    """Pull one cat girl's config from a ``characters.json`` dump."""
+    """Pull one neko's config from a ``characters.json`` dump."""
     catgirls = data.get("猫娘")
     if not isinstance(catgirls, dict):
         return None
@@ -361,7 +361,7 @@ def _get_reserved_system_prompt(entry: dict[str, Any]) -> str:
 
 @router.get("/real_characters")
 async def list_real_characters() -> dict[str, Any]:
-    """Enumerate cat girls defined in the tester's **real** ``characters.json``.
+    """Enumerate nekos defined in the tester's **real** ``characters.json``.
 
     Works only when a session (hence a sandbox) is active — that's how we know
     where the real (pre-patch) ``config_dir`` lives. Each entry is a compact
@@ -1233,7 +1233,7 @@ class _ImportArchiveRequest(BaseModel):
 
     ``archive_b64`` is the base64 of a ``.zip``. ``character_name`` is optional
     and only needed to disambiguate an archive whose ``characters.json`` holds
-    more than one cat girl. ``filename`` is for logging only.
+    more than one neko. ``filename`` is for logging only.
     """
 
     archive_b64: str
@@ -1343,7 +1343,7 @@ def _assert_safe_character_name(name: str) -> str:
 def _resolve_archive_character_name(
     raw: dict[str, Any], requested: str | None, meta: dict[str, Any] | None,
 ) -> str:
-    """Pick which cat girl to import from the archive's ``characters.json``.
+    """Pick which neko to import from the archive's ``characters.json``.
 
     Priority: explicit ``requested`` -> ``meta.json.character_name`` ->
     ``当前猫娘`` -> the single key when unambiguous. Raises 422 when the

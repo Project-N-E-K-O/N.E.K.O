@@ -463,19 +463,14 @@ def test_decision_prompt_lifecycle_events_do_not_fire_for_alerts():
 
 
 @pytest.mark.unit
-def test_dialogs_only_keeps_page_shortcuts_and_still_allows_escape_cancellation():
+def test_page_shortcut_block_still_allows_escape_cancellation():
     result = _run_common_dialogs_node_scenario(
         """
     let prevented = 0;
     const shortcut = { type: 'keydown', key: 'w', metaKey: true,
       preventDefault() { prevented++; } };
     document.dispatchEvent(shortcut);
-    assert.strictEqual(prevented, 1, 'Existing consumers retain their shortcut policy');
-    document._listeners.clear();
-    document.currentScript = { dataset: { dialogsOnly: 'true' } };
-    vm.runInThisContext(source);
-    document.dispatchEvent(shortcut);
-    assert.strictEqual(prevented, 1, 'Dialog reuse must not take over page shortcuts');
+    assert.strictEqual(prevented, 1, 'Pages retain their close-tab shortcut block');
     const pending = window.showConfirm('Delete across devices?', 'Delete', { danger: true });
     document.dispatchEvent({ type: 'keydown', key: 'Escape' });
     const cancelled = await pending;

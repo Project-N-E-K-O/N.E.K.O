@@ -3931,7 +3931,7 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         lp = rt.room.max_lp_seen + 1
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:96", "i": 0, "lp": lp, "txt": "猫", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # Starts as catgirl line.
+            "rt": "", "wu": False}, nbytes=200)                # Starts as neko line.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:97", "i": 0, "lp": lp + 1, "txt": "猫", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)                # Starts without farewell status.
@@ -4312,7 +4312,7 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
     assert side.host.frames_of("visit_invite") == []
 
 
-# ── Catgirl voice tracks (OD-15 v4) ───────────────────────────────────────────────
+# ── Neko voice tracks (OD-15 v4) ───────────────────────────────────────────────
 
 
 async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
