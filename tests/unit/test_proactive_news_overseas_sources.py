@@ -872,3 +872,30 @@ def test_selected_link_for_other_sources_keeps_model_wording():
     assert selected["title"] == "微博话题（热）"
     assert selected["source"] == "微博热搜"
     assert selected["mode"] == "news"
+
+
+@pytest.mark.unit
+def test_google_trends_keeps_long_article_urls_whole_and_skips_oversized_ones():
+    long_url = "https://news.example.com/a?" + "q=" + "x" * 700
+    oversized = "https://news.example.com/b?" + "q=" + "y" * 2100
+    rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:ht="https://trends.google.com/trending/rss" version="2.0"><channel>
+  <item>
+    <title>long link trend</title>
+    <ht:news_item>
+      <ht:news_item_title>Oversized link story</ht:news_item_title>
+      <ht:news_item_url>{oversized}</ht:news_item_url>
+    </ht:news_item>
+    <ht:news_item>
+      <ht:news_item_title>Long but valid link story</ht:news_item_title>
+      <ht:news_item_url>{long_url}</ht:news_item_url>
+    </ht:news_item>
+  </item>
+</channel></rss>
+"""
+
+    trends = parse_google_trends_rss(rss, limit=5)
+
+    assert len(trends) == 1
+    assert trends[0]["news"][0]["title"] == "Long but valid link story"
+    assert trends[0]["url"] == long_url

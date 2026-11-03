@@ -45,6 +45,8 @@ _LANGUAGE_TO_GEO = {
     "zh-TW": "TW",
 }
 _MAX_NEWS_PER_TREND = 2
+# Oversized links are skipped, never shortened: a cut URL breaks or retargets.
+_MAX_URL_CHARS = 2048
 
 
 def google_trends_geo_for_language(language: str | None) -> str:
@@ -86,7 +88,9 @@ def parse_google_trends_rss(xml_text: str, *, limit: int = 10) -> list[dict[str,
         news: list[dict[str, str]] = []
         for news_item in item.findall(f"{_HT_NS}news_item"):
             title = _plain(news_item.findtext(f"{_HT_NS}news_item_title"), 200)
-            url = _plain(news_item.findtext(f"{_HT_NS}news_item_url"), 500)
+            url = str(news_item.findtext(f"{_HT_NS}news_item_url") or "").strip()
+            if len(url) > _MAX_URL_CHARS:
+                continue
             if not title or not url.startswith(("https://", "http://")):
                 continue
             # Live feeds link sportsbook pages and image files as "news".
