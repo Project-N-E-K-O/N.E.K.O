@@ -363,6 +363,34 @@ async def test_native_owner_uses_default_service_for_capture_and_download(owner,
 
 
 @pytest.mark.asyncio
+async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owner):
+    import hashlib
+    from memory.event_log import EVT_FACT_ADDED
+    retired = {'id': 'same-retirement', 'subject': 'master', 'sourceMessageIds': ['old-source']}
+    atomic_write_json(owner.directory / FILES['sync'], {'evidence': {'retirements': [retired], 'confirmations': []}})
+    incoming = learned()
+    incoming.update(schemaVersion=2, evidence={'retirements': [{**retired, 'subject': 'neko'}], 'confirmations': []})
+    remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000, 'document': incoming}
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), None,
+                                      session_fingerprint=(await owner.runtime._session())[1])
+    before = {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+    assert not await owner.native.consume(UID)
+    assert not (owner.directory / 'events.ndjson').exists()
+    inbox = owner.adapter.incoming_path(UID)
+    payload = {'characterSyncId': UID, 'inboxSha256': hashlib.sha256(inbox.read_bytes()).hexdigest()}
+    log = owner.native.runtime.event_log
+    log.append('Neko', 'memory.long_term_replaced', payload)
+    final_id = log.append('Neko', EVT_FACT_ADDED, {'fact_id': 'later-local-fact'})
+    applied = []
+    owner.replay.register(EVT_FACT_ADDED, lambda name, row: (applied.append(row['fact_id']) or True))
+    assert await owner.replay.areconcile('Neko') == 1
+    assert applied == ['later-local-fact']
+    assert log.read_sentinel('Neko') == final_id
+    assert inbox.exists()
+    assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+
+
+@pytest.mark.asyncio
 async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exact_snapshot(owner, monkeypatch):
     await stage(owner)
     before = {path.name: path.read_bytes() for path in owner.directory.iterdir()}

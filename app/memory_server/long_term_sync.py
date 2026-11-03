@@ -12,6 +12,7 @@ import time
 from uuid import uuid4
 
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
+from memory.long_term_sync import RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -259,7 +260,7 @@ def _write_snapshot(name, payload, *, check_only=False):
         with _session_guard(fingerprint):
             return _write_snapshot_locked(name, payload, check_only=check_only)
     except ValueError as error:
-        if str(error) in {'chat_sync_login_required', 'chat_sync_session_changed', 'chat_sync_session_unavailable'}:
+        if isinstance(error, RetirementSubjectConflict) or str(error) in {'chat_sync_login_required', 'chat_sync_session_changed', 'chat_sync_session_unavailable'}:
             return False
         raise
 
@@ -285,6 +286,8 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         if local and local['document']['completedAt'] > remote['completedAt']:
             return False
         if check_only:
+            validate_retirement_subjects(retirement_evidence(Path(runtime._config_manager.memory_dir) / name),
+                                         remote['document'].get('evidence', {}).get('retirements', []))
             return True
         operation = f'download:{remote["revision"]}'
         if local and local['operationId'] == operation and local['document'] == remote['document']:

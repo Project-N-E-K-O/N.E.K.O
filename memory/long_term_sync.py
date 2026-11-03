@@ -25,6 +25,13 @@ class LongTermMemoryRecoveryRequired(RuntimeError):
         super().__init__('long_term_memory_recovery_required')
 
 
+class RetirementSubjectConflict(ValueError):
+    """A snapshot assigns an existing retirement identifier to another subject."""
+
+    def __init__(self):
+        super().__init__('invalid_long_term_memory')
+
+
 def require_consistent_views(directory):
     path = Path(directory) / JOURNAL
     if path.exists():
@@ -321,8 +328,19 @@ def export_document(views, completed_at, *, source_evidence=None):
                      'evidence': deepcopy(state.get('evidence') or {'retirements': [], 'confirmations': []})})
 
 
+def validate_retirement_subjects(previous, incoming):
+    """Reject incompatible owners of a globally unique retirement identifier."""
+    subjects = {}
+    for row in [*previous, *incoming]:
+        if row['id'] in subjects and subjects[row['id']] != row['subject']:
+            raise RetirementSubjectConflict()
+        subjects[row['id']] = row['subject']
+
+
 def import_document(incoming, existing, *, baseline=None, source_evidence=None):
     incoming = document(incoming)
+    validate_retirement_subjects(existing.get('sync', {}).get('evidence', {}).get('retirements', []),
+                                 incoming.get('evidence', {}).get('retirements', []))
     result = deepcopy(existing)
     result['sync'] = {'evidence': deepcopy(incoming.get('evidence') or existing.get('sync', {}).get('evidence') or {'retirements': [], 'confirmations': []}), 'dormantEntries': []}
     for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
@@ -331,8 +349,6 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
             row = deepcopy(incoming_row)
             previous = retained.get(row[key])
             if field == 'retirements' and previous:
-                if previous['subject'] != row['subject']:
-                    raise ValueError('invalid_long_term_memory')
                 old_proof = bool(previous.get('retiredBySourceMessageIds') or previous.get('retiredThroughAtFromCorrection'))
                 new_proof = bool(row.get('retiredBySourceMessageIds') or row.get('retiredThroughAtFromCorrection'))
                 times = [item['retiredThroughAt'] for item, proof in [(previous, old_proof), (row, new_proof)]
