@@ -846,6 +846,33 @@ async def test_reflection_merge_with_a_source_entering_cooldown_is_stale(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_reflection_turned_terminal_after_render_is_stale(tmp_path):
+    """A source denied while the model was thinking must not be merged back
+    to life: the apply step reads active reflections only."""
+    env = _install(str(tmp_path))
+    await _seed_reflections(env.engine, [
+        _reflection('p1', '主人可能在准备考试', status='pending', rein=0.0),
+        _reflection('p2', '主人最近在复习功课', status='pending', rein=0.0),
+    ])
+
+    def _deny_p1_then_merge(prompt):
+        rows = env.engine.load_reflections(NAME)
+        next(r for r in rows if r['id'] == 'p1')['status'] = 'denied'
+        env.engine.save_reflections(NAME, rows)
+        return json.dumps([
+            {'action': 'merge', 'ids': [_number(prompt, '主人可能在准备考试'), _number(prompt, '主人最近在复习功课')],
+             'text': '主人在准备考试', 'reason': '同义'},
+        ], ensure_ascii=False)
+
+    result = await _run(env, _FakeThinking(_deny_p1_then_merge))
+
+    assert result.applied == 0 and result.rejected == {'stale': 1}
+    rows = {r['id']: r for r in await env.engine._aload_reflections_full(NAME)}
+    assert rows['p1']['status'] == 'denied' and 'p2' in rows
+    assert all(r['text'] != '主人在准备考试' for r in rows.values())
+
+
+@pytest.mark.asyncio
 async def test_merge_with_a_source_in_mention_cooldown_is_stale(tmp_path):
     env = _install(str(tmp_path))
     cooled_at = (datetime.now() - timedelta(hours=1)).isoformat(timespec='seconds')
