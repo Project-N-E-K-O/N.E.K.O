@@ -695,6 +695,16 @@ async def _run_introspection_tick() -> None:
         async with review._get_review_spawn_lock(name):
             if name in review._retired_derived_task_names:
                 continue
+            # A rename / delete that finished between the roster read above
+            # and this lock has already lifted its retirement: ask the roster
+            # again, since rendering a removed name recreates its persona file.
+            try:
+                current_data = await runtime._config_manager.aload_characters()
+            except Exception as e:
+                logger.debug(f"[Introspection] 重新加载角色列表失败: {e}")
+                return
+            if name not in (current_data.get('猫娘') or {}):
+                continue
             existing = review.introspection_tasks.get(name)
             if existing is not None and not existing.done():
                 return

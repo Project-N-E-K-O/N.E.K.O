@@ -1372,6 +1372,34 @@ async def test_character_release_cancels_a_running_introspection(maint_state, mo
     assert run.await_count == 1, "已释放的角色名不能再启动自省"
 
 
+@pytest.mark.asyncio
+async def test_a_name_removed_before_the_spawn_lock_is_not_started(maint_state, monkeypatch):
+    """A delete / rename can finish (and lift its retirement) between the
+    tick's roster read and the spawn lock; the run must not start for the
+    removed name, nor when the roster cannot be read again."""
+    from app.memory_server import refine_loops, review, runtime
+    from memory.introspection import IntrospectionResult
+
+    run = AsyncMock(return_value=IntrospectionResult())
+    _tick_runtime(monkeypatch, run)
+    monkeypatch.setattr(maint_state, '_is_idle', lambda: True)
+    monkeypatch.setattr(maint_state, '_ais_powerful_memory_enabled', AsyncMock(return_value=True))
+    roster = {'猫娘': {NAME: {}}}
+
+    runtime._config_manager.aload_characters = AsyncMock(side_effect=[roster, {'猫娘': {}}])
+    await refine_loops._run_introspection_tick()
+    runtime._config_manager.aload_characters = AsyncMock(side_effect=[roster, OSError('busy')])
+    await refine_loops._run_introspection_tick()
+
+    assert run.await_count == 0
+    assert NAME not in review.introspection_tasks
+    assert 'introspection_last_run_at' not in maint_state._maint_view(NAME)
+
+    runtime._config_manager.aload_characters = AsyncMock(return_value=roster)
+    await refine_loops._run_introspection_tick()
+    assert run.await_count == 1, "名单里仍在的角色照常运行"
+
+
 def test_runtime_registers_the_introspection_loop():
     import inspect
     from app.memory_server import refine_loops
