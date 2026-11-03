@@ -173,6 +173,27 @@ def test_complete_persona_copy_does_not_discard_subject_evidence_for_an_incomple
     assert _check(str(tmp_path))(_persona_event('x', incomplete, shard='2026-09-01_bbbbbbbb.json'))
 
 
+@pytest.mark.parametrize('kind,subject_id,scope', [
+    ('group_chat', 'p:g1', 'group_chat:p:g1'),
+    ('participant', 'p:u1', 'participant:p:u1'),
+    ('group_participant', 'p:g1:u1', 'group:p:g1'),
+])
+@pytest.mark.parametrize('copy_subject', ['same', 'other', 'missing'])
+def test_scoped_persona_archives_follow_the_saved_copy_check(tmp_path, kind, subject_id, scope, copy_subject):
+    from memory.scopes import MemorySubject
+    subject = MemorySubject(kind=kind, subject_id=subject_id, scope=scope)
+    row = _entry('scoped', entity_key=subject.persona_section_key, **subject.as_entry_fields())
+    snapshot = dict(row)
+    if copy_subject == 'other':
+        row['entity_key'] = 'master'
+    elif copy_subject == 'missing':
+        row.pop('entity_key')
+    _write_shard(str(tmp_path), 'persona_archive', '2026-09-01_aaaaaaaa.json', [row])
+    event = _persona_event('scoped', snapshot)
+    event['payload']['entity_key'] = subject.persona_section_key
+    assert _check(str(tmp_path))(event) is (copy_subject != 'same')
+
+
 @pytest.mark.parametrize("side", SIDES)
 def test_restore_events_are_not_archive_events(tmp_path, side):
     """Restore events carry entry_snapshot too, but they are not archivals."""

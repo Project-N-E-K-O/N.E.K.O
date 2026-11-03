@@ -578,7 +578,7 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
         snapshot = payload.get('entry_snapshot')
         persona = record.get('type') == EVT_PERSONA_FACT_ADDED
         subject = payload.get('entity_key') if persona else None
-        if persona and subject not in ('master', 'neko', 'relationship'):
+        if persona and (not isinstance(subject, str) or not subject):
             return True
         if not isinstance(snapshot, dict) and not persona:
             return False
