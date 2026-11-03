@@ -1,4 +1,4 @@
-name: Restore patch branch
+name: Restore patch branch v2
 on:
   workflow_dispatch: {}
 permissions:
@@ -7,10 +7,27 @@ jobs:
   restore:
     runs-on: ubuntu-latest
     steps:
-      - name: Create restore-patch branch from d6bef122
+      - uses: actions/checkout@v4
+      - name: Route A git fetch+push
+        id: routeA
         run: |
-          curl -s -X POST \
+          git config user.name "zaoxi82813"
+          git config user.email "zaoxi82813@users.noreply.github.com"
+          git fetch origin d6bef1227f71b9a51f66f8b9f33197f2ebff98f2
+          git push origin d6bef1227f71b9a51f66f8b9f33197f2ebff98f2:refs/heads/restore-patch
+      - name: Route B API create ref fallback
+        if: failure()
+        run: |
+          curl -sf -X POST \
             -H "Authorization: Bearer ${{ github.token }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ github.repository }}/git/refs \
             -d '{"ref":"refs/heads/restore-patch","sha":"d6bef1227f71b9a51f66f8b9f33197f2ebff98f2"}'
+      - name: Verify hard gate
+        if: always()
+        run: |
+          sleep 3
+          RESP=$(curl -s -H "Authorization: Bearer ${{ github.token }}" "https://api.github.com/repos/${{ github.repository }}/branches/restore-patch")
+          echo "$RESP" | head -c 200
+          echo ""
+          echo "$RESP" | grep -q '"name"' && echo "VERIFY_OK branch exists" || exit 1
