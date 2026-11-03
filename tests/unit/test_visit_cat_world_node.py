@@ -90,6 +90,7 @@ async function main() {
   let staleIntentOnce = false;
   let stateResponses = 0;
   let failStates = 0;
+  let failIntents = 0;
 
   function schedule(fn, delay, interval) {
     const id = nextTimer++;
@@ -160,6 +161,10 @@ async function main() {
     nekoVisitCatWorldApi: {
       sendIntent(payload) {
         calls.intent.push(JSON.parse(JSON.stringify(payload)));
+        if (failIntents > 0) {
+          failIntents -= 1;
+          return Promise.resolve(false);
+        }
         if (staleIntentOnce) {
           staleIntentOnce = false;
           return Promise.resolve({ stale: true, current_intent_id: 40 });
@@ -302,6 +307,19 @@ async function main() {
   assert.deepEqual(calls.intent.slice(-2).map((item) => item.kind), ['yarn_grab', 'yarn_release']);
   assert.ok(calls.intent[calls.intent.length - 1].intent_id > calls.intent[calls.intent.length - 2].intent_id);
 
+  // A failed reliable intent is retried in place: the release still lands, and
+  // never overtakes its grab, after the local drag has already ended.
+  const beforeRetry = calls.intent.length;
+  failIntents = 2;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 5, clientX: 640, clientY: 260,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 5, clientX: 650, clientY: 270 });
+  await flush();
+  await advance(2000);
+  const retriedIntents = calls.intent.slice(beforeRetry).map((item) => item.kind);
+  assert.deepEqual(retriedIntents, ['yarn_grab', 'yarn_grab', 'yarn_grab', 'yarn_release']);
+  assert.equal(failIntents, 0);
+
   // A pointer is accepted only from the actor and intent that currently owns the yarn.
   emit('neko-visit-cat-world-intent', {
     type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'yarn_grab',
@@ -441,7 +459,7 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 6
+    assert result["guestIntentCount"] == 10
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False

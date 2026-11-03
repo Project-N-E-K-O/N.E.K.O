@@ -19,6 +19,8 @@
   var POINTER_SEND_MS = 60;
   var OUTBOUND_RETRY_MIN_MS = 500;
   var OUTBOUND_RETRY_MAX_MS = 8000;
+  var INTENT_RETRY_MIN_MS = 300;
+  var INTENT_RETRY_MAX_MS = 4000;
   var INTENT_KINDS = {
     yarn_spawn: true,
     yarn_grab: true,
@@ -155,6 +157,24 @@
     catch (_) { return Promise.resolve(false); }
   }
 
+  function intentStillCurrent(visitId, token) {
+    return state.active && !state.ending && state.visitId === visitId && state.intentToken === token;
+  }
+
+  // A failed reliable intent (local HTTP error, VISIT_E_BUSY) is retried in
+  // place: later intents keep their order, and a lost release cannot leave the
+  // yarn held on the host after the local drag has already ended.
+  function callIntentApi(payload, visitId, token, delayMs) {
+    return callApi('sendIntent', payload).then(function (result) {
+      if ((result && (result.ok === true || result.stale)) || !intentStillCurrent(visitId, token)) return result;
+      var delay = delayMs ? Math.min(INTENT_RETRY_MAX_MS, delayMs * 2) : INTENT_RETRY_MIN_MS;
+      return new Promise(function (resolve) { setTimeout(resolve, delay); }).then(function () {
+        if (!intentStillCurrent(visitId, token)) return result;
+        return callIntentApi(payload, visitId, token, delay);
+      });
+    });
+  }
+
   function sendIntent(kind, point, intentId) {
     if (!state.active || state.ending || !INTENT_KINDS[kind] || kind === 'pointer') return false;
     var id = Number.isSafeInteger(intentId) ? intentId : nextIntentId();
@@ -176,7 +196,7 @@
         payload = Object.assign({}, payload, { intent_id: nextIntentId() });
         if (state.drag && state.drag.intentId === previousId) state.drag.intentId = payload.intent_id;
       }
-      return callApi('sendIntent', payload);
+      return callIntentApi(payload, visitId, token);
     }).then(function (result) {
       if (result && result.ok === true) {
         state.sentIntentCursor = Math.max(state.sentIntentCursor, payload.intent_id);
@@ -190,7 +210,7 @@
       var retryId = nextIntentId();
       if (state.drag && state.drag.intentId === staleId) state.drag.intentId = retryId;
       payload = Object.assign({}, payload, { intent_id: retryId });
-      return callApi('sendIntent', payload).then(function (retryResult) {
+      return callIntentApi(payload, visitId, token).then(function (retryResult) {
         if (retryResult && retryResult.ok === true) {
           state.sentIntentCursor = Math.max(state.sentIntentCursor, retryId);
         }
