@@ -3988,6 +3988,7 @@
             "localTracking": "Rastreamento Local",
             "lockedHoverFade": "Desbotamento de foco bloqueado",
             "forgeDropEffects": "Efeitos ao receber bilhete",
+            "modelClickShake": "Tremor ao clicar",
             "hideCommunityEntry": "Ocultar acesso ao Universo Miau",
             "textGuardMaxLength": "Limite de comprimento de resposta",
             "unlimited": "Ilimitado",

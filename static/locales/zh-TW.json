@@ -3988,6 +3988,7 @@
             "localTracking": "局部跟蹤",
             "lockedHoverFade": "鎖定懸停淡化",
             "forgeDropEffects": "掉券動畫與音效",
+            "modelClickShake": "點擊顫動回饋",
             "hideCommunityEntry": "隱藏喵宇宙入口",
             "textGuardMaxLength": "回覆長度上限",
             "unlimited": "無限制",

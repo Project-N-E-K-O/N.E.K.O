@@ -2469,8 +2469,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.applyRenderQuality(window.renderQuality);
     }
 
-    if (typeof this._optimizeLinuxX11RendererProfile === 'function') {
-        this._optimizeLinuxX11RendererProfile(model);
+    if (typeof this._optimizeRendererProfile === 'function') {
+        this._optimizeRendererProfile(model);
     }
 
     // 应用位置和缩放设置

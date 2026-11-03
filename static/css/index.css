@@ -979,8 +979,12 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-.neko-idle-return-btn.is-desktop-window-gravity > .neko-idle-return-art {
-    scale: var(--neko-window-gravity-scale-x, 1) var(--neko-window-gravity-scale-y, 1);
+.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art {
+    translate:
+        var(--neko-collision-shift-x, 0%)
+        var(--neko-collision-shift-y, 0%);
+    scale: var(--neko-collision-scale-x, 1) var(--neko-collision-scale-y, 1);
+    will-change: opacity, transform, translate, scale, filter;
 }
 
 .neko-idle-return-btn.is-cat1-desktop-window-top-edge-active.is-cat1-desktop-window-top-edge-facing-right > .neko-idle-return-art {
