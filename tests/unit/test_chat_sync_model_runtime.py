@@ -152,6 +152,43 @@ async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('changed_record', [False, True])
+async def test_model_confirmation_matches_the_cloud_record_before_applying(tmp_path, changed_record):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    runtime, service, _ = setup_runtime(tmp_path, ModelService())
+    adapter = SimpleNamespace(
+        read=AsyncMock(return_value={'name': 'Synthetic', 'kind': 'live2d', 'path': '/original', 'selection': 'original'}),
+        apply=AsyncMock(return_value=True),
+    )
+    runtime.models.adapter = adapter
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        await runtime.models.step(UID, manual=True)
+        before = runtime.models.store.get(DOMAIN.key())
+        candidate = (await runtime.models.status(UID))['candidate']
+        if changed_record:
+            fixture = json.loads((Path(__file__).parents[1] / 'fixtures/cloud_model_v1.json').read_text(encoding='utf-8'))
+            service.model = next(item['record'] for item in fixture['valid'] if item['name'] == 'complete_model')
+            with pytest.raises(ValueError, match='^invalid_model_response$'):
+                await runtime.models.finish(UID, candidate['token'], True)
+            adapter.apply.assert_not_awaited()
+            assert runtime.models.store.get(DOMAIN.key()) == before
+        service.model = dict(reversed(list(before['candidate']['record'].items())))
+        assert await runtime.models.finish(UID, candidate['token'], True) is True
+        adapter.apply.assert_awaited_once()
+        saved = runtime.models.store.get(DOMAIN.key())
+        assert saved['remote'] == before['candidate']['record']
+        assert saved['revision'] == service.model_revision
+        assert 'candidate' not in saved and 'failed' not in saved
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_default_model_candidate_loads_from_the_actual_static_route(tmp_path):
     from urllib.parse import urljoin
     from app.main_server.web_app import app

@@ -405,6 +405,8 @@ class DesktopModelSync:
                 state.pop('candidate')
                 await commit(self.store.put, domain.key(), state)
                 return False
+            if encode(latest['record']) != encode(candidate['record']):
+                raise ValueError('invalid_model_response')
             if not await self.adapter.apply(uid, candidate["expected"], candidate["path"], commit):
                 return False
             state.update(revision=candidate["revision"], selection=canonical(["live2d", candidate["path"]]).decode(), remote=candidate["record"])
