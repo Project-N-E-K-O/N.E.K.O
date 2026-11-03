@@ -323,7 +323,7 @@ class _Transfer:
                 raise
             await flush()
         finally:
-            await opened.response.aclose()
+            await await_cancellation_safe(asyncio.create_task(opened.response.aclose()))
         body_seconds = time.monotonic() - opened.headers_at
         body_bytes = self.received - start
         sampled = body_bytes >= THROUGHPUT_SAMPLE_BYTES and body_seconds > 0

@@ -124,6 +124,18 @@ def test_out_of_order_delivery_keeps_latest_record_and_bounded_capacity(
     assert context.get_user_context("YUI", limit=1)[0]["event_id"] == "latest"
 
 
+def test_clock_rollback_does_not_reorder_producer_timestamps(context, monkeypatch):
+    # The producer clock was ahead of the receiver after a wall-clock rollback.
+    patch_module_clock(monkeypatch, state_module, time=lambda: 1000.0)
+    context.add_user_context_event("YUI", {"event_id": "newer", "_ts": 1100.0})
+    patch_module_clock(monkeypatch, state_module, time=lambda: 1010.0)
+    context.add_user_context_event("YUI", {"event_id": "older", "_ts": 1050.0})
+    records = context.get_user_context("YUI")
+    assert [record["event_id"] for record in records] == ["older", "newer"]
+    assert records[-1]["_ts"] == 1100.0
+    assert context.get_user_context("YUI", limit=1)[0]["event_id"] == "newer"
+
+
 def test_expired_replay_does_not_renew_activity(context, monkeypatch):
     patch_module_clock(monkeypatch, state_module, time=lambda: 10000.0)
     event = turn_event(timestamp=9990)

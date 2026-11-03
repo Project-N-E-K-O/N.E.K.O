@@ -420,11 +420,18 @@ async def test_cancelled_download_closes_winning_response(tmp_path):
     from plugin.server.infrastructure.package_transfer import _Opened, _Transfer
     cancelled = asyncio.Event()
     release = asyncio.Event()
+    closing, release_close = asyncio.Event(), asyncio.Event()
 
     class Body(httpx.AsyncByteStream):
+        close_finished = False
 
         async def __aiter__(self):
             yield b'synthetic'
+
+        async def aclose(self):
+            closing.set()
+            await release_close.wait()
+            self.close_finished = True
     response = httpx.Response(200, stream=Body(), request=httpx.Request('GET', 'https://fast.invalid/package'))
     transfer = _Transfer(httpx, [('slow', 'https://slow.invalid/package'), ('fast', 'https://fast.invalid/package')], maximum_bytes=1024, report_progress=lambda *_: None, report_route=lambda *_: None, check_cancelled=lambda: None)
 
@@ -443,8 +450,61 @@ async def test_cancelled_download_closes_winning_response(tmp_path):
         await asyncio.wait_for(cancelled.wait(), 2)
         task.cancel()
         release.set()
+        await asyncio.wait_for(closing.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_close.set()
         result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
         assert isinstance(result[0], asyncio.CancelledError)
-        assert response.is_closed
+        assert response.stream.close_finished
     finally:
-        await response.aclose()
+        release.set()
+        release_close.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await response.stream.aclose()
+
+
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_cancel_during_winner_body_cleanup_drains_stream(cancel_count):
+    import io
+
+    reading, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        close_finished = False
+
+        async def __aiter__(self):
+            reading.set()
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+        async def aclose(self):
+            closing.set()
+            await release.wait()
+            self.close_finished = True
+
+    response = httpx.Response(200, stream=Body(), request=httpx.Request("GET", "https://winner.invalid/pkg"))
+    instance = transfer._Transfer(httpx, [], maximum_bytes=1024,
+        report_progress=lambda *_: None, report_route=lambda *_: None, check_cancelled=lambda: None)
+    opened = transfer._Opened("winner", "https://winner.invalid/pkg", response, 0, 0, 0, 0)
+    task = asyncio.create_task(instance._carry(opened, io.BytesIO()))
+    try:
+        await asyncio.wait_for(reading.wait(), 1)
+        task.cancel()  # Interrupt body consumption and enter the finally block.
+        await asyncio.wait_for(closing.wait(), 1)
+        assert response.is_closed and not response.stream.close_finished
+        for _ in range(cancel_count):
+            task.cancel()  # Interrupt cleanup, not just the preceding download.
+            await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert response.stream.close_finished
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await response.stream.aclose()

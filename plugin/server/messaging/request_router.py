@@ -135,6 +135,7 @@ class PluginRouter:
         with self._start_lock:
             self._router_task = None
             self._ingress = None
+            self._queue = None
         logger.info("Plugin router stopped")
 
     async def _router_loop(self) -> None:

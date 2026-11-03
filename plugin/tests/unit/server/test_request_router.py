@@ -508,3 +508,27 @@ async def test_fault_recovery_cancels_only_old_requests_and_reopens_delivery(mon
         assert reply['request_id'] == 'new' and reply['result'] == 'new'
     finally:
         await asyncio.wait_for(router.stop(), 2)
+
+
+async def test_stopped_router_releases_unprocessed_queue_payloads(monkeypatch):
+    import gc
+    import weakref
+
+    class Payload:
+        pass
+
+    monkeypatch.setattr(state, "_plugin_comm_queue", asyncio.Queue())
+    monkeypatch.setattr(state, "plugin_control_ingress", None)
+    router = module.PluginRouter()
+    await router.start()
+    router._router_task.cancel()
+    await asyncio.gather(router._router_task, return_exceptions=True)
+    queue_ref = weakref.ref(router._queue)
+    payload = Payload()
+    payload_ref = weakref.ref(payload)
+    await router._ingress.enqueue({"type": "OP", "request_id": "queued", "payload": payload})
+    del payload
+    await router.stop()
+    gc.collect()
+    assert router._queue is None
+    assert queue_ref() is None and payload_ref() is None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 
@@ -19,8 +20,8 @@ class ControlIngress:
         self._closed = False
         self._handoff_lock = threading.Lock()
         self._handoffs: set[Future] = set()
-        self._queued: set[tuple[str, str]] = set()
-        self._cancelled: set[tuple[str, str]] = set()
+        self._queued: Counter[tuple[str, str]] = Counter()
+        self._cancelled: Counter[tuple[str, str]] = Counter()
 
     @staticmethod
     def _key(request: Mapping) -> tuple[str, str]:
@@ -36,15 +37,20 @@ class ControlIngress:
         key = self._key(request)
         operation = request.get("type")
         if operation in {"RPC_CANCEL", "RPC_DISCONNECT"}:
-            self._cancelled.update(
-                k
-                for k in self._queued
-                if k == key or (operation == "RPC_DISCONNECT" and k[0] == key[0])
-            )
+            # Count only copies already queued at this cancellation boundary.
+            # A later retry of the same ID must not inherit their cancellation.
+            for queued_key, count in self._queued.items():
+                if queued_key == key or (
+                    operation == "RPC_DISCONNECT" and queued_key[0] == key[0]
+                ):
+                    self._cancelled[queued_key] = count
             self._control(request)
             return
+        deadline = request_deadline(request, None)
+        if deadline is not None and deadline <= time.monotonic():
+            raise TimeoutError("Plugin control request expired before admission")
         self.queue.put_nowait(request)
-        self._queued.add(key)
+        self._queued[key] += 1
 
     async def _enqueue_local(
         self,
@@ -112,9 +118,14 @@ class ControlIngress:
 
     def take(self, request: Mapping) -> bool:
         key = self._key(request)
-        self._queued.discard(key)
-        cancelled = key in self._cancelled
-        self._cancelled.discard(key)
+        self._queued[key] -= 1
+        if self._queued[key] <= 0:
+            self._queued.pop(key, None)
+        cancelled = self._cancelled[key] > 0
+        if cancelled:
+            self._cancelled[key] -= 1
+            if self._cancelled[key] == 0:
+                self._cancelled.pop(key, None)
         return not self._closed and not cancelled
 
     def close(self) -> None:

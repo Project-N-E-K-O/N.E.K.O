@@ -10,6 +10,51 @@ from plugin.core import control_ingress as ingress_module
 from plugin.logging_config import get_logger
 
 
+async def test_expired_admission_does_not_consume_capacity():
+    queue = asyncio.Queue(maxsize=1)
+    ingress = ingress_module.ControlIngress(queue, lambda _: None)
+    try:
+        with pytest.raises(TimeoutError):
+            await ingress.enqueue(
+                {
+                    "type": "OP",
+                    "request_id": "expired",
+                    "_request_deadline_monotonic": time.monotonic() - 1,
+                }
+            )
+        assert queue.empty()
+        await ingress.enqueue({"type": "OP", "request_id": "live"})
+        assert ingress.take(queue.get_nowait())
+    finally:
+        ingress.close()
+
+
+@pytest.mark.parametrize("operation", ["RPC_CANCEL", "RPC_DISCONNECT"])
+async def test_cancel_covers_all_queued_duplicates_but_not_later_retry(operation):
+    queue = asyncio.Queue(maxsize=4)
+    ingress = ingress_module.ControlIngress(queue, lambda _: None)
+    request = {"type": "OP", "request_id": "same", "_rpc_connection_id": "connection"}
+    try:
+        await ingress.enqueue(dict(request))
+        await ingress.enqueue(dict(request))
+        await ingress.enqueue({**request, "_rpc_connection_id": "other"})
+        await ingress.enqueue(
+            {
+                **request,
+                "type": operation,
+                "_request_deadline_monotonic": time.monotonic() - 1,
+            }
+        )
+        assert not ingress.take(queue.get_nowait())
+        # A retry may arrive before every cancelled copy has drained.
+        await ingress.enqueue(dict(request))
+        assert not ingress.take(queue.get_nowait())
+        assert ingress.take(queue.get_nowait())  # Other connection is untouched.
+        assert ingress.take(queue.get_nowait())  # New retry is not cancelled.
+    finally:
+        ingress.close()
+
+
 async def test_ingress_full_cancel_disconnect_and_restart_boundaries(monkeypatch):
     from plugin.core.rpc import RpcClosedError
 

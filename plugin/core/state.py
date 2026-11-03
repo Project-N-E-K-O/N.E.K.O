@@ -1418,7 +1418,7 @@ class GlobalState:
         if not math.isfinite(occurred_at):
             return
         # A relay must retain event age, never renew it on arrival or replay.
-        payload["_ts"] = min(occurred_at, now)
+        payload["_ts"] = occurred_at
 
         with self._user_context_lock:
             ttl = self._user_context_ttl_seconds
