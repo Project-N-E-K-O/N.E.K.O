@@ -162,12 +162,19 @@ def test_thread_still_waiting_on_the_file_lock_is_named_as_holder(isolated_locks
 
 
 @pytest.mark.unit
-def test_read_queued_behind_a_full_executor_times_out_and_reports(tmp_path, isolated_locks, captured_reports):
+@pytest.mark.parametrize('config_on_executor', [False, True])
+def test_read_queued_behind_a_full_executor_times_out_and_reports(
+    tmp_path, isolated_locks, captured_reports, config_on_executor,
+):
     from concurrent.futures import ThreadPoolExecutor
 
     from tests.unit.test_recent_file_lock import _make_manager
 
     mgr, name, _path = _make_manager(tmp_path)
+    if config_on_executor:
+        # The real config manager offloads this read too, so it queues first.
+        config = mgr._config_manager
+        config.aget_character_data = lambda: asyncio.to_thread(config.get_character_data)
     release = threading.Event()
     executor = ThreadPoolExecutor(max_workers=1)
 
@@ -303,7 +310,8 @@ async def test_get_recent_history_returns_503_when_the_lock_wait_times_out():
 
     with patch.object(memory_server.runtime, "_config_manager", fake_config), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
-         patch.object(memory_server.routes.logger, "warning") as warning:
+         patch.object(memory_server.routes.logger, "warning") as warning, \
+         patch("utils.stall_report.report_stall"):
         response = await memory_server.get_recent_history("test_char")
 
     assert response.status_code == 503
@@ -312,3 +320,40 @@ async def test_get_recent_history_returns_503_when_the_lock_wait_times_out():
     assert json.loads(response.body)["status"] == "error"
     kwargs = fake_recent.aget_recent_history.await_args.kwargs
     assert 0 < kwargs["lock_timeout"] < 5
+
+
+@pytest.mark.unit
+def test_get_recent_history_budget_covers_the_character_check(captured_reports, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app import memory_server
+
+    monkeypatch.setattr(memory_server.routes, "_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS", 0.2)
+    release = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    # The real config manager offloads load_characters, so it queues behind a full executor.
+    fake_config = SimpleNamespace(
+        aload_characters=lambda: asyncio.to_thread(lambda: {"猫娘": {"test_char": {}}}),
+    )
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(executor)
+        busy = loop.run_in_executor(None, release.wait, 10)
+        started = time.monotonic()
+        try:
+            response = await memory_server.get_recent_history("test_char")
+            return response, time.monotonic() - started
+        finally:
+            release.set()
+            await busy
+
+    try:
+        with patch.object(memory_server.runtime, "_config_manager", fake_config):
+            response, elapsed = asyncio.run(_run())
+    finally:
+        executor.shutdown(wait=True)
+    assert response.status_code == 503
+    assert elapsed < 2
+    message, kwargs = captured_reports[0]
+    assert '/get_recent_history' in message and 'test_char' in message

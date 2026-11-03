@@ -51,7 +51,6 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
-from utils.recent_file import RecentFileLockTimeout
 from utils.llm_tool_leak_filter import (
     strip_tool_call_leaks,
     strip_tool_call_leaks_from_parts,
@@ -2082,6 +2081,24 @@ _RECENT_HISTORY_LOCK_TIMEOUT_SECONDS = 4.0
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
+    # The only caller (game pregame) gives up after 5s and falls back to empty history.
+    # One budget covers every step that can queue on the default executor or the recent
+    # lock; lock_timeout below also stops the worker thread instead of leaving it waiting.
+    try:
+        async with asyncio.timeout(_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS):
+            return await _render_recent_history(lanlan_name, _lang)
+    except TimeoutError:
+        from utils.stall_report import report_stall
+        report_stall(
+            f"/get_recent_history {lanlan_name} {_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS}s 内未完成，返回 503",
+            loop=asyncio.get_running_loop(),
+        )
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+
+
+async def _render_recent_history(lanlan_name: str, _lang: str):
     # Check whether character exists in configuration.
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -2093,17 +2110,9 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    try:
-        raw_history = await runtime.recent_history_manager.aget_recent_history(
-            lanlan_name, lock_timeout=_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS,
-        )
-    except RecentFileLockTimeout:
-        # The only caller (game pregame) gives up after 5s and falls back to empty history;
-        # failing first keeps the worker thread from waiting on the lock forever. The lock
-        # already logged this wait through the rate-limited stall report.
-        return JSONResponse(
-            {"status": "error", "message": "recent history is busy"}, status_code=503,
-        )
+    raw_history = await runtime.recent_history_manager.aget_recent_history(
+        lanlan_name, lock_timeout=_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS,
+    )
     history = _screen_guarded_recent_history(raw_history)
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
