@@ -920,6 +920,10 @@ def test_unmatched_pick_from_grounded_news_source_is_recognized():
     assert _unmatched_pick_may_be_grounded_news("Google", links)
     # A source that clearly names a non-grounded candidate keeps the title-only path.
     assert not _unmatched_pick_may_be_grounded_news("YouTube", links)
+    # An empty source is never "clearly named", even if some candidate lacks one.
+    sourceless = links + [{"title": "x", "url": "https://example.com/x", "source": "", "mode": "web"}]
+    assert _unmatched_pick_may_be_grounded_news("", sourceless)
+    assert _unmatched_pick_may_be_grounded_news(None, sourceless)
 
 
 @pytest.mark.unit
