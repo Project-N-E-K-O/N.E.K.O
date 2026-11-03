@@ -966,6 +966,10 @@ class VRMInteraction {
                 this._rememberPanDragPointer(e);
                 this._rememberDragHintPanPointer(e);
                 void this._recordDragHintPointerEdgeApproach('vrm');
+                // 一旦拖出点击范围就不再算点击，拖回原处松手也不颤
+                if (this._clickShakeTap && !window.NekoAvatarClickShake?.isTap(this._clickShakeTap, e)) {
+                    this._clickShakeTap = null;
+                }
             }
 
             if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {

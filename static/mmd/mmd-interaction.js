@@ -412,6 +412,10 @@ class MMDInteraction {
                 this._rememberPanDragPointer(e);
                 this._rememberDragHintPanPointer(e);
                 void this._recordDragHintPointerEdgeApproach('mmd');
+                // 一旦拖出点击范围就不再算点击，拖回原处松手也不颤
+                if (this._clickShakeTap && !window.NekoAvatarClickShake?.isTap(this._clickShakeTap, e)) {
+                    this._clickShakeTap = null;
+                }
             }
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 

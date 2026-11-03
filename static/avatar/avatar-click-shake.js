@@ -12,7 +12,22 @@
     const running = new WeakMap();
 
     function isEnabled() {
-        return global.modelClickShakeEnabled !== false;
+        if (typeof global.modelClickShakeEnabled === 'boolean') return global.modelClickShakeEnabled;
+        // 模型管理、小游戏等页面不加载 app-settings.js，直接读主界面存下的设置
+        try {
+            const saved = JSON.parse(global.localStorage.getItem('project_neko_settings') || 'null');
+            const value = saved && saved.modelClickShakeEnabled;
+            if (value === false || value === 'false') return false;
+        } catch (_) {}
+        return true;
+    }
+
+    function prefersReducedMotion() {
+        try {
+            return !!(global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (_) {
+            return false;
+        }
     }
 
     function tapStart(point) {
@@ -28,7 +43,7 @@
 
     // 画布整体原地抖一下；只动 CSS 合成层，不改模型坐标，也就不会被位置保存/回弹读到
     function play(element) {
-        if (!isEnabled() || !element || typeof element.animate !== 'function') return null;
+        if (!isEnabled() || prefersReducedMotion() || !element || typeof element.animate !== 'function') return null;
         const previous = running.get(element);
         if (previous) previous.cancel();
         let animation;

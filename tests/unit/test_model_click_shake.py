@@ -68,6 +68,14 @@ def test_click_shake_toggle_lives_in_animation_settings_and_persists():
     assert "settings.toggles.modelClickShake" in panel
     assert "window.modelClickShakeEnabled = enabled;" in panel
     assert "window.modelClickShakeEnabled !== false" in panel
+    # Read the effective value (saved settings on pages without app-settings.js) and
+    # resync the toggle each time the once-built panel expands.
+    assert "window.NekoAvatarClickShake.isEnabled()" in panel
+    assert "const enabled = !isClickShakeEnabled();" in panel
+    expand_wrapper = panel[panel.index("container._expand = () => {"):]
+    expand_wrapper = expand_wrapper[: expand_wrapper.index("};")]
+    assert "clickShakeCheckbox.checked = isClickShakeEnabled();" in expand_wrapper
+    assert expand_wrapper.index("isClickShakeEnabled()") < expand_wrapper.index("originalExpand();")
     assert panel.index("trackingRow.appendChild(hoverFadeRow);") < panel.index(
         "trackingRow.appendChild(clickShakeRow);"
     ) < panel.index("trackingRow.appendChild(forgeDropEffectsRow);")

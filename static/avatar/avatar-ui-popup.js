@@ -1720,7 +1720,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const clickShakeCheckbox = document.createElement('input');
     clickShakeCheckbox.type = 'checkbox';
     clickShakeCheckbox.style.display = 'none';
-    clickShakeCheckbox.checked = window.modelClickShakeEnabled !== false; // 默认开启
+    // 以颤动模块的判定为准：没加载 app-settings.js 的页面也能读到已存的设置；默认开启
+    const isClickShakeEnabled = () => (window.NekoAvatarClickShake
+        ? window.NekoAvatarClickShake.isEnabled()
+        : window.modelClickShakeEnabled !== false);
+    clickShakeCheckbox.checked = isClickShakeEnabled();
 
     const {
         indicator: clickShakeIndicator,
@@ -1747,7 +1751,8 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     updateClickShakeRowStyle();
 
     const handleClickShakeChange = () => {
-        const enabled = !clickShakeCheckbox.checked;
+        // 按实际值切换：别的窗口改过设置时，面板显示可能还没刷新
+        const enabled = !isClickShakeEnabled();
         clickShakeCheckbox.checked = enabled;
         window.modelClickShakeEnabled = enabled;
         updateClickShakeRowStyle();
@@ -1890,6 +1895,14 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     trackingRow.appendChild(communityEntryRow);
+
+    // 面板只建一次；每次展开前按实际值刷新点击颤动开关
+    const originalExpand = container._expand;
+    container._expand = () => {
+        clickShakeCheckbox.checked = isClickShakeEnabled();
+        updateClickShakeRowStyle();
+        originalExpand();
+    };
 
     document.body.appendChild(container);
     return container;

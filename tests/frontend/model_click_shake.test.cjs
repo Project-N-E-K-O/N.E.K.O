@@ -152,6 +152,37 @@ test('helper respects the animation settings toggle and missing elements', () =>
     assert.ok(h.shake.play(h.canvas));
 });
 
+test('helper falls back to saved settings on pages without app-settings.js', () => {
+    for (const [saved, expected] of [
+        [{ modelClickShakeEnabled: false }, false],
+        [{ modelClickShakeEnabled: 'false' }, false],
+        [{ modelClickShakeEnabled: true }, true],
+        [null, true],
+        ['{not json', true]
+    ]) {
+        const h = helper();
+        h.window.localStorage = {
+            getItem: key => (key === 'project_neko_settings' && saved !== null
+                ? (typeof saved === 'string' ? saved : JSON.stringify(saved))
+                : null)
+        };
+        assert.equal(h.shake.isEnabled(), expected, JSON.stringify(saved));
+        assert.equal(!!h.shake.play(h.canvas), expected);
+        // 本页运行时的取值优先于存储
+        h.window.modelClickShakeEnabled = !expected;
+        assert.equal(h.shake.isEnabled(), !expected);
+    }
+});
+
+test('helper skips the shake when the system asks for reduced motion', () => {
+    const h = helper();
+    let reduce = true;
+    h.window.matchMedia = query => ({ matches: reduce && query === '(prefers-reduced-motion: reduce)' });
+    assert.equal(h.shake.play(h.canvas), null);
+    reduce = false;
+    assert.ok(h.shake.play(h.canvas));
+});
+
 test('helper tap detection matches the Live2D click thresholds', () => {
     const h = helper();
     const start = h.shake.tapStart({ clientX: 100, clientY: 100 });
@@ -192,6 +223,21 @@ test('VRM and MMD shake on a left-click or one-finger tap, not on drag, orbit or
         h.document.fire('mouseup', mouse(460));
         await new Promise(setImmediate);
         assert.equal(h.shakes.length, 1, `${kind} drag`);
+
+        // 拖出点击范围再拖回原处，仍是拖拽
+        h.canvas.fire('mousedown', mouse(400));
+        h.document.fire('mousemove', mouse(430));
+        h.document.fire('mousemove', mouse(401));
+        h.document.fire('mouseup', mouse(401));
+        await new Promise(setImmediate);
+        assert.equal(h.shakes.length, 1, `${kind} drag out and back`);
+
+        h.canvas.fire('pointerdown', pointer(9, 400, 400));
+        h.document.fire('pointermove', pointer(9, 440, 400));
+        h.document.fire('pointermove', pointer(9, 402, 400));
+        h.document.fire('pointerup', pointer(9, 402, 400));
+        await new Promise(setImmediate);
+        assert.equal(h.shakes.length, 1, `${kind} touch drag out and back`);
 
         h.canvas.fire('mousedown', mouse(400, 400, 2));
         h.document.fire('mouseup', mouse(400, 400, 2));
