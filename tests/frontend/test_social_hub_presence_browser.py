@@ -41,6 +41,7 @@ class SocialHubAccountSwitchBrowserTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 context = self.browser.new_context()
                 page = context.new_page()
+                page.clock.install()
                 reads, errors = [], []
                 page.on('pageerror', lambda error: errors.append(str(error)))
 
@@ -62,7 +63,8 @@ class SocialHubAccountSwitchBrowserTests(unittest.TestCase):
                         request_route.fulfill(json=BODY)
                     elif path == '/api/community/friend-presence':
                         reads.append('compact')
-                        request_route.fulfill(json={'friends': [{'id': 'friend-0', 'presence_status': 'away'}]})
+                        request_route.fulfill(json={'friends': [{'id': 'friend-0',
+                            'presence_status': 'away' if reads.count('compact') == 1 else 'online'}]})
                     else:
                         asset = ROOT / path.lstrip('/')
                         request_route.fulfill(status=200 if asset.is_file() else 404,
@@ -77,13 +79,21 @@ class SocialHubAccountSwitchBrowserTests(unittest.TestCase):
                     page.evaluate('nekoSocialHub.open()')
                     page.wait_for_function('nekoSocialHub._state.loggedIn && !nekoSocialHub._state.loading')
                     baseline = reads.count('hub')
-                    page.evaluate('''() => { for(let i=0; i<20; i++) __notify({kind: 'presence_changed', payload: {resync: true}}); }''')
+                    page.evaluate('''() => { for(let i=0; i<20; i++) __notify({kind: 'presence_resync', payload: {resync: true}}); }''')
                     page.wait_for_function("nekoSocialHub._state.friends[0].presenceStatus === 'away'")
+                    self.assertEqual(page.evaluate('nekoSocialHub._state.friends.length'), len(BODY['friends']))
                     self.assertEqual(reads.count('compact'), 1)
+                    self.assertEqual(reads.count('hub'), baseline)
+                    page.clock.fast_forward(16000)
+                    page.evaluate('__connection({connected: true})')
+                    page.clock.run_for(600)
+                    page.wait_for_function("nekoSocialHub._state.friends[0].presenceStatus === 'online'")
+                    self.assertEqual(reads.count('compact'), 2)
+                    self.assertEqual(page.evaluate('nekoSocialHub._state.friends.length'), len(BODY['friends']))
                     self.assertEqual(reads.count('hub'), baseline)
                     page.evaluate('nekoSocialHub.close(); __connection({connected: true})')
                     page.wait_for_timeout(600)
-                    self.assertEqual(reads.count('compact'), 1)
+                    self.assertEqual(reads.count('compact'), 2)
                     self.assertEqual(errors, [])
                 finally:
                     context.close()

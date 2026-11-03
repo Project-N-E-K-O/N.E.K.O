@@ -87,6 +87,7 @@ test('global presence hints coalesce and repeat once when a hint arrives during 
   await new Promise(setImmediate);
   assert.equal(hub._state.friends[0].presenceStatus, 'away');
   assert.equal(timeouts.length, 2);
+  assert.ok(timeouts[1].delay >= 15000 - 100, 'in-flight hints respect the minimum interval');
   timeouts[1].callback();
   reads[1].resolve({ ok: true, json: async () => ({ friends: [{ id: 'friend', presence_status: 'online' }] }) });
   await new Promise(setImmediate);
@@ -134,6 +135,33 @@ test('global hint during initial hub read is recovered after the account becomes
   finish({ ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) });
   await reading;
   assert.equal(timeouts.length, 1);
+});
+
+test('sustained independent resync hints cannot request compact state each second', async () => {
+  let notify, now = Date.now();
+  class FixtureDate extends Date { static now() { return now; } }
+  const reads = [];
+  const { hub, timeouts } = loadHub({ clocked: true, Date: FixtureDate,
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: async (url) => {
+      if (!String(url).includes('friend-presence')) return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) };
+      reads.push(url); return { ok: true, json: async () => ({ friends: [] }) };
+    },
+  });
+  await new Promise(setImmediate);
+  hub._state.open = true;
+  notify({ kind: 'presence_resync', payload: { resync: true } });
+  now += timeouts[0].delay; timeouts[0].callback(); await new Promise(setImmediate);
+  assert.equal(reads.length, 1);
+  now += 1000;
+  notify({ kind: 'presence_resync', payload: { resync: true } });
+  assert.ok(timeouts[1].delay >= 14000 && timeouts[1].delay <= 17000);
+  for (let i = 0; i < 10; i++) { now += 1000; notify({ kind: 'presence_resync', payload: { resync: true } }); }
+  assert.equal(reads.length, 1);
+  assert.equal(timeouts.length, 2);
+  now += 20000; timeouts[1].callback(); await new Promise(setImmediate);
+  assert.equal(reads.length, 2);
+  assert.equal(timeouts.length, 2, 'the last read acknowledges all merged hints');
 });
 
 for (const realtime of [true, false]) {

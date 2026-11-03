@@ -33,6 +33,7 @@
   var presenceResyncApplied = 0;
   var presenceResyncAttempts = 0;
   var presenceResyncTimer = null;
+  var presenceResyncNextAt = 0;
   var presencePushRevision = 0;
   var presencePushRevisions = new Map();
   var dismissedRecommendationIds = new Set();
@@ -1151,8 +1152,10 @@
       presenceResyncTimer = null;
       if (!state.open || !state.loggedIn || presenceResyncApplied >= presenceResyncRequested) return;
       ++presenceResyncAttempts;
+      presenceResyncNextAt = Date.now() + 15000;
       void refreshPresence();
-    }, (500 + Math.random() * 2500) * Math.pow(2, presenceResyncAttempts));
+    }, Math.max(0, presenceResyncNextAt - Date.now())
+      + (500 + Math.random() * 2500) * Math.pow(2, presenceResyncAttempts));
   }
   function requestPresenceResync() {
     ++presenceResyncRequested;
@@ -1635,7 +1638,7 @@
     socialApi.onNotifyIncoming(function (notification) {
       var payload = notification && notification.payload;
       var kind = String(notification && notification.kind || payload && payload.type || '');
-      if (kind === 'presence_changed') applyPresenceChanged(notification);
+      if (kind === 'presence_changed' || kind === 'presence_resync') applyPresenceChanged(notification);
       // Chat owns the compact invitation read. Apply the event locally here:
       // rebuilding the hub in every window repeats profile/friend/ranking reads.
       // Existing periodic reconciliation remains until the rev rollout.
