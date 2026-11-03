@@ -247,7 +247,8 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
     )
 
     fake_mgr.send_lanlan_response.assert_awaited_once()
-    assert fake_mgr._chat_original_turns["plugin-reply-turn"]["origin"] == "agent"
+    # No origin is pinned here; send_lanlan_response creates the rotated turn's ordinary proof.
+    assert fake_mgr._chat_original_turns == {}
     assert fake_mgr.send_lanlan_response.await_args.kwargs["turn_id"] == "plugin-reply-turn"
     assert fake_mgr.send_lanlan_response.await_args.kwargs["expected_speech_id"] == "plugin-reply-turn"
     sent_text = fake_mgr.send_lanlan_response.await_args.args[0]

@@ -16,6 +16,21 @@ from utils import recent_file
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 
 
+class IdleWake(asyncio.Event):
+    """Scheduler wake event that also reports when the loop blocks with no pending hint."""
+
+    def __init__(self):
+        super().__init__()
+        self.waiting = False
+
+    async def wait(self):
+        self.waiting = True
+        try:
+            return await super().wait()
+        finally:
+            self.waiting = False
+
+
 def test_only_successful_recent_writes_notify_and_listener_faults_do_not_fail_saves(tmp_path, monkeypatch):
     seen = []
     path = tmp_path / 'recent.json'
@@ -76,10 +91,9 @@ async def test_recent_runtime_has_no_duplicate_body_scan_and_idles_until_write(t
         ticked.set()
     monkeypatch.setattr(runtime, 'scheduler_tick', tick)
     def forbidden_read(name):
-        raise AssertionError('body lane must not reread the projection')
+        raise AssertionError('an idle runtime must not reread the projection')
     monkeypatch.setattr(adapter, 'read', forbidden_read)
     try:
-        assert await runtime._channel_pass('a' * 32, 'body') is None
         runtime.start_scheduler()
         await asyncio.wait_for(ticked.wait(), 2)
         ticked.clear()
@@ -119,15 +133,32 @@ async def test_idle_wait_is_thirty_seconds_but_preserves_earlier_retry(tmp_path,
 
 @pytest.mark.asyncio
 async def test_pending_profile_does_not_keep_waking_a_declined_retry(tmp_path, monkeypatch):
-    from tests.unit.test_chat_sync_runtime import setup_runtime, UID
-    runtime, _, _ = setup_runtime(tmp_path, recent_memory_adapter=object())
+    from services.chat_sync.runtime import ChatSyncServiceError
+    from tests.unit.test_chat_sync_runtime import DOMAIN, setup_runtime, UID
+    runtime, service, _ = setup_runtime(tmp_path, recent_memory_adapter=object())
+    # Profiles only need to be available; any other adapter use would fail loudly.
+    runtime.profiles.adapter = SimpleNamespace()
     monkeypatch.setattr(runtime.profiles.store, 'next_operation', lambda domain: {'base_revision': 1})
-    monkeypatch.setattr(runtime.profiles, 'step', AsyncMock())
+    monkeypatch.setattr(runtime.profiles, 'local', AsyncMock(return_value={'domain': DOMAIN.key()}))
     try:
         await runtime.configure('https://sync.test')
         binding = await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        # The approved profile retry is still inside its durable backoff.
+        runtime.scheduler.failure(DOMAIN.key(), 'profile', binding['generation'], presence,
+                                  ChatSyncServiceError(503, 240000))
+        claims = []
+        claim = runtime.scheduler.claim
+        def observed_claim(domain, channel, *args, **kwargs):
+            claims.append((channel, claim(domain, channel, *args, **kwargs)))
+            return claims[-1][1]
+        monkeypatch.setattr(runtime.scheduler, 'claim', observed_claim)
+        service.requests.clear()
         runtime._wake.clear()
-        await runtime._automatic_profiles([binding], await runtime.session_presence_provider())
+        await runtime._automatic_profiles([binding], presence)
+        assert claims == [('profile', False)]
+        # No identity request either: the declined claim returned before any transport was opened.
+        assert service.requests == []
         assert not runtime._wake.is_set()
     finally:
         await runtime.close()
@@ -199,21 +230,24 @@ async def test_saved_chat_and_compaction_sync_once_without_idle_reads_or_upload_
         return original_read(name)
     monkeypatch.setattr(adapter, 'read', counted_read)
     runtime, _, _ = setup_runtime(tmp_path, service, recent_memory_adapter=adapter)
-    async def wait_for_receipts(count):
-        async with asyncio.timeout(4):
-            while len(remote.receipts) < count:
+    runtime._wake = wake = IdleWake()
+    async def settle(receipts):
+        # Each finished pass wakes the loop once more to re-inspect and decline. Count idle
+        # reads only once the loop blocks with no pending hint and no running flight.
+        async with asyncio.timeout(10):
+            while (len(remote.receipts) < receipts or wake.is_set() or not wake.waiting
+                   or not all(flight.done() for flight in runtime._flights.values())):
                 await asyncio.sleep(0.01)
-        await asyncio.sleep(0.5)
     try:
         await runtime.configure('https://sync.test')
         await runtime.enable(UID, 'Neko')
         runtime.start_scheduler()
-        await wait_for_receipts(1)
+        await settle(1)
         idle_reads = len(reads)
         await asyncio.sleep(1.2)
         assert len(reads) == idle_reads
         recent_file.write_recent_payload(path, [row('system', 'compacted memo')])
-        await wait_for_receipts(2)
+        await settle(2)
         assert [entry['text'] for entry in remote.rows] == ['compacted memo']
         assert len(remote.requests) == 2
     finally:

@@ -150,9 +150,10 @@ class PersistenceMixin:
         archive event so an idle character never carries an empty dir.
         """
         from memory import ensure_character_dir
+        from memory.archive_shards import REFLECTION_ARCHIVE_DIRNAME
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
-            'reflection_archive',
+            REFLECTION_ARCHIVE_DIRNAME,
         )
 
     def _reflections_legacy_archive_path(self, name: str) -> str:
