@@ -442,7 +442,7 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, 
     `cancelled_sigs`) → redact it **unless** it is a "first-time analyze"
     turn. A user message is first-time if it has **exactly one**
     role=='assistant' message after it in `messages` — that one assistant
-    is the catgirl reply whose turn-end triggered the current analyze call,
+    is the neko reply whose turn-end triggered the current analyze call,
     so this is its first analyze pass and it must bypass the cancel set
     (the user has explicitly re-issued / added new input after the
     previous cancel).

@@ -395,8 +395,8 @@ def resolve_recent_file_path(
     Resolve a logical recent filename to the actual storage path.
 
     Supports both:
-    - New layout: memory/<catgirl>/recent.json
-    - Legacy layout: memory/recent_<catgirl>.json
+    - New layout: memory/<neko>/recent.json
+    - Legacy layout: memory/recent_<neko>.json
     """
     catgirl_name = extract_catgirl_name_from_recent_filename(filename)
     if not catgirl_name:
@@ -436,10 +436,10 @@ def path_error_status_code(error_code: str) -> int:
 
 def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserved_route: bool = True) -> tuple[bool, str]:
     """
-    Validate a catgirl name for safe use in filenames.
+    Validate a neko name for safe use in filenames.
     
     Args:
-        name: The catgirl name to validate
+        name: The neko name to validate
         allow_dots: If True, permit dots in the name (for historical names during migration).
                     Path traversal via '..' is still rejected.
     
@@ -974,12 +974,16 @@ def _write_recent_browser_payload(
         # Retain projection identity through edits without accepting IDs supplied by the browser.
         from memory.recent_sync import ID_KEY, TIME_KEY
         from utils.llm_client import message_metadata
-        current_rows = json.loads(current_text)
+        try:
+            current_rows = json.loads(current_text)
+        except (TypeError, ValueError):
+            # A damaged file stays repairable by saving over it; it has no IDs to keep.
+            current_rows = []
         if not isinstance(current_rows, list):
             current_rows = []
         for item, edit in zip(payload, browser_chat or []):
             source = edit.get("source_index") if isinstance(edit, dict) else None
-            if type(source) is int and 0 <= source < len(current_rows):
+            if type(source) is int and 0 <= source < len(current_rows) and isinstance(current_rows[source], dict):
                 key = message_metadata(current_rows[source]).get(ID_KEY)
                 source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
                 if key and item.get("type") == source_type:
@@ -1338,7 +1342,7 @@ async def save_recent_file(request: Request):
     cm = get_config_manager()
     catgirl_name = extract_catgirl_name_from_recent_filename(filename)
     if catgirl_name is None:
-        logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
+        logger.warning(f"Failed to extract neko name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
     # Save into the same layout reads resolve; never silently move legacy flat/project files into nonexistent
@@ -1453,7 +1457,7 @@ async def save_recent_file(request: Request):
 @router.post('/update_catgirl_name')
 async def update_catgirl_name(request: Request):
     """
-    Update the catgirl name in memory files.
+    Update the neko name in memory files.
     1. Rename the memory files
     2. Update name references inside the file contents
     """

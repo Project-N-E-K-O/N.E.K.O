@@ -581,6 +581,38 @@ class FactsMixin:
                     return ek, entry
         return None, None
 
+    async def arecord_covered_facts(
+        self, name: str, section_key: str, entry_id: str,
+        fact_ids: list[str], *, expected_text: str, subject=None,
+    ) -> bool:
+        """Record facts that reflection synthesis skipped as already covered
+        by one persona entry.
+
+        Audit only: evidence stays untouched, so restating an entry never
+        raises its render priority. Returns False when the entry is gone,
+        protected, outside ``subject``'s isolation domain, or no longer
+        reads ``expected_text`` (the wording the skip decision was made on).
+        """
+        from memory._reflection.schema import merge_covered_fact_ids
+        from memory.scopes import entry_matches_subject
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(section_key)
+            entry = self._find_entry_in_section(
+                section.get('facts', []) if isinstance(section, dict) else [],
+                entry_id,
+            )
+            if (
+                entry is None
+                or entry.get('protected')
+                or entry.get('text') != expected_text
+                or not entry_matches_subject(entry, subject)
+            ):
+                return False
+            if merge_covered_fact_ids(entry, fact_ids):
+                await self.asave_persona(name, persona)
+            return True
+
     async def amerge_into(
         self, name: str, target_entry_id: str, merged_text: str,
         *,
@@ -1428,7 +1460,7 @@ class FactsMixin:
         """Return master + lanlan names + their nicknames (``昵称``) — used to strip
         stop-names before any keyword/BM25/extraction step in the memory pipeline.
 
-        ``lanlan_name`` defaults to the currently active catgirl. When given,
+        ``lanlan_name`` defaults to the currently active neko. When given,
         use that character's own ``昵称`` — on this path ``aadd_fact`` etc.
         explicitly know the target character, avoiding misuse of the active
         character's nicknames in multi-character setups.

@@ -368,7 +368,7 @@ async def _run_post_turn_signals(
     ``"extract_facts"`` (the outbox.ndjson wire format is immutable).
     """
     # Theater originals enter recent/time-index memory, but must not impersonate real-chat participation facts, feedback
-    # judgments, or catgirl disclosure statistics; mixed batches pass only normal messages to those downstream paths.
+    # judgments, or neko disclosure statistics; mixed batches pass only normal messages to those downstream paths.
     ordinary_messages = [message for message in messages if not is_theater_memory_message(message)]
     user_msgs = _extract_user_messages(ordinary_messages)
 

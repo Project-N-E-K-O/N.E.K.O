@@ -313,7 +313,7 @@ async def _runtime_for_story(config_manager: Any, story_id: str) -> NumericV2Run
 
 
 def _current_catgirl_binding(config_manager: Any) -> dict[str, str]:
-    """Sessions bind only to the server's current catgirl; clients cannot forge personas."""  # noqa: DOCSTRING_CJK
+    """Sessions bind only to the server's current neko; clients cannot forge personas."""  # noqa: DOCSTRING_CJK
 
     return numeric_v2_catgirl_binding(config_manager)
 
@@ -538,7 +538,7 @@ async def _numeric_payload(
     payload = {
         "session": _public_session(stored.session),
         "story_title": str(runtime.engine.story["meta"]["title"]),
-        # History attribution uses current display bindings; frontends must not infer player/catgirl names from local prose.
+        # History attribution uses current display bindings; frontends must not infer player/neko names from local prose.
         "participants": _participants(
             binding,
             known=bool(stored.session.player_address_known),
@@ -2056,7 +2056,7 @@ async def _retract_forgotten_attempts(
 
 @router.get("/memory/archives")
 async def list_numeric_memory_archives(story_id: str):
-    """List the current catgirl's cold-archive summaries for a script."""  # noqa: DOCSTRING_CJK
+    """List the current neko's cold-archive summaries for a script."""  # noqa: DOCSTRING_CJK
 
     config_manager = get_config_manager()
     normalized_story_id = str(story_id or "").strip()
@@ -2086,7 +2086,7 @@ async def list_numeric_memory_archives(story_id: str):
 
 @router.get("/memory/archive")
 async def get_numeric_memory_archive(story_id: str, session_id: str):
-    """Read one complete public enactment the current catgirl may access."""  # noqa: DOCSTRING_CJK
+    """Read one complete public enactment the current neko may access."""  # noqa: DOCSTRING_CJK
 
     normalized_story_id = str(story_id or "").strip()
     normalized_session_id = str(session_id or "").strip()
@@ -2151,7 +2151,7 @@ async def pin_numeric_memory_archive(request: Request):
 
 @router.post("/memory/forget")
 async def forget_numeric_story_memory(request: Request):
-    """Explicitly forget the current catgirl's script without deleting the package or Session."""  # noqa: DOCSTRING_CJK
+    """Explicitly forget the current neko's script without deleting the package or Session."""  # noqa: DOCSTRING_CJK
 
     payload = await _json_object(request)
     validation_error = _validate_local_mutation_request(

@@ -280,8 +280,8 @@ def _validate_record(record: Any, rev_id: str) -> dict:
     for pair in pair_ids:
         if group_chat_subject(pair) not in subjects:
             raise ValueError("revocation log lacks the group subject of a recorded pair")
-        # Every pair in the roster must have at least one associated peer catgirl (upsert requires peer_char_id), so every pair
-        # must include a group_participant; otherwise the log would leave the other person's catgirl memory behind
+        # Every pair in the roster must have at least one associated peer neko (upsert requires peer_char_id), so every pair
+        # must include a group_participant; otherwise the log would leave the other person's neko memory behind
         prefix = group_chat_subject(pair)["subject_id"] + ":"
         if not any(s["subject_kind"] == "group_participant" and s["subject_id"].startswith(prefix)
                    for s in subjects):
@@ -1069,7 +1069,7 @@ async def run_revocation(
     if not isinstance(char_name, str) or not char_name:
         raise ValueError("own_char must be the character's current non-empty name")
     if STEP_REMOVE_CHAR not in record["done_steps"]:
-        # If the roster entry still exists, use it for reconciliation: a log that omits one peer catgirl's group_participant
+        # If the roster entry still exists, use it for reconciliation: a log that omits one peer neko's group_participant
         # (or a pair) may still pass internal validation; replay could clear the other subjects, delete the roster entry, and close the log,
         # leaving the omitted memory with no way to replay its deletion. Merge missing roster-derived data back into the log first
         # (Merging moves remove_char and later steps after the new forget operation)

@@ -53,7 +53,7 @@ def test_declined_save_records_divergence_without_queueing_upload():
             window.confirm=()=>false;
             response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
                 {...candidate,head:null,conflict:false,renameRequired:false};
-            await window.nekoCharacterProfileSync.afterSave('Synthetic',false);
+            await window.nekoCharacterProfileSync.afterSave('Synthetic');
             assert.deepEqual(calls.map(x=>x.path),['/api/chat-sync/status','/api/chat-sync/characters/'+uid+'/profile/local']);
             assert.equal(alerts.length,0);
         })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -65,7 +65,7 @@ def test_unbound_save_asks_and_explains_manual_binding_without_enabling():
         (async()=>{
             let asked=0;window.confirm=()=>{asked++;return true;};
             response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,binding:null}]});
-            await window.nekoCharacterProfileSync.afterSave('Synthetic',false);
+            await window.nekoCharacterProfileSync.afterSave('Synthetic');
             assert.equal(asked,1);assert.deepEqual(alerts,['chatSync.profileNeedsBinding']);
             assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/chat-sync/status');
         })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -77,7 +77,7 @@ def test_approved_save_pins_saved_hash_and_cloud_revision_only():
         (async()=>{
             response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
                 {...candidate,head:null,conflict:false,renameRequired:false};
-            await window.nekoCharacterProfileSync.afterSave('Synthetic',false);
+            await window.nekoCharacterProfileSync.afterSave('Synthetic');
             assert.equal(calls.length,3);
             assert.deepEqual(JSON.parse(calls[2].init.body),{localHash:candidate.local_hash,revision:2});
         })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -185,21 +185,21 @@ def test_all_served_entrypoints_and_eight_locales_cover_profile_labels():
         assert all(locale[key] for locale in locales)
 
 
-@pytest.mark.parametrize('enabled,is_new', [(True, True), (True, False), (False, False)])
-def test_card_save_uses_one_choice_without_a_second_profile_confirmation(enabled, is_new):
+@pytest.mark.parametrize('enabled', [True, False])
+def test_card_save_uses_one_choice_without_a_second_profile_confirmation(enabled):
     run_script(r"""
         (async()=>{
             let asked=0;const messages=[];
             window.confirm=()=>{asked++;throw new Error('Unexpected second confirmation');};
             window.showMessage=(text,kind)=>messages.push({text,kind});
             response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:{};
-            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',ENABLED,IS_NEW);
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',ENABLED);
             assert.equal(asked,0);assert.equal(alerts.length,0);assert.equal(calls.length,2);
             assert.equal(calls[1].path,'/api/chat-sync/characters/'+uid+'/sync-choice');
             assert.deepEqual(JSON.parse(calls[1].init.body),{enabled:ENABLED,includeHistory:true});
             assert.equal(messages[0].text,'chatSync.syncChoiceSaved');
         })().catch(e=>{console.error(e);process.exitCode=1;});
-    """.replace('ENABLED', json.dumps(enabled)).replace('IS_NEW', json.dumps(is_new)))
+    """.replace('ENABLED', json.dumps(enabled)))
 
 
 @pytest.mark.parametrize('enabled,loading', [(False, False), (True, False), (True, True)])
@@ -289,7 +289,7 @@ def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied():
             window.showMessage=(text,kind)=>messages.push({text,kind});
             response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:
                 (()=>{throw new Error('synthetic failure');})();
-            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true,false);
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true);
             assert.equal(calls.length,2);
             assert.equal(messages[0].kind,'warning');assert.equal(alerts.length,0);
         })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -304,7 +304,7 @@ def test_card_save_explains_required_recovery_and_poll_explains_the_setup_failur
         window.nekoChatSync={describeError:error=>'reason:'+error};
         response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,
             binding:{writerRecoveryRequired:true}}]}:{};
-        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true,false);
+        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true);
         assert.deepEqual(messages,[{text:'reason:chat_sync_writer_recovery_required',kind:'warning'}]);
         assert.equal(calls.length,2);
         response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
@@ -321,7 +321,7 @@ def test_card_save_before_choice_load_preserves_previous_consent_without_warning
     """A pending status read is not a failed sync save or new consent."""
     run_script(r"""(async()=>{
         const messages=[];window.showMessage=(text,kind)=>messages.push({text,kind});
-        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',undefined,false);
+        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',undefined);
         assert.deepEqual(calls,[]);assert.deepEqual(messages,[]);assert.deepEqual(alerts,[]);
     })().catch(e=>{console.error(e);process.exitCode=1;});
     """)
@@ -432,10 +432,20 @@ def test_card_choice_uses_effective_pending_consent_while_binding_is_still_pause
     """)
 
 
+def test_card_choice_reads_only_the_effective_choice_never_the_binding_flag():
+    """A saved Off stays off even while a first grant's binding is still enabled."""
+    run_script(r"""(async()=>{
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncEnabled:false,syncPending:false,binding:{enabled:true,bindingId:null,generation:1}}]});
+        assert.equal(await window.nekoCharacterProfileSync.getSyncChoice('Synthetic'),false);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
 def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_actions():
-    """Binding and history retries use the card switch, not the recovery-only panel."""
+    """Setup and binding retries use the card switch, not the recovery-only panel."""
     for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
         locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding="utf-8"))['chatSync']
-        for key in ('setupNeedsSave', 'initialHistoryFailed', 'profileNeedsBinding'):
+        for key in ('setupNeedsSave', 'profileNeedsBinding'):
             assert locale['moreOptions'].casefold() not in locale[key].casefold(), (language, key)
 

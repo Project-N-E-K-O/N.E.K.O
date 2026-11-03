@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit (cross-machine visiting) constants.
+"""Neko visit (cross-machine visiting) constants.
 
 Single source of truth for every number of the visit infrastructure
 (``docs/design/visit-infrastructure.md`` §4.8). Grouped by axis; each

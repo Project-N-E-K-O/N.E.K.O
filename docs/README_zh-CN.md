@@ -15,7 +15,7 @@
 [![Commit](https://img.shields.io/github/last-commit/Project-N-E-K-O/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 ![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1092413003-00BFFF?style=flat&logo=tencent-qq)
-[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
+[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=badge_zh_cn)
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online/zh-CN/)
 [![Website](https://img.shields.io/badge/🐾_官网-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
@@ -24,7 +24,7 @@
 
 </div>
 
-本 README 面向开发者。只想使用 N.E.K.O. 的话，请在 [Steam](https://store.steampowered.com/app/4099310/__NEKO/) 免费下载，或访问官网 [project-neko.cn](https://project-neko.cn)。
+本 README 面向开发者。只想使用 N.E.K.O. 的话，请在 [Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=intro_zh_cn) 免费下载，或访问官网 [project-neko.cn](https://project-neko.cn)。
 
 ---
 
@@ -37,9 +37,9 @@ OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己�
 ### 🎮 陪你打游戏
 
 - **内置双人游戏**：空气篮球、羽毛球、你画我猜、足球，还有一起看。开发者可以用小游戏 SDK 和游戏视觉服务继续扩展。
-- **陪你一起玩**：社区插件读取游戏遥测或画面，让她在战争雷霆、杀戮尖塔 2、卡拉彼丘、战舰世界、KARDS 里实时提醒和解说。这些插件都不作弊，自动操作只在你主动开启时才会发生。
-- **自己上手玩**：你一句话，她就能在植物大战僵尸、泰坦陨落 2、半条命与传送门、深海迷航里自己玩，你随时可以接手。自带的 Minecraft 插件需要连接单独启动的本地 Minecraft Agent 服务器（[启用步骤](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
-- **懂你的游戏**：原神、崩坏：星穹铁道、文明 6、环世界、胡闹厨房 2 的陪玩插件会读取游戏状态，让她能聊你的进度、给你出主意。
+- **陪你一起玩**：在胡闹厨房 2、杀戮尖塔 2 和 Minecraft 里，她是你的 2P，跟你一起上手玩；在战争雷霆、卡拉彼丘、战舰世界、KARDS 里，她是你的副官，社区插件读取游戏遥测或画面，让她实时提醒和解说，绝不作弊。自动操作只在你主动开启时才会发生。自带的 Minecraft 插件需要连接单独启动的本地 Minecraft Agent 服务器（[启用步骤](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
+- **自己上手玩**：你一句话，她就能在植物大战僵尸、泰坦陨落 2、半条命与传送门、深海迷航里自己玩，你随时可以接手。
+- **懂你的游戏**：原神、崩坏：星穹铁道、文明 6、环世界的陪玩插件会读取游戏状态，让她能聊你的进度、给你出主意。
 - **屏幕感知**：你玩什么，她都能看着、随时搭话。
 
 ### 🐾 她有自己的社交圈

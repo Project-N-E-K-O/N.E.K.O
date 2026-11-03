@@ -1517,8 +1517,8 @@ PROFILE_RENAME_EVENT_TEXT = {
     "pt": "Antes eu me chamava \"{old_name}\"; agora me chamo \"{new_name}\". Trate \"{new_name}\" como meu nome atual de agora em diante.",
 }
 
-# User rename records live in catgirl persona/master sections; the catgirl reads them,
-# while users renamed. First-person wording suggests catgirl renames, and second person sounds
+# User rename records live in neko persona/master sections; the neko reads them,
+# while users renamed. First-person wording suggests neko renames, and second person sounds
 # awkward; omit personal pronouns and use neutral statements matching other impersonal
 # master fields such as nicknames/gender.
 PROFILE_RENAME_EVENT_FIELD_MASTER = {
@@ -1563,11 +1563,11 @@ def render_profile_rename_event_context(
 ) -> tuple[str, str]:
     """Render a rename record; returns (field_name, content).
 
-    entity="neko": written into the catgirl's own section, in the first person, I.
-    entity="master": written into the master section of the catgirl's persona — the
-    reader is the catgirl while the renamer is the user, so person markers are dropped
+    entity="neko": written into the neko's own section, in the first person, I.
+    entity="master": written into the master section of the neko's persona — the
+    reader is the neko while the renamer is the user, so person markers are dropped
     in favor of a neutral statement, lest the first person make the user's rename look
-    like the catgirl's own.
+    like the neko's own.
     """  # noqa: DOCSTRING_CJK
     lang_key = _normalize_memory_prompt_lang(lang)
     if str(entity or "").strip().lower() == "master":
@@ -2900,26 +2900,31 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-请基于这些事实，提炼一条高层次的反思洞察。请按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}请基于这些事实，整理出一条具体的记忆（reflection）：写清发生了什么，不要给抽象结论。请按以下五步思考：
 
-第一步：判断该反思主要关于谁（entity）
+第一步：判断这条记忆主要关于谁（entity）
 - "master": 主要关于 {MASTER_NAME} 的个人特征
 - "neko": 主要关于 {LANLAN_NAME} 的自我认知
-- "relationship": 关于两人之间的关系动态
+- "relationship": 关于两人之间具体的互动（谁对谁做了什么、说了什么）
 
 第二步：选定语义类别 relation_type（必须与 entity 匹配）
 - master 可用: preference(偏好) | trait(性格) | habit(习惯) | identity(身份) | emotional(情感) | boundary(边界)
 - neko 可用: self_awareness(自我认知) | learned(习得行为) | role_note(角色备注)
-- relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
+- relationship 可用: dynamic(反复出现的具体互动) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 
 第三步：围绕已选定的 entity / relation_type 撰写 reflection 文本
 要求：
 - 紧扣单一观察或模式，不要罗列事实，也不要把多个无关事实混在一起
+- 每个动作的主语都写出具体是谁（用事实里的名字），不要用"我/你/他/她/对方/两人/双方"代替，避免分不清是谁做的
+- relationship 类必须落在具体的事和原话上：谁、做了什么、说了什么（原话可简短引用）；事实里找不到具体事件支撑的关系判断不要写
+- 只写发生了什么，不下结论、不加评价尾巴：禁止"形成了……默契/模式""体现了……""意味着……""说明了……""两人之间存在……纽带/羁绊""关系更加……"这类句子
+  - 反例：「两人形成了互相关心的默契」
+  - 正例：「{MASTER_NAME} 感冒那次，{LANLAN_NAME} 每隔一会儿就问一句"好点没"」
 - 简洁清晰，不得超过 150 字
 - **不要在 reflection 文本里使用"今天/刚刚/最近/这周/近期"等相对时间词** —— 具体时间靠 event_when 字段记录，文本保持中性叙事（例如"某次"、"那段时间"、"当时"）
 
 第四步：判定时间属性 temporal_scope（三档之一，反映"是否会过期"）
-- "pattern": 持续模式 / 性格特质 / 长期偏好，永不过期。例：「{MASTER_NAME} 喜欢咖啡」「{LANLAN_NAME} 性格内向」「两人长期互相依赖」。
+- "pattern": 持续模式 / 性格特质 / 长期偏好，永不过期。例：「{MASTER_NAME} 喜欢咖啡」「{LANLAN_NAME} 性格内向」「{MASTER_NAME} 每次出门前都会对 {LANLAN_NAME} 说"我走了"」。
 - "state": 当前持续的情境，几周内自然过期。例：「{MASTER_NAME} 最近工作压力大」「{LANLAN_NAME} 这段时间在适应新角色」。
 - "episode": 一次具体事件，几天内过期。例：「{MASTER_NAME} 昨晚通宵改代码」「{LANLAN_NAME} 今天收到一份礼物」。
 - 拿不准时请倾向选 pattern（误判 pattern 当 state / episode 会让长期特征过早淡出，比反过来更危险）。
@@ -2935,33 +2940,38 @@ REFLECTION_PROMPT = {
 - 例 3：长期"喜欢咖啡"（pattern） → null
 
 请以 JSON 格式返回，字段顺序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "你的反思洞察", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具体发生了什么（主语写名字）", "temporal_scope": "pattern", "event_when": null}""",
     "zh-TW": """以下是關於 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已擷取事實：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-請根據這些事實，提煉一條高層次的反思洞察。請按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}請根據這些事實，整理出一條具體的記憶（reflection）：寫清發生了什麼，不要給抽象結論。請按以下五步思考：
 
-第一步：判斷該反思主要關於誰（entity）
+第一步：判斷這條記憶主要關於誰（entity）
 - "master": 主要關於 {MASTER_NAME} 的個人特徵
 - "neko": 主要關於 {LANLAN_NAME} 的自我認知
-- "relationship": 關於兩人之間的關係動態
+- "relationship": 關於兩人之間具體的互動（誰對誰做了什麼、說了什麼）
 
 第二步：選定語意類別 relation_type（必須與 entity 相符）
 - master 可用: preference(偏好) | trait(性格) | habit(習慣) | identity(身分) | emotional(情感) | boundary(界線)
 - neko 可用: self_awareness(自我認知) | learned(習得行為) | role_note(角色備註)
-- relationship 可用: dynamic(互動模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同記憶) | agreement(約定)
+- relationship 可用: dynamic(反覆出現的具體互動) | milestone(里程碑) | tension(摩擦) | shared_memory(共同記憶) | agreement(約定)
 
 第三步：圍繞已選定的 entity / relation_type 撰寫 reflection 文字
 要求：
 - 緊扣單一觀察或模式，不要羅列事實，也不要把多個無關事實混在一起
+- 每個動作的主語都寫出具體是誰（用事實裡的名字），不要用「我/你/他/她/對方/兩人/雙方」代替，避免分不清是誰做的
+- relationship 類必須落在具體的事和原話上：誰、做了什麼、說了什麼（原話可簡短引用）；事實裡找不到具體事件支撐的關係判斷不要寫
+- 只寫發生了什麼，不下結論、不加評價尾巴：禁止「形成了……默契/模式」「體現了……」「意味著……」「說明了……」「兩人之間存在……紐帶/羈絆」「關係更加……」這類句子
+  - 反例：「兩人形成了互相關心的默契」
+  - 正例：「{MASTER_NAME} 感冒那次，{LANLAN_NAME} 每隔一會兒就問一句『好點沒』」
 - 簡潔清晰，不得超過 150 字
 - **不要在 reflection 文字裡使用「今天/剛剛/最近/這週/近期」等相對時間詞** —— 具體時間由 event_when 欄位紀錄，文字保持中性敘事（例如「某次」、「那段時間」、「當時」）
 
 第四步：判定時間屬性 temporal_scope（三類之一，反映「是否會過期」）
-- "pattern": 持續模式 / 性格特質 / 長期偏好，永不過期。例：「{MASTER_NAME} 喜歡咖啡」「{LANLAN_NAME} 性格內向」「兩人長期互相依賴」。
+- "pattern": 持續模式 / 性格特質 / 長期偏好，永不過期。例：「{MASTER_NAME} 喜歡咖啡」「{LANLAN_NAME} 性格內向」「{MASTER_NAME} 每次出門前都會對 {LANLAN_NAME} 說『我走了』」。
 - "state": 目前持續的情境，幾週內自然過期。例：「{MASTER_NAME} 最近工作壓力大」「{LANLAN_NAME} 這段時間在適應新角色」。
 - "episode": 一次具體事件，幾天內過期。例：「{MASTER_NAME} 昨晚熬夜改程式碼」「{LANLAN_NAME} 今天收到一份禮物」。
 - 拿不準時請傾向選 pattern（誤判 pattern 為 state / episode 會讓長期特徵過早淡出，比反過來更危險）。
@@ -2977,19 +2987,19 @@ REFLECTION_PROMPT = {
 - 例 3：長期「喜歡咖啡」（pattern）→ null
 
 請以 JSON 格式回傳，欄位順序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "你的反思洞察", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具體發生了什麼（主語寫名字）", "temporal_scope": "pattern", "event_when": null}""",
     "en": """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Based on these facts, distill one higher-level reflective insight. Follow these five steps:
+{EXISTING_IMPRESSIONS_BLOCK}Based on these facts, write one concrete memory (reflection): state what actually happened, not an abstract conclusion. Follow these five steps:
 
-Step 1: Determine which entity the reflection primarily concerns
+Step 1: Determine which entity the memory primarily concerns
 - "master": primarily about {MASTER_NAME}'s personal traits
 - "neko": primarily about {LANLAN_NAME}'s self-perception
-- "relationship": about the dynamics between them
+- "relationship": about concrete interactions between them (who did or said what to whom)
 
 Step 2: Choose a semantic relation_type (must match the entity)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -2999,11 +3009,16 @@ Step 2: Choose a semantic relation_type (must match the entity)
 Step 3: Write the reflection around the chosen entity / relation_type
 Requirements:
 - Stay focused on a single observation or pattern; do not list facts, and do not mix unrelated facts
+- Name the actor of every action (use the names from the facts); never substitute "I / you / he / she / the other one / the two / both", so it is always clear who did what
+- relationship entries must rest on a concrete event and the actual words: who, did what, said what (short quotes are fine); do not write a relationship judgment that no concrete event in the facts supports
+- Describe what happened; no conclusions and no evaluative tail. Forbidden: "formed a tacit understanding / pattern of...", "reflects...", "means...", "shows that...", "a bond exists between the two...", "their relationship grew closer"
+  - Bad: "The two formed a tacit habit of caring for each other"
+  - Good: "When {MASTER_NAME} had a cold, {LANLAN_NAME} kept asking 'feeling better yet?'"
 - Be concise and clear; the reflection MUST NOT exceed 150 words
 - **Do NOT use relative time words like "today / just now / recently / this week" in the reflection text** — specific timing lives in event_when; keep the prose neutral (e.g. "on one occasion", "during that period", "at that time")
 
 Step 4: Classify temporal_scope (one of three — what governs expiry)
-- "pattern": persistent mode / personality trait / long-term preference, never expires. e.g. "{MASTER_NAME} loves coffee", "{LANLAN_NAME} is introverted", "long-term mutual reliance".
+- "pattern": persistent mode / personality trait / long-term preference, never expires. e.g. "{MASTER_NAME} loves coffee", "{LANLAN_NAME} is introverted", "{MASTER_NAME} always tells {LANLAN_NAME} 'I'm heading out' before leaving".
 - "state": currently ongoing situation that naturally expires in weeks. e.g. "{MASTER_NAME} is stressed about work lately", "{LANLAN_NAME} is adjusting to a new role".
 - "episode": one specific event, expires in days. e.g. "{MASTER_NAME} pulled an all-nighter coding last night", "{LANLAN_NAME} received a gift today".
 - When unsure, prefer pattern (misclassifying pattern as state/episode causes long-term traits to fade prematurely, which is worse than the reverse).
@@ -3019,19 +3034,19 @@ Step 5: Annotate event_when (always use RELATIVE TIME, never absolute dates)
 - Example 3: long-term "loves coffee" (pattern) → null
 
 Return JSON with fields in this exact order:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "your reflective insight", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "what concretely happened (name the actors)", "temporal_scope": "pattern", "event_when": null}""",
     "ja": """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-これらの事実に基づき、より高次元の反省的洞察を 1 つ抽出してください。次の 5 ステップで進めてください：
+{EXISTING_IMPRESSIONS_BLOCK}これらの事実に基づき、具体的な記憶（reflection）を 1 つ書いてください：抽象的な結論ではなく、実際に何があったかを書くこと。次の 5 ステップで進めてください：
 
-ステップ 1：この反省が主に誰についてのものか判断する（entity）
+ステップ 1：この記憶が主に誰についてのものか判断する（entity）
 - "master": 主に {MASTER_NAME} の個人的特徴について
 - "neko": 主に {LANLAN_NAME} の自己認識について
-- "relationship": 二人の関係の動態について
+- "relationship": 二人の間の具体的なやり取りについて（誰が誰に何をした・何を言ったか）
 
 ステップ 2：意味カテゴリ relation_type を選定（entity と整合）
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3041,11 +3056,16 @@ Return JSON with fields in this exact order:
 ステップ 3：選定した entity / relation_type に沿って reflection を書く
 要件：
 - 単一の観察やパターンに集中し、事実を列挙したり、無関係な事実を混ぜたりしないこと
+- すべての行動の主語を具体的に書くこと（事実中の名前を使う）。「私／あなた／彼／彼女／相手／二人／お互い」で置き換えず、誰がしたのか曖昧にしないこと
+- relationship は具体的な出来事と実際の言葉に基づくこと：誰が、何をして、何と言ったか（短い引用可）。事実に具体的な出来事の裏付けがない関係の判断は書かないこと
+- 起きたことだけを書き、結論や評価の締めくくりを付けないこと。「〜という暗黙の了解／パターンが形成された」「〜を体現している」「〜を意味する」「〜を示している」「二人の間には〜の絆がある」「関係がより深まった」のような文は禁止
+  - 悪い例：「二人はお互いを気遣う暗黙の了解を形成した」
+  - 良い例：「{MASTER_NAME} が風邪をひいた時、{LANLAN_NAME} は何度も『もう良くなった？』と聞いた」
 - 簡潔かつ明瞭で、150 字を超えてはならない
 - **reflection 本文に「今日／さっき／最近／今週」等の相対時間表現を入れないこと** —— 具体的な時間は event_when に記録し、本文は中性的な語り（「ある時」「その頃」等）にすること
 
 ステップ 4：時間属性 temporal_scope を判定（三択、「いつ期限切れか」を表す）
-- "pattern": 持続的なパターン / 性格特性 / 長期的な嗜好、決して期限切れにならない。例：「{MASTER_NAME} はコーヒー好き」「{LANLAN_NAME} は内向的」。
+- "pattern": 持続的なパターン / 性格特性 / 長期的な嗜好、決して期限切れにならない。例：「{MASTER_NAME} はコーヒー好き」「{LANLAN_NAME} は内向的」「{MASTER_NAME} は出かける前に必ず {LANLAN_NAME} に『行ってきます』と言う」。
 - "state": 現在進行中の情況、数週間で自然に期限切れ。例：「{MASTER_NAME} は最近仕事のストレスが大きい」。
 - "episode": 一度きりの具体的な出来事、数日で期限切れ。例：「{MASTER_NAME} は昨夜徹夜でコードを書いた」。
 - 迷ったら pattern を選ぶ（pattern を state / episode と誤認すると長期特性が早く消える方が危険）。
@@ -3059,19 +3079,19 @@ Return JSON with fields in this exact order:
 - 例：「先週月曜に登山」→ {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "あなたの反省的洞察", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具体的に何があったか（主語は名前で）", "temporal_scope": "pattern", "event_when": null}""",
     "ko": """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-이 사실들을 바탕으로 더 높은 차원의 반성적 통찰 하나를 도출해 주세요. 다음 다섯 단계를 따르세요:
+{EXISTING_IMPRESSIONS_BLOCK}이 사실들을 바탕으로 구체적인 기억(reflection) 하나를 작성해 주세요: 추상적인 결론이 아니라 실제로 무슨 일이 있었는지를 쓰세요. 다음 다섯 단계를 따르세요:
 
-1단계: 이 반성이 주로 누구에 대한 것인지 판단합니다 (entity)
+1단계: 이 기억이 주로 누구에 대한 것인지 판단합니다 (entity)
 - "master": 주로 {MASTER_NAME}의 개인적 특성에 대해
 - "neko": 주로 {LANLAN_NAME}의 자기 인식에 대해
-- "relationship": 두 사람 사이의 관계 동태에 대해
+- "relationship": 두 사람 사이의 구체적인 상호작용에 대해 (누가 누구에게 무엇을 했고 무슨 말을 했는지)
 
 2단계: 의미 범주 relation_type 선택 (entity와 일치해야 함)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3081,11 +3101,16 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 3단계: 선택한 entity / relation_type을 중심으로 reflection을 작성
 요구사항:
 - 단일 관찰 또는 패턴에 집중하고, 사실을 나열하거나 관련 없는 사실을 섞지 마세요
+- 모든 행동의 주어를 구체적으로 쓰세요 (사실에 나온 이름 사용). "나/너/그/그녀/상대/두 사람/서로"로 대신하지 말고, 누가 한 일인지 헷갈리지 않게 하세요
+- relationship은 구체적인 사건과 실제 한 말에 근거해야 합니다: 누가, 무엇을 했고, 무슨 말을 했는지 (짧은 인용 가능). 사실에서 구체적인 사건으로 뒷받침되지 않는 관계 판단은 쓰지 마세요
+- 일어난 일만 쓰고, 결론이나 평가성 꼬리말을 붙이지 마세요. "~하는 암묵적인 합의/패턴이 형성되었다", "~을 보여준다", "~을 의미한다", "~을 드러낸다", "두 사람 사이에는 ~한 유대가 있다", "관계가 더 깊어졌다" 같은 문장은 금지
+  - 나쁜 예: "두 사람은 서로를 챙기는 암묵적인 합의를 형성했다"
+  - 좋은 예: "{MASTER_NAME}가 감기에 걸렸을 때 {LANLAN_NAME}는 몇 번이고 '좀 나아졌어?'라고 물었다"
 - 간결하고 명확하게, 150자를 초과해서는 안 됩니다
 - **reflection 본문에 "오늘/방금/최근/이번 주" 등 상대 시간 표현을 쓰지 마세요** —— 구체적 시간은 event_when에 기록하고, 본문은 중립적 서술 ("어느 시기에", "그 무렵" 등) 유지
 
 4단계: 시간 속성 temporal_scope 판정 (세 가지 중 하나, 만료 시점을 결정)
-- "pattern": 지속적 패턴 / 성격 특성 / 장기 선호, 만료되지 않음. 예: "{MASTER_NAME}는 커피를 좋아함", "{LANLAN_NAME}는 내향적".
+- "pattern": 지속적 패턴 / 성격 특성 / 장기 선호, 만료되지 않음. 예: "{MASTER_NAME}는 커피를 좋아함", "{LANLAN_NAME}는 내향적", "{MASTER_NAME}는 외출하기 전에 늘 {LANLAN_NAME}에게 '다녀올게'라고 말함".
 - "state": 현재 진행 중인 상황, 몇 주 안에 자연 만료. 예: "{MASTER_NAME}는 최근 업무 스트레스가 큼".
 - "episode": 일회성 구체적 사건, 며칠 안에 만료. 예: "{MASTER_NAME}는 어젯밤 밤샘 코딩".
 - 모호할 때는 pattern을 선택 (pattern을 state/episode로 오판하면 장기 특성이 일찍 사라져 더 위험함).
@@ -3099,19 +3124,19 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 예: "지난 월요일에 등산" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "당신의 반성적 통찰", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "구체적으로 무슨 일이 있었는지 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null}""",
     "ru": """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-На основе этих фактов выведите одно рефлексивное наблюдение более высокого уровня. Выполните пять шагов:
+{EXISTING_IMPRESSIONS_BLOCK}На основе этих фактов напишите одно конкретное воспоминание (reflection): что именно произошло, а не абстрактный вывод. Выполните пять шагов:
 
-Шаг 1: Определите, к кому это наблюдение относится в первую очередь (entity)
+Шаг 1: Определите, к кому это воспоминание относится в первую очередь (entity)
 - "master": в основном о личных качествах {MASTER_NAME}
 - "neko": в основном о самовосприятии {LANLAN_NAME}
-- "relationship": о динамике отношений между ними
+- "relationship": о конкретных взаимодействиях между ними (кто что сделал или сказал кому)
 
 Шаг 2: Выберите семантическую категорию relation_type (должна соответствовать entity)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3121,11 +3146,16 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 Шаг 3: Напишите reflection вокруг выбранных entity / relation_type
 Требования:
 - Сосредоточьтесь на одном наблюдении или паттерне; не перечисляйте факты и не смешивайте несвязанные факты
+- Называйте исполнителя каждого действия (используйте имена из фактов); не заменяйте их на «я / ты / он / она / собеседник / оба / друг друга», чтобы всегда было ясно, кто что сделал
+- Записи relationship должны опираться на конкретное событие и реально сказанные слова: кто, что сделал, что сказал (короткие цитаты допустимы); не пишите суждение об отношениях, которое не подкреплено конкретным событием из фактов
+- Описывайте то, что произошло, без выводов и оценочных концовок. Запрещены фразы вроде «сложилось молчаливое взаимопонимание / сложился паттерн…», «это отражает…», «это означает…», «это показывает…», «между ними существует связь…», «их отношения стали ближе»
+  - Плохо: «Между ними сложилось молчаливое взаимопонимание и забота друг о друге»
+  - Хорошо: «Пока {MASTER_NAME} болеет простудой, {LANLAN_NAME} то и дело спрашивает: „Уже лучше?“»
 - Сжато и ясно; длина НЕ должна превышать 150 слов
 - **Не используйте в тексте reflection относительные слова времени "сегодня / только что / недавно / на этой неделе"** —— конкретное время фиксируется в event_when, текст держите нейтральным ("однажды", "в тот период")
 
 Шаг 4: Классифицируйте temporal_scope (один из трёх — определяет срок действия)
-- "pattern": устойчивая модель / черта характера / долгосрочное предпочтение, не истекает. Пример: "{MASTER_NAME} любит кофе", "{LANLAN_NAME} интроверт".
+- "pattern": устойчивая модель / черта характера / долгосрочное предпочтение, не истекает. Пример: "{MASTER_NAME} любит кофе", "{LANLAN_NAME} интроверт", "{MASTER_NAME} перед выходом из дома всегда говорит {LANLAN_NAME}: «Я ухожу»".
 - "state": текущая длящаяся ситуация, естественно истекает через недели. Пример: "{MASTER_NAME} в последнее время в стрессе из-за работы".
 - "episode": конкретное одноразовое событие, истекает через дни. Пример: "{MASTER_NAME} вчера всю ночь кодил".
 - При сомнении предпочитайте pattern (ошибка pattern→state/episode уводит долгосрочные черты раньше времени — хуже обратной).
@@ -3139,19 +3169,19 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Пример: "ходил в горы в прошлый понедельник" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Верните в формате JSON, сохраняя порядок полей:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "ваше рефлексивное наблюдение", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "что конкретно произошло (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null}""",
     "es": """A continuación hay una serie de hechos extraídos sobre {LANLAN_NAME} y {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Con base en estos hechos, destila una sola reflexión de nivel superior. Sigue estos cinco pasos:
+{EXISTING_IMPRESSIONS_BLOCK}Con base en estos hechos, escribe un solo recuerdo concreto (reflection): lo que realmente pasó, no una conclusión abstracta. Sigue estos cinco pasos:
 
-Paso 1: Determina a qué entidad se refiere principalmente la reflexión
+Paso 1: Determina a qué entidad se refiere principalmente el recuerdo
 - "master": principalmente sobre rasgos personales de {MASTER_NAME}
 - "neko": principalmente sobre la autopercepción de {LANLAN_NAME}
-- "relationship": sobre la dinámica entre ambos
+- "relationship": sobre interacciones concretas entre ambos (quién le hizo o le dijo qué a quién)
 
 Paso 2: Elige una relation_type semántica (debe coincidir con la entidad)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3161,11 +3191,16 @@ Paso 2: Elige una relation_type semántica (debe coincidir con la entidad)
 Paso 3: Escribe la reflection alrededor de entity / relation_type elegidos
 Requisitos:
 - Céntrate en una sola observación o patrón; no enumeres hechos ni mezcles hechos no relacionados
+- Nombra a quien realiza cada acción (usa los nombres de los hechos); nunca lo sustituyas por "yo / tú / él / ella / la otra persona / los dos / ambos", para que siempre quede claro quién hizo qué
+- Las entradas relationship deben apoyarse en un suceso concreto y en las palabras que realmente se dijeron: quién, qué hizo, qué dijo (se permiten citas breves); no escribas un juicio sobre la relación que ningún suceso concreto de los hechos respalde
+- Describe lo que pasó, sin conclusiones ni coletillas valorativas. Prohibido: "se formó una complicidad / un patrón de...", "refleja...", "significa...", "demuestra que...", "existe un vínculo entre ambos...", "su relación se volvió más cercana"
+  - Mal: "Entre los dos se formó una complicidad de cuidarse mutuamente"
+  - Bien: "Durante el resfriado de {MASTER_NAME}, {LANLAN_NAME} preguntaba a cada rato: '¿ya estás mejor?'"
 - Sé conciso y claro; la reflexión NO debe superar 150 palabras
 - **No uses palabras relativas de tiempo "hoy / hace un momento / recientemente / esta semana" en el texto** —— el tiempo concreto se registra en event_when; mantén la prosa neutra ("en una ocasión", "durante ese período")
 
 Paso 4: Clasifica temporal_scope (uno de tres — gobierna la caducidad)
-- "pattern": modo persistente / rasgo de personalidad / preferencia a largo plazo, nunca caduca. Ej.: "{MASTER_NAME} ama el café", "{LANLAN_NAME} es introvertido/a".
+- "pattern": modo persistente / rasgo de personalidad / preferencia a largo plazo, nunca caduca. Ej.: "{MASTER_NAME} ama el café", "{LANLAN_NAME} es introvertido/a", "{MASTER_NAME} siempre le dice 'me voy' a {LANLAN_NAME} antes de salir".
 - "state": situación actual en curso, caduca naturalmente en semanas. Ej.: "{MASTER_NAME} está estresado/a por el trabajo últimamente".
 - "episode": un evento específico, caduca en días. Ej.: "{MASTER_NAME} pasó la noche programando ayer".
 - Cuando dudes, prefiere pattern (clasificar pattern como state/episode hace que los rasgos a largo plazo se desvanezcan prematuramente, lo cual es peor).
@@ -3179,19 +3214,19 @@ Paso 5: Anota event_when con TIEMPO RELATIVO (prohibidas fechas absolutas)
 - Ej.: "fui de excursión el lunes pasado" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Devuelve JSON con los campos en este orden exacto:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "tu reflexión", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "qué pasó concretamente (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null}""",
     "pt": """Abaixo há uma série de fatos extraídos sobre {LANLAN_NAME} e {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Com base nesses fatos, extraia uma única reflexão de nível superior. Siga estes cinco passos:
+{EXISTING_IMPRESSIONS_BLOCK}Com base nesses fatos, escreva uma única memória concreta (reflection): o que realmente aconteceu, não uma conclusão abstrata. Siga estes cinco passos:
 
-Passo 1: Determine a qual entidade a reflexão se refere principalmente
+Passo 1: Determine a qual entidade a memória se refere principalmente
 - "master": principalmente sobre características pessoais de {MASTER_NAME}
 - "neko": principalmente sobre a autopercepção de {LANLAN_NAME}
-- "relationship": sobre a dinâmica entre os dois
+- "relationship": sobre interações concretas entre os dois (quem fez ou disse o quê para quem)
 
 Passo 2: Escolha uma relation_type semântica (deve corresponder à entidade)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3201,11 +3236,16 @@ Passo 2: Escolha uma relation_type semântica (deve corresponder à entidade)
 Passo 3: Escreva a reflection em torno de entity / relation_type escolhidos
 Requisitos:
 - Foque em uma única observação ou padrão; não liste fatos nem misture fatos não relacionados
+- Nomeie quem faz cada ação (use os nomes dos fatos); nunca substitua por "eu / você / ele / ela / a outra pessoa / os dois / ambos", para que fique sempre claro quem fez o quê
+- Entradas relationship devem se apoiar em um acontecimento concreto e nas palavras realmente ditas: quem, fez o quê, disse o quê (citações curtas são permitidas); não escreva um julgamento sobre a relação que nenhum acontecimento concreto dos fatos sustente
+- Descreva o que aconteceu, sem conclusões nem arremates avaliativos. Proibido: "formou-se uma cumplicidade / um padrão de...", "reflete...", "significa...", "demonstra que...", "existe um vínculo entre os dois...", "a relação ficou mais próxima"
+  - Ruim: "Os dois formaram uma cumplicidade de cuidar um do outro"
+  - Bom: "Durante o resfriado de {MASTER_NAME}, {LANLAN_NAME} perguntava a toda hora: 'já está melhor?'"
 - Seja conciso e claro; a reflexão NÃO deve exceder 150 palavras
 - **Não use palavras de tempo relativo "hoje / agora mesmo / recentemente / esta semana" no texto** —— o tempo concreto fica em event_when; mantenha a prosa neutra ("em certa ocasião", "naquele período")
 
 Passo 4: Classifique temporal_scope (um dos três — define a expiração)
-- "pattern": modo persistente / traço de personalidade / preferência de longo prazo, nunca expira. Ex.: "{MASTER_NAME} adora café", "{LANLAN_NAME} é introvertido/a".
+- "pattern": modo persistente / traço de personalidade / preferência de longo prazo, nunca expira. Ex.: "{MASTER_NAME} adora café", "{LANLAN_NAME} é introvertido/a", "{MASTER_NAME} sempre diz 'estou saindo' para {LANLAN_NAME} antes de sair".
 - "state": situação atualmente em andamento, expira naturalmente em semanas. Ex.: "{MASTER_NAME} anda estressado/a com o trabalho".
 - "episode": um evento específico, expira em dias. Ex.: "{MASTER_NAME} virou a noite codando ontem".
 - Quando em dúvida, prefira pattern (classificar pattern como state/episode faz traços de longo prazo desvanecerem cedo demais, o que é pior).
@@ -3219,7 +3259,7 @@ Passo 5: Anote event_when com TEMPO RELATIVO (datas absolutas proibidas)
 - Ex.: "fui escalar segunda-feira passada" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Retorne JSON com os campos nesta ordem exata:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "sua reflexão", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o que aconteceu concretamente (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null}""",
 }
 
 
@@ -3235,12 +3275,49 @@ REFLECTION_RELATED_CONTEXT_NOTE = {
 }
 
 
+# Follows the existing-impressions block that synthesis injects only when
+# vectors found candidates. The skip exit lives here, not in REFLECTION_PROMPT,
+# so the prompt without candidates stays exactly what it was. The other
+# fields are still requested on skip: an id outside the candidate set falls
+# back to an ordinary new reflection built from them.
+REFLECTION_EXISTING_IMPRESSIONS_NOTE = {
+    "zh": """上面是已经记下的印象，方括号里是 id。写之前先对照：
+- 如果这批事实没有超出其中某一条的新信息（只是同一件事、同一个习惯换个说法又出现了一次），请在返回的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一条的 id，照方括号里的原样抄写>"，其余字段照常填写。
+- 只要有任何新的具体内容（新的事、新的原话、新的细节），就不要加这两个字段，照常写一条新记忆。""",
+    "zh-TW": """上面是已經記下的印象，方括號裡是 id。寫之前先對照：
+- 如果這批事實沒有超出其中某一條的新資訊（只是同一件事、同一個習慣換個說法又出現了一次），請在回傳的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一條的 id，照方括號裡的原樣抄寫>"，其餘欄位照常填寫。
+- 只要有任何新的具體內容（新的事、新的原話、新的細節），就不要加這兩個欄位，照常寫一條新記憶。""",
+    "en": """Above are impressions already on record; each id is in square brackets. Check them before writing:
+- If this batch of facts adds nothing beyond one of them (the same event or habit showing up again in different words), put "skip": true and "covered_by": "<that entry's id, copied exactly from the brackets>" at the start of the returned JSON, and still fill in every other field as usual.
+- If there is anything new and concrete (a new event, new words actually said, a new detail), do not add these two fields; write a new memory as usual.""",
+    "ja": """上は既に記録済みの印象で、角括弧内が id です。書く前に照らし合わせてください：
+- この事実群がそのうちどれか 1 件を超える新しい情報を含まない場合（同じ出来事や習慣が言い方を変えて再び現れただけの場合）、返す JSON の先頭に "skip": true と "covered_by": "<その項目の id、角括弧内をそのまま書き写す>" を加え、その他のフィールドも通常どおり埋めてください。
+- 新しい具体的な内容（新しい出来事、新しい実際の発言、新しい細部）が一つでもあれば、この 2 つのフィールドは加えず、通常どおり新しい記憶を書いてください。""",
+    "ko": """위는 이미 기록된 인상이며, 대괄호 안이 id입니다. 쓰기 전에 먼저 대조하세요:
+- 이번 사실들이 그중 어느 한 항목을 넘어서는 새로운 정보가 없다면 (같은 일이나 습관이 표현만 바뀌어 다시 나타난 것이라면), 반환하는 JSON 맨 앞에 "skip": true 와 "covered_by": "<그 항목의 id, 대괄호 안을 그대로 옮겨 쓰기>"를 넣고, 나머지 필드도 평소대로 채우세요.
+- 새로운 구체적 내용(새로운 사건, 새로 한 말, 새로운 세부 사항)이 하나라도 있으면 이 두 필드는 넣지 말고 평소대로 새 기억을 작성하세요.""",
+    "ru": """Выше — уже записанные впечатления, id указан в квадратных скобках. Сверьтесь с ними перед тем, как писать:
+- Если эта партия фактов не добавляет ничего сверх одного из них (то же событие или привычка снова появились в других словах), поставьте в начало возвращаемого JSON "skip": true и "covered_by": "<id этой записи, скопированный из скобок без изменений>", а остальные поля всё равно заполните как обычно.
+- Если есть хоть что-то новое и конкретное (новое событие, новые реально сказанные слова, новая деталь), не добавляйте эти два поля и напишите новое воспоминание как обычно.""",
+    "es": """Arriba están las impresiones ya registradas; cada id va entre corchetes. Compáralas antes de escribir:
+- Si este lote de hechos no aporta nada más allá de una de ellas (el mismo suceso o hábito que vuelve a aparecer con otras palabras), pon "skip": true y "covered_by": "<el id de esa entrada, copiado tal cual de los corchetes>" al principio del JSON devuelto, y aun así rellena todos los demás campos como de costumbre.
+- Si hay algo nuevo y concreto (un suceso nuevo, palabras nuevas que realmente se dijeron, un detalle nuevo), no añadas estos dos campos y escribe un recuerdo nuevo como de costumbre.""",
+    "pt": """Acima estão as impressões já registradas; cada id fica entre colchetes. Compare antes de escrever:
+- Se este lote de fatos não acrescenta nada além de uma delas (o mesmo acontecimento ou hábito reaparecendo com outras palavras), coloque "skip": true e "covered_by": "<o id dessa entrada, copiado exatamente dos colchetes>" no início do JSON retornado e, mesmo assim, preencha todos os outros campos normalmente.
+- Se houver qualquer coisa nova e concreta (um acontecimento novo, palavras novas realmente ditas, um detalhe novo), não adicione esses dois campos e escreva uma nova memória normalmente.""",
+}
+
+
 def get_reflection_prompt(lang: str = "zh") -> str:
     return _loc(REFLECTION_PROMPT, lang)
 
 
 def get_reflection_related_context_note(lang: str = "zh") -> str:
     return _loc(REFLECTION_RELATED_CONTEXT_NOTE, lang)
+
+
+def get_reflection_existing_impressions_note(lang: str = "zh") -> str:
+    return _loc(REFLECTION_EXISTING_IMPRESSIONS_NOTE, lang)
 
 
 reflection_prompt = REFLECTION_PROMPT["zh"]
@@ -4433,7 +4510,7 @@ FORGE_SCOPE_HINT = {
     },
     "en": {
         "visit_group_chat": "[Visit memory: from a visit with a neighbor; \"the other side\" means the neighbor] ",
-        "visit_group_participant": "[Visit memory: about the neighbor's catgirl] ",
+        "visit_group_participant": "[Visit memory: about the neighbor's neko] ",
         "visit_participant": "[Visit memory: about the neighbor's human] ",
         "group_chat": "[Group chat memory: from a group chat] ",
         "group_participant": "[Group chat memory: about a group member] ",

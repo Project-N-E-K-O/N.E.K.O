@@ -33,7 +33,7 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
         if not segment:
             return block_type == "dialogue"
         if block_type == "action":
-            # performance parentheses always contain the current catgirl's visible micro-actions, not environmental narration.
+            # performance parentheses always contain the current neko's visible micro-actions, not environmental narration.
             # Explicit typing prevents Evaluator from treating character actions such as raised hands or tilted ears as environment evidence.
             blocks.append({"type": "action", "text": segment})
         else:
@@ -71,7 +71,7 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
 
 
 def fixed_narration_blocks(container: Mapping[str, Any], position: str) -> list[dict[str, str]]:
-    """Read server-owned text verbatim; it never becomes catgirl dialogue."""
+    """Read server-owned text verbatim; it never becomes neko dialogue."""
     return [{"type": "narration", "text": item["text"]}
             for item in container.get("fixed_narrations", []) if item["position"] == position]
 

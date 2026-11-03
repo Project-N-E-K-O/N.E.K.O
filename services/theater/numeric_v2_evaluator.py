@@ -1621,10 +1621,10 @@ def _build_transition_judge_messages(
             "该字段只判断候选正文，不据此否定玩家意愿或原邀请；普通到场后的额外动作仍单独报正文违规。"
             # Formal transitions reuse indexes; truncated hints cannot become complete authorization or permanent state.
             "索引标记 excerpt_only 时只是截短原文，不能凭摘录缺项认定未发生或获得授权；新记录覆盖同一对象的旧状态。"
-            # Match Actor mixed-text semantics: parenthesized actions and first-person self-address belong to catgirl, never players due to omitted subjects.
+            # Match Actor mixed-text semantics: parenthesized actions and first-person self-address belong to neko, never players due to omitted subjects.
             "source_response.performance 和 target_opening.performance 的动作主体与说话人始终是猫娘；"
             "其中‘我/人家’指猫娘，‘你’指玩家。猫娘说‘行’是在回应玩家，不代表玩家改变决定。"
-            # Source external responses play with catgirl performance; actor labels cannot override explicit NPC narration subjects.
+            # Source external responses play with neko performance; actor labels cannot override explicit NPC narration subjects.
             "performer 只标记 performance，不标记同段旁白的主体。source_response.scene_narration 若存在，"
             "是本轮来源场景已演出的外部动作或 NPC 答复，先于该段猫娘表演；按来源边界审查，不是桥后事实。"
             "NPC 的具体答复、明确拒绝或说明未知都算回应，不要求猫娘或目标段复述，也不能借旁白新增玩家未授权动作。"

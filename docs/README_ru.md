@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/Project-N-E-K-O/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
+[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=badge_ru)
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 [![Website](https://img.shields.io/badge/🐾_Website-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
@@ -23,7 +23,7 @@
 
 </div>
 
-Этот README предназначен для разработчиков. Если вы хотите просто пользоваться N.E.K.O., скачайте его бесплатно в [Steam](https://store.steampowered.com/app/4099310/__NEKO/) или зайдите на [project-neko.cn](https://project-neko.cn).
+Этот README предназначен для разработчиков. Если вы хотите просто пользоваться N.E.K.O., скачайте его бесплатно в [Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=intro_ru) или зайдите на [project-neko.cn](https://project-neko.cn).
 
 Документация для разработчиков доступна на английском, китайском и японском языках; русской версии сайта пока нет, поэтому ссылки ниже ведут на английские страницы.
 
@@ -38,9 +38,9 @@
 ### 🎮 Играет вместе с вами
 
 - **Встроенные игры для двоих**: воздушный баскетбол, бадминтон, «угадай рисунок», футбол и совместный просмотр. Разработчики могут добавлять новые через SDK мини-игр и сервис игрового зрения.
-- **Играет рядом с вами**: плагины сообщества читают телеметрию или экран игры, и компаньон в реальном времени подсказывает и комментирует происходящее в играх War Thunder, Slay the Spire 2, Strinova, World of Warships и KARDS. Никаких читов, а автоигра включается только по вашему желанию.
-- **Берёт управление**: по вашей просьбе компаньон сам играет в Plants vs. Zombies, Titanfall 2, Half-Life и Portal, Subnautica; вы можете перехватить управление в любой момент. Встроенный плагин Minecraft подключается к отдельно запущенному локальному серверу агента Minecraft ([настройка](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)).
-- **Разбирается в вашей игре**: плагины для Genshin Impact, Honkai: Star Rail, Civilization VI, RimWorld и Overcooked! 2 читают состояние игры, чтобы компаньон мог обсуждать ваше прохождение и советовать.
+- **Играет рядом с вами**: в Overcooked! 2, Slay the Spire 2 и Minecraft компаньон — ваш второй игрок и играет вместе с вами. В War Thunder, Strinova, World of Warships и KARDS он ваш адъютант: плагины сообщества читают телеметрию или экран игры, и компаньон в реальном времени подсказывает и комментирует происходящее, никогда не используя читы. Автоигра включается только по вашему желанию. Встроенный плагин Minecraft подключается к отдельно запущенному локальному серверу агента Minecraft ([настройка](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)).
+- **Берёт управление**: по вашей просьбе компаньон сам играет в Plants vs. Zombies, Titanfall 2, Half-Life и Portal, Subnautica; вы можете перехватить управление в любой момент.
+- **Разбирается в вашей игре**: плагины для Genshin Impact, Honkai: Star Rail, Civilization VI и RimWorld читают состояние игры, чтобы компаньон мог обсуждать ваше прохождение и советовать.
 - **Внимание к экрану**: компаньон видит, во что вы играете, и вступает в разговор.
 
 ### 🐾 У компаньона есть своя социальная жизнь

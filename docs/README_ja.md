@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/Project-N-E-K-O/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
+[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=badge_ja)
 
 [![Docs](https://img.shields.io/badge/📖_開発者ドキュメント-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online/ja/)
 [![Website](https://img.shields.io/badge/🐾_Website-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
@@ -23,7 +23,7 @@
 
 </div>
 
-この README は開発者向けです。N.E.K.O. を使うだけなら、[Steam](https://store.steampowered.com/app/4099310/__NEKO/) で無料で入手するか、[project-neko.cn](https://project-neko.cn) をご覧ください。
+この README は開発者向けです。N.E.K.O. を使うだけなら、[Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=intro_ja) で無料で入手するか、[project-neko.cn](https://project-neko.cn) をご覧ください。
 
 ---
 
@@ -36,9 +36,9 @@ OpenClaw のようなパーソナル Agent は、人々が自分だけの AI を
 ### 🎮 一緒にゲームをする
 
 - **内蔵の 2 人用ゲーム**：エアバスケットボール、バドミントン、お絵かき当て、サッカー、一緒に視聴。ミニゲーム SDK とゲーム視覚サービスで開発者が追加できます。
-- **隣で一緒に遊ぶ**：コミュニティのプラグインがゲームのテレメトリーや画面を読み取り、War Thunder、Slay the Spire 2、Strinova、World of Warships、KARDS で彼女がリアルタイムに声をかけ、実況します。チートは一切せず、自動プレイは自分で有効にした場合だけです。
-- **自分で操作する**：頼めば、Plants vs. Zombies、Titanfall 2、Half-Life と Portal、Subnautica を彼女が自分で遊びます。いつでも交代できます。同梱の Minecraft プラグインは、別途起動したローカルの Minecraft Agent サーバーに接続します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
-- **ゲームを理解する**：原神、崩壊：スターレイル、Civilization VI、RimWorld、Overcooked! 2 向けのプラグインがゲームの状態を読み取り、進行について話したりアドバイスしたりできます。
+- **隣で一緒に遊ぶ**：Overcooked! 2、Slay the Spire 2、Minecraft では、彼女があなたの 2P として一緒にプレイします。War Thunder、Strinova、World of Warships、KARDS では彼女があなたの副官になり、コミュニティのプラグインがゲームのテレメトリーや画面を読み取って、リアルタイムに声をかけ、実況します。チートは一切しません。自動プレイは自分で有効にした場合だけです。同梱の Minecraft プラグインは、別途起動したローカルの Minecraft Agent サーバーに接続します（[セットアップ](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/game_agent_minecraft/README.md)）。
+- **自分で操作する**：頼めば、Plants vs. Zombies、Titanfall 2、Half-Life と Portal、Subnautica を彼女が自分で遊びます。いつでも交代できます。
+- **ゲームを理解する**：原神、崩壊：スターレイル、Civilization VI、RimWorld 向けのプラグインがゲームの状態を読み取り、進行について話したりアドバイスしたりできます。
 - **画面認識**：何を遊んでいても、彼女が見て話しかけてきます。
 
 ### 🐾 彼女にも交友関係がある
