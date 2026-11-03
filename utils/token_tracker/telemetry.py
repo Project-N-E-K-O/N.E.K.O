@@ -17,6 +17,8 @@
 import hashlib
 import os
 import secrets
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -199,6 +201,16 @@ _TELEMETRY_BRANCHES: tuple = ("main", "proactive_interval_40s")
 
 _telemetry_branch_cache: dict = {}
 
+# Serializes the slow path within one process (the three servers share a process and several callers
+# resolve the branch concurrently at first launch).
+_telemetry_branch_lock = threading.Lock()
+
+# An empty branch file usually means another process is between O_EXCL create and write; wait briefly
+# before treating it as corrupt, otherwise both writers can persist different branches.
+_BRANCH_FILE_PEER_WRITE_RETRIES = 10
+
+_BRANCH_FILE_PEER_WRITE_WAIT_S = 0.02
+
 _RETIRED_INTERVAL_ROLLBACK_BRANCH = "proactive_interval_20s"
 
 _RETIRED_INTERVAL_EXPERIMENT_VALUE = 20
@@ -271,6 +283,14 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
         logger.debug(f"Token tracker: proactive_interval rollback skipped (error): {e}")
 
 def _get_telemetry_branch(config_dir: Path) -> str:
+    """Read or draw the A/B test branch identifier; see ``_resolve_telemetry_branch``."""
+    cached_proc = _telemetry_branch_cache.get(str(config_dir))
+    if cached_proc is not None:
+        return cached_proc
+    with _telemetry_branch_lock:
+        return _resolve_telemetry_branch(config_dir)
+
+def _resolve_telemetry_branch(config_dir: Path) -> str:
     """Read or draw the A/B test branch identifier, persisted under config_dir.
 
     Multi-process cold-start safe: atomic creation with ``O_CREAT | O_EXCL`` guarantees
@@ -330,8 +350,14 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             os.close(fd)
         return _telemetry_branch_cache.setdefault(cache_key, branch)
     except FileExistsError:
-        # Another process wrote first; reread its value so both processes return the same branch
+        # Another process wrote first; reread its value so both processes return the same branch.
+        # An empty file means that writer has not written yet, so wait for it instead of healing.
         peer = _read()
+        for _ in range(_BRANCH_FILE_PEER_WRITE_RETRIES):
+            if peer is not None or p.read_text(encoding="utf-8").strip():
+                break
+            time.sleep(_BRANCH_FILE_PEER_WRITE_WAIT_S)
+            peer = _read()
         if peer is not None:
             return _telemetry_branch_cache.setdefault(cache_key, peer)
         # peer=None means the file exists but contains a value outside _TELEMETRY_BRANCHES (truncated/corrupt/
