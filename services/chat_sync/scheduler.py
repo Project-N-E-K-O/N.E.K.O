@@ -141,20 +141,22 @@ class ChatSyncScheduler:
             conn.execute("UPDATE scheduler_tasks SET retry_at=0,failures=0,blocked_generation=NULL,"
                          "blocked_session=NULL,last_error=NULL WHERE domain=? AND channel=?", (domain, channel))
 
-    def record_long_term_capacity(self, domain, generation, exceeded):
-        """Expose local publication capacity without gating any transport channel."""
-        channel, code = 'long_term_capture', 'long_term_memory_capacity_exceeded'
+    def record_long_term_capture_error(self, domain, generation, code):
+        """Expose fixed local publication diagnostics without gating transport."""
+        channel = 'long_term_capture'
+        if code not in (None, 'long_term_memory_capacity_exceeded', 'long_term_archive_subject_unavailable'):
+            raise ValueError('invalid_long_term_diagnostic')
         with closing(self._connect()) as conn, conn:
             row = conn.execute('SELECT last_error,blocked_generation FROM scheduler_tasks WHERE domain=? AND channel=?',
                                (domain, channel)).fetchone()
-            if exceeded:
+            if code is not None:
                 if row and row['last_error'] == code and row['blocked_generation'] == generation:
                     return
                 conn.execute('INSERT INTO scheduler_tasks(domain,channel,last_attempt,blocked_generation,last_error) '
                              'VALUES(?,?,?,?,?) ON CONFLICT(domain,channel) DO UPDATE SET '
                              'last_attempt=excluded.last_attempt,blocked_generation=excluded.blocked_generation,last_error=excluded.last_error',
                              (domain, channel, self.clock(), generation, code))
-            elif row and row['last_error'] == code:
+            elif row and row['last_error'] in ('long_term_memory_capacity_exceeded', 'long_term_archive_subject_unavailable'):
                 conn.execute('DELETE FROM scheduler_tasks WHERE domain=? AND channel=?', (domain, channel))
 
     def failure(self, domain, channel, generation, session, exc) -> None:
@@ -211,5 +213,5 @@ class ChatSyncScheduler:
         """Keep local capacity notices separate from transport failures."""
         with closing(self._connect()) as conn:
             row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture' "
-                               "AND last_error='long_term_memory_capacity_exceeded'", (domain,)).fetchone()
+                               "AND last_error IN ('long_term_memory_capacity_exceeded','long_term_archive_subject_unavailable')", (domain,)).fetchone()
         return [row[0]] if row else []

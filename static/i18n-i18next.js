@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh sync and mainline resources after merging their locale changes.
-    const LOCALE_VERSION = '2026-11-03-sync-memory-waiting';
+    const LOCALE_VERSION = '2026-11-03-sync-archive-subject-recovery';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

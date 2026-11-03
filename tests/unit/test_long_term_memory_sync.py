@@ -479,7 +479,7 @@ async def test_waiting_inbox_status_coexists_with_errors_without_mutating_or_acc
     assert not await owner.native.consume(UID)
     inbox = owner.adapter.incoming_path(UID)
     before = {path: path.read_bytes() for path in [inbox, *(owner.directory / name for name in FILES.values())]}
-    owner.runtime.scheduler.record_long_term_capacity(DOMAIN.key(), owner.binding['generation'], True)
+    owner.runtime.scheduler.record_long_term_capture_error(DOMAIN.key(), owner.binding['generation'], 'long_term_memory_capacity_exceeded')
     owner.runtime.scheduler.failure(DOMAIN.key(), 'pull', owner.binding['generation'], 'session',
                                     ValueError('chat_sync_login_required'))
     with pytest.raises(ValueError, match='^long_term_memory_incoming_pending$'):
@@ -1761,6 +1761,132 @@ def test_legacy_persona_archive_resolves_subject_from_durable_event(tmp_path):
         'entity_key': 'relationship', 'entry_id': 'old', 'archive_shard_path': path.name}}) + '\n')
     assert export_document(read_views(directory), 3000)['entries'][0]['subject'] == 'relationship'
     assert 'entity_key' not in json.loads(path.read_text())[0]
+
+
+@pytest.mark.asyncio
+async def test_native_capture_makes_legacy_subject_durable_before_journal_compaction(owner):
+    from datetime import datetime
+    from memory.evidence_handlers import make_archive_copy_check
+    from tests.unit.test_event_log_compaction import _fresh_log, _knobs
+    path = owner.directory / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+    path.parent.mkdir()
+    row = {'id': 'legacy', 'text': 'An archived relationship', 'archived_at': '2026-10-01T00:00:00'}
+    atomic_write_json(path, [row])
+    event = {'event_id': 'archived', 'ts': '2026-10-01T00:00:00', 'type': 'persona.fact_added',
+             'payload': {'entity_key': 'relationship', 'entry_id': row['id'], 'archive_shard_path': path.name,
+                         'entry_snapshot': row}}
+    journal = owner.directory / 'events.ndjson'
+    journal.write_text('\n'.join(json.dumps(item) for item in [event,
+        {'event_id': 'noise', 'ts': '2026-10-01T00:00:00', 'type': 'old', 'payload': {}},
+        {'event_id': 'anchor', 'ts': '2026-10-02T00:00:00', 'type': 'anchor', 'payload': {}}]) + '\n', encoding='utf-8')
+    log = _fresh_log(str(owner.config.memory_dir))
+    log.advance_sentinel('Neko', 'anchor')
+    before_sentinel = (owner.directory / 'events_applied.json').read_bytes()
+    with _knobs():
+        check = make_archive_copy_check(str(owner.directory))
+        first = log.compact_applied_history('Neko', needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
+                                           now=datetime(2026, 11, 3))
+        assert first.pinned == 1
+        assert '"archived"' in journal.read_text(encoding='utf-8')
+        assert owner.native._capture('Neko', True)
+        assert json.loads(path.read_text(encoding='utf-8')) == [{**row, 'entity_key': 'relationship'}]
+        check = make_archive_copy_check(str(owner.directory))
+        second = log.compact_applied_history('Neko', needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
+                                            now=datetime(2026, 11, 3))
+        assert second.pinned == 0 and second.dropped_lines == 1
+    assert '"archived"' not in journal.read_text(encoding='utf-8')
+    assert export_document(read_views(owner.directory), 3000)['entries'][0]['subject'] == 'relationship'
+    assert (owner.directory / 'events_applied.json').read_bytes() == before_sentinel
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_archive_preserves_data_and_reports_backup_recovery(owner):
+    path = owner.directory / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+    path.parent.mkdir()
+    row = {'id': 'unknown', 'text': 'Unknown archived subject', 'archived_at': '2026-10-01T00:00:00'}
+    atomic_write_json(path, [row])
+    before = {file: file.read_bytes() for file in [path, *(owner.directory / name for name in FILES.values())]}
+    with pytest.raises(ValueError, match='^long_term_archive_subject_unavailable$'):
+        owner.native._capture('Neko', True)
+    assert not owner.adapter.local_path(owner.binding).exists()
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == ['long_term_archive_subject_unavailable']
+    await stage(owner)
+    with pytest.raises(ValueError, match='^long_term_archive_subject_unavailable$'):
+        await owner.native.consume(UID)
+    assert owner.adapter.incoming_path(UID).exists()
+    assert not (owner.directory / 'events.ndjson').exists()
+    assert before == {file: file.read_bytes() for file in before}
+    # Old unusable sync references must not block later local memory events.
+    import hashlib
+    from memory.event_log import EVT_FACT_ADDED
+    inbox = owner.adapter.incoming_path(UID)
+    owner.native.runtime.event_log.append('Neko', 'memory.long_term_replaced', {
+        'characterSyncId': UID, 'inboxSha256': hashlib.sha256(inbox.read_text(encoding='utf-8').encode('utf-8')).hexdigest()})
+    owner.native.runtime.event_log.append('Neko', EVT_FACT_ADDED, {'fact_id': 'later-local-fact'})
+    applied = []
+    owner.replay.register(EVT_FACT_ADDED, lambda name, row: (applied.append(row['fact_id']) or True))
+    assert await owner.replay.areconcile('Neko') == 1
+    assert applied == ['later-local-fact']
+    assert owner.adapter.incoming_path(UID).exists()
+    # A verified backup supplies the missing metadata; no subject is inferred.
+    atomic_write_json(path, [{**row, 'entity_key': 'master'}])
+    assert await owner.native.consume(UID)
+    owner.native._capture('Neko', True)
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
+
+
+@pytest.mark.parametrize('conflicting', [False, True])
+def test_legacy_subject_recovery_matches_the_archived_copy_and_refuses_ambiguous_events(tmp_path, conflicting):
+    path = tmp_path / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+    path.parent.mkdir()
+    row = {'id': 'same-id', 'text': 'An old archive', 'archived_at': '2026-10-01T00:00:00'}
+    atomic_write_json(path, [row])
+    def event(subject, stamp):
+        return {'type': 'persona.fact_added', 'payload': {'entry_id': row['id'], 'entity_key': subject,
+                'archive_shard_path': path.name, 'archived_at': stamp}}
+    events = [event('master', row['archived_at']), event('neko', row['archived_at'] if conflicting else '2026-10-02T00:00:00')]
+    (tmp_path / 'events.ndjson').write_text('{broken\n[]\n' + '\n'.join(map(json.dumps, events)), encoding='utf-8')
+    if conflicting:
+        with pytest.raises(ValueError, match='^long_term_archive_subject_unavailable$'):
+            read_views(tmp_path)
+    else:
+        assert read_views(tmp_path)['personaArchives']['persona_archive/' + path.name][0]['entity_key'] == 'master'
+    assert json.loads(path.read_text(encoding='utf-8')) == [row]
+
+
+def test_subjectless_legacy_event_cannot_assign_one_subject_to_two_copies(tmp_path):
+    path = tmp_path / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+    path.parent.mkdir()
+    rows = [{'id': 'same', 'text': text} for text in ('First archive', 'Second archive')]
+    atomic_write_json(path, rows)
+    (tmp_path / 'events.ndjson').write_text(json.dumps({'type': 'persona.fact_added', 'payload': {
+        'entry_id': 'same', 'entity_key': 'master', 'archive_shard_path': path.name}}), encoding='utf-8')
+    with pytest.raises(ValueError, match='^long_term_archive_subject_unavailable$'):
+        read_views(tmp_path)
+    assert json.loads(path.read_text(encoding='utf-8')) == rows
+
+
+@pytest.mark.asyncio
+async def test_failed_subject_backfill_keeps_the_original_shard_and_journal_evidence(owner, monkeypatch):
+    from memory.evidence_handlers import make_archive_copy_check
+    path = owner.directory / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+    path.parent.mkdir()
+    row = {'id': 'old', 'text': 'Legacy archive', 'archived_at': '2026-10-01T00:00:00'}
+    atomic_write_json(path, [row])
+    event = {'type': 'persona.fact_added', 'payload': {'entry_id': 'old', 'entity_key': 'master',
+             'archive_shard_path': path.name, 'entry_snapshot': row}}
+    journal = owner.directory / 'events.ndjson'
+    journal.write_text(json.dumps(event) + '\n', encoding='utf-8')
+    before = {file: file.read_bytes() for file in (path, journal)}
+    def denied(*args, **kwargs):
+        raise OSError('write unavailable')
+    monkeypatch.setattr(owner.native, 'atomic_write_text', denied)
+    with pytest.raises(ValueError, match='^long_term_memory_save_failed$'):
+        owner.native._capture('Neko', True)
+    assert before == {file: file.read_bytes() for file in before}
+    assert not owner.adapter.local_path(owner.binding).exists()
+    assert make_archive_copy_check(str(owner.directory))(event)
+    owner.runtime.writer.check()
 
 
 def test_unresolved_or_corrupt_archive_cannot_be_published(tmp_path):

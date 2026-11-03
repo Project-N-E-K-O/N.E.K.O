@@ -515,7 +515,9 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
     second time has the same id with a newer ``archived_at``, and only its
     newest copy may be missing from the shards. An unreadable shard keeps
     every archive event of that side. Anything that is not such an archive
-    event returns False and follows the normal retention rules.
+    event returns False and follows the normal retention rules. Persona
+    copies must also retain the payload's subject; older events without a
+    snapshot remain pinned until their subject is durable in a shard.
 
     Paths are built from ``character_dir`` without calling the managers'
     getters, which would create directories. Each side's shards are read
@@ -541,7 +543,7 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
             _is_persona_archive_payload,
         ),
     }
-    indexes: dict[str, dict[str, frozenset[str]] | None] = {}
+    indexes = {}
     # Identity of each side's shard files as they were when its index was read.
     signatures: dict[str, tuple | None] = {}
 
@@ -574,18 +576,32 @@ def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
         if not isinstance(payload, dict) or not is_archive_payload(payload):
             return False
         snapshot = payload.get('entry_snapshot')
-        if not isinstance(snapshot, dict):
+        persona = record.get('type') == EVT_PERSONA_FACT_ADDED
+        subject = payload.get('entity_key') if persona else None
+        if persona and subject not in ('master', 'neko', 'relationship'):
+            return True
+        if not isinstance(snapshot, dict) and not persona:
             return False
         entry_id = payload.get(id_key)
         if not isinstance(entry_id, str) or not entry_id:
             return False
         if archive_dir not in indexes:
             signatures[archive_dir] = _shard_signature(archive_dir)
-            indexes[archive_dir] = shard_entry_index_sync(archive_dir)
+            indexes[archive_dir] = (shard_entry_index_sync(archive_dir, by_subject=True) if persona
+                            else shard_entry_index_sync(archive_dir))
         index = indexes[archive_dir]
         if index is None:
             return True
-        return archive_copy_fingerprint(snapshot) not in index.get(entry_id, frozenset())
+        fingerprints = index.get((entry_id, subject) if persona else entry_id, frozenset())
+        unknown = index.get((entry_id, None), frozenset()) if persona else frozenset()
+        stamp = snapshot.get('archived_at') if isinstance(snapshot, dict) else payload.get('archived_at')
+        if unknown and (not stamp or archive_copy_fingerprint({'archived_at': stamp}) in unknown):
+            return True
+        if not isinstance(snapshot, dict):
+            return archive_copy_fingerprint({'archived_at': stamp}) not in fingerprints if stamp else not fingerprints
+        if persona and not snapshot.get('archived_at'):
+            snapshot = {**snapshot, 'entity_key': subject}
+        return archive_copy_fingerprint(snapshot) not in fingerprints
 
     _needs_journal_copy.sources_unchanged = _sources_unchanged
     return _needs_journal_copy

@@ -467,12 +467,66 @@ def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedbac
         .replace('RECEIVED_COUNT', str(received_count)))
 
 
+@pytest.mark.parametrize('phase', ['status', 'recent'])
+@pytest.mark.parametrize('change', ['switching', 'returned', 'new_disabled'])
+def test_late_recent_display_cannot_repopulate_chat_after_switch_cleanup(phase, change):
+    run_script(r"""(async()=>{
+        let release, reads=0, updates=0, messages=[];
+        window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
+        window.reactChatWindowHost={maxMessages:50,getState:()=>({messages}),setMessages:value=>{updates++;messages=value;}};
+        global.fetch=async path=>{
+            reads++;
+            const value=path.endsWith('/status')
+                ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
+                :{originals:[original]};
+            if((PHASE==='status'&&path.endsWith('/status'))||(PHASE==='recent'&&path.endsWith('/recent-display'))){
+                return await new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>value});});
+            }
+            return{ok:true,json:async()=>value};
+        };
+        const flush=()=>new Promise(resolve=>setImmediate(resolve));
+        documentEvents.DOMContentLoaded();await flush();
+        assert.equal(typeof release,'function');
+        window.appState.isSwitchingCatgirl=true;
+        window.appState._switchAttemptCounter++;
+        messages=[];
+        if(CHANGE==='returned')window.appState.isSwitchingCatgirl=false;
+        if(CHANGE==='new_disabled'){
+            window.lanlan_config.lanlan_name='Other';
+            window.appState.isSwitchingCatgirl=false;
+        }
+        const before=reads;release();await flush();
+        assert.equal(updates,0);
+        assert.deepEqual(messages,[]);
+        assert.equal(reads,before);
+        window.lanlan_config.lanlan_name='Other';window.appState.isSwitchingCatgirl=false;
+        global.fetch=async path=>{
+            assert(path.endsWith('/status'));
+            return{ok:true,json:async()=>({characters:[{displayName:'Other',binding:{enabled:false}}]})};
+        };
+        intervals.find(interval=>interval.delay===30000).callback();await flush();
+        assert.equal(updates,0);assert.deepEqual(messages,[]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('PHASE', json.dumps(phase)).replace('CHANGE', json.dumps(change)))
+
+
+def test_recent_display_does_not_start_while_the_character_is_switching():
+    run_script(r"""(async()=>{
+        window.appState={isSwitchingCatgirl:true,_switchAttemptCounter:1};
+        window.reactChatWindowHost={maxMessages:50,getState:()=>({messages:[]}),setMessages(){throw new Error('stale update');}};
+        documentEvents.DOMContentLoaded();
+        await new Promise(resolve=>setImmediate(resolve));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
 @pytest.mark.parametrize('code,key', [
     ('chat_sync_account_mismatch', 'errorAccountMismatch'),
     ('chat_sync_writer_recovery_required', 'errorWriterRecovery'),
     ('chat_sync_unavailable', 'errorNetwork'),
     ('chat_sync_retry_later', 'errorRetryLater'),
     ('chat_sync_session_changed', 'errorSessionChanged'),
+    ('long_term_archive_subject_unavailable', 'errorArchiveSubject'),
     ('private token from an unknown error', 'errorUnknown'),
 ])
 def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):

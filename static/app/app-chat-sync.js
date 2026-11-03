@@ -27,6 +27,7 @@
             chat_sync_pull_timeout: 'errorNetwork',
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
             long_term_memory_incoming_pending: 'errorLongTermPending',
+            long_term_archive_subject_unavailable: 'errorArchiveSubject',
             chat_sync_retry_later: 'errorRetryLater',
             chat_sync_service_rejected: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',
@@ -329,17 +330,22 @@
     async function refreshRecentDisplay() {
         var host = window.reactChatWindowHost;
         if (!host || typeof host.getState !== 'function' || typeof host.setMessages !== 'function'
-                || document.visibilityState === 'hidden' || liveChatBusy(host)) return;
+                || window.appState?.isSwitchingCatgirl || document.visibilityState === 'hidden' || liveChatBusy(host)) return;
         if (displayFlight) { displayPending = true; return; }
         displayFlight = true;
         try {
             var name = liveCharacterName();
+            var switchAttempt = window.appState?._switchAttemptCounter || 0;
+            function isCurrentRole() {
+                return liveCharacterName() === name && !window.appState?.isSwitchingCatgirl &&
+                    (window.appState?._switchAttemptCounter || 0) === switchAttempt;
+            }
             var state = await api('/status');
             var role = (state.characters || []).find(function (item) { return item.displayName === name; });
-            if (!role || !role.binding || !role.binding.enabled || liveCharacterName() !== name) return;
+            if (!role || !role.binding || !role.binding.enabled || !isCurrentRole()) return;
             var uid = role.characterSyncId;
             var result = await api('/characters/' + uid + '/recent-display');
-            if (liveCharacterName() !== name || window.reactChatWindowHost !== host || liveChatBusy(host)) return;
+            if (!isCurrentRole() || window.reactChatWindowHost !== host || liveChatBusy(host)) return;
             var received = result.originals.map(function (record) { return recentMessage(record, name, uid); }).filter(Boolean);
             // The endpoint supplies only received recent messages. Local split bubbles stay owned by the chat host.
             var current = host.getState().messages || [];

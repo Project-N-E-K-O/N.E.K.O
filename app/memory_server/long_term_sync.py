@@ -13,7 +13,7 @@ import time
 from uuid import uuid4
 
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
-from memory.long_term_sync import LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
+from memory.long_term_sync import LongTermArchiveSubjectUnavailable, LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -155,6 +155,18 @@ def _capture_scheduler(directory):
     return ChatSyncScheduler(directory / 'scheduler.sqlite3')
 
 
+def _read_native_views(name):
+    """Persist only verified legacy subjects under the owner's view locks."""
+    directory = Path(runtime._config_manager.memory_dir) / name
+    def repair(relative, rows):
+        assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/{relative}')
+        try:
+            atomic_write_text(directory / relative, json.dumps(rows, ensure_ascii=False, indent=2), create_parents=False)
+        except OSError as error:
+            raise ValueError('long_term_memory_save_failed') from error
+    return read_views(directory, repair_archive=repair)
+
+
 def _capture(name, force, expected_uid=None, require_consumed=False):
     _recover_snapshot(name)
     writer = _authority()
@@ -172,20 +184,20 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
         if require_consumed and adapter.incoming_path(uid).is_file():
             raise ValueError('long_term_memory_incoming_pending')
         previous = adapter.read_local(binding, epoch)
-        with runtime.fact_store._get_lock(name):
-            views = read_views(Path(runtime._config_manager.memory_dir) / name)
         completed = max(time.time_ns() // 1_000_000, (previous['document']['completedAt'] if previous else 0) + 1)
         from services.chat_sync.ledger import ChatDomain
         domain = ChatDomain(binding['owner_id'], uid).key()
         scheduler = _capture_scheduler(writer.directory)
         try:
+            with runtime.fact_store._get_lock(name):
+                views = _read_native_views(name)
             document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
-        except LongTermMemoryCapacityExceeded:
+        except (LongTermMemoryCapacityExceeded, LongTermArchiveSubjectUnavailable) as error:
             if _uid(name) != uid or _binding(uid) != binding:
                 return None if expected_uid is not None else False
-            scheduler.record_long_term_capacity(domain, binding['generation'], True)
+            scheduler.record_long_term_capture_error(domain, binding['generation'], str(error))
             raise
-        scheduler.record_long_term_capacity(domain, binding['generation'], False)
+        scheduler.record_long_term_capture_error(domain, binding['generation'], None)
         if not force and ((not previous and not document['entries'] and not document['evidence']['retirements'] and not document['evidence']['confirmations'])
                           or (previous and previous['nativeEntries'] == document['entries'] and (previous['document'].get('evidence') or {'retirements': [], 'confirmations': []}) == document['evidence'])):
             return False
@@ -282,6 +294,16 @@ def _write_snapshot(name, payload, *, check_only=False):
     try:
         with _session_guard(fingerprint):
             return _write_snapshot_locked(name, payload, check_only=check_only)
+    except LongTermArchiveSubjectUnavailable as error:
+        binding = payload['binding']
+        if _uid(name) == binding['character_uid'] and _binding(binding['character_uid']) == binding:
+            from services.chat_sync.ledger import ChatDomain
+            domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
+            _capture_scheduler(_authority().directory).record_long_term_capture_error(domain, binding['generation'], str(error))
+        if not check_only:
+            # Retained inboxes can retry without blocking later local events.
+            return False
+        raise
     except ValueError as error:
         if isinstance(error, RetirementSubjectConflict) or str(error) in {'chat_sync_login_required', 'chat_sync_session_changed', 'chat_sync_session_unavailable'}:
             return False
@@ -311,6 +333,8 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         if check_only:
             validate_retirement_subjects(retirement_evidence(Path(runtime._config_manager.memory_dir) / name),
                                          remote['document'].get('evidence', {}).get('retirements', []))
+            with runtime.fact_store._get_lock(name):
+                _read_native_views(name)
             return True
         operation = f'download:{remote["revision"]}'
         if local and local['operationId'] == operation and local['document'] == remote['document']:
@@ -322,7 +346,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
         with runtime.fact_store._get_lock(name):
-            existing = read_views(directory)
+            existing = _read_native_views(name)
             source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
             views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [], source_evidence=source_evidence)
             # Retained local edits have not been published. Keep them outside the

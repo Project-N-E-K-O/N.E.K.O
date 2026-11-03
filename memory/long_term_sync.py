@@ -1,6 +1,7 @@
 """Translate private learned memory, without opening original chat databases."""
 
 from contextlib import contextmanager
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -30,6 +31,13 @@ class LongTermMemoryCapacityExceeded(ValueError):
 
     def __init__(self):
         super().__init__('long_term_memory_capacity_exceeded')
+
+
+class LongTermArchiveSubjectUnavailable(ValueError):
+    """A legacy archive has no unambiguous subject evidence left locally."""
+
+    def __init__(self):
+        super().__init__('long_term_archive_subject_unavailable')
 
 
 class RetirementSubjectConflict(ValueError):
@@ -163,7 +171,7 @@ def _entry_id(subject, native):
     return native.get('id') or 'legacy_' + hashlib.sha256(f'{subject}:{native.get("text")}'.encode()).hexdigest()[:24]
 
 
-def read_views(directory, *, recovering=False):
+def read_views(directory, *, recovering=False, repair_archive=None):
     if not recovering:
         require_consistent_views(directory)
     result = {}
@@ -190,27 +198,51 @@ def read_views(directory, *, recovering=False):
             result[key][relative] = rows
     # Older persona shards omit their subject; the durable archive event owns it.
     unresolved = {(relative.rsplit('/', 1)[-1], row.get('id')) for relative, rows in result['personaArchives'].items()
-                  for row in rows if not row.get('entity_key')}
+                  for row in rows if private(row) and not row.get('entity_key')}
     subjects = {}
     if unresolved:
+        copies = Counter((relative.rsplit('/', 1)[-1], row.get('id')) for relative, rows in result['personaArchives'].items()
+                         for row in rows if private(row))
         try:
             with (Path(directory) / 'events.ndjson').open(encoding='utf-8') as events:
                 for line in events:
-                    event = json.loads(line)
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict) or not isinstance(event.get('payload'), dict):
+                        continue
                     payload = event.get('payload') or {}
+                    if not isinstance(payload.get('archive_shard_path'), str) or not isinstance(payload.get('entry_id'), str):
+                        continue
                     identity = (payload.get('archive_shard_path'), payload.get('entry_id'))
-                    if identity in unresolved and event.get('type') == 'persona.fact_added' and payload.get('entity_key'):
-                        subjects[identity] = payload['entity_key']
+                    if identity in unresolved and event.get('type') == 'persona.fact_added' and payload.get('entity_key') in SUBJECTS:
+                        snapshot = payload.get('entry_snapshot')
+                        stamp = payload.get('archived_at') or (snapshot.get('archived_at') if isinstance(snapshot, dict) else None)
+                        if stamp is not None and not isinstance(stamp, str):
+                            continue
+                        subjects.setdefault(identity, set()).add((stamp, payload['entity_key']))
         except FileNotFoundError:
             pass
+        unavailable = False
         for relative, rows in result['personaArchives'].items():
+            repaired = False
             for row in rows:
-                if not row.get('entity_key'):
-                    subject = subjects.get((relative.rsplit('/', 1)[-1], row.get('id')))
-                    if subject is None and private(row):
-                        raise ValueError('long_term_archive_subject_unavailable')
-                    if subject is not None:
-                        row['entity_key'] = subject
+                if private(row) and not row.get('entity_key'):
+                    identity = (relative.rsplit('/', 1)[-1], row.get('id'))
+                    candidates = subjects.get(identity, ())
+                    matched = {subject for stamp, subject in candidates if stamp and stamp == row.get('archived_at')}
+                    if not matched and copies[identity] == 1 and all(not stamp for stamp, _ in candidates):
+                        matched = {subject for _, subject in candidates}
+                    if len(matched) != 1:
+                        unavailable = True
+                    else:
+                        row['entity_key'] = matched.pop()
+                        repaired = True
+            if repaired and repair_archive is not None:
+                repair_archive(relative, rows)
+        if unavailable:
+            raise LongTermArchiveSubjectUnavailable()
     return result
 
 
