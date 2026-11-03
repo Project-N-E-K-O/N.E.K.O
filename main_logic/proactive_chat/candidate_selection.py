@@ -78,6 +78,22 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     return f"{index}. {title}{suffix}"
 
 
+def _is_grounded_news_phase1_source(source: Any, links: list[dict[str, Any]]) -> bool:
+    """Whether a Phase 1 pick names the source of an overseas grounded news candidate.
+
+    An unmatched pick from such a source must be skipped: Phase 2 would otherwise
+    receive only the model's own paraphrase, without the source facts and the
+    no-invention constraint that matched grounded candidates get.
+    """
+
+    normalized = " ".join(str(source or "").split()).casefold()
+    return bool(normalized) and any(
+        link.get("grounded_news")
+        and " ".join(str(link.get("source") or "").split()).casefold() == normalized
+        for link in links
+    )
+
+
 def _selected_web_link_from_match(
     matched: dict[str, Any], web_parsed: dict[str, Any]
 ) -> dict[str, Any]:

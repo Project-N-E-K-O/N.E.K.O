@@ -8,6 +8,7 @@ import pytest
 
 from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
+    _is_grounded_news_phase1_source,
     _selected_web_link_from_match,
 )
 from main_logic.proactive_chat.sources import _extract_links_from_raw
@@ -899,3 +900,47 @@ def test_google_trends_keeps_long_article_urls_whole_and_skips_oversized_ones():
     assert len(trends) == 1
     assert trends[0]["news"][0]["title"] == "Long but valid link story"
     assert trends[0]["url"] == long_url
+
+
+@pytest.mark.unit
+def test_unmatched_pick_from_grounded_news_source_is_recognized():
+    links = [
+        {"title": "Binance", "url": "https://twitter.com/search?q=Binance", "source": "Twitter",
+         "mode": "news", "grounded_news": True},
+        {"title": "Moon Sweepers", "url": "https://store.steampowered.com/app/1/", "source": "Steam",
+         "mode": "news", "grounded_news": True},
+        {"title": "微博话题", "url": "https://s.weibo.com/1", "source": "微博", "mode": "news"},
+        {"title": "Some video", "url": "https://youtube.com/watch?v=1", "source": "YouTube", "mode": "video"},
+    ]
+
+    assert _is_grounded_news_phase1_source("Steam", links)
+    assert _is_grounded_news_phase1_source("  twitter ", links)
+    # Non-grounded sources keep the existing title-only path.
+    assert not _is_grounded_news_phase1_source("微博", links)
+    assert not _is_grounded_news_phase1_source("YouTube", links)
+    assert not _is_grounded_news_phase1_source("", links)
+    assert not _is_grounded_news_phase1_source(None, links)
+    assert not _is_grounded_news_phase1_source("Steam", [])
+
+
+@pytest.mark.unit
+def test_service_skips_unmatched_grounded_news_picks():
+    import ast
+    from pathlib import Path as _Path
+
+    source = _Path("main_logic/proactive_chat/service.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "_is_grounded_news_phase1_source"
+    ]
+    assert calls, "service must check unmatched picks against grounded news sources"
+    # The check sits in the unmatched branch, next to the community-card skip.
+    branch = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(call in ast.walk(node.test) for call in calls)
+    )
+    assert "matched is None" in ast.unparse(branch.test)
+    assert "跳过" in ast.unparse(branch.body[0])

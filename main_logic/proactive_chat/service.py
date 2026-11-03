@@ -89,6 +89,7 @@ from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
     _number_phase1_links_by_source,
     _phase1_linkless_modes,
+    _is_grounded_news_phase1_source,
     _round_robin_phase1_links,
     _selected_web_link_from_match,
 )
@@ -1924,6 +1925,13 @@ async def handle_proactive_chat(
             ):
                 print(
                     f"[{lanlan_name}] Phase 1 社区卡牌选择未匹配，跳过: "
+                    f"{web_parsed.get('title', '')[:60]}"
+                )
+            elif matched is None and _is_grounded_news_phase1_source(
+                web_parsed.get("source"), all_web_links
+            ):
+                print(
+                    f"[{lanlan_name}] Phase 1 海外新闻选择未匹配，跳过: "
                     f"{web_parsed.get('title', '')[:60]}"
                 )
             else:
