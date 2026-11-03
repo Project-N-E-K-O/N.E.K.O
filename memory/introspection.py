@@ -80,6 +80,16 @@ REJECT_STALE = 'stale'
 
 _REASON_MAX_CHARS = 200
 
+# The checklist codes a suppress names (the prompt lists them in brackets).
+ISSUE_CODES = frozenset({
+    'contradiction', 'redundant', 'hollow', 'self_rule', 'unclear', 'stale',
+    'card_conflict',
+})
+# Problems in the wording itself: a later line that says the same is just as
+# wrong. Stale / contradicted / card-conflicting lines are left out on purpose
+# -- fresh facts can make the same sentence true again.
+_RESTATEMENT_BLOCKING_ISSUES = frozenset({'hollow', 'redundant', 'self_rule', 'unclear'})
+
 
 def is_permanently_suppressed(entry) -> bool:
     """True when introspection retired this persona entry / reflection for good.
@@ -92,21 +102,46 @@ def is_permanently_suppressed(entry) -> bool:
 
 def build_permanent_suppression(
     reason: str, now_iso: str, *,
+    issue: str | None = None,
     merged_into: str | None = None, restates: str | None = None,
 ) -> dict:
     """The value stored under ``PERMANENT_SUPPRESSION_KEY``.
 
+    ``issue`` is the checklist code the model gave (see ``ISSUE_CODES``).
     ``merged_into`` names the entry a merge folded this one into: the source
     stays on disk, retired, instead of being deleted. ``restates`` names the
     retired entry a newly synthesized reflection repeats, which is why it was
     stored already suppressed.
     """
     marker = {'at': now_iso, 'reason': reason}
+    if issue:
+        marker['issue'] = issue
     if merged_into:
         marker['merged_into'] = merged_into
     if restates:
         marker['restates'] = restates
     return marker
+
+
+def retirement_blocks_restatement(entry) -> bool:
+    """Whether a new line restating this retired entry should be retired too.
+
+    Only when the entry was retired for its wording (hollow, redundant, the
+    AI's own reaction as a rule, unclear subject), folded into a merge, or
+    was itself such a restatement. A line retired as stale, contradicted or
+    conflicting with the card can become true again, and one with no issue
+    recorded gets the benefit of the doubt.
+    """
+    if not is_permanently_suppressed(entry):
+        return False
+    marker = entry.get(PERMANENT_SUPPRESSION_KEY)
+    if not isinstance(marker, dict):
+        return False
+    return (
+        marker.get('issue') in _RESTATEMENT_BLOCKING_ISSUES
+        or bool(marker.get('merged_into'))
+        or bool(marker.get('restates'))
+    )
 
 
 def _clip_reason(raw) -> str:
@@ -217,6 +252,8 @@ _NUMBER_RE = re.compile(r'\d+')
 # card line, say) could otherwise close the memory block early and continue
 # as instructions.
 _DELIMITER_RUN_RE = re.compile(r'={6,}')
+# A numbered bullet as the render writes it: the tag opens its own line.
+_TAG_LINE_RE = re.compile(r'(?m)^[ \t]*- \[(\d+)( RO)?\] ')
 
 
 def _parse_number(raw) -> int | None:
@@ -302,6 +339,9 @@ def plan_actions(
         }
         if verb != ACTION_SUPPRESS:
             resolved['text'] = new_text
+        else:
+            issue = str(action.get('issue') or '').strip().lower()
+            resolved['issue'] = issue if issue in ISSUE_CODES else None
         if kind == KIND_PERSONA:
             resolved['entity'] = targets[0].entity
             plan.persona.append(resolved)
@@ -402,16 +442,21 @@ def _shown_lines(
     """The numbered lines whose tag and whole text made it into the prompt.
 
     A line cut off by the input budget, or cut in half, is not offered to
-    the model's actions: it judged at most part of that text.
+    the model's actions: it judged at most part of that text. The text is
+    looked for only between its tag and the next one, so neither the tag's
+    own digits nor the same words in a later line pass for it.
     """
+    tags = list(_TAG_LINE_RE.finditer(memory_text))
     shown: dict[int, AnnotatedLine] = {}
-    for number, line in lines.items():
-        tag = f"- [{number} RO] " if line.readonly else f"- [{number}] "
-        start = memory_text.find(tag)
-        if start < 0:
+    for i, match in enumerate(tags):
+        line = lines.get(int(match.group(1)))
+        if line is None:
             continue
-        if line.text in memory_text[start:]:
-            shown[number] = line
+        end = tags[i + 1].start() if i + 1 < len(tags) else len(memory_text)
+        body = memory_text[match.end():end]
+        # The do-not-mention section prints the stripped text.
+        if line.text.strip() in body:
+            shown[line.number] = line
     return shown
 
 

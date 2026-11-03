@@ -189,7 +189,7 @@ class RefinementMixin:
                 reason = f"introspection: {act.get('reason') or verb}"
                 if verb == ACTION_SUPPRESS:
                     srcs[0][PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
-                        act.get('reason') or verb, now_iso,
+                        act.get('reason') or verb, now_iso, issue=act.get('issue'),
                     )
                 elif verb == ACTION_REWRITE:
                     self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)

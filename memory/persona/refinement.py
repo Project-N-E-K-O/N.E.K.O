@@ -175,7 +175,9 @@ class RefinementMixin:
                 reason = f"introspection: {act.get('reason') or verb}"
                 if verb == ACTION_SUPPRESS:
                     src = srcs[0]
-                    marker = build_permanent_suppression(act.get('reason') or verb, now_iso)
+                    marker = build_permanent_suppression(
+                        act.get('reason') or verb, now_iso, issue=act.get('issue'),
+                    )
                     if self._event_log is None:
                         src[PERMANENT_SUPPRESSION_KEY] = marker
                         dirty = True

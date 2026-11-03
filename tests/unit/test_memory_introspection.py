@@ -253,6 +253,47 @@ def test_plan_rejects_readonly_and_unknown_numbers_and_counts_them():
     assert plan.persona[0]['entity'] == 'master'
 
 
+def test_plan_keeps_the_checklist_issue_of_a_suppress():
+    from memory.introspection import plan_actions
+
+    plan = plan_actions([
+        {'action': 'suppress', 'id': 2, 'issue': ' Hollow ', 'reason': 'x'},
+        {'action': 'suppress', 'id': 3, 'issue': 'made-up', 'reason': 'x'},
+        {'action': 'suppress', 'id': 4, 'reason': 'x'},
+    ], _lines(), max_actions=15)
+
+    assert [a['issue'] for a in plan.persona] == ['hollow', None, None]
+
+
+@pytest.mark.asyncio
+async def test_suppression_marker_records_the_issue(tmp_path):
+    env = _install(str(tmp_path))
+    texts = await _seed_ranked_master(env, 1)
+    fake = _FakeThinking(lambda p: json.dumps([
+        {'action': 'suppress', 'id': _number(p, texts[0]), 'issue': 'stale', 'reason': '过期'},
+    ], ensure_ascii=False), '[]')
+
+    await _run(env, fake)
+
+    marker = (await _persona_entry(env.pm, 'master', 'm0'))['permanent_suppression']
+    assert marker['issue'] == 'stale'
+
+
+def test_restatement_blocking_follows_the_issue():
+    from memory.introspection import retirement_blocks_restatement
+
+    def _row(**marker):
+        return {'permanent_suppression': {'at': 'x', 'reason': 'r', **marker}}
+
+    for issue in ('hollow', 'redundant', 'self_rule', 'unclear'):
+        assert retirement_blocks_restatement(_row(issue=issue)), issue
+    for issue in ('stale', 'contradiction', 'card_conflict', None):
+        assert not retirement_blocks_restatement(_row(issue=issue)), issue
+    assert retirement_blocks_restatement(_row(merged_into='per_x'))
+    assert retirement_blocks_restatement(_row(restates='reflection.r'))
+    assert not retirement_blocks_restatement({'text': 'live'})
+
+
 def test_plan_enforces_shape_kind_section_reuse_and_cap():
     from memory.introspection import plan_actions
 
@@ -1339,6 +1380,33 @@ async def test_lines_cut_by_the_input_budget_cannot_be_acted_on(tmp_path):
     assert texts[2] not in prompt
     assert result.applied == 0 and result.rejected == {'unknown_id': 1}
     assert 'permanent_suppression' not in await _persona_entry(env.pm, 'master', 'm2')
+
+
+def test_shown_lines_accept_text_printed_stripped():
+    """The do-not-mention section prints the stripped text; an entry stored
+    with surrounding spaces is still fully shown."""
+    from memory.introspection import AnnotatedLine, KIND_PERSONA, _shown_lines
+
+    lines = {7: AnnotatedLine(7, KIND_PERSONA, 'r2', 'relationship', '  主人常在深夜找她聊天 ', False)}
+    shown = _shown_lines("### 暂不主动提及\n- [7] 主人常在深夜找她聊天", lines)
+
+    assert set(shown) == {7}
+
+
+def test_shown_lines_read_only_the_text_under_each_tag():
+    """A cut line is not rescued by its own tag digits or by the same words
+    in a later line."""
+    from memory.introspection import AnnotatedLine, KIND_PERSONA, _shown_lines
+
+    lines = {
+        1: AnnotatedLine(1, KIND_PERSONA, 'm0', 'master', '1', False),
+        2: AnnotatedLine(2, KIND_PERSONA, 'm1', 'master', '主人喜欢猫', False),
+        3: AnnotatedLine(3, KIND_PERSONA, 'm2', 'master', '主人喜欢猫和狗', False),
+        4: AnnotatedLine(4, KIND_PERSONA, 'm3', 'master', '主人住在海边', False),
+    }
+    text = "- [1] \n- [2] 主人喜\n- [3] 主人喜欢猫和狗\n- [4] [上周] 主人住在海边"
+
+    assert set(_shown_lines(text, lines)) == {3, 4}
 
 
 def test_entry_text_cannot_close_the_memory_block():

@@ -589,10 +589,11 @@ async def test_synthesis_skip_falls_back_when_target_rewritten_meanwhile(tmp_pat
     assert "covered_fact_ids" not in old
 
 
-def _retired() -> dict:
-    return {"permanent_suppression": {
-        "at": datetime.now().isoformat(timespec="seconds"), "reason": "空洞",
-    }}
+def _retired(issue: str | None = None) -> dict:
+    marker = {"at": datetime.now().isoformat(timespec="seconds"), "reason": "空洞"}
+    if issue:
+        marker["issue"] = issue
+    return {"permanent_suppression": marker}
 
 
 @pytest.mark.asyncio
@@ -684,12 +685,12 @@ async def test_synthesis_restating_a_retired_line_is_stored_retired(tmp_path, ki
     _write_json(tmpdir, "facts.json", facts)
     if kind == "reflection":
         _write_json(tmpdir, "reflections.json", [
-            _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired()),
+            _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired("hollow")),
         ])
         key = "reflection.ref_hollow"
     else:
         _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
-            _persona_entry("p_hollow", "睡前道晚安体现了两人的纽带", **_retired()),
+            _persona_entry("p_hollow", "睡前道晚安体现了两人的纽带", **_retired("hollow")),
         ]}})
         key = "persona.relationship.p_hollow"
     _fs, _pm, re = _install(tmpdir)
@@ -711,7 +712,7 @@ async def test_synthesis_unrelated_to_retired_lines_stays_live(tmp_path):
     tmpdir = str(tmp_path)
     _write_json(tmpdir, "facts.json", _facts())
     _write_json(tmpdir, "reflections.json", [
-        _reflection("ref_hollow", "两人喝咖啡形成了默契", **_retired()),
+        _reflection("ref_hollow", "两人喝咖啡形成了默契", **_retired("hollow")),
     ])
     _fs, _pm, re = _install(tmpdir)
     answer = _new_reflection_answer("主人连着几晚睡前对小天说晚安")
@@ -725,10 +726,32 @@ async def test_synthesis_unrelated_to_retired_lines_stays_live(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("issue", ["stale", "contradiction", "card_conflict", None])
+async def test_restating_a_line_retired_as_stale_is_new_information(tmp_path, issue):
+    """A line retired as outdated, contradicted or off-card (or with no issue
+    recorded) can become true again: the same words backed by fresh facts
+    are kept live."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_old", "主人每晚睡前都会对小天说晚安", **_retired(issue)),
+    ])
+    _fs, _pm, re = _install(tmpdir)
+    answer = _new_reflection_answer("主人每晚睡前都会对小天说晚安")
+    with _patch_vectors(_FakeEmbeddingService()), _llm(answer, []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert "permanent_suppression" not in stored
+
+
+@pytest.mark.asyncio
 async def test_retired_restatement_without_vectors_matches_identical_text_only(tmp_path):
     tmpdir = str(tmp_path)
     _write_json(tmpdir, "reflections.json", [
-        _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired()),
+        _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired("hollow")),
         _reflection("ref_live", "主人睡前说晚安"),
     ])
     _fs, _pm, re = _install(tmpdir)

@@ -53,6 +53,7 @@ from memory.introspection import (
     PERMANENT_SUPPRESSION_KEY,
     build_permanent_suppression,
     is_permanently_suppressed,
+    retirement_blocks_restatement,
 )
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -833,10 +834,12 @@ class SynthesisMixin:
     ) -> str | None:
         """Key of a permanently suppressed impression ``text`` restates, or None.
 
-        Candidates are the subject's retired reflections and persona entries,
-        the ones the existing-impressions block leaves out. A match is an
-        identical text, or a cosine of at least
-        ``REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE`` when vectors are usable.
+        Candidates are the subject's retired reflections and persona entries
+        whose retirement says the wording itself is wrong
+        (``retirement_blocks_restatement``): a line retired as stale or
+        contradicted may be true again. A match is an identical text, or a
+        cosine of at least ``REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE`` when
+        vectors are usable.
         """
         from config import REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE
         from memory.scopes import entry_matches_subject
@@ -850,7 +853,7 @@ class SynthesisMixin:
         pool: list[tuple[str, dict]] = [
             (f"reflection.{r.get('id')}", r)
             for r in reflections
-            if is_permanently_suppressed(r) and entry_matches_subject(r, subject)
+            if retirement_blocks_restatement(r) and entry_matches_subject(r, subject)
         ]
         for section_key, section in (persona or {}).items():
             if not isinstance(section, dict):
@@ -858,7 +861,7 @@ class SynthesisMixin:
             pool.extend(
                 (f"persona.{section_key}.{e.get('id')}", e)
                 for e in section.get('facts') or []
-                if is_permanently_suppressed(e) and entry_matches_subject(e, subject)
+                if retirement_blocks_restatement(e) and entry_matches_subject(e, subject)
             )
         if not pool:
             return None

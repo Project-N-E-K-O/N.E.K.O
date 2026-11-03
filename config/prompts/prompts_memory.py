@@ -5274,13 +5274,13 @@ MEMORY_INTROSPECTION_PROMPT = {
 ======以上为当前注入的记忆======
 
 逐条阅读，找出有问题的条目：
-1. 互相矛盾：两条说法冲突
-2. 冗余：同一个意思换了几种说法
-3. 空洞的关系定性：例如「形成了……默契／模式／纽带」「体现了／意味着……」，却没有任何具体事件
-4. 把 {AI_NAME} 自己的反应写成规律：例如「{AI_NAME}总是默许……」
-5. 主语或指代不清：读不出是谁做的、谁说的
-6. 过期或明显已经失效
-7. 和角色卡（RO 行）冲突
+1. 互相矛盾：两条说法冲突 [contradiction]
+2. 冗余：同一个意思换了几种说法 [redundant]
+3. 空洞的关系定性：例如「形成了……默契／模式／纽带」「体现了／意味着……」，却没有任何具体事件 [hollow]
+4. 把 {AI_NAME} 自己的反应写成规律：例如「{AI_NAME}总是默许……」 [self_rule]
+5. 主语或指代不清：读不出是谁做的、谁说的 [unclear]
+6. 过期或明显已经失效 [stale]
+7. 和角色卡（RO 行）冲突 [card_conflict]
 
 可用操作：
 - suppress：永久压制这一条，之后不再注入。适合空洞的定性、过期、与角色卡冲突、或改不好的条目
@@ -5293,12 +5293,13 @@ MEMORY_INTROSPECTION_PROMPT = {
 - 每个编号只能出现在一个操作里
 - 不能对 RO 行做任何操作
 - 每个操作都要写 reason
+- suppress 必须写 issue，取上面清单里对应问题的方括号代号
 - 改写与合并后的文本沿用原条目的语言
 - 不需要任何操作时，返回空数组 []
 
 只输出 JSON 数组：
 [
-  {"action": "suppress", "id": 12, "reason": "空洞的关系定性，没有具体事件"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "空洞的关系定性，没有具体事件"},
   {"action": "rewrite", "id": 7, "text": "改写后的具体表述", "reason": "主语不清"},
   {"action": "merge", "ids": [3, 9], "text": "合并后的一条", "reason": "同一个意思的两种说法"}
 ]""",
@@ -5312,13 +5313,13 @@ MEMORY_INTROSPECTION_PROMPT = {
 ======以上为当前注入的记忆======
 
 逐條閱讀，找出有問題的條目：
-1. 互相矛盾：兩條說法衝突
-2. 冗餘：同一個意思換了幾種說法
-3. 空洞的關係定性：例如「形成了……默契／模式／紐帶」「體現了／意味著……」，卻沒有任何具體事件
-4. 把 {AI_NAME} 自己的反應寫成規律：例如「{AI_NAME}總是默許……」
-5. 主語或指代不清：讀不出是誰做的、誰說的
-6. 過期或明顯已經失效
-7. 和角色卡（RO 行）衝突
+1. 互相矛盾：兩條說法衝突 [contradiction]
+2. 冗餘：同一個意思換了幾種說法 [redundant]
+3. 空洞的關係定性：例如「形成了……默契／模式／紐帶」「體現了／意味著……」，卻沒有任何具體事件 [hollow]
+4. 把 {AI_NAME} 自己的反應寫成規律：例如「{AI_NAME}總是默許……」 [self_rule]
+5. 主語或指代不清：讀不出是誰做的、誰說的 [unclear]
+6. 過期或明顯已經失效 [stale]
+7. 和角色卡（RO 行）衝突 [card_conflict]
 
 可用操作：
 - suppress：永久壓制這一條，之後不再注入。適合空洞的定性、過期、與角色卡衝突、或改不好的條目
@@ -5331,12 +5332,13 @@ MEMORY_INTROSPECTION_PROMPT = {
 - 每個編號只能出現在一個操作裡
 - 不能對 RO 行做任何操作
 - 每個操作都要寫 reason
+- suppress 必須寫 issue，取上面清單裡對應問題的方括號代號
 - 改寫與合併後的文字沿用原條目的語言
 - 不需要任何操作時，回傳空陣列 []
 
 只輸出 JSON 陣列：
 [
-  {"action": "suppress", "id": 12, "reason": "空洞的關係定性，沒有具體事件"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "空洞的關係定性，沒有具體事件"},
   {"action": "rewrite", "id": 7, "text": "改寫後的具體表述", "reason": "主語不清"},
   {"action": "merge", "ids": [3, 9], "text": "合併後的一條", "reason": "同一個意思的兩種說法"}
 ]""",
@@ -5350,13 +5352,13 @@ The [number] at the start of each memory line is its id. Lines marked RO (e.g. [
 ======以上为当前注入的记忆======
 
 Read every entry and find the problematic ones:
-1. Contradiction: two entries conflict
-2. Redundancy: the same idea phrased several ways
-3. Hollow relationship labels: e.g. "they have formed a tacit understanding / pattern / bond", "this reflects / means ...", with no concrete event behind it
-4. {AI_NAME}'s own reactions written up as a rule: e.g. "{AI_NAME} always goes along with ..."
-5. Unclear subject or reference: you cannot tell who did or said it
-6. Outdated or clearly no longer true
-7. Conflicts with the character card (RO lines)
+1. Contradiction: two entries conflict [contradiction]
+2. Redundancy: the same idea phrased several ways [redundant]
+3. Hollow relationship labels: e.g. "they have formed a tacit understanding / pattern / bond", "this reflects / means ...", with no concrete event behind it [hollow]
+4. {AI_NAME}'s own reactions written up as a rule: e.g. "{AI_NAME} always goes along with ..." [self_rule]
+5. Unclear subject or reference: you cannot tell who did or said it [unclear]
+6. Outdated or clearly no longer true [stale]
+7. Conflicts with the character card (RO lines) [card_conflict]
 
 Available actions:
 - suppress: permanently suppress this entry so it is no longer injected. Use it for hollow labels, outdated entries, conflicts with the character card, or entries that cannot be fixed
@@ -5369,12 +5371,13 @@ Constraints:
 - each id may appear in only one action
 - never act on RO lines
 - every action needs a reason
+- every suppress needs an issue: the bracketed code of the matching problem in the list above
 - rewritten and merged text keeps the language of the original entries
 - if nothing needs to change, return an empty array []
 
 Output only a JSON array:
 [
-  {"action": "suppress", "id": 12, "reason": "hollow relationship label with no concrete event"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "hollow relationship label with no concrete event"},
   {"action": "rewrite", "id": 7, "text": "the concrete rewritten statement", "reason": "unclear subject"},
   {"action": "merge", "ids": [3, 9], "text": "the single merged entry", "reason": "two phrasings of the same idea"}
 ]""",
@@ -5388,13 +5391,13 @@ Output only a JSON array:
 ======以上为当前注入的记忆======
 
 1 件ずつ読み、問題のあるエントリを見つけてください：
-1. 矛盾：2 つの記述が食い違っている
-2. 冗長：同じ意味を何通りにも言い換えている
-3. 中身のない関係づけ：「……という暗黙の了解／パターン／絆が生まれた」「……を表している／意味している」などで、具体的な出来事がない
-4. {AI_NAME} 自身の反応を法則として書いている：例「{AI_NAME}はいつも……を黙認する」
-5. 主語や指示対象が不明：誰がしたのか、誰が言ったのか読み取れない
-6. 古くなった、または明らかにもう当てはまらない
-7. キャラクターカード（RO 行）と矛盾する
+1. 矛盾：2 つの記述が食い違っている [contradiction]
+2. 冗長：同じ意味を何通りにも言い換えている [redundant]
+3. 中身のない関係づけ：「……という暗黙の了解／パターン／絆が生まれた」「……を表している／意味している」などで、具体的な出来事がない [hollow]
+4. {AI_NAME} 自身の反応を法則として書いている：例「{AI_NAME}はいつも……を黙認する」 [self_rule]
+5. 主語や指示対象が不明：誰がしたのか、誰が言ったのか読み取れない [unclear]
+6. 古くなった、または明らかにもう当てはまらない [stale]
+7. キャラクターカード（RO 行）と矛盾する [card_conflict]
 
 使える操作：
 - suppress：このエントリを恒久的に抑制し、今後注入しない。中身のない関係づけ、古い内容、キャラクターカードとの矛盾、直しようのないエントリに使う
@@ -5407,12 +5410,13 @@ Output only a JSON array:
 - 各番号は 1 つの操作にしか使えない
 - RO 行には一切操作しない
 - すべての操作に reason を書く
+- suppress には必ず issue を書く：上のリストで該当する問題の角括弧内のコード
 - 書き換え・統合後のテキストは元のエントリの言語のままにする
 - 操作が不要なら空配列 [] を返す
 
 JSON 配列だけを出力：
 [
-  {"action": "suppress", "id": 12, "reason": "具体的な出来事のない関係づけ"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "具体的な出来事のない関係づけ"},
   {"action": "rewrite", "id": 7, "text": "書き換えた具体的な記述", "reason": "主語が不明"},
   {"action": "merge", "ids": [3, 9], "text": "統合した 1 件", "reason": "同じ意味の 2 通りの言い方"}
 ]""",
@@ -5426,13 +5430,13 @@ JSON 配列だけを出力：
 ======以上为当前注入的记忆======
 
 항목을 하나씩 읽고 문제가 있는 항목을 찾으세요:
-1. 서로 모순: 두 항목의 내용이 충돌함
-2. 중복: 같은 뜻을 여러 방식으로 말함
-3. 내용 없는 관계 규정: 예) 「……한 암묵적 이해/패턴/유대가 형성되었다」「……을(를) 보여 준다/의미한다」 같은데 구체적인 사건이 없음
-4. {AI_NAME} 자신의 반응을 규칙처럼 씀: 예) 「{AI_NAME}은(는) 늘 ……을(를) 묵인한다」
-5. 주어나 지시 대상이 불분명: 누가 했는지, 누가 말했는지 알 수 없음
-6. 오래되었거나 이미 맞지 않음이 분명함
-7. 캐릭터 카드(RO 줄)와 충돌함
+1. 서로 모순: 두 항목의 내용이 충돌함 [contradiction]
+2. 중복: 같은 뜻을 여러 방식으로 말함 [redundant]
+3. 내용 없는 관계 규정: 예) 「……한 암묵적 이해/패턴/유대가 형성되었다」「……을(를) 보여 준다/의미한다」 같은데 구체적인 사건이 없음 [hollow]
+4. {AI_NAME} 자신의 반응을 규칙처럼 씀: 예) 「{AI_NAME}은(는) 늘 ……을(를) 묵인한다」 [self_rule]
+5. 주어나 지시 대상이 불분명: 누가 했는지, 누가 말했는지 알 수 없음 [unclear]
+6. 오래되었거나 이미 맞지 않음이 분명함 [stale]
+7. 캐릭터 카드(RO 줄)와 충돌함 [card_conflict]
 
 사용할 수 있는 작업:
 - suppress: 이 항목을 영구히 억제하여 더 이상 주입하지 않음. 내용 없는 관계 규정, 오래된 항목, 캐릭터 카드와의 충돌, 고칠 수 없는 항목에 사용
@@ -5445,12 +5449,13 @@ JSON 配列だけを出力：
 - 각 번호는 하나의 작업에만 나올 수 있음
 - RO 줄에는 어떤 작업도 하지 않음
 - 모든 작업에 reason을 씀
+- suppress에는 반드시 issue를 씀: 위 목록에서 해당 문제의 대괄호 코드
 - 고쳐 쓰거나 합친 텍스트는 원래 항목의 언어를 유지
 - 작업이 필요 없으면 빈 배열 []을 반환
 
 JSON 배열만 출력:
 [
-  {"action": "suppress", "id": 12, "reason": "구체적인 사건 없는 관계 규정"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "구체적인 사건 없는 관계 규정"},
   {"action": "rewrite", "id": 7, "text": "구체적으로 고친 서술", "reason": "주어가 불분명"},
   {"action": "merge", "ids": [3, 9], "text": "합친 한 항목", "reason": "같은 뜻의 두 가지 표현"}
 ]""",
@@ -5464,13 +5469,13 @@ JSON 배열만 출력:
 ======以上为当前注入的记忆======
 
 Прочитайте каждую запись и найдите проблемные:
-1. Противоречие: две записи конфликтуют
-2. Избыточность: одна и та же мысль в нескольких формулировках
-3. Пустые характеристики отношений: например, «между ними сложилось молчаливое понимание / закономерность / связь», «это отражает / означает …», без какого-либо конкретного события
-4. Собственные реакции {AI_NAME}, записанные как правило: например, «{AI_NAME} всегда молча соглашается с …»
-5. Неясный субъект или отсылка: нельзя понять, кто это сделал или сказал
-6. Устарело или явно больше не соответствует действительности
-7. Противоречит карточке персонажа (строкам RO)
+1. Противоречие: две записи конфликтуют [contradiction]
+2. Избыточность: одна и та же мысль в нескольких формулировках [redundant]
+3. Пустые характеристики отношений: например, «между ними сложилось молчаливое понимание / закономерность / связь», «это отражает / означает …», без какого-либо конкретного события [hollow]
+4. Собственные реакции {AI_NAME}, записанные как правило: например, «{AI_NAME} всегда молча соглашается с …» [self_rule]
+5. Неясный субъект или отсылка: нельзя понять, кто это сделал или сказал [unclear]
+6. Устарело или явно больше не соответствует действительности [stale]
+7. Противоречит карточке персонажа (строкам RO) [card_conflict]
 
 Доступные действия:
 - suppress: навсегда подавить запись, чтобы она больше не подставлялась. Подходит для пустых характеристик, устаревших записей, конфликтов с карточкой персонажа и записей, которые не удаётся исправить
@@ -5483,12 +5488,13 @@ JSON 배열만 출력:
 - каждый номер может встречаться только в одном действии
 - никаких действий над строками RO
 - у каждого действия должно быть поле reason
+- у каждого suppress должно быть поле issue: код в квадратных скобках из списка выше
 - переписанный и объединённый текст сохраняет язык исходных записей
 - если ничего менять не нужно, верните пустой массив []
 
 Выведите только JSON-массив:
 [
-  {"action": "suppress", "id": 12, "reason": "пустая характеристика отношений без конкретного события"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "пустая характеристика отношений без конкретного события"},
   {"action": "rewrite", "id": 7, "text": "конкретная переписанная формулировка", "reason": "неясный субъект"},
   {"action": "merge", "ids": [3, 9], "text": "одна объединённая запись", "reason": "две формулировки одной мысли"}
 ]""",
@@ -5502,13 +5508,13 @@ El [número] al inicio de cada línea de memoria es su identificador. Las línea
 ======以上为当前注入的记忆======
 
 Lee cada entrada y localiza las problemáticas:
-1. Contradicción: dos entradas chocan entre sí
-2. Redundancia: la misma idea dicha de varias maneras
-3. Etiquetas de relación vacías: p. ej. «han desarrollado una complicidad / un patrón / un vínculo», «esto refleja / significa …», sin ningún hecho concreto detrás
-4. Reacciones de {AI_NAME} escritas como una regla: p. ej. «{AI_NAME} siempre consiente …»
-5. Sujeto o referencia poco claros: no se entiende quién lo hizo o lo dijo
-6. Desactualizado o claramente ya no vigente
-7. Choca con la ficha del personaje (líneas RO)
+1. Contradicción: dos entradas chocan entre sí [contradiction]
+2. Redundancia: la misma idea dicha de varias maneras [redundant]
+3. Etiquetas de relación vacías: p. ej. «han desarrollado una complicidad / un patrón / un vínculo», «esto refleja / significa …», sin ningún hecho concreto detrás [hollow]
+4. Reacciones de {AI_NAME} escritas como una regla: p. ej. «{AI_NAME} siempre consiente …» [self_rule]
+5. Sujeto o referencia poco claros: no se entiende quién lo hizo o lo dijo [unclear]
+6. Desactualizado o claramente ya no vigente [stale]
+7. Choca con la ficha del personaje (líneas RO) [card_conflict]
 
 Acciones disponibles:
 - suppress: suprimir esta entrada de forma permanente para que ya no se inyecte. Úsala para etiquetas vacías, entradas desactualizadas, conflictos con la ficha del personaje o entradas que no se pueden arreglar
@@ -5521,12 +5527,13 @@ Restricciones:
 - cada número puede aparecer en una sola acción
 - ninguna acción sobre líneas RO
 - cada acción necesita un reason
+- cada suppress necesita un issue: el código entre corchetes del problema correspondiente en la lista de arriba
 - el texto reescrito o fusionado conserva el idioma de las entradas originales
 - si no hace falta cambiar nada, devuelve un array vacío []
 
 Devuelve solo un array JSON:
 [
-  {"action": "suppress", "id": 12, "reason": "etiqueta de relación vacía sin hecho concreto"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "etiqueta de relación vacía sin hecho concreto"},
   {"action": "rewrite", "id": 7, "text": "la afirmación concreta reescrita", "reason": "sujeto poco claro"},
   {"action": "merge", "ids": [3, 9], "text": "la entrada única fusionada", "reason": "dos formulaciones de la misma idea"}
 ]""",
@@ -5540,13 +5547,13 @@ O [número] no início de cada linha de memória é o seu identificador. Linhas 
 ======以上为当前注入的记忆======
 
 Leia cada entrada e encontre as problemáticas:
-1. Contradição: duas entradas se contradizem
-2. Redundância: a mesma ideia dita de várias formas
-3. Rótulos de relação vazios: ex. «desenvolveram uma cumplicidade / um padrão / um vínculo», «isso reflete / significa …», sem nenhum acontecimento concreto
-4. Reações do próprio {AI_NAME} escritas como regra: ex. «{AI_NAME} sempre consente com …»
-5. Sujeito ou referência pouco claros: não dá para saber quem fez ou disse
-6. Desatualizado ou claramente não mais válido
-7. Conflita com a ficha do personagem (linhas RO)
+1. Contradição: duas entradas se contradizem [contradiction]
+2. Redundância: a mesma ideia dita de várias formas [redundant]
+3. Rótulos de relação vazios: ex. «desenvolveram uma cumplicidade / um padrão / um vínculo», «isso reflete / significa …», sem nenhum acontecimento concreto [hollow]
+4. Reações do próprio {AI_NAME} escritas como regra: ex. «{AI_NAME} sempre consente com …» [self_rule]
+5. Sujeito ou referência pouco claros: não dá para saber quem fez ou disse [unclear]
+6. Desatualizado ou claramente não mais válido [stale]
+7. Conflita com a ficha do personagem (linhas RO) [card_conflict]
 
 Ações disponíveis:
 - suppress: suprimir esta entrada permanentemente para que não seja mais injetada. Use para rótulos vazios, entradas desatualizadas, conflitos com a ficha do personagem ou entradas que não dá para consertar
@@ -5559,12 +5566,13 @@ Restrições:
 - cada número pode aparecer em apenas uma ação
 - nenhuma ação sobre linhas RO
 - toda ação precisa de um reason
+- todo suppress precisa de um issue: o código entre colchetes do problema correspondente na lista acima
 - o texto reescrito ou unido mantém o idioma das entradas originais
 - se nada precisar mudar, retorne um array vazio []
 
 Retorne apenas um array JSON:
 [
-  {"action": "suppress", "id": 12, "reason": "rótulo de relação vazio sem acontecimento concreto"},
+  {"action": "suppress", "id": 12, "issue": "hollow", "reason": "rótulo de relação vazio sem acontecimento concreto"},
   {"action": "rewrite", "id": 7, "text": "a afirmação concreta reescrita", "reason": "sujeito pouco claro"},
   {"action": "merge", "ids": [3, 9], "text": "a entrada única unida", "reason": "duas formulações da mesma ideia"}
 ]""",
