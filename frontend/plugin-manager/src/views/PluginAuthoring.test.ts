@@ -226,6 +226,19 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.push).toHaveBeenCalledWith('/plugins/hello_world')
   })
 
+  it('shows the overview first and an empty profile tab', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    const container = await mount()
+    const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)
+    expect(tabs).toEqual([en.tabOverview, en.tabProfile])
+    expect(container.querySelector('.el-descriptions')).toBeTruthy()
+    ;(container.querySelector('#tab-profile') as HTMLElement).click()
+    await flush()
+    const profile = container.querySelector('#pane-profile') as HTMLElement
+    expect(profile.textContent).toContain('No data')
+  })
+
   it('offers no plugin page for a project the runtime did not load', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([{ ...listed, loaded: false }])

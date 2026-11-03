@@ -60,7 +60,14 @@
         class="authoring-create-notice"
       />
       <LoadingSpinner v-if="!loaded && !loadError" :loading="true" />
-      <AuthoringProjectDetails v-else-if="current" :project="current" />
+      <el-tabs v-else-if="current" v-model="activeTab" class="authoring-tabs">
+        <el-tab-pane :label="t('authoring.tabOverview')" name="overview">
+          <AuthoringProjectDetails :project="current" />
+        </el-tab-pane>
+        <el-tab-pane :label="t('authoring.tabProfile')" name="profile">
+          <EmptyState :description="t('common.noData')" :icon="Document" />
+        </el-tab-pane>
+      </el-tabs>
       <EmptyState
         v-else-if="requestedProject"
         :description="loaded ? t('authoring.projectNotFound') : ''"
@@ -80,13 +87,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Delete,
+  Document,
   FolderAdd,
   FolderOpened,
   Plus,
@@ -126,6 +134,11 @@ const current = computed(() =>
 const headerTitle = computed(() =>
   current.value ? projectTitle(current.value) : t('authoring.title')
 )
+const activeTab = ref<'overview' | 'profile'>('overview')
+// Each project opens on its overview.
+watch(requestedProject, () => {
+  activeTab.value = 'overview'
+})
 const createVisible = ref(false)
 const helpVisible = ref(false)
 const busy = ref(false)
