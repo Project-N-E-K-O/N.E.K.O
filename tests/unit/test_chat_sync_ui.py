@@ -514,8 +514,11 @@ def test_recent_display_does_not_start_while_the_character_is_switching():
     run_script(r"""(async()=>{
         window.appState={isSwitchingCatgirl:true,_switchAttemptCounter:1};
         window.reactChatWindowHost={maxMessages:50,getState:()=>({messages:[]}),setMessages(){throw new Error('stale update');}};
+        let requests=0;
+        global.fetch=async()=>{requests++;throw new Error('unexpected request');};
         documentEvents.DOMContentLoaded();
         await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(requests,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
 

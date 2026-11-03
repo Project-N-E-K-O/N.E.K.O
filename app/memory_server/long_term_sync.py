@@ -297,9 +297,11 @@ def _write_snapshot(name, payload, *, check_only=False):
     except LongTermArchiveSubjectUnavailable as error:
         binding = payload['binding']
         if _uid(name) == binding['character_uid'] and _binding(binding['character_uid']) == binding:
-            from services.chat_sync.ledger import ChatDomain
-            domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
-            _capture_scheduler(_authority().directory).record_long_term_capture_error(domain, binding['generation'], str(error))
+            writer = _authority()
+            if writer is not None:
+                from services.chat_sync.ledger import ChatDomain
+                domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
+                _capture_scheduler(writer.directory).record_long_term_capture_error(domain, binding['generation'], str(error))
         if not check_only:
             # Retained inboxes can retry without blocking later local events.
             return False
@@ -486,6 +488,14 @@ async def consume(uid):
                 with writer.locked():
                     if applied[0] and path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
                         path.unlink()
+                        binding = payload['binding']
+                        try:
+                            if _uid(name) == uid and _binding(uid) == binding:
+                                from services.chat_sync.ledger import ChatDomain
+                                domain = ChatDomain(binding['owner_id'], uid).key()
+                                _capture_scheduler(writer.directory).clear_archive_subject_error(domain, binding['generation'])
+                        except (OSError, ValueError, sqlite3.Error):
+                            logger.warning('[LongTermSync] archive diagnostic cleanup deferred')
             return applied[0]
         return await _complete_file_commit(commit)
 

@@ -52,6 +52,22 @@ def test_local_memory_diagnostic_is_durable_without_transport_retry_or_extra_wri
 
 
 @pytest.mark.parametrize('active_error', [None, 'chat_sync_unavailable'])
+@pytest.mark.parametrize('same_generation', [True, False])
+@pytest.mark.parametrize('code', ['long_term_archive_subject_unavailable', 'long_term_memory_capacity_exceeded'])
+def test_applied_archive_only_clears_its_matching_diagnostic(tmp_path, active_error, same_generation, code):
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db')
+    scheduler.record_long_term_capture_error('role', 3, code)
+    scheduler.record_long_term_capture_error('other-role', 3, 'long_term_archive_subject_unavailable')
+    if active_error:
+        scheduler.failure('role', 'pull', 3, 'session', ValueError(active_error))
+    scheduler.clear_archive_subject_error('role', 3 if same_generation else 2)
+    expected = [] if same_generation and code == 'long_term_archive_subject_unavailable' else [code]
+    assert scheduler.local_memory_diagnostics('role') == expected
+    assert scheduler.local_memory_diagnostics('other-role') == ['long_term_archive_subject_unavailable']
+    assert scheduler.last_error('role') == active_error
+
+
+@pytest.mark.parametrize('active_error', [None, 'chat_sync_unavailable'])
 def test_retired_media_error_does_not_mask_current_status_after_restart(tmp_path, active_error):
     path = tmp_path / 'scheduler.db'
     scheduler = ChatSyncScheduler(path, clock=lambda: 1000, uniform=lambda *_: 0)

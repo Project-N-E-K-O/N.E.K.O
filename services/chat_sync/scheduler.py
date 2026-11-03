@@ -159,6 +159,13 @@ class ChatSyncScheduler:
             elif row and row['last_error'] in ('long_term_memory_capacity_exceeded', 'long_term_archive_subject_unavailable'):
                 conn.execute('DELETE FROM scheduler_tasks WHERE domain=? AND channel=?', (domain, channel))
 
+    def clear_archive_subject_error(self, domain, generation):
+        """Clear only the repaired archive notice for the applied binding."""
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture' "
+                         "AND blocked_generation=? AND last_error='long_term_archive_subject_unavailable'",
+                         (domain, generation))
+
     def failure(self, domain, channel, generation, session, exc) -> None:
         """Retain safe retry metadata without storing server bodies or credentials."""
         code, status = str(exc), getattr(exc, "status_code", None)

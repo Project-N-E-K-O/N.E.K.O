@@ -1831,8 +1831,78 @@ async def test_unrecoverable_archive_preserves_data_and_reports_backup_recovery(
     # A verified backup supplies the missing metadata; no subject is inferred.
     atomic_write_json(path, [{**row, 'entity_key': 'master'}])
     assert await owner.native.consume(UID)
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
     owner.native._capture('Neko', True)
     assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('check_only', [False, True])
+async def test_archive_subject_error_survives_authority_loss_after_binding_validation(owner, monkeypatch, check_only):
+    path = owner.directory / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+    path.parent.mkdir()
+    atomic_write_json(path, [{'id': 'unknown', 'text': 'Unknown archive subject'}])
+    await stage(owner)
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text(encoding='utf-8'))
+    original_binding = owner.native._binding
+    available, reads = [True], []
+    def binding(uid):
+        result = original_binding(uid)
+        reads.append(uid)
+        if len(reads) == 2:
+            available[0] = False
+        return result
+    monkeypatch.setattr(owner.native, '_binding', binding)
+    monkeypatch.setattr(owner.native, '_authority', lambda: owner.runtime.writer if available[0] else None)
+    before = path.read_bytes()
+    if check_only:
+        with pytest.raises(ValueError, match='^long_term_archive_subject_unavailable$'):
+            owner.native._write_snapshot('Neko', payload, check_only=True)
+    else:
+        assert owner.native._write_snapshot('Neko', payload) is False
+    assert reads == [UID, UID]
+    assert path.read_bytes() == before
+    assert not owner.adapter.local_path(owner.binding).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('replacement', [False, True])
+@pytest.mark.parametrize('code', ['long_term_archive_subject_unavailable', 'long_term_memory_capacity_exceeded'])
+async def test_consumed_inbox_clears_only_the_repaired_archive_diagnostic(owner, monkeypatch, replacement, code):
+    await stage(owner)
+    owner.runtime.scheduler.record_long_term_capture_error(DOMAIN.key(), owner.binding['generation'], code)
+    inbox = owner.adapter.incoming_path(UID)
+    pending = json.loads(inbox.read_text(encoding='utf-8'))
+    if replacement:
+        original = owner.native.runtime.event_log.record_and_save
+        def replace(*args, **kwargs):
+            result = original(*args, **kwargs)
+            pending['head']['revision'] += 1
+            pending['head']['completedAt'] += 1
+            pending['head']['document']['completedAt'] += 1
+            atomic_write_json(inbox, pending)
+            return result
+        monkeypatch.setattr(owner.native.runtime.event_log, 'record_and_save', replace)
+    assert await owner.native.consume(UID)
+    expected = [] if not replacement and code == 'long_term_archive_subject_unavailable' else [code]
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == (
+        expected + (['long_term_memory_incoming_pending'] if replacement else []))
+    assert inbox.exists() == replacement
+
+
+@pytest.mark.asyncio
+async def test_archive_notice_cleanup_failure_does_not_change_a_successful_apply(owner, monkeypatch):
+    import sqlite3
+    await stage(owner)
+    owner.runtime.scheduler.record_long_term_capture_error(DOMAIN.key(), owner.binding['generation'],
+                                                          'long_term_archive_subject_unavailable')
+    def denied(*args):
+        raise sqlite3.OperationalError('diagnostic write unavailable')
+    monkeypatch.setattr(owner.native, '_capture_scheduler', lambda _: owner.runtime.scheduler)
+    monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', denied)
+    assert await owner.native.consume(UID)
+    assert not owner.adapter.incoming_path(UID).exists()
+    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
 
 
 @pytest.mark.parametrize('conflicting', [False, True])
