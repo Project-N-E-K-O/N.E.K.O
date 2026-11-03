@@ -5,10 +5,12 @@ from plugin.core.rpc import RpcContext
 from plugin.server.domain.errors import ServerDomainError
 
 
-def _service():
-    from plugin.server.lifecycle import get_conversation_service
+async def _service():
+    from plugin.server.lifecycle import get_conversation_service, probe_conversation_service
 
     service = get_conversation_service()
+    if service is None:
+        service = await probe_conversation_service()
     if service is None:
         raise ServerDomainError(
             code="CONVERSATIONS_NOT_READY",
@@ -31,8 +33,10 @@ def _identity(request: dict[str, object], key: str) -> str:
 
 
 async def handle_conversation_reply_get(ctx: RpcContext, request: dict[str, object]) -> object:
-    return _service().get_reply(_identity(request, "reply_id"))
+    service = await _service()
+    return service.get_reply(_identity(request, "reply_id"))
 
 
 async def handle_conversation_interaction_get(ctx: RpcContext, request: dict[str, object]) -> object:
-    return _service().get_interaction(_identity(request, "input_id"))
+    service = await _service()
+    return service.get_interaction(_identity(request, "input_id"))

@@ -14,6 +14,84 @@ pytestmark = pytest.mark.plugin_unit
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_detail_reads_reprobe_retained_service_without_starting_plane(monkeypatch, cancel_first):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from plugin.server.application.conversations import ConversationService
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    service = module.ServerLifecycleService()
+    retained = ConversationService(lambda _: None)
+    retained.accept_fact("reply.closed", {"reply_id": "r", "character": "YUI", "text": "kept", "close_reason": "completed"})
+    service._conversation_service = retained
+    monkeypatch.setattr(module, "_service", service)
+    monkeypatch.setattr(service, "ensure_delivery_path_started", AsyncMock(side_effect=AssertionError("reads must not start delivery")))
+    entered, release = asyncio.Event(), asyncio.Event()
+    probes = []
+
+    async def health_check_async(**_):
+        probes.append(True)
+        entered.set()
+        await release.wait()
+        await asyncio.sleep(0)
+        return True
+
+    service._message_plane_runner = SimpleNamespace(is_alive=lambda: True, health_check_async=health_check_async)
+    if cancel_first:
+        first = asyncio.create_task(handlers.handle_conversation_reply_get(None, {"reply_id": "r"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        finally:
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+    release.set()
+    results = await asyncio.gather(
+        handlers.handle_conversation_reply_get(None, {"reply_id": "r"}),
+        handlers.handle_conversation_interaction_get(None, {"input_id": "missing"}),
+        handlers.handle_conversation_reply_get(None, {"reply_id": "r"}),
+    )
+    assert len(probes) == 1 + int(cancel_first)
+    assert results[0]["text"] == results[2]["text"] == "kept" and results[1] is None
+    assert service.conversation_service() is retained
+    assert service._delivery_path_started is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_hides_details_before_stopping_fact_dispatch(monkeypatch):
+    from unittest.mock import Mock
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    service = module.ServerLifecycleService()
+    retained = Mock()
+    service._conversation_service = retained
+    service._conversation_service_ready = True
+    monkeypatch.setattr(module, "_service", service)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def shutdown_internal():
+        entered.set()
+        await release.wait()
+        return module._ShutdownResult(had_errors=False)
+
+    monkeypatch.setattr(service, "_shutdown_internal", shutdown_internal)
+    task = asyncio.create_task(service.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        with pytest.raises(ServerDomainError) as not_ready:
+            await handlers.handle_conversation_reply_get(None, {"reply_id": "r"})
+        assert not_ready.value.code == "CONVERSATIONS_NOT_READY"
+    finally:
+        release.set()
+        await task
+    retained.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("invalidation failed"), asyncio.CancelledError()])
 async def test_retire_stops_plane_and_bridges_when_invalidation_fails(monkeypatch, failure):
     from unittest.mock import AsyncMock, Mock

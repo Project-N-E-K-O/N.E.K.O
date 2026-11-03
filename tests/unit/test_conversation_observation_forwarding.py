@@ -74,6 +74,8 @@ def test_disabled_or_absent_service_fact_does_not_enter_subscription_queue(forwa
     event = {"lanlan_name": "YUI", "fact": "input.submitted", "payload": {}}
     monkeypatch.setattr(lifecycle, "get_conversation_service", lambda *, require_ready=True: None)
     assert api._forward_conversation_fact(event) is False
+    assert facts == []
+    monkeypatch.setattr(lifecycle, "get_conversation_service", lambda *, require_ready=True: object())
     monkeypatch.setattr(api, "_user_plugins_enabled", lambda: False)
     assert api._forward_conversation_fact(event) is False
     assert facts == []

@@ -150,9 +150,21 @@ class ServerLifecycleService:
 
     def conversation_service(self, *, require_ready: bool = True) -> ConversationService | None:
         """Gate reads on health while preserving retained fact ingress."""
-        if require_ready and not self._conversation_service_ready:
+        if require_ready and (self._delivery_path_shutting_down or not self._conversation_service_ready):
             return None
         return self._conversation_service
+
+    async def probe_conversation_service(self) -> ConversationService | None:
+        """Recheck an existing plane for a cold read without starting resources."""
+        async with _held(self._delivery_path_lock):
+            if (
+                not self._delivery_path_shutting_down
+                and not self._conversation_service_ready
+                and self._conversation_service is not None
+                and self._message_plane_runner is not None
+            ):
+                await self._check_message_plane_health()
+        return self.conversation_service()
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -1093,6 +1105,10 @@ _service = ServerLifecycleService()
 def get_conversation_service(*, require_ready: bool = True) -> ConversationService | None:
     """Access the current delivery-path instance without constructing another."""
     return _service.conversation_service(require_ready=require_ready)
+
+
+async def probe_conversation_service() -> ConversationService | None:
+    return await _service.probe_conversation_service()
 
 
 def _final_log_flush() -> None:
