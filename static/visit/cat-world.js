@@ -468,10 +468,16 @@
       && validQ16(frame.x_q16) && validQ16(frame.y_q16));
   }
 
+  // Buffered or replayed intents keep the time they arrived, so a replayed
+  // drag throws at the speed it was actually moved.
+  function intentTime(frame) {
+    return Number.isFinite(frame.received_at) ? frame.received_at : Date.now();
+  }
+
   function rememberPointer(frame) {
     var drag = state.dragAuthority;
     if (!drag || drag.intentId !== frame.intent_id || drag.actor !== frame.actor) return false;
-    var timestamp = Date.now();
+    var timestamp = intentTime(frame);
     drag.samples.push({ x: frame.x_q16, y: frame.y_q16, at: timestamp });
     while (drag.samples.length > 4 || (drag.samples[0] && drag.samples[0].at < timestamp - 180)) {
       drag.samples.shift();
@@ -486,9 +492,9 @@
     return true;
   }
 
-  function releaseVelocity(drag, point) {
+  function releaseVelocity(drag, point, at) {
     var samples = drag && drag.samples ? drag.samples.slice() : [];
-    samples.push({ x: point.x_q16, y: point.y_q16, at: Date.now() });
+    samples.push({ x: point.x_q16, y: point.y_q16, at: at });
     if (samples.length < 2) return { x: 0, y: 0 };
     var first = samples[0];
     var last = samples[samples.length - 1];
@@ -503,20 +509,20 @@
     if (!state.active || state.side !== 'host' || !validIntent(frame)) return false;
     if (!state.simulationStarted || state.recoveryWaitSeq) {
       // Accepted before the world is settled: apply on top of it once it is.
-      state.pendingIntents.push(Object.assign({}, frame));
+      state.pendingIntents.push(Object.assign({ received_at: Date.now() }, frame));
       while (state.pendingIntents.length > 64) state.pendingIntents.shift();
       return true;
     }
     var world = state.world;
     var point = { x_q16: frame.x_q16, y_q16: frame.y_q16 };
     var holder = actorToHolder(frame.actor);
-    if (frame.kind === 'pointer') return rememberPointer(frame);
     if (state.recoveryCursor) {
       // A saved world may still arrive after the wait gave up: keep what was
-      // applied meanwhile so it can be replayed on top of that world.
-      state.recoveryReplay.push(Object.assign({}, frame));
-      while (state.recoveryReplay.length > 64) state.recoveryReplay.shift();
+      // applied meanwhile (pointer samples too) so it can be replayed on top of it.
+      state.recoveryReplay.push(Object.assign({ received_at: Date.now() }, frame));
+      while (state.recoveryReplay.length > 256) state.recoveryReplay.shift();
     }
+    if (frame.kind === 'pointer') return rememberPointer(frame);
     if (frame.kind === 'yarn_spawn' && world.yarn_active) return true;
     if (frame.kind === 'question_tap' || frame.kind === 'yarn_spawn') {
       world.yarn_active = true;
@@ -538,12 +544,12 @@
       state.dragAuthority = {
         actor: frame.actor,
         intentId: frame.intent_id,
-        samples: [{ x: frame.x_q16, y: frame.y_q16, at: Date.now() }]
+        samples: [{ x: frame.x_q16, y: frame.y_q16, at: intentTime(frame) }]
       };
     } else if (frame.kind === 'yarn_release') {
       var drag = state.dragAuthority;
       if (!drag || drag.actor !== frame.actor || world.yarn_holder !== holder) return false;
-      var velocity = releaseVelocity(drag, point);
+      var velocity = releaseVelocity(drag, point, intentTime(frame));
       world.yarn_holder = 'none';
       world.yarn_x_q16 = point.x_q16;
       world.yarn_y_q16 = point.y_q16;

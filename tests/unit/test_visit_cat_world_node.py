@@ -616,11 +616,24 @@ async function main() {
     type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
     intent_id: 80, x_q16: 33000, y_q16: 15000,
   });
+  // A slow drag made meanwhile keeps its real timing when replayed.
+  const peerIntent = (kind, intentId, x) => emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind,
+    intent_id: intentId, x_q16: x, y_q16: 15000,
+  });
+  peerIntent('yarn_grab', 81, 33000);
+  for (let step = 1; step <= 6; step += 1) {
+    await advance(100);
+    peerIntent('pointer', 81, 33000 + step * 160);
+  }
+  peerIntent('yarn_release', 82, 34000);
   emit('neko-visit-cat-world', Object.assign(worldFrame(305, 12345, 'commit'), { question_x_q16: 777 }));
-  await flush();
   const restored = win.NekoVisitCatWorld.snapshot().world;
   assert.equal(restored.question_x_q16, 777);
-  assert.equal(restored.yarn_x_q16, 33000);
+  assert.equal(restored.yarn_x_q16, 34000);
+  assert.equal(restored.yarn_holder, 'none');
+  assert.ok(Math.abs(restored.yarn_vx_q12) < 1000, String(restored.yarn_vx_q12));
+  await flush();
   const republished = calls.state.filter((item) => item.phase === 'commit').pop();
   assert.equal(republished.question_x_q16, 777);
   assert.ok(republished.world_seq > 321);
