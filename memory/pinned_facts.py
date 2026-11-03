@@ -88,6 +88,7 @@ from config.prompts.prompts_memory import (
     get_pinned_fact_resolve_prompt,
     get_pinned_facts_section_header,
     render_pinned_fact_line,
+    render_pinned_fact_removed_line,
 )
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json, robust_json_loads
@@ -287,6 +288,36 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _live_withdrawals(
+    history: List[Dict[str, Any]], now: float, *, actions: frozenset = frozenset({"remove"}),
+) -> List[Dict[str, Any]]:
+    """History records of ``actions`` whose retracted text has not expired yet.
+
+    Only records that carry the conversation time of the retracting account
+    (``noted_at``) count. Each comes back as ``{id, text, text_at,
+    withdrawn_at, action}``; a later record for the same id replaces an
+    earlier one.
+    """
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for record in history:
+        if not isinstance(record, dict) or record.get("action") not in actions:
+            continue
+        withdrawn_at = _as_float(record.get("noted_at"))
+        expire_at = _as_float(record.get("expire_at"))
+        entry_id, text = record.get("id"), record.get("text")
+        if (withdrawn_at is None or expire_at is None or expire_at <= now
+                or not isinstance(entry_id, str) or not isinstance(text, str)):
+            continue
+        by_id[(record["action"], entry_id)] = {
+            "id": entry_id,
+            "text": text,
+            "text_at": _as_float(record.get("text_at")) or withdrawn_at,
+            "withdrawn_at": withdrawn_at,
+            "action": record["action"],
+        }
+    return list(by_id.values())
+
+
 def _coerce_candidate_index(raw: Any, count: int) -> Optional[int]:
     """0-based index for a model-emitted 1-based candidate number, or None."""
     if isinstance(raw, bool):
@@ -457,6 +488,26 @@ class PinnedFactStore:
     async def aget_active(self, name: str, *, now: Optional[float] = None) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self.get_active, name, now=now)
 
+    def get_snapshot(
+        self, name: str, *, now: Optional[float] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """``(live entries, removed entries whose lifetime has not run out)``."""
+        if not name:
+            return [], []
+        ts = float(now if now is not None else _now())
+        with _file_lock(name):
+            facts, history = self._read_unlocked(name)
+        active = [dict(e) for e in facts if e["expire_at"] > ts]
+        live_ids = {e["id"] for e in active}
+        removed = [r for r in _live_withdrawals(history, ts) if r["id"] not in live_ids]
+        removed.sort(key=lambda r: r["withdrawn_at"], reverse=True)
+        return active, removed
+
+    async def aget_snapshot(
+        self, name: str, *, now: Optional[float] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        return await asyncio.to_thread(self.get_snapshot, name, now=now)
+
     def render_prompt_block(self, name: str, lang: str, *, now: Optional[float] = None) -> str:
         """The ``### `` section for the private-chat prompt; "" when nothing is live.
 
@@ -554,11 +605,28 @@ class PinnedFactStore:
                 {e["id"] for e in live if e["id"] not in expected_revs}
                 if expected_revs is not None else set()
             )
+            # Withdrawn entries: when the retracting account was given, by id
+            # (removals, for decisions the model matched to one) and by text
+            # (removals and replacements, for verbatim replays of what was
+            # retracted).
+            withdrawals = _live_withdrawals(history, ts, actions=frozenset({"remove", "replace"}))
+            retracted = {w["id"]: w["withdrawn_at"] for w in withdrawals if w["action"] == "remove"}
+            superseded: Dict[str, float] = {}
+            for w in withdrawals:
+                key = _text_key(w["text"])
+                superseded[key] = max(superseded.get(key, w["withdrawn_at"]), w["withdrawn_at"])
             touched: set[str] = set()
             for index, (candidate, (action, target_id)) in enumerate(zip(candidates, decisions)):
                 by_id = {e["id"]: e for e in live}
                 target = by_id.get(target_id) if target_id else None
-                if action in _TARGETED_ACTIONS:
+                noted = min(_as_float(candidate.get("noted_at")) or ts, ts)
+                lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
+                retracted_at = retracted.get(target_id) if target is None and target_id else None
+                if action in _TARGETED_ACTIONS and retracted_at is not None:
+                    # Matched to an entry that was withdrawn: an account given
+                    # before the withdrawal stays out, a later one is new.
+                    action = None if noted < retracted_at else ACTION_ADD
+                elif action in _TARGETED_ACTIONS:
                     outdated_view = expected_revs is not None and (
                         target is None
                         or (target_id not in touched
@@ -582,10 +650,14 @@ class PinnedFactStore:
                 if candidate.get("outdated") and action != ACTION_REMOVE:
                     # Its own lifetime is over: it may only retract an entry.
                     action = None
+                if (action == ACTION_ADD
+                        and noted < superseded.get(_text_key(candidate["text"]), float("-inf"))):
+                    # The very words a later account withdrew or replaced
+                    # (a delayed replay of Monday's "exam on Wednesday" after
+                    # Tuesday's "exam cancelled"): keep them out.
+                    action = None
                 if action == ACTION_ADD:
                     action, target = self._renew_instead_of_duplicate(candidate, live)
-                noted = min(_as_float(candidate.get("noted_at")) or ts, ts)
-                lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
                 if (action in (ACTION_REPLACE, ACTION_REMOVE) and target is not None
                         and noted < target["text_at"]):
                     # An older account never overrides the newer one it targets
@@ -598,7 +670,9 @@ class PinnedFactStore:
                     touched.add(entry["id"])
                     counts["added"] += 1
                 elif action == ACTION_REPLACE:
-                    history.append(self._history_record(target, "replace", ts))
+                    history.append(self._history_record(target, "replace", ts, noted_at=noted))
+                    key = _text_key(target["text"])
+                    superseded[key] = max(superseded.get(key, noted), noted)
                     target.update({
                         "text": candidate["text"],
                         "entity": candidate["entity"],
@@ -625,7 +699,10 @@ class PinnedFactStore:
                     touched.add(target["id"])
                     counts["renewed"] += 1
                 elif action == ACTION_REMOVE:
-                    history.append(self._history_record(target, "remove", ts))
+                    history.append(self._history_record(target, "remove", ts, noted_at=noted))
+                    retracted[target["id"]] = noted
+                    key = _text_key(target["text"])
+                    superseded[key] = max(superseded.get(key, noted), noted)
                     live = [e for e in live if e["id"] != target["id"]]
                     touched.discard(target["id"])
                     counts["removed"] += 1
@@ -675,14 +752,26 @@ class PinnedFactStore:
         }
 
     @staticmethod
-    def _history_record(entry: Dict[str, Any], action: str, ts: float) -> Dict[str, Any]:
-        return {
+    def _history_record(
+        entry: Dict[str, Any], action: str, ts: float, *, noted_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        record = {
             "id": entry["id"],
             "text": entry["text"],
             "entity": entry["entity"],
             "action": action,
             "at": ts,
         }
+        if noted_at is not None:
+            # A removal or replacement keeps when the retracting account was
+            # given and what it retracted, so an account from before it can be
+            # kept out (see _live_withdrawals).
+            record.update({
+                "noted_at": noted_at,
+                "text_at": entry["text_at"],
+                "expire_at": entry["expire_at"],
+            })
+        return record
 
     def clear(self, name: str) -> None:
         """Entry point for tests / manual clearing; keeps nothing, history included."""
@@ -743,15 +832,25 @@ class PinnedFactStore:
         while pending and rounds < PINNED_FACT_RESOLVE_ATTEMPTS:
             rounds += 1
             batch = [candidates[i] for i in pending]
-            active = await self.aget_active(name, now=ts)
-            if not active:
+            active, removed = await self.aget_snapshot(name, now=ts)
+            # A withdrawal only matters to candidates given before it.
+            removed = [
+                r for r in removed
+                if any(c["noted_at"] < r["withdrawn_at"] for c in batch)
+            ][:PINNED_FACT_MAX_ACTIVE]
+            if not active and not removed:
                 decisions: List[Tuple[Optional[str], Optional[str]]] = [
                     (ACTION_ADD, None) for _ in batch
                 ]
             else:
-                results = await self._aresolve_with_model(name, active, batch, now=ts)
+                results = await self._aresolve_with_model(
+                    name, active, batch, now=ts, removed=removed,
+                )
                 parsed = (
-                    parse_resolve_decisions(results, len(batch), {e["id"] for e in active})
+                    parse_resolve_decisions(
+                        results, len(batch),
+                        {e["id"] for e in active} | {r["id"] for r in removed},
+                    )
                     if results is not None else {}
                 )
                 resolved_by_model = resolved_by_model or bool(parsed)
@@ -811,6 +910,7 @@ class PinnedFactStore:
         candidates: List[Dict[str, Any]],
         *,
         now: float,
+        removed: Optional[List[Dict[str, Any]]] = None,
     ) -> Any:
         """One resolve-model call; the parsed JSON, or None on any failure."""
         from memory.thinking_llm import ainvoke_thinking
@@ -825,6 +925,7 @@ class PinnedFactStore:
             master_name = "master"
         prompt = await asyncio.to_thread(
             self._build_resolve_prompt, name, master_name, active, candidates, now,
+            removed or [],
         )
         try:
             set_call_type("memory_pinned_facts")
@@ -855,12 +956,13 @@ class PinnedFactStore:
         active: List[Dict[str, Any]],
         candidates: List[Dict[str, Any]],
         now: float,
+        removed: List[Dict[str, Any]],
     ) -> str:
         """The resolve prompt (token work, so callers run it off the event loop).
 
-        Input stays bounded: at most PINNED_FACT_MAX_ACTIVE entries plus
-        PINNED_FACT_MAX_CANDIDATES_PER_ROUND candidates, each text capped at
-        PINNED_FACT_TEXT_MAX_TOKENS.
+        Input stays bounded: at most PINNED_FACT_MAX_ACTIVE live and as many
+        withdrawn entries, plus PINNED_FACT_MAX_CANDIDATES_PER_ROUND
+        candidates, each text capped at PINNED_FACT_TEXT_MAX_TOKENS.
         """
         from utils.language_utils import (
             detect_prompt_language_with_ascii_fallback,
@@ -880,6 +982,16 @@ class PinnedFactStore:
             )
             for entry in active[:PINNED_FACT_MAX_ACTIVE]
         )
+        withdrawn = "\n".join(
+            f"[{record['id']}] " + render_pinned_fact_removed_line(
+                truncate_to_tokens(record["text"], PINNED_FACT_TEXT_MAX_TOKENS),
+                since=_format_moment(record["text_at"]),
+                removed=_format_moment(record["withdrawn_at"]),
+                lang=lang,
+            )
+            for record in removed[:PINNED_FACT_MAX_ACTIVE]
+        )
+        zone = "\n".join(part for part in (zone, withdrawn) if part)
         # Candidates carry their own dates too: the model must be able to tell
         # an older account of a matter from a newer one.
         listed = "\n".join(

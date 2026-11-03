@@ -458,21 +458,21 @@ def test_concurrent_first_admissions_are_reconciled(tmp_path, monkeypatch):
     # Cloud review #3598: two admissions into an empty section skip the model;
     # without a check both land, "exam Wednesday" next to "exam moved to Friday".
     store = _store(tmp_path)
-    real_snapshot = store.aget_active
+    real_snapshot = store.aget_snapshot
     snapshots = 0
 
     async def snapshot(name, *, now=None):
         nonlocal snapshots
         snapshots += 1
-        active = await real_snapshot(name, now=now)
+        snap = await real_snapshot(name, now=now)
         if snapshots == 1:
             # The other admission lands right after our (empty) snapshot.
             store.apply_decisions(
                 _NAME, [_candidate("主人下周三考试", 14)], [("add", None)], now=_T0,
             )
-        return active
+        return snap
 
-    monkeypatch.setattr(store, "aget_active", snapshot)
+    monkeypatch.setattr(store, "aget_snapshot", snapshot)
     prompts: list[str] = []
 
     async def model(api_config, prompt, *, timeout, call_label):
@@ -689,6 +689,87 @@ def test_an_older_account_never_overrides_a_newer_entry(tmp_path):
     assert (counts["removed"], counts["replaced"], counts["skipped"], counts["renewed"]) == (0, 0, 1, 1)
     [after] = store.get_active(_NAME, now=evening + 60)
     assert (after["text"], after["text_at"]) == ("主人的考试改到下周五", pytest.approx(evening))
+
+
+def _withdrawn_exam(store) -> dict:
+    """Sunday's exam entry, withdrawn by Tuesday's "exam cancelled"."""
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+    store.apply_decisions(_NAME, [_candidate("主人的考试取消了", 3, noted_at=_T0 + 2 * _DAY)],
+                          [("remove", exam["id"])], now=_T0 + 2 * _DAY)
+    assert store.get_active(_NAME, now=_T0 + 2 * _DAY) == []
+    return exam
+
+
+def test_a_removal_records_when_it_was_said(tmp_path):
+    store = _store(tmp_path)
+    exam = _withdrawn_exam(store)
+    [record] = [h for h in _read_file(tmp_path)["history"] if h["action"] == "remove"]
+    assert record["id"] == exam["id"]
+    assert record["noted_at"] == pytest.approx(_T0 + 2 * _DAY)
+    assert record["text_at"] == pytest.approx(_T0)
+    assert record["expire_at"] == pytest.approx(_T0 + 14 * _DAY)
+
+
+def test_a_verbatim_replay_of_a_withdrawn_entry_stays_out(tmp_path, monkeypatch):
+    # Greptile #3598: Monday's delayed "exam on Wednesday" lands after Tuesday's
+    # "exam cancelled" removed it. Even an empty section asks the model, and
+    # the exact words stay out whatever it answers.
+    store = _store(tmp_path)
+    _withdrawn_exam(store)
+    model = _install_model(monkeypatch, _Model([{"candidate": 1, "action": "add", "target": None}]))
+
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人下周三考试", 14)], noted_at=_T0 + _DAY, now=_T0 + 3 * _DAY,
+    ))
+
+    [prompt] = model.prompts
+    assert "主人下周三考试（记于 " in prompt and "撤销）" in prompt
+    assert (counts["added"], counts["skipped"]) == (0, 1)
+    assert store.get_active(_NAME, now=_T0 + 3 * _DAY) == []
+
+
+def test_a_withdrawn_entry_matched_by_the_model_is_settled_by_time(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    exam = _withdrawn_exam(store)
+    _install_model(monkeypatch, _Model([
+        {"candidate": 1, "action": "remove", "target": exam["id"]},
+        {"candidate": 2, "action": "replace", "target": exam["id"]},
+    ]))
+
+    # Worded differently, so only the model can match them to the withdrawn
+    # entry: the one from before the withdrawal stays out, the later one is new.
+    counts = asyncio.run(store.aadmit_extracted(_NAME, [
+        _pin("主人周三要考试", 14), _pin("主人又定了下周五考试", 14),
+    ], noted_at=_T0 + _DAY, now=_T0 + 3 * _DAY))
+    assert (counts["added"], counts["skipped"]) == (0, 2)
+
+    counts = store.apply_decisions(
+        _NAME, [_candidate("主人又定了下周五考试", 14, noted_at=_T0 + 3 * _DAY)],
+        [("replace", exam["id"])], now=_T0 + 3 * _DAY + 1,
+    )
+    assert counts["added"] == 1
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 3 * _DAY + 1)] == [
+        "主人又定了下周五考试",
+    ]
+
+
+def test_a_verbatim_replay_of_replaced_words_stays_out(tmp_path):
+    store = _store(tmp_path)
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+    store.apply_decisions(_NAME, [_candidate("主人的考试改到下周五", 14, noted_at=_T0 + 2 * _DAY)],
+                          [("replace", exam["id"])], now=_T0 + 2 * _DAY)
+
+    counts = store.apply_decisions(
+        _NAME, [_candidate("主人下周三考试", 14, noted_at=_T0 + _DAY)], [("add", None)],
+        now=_T0 + 3 * _DAY,
+    )
+
+    assert (counts["added"], counts["skipped"]) == (0, 1)
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 3 * _DAY)] == ["主人的考试改到下周五"]
 
 
 def test_resolve_prompt_dates_carry_the_time_of_day(tmp_path, monkeypatch):
@@ -1148,8 +1229,11 @@ def test_pinned_prompt_tables_cover_every_locale():
     from config.prompts import prompts_memory as pm
 
     for table in (pm.PINNED_FACTS_SECTION_HEADER, pm.PINNED_FACT_LINE,
-                  pm.PINNED_FACT_RESOLVE_PROMPT):
+                  pm.PINNED_FACT_REMOVED_LINE, pm.PINNED_FACT_RESOLVE_PROMPT):
         assert set(table) == _LOCALES
+    for lang, line in pm.PINNED_FACT_REMOVED_LINE.items():
+        rendered = line.format(text="T", since="2026-01-02 08:00", removed="2026-01-03 09:00")
+        assert "2026-01-02 08:00" in rendered and "2026-01-03 09:00" in rendered, lang
     for lang, line in pm.PINNED_FACT_LINE.items():
         rendered = line.format(text="T", since="2026-01-02", until="2026-03-04")
         assert "2026-01-02" in rendered and "2026-03-04" in rendered, lang

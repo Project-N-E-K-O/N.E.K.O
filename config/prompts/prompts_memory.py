@@ -4745,6 +4745,20 @@ PINNED_FACT_LINE = {
     "pt": "{text} (anotado em {since}, até {until})",
 }
 
+# A withdrawn entry, listed in the resolve prompt next to the live ones while
+# its lifetime lasts, so an account from before the withdrawal can be matched
+# to it and kept out.
+PINNED_FACT_REMOVED_LINE = {
+    "zh": "{text}（记于 {since}，已于 {removed} 撤销）",
+    "zh-TW": "{text}（記於 {since}，已於 {removed} 撤銷）",
+    "en": "{text} (noted {since}, withdrawn {removed})",
+    "ja": "{text}（{since} 記録、{removed} に取り消し済み）",
+    "ko": "{text} ({since} 기록, {removed}에 취소됨)",
+    "ru": "{text} (записано {since}, отменено {removed})",
+    "es": "{text} (anotado el {since}, retirado el {removed})",
+    "pt": "{text} (anotado em {since}, retirado em {removed})",
+}
+
 # Placeholders are substituted with str.replace in this order: {LANLAN_NAME},
 # {MASTER_NAME}, {TODAY}, then {ZONE} and {CANDIDATES} last, so a literal
 # placeholder inside an entry text is never expanded again.
@@ -4772,6 +4786,7 @@ PINNED_FACT_RESOLVE_PROMPT = {
 - add 的 target 写 null。
 - 拿不准是不是同一件事时选 add。
 - 候选的记录日期早于常驻区里同一件事的记录日期时，它是更早的说法：选 renew 指向那一条，不要 replace 或 remove。
+- 标着「已撤销」的条目已经不成立。候选如果说的是同一件事：记录时间早于撤销时间，就是撤销前的旧说法，选 remove 并在 target 填那条的 id，候选不会入区；晚于撤销时间，就当新的事选 add。
 - 每条候选只输出一个动作。
 
 只返回 JSON 数组，不要输出其他内容：
@@ -4802,6 +4817,7 @@ PINNED_FACT_RESOLVE_PROMPT = {
 - add 的 target 寫 null。
 - 拿不準是不是同一件事時選 add。
 - 候選的記錄日期早於常駐區裡同一件事的記錄日期時，它是更早的說法：選 renew 指向那一條，不要 replace 或 remove。
+- 標著「已撤銷」的條目已經不成立。候選如果說的是同一件事：記錄時間早於撤銷時間，就是撤銷前的舊說法，選 remove 並在 target 填那條的 id，候選不會入區；晚於撤銷時間，就當新的事選 add。
 - 每條候選只輸出一個動作。
 
 只回傳 JSON 陣列，不要輸出其他內容：
@@ -4832,6 +4848,7 @@ Rules:
 - add uses null as target.
 - When unsure whether it is the same matter, choose add.
 - If a candidate was noted earlier than the section's entry about the same matter, it is the older account: choose renew on that entry, never replace or remove.
+- Entries marked as withdrawn no longer hold. If a candidate is about the same matter: noted before the withdrawal, it is the account from before it, so choose remove with that entry's id as target and the candidate stays out; noted after the withdrawal, treat it as new and choose add.
 - Output exactly one action per candidate.
 
 Return only a JSON array and nothing else:
@@ -4862,6 +4879,7 @@ Return only a JSON array and nothing else:
 - add の target は null。
 - 同じ件かどうか迷ったら add を選ぶ。
 - 候補の記録日が、エリア内の同じ件の記録日より前なら、それは古い言い方なので、その項目に renew を選び、replace や remove は選ばない。
+- 「取り消し済み」と付いた項目はもう成り立たない。候補が同じ件なら、記録が取り消しより前なら取り消し前の古い言い方なので remove を選び target にその項目の id を入れる（候補は入らない）。取り消しより後なら新しい件として add を選ぶ。
 - 候補一つにつき動作は一つだけ出力する。
 
 JSON 配列だけを返し、ほかには何も出力しないでください：
@@ -4892,6 +4910,7 @@ JSON 配列だけを返し、ほかには何も出力しないでください：
 - add의 target은 null.
 - 같은 일인지 애매하면 add를 고름.
 - 후보의 기록일이 구역 안 같은 일의 기록일보다 이르면 그것은 예전의 말이므로, 그 항목에 renew를 고르고 replace나 remove는 고르지 않음.
+- "취소됨" 표시가 있는 항목은 더 이상 성립하지 않음. 후보가 같은 일이라면, 기록이 취소보다 이르면 취소 전의 예전 말이므로 remove를 고르고 target에 그 항목의 id를 넣음(후보는 들어가지 않음). 취소보다 늦으면 새로운 일로 보고 add를 고름.
 - 후보 하나당 동작은 하나만 출력.
 
 JSON 배열만 반환하고 다른 내용은 출력하지 마세요:
@@ -4922,6 +4941,7 @@ JSON 배열만 반환하고 다른 내용은 출력하지 마세요:
 - для add в target пиши null.
 - если не уверен, то же ли это самое, выбирай add.
 - если кандидат записан раньше, чем запись раздела о том же самом, это более старая версия: выбери renew для той записи, но не replace и не remove.
+- записи с пометкой «отменено» больше не актуальны. Если кандидат о том же самом: записан раньше отмены — это версия до неё, выбери remove с id этой записи в target, кандидат не добавляется; записан позже отмены — считай это новым и выбирай add.
 - на каждого кандидата выведи ровно одно действие.
 
 Верни только JSON-массив и больше ничего:
@@ -4952,6 +4972,7 @@ Reglas:
 - add lleva null en target.
 - Si dudas de si es el mismo asunto, elige add.
 - Si un candidato se anotó antes que la entrada de la sección sobre el mismo asunto, es la versión anterior: elige renew sobre esa entrada, nunca replace ni remove.
+- Las entradas marcadas como retiradas ya no son ciertas. Si un candidato trata del mismo asunto: si se anotó antes de la retirada, es la versión previa, así que elige remove con el id de esa entrada en target y el candidato no entra; si se anotó después, trátalo como nuevo y elige add.
 - Da exactamente una acción por candidato.
 
 Devuelve solo un array JSON y nada más:
@@ -4982,6 +5003,7 @@ Regras:
 - add usa null em target.
 - Na dúvida se é o mesmo assunto, escolha add.
 - Se um candidato foi anotado antes da entrada da seção sobre o mesmo assunto, é a versão mais antiga: escolha renew para essa entrada, nunca replace nem remove.
+- As entradas marcadas como retiradas não valem mais. Se um candidato for sobre o mesmo assunto: anotado antes da retirada, é a versão anterior, então escolha remove com o id dessa entrada em target e o candidato não entra; anotado depois, trate como novo e escolha add.
 - Dê exatamente uma ação por candidato.
 
 Retorne apenas um array JSON e nada mais:
@@ -4999,6 +5021,11 @@ def get_pinned_facts_section_header(lang: str = "zh") -> str:
 def render_pinned_fact_line(text: str, *, since: str, until: str, lang: str = "zh") -> str:
     """One entry of the pinned section, without its list marker or id prefix."""
     return _loc(PINNED_FACT_LINE, lang).format(text=text, since=since, until=until)
+
+
+def render_pinned_fact_removed_line(text: str, *, since: str, removed: str, lang: str = "zh") -> str:
+    """One withdrawn entry for the resolve prompt, without its id prefix."""
+    return _loc(PINNED_FACT_REMOVED_LINE, lang).format(text=text, since=since, removed=removed)
 
 
 def get_pinned_fact_resolve_prompt(lang: str = "zh") -> str:
