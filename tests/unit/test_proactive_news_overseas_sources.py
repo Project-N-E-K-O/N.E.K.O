@@ -927,6 +927,25 @@ def test_unmatched_pick_from_grounded_news_source_is_recognized():
 
 
 @pytest.mark.unit
+def test_linkless_sections_keep_unmatched_picks_usable():
+    links = [
+        {"title": "Binance", "url": "https://twitter.com/search?q=Binance", "source": "Twitter",
+         "mode": "news", "grounded_news": True},
+    ]
+    linkless = ["Window search"]
+
+    # Window search renders text without links, so its picks never match a
+    # link; they must keep the title-only path instead of being dropped.
+    assert not _unmatched_pick_may_be_grounded_news("Window search", links, linkless_sources=linkless)
+    assert not _unmatched_pick_may_be_grounded_news("search results", links, linkless_sources=linkless)
+    assert not _unmatched_pick_may_be_grounded_news("", links, linkless_sources=linkless)
+    # A pick that names grounded news is still skipped.
+    assert _unmatched_pick_may_be_grounded_news("Twitter", links, linkless_sources=linkless)
+    # Without linkless sections the stricter rule applies.
+    assert _unmatched_pick_may_be_grounded_news("search results", links, linkless_sources=[])
+
+
+@pytest.mark.unit
 def test_rounds_without_grounded_news_keep_title_only_path():
     china_links = [
         {"title": "微博话题", "url": "https://s.weibo.com/1", "source": "微博", "mode": "news"},
@@ -960,6 +979,9 @@ def test_service_skips_unmatched_grounded_news_picks():
         and any(call in ast.walk(node.test) for call in calls)
     )
     assert "matched is None" in ast.unparse(branch.test)
+    # Linkless sections (window search) must be passed so their picks survive.
+    assert any(kw.arg == "linkless_sources" for call in calls for kw in call.keywords)
+    assert "phase1_linkless_labels.append(label)" in source
     assert "跳过" in ast.unparse(branch.body[0])
 
 
