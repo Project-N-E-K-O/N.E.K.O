@@ -253,6 +253,34 @@ def test_plan_rejects_readonly_and_unknown_numbers_and_counts_them():
     assert plan.persona[0]['entity'] == 'master'
 
 
+def test_plan_rejects_a_reflection_merge_across_entities():
+    """A merge would file one subject's reflection under another's."""
+    from memory.introspection import AnnotatedLine, KIND_REFLECTION, plan_actions
+
+    lines = {
+        1: AnnotatedLine(1, KIND_REFLECTION, 'c1', 'master', '主人爱喝茶', False),
+        2: AnnotatedLine(2, KIND_REFLECTION, 'c2', 'relationship', '两人常一起喝茶', False),
+        3: AnnotatedLine(3, KIND_REFLECTION, 'c3', 'master', '主人每天喝茶', False),
+    }
+    plan = plan_actions([
+        {'action': 'merge', 'ids': [1, 2], 'text': 'x', 'reason': 'r'},
+        {'action': 'merge', 'ids': [1, 3], 'text': '主人每天都喝茶', 'reason': 'r'},
+    ], lines, max_actions=15)
+
+    assert plan.rejected == {'cross_section': 1}
+    assert [a['targets'] for a in plan.reflection] == [[('c1', '主人爱喝茶'), ('c3', '主人每天喝茶')]]
+
+
+def test_annotator_records_the_reflection_entity():
+    from memory.introspection import KIND_REFLECTION, RenderAnnotator
+
+    annotator = RenderAnnotator()
+    annotator.tag(KIND_REFLECTION, {'id': 'c1', 'text': 't', 'entity': 'relationship'})
+    annotator.tag(KIND_REFLECTION, {'id': 'c2', 'text': 't'})
+
+    assert [line.entity for line in annotator.lines.values()] == ['relationship', None]
+
+
 def test_plan_keeps_the_checklist_issue_of_a_suppress():
     from memory.introspection import plan_actions
 
@@ -1383,14 +1411,18 @@ async def test_lines_cut_by_the_input_budget_cannot_be_acted_on(tmp_path):
 
 
 def test_shown_lines_accept_text_printed_stripped():
-    """The do-not-mention section prints the stripped text; an entry stored
-    with surrounding spaces is still fully shown."""
+    """An entry stored with surrounding spaces is fully shown both where the
+    render prints it as stored and in the do-not-mention section, which
+    prints it stripped."""
     from memory.introspection import AnnotatedLine, KIND_PERSONA, _shown_lines
 
-    lines = {7: AnnotatedLine(7, KIND_PERSONA, 'r2', 'relationship', '  主人常在深夜找她聊天 ', False)}
-    shown = _shown_lines("### 暂不主动提及\n- [7] 主人常在深夜找她聊天", lines)
+    lines = {
+        6: AnnotatedLine(6, KIND_PERSONA, 'm1', 'master', '  主人住在海边', False),
+        7: AnnotatedLine(7, KIND_PERSONA, 'r2', 'relationship', '  主人常在深夜找她聊天 ', False),
+    }
+    text = "- [6]   主人住在海边\n### 暂不主动提及\n- [7] 主人常在深夜找她聊天"
 
-    assert set(shown) == {7}
+    assert set(_shown_lines(text, lines)) == {6, 7}
 
 
 def test_shown_lines_read_only_the_text_under_each_tag():
@@ -1407,6 +1439,20 @@ def test_shown_lines_read_only_the_text_under_each_tag():
     text = "- [1] \n- [2] 主人喜\n- [3] 主人喜欢猫和狗\n- [4] [上周] 主人住在海边"
 
     assert set(_shown_lines(text, lines)) == {3, 4}
+
+
+def test_numbered_list_inside_an_entry_does_not_hide_it():
+    """An entry whose own text holds a numbered list stays reviewable."""
+    from memory.introspection import AnnotatedLine, KIND_PERSONA, _shown_lines
+
+    steps = '睡前流程：\n- [1] 先洗漱\n- [2] 再道晚安'
+    lines = {
+        1: AnnotatedLine(1, KIND_PERSONA, 'm0', 'master', '主人爱喝茶', False),
+        5: AnnotatedLine(5, KIND_PERSONA, 'm4', 'master', steps, False),
+    }
+    text = f"- [1] 主人爱喝茶\n- [5] {steps}\n"
+
+    assert set(_shown_lines(text, lines)) == {1, 5}
 
 
 def test_entry_text_cannot_close_the_memory_block():

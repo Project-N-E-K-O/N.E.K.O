@@ -157,7 +157,8 @@ class AnnotatedLine:
     number: int
     kind: str
     entry_id: str
-    # Persona section key; None for reflections.
+    # Persona section key, or the reflection's own ``entity`` as stored. A
+    # merge never spans two (promotion merges reflections the same way).
     entity: str | None
     # Raw entry text at render time — the apply step refuses to touch an
     # entry whose text has changed since the model saw it.
@@ -191,7 +192,10 @@ class RenderAnnotator:
     def tag(self, kind: str, entry: dict) -> str:
         number = len(self.lines) + 1
         entry_id = str(entry.get('id') or '')
-        entity = self._section_of.get(id(entry)) if kind == KIND_PERSONA else None
+        if kind == KIND_PERSONA:
+            entity = self._section_of.get(id(entry))
+        else:
+            entity = entry.get('entity')
         readonly = (
             bool(entry.get('protected'))
             or not entry_id
@@ -254,6 +258,8 @@ _NUMBER_RE = re.compile(r'\d+')
 _DELIMITER_RUN_RE = re.compile(r'={6,}')
 # A numbered bullet as the render writes it: the tag opens its own line.
 _TAG_LINE_RE = re.compile(r'(?m)^[ \t]*- \[(\d+)( RO)?\] ')
+# The time label older reflections carry between the tag and the text.
+_TIME_LABEL_RE = re.compile(r'\[[^\]\n]*\] ')
 
 
 def _parse_number(raw) -> int | None:
@@ -326,7 +332,7 @@ def plan_actions(
             plan.rejected[REJECT_CROSS_KIND] += 1
             continue
         kind = targets[0].kind
-        if kind == KIND_PERSONA and len({line.entity for line in targets}) > 1:
+        if len({line.entity for line in targets}) > 1:
             plan.rejected[REJECT_CROSS_SECTION] += 1
             continue
         used.update(numbers)
@@ -442,20 +448,22 @@ def _shown_lines(
     """The numbered lines whose tag and whole text made it into the prompt.
 
     A line cut off by the input budget, or cut in half, is not offered to
-    the model's actions: it judged at most part of that text. The text is
-    looked for only between its tag and the next one, so neither the tag's
-    own digits nor the same words in a later line pass for it.
+    the model's actions: it judged at most part of that text. The text must
+    follow its tag directly (after the time label older reflections carry),
+    so neither the tag's own digits nor the same words in a later line pass
+    for it, and a numbered list inside an entry's own text does not cut the
+    entry short.
     """
-    tags = list(_TAG_LINE_RE.finditer(memory_text))
     shown: dict[int, AnnotatedLine] = {}
-    for i, match in enumerate(tags):
+    for match in _TAG_LINE_RE.finditer(memory_text):
         line = lines.get(int(match.group(1)))
         if line is None:
             continue
-        end = tags[i + 1].start() if i + 1 < len(tags) else len(memory_text)
-        body = memory_text[match.end():end]
+        rest = memory_text[match.end():]
+        label = _TIME_LABEL_RE.match(rest)
+        starts = (rest, rest[label.end():]) if label else (rest,)
         # The do-not-mention section prints the stripped text.
-        if line.text.strip() in body:
+        if any(start.lstrip().startswith(line.text.strip()) for start in starts):
             shown[line.number] = line
     return shown
 
