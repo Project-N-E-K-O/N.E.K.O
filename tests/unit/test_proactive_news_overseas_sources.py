@@ -976,7 +976,10 @@ def test_service_skips_unmatched_grounded_news_picks():
     import ast
     from pathlib import Path as _Path
 
-    source = _Path("main_logic/proactive_chat/service.py").read_text(encoding="utf-8")
+    repo_root = _Path(__file__).resolve().parents[2]
+    source = (repo_root / "main_logic" / "proactive_chat" / "service.py").read_text(
+        encoding="utf-8"
+    )
     tree = ast.parse(source)
     calls = [
         node for node in ast.walk(tree)
@@ -991,12 +994,30 @@ def test_service_skips_unmatched_grounded_news_picks():
         and any(call in ast.walk(node.test) for call in calls)
     )
     assert "matched is None" in ast.unparse(branch.test)
-    # Linkless sections (window search) must be passed so their picks survive.
-    keywords = {kw.arg for call in calls for kw in call.keywords}
-    assert {"title", "linkless_labels", "linkless_records"} <= keywords
-    assert "phase1_linkless_labels.append(label)" in source
-    assert "phase1_linkless_records.extend(fallback_lines)" in source
-    assert "跳过" in ast.unparse(branch.body[0])
+    # Linkless sections (window search) must be passed with the collected
+    # values, not placeholders such as [], so their picks survive.
+    passed = {kw.arg: ast.unparse(kw.value) for call in calls for kw in call.keywords}
+    assert passed.get("title") == "web_parsed.get('title')"
+    assert passed.get("linkless_labels") == "phase1_linkless_labels"
+    assert passed.get("linkless_records") == "phase1_linkless_records"
+
+    # Both collections are filled where fallback text sections are rendered.
+    def _fills(name: str, method: str) -> bool:
+        return any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == method
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == name
+            for node in ast.walk(tree)
+        )
+
+    assert _fills("phase1_linkless_labels", "append")
+    assert _fills("phase1_linkless_records", "extend")
+    # The branch skips the pick: it neither selects a link nor records a topic.
+    branch_body = ast.unparse(ast.Module(body=branch.body, type_ignores=[]))
+    assert "selected_web_link" not in branch_body
+    assert "phase1_topics" not in branch_body
 
 
 @pytest.mark.unit
