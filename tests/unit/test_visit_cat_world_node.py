@@ -96,6 +96,8 @@ async function main() {
   let refuseThenStaleSame = false;
   let refusedIntent = 0;
   const storage = new Map();
+  let staleStateCursor = 0;
+  let stateGate = null;
 
   function schedule(fn, delay, interval) {
     const id = nextTimer++;
@@ -202,6 +204,12 @@ async function main() {
       sendState(payload) {
         calls.state.push(JSON.parse(JSON.stringify(payload)));
         stateResponses += 1;
+        if (staleStateCursor) {
+          const cursor = staleStateCursor;
+          staleStateCursor = 0;
+          const reply = { stale: true, current_world_seq: cursor };
+          return stateGate ? stateGate.then(() => reply) : Promise.resolve(reply);
+        }
         if (failStates > 0) {
           failStates -= 1;
           return Promise.resolve(false);
@@ -586,6 +594,43 @@ async function main() {
   await advance(2000);
   await flush();
   assert.ok(calls.intent.slice(beforeNextVisit).some((item) => item.kind === 'yarn_release'));
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+
+  // Host reload whose saved world arrives only after the wait gave up, and
+  // below the runtime cursor (a later frame moved it): it still wins.
+  lifecycle('departed', 'host');
+  staleStateCursor = 300;
+  await advance(181);
+  await flush();
+  const lateBefore = calls.state.length;
+  await advance(1100);
+  await flush();
+  assert.ok(calls.state.slice(lateBefore).some((item) => item.phase === 'commit' && item.world_seq === 301));
+  emit('neko-visit-cat-world', worldFrame(290, 12345, 'commit'));
+  await flush();
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 12345);
+  const republished = calls.state.filter((item) => item.phase === 'commit').pop();
+  assert.equal(republished.yarn_x_q16, 12345);
+  assert.ok(republished.world_seq > 301);
+
+  // A stale commit that is retried resends the world as it is now.
+  let releaseGate;
+  stateGate = new Promise((resolve) => { releaseGate = resolve; });
+  staleStateCursor = 1;
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
+    intent_id: 70, x_q16: 11000, y_q16: 15000,
+  });
+  await flush();
+  const gatedBefore = calls.state.length;
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
+    intent_id: 71, x_q16: 22000, y_q16: 15000,
+  });
+  releaseGate();
+  stateGate = null;
+  await flush();
+  assert.equal(calls.state[gatedBefore].yarn_x_q16, 22000);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   process.stdout.write(JSON.stringify({

@@ -107,6 +107,7 @@
     heldReleaseInFlight: false,
     recoveryWaitTimer: 0,
     recoveryWaitSeq: 0,
+    recoveryCursor: 0,
     lastTickAt: 0,
     drag: null,
     dragAuthority: null,
@@ -599,6 +600,8 @@
         }
         if (!item.retried) {
           item.retried = true;
+          // Resend what the world is now, not the snapshot taken before.
+          item.snapshot = stateSnapshotForWire();
           state.outbound.unshift(item);
         }
       } else if (!(result && result.ok === true) && item.phase === 'commit'
@@ -617,12 +620,18 @@
     });
   }
 
+  // recoveryCursor stays after the wait times out: every world frame at or
+  // below it is the runtime's saved world, never this page's own echo (this
+  // page only publishes above it), so a late recovery still replaces the default.
   function waitForRecovery(seq) {
     state.recoveryWaitSeq = seq;
+    state.recoveryCursor = Math.max(state.recoveryCursor, seq);
     if (state.recoveryWaitTimer) clearTimeout(state.recoveryWaitTimer);
     state.recoveryWaitTimer = setTimeout(function () {
       state.recoveryWaitTimer = 0;
       state.recoveryWaitSeq = 0;
+      var waiting = state.outbound[0];
+      if (waiting) waiting.snapshot = stateSnapshotForWire();
       drainOutbound();
       applyPendingIntents();
     }, RECOVERY_WAIT_MS);
@@ -632,6 +641,7 @@
     if (state.recoveryWaitTimer) clearTimeout(state.recoveryWaitTimer);
     state.recoveryWaitTimer = 0;
     state.recoveryWaitSeq = 0;
+    state.recoveryCursor = 0;
     // Everything queued was computed from the world the recovery replaced.
     state.outbound = [];
   }
@@ -830,20 +840,22 @@
   }
 
   function applyWorldFrame(frame) {
-    if (!state.active || !validWorldFrame(frame) || frame.world_seq <= state.lastAppliedWorldSeq) return false;
+    if (!state.active || !validWorldFrame(frame)) return false;
+    var recovery = state.side === 'host' && state.recoveryCursor > 0
+      && frame.world_seq <= state.recoveryCursor;
+    if (!recovery && frame.world_seq <= state.lastAppliedWorldSeq) return false;
     var previousCollision = state.world.collision_seq;
     var previousPublished = state.publishedWorldSeq;
-    state.lastAppliedWorldSeq = frame.world_seq;
+    state.lastAppliedWorldSeq = Math.max(state.lastAppliedWorldSeq, frame.world_seq);
     state.publishedWorldSeq = Math.max(state.publishedWorldSeq, frame.world_seq);
     // A host sees both its own transport echo and cached recovery commits.  A
     // frame no newer than what this controller already published is an echo;
     // a higher cursor is authoritative recovery and must replace the default
     // world even if it arrived after the short replay wait.
-    var awaitedRecovery = state.recoveryWaitSeq && frame.world_seq >= state.recoveryWaitSeq;
     if (state.side === 'host' && state.simulationStarted
-        && frame.world_seq <= previousPublished && !awaitedRecovery) return true;
-    if (awaitedRecovery) endRecoveryWait();
-    var applyHeldIntents = awaitedRecovery && state.simulationStarted;
+        && frame.world_seq <= previousPublished && !recovery) return true;
+    if (recovery) endRecoveryWait();
+    var settleRecovery = recovery && state.simulationStarted;
     state.world = {
       world_seq: frame.world_seq,
       yarn_active: frame.yarn_active,
@@ -870,8 +882,10 @@
       && state.world.yarn_y_q16 >= Q16_MAX - state.settings.floorInsetQ16;
     if (frame.collision_seq !== previousCollision) pulseCollision('');
     renderWorld();
-    if (releasedGrab && state.simulationStarted) publish('commit');
-    if (applyHeldIntents) applyPendingIntents();
+    // A recovery that came after the wait gave up may already sit below this
+    // page's default commit in the runtime: publish the restored world again.
+    if ((releasedGrab || settleRecovery) && state.simulationStarted) publish('commit');
+    if (settleRecovery) applyPendingIntents();
     watchHeldYarn(true);
     return true;
   }
@@ -926,6 +940,7 @@
     state.heldReleaseAttempts = 0;
     state.recoveryWaitTimer = 0;
     state.recoveryWaitSeq = 0;
+    state.recoveryCursor = 0;
     if (state.layer) state.layer.classList.remove('is-collision');
   }
 
