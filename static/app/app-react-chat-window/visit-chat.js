@@ -2269,6 +2269,20 @@
         await decideDirectInvitation(String(payload.decision || ''));
     }
 
+    async function deliverLegacyInvitationQuestion(presentation, visitId, catgirl) {
+        presentation.questionAttempted = true;
+        presentation.deliveryInFlight = true;
+        try {
+            var delivered = await api('POST', '/api/visit/direct/' + encodeURIComponent(visitId) + '/deliver-question', {
+                catgirl: catgirl
+            });
+            presentation.questionDelivered = delivered.status === 200 && delivered.body && delivered.body.delivered === true;
+        } finally {
+            presentation.deliveryInFlight = false;
+            if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) void reconcileRealtimeInvitations();
+        }
+    }
+
     /** 把喵宇宙定向邀请变成当前猫娘的一条聊天提问，而不是悬浮窗卡片。 */
     async function presentDirectInvitation(incoming) {
         if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) {
@@ -2280,6 +2294,11 @@
         var notificationId = String(incoming.notification_id || incoming.id || '');
         if (!isUiWindow() || !releaseEnabled || !userSwitchOn()
                 || !VISIT_ID_RE.test(visitId) || !notificationId) return false;
+        var accountAtStart = String(realtimeInvitationState && realtimeInvitationState.accountKey || '');
+        function stillLegacyOwner() {
+            return !(realtimeInvitationState && realtimeInvitationState.realtimeEnabled)
+                && String(realtimeInvitationState && realtimeInvitationState.accountKey || '') === accountAtStart;
+        }
         if (resolvedDirectInvitationIds.has(notificationId)) {
             await markDirectInviteRead(notificationId);
             return true;
@@ -2307,11 +2326,7 @@
             } else {
                 render();
                 if (!pendingDirectInvitation.questionDelivered) {
-                    var retried = await api('POST', '/api/visit/direct/' + encodeURIComponent(visitId) + '/deliver-question', {
-                        catgirl: catgirl
-                    });
-                    pendingDirectInvitation.questionDelivered = retried.status === 200
-                        && retried.body && retried.body.delivered === true;
+                    await deliverLegacyInvitationQuestion(pendingDirectInvitation, visitId, catgirl);
                 }
                 return true;
             }
@@ -2320,13 +2335,14 @@
         try {
             // 先由 Connect 用当前登录账号核验定向房间；聊天里不展示伪造或已失效的通知。
             var preview = await api('GET', '/api/visit/direct/' + encodeURIComponent(visitId) + '/preview');
+            if (currentCatgirl() !== catgirl || !stillLegacyOwner()) return false;
             if (preview.status !== 200 || !preview.body || String(preview.body.visit_id || '') !== visitId) {
                 if (preview.status === 410) await markDirectInviteRead(notificationId);
                 return false;
             }
-            if (currentCatgirl() !== catgirl) return false;
             var payload = {
                 notification_id: notificationId,
+                account_key: accountAtStart,
                 actor_id: String(incoming.actor_id || incoming.actorId || ''),
                 visit_id: visitId,
                 expires_at: Number(incoming.expires_at || incoming.expiresAt) || Number(preview.body.expires_at) || 0,
@@ -2339,20 +2355,18 @@
             if (generated.status !== 200 || !generated.body || !String(generated.body.question || '').trim()) {
                 return false;
             }
-            if (currentCatgirl() !== catgirl) return false;
-            pendingDirectInvitation = {
+            if (currentCatgirl() !== catgirl || !stillLegacyOwner()) return false;
+            var presentation = {
                 messageId: messageId, payload: payload, busy: false, questionDelivered: false
             };
+            pendingDirectInvitation = presentation;
             render();
             refreshCompactGeometry();
-            var delivered = await api('POST', '/api/visit/direct/' + encodeURIComponent(visitId) + '/deliver-question', {
-                catgirl: catgirl
-            });
-            pendingDirectInvitation.questionDelivered = delivered.status === 200
-                && delivered.body && delivered.body.delivered === true;
+            await deliverLegacyInvitationQuestion(presentation, visitId, catgirl);
             return true;
         } finally {
             directInvitationPresenting.delete(messageId);
+            if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) void reconcileRealtimeInvitations();
         }
     }
 
@@ -2453,7 +2467,7 @@
         } else if (!snapshot.realtimeEnabled && isUiWindow() && !legacyInvitationTimer) {
             legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
         }
-        if (snapshot.realtimeEnabled || pendingDirectInvitation && pendingDirectInvitation.payload.invitation_id) {
+        if (snapshot.realtimeEnabled || pendingDirectInvitation) {
             void reconcileRealtimeInvitations();
         }
     }
@@ -2463,6 +2477,7 @@
         var snapshot = realtimeInvitationState;
         if (!snapshot) return false;
         var items = Array.isArray(snapshot.items) ? snapshot.items : [];
+        var legacyItem = null, legacyAttempted = false, legacyConfirmed = false;
         if (pendingDirectInvitation && pendingDirectInvitation.payload.invitation_id) {
             var old = pendingDirectInvitation.payload;
             var stillPending = snapshot.accountKey === old.account_key && items.some(function (i) {
@@ -2470,17 +2485,46 @@
             });
             if (!stillPending) { pendingDirectInvitation = null; render(); refreshCompactGeometry(); }
         }
+        else if (pendingDirectInvitation) {
+            var legacy = pendingDirectInvitation;
+            var sameAccount = !legacy.payload.account_key || legacy.payload.account_key === snapshot.accountKey;
+            if (snapshot.realtimeEnabled) {
+                legacyItem = sameAccount && items.find(function (i) {
+                    return i.actionable && i.notification_id === legacy.payload.notification_id
+                        && i.visit_id === legacy.payload.visit_id;
+                });
+                if (legacyItem) {
+                    if (legacy.deliveryInFlight) return false;
+                    legacyConfirmed = !!legacy.questionDelivered;
+                    legacyAttempted = !!(legacy.questionAttempted || legacyConfirmed);
+                }
+            }
+            if (!sameAccount || snapshot.realtimeEnabled && !legacyItem) {
+                // Withdrawing a stale toolbar is not a user decision or a read
+                // receipt. Never send either action under the replacement account.
+                pendingDirectInvitation = null; render(); refreshCompactGeometry();
+            }
+        }
         if (!snapshot.realtimeEnabled || !releaseEnabled || !userSwitchOn() || inVisit()) return false;
-        var item = items.find(function (i) { return i.actionable; });
+        var handoff = pendingDirectInvitation && pendingDirectInvitation.legacyDelivery
+            && items.find(function (i) { return i.id === pendingDirectInvitation.payload.invitation_id && i.actionable; });
+        var item = legacyItem || handoff || items.find(function (i) { return i.actionable; });
         var catgirl = currentCatgirl();
         if (!item || !catgirl || !getHost()) return false;
         // A delivered/delivering question still leaves a decision in the toolbar,
         // including after a renderer/process restart or a character switch.
         if (!pendingDirectInvitation || pendingDirectInvitation.payload.invitation_id !== item.id) {
             pendingDirectInvitation = { messageId: directInviteMessageId(item.id),
-                payload: realtimePayload(item, snapshot), busy: false, questionDelivered: !item.promptEligible };
+                payload: realtimePayload(item, snapshot), busy: false, questionDelivered: legacyConfirmed || !item.promptEligible,
+                legacyDelivery: legacyAttempted ? { confirmed: legacyConfirmed } : null };
             render(); refreshCompactGeometry();
-        } else pendingDirectInvitation.payload.catgirl = catgirl;
+        } else {
+            pendingDirectInvitation.payload.catgirl = catgirl;
+            if (pendingDirectInvitation.legacyDelivery) {
+                legacyAttempted = true;
+                legacyConfirmed = pendingDirectInvitation.legacyDelivery.confirmed;
+            }
+        }
         if (!item.promptEligible) return true;
         realtimeInvitationFlight = true;
         var bridge = window.nekoSocial;
@@ -2496,6 +2540,19 @@
         try {
             claim = await bridge.claimInvitation(item.id, snapshot.generation);
             if (!claim || !claim.ok || !current()) return false;
+            if (legacyAttempted) {
+                // Adopt a pre-takeover HTTP side effect into the owner's durable
+                // delivery state. An uncertain attempt must not generate a second question.
+                var adopted = await bridge.beginInvitationDelivery(item.id, claim.token, snapshot.generation);
+                if (!adopted || !adopted.ok) return false;
+                delivering = true;
+                if (!current()) return false;
+                if (pendingDirectInvitation && pendingDirectInvitation.payload.invitation_id === item.id) {
+                    pendingDirectInvitation.legacyDelivery = null;
+                }
+                if (legacyConfirmed) await bridge.completeInvitationDelivery(item.id, claim.token, snapshot.generation);
+                return true;
+            }
             var preview = await realtimeInvitationApi('GET', '/api/visit/direct/' + encodeURIComponent(item.visit_id) + '/preview', item);
             if (!current()) return false;
             if (connectInvitationInvalid(preview)) {

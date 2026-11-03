@@ -128,14 +128,16 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     )]
     assert "refreshCompactGeometry();" in present_direct
     assert "type: 'buttons'" not in present_direct
-    assert "'/deliver-question'" in present_direct
+    deliver_legacy = chat[chat.index("async function deliverLegacyInvitationQuestion") : chat.index("async function presentDirectInvitation")]
+    assert "'/deliver-question'" in deliver_legacy
+    assert "await deliverLegacyInvitationQuestion(presentation, visitId, catgirl)" in present_direct
     assert "host.appendMessage({" not in present_direct
     assert "host.updateMessage(" not in present_direct
     assert "host.openWindow()" not in present_direct
     assert "messageId: messageId, payload: payload, busy: false, questionDelivered: false" in present_direct
     assert "catgirl: catgirl" in present_direct
     assert "currentCatgirl() !== catgirl" in present_direct
-    assert present_direct.index("/question?catgirl=") < present_direct.rindex("/deliver-question")
+    assert present_direct.index("/question?catgirl=") < present_direct.rindex("await deliverLegacyInvitationQuestion(presentation")
     assert "directInvitationExpired(payload)" in direct_action
     assert "connectInvitationInvalid(result)" in direct_action
     invalid_result = chat.split("function connectInvitationInvalid(result)", 1)[1].split(

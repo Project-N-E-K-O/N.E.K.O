@@ -246,6 +246,69 @@ const report = {};
     }
   }
   report.realtime_pages = [];
+  report.legacy_card_takeover = [];
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    for (const scenario of ['withdrawn', 'account_changed', 'account_changed_compat', 'account_changed_new', 'valid', 'uncertain', 'claim_failure', 'begin_failure']) {
+      let changed, claims = 0, begun = 0, completed = 0, deliveries = 0;
+      let snapshot = { generation: 1, accountKey: 'account-a', accountId: 'me',
+        realtimeEnabled: false, synced: false, items: [] };
+      const social = { onInvitationsChanged(callback) { changed = callback; }, getInvitations: async () => snapshot,
+        claimInvitation: async () => { claims++; return { ok: !(scenario === 'claim_failure' && claims === 1), token: 'claim' }; },
+        beginInvitationDelivery: async () => {
+          begun++; if (scenario === 'begin_failure' && begun === 1) return { ok: false };
+          snapshot.items[0].promptEligible = false; changed(snapshot); return { ok: true };
+        },
+        completeInvitationDelivery: async () => { completed++; return { ok: true }; },
+        releaseInvitation: async () => ({ ok: true }) };
+      const h = createHarness({ pathname, multiWindow: pathname !== '/', social, routes: {
+        ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID } }),
+        ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Legacy question' } }),
+        ['/api/visit/direct/' + VID + '/deliver-question']: async () => {
+          deliveries++; return { status: scenario === 'uncertain' ? 503 : 200, body: { delivered: true } };
+        },
+        ['/api/visit/direct/' + VID2 + '/preview']: async () => ({ status: 200, body: { visit_id: VID2 } }),
+        ['/api/visit/direct/' + VID2 + '/question*']: async () => ({ status: 200, body: { question: 'New account question' } }),
+        ['/api/visit/direct/' + VID2 + '/deliver-question']: async () => {
+          deliveries++; return { status: 200, body: { delivered: true } };
+        },
+      } });
+      h.chat.applyState({ enabled: true, active: false }); await h.settle();
+      await h.chat.presentDirectInvitation({ id: 'legacy', visit_id: VID, expires_at: 9e9 });
+      const before = !!h.I.getVisitChatView().bar;
+      const valid = ['valid', 'uncertain', 'claim_failure', 'begin_failure'].includes(scenario);
+      const replaced = scenario === 'account_changed_new';
+      snapshot = { ...snapshot, generation: 2, accountKey: scenario.startsWith('account_changed') ? 'account-b' : 'account-a',
+        realtimeEnabled: scenario !== 'account_changed_compat', synced: true,
+        items: valid || replaced ? [{ id: '33333333-3333-4333-8333-333333333333',
+          notification_id: replaced ? 'replacement' : 'legacy', visit_id: replaced ? VID2 : VID,
+          sender_id: 'friend', recipient_id: 'me', expires_at: '2023-11-14T22:23:20Z', actionable: true, promptEligible: true }] : [] };
+      changed(snapshot); await h.settle();
+      if (scenario.endsWith('_failure')) { changed(snapshot); await h.settle(); }
+      report.legacy_card_takeover.push({ pathname, scenario, before, after: !!h.I.getVisitChatView().bar,
+        claims, begun, completed, deliveries,
+        reads: h.fetches.filter((entry) => entry.url.startsWith('/api/community/')).length });
+    }
+  }
+  report.legacy_card_inflight = [];
+  for (const phase of ['preview', 'delivery']) {
+    let changed, release;
+    const snapshot = { generation: 1, accountKey: 'account-a', realtimeEnabled: false, synced: false, items: [] };
+    const h = createHarness({ social: { onInvitationsChanged(callback) { changed = callback; }, getInvitations: async () => snapshot }, routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => phase === 'preview'
+        ? await new Promise((resolve) => { release = () => resolve({ status: 200, body: { visit_id: VID } }); })
+        : { status: 200, body: { visit_id: VID } },
+      ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Legacy question' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => phase === 'delivery'
+        ? await new Promise((resolve) => { release = () => resolve({ status: 200, body: { delivered: true } }); })
+        : { status: 200, body: { delivered: true } },
+    } });
+    h.chat.applyState({ enabled: true, active: false }); await h.settle();
+    const task = h.chat.presentDirectInvitation({ id: 'legacy', visit_id: VID, expires_at: 9e9 });
+    await h.settle(); changed({ ...snapshot, generation: 2, realtimeEnabled: true, synced: true }); await h.settle();
+    release(); await task; await h.settle();
+    report.legacy_card_inflight.push({ phase, bar: !!h.I.getVisitChatView().bar,
+      deliveries: h.fetches.filter((entry) => entry.url.endsWith('/deliver-question')).length });
+  }
   report.initial_invitation_snapshot_recovery = [];
   for (const pathname of ['/', '/chat', '/chat_full']) {
     for (const scenario of ['hung', 'late_realtime', 'ready_early']) {
@@ -2163,6 +2226,21 @@ def test_hung_initial_invitation_snapshot_recovers_and_late_realtime_stops_legac
             assert case["reads"] >= 1, case
         else:
             assert case["reads"] == (1 if case["scenario"] == "late_realtime" else 0), case
+
+
+def test_realtime_takeover_retires_old_http_cards_and_keeps_valid_delivery_once(report):
+    assert len(report["legacy_card_takeover"]) == 24
+    for case in report["legacy_card_takeover"]:
+        valid = case["scenario"] in {"valid", "uncertain", "claim_failure", "begin_failure", "account_changed_new"}
+        assert case["before"] and case["after"] == valid, case
+        assert case["deliveries"] == (2 if case["scenario"] == "account_changed_new" else 1) and case["reads"] == 0, case
+        assert case["claims"] == (2 if case["scenario"].endswith('_failure') else int(valid)), case
+        assert case["begun"] == (2 if case["scenario"] == 'begin_failure' else int(valid)), case
+        assert case["completed"] == int(valid and case["scenario"] != "uncertain"), case
+    assert report["legacy_card_inflight"] == [
+        {"phase": "preview", "bar": False, "deliveries": 0},
+        {"phase": "delivery", "bar": False, "deliveries": 1},
+    ]
 
 
 def test_browser_receive_fallback_does_not_enable_desktop_only_outgoing_creation(report):
