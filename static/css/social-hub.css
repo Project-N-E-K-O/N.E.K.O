@@ -23,12 +23,18 @@ body.neko-social-hub-standalone {
   box-sizing: border-box;
 }
 
-.neko-social-hub-panel {
+.neko-social-hub-panel,
+.neko-social-hub-presence-menu {
   --hub-accent: #35abf5;
   --hub-accent-strong: #168fe5;
   --hub-text: #20304a;
   --hub-muted: #74839d;
   --hub-line: rgba(123, 161, 196, 0.2);
+  color: var(--hub-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.neko-social-hub-panel {
   position: fixed;
   display: flex;
   flex-direction: column;
@@ -41,8 +47,6 @@ body.neko-social-hub-standalone {
   box-sizing: border-box;
   background: var(--neko-popup-bg, rgba(255, 255, 255, 0.82));
   box-shadow: var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04));
-  color: var(--hub-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   pointer-events: auto;
   backdrop-filter: blur(22px) saturate(1.16);
   -webkit-backdrop-filter: blur(22px) saturate(1.16);
@@ -324,10 +328,10 @@ body.neko-social-hub-standalone {
 }
 
 .neko-social-hub-presence-menu {
-  position: absolute;
-  z-index: 4;
-  top: calc(100% + 6px);
-  left: -8px;
+  position: fixed;
+  z-index: 10061;
+  pointer-events: auto;
+  overflow-y: auto;
   width: 248px;
   padding: 6px;
   border: 1px solid rgba(123, 161, 196, 0.24);
@@ -597,13 +601,16 @@ body.neko-social-hub-standalone {
 
 .neko-social-hub-toast.is-error { background: rgba(226, 76, 76, 0.1); color: #bc4545; }
 .neko-social-hub-panel button:focus-visible,
+.neko-social-hub-presence-menu button:focus-visible,
 .neko-social-hub-panel input:focus-visible {
   outline: 2px solid rgba(39, 151, 224, 0.7);
   outline-offset: 2px;
 }
 
 [data-theme="dark"] .neko-social-hub-panel,
-html.dark .neko-social-hub-panel {
+html.dark .neko-social-hub-panel,
+[data-theme="dark"] .neko-social-hub-presence-menu,
+html.dark .neko-social-hub-presence-menu {
   --hub-text: #edf5ff;
   --hub-muted: #aab8ca;
   --hub-line: rgba(151, 188, 220, 0.18);

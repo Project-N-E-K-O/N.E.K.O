@@ -63,6 +63,7 @@ from config.visit_settings import (
     VISIT_CROP_DEFAULT,
     VISIT_ENABLED_DEFAULT,
     VISIT_ENDING_SOON_S,
+    VISIT_HUMAN_REPLY_GRACE_S,
     VISIT_IDLE_TIMEOUT_S,
     VISIT_INBOX_HANDOFF_ABS_MAX_S,
     VISIT_LEAVE_GAP_GRACE_S,
@@ -204,6 +205,7 @@ class RuntimeDeps:
     schedule_upload: Callable[[str], Any] = None  # type: ignore[assignment]
     rng: random.Random = field(default_factory=random.Random)
     reply_gap_s: tuple[float, float] = VISIT_REPLY_GAP_S
+    human_reply_grace_s: float = VISIT_HUMAN_REPLY_GRACE_S
 
     def __post_init__(self) -> None:
         if self.record_account is None:
@@ -330,7 +332,7 @@ def apply_voice_setting(enabled: bool) -> int:
     line; the home-coming line and debrief summary follow it as well. The
     one-way TTS fallback (``voice.fallen_back``) is kept. The voice audio
     tracks follow at once (OD-15 v4): a fresh ``media`` snapshot is sent so
-    the transport page stops / resumes sending and playing catgirl audio.
+    the transport page stops / resumes sending and playing neko audio.
     Returns how many runtimes were updated.
     """
     runtimes = live_runtimes()
@@ -1407,7 +1409,11 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         self.kick()
 
     def on_transport_stats(self, msg: dict) -> None:
-        """iframe ``stats``: kept for ``GET /state`` and forwarded to the peer as data-channel ``stats``."""
+        """iframe ``stats``: kept for ``GET /state`` and forwarded to the peer as data-channel ``stats``.
+
+        ``video_rx_overrun`` / ``audio_rx_overrun`` (receiver-side bitrate guard, the iframe already
+        unsubscribed that track) end the visit with ``peer_protocol_violation``.
+        """
         global _vp8_next_visit
         keep = ("tx_fps", "enc_fps", "tx_kbps", "rx_fps", "rx_kbps", "rtt_ms", "loss_pct", "dc_queue",
                 "rx_w", "rx_h")
@@ -1416,6 +1422,16 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if msg.get("softenc_overloaded") is True:
             _vp8_next_visit = True
         if self.peer is None or not self.ready_exchanged or self.finalizing:
+            return
+        overrun = [kind for kind in ("video", "audio") if msg.get(f"{kind}_rx_overrun") is True]
+        if overrun:
+            # Receiver-side bitrate guard (§4.7): the iframe saw the peer's inbound video / voice above
+            # VISIT_RX_GUARD_RATIO x the tier cap for VISIT_RX_GUARD_WINDOW_S and already unsubscribed it.
+            # Local self-protection only: measured and reported by this machine, so never grounds for a ban.
+            for kind in overrun:
+                self._count_anomaly(f"{kind}_rx_overrun", streak=False)
+            logger.warning("visit %s: peer %s bitrate over the tier cap, ending", self.visit_id[:6], "/".join(overrun))
+            self.request_finalize("peer_protocol_violation")
             return
         wire = {"rx_fps": float, "rx_kbps": int, "rtt_ms": int, "loss_pct": float, "rx_w": int, "rx_h": int}
         if not all(k in self.stats for k in wire):
@@ -1470,7 +1486,7 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         and play the peer's, only after ``ready``, only while
         ``visitVoiceEnabled`` is on and only when the current credentials carry
         Servers' ``publish.audio`` as a literal true (latched, see
-        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays catgirl audio. A
+        :meth:`_voice_gate`; older Servers: no audio at all). With voice off this side neither sends nor plays neko audio. A
         TTS fallback keeps the track published but silent. Voice is off from
         the moment the visit starts ending: the tap carries the shared TTS
         chain, so once private chat is back nothing more may reach the room.
@@ -1811,13 +1827,17 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
                 spawn_visit_background(self.character_uid, lambda: self._finalize_late_spool(reason))
             return
         self.room = VisitRoom(self.side, peer_crop=peer.crop, rng=self.deps.rng,
-                              reply_gap_s=self.deps.reply_gap_s)
+                              reply_gap_s=self.deps.reply_gap_s,
+                              human_reply_grace_s=self.deps.human_reply_grace_s)
         self.activated = True
         now = self.clock()
         self.started_at_mono = now
         self.started_at_wall = self.wall()
         self.last_text_at = now
         self._set_phase(PHASE_ACTIVE)
+        if self.voice.tts_on:
+            # The first line's start timeout counts from its first push, TTS cold start included: start the worker now.
+            self.spawn(self.host.warm_speech(), name="tts-warm")
 
     async def _summary_handoff(self) -> None:
         from main_logic.visit.memory_commit import last_summary_handoff

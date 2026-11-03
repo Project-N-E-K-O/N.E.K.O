@@ -314,6 +314,8 @@ class TalkMixin:
                 elif why == "busy":
                     await asyncio.sleep(_BUSY_RETRY_S)
                 else:
+                    if plan is not None:
+                        self.room.drop_reply(plan)
                     return
             if self._reply_task is me:
                 # Once speaking starts, this is no longer unsaid inference: pending-reply cancellation leaves it alone; interruption uses abort.
@@ -839,7 +841,10 @@ class TalkMixin:
         def reply() -> None:
             if to_own and not self.finalizing and self.room is not None and self.room.phase == "active":
                 lo, hi = self.deps.reply_gap_s
-                self.schedule_reply(ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi)))
+                plan = ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi))
+                # Book it in the room too, so a late peer pick-up cannot replace this answer to the human.
+                self.room.hold_reply(plan)
+                self.schedule_reply(plan)
 
         async def commit() -> None:
             try:

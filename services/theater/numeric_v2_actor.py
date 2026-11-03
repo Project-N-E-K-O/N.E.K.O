@@ -127,7 +127,7 @@ def _output_schema_instruction(phase: str, *, single_ending_response: bool = Fal
              "顶层字段按播放顺序生成：source_scene_narration:string、source_performance:string、"
              "bridge_scene_narration:string、target_scene_narration:string、target_performance:string、suggested_inputs:string[]。")
             +
-            # Source segments may contain external responses, keeping NPC replies out of catgirl performance and transition bridges.
+            # Source segments may contain external responses, keeping NPC replies out of neko performance and transition bridges.
             "本轮直接询问在场 NPC 时，在 source_scene_narration 给出他的具体答复、明确拒绝或说明未知；用‘角色名回答：“具体内容”’标明主体。"
             "无待答问题或必要外部动作时填空字符串。"
             +
@@ -495,7 +495,7 @@ def _assert_no_unknown_player_address_leak(
         or configured_address in str(player_input or "")
     ):
         return
-    # Recommended input is player dialogue, not catgirl forms of address; inspect catgirl text/narration only.
+    # Recommended input is player dialogue, not neko forms of address; inspect neko text/narration only.
     # Reuse Runtime disclosure boundaries, adding mixed-narrative action parentheses and quotation/tone punctuation,
     # so （抬头）哥哥， counts as direct address while 小哥哥/你哥哥 do not.
     boundary = PLAYER_ADDRESS_BOUNDARY_CHARS + r"（）()\[\]【】\"'“”‘’「」『』？?、…～~—"
@@ -974,7 +974,7 @@ def _history(
 
 
 def _story_so_far_row_text(row: Mapping[str, Any]) -> str:
-    """Render one real historical record as narrative understandable to player and catgirl."""  # noqa: DOCSTRING_CJK
+    """Render one real historical record as narrative understandable to player and neko."""  # noqa: DOCSTRING_CJK
 
     parts: list[str] = []
     player_input = str(row.get("player_input") or "").strip()
@@ -3809,7 +3809,7 @@ class NumericV2Actor:
         self.base_fact_candidate_parse_counts: dict[str, int] = {}
 
     def _character_profile(self) -> str:
-        """Read current server-side catgirl persona summaries only; accept no client character names."""  # noqa: DOCSTRING_CJK
+        """Read current server-side neko persona summaries only; accept no client character names."""  # noqa: DOCSTRING_CJK
 
         try:
             characters = self.config_manager.load_characters()
@@ -4155,7 +4155,7 @@ class NumericV2Actor:
                 if narration.endswith(text) and (rest := narration[:-len(text)].strip()):
                     narration = rest
             target_segment["scene_narration"] = narration
-            # Persona contracts inspect catgirl text on both sides only; Workflow reviews dynamic narration's facts/stage boundaries holistically.
+            # Persona contracts inspect neko text on both sides only; Workflow reviews dynamic narration's facts/stage boundaries holistically.
             source_output = {"performance": source_segment.get("performance", "")}
             target_output = {"performance": target_segment.get("performance", "")}
             target_text = "".join(str(target_output["performance"]).split())
@@ -4189,7 +4189,7 @@ class NumericV2Actor:
             previous_visible_performance = session.opening_performance
             previous_scene_performance = previous_visible_performance
             if isinstance(previous_visible_performance.get("performance"), str):
-                # Opening environmental narration does not recur in ordinary turns; compare catgirl text only so long narration cannot dilute repetition.
+                # Opening environmental narration does not recur in ordinary turns; compare neko text only so long narration cannot dilute repetition.
                 previous_visible_performance = {
                     "performance": previous_visible_performance["performance"],
                 }

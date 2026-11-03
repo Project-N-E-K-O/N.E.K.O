@@ -597,3 +597,53 @@ test('theater-only proactive mode can schedule independently of mini-games', () 
     state.proactiveMiniGameInviteEnabled = true;
     assert.equal(window.appProactive.hasAnyChatModeEnabled(), true);
 });
+
+test('typing pushes a nearer proactive tick to 30s after the last input at any interval', async () => {
+    const docListeners = new Map();
+    const timers = new Map();
+    let nextTimer = 0;
+    let now = 1_000_000;
+    class FakeDate extends Date { static now() { return now; } }
+    const state = {
+        isRecording: true,
+        proactiveChatEnabled: true,
+        proactiveNewsChatEnabled: true,
+        proactiveVisionEnabled: false,
+        proactiveChatInterval: 45,
+        _proactiveSchedulerInitialized: true
+    };
+    const window = { appState: state, appConst: {}, addEventListener() {} };
+    vm.runInNewContext(source, {
+        window,
+        Date: FakeDate,
+        document: {
+            addEventListener(type, listener) { docListeners.set(type, listener); },
+            getElementById() { return null; }
+        },
+        localStorage: { getItem() { return null; } },
+        console,
+        setTimeout(fn, ms) { timers.set(++nextTimer, { fn, ms }); return nextTimer; },
+        clearTimeout(id) { timers.delete(id); },
+        clearInterval() {}
+    });
+    const input = { nodeType: 1, matches() { return true; }, disabled: false, readOnly: false };
+
+    window.scheduleProactiveChat();
+    const firstId = state.proactiveChatTimer;
+    assert.equal(timers.get(firstId).ms, 45000);
+
+    // 15s remain when typing starts: the armed timer is kept, not restarted from a full interval.
+    now += 30000;
+    docListeners.get('input')({ target: input });
+    assert.equal(state.proactiveChatTimer, firstId);
+    assert.equal(timers.size, 1);
+
+    // At the original deadline the tick defers to 30s after the input instead of speaking.
+    now += 15000;
+    const { fn } = timers.get(firstId);
+    timers.delete(firstId);
+    await fn();
+    const deferred = timers.get(state.proactiveChatTimer);
+    assert.ok(deferred, 'tick must re-arm for the rest of the input window');
+    assert.equal(deferred.ms, 15000);
+});

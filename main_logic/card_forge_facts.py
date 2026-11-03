@@ -16,6 +16,11 @@ from typing import Any
 
 import httpx
 
+from config.prompts.prompts_memory import get_forge_scope_hint
+from config.visit_settings import VISIT_MEMORY_PLATFORM
+from memory.scopes import subject_from_entry
+from utils.language_utils import get_global_language_full
+
 logger = logging.getLogger("neko.card_forge_facts")
 
 
@@ -211,6 +216,16 @@ def _shareable_facts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not any(isinstance(item, dict) and item.get("origin") in _UNSHAREABLE_ORIGINS for item in items):
         return items
     return [item for item in items if not (isinstance(item, dict) and item.get("origin") in _UNSHAREABLE_ORIGINS)]
+
+
+def _forge_text(item: dict[str, Any], lang: str) -> str:
+    """The fact text sent to the forge: scoped facts get a hint naming who they are about."""
+    subject = subject_from_entry(item)
+    if subject is None:
+        return item["text"]
+    platform = subject.subject_id.split(":", 1)[0]
+    hint = get_forge_scope_hint(subject.kind, visit=platform == VISIT_MEMORY_PLATFORM, lang=lang)
+    return hint + item["text"]
 
 
 def _weighted_pick(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
@@ -414,7 +429,9 @@ def _select_forge_facts_with_stats(
     exclude_ids: set[str] | None = None,
     exclude_hashes: set[str] | None = None,
     exclude_keys: set[_FactKey] | None = None,
+    lang: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    lang = lang or get_global_language_full()
     exclude_ids = exclude_ids or set()
     exclude_hashes = exclude_hashes or set()
     exclude_keys = exclude_keys or set()
@@ -562,7 +579,7 @@ def _select_forge_facts_with_stats(
     facts = [
         {
             "id": item["_forge_wire_id"],
-            "text": item["text"],
+            "text": _forge_text(item, lang),
             "importance": _safe_importance(item.get("importance")),
             "entity": str(item.get("entity", "")),
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
@@ -599,6 +616,7 @@ def _select_archive_facts(
     exclude_hashes: set[str],
     fill_count: int = 0,
     exclude_keys: set[_FactKey] | None = None,
+    lang: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if not raw_archive:
         return [], {"archiveRawCount": 0, "archiveFilteredCount": 0}
@@ -620,8 +638,9 @@ def _select_archive_facts(
         exclude_ids=exclude_ids,
         exclude_hashes=exclude_hashes,
         exclude_keys=exclude_keys,
+        lang=lang,
     )
-    dated = [item for item in candidates if _fact_memory_datetime(item) is not None]
+    dated =[item for item in candidates if _fact_memory_datetime(item) is not None]
     archive_stats = {
         "archiveRawCount": archive_raw_count,
         "archiveFilteredCount": stats.get("filteredCount", 0),
@@ -776,6 +795,8 @@ async def build_forge_facts_payload(
     legacy_excluded_keys = await asyncio.to_thread(
         _legacy_excluded_fact_keys, raw, raw_archive, excluded_ids,
     )
+    # A cold language cache probes the OS synchronously (subprocesses on macOS): keep it off the event loop.
+    lang = await asyncio.to_thread(get_global_language_full)
     facts, stats = await asyncio.to_thread(
         _select_forge_facts_with_stats,
         shareable_raw,
@@ -785,6 +806,7 @@ async def build_forge_facts_payload(
         exclude_ids=excluded_ids,
         exclude_hashes=excluded_hashes,
         exclude_keys=legacy_excluded_keys,
+        lang=lang,
     )
     archive_facts: list[dict[str, Any]] = []
     archive_stats = {
@@ -805,6 +827,7 @@ async def build_forge_facts_payload(
             exclude_keys=active_ids | legacy_excluded_keys,
             exclude_hashes=excluded_hashes | active_hashes,
             fill_count=max(0, limit - len(facts)),
+            lang=lang,
         )
         if archive_facts:
             facts = [*facts[: limit - len(archive_facts)], *archive_facts]

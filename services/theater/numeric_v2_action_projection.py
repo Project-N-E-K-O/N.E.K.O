@@ -86,7 +86,7 @@ def _has_future_or_uncommitted_marker(text: str) -> bool:
 
 def _explicit_subject(text: str) -> bool:
     # Expressions such as going back to study or let's go directly omit the subject; "带我去" (take me there) asks
-    # the catgirl to act and must not count as the player having moved.
+    # the neko to act and must not count as the player having moved.
     return bool(re.search(r"(?:^|[，,。；;：:\s])(?:我|我们|咱们|先|那我|这就)", text))
 
 

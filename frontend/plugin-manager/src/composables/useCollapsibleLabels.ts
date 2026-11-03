@@ -14,6 +14,7 @@ export function useCollapsibleLabels(
   const compact = ref(false)
   let labelledWidth = 0
   let observedWidth = -1
+  let contentInvalidated = false
 
   function availableWidth(host: HTMLElement) {
     const style = getComputedStyle(host)
@@ -49,9 +50,17 @@ export function useCollapsibleLabels(
   // 布局过渡期间按钮和文字的宽度是动画中间值，量出来不作数；跳过的这次在过渡结束、
   // 尺寸已是终态时补上，否则过渡中途窗口变宽，文字会一直收着直到下一次尺寸变化。
   let settling: MutationObserver | null = null
-  function observedUpdate() {
+  async function observedUpdate(): Promise<void> {
     const running = container.value?.closest('[data-motion-running]')
     if (!running) {
+      if (contentInvalidated) {
+        contentInvalidated = false
+        compact.value = false
+        labelledWidth = 0
+        await nextTick()
+        // A replacement transition may have started while Vue patched labels.
+        return observedUpdate()
+      }
       update()
       return
     }
@@ -61,7 +70,7 @@ export function useCollapsibleLabels(
       if (running.hasAttribute('data-motion-running')) return
       settling?.disconnect()
       settling = null
-      observedUpdate()
+      void observedUpdate()
     })
     settling.observe(running, { attributes: true, attributeFilter: ['data-motion-running'] })
   }
@@ -77,11 +86,10 @@ export function useCollapsibleLabels(
   // 字体晚到、徽标数字变化等会在容器宽度不变时撑宽按钮组；收起状态下 update 只看容器宽度，不会来回切换。
   useResizeObserver(groups, observedUpdate)
 
-  watch(contentKey, async () => {
-    compact.value = false
-    labelledWidth = 0
-    await nextTick()
-    update()
+  watch(contentKey, () => {
+    // Keep the current layout until the labels are no longer being animated.
+    contentInvalidated = true
+    void observedUpdate()
   }, { flush: 'post' })
 
   // relayout 让调用方在切换到新布局后、测量终态前同步决定收起与否，之后的观察者便无需再改。

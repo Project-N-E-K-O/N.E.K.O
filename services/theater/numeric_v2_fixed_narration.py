@@ -170,7 +170,7 @@ def review_candidates(node: Mapping[str, Any], session: Any) -> list[dict[str, A
 
 
 def _actor_receive_requires_handoff(condition: str) -> bool:
-    """Add a directional handover gate only to conditions explicitly requiring catgirl receipt/possession."""  # noqa: DOCSTRING_CJK
+    """Add a directional handover gate only to conditions explicitly requiring neko receipt/possession."""  # noqa: DOCSTRING_CJK
 
     return any(marker in str(condition or "") for marker in _ACTOR_RECEIVE_MARKERS)
 
@@ -206,7 +206,7 @@ def apply_triggers(node: Mapping[str, Any], session: Any, performance: Mapping[s
         # Explicit touching conditions need not require handover, but actual receiving actions retain handover protection.
         if requires_handoff or ("player_handoff_required" in trigger and _actor_receive_requires_handoff(evidence)):
             # Candidate narration claiming receipt cannot prove a handover occurred: require explicit player delivery
-            # or historical evidence. Allow player-offers -> catgirl-receives, but block player-picks-up -> catgirl-receives.
+            # or historical evidence. Allow player-offers -> neko-receives, but block player-picks-up -> neko-receives.
             historical_text = "\n".join(
                 row["text"] for row in performance_history_records(session)
                 if isinstance(row, Mapping) and isinstance(row.get("text"), str)

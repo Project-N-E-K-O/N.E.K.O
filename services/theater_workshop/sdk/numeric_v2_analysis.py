@@ -24,7 +24,7 @@ _COMPARATORS = {
 }
 # For conditions based on these subjects' own actions, the only runtime witness may be narrative written by Actor this turn.
 _ACTOR_WITNESS_SUBJECTS = ("猫娘", "女主", "新载体", "机体", "猫耳")
-# Player subjects and exclusion clauses do not mean the catgirl satisfies a condition merely by appearing in its text.
+# Player subjects and exclusion clauses do not mean the neko satisfies a condition merely by appearing in its text.
 _PLAYER_ACTOR_TOKENS = ("玩家", "男主", "你")
 _EXCLUSION_MARKERS = ("不算", "不作为", "不能算", "不表示", "不算作", "并非", "不能代替")
 
@@ -39,7 +39,7 @@ class NumericV2AnalysisWarning:
 
 
 def _condition_actor(condition: str) -> str:
-    """Return the actor a condition is satisfied by: ``actor`` (catgirl), ``player`` or ``""``.
+    """Return the actor a condition is satisfied by: ``actor`` (neko), ``player`` or ``""``.
 
     Chinese conditions are read clause by clause. The first subject token in a positive clause is
     the actor; exclusion clauses such as "玩家拿着不算" are skipped, and a clause without a subject
@@ -63,7 +63,7 @@ def _fixed_narration_witness_warnings(ordered_nodes: list[Mapping[str, Any]]) ->
     """Warn when a condition-triggered fixed narration can only be witnessed by the actor's own prose.
 
     Runtime evidence for a condition includes the current (uncommitted) candidate text, so a
-    condition whose subject is the catgirl can be satisfied by the actor writing the condition
+    condition whose subject is the neko can be satisfied by the actor writing the condition
     itself and then being cited as proof (issue 2.141).
     """
 

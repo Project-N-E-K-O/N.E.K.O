@@ -325,7 +325,7 @@ def _check_char_entry(entry: Any, where: str, *, pair: str | None = None,
     if any("last_seen" in info and not is_finite_number(info["last_seen"])
            for info in chars.values()):
         raise RosterCorruptError(f"{where}: chars last_seen is not a number")
-    # Upsert always writes both pair and peer catgirl; only one remaining indicates half-corruption, producing plans
+    # Upsert always writes both pair and peer neko; only one remaining indicates half-corruption, producing plans
     # missing group_chat / group_participant subjects (or failing revocation-log validation).
     if bool(pairs) != bool(chars):
         raise RosterCorruptError(f"{where}: pairs and chars must both be present")

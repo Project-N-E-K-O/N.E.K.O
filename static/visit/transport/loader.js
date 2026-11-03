@@ -32,6 +32,9 @@
   var PEER_STATS_FRESH_MS = 12000;
   var SOFTENC_WINDOW_MS = 10000;      // VISIT_VP9_CPU_FALLBACK 的秒数
   var SOFTENC_FPS_RATIO = 0.9;        // 27 / 30：编码帧率低于目标帧率的 90 % 算软编跟不上
+  // 接收端码率自保（VISIT_RX_GUARD_RATIO / VISIT_RX_GUARD_WINDOW_S）：对端入站码率超过档位上限的这个倍数、持续这么久
+  var RX_GUARD_RATIO = 1.5;
+  var RX_GUARD_WINDOW_MS = 10000;
   var PUBLISH_RETRY_BASE_MS = 2000;   // SDK 拒绝发布后的首次重试间隔，之后翻倍
   var PUBLISH_RETRY_MAX_MS = 30000;
   var AUDIO_KBPS_DEFAULT = 32;        // VISIT_AUDIO_KBPS：凭证没带 publish.audio_kbps 时的语音码率上限
@@ -210,6 +213,8 @@
     this.peerRxFps = null;
     this.loss = null;
     this.softencSince = null;
+    this.rxOverSince = { video: null, audio: null };   // 对端视频 / 语音入站码率开始超档的时刻（checkRxGuard）
+    this.rxTripped = { video: false, audio: false };   // 已因超档退订的那一路：本页之后不再订阅，每拍统计都带上报
     this.statsMark = null;
     this.lastRxSample = null;   // 上一拍成功取到的接收统计（getStats 卡住时沿用，见 collectStats）
     this.statsGen = 0;
@@ -673,7 +678,8 @@
   };
 
   P.setAudioSubscribe = function (on) {
-    this.media.audioSubscribe = !!on;
+    this.media.audioSubscribe = !!on && !this.rxTripped.audio;
+    if (!this.media.audioSubscribe) this.rxOverSince.audio = null;
     if (this.adapter) this.adapter.setAudioSubscribe(this.media.audioSubscribe);
     if (!this.media.audioSubscribe) this.onRemoteAudio(null);
   };
@@ -834,7 +840,7 @@
       if (pub !== this.media.audioPublish) this.setAudioPublish(pub);
     }
     if (typeof msg.audio_subscribe === 'boolean') {
-      var sub = msg.audio_subscribe && audioAllowed;
+      var sub = msg.audio_subscribe && audioAllowed && !this.rxTripped.audio;
       if (sub !== this.media.audioSubscribe) this.setAudioSubscribe(sub);
     }
     if (this.side === 'guest') {
@@ -858,9 +864,18 @@
         if (this.adapter) this.adapter.unpublish();
       }
     } else if (typeof msg.subscribe === 'boolean') {
-      this.media.subscribe = msg.subscribe;
-      if (this.adapter) this.adapter.setSubscribe(msg.subscribe);
-      if (!msg.subscribe && this.unpacker) {
+      // 因入站超档退订过：本页不再订阅对端视频（后端收到上报后结束本场，这期间的快照仍可能带 subscribe:true）
+      this.setVideoSubscribe(msg.subscribe && !this.rxTripped.video);
+    }
+  };
+
+  /** host 订阅 / 退订对端视频。 */
+  P.setVideoSubscribe = function (on) {
+    this.media.subscribe = !!on;
+    if (this.adapter) this.adapter.setSubscribe(this.media.subscribe);
+    if (!this.media.subscribe) {
+      this.rxOverSince.video = null;
+      if (this.unpacker) {
         this.unpacker.detach();
         this.remoteVideo = false;
       }
@@ -880,6 +895,7 @@
     this.loss = null;
     this.peerRxFps = null;
     this.softencSince = null;
+    this.rxOverSince = { video: null, audio: null };
     this.announcePublish(false);
     this.media.subscribe = false;
     if (this.packer) this.packer.active = false;
@@ -899,6 +915,8 @@
     this.statsGen += 1;
     this.statsMark = null;
     this.lastRxSample = null;
+    // 接收端自保的超档计时同样重新起算：重连后的入站码率要重新连续超档才算
+    this.rxOverSince = { video: null, audio: null };
     if (this.unpacker) this.unpacker.resetStats();
     if (this.adapter && typeof this.adapter.resetStats === 'function') this.adapter.resetStats();
   };
@@ -1041,7 +1059,7 @@
       if (typeof out.enc_fps !== 'number' && typeof out.tx_fps === 'number') out.enc_fps = out.tx_fps;
       if (this.creds && this.creds.publish && this.creds.publish.codec) out.enc = this.creds.publish.codec;
     }
-    var finish = function (extra) {
+    var finish = function (extra, rxSample) {
       if (gen !== self.statsGen) return;   // 取样期间离开了在房状态：这拍作废
       // 比这拍更新的取样已经发出：慢回来的旧拍不再发、不喂阶梯（比较的是已发出的最新序号，
       // 不是已发起的——getStats 一直慢于 5 s 时每拍按顺序照样发出）
@@ -1061,6 +1079,7 @@
         for (var k in rx) out[k] = rx[k];
       }
       self.checkSoftenc(out, doneAt);
+      self.checkRxGuard(rxSample, out, doneAt);
       self.stepLadder(doneAt);
       self.sendBackend(out);
       self.post({ t: 'stats', fps: finiteOr(out.tx_fps, finiteOr(out.rx_fps, 0)), kbps: Math.round(finiteOr(out.tx_kbps, finiteOr(out.rx_kbps, 0))), rtt_ms: Math.round(finiteOr(out.rtt_ms, 0)), hidden: self.hidden });
@@ -1068,7 +1087,8 @@
     var adapter = this.adapter;
     var sender = adapter && typeof adapter.senderStats === 'function' && this.media.publish
       ? adapter.senderStats() : Promise.resolve(null);
-    var receiver = adapter && typeof adapter.receiverStats === 'function' && this.media.subscribe
+    // 只订阅对端语音（guest）时也取接收统计：语音轨同样要做接收端码率自保
+    var receiver = adapter && typeof adapter.receiverStats === 'function' && (this.media.subscribe || this.media.audioSubscribe)
       ? adapter.receiverStats(now) : Promise.resolve(null);
     // getStats 可能一直不回（网络 / 设备切换时 WebRTC 卡住）：每拍最多等 STATS_COLLECT_TIMEOUT_MS，到点只发同步部分，
     // 否则后端统计、接收帧率与拥塞阶梯都会停住。晚回来的那份由上面的代号 / 序号检查丢掉
@@ -1101,7 +1121,7 @@
           keys.forEach(function (key) { if (typeof out[key] !== 'number') out[key] = last[key]; });
         }
       }
-      finish(res ? res[0] : null);
+      finish(res ? res[0] : null, rx || null);
     });
   };
 
@@ -1119,6 +1139,47 @@
     } else {
       this.softencSince = null;
     }
+  };
+
+  /**
+   * 接收端码率自保（设计稿 §4.7、Servers 契约第 9 条）：LiveKit 没有服务端单轨码率上限，改过的对端可以超发。
+   * 对端视频（rx_kbps，档位上限 publish.bitrate_kbps）/ 语音（rx_audio_kbps，上限 audioKbps()）的入站码率
+   * 从第一次超过上限 × RX_GUARD_RATIO 的取样起、连续每拍都超且满 RX_GUARD_WINDOW_MS → 本地退订这一路、
+   * 本页不再订阅，之后每拍统计带 video_rx_overrun / audio_rx_overrun，后端据此以 peer_protocol_violation 结束。
+   * 没测到码率的一拍（取样超时、新轨或重置后的第一拍）不算持续超档，计时重新起算。
+   * 测量与上报都出自本机，只作本地自保、不作封禁依据。
+   */
+  P.checkRxGuard = function (rx, out, now) {
+    var self = this;
+    var guarded = !!(this.adapter && this.adapter.rxGuard === true);
+    var caps = { video: this.creds && this.creds.publish && this.creds.publish.bitrate_kbps, audio: this.audioKbps() };
+    var subscribed = { video: this.media.subscribe, audio: this.media.audioSubscribe };
+    var measured = { video: rx && rx.rx_kbps, audio: rx && rx.rx_audio_kbps };
+    ['video', 'audio'].forEach(function (kind) {
+      if (self.rxTripped[kind]) {
+        out[kind + '_rx_overrun'] = true;
+        return;
+      }
+      var cap = caps[kind];
+      var kbps = measured[kind];
+      if (!guarded || !subscribed[kind] || !(typeof cap === 'number' && cap > 0) ||
+          typeof kbps !== 'number' || !isFinite(kbps) || kbps <= cap * RX_GUARD_RATIO) {
+        self.rxOverSince[kind] = null;
+        return;
+      }
+      if (self.rxOverSince[kind] === null) self.rxOverSince[kind] = now;
+      if (now - self.rxOverSince[kind] < RX_GUARD_WINDOW_MS) return;
+      self.tripRxGuard(kind, kbps);
+      out[kind + '_rx_overrun'] = true;
+    });
+  };
+
+  /** 入站超档：退订对端这一路并锁住（之后的 media 快照也不再订阅）。 */
+  P.tripRxGuard = function (kind, kbps) {
+    this.rxTripped[kind] = true;
+    this.log('warn', 'peer ' + kind + ' bitrate over the tier cap, unsubscribed', kind + '_rx_overrun:' + Math.round(kbps));
+    if (kind === 'audio') this.setAudioSubscribe(false);
+    else this.setVideoSubscribe(false);
   };
 
   P.stepLadder = function (now) {

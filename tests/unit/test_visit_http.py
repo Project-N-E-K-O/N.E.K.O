@@ -950,6 +950,20 @@ async def test_state_never_carries_the_invite_code(env):
     assert "invite_code" not in _keys(resp.json()) and INVITE not in resp.text
 
 
+async def test_state_restores_host_invitation_target_only_to_its_owner(env):
+    await _rooms(env)
+    target = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    env.host.rt.target_user_id = target
+    async with env.client() as client:
+        restored = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+    assert restored.json()["target_user_id"] == target
+    assert restored.json()["phase"] == "pending"
+    assert "target_user_id" not in hidden.json() and target not in hidden.text
+    assert "invite_code" not in restored.json()
+
+
 async def test_current_host_room_recovers_only_the_owned_pending_invite(env):
     async with env.client() as c:
         missing = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)

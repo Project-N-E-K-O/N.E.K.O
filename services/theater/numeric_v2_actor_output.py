@@ -474,7 +474,7 @@ def _parse_output(
             payload.get("target_performance"), dialogue_policy=target_dialogue_policy,
             allow_empty=natural_ending or entry_narration,
         )
-        # Source narration, like ordinary scene_update, may be omitted; preserve NPC wording rather than turning it into catgirl dialogue.
+        # Source narration, like ordinary scene_update, may be omitted; preserve NPC wording rather than turning it into neko dialogue.
         if "source_scene_narration" in payload:
             narration = _parse_scene_update(payload["source_scene_narration"])
             if narration:

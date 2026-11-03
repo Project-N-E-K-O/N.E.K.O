@@ -900,7 +900,7 @@ async function _companionRunGenerate(state) {
         // 走完澄清问答后被 LLM 镜像成中文回复。
         state.mode = 'chat';
         const seedDescribe = _cardAssistT('character.aiCompanionSeedDescribe',
-            'Generate a catgirl card based on this description: ');
+            'Generate a neko card based on this description: ');
         const seedGenerated = _cardAssistT('character.aiCompanionSeedGenerated',
             'Generated and filled into the form: ');
         state.chatHistory.push({ role: 'user',
@@ -1314,7 +1314,7 @@ function _companionEnsureLiveForm(state) {
     // 找 live form 的两条路（按顺序回退）：
     //   1) 有 originalName → 按 `catgirl-form-${originalName}` 精确查（已保存卡
     //      常态：切猫娘 / 关再开）
-    //   2) 上一步失败 / originalName 为空 → 用 DOM 选择器在当前 catgirl panel 里
+    //   2) 上一步失败 / originalName 为空 → 用 DOM 选择器在当前 neko panel 里
     //      找那个唯一 form。详情面板同时只能有一个 form，所以选择器命中唯一。
     //      这一支专门覆盖两个场景：
     //        a. 「空白新卡 → 填档案名 → 手动 Save → form id 从 catgirl-form-new
@@ -1328,7 +1328,7 @@ function _companionEnsureLiveForm(state) {
         liveForm = document.getElementById('catgirl-form-' + state.originalName);
     }
     if (!liveForm) {
-        // path-2 选择器回退：在当前 catgirl panel 里找那个唯一 form。
+        // path-2 选择器回退：在当前 neko panel 里找那个唯一 form。
         // 安全性（Codex #3328901017）：打开/切换到「别的卡」必须先 closeCatgirlPanel
         //（openCatgirlPanel 顶部 _catgirlPanelOpen 互斥），而 closeCatgirlPanel 会直接
         // teardown+destroy 掉 companion。所以能走到这一支时 companion 必然还活着 = 详情
@@ -1349,7 +1349,7 @@ function _companionEnsureLiveForm(state) {
     //   - `_companionTryAutoSave` 里的 `if (state.isNew && !state.form._autoCreated)`
     //     永久命中 → 自动保存永远 bail，新卡保存提示反复弹
     //   - 一旦走到 saveCatgirlFromPanel，`effectiveIsNew=true` 会触发 POST 而
-    //     不是 PUT，造成同名 catgirl 409 / 重复
+    //     不是 PUT，造成同名 neko 409 / 重复
     const liveIsNew = liveForm._isNew === true;
     const wasNew = state.isNew;
     state.isNew = liveIsNew;

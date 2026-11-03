@@ -857,7 +857,7 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
             // live2d_item_id 是系统自动管理的，不应该从外部数据读取
             const RESERVED_FIELDS = getWorkshopReservedFields();
 
-            // 转换为符合catgirl API格式的数据（不包含保留字段）
+            // 转换为符合neko API格式的数据（不包含保留字段）
             const catgirlFormat = {
                 '档案名': charaName
             };
@@ -883,7 +883,7 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
                 catgirlFormat['live2d_item_id'] = String(itemId);
             }
 
-            // 调用catgirl API添加到系统
+            // 调用neko API添加到系统
             const addResponse = await fetch('/api/characters/catgirl', {
                 method: 'POST',
                 headers: {

@@ -378,7 +378,7 @@ async def test_confirmed_departure_drops_conflicting_scene_update_without_actor_
 
 
 def test_confirmed_departure_does_not_trim_conflict_outside_scene_update():
-    """Conflicts involving catgirl dialogue cannot be made safe merely by deleting scene updates."""  # noqa: DOCSTRING_CJK
+    """Conflicts involving neko dialogue cannot be made safe merely by deleting scene updates."""  # noqa: DOCSTRING_CJK
 
     review = evaluator.NumericV2TransitionOfferReview(
         offer_present=False,

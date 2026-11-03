@@ -73,7 +73,7 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
 
 
 def fixed_narration_blocks(container: Mapping[str, Any], position: str) -> list[dict[str, str]]:
-    """Read server-owned text verbatim; it never becomes catgirl dialogue."""
+    """Read server-owned text verbatim; it never becomes neko dialogue."""
     return [{"type": "narration", "text": item["text"]}
             for item in container.get("fixed_narrations", []) if item["position"] == position]
 

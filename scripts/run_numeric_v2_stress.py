@@ -632,9 +632,9 @@ def _contextual_freeform_input(
     attempt_index: int,
     node_title: str = "",
 ) -> str:
-    """Build natural player input from recent visible dialogue without repeating catgirl actions or entire body text."""  # noqa: DOCSTRING_CJK
+    """Build natural player input from recent visible dialogue without repeating neko actions or entire body text."""  # noqa: DOCSTRING_CJK
 
-    # Extract anchors only from parsed dialogue/narration; action blocks describe catgirl performance, not player-observed facts for the tester to invent.
+    # Extract anchors only from parsed dialogue/narration; action blocks describe neko performance, not player-observed facts for the tester to invent.
     visible_parts = [
         str(block.get("text") or "").strip()
         for block in performance_content_blocks(performance)
@@ -658,7 +658,7 @@ def _contextual_freeform_input(
     anchor = anchor.strip("“”\"' ")
     normalized_anchor = anchor.rstrip("………!！?？~～ ").strip()
     if normalized_anchor in GENERIC_CONTEXT_ANCHORS or len(normalized_anchor) < 4:
-        # Closing sentences are not observable facts; fall back to node titles rather than repeating the catgirl's emotional closure as player input.
+        # Closing sentences are not observable facts; fall back to node titles rather than repeating the neko's emotional closure as player input.
         anchor = node_title or "眼前这件事"
     anchor = anchor[:30]
     if attempt_index % 17 == 5:

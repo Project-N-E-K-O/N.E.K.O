@@ -536,6 +536,10 @@
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
     // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
     const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
+    // 主动搭话间隔默认值 A/B 实验组（与 utils/token_tracker/telemetry.py 的 _TELEMETRY_BRANCHES
+    // 对齐）。控制组 main 用 app-state.js 的 DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）。
+    const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_40s';
+    const _PROACTIVE_INTERVAL_AB_VALUE = 40;
     const _SHARED_SETTINGS_KEYS = [
         'proactiveChatEnabled',
         'proactiveVisionEnabled',
@@ -567,7 +571,8 @@
         'textGuardMaxLength',
         'renderQuality',
         'targetFrameRate',
-        'forgeDropEffectsEnabled'
+        'forgeDropEffectsEnabled',
+        'modelClickShakeEnabled'
     ];
 
     function _normalizeIndependentAsrProviderPreference(value) {
@@ -1723,6 +1728,9 @@
         const currentForgeDropEffects = typeof window.forgeDropEffectsEnabled !== 'undefined'
             ? window.forgeDropEffectsEnabled
             : true;
+        const currentModelClickShake = typeof window.modelClickShakeEnabled !== 'undefined'
+            ? window.modelClickShakeEnabled
+            : true;
 
         // 读取字幕设置（统一走 subtitle-shared store，避免多处直接写 localStorage）
         const subtitleStore = window.nekoSubtitleShared;
@@ -1770,6 +1778,7 @@
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             lockedHoverFadeEnabled: currentLockedHoverFade,
             forgeDropEffectsEnabled: currentForgeDropEffects,
+            modelClickShakeEnabled: currentModelClickShake,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -2052,6 +2061,15 @@
                     window.forgeDropEffectsEnabled = true;
                 }
 
+                // 点击模型原地颤动反馈设置
+                if (typeof settings.modelClickShakeEnabled === 'boolean') {
+                    window.modelClickShakeEnabled = settings.modelClickShakeEnabled;
+                } else if (typeof settings.modelClickShakeEnabled === 'string') {
+                    window.modelClickShakeEnabled = settings.modelClickShakeEnabled === 'true';
+                } else {
+                    window.modelClickShakeEnabled = true;
+                }
+
                 // 同步到运行中的实例
                 if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
                     window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
@@ -2081,7 +2099,7 @@
                 // 首次启动：隐私模式按用户地区分流（仅中国地区默认关闭隐私 / vision 开）。
                 // 历史上这里挂过隐私默认值实验（privacy_default_off_v2，已退役）和屏幕分享
                 // 来源默认值实验（vision_chat_default_off，已合并进 main、默认回到「开」），
-                // 现都不再做首启覆写，仅保留地区分流。
+                // 现都不再做首启覆写，仅保留地区分流。搭话间隔实验的覆写在下方 branch 决议后做。
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
                 }
@@ -2103,6 +2121,7 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
                 window.forgeDropEffectsEnabled = true;
+                window.modelClickShakeEnabled = true;
 
                 // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
                 // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
@@ -2126,6 +2145,7 @@
             window.humanoidLocalTrackingEnabled = false;
             window.lockedHoverFadeEnabled = true;
             window.forgeDropEffectsEnabled = true;
+            window.modelClickShakeEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
@@ -2259,9 +2279,9 @@
                 // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
                 // 对实验组 vision_chat_default_off 把屏幕分享来源（proactiveVisionChatEnabled）
                 // 首启默认翻成「关」，现该实验已合并进 main、默认回到控制组「开」（见
-                // app-state.js / loadSettings 的 ?? true），故不再做首启覆写；仅保留 marker
-                // 决议时序——情境弹窗 app-context-prompt.js 靠下方 neko:telemetry-branch-resolved
-                // 广播判断 settings 已就绪。
+                // app-state.js / loadSettings 的 ?? true），故不再做该覆写；marker 决议时序
+                // 仍供下方搭话间隔实验覆写使用，情境弹窗 app-context-prompt.js 也靠下方
+                // neko:telemetry-branch-resolved 广播判断 settings 已就绪。
                 const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
                 if (branchResolutionFinalized) {
                     try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
@@ -2328,6 +2348,26 @@
                         || S.independentAsrEnabled !== previousAsr) {
                         hasUpdate = true;
                     }
+                }
+
+                // A/B 实验组 proactive_interval_40s（全地区）：真·首启时把主动搭话间隔默认值
+                // 从控制组 DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）改成 40s。守卫：服务器没存过
+                // 间隔偏好、用户在 GET 期间（含其他窗口）没改过、本地仍是控制组默认值。放在
+                // 基线滚动之前，覆写值算默认值而不是用户改动。
+                const serverHasIntervalPref = !!serverSettings
+                    && serverSettings.proactiveChatInterval !== undefined;
+                const userTouchedInterval = _dirtySettingsKeys.has('proactiveChatInterval')
+                    || _pendingSettingsKeys.has('proactiveChatInterval')
+                    || (_crossWindowKeyMutationVersions.proactiveChatInterval || 0)
+                        > mutationVersionAtGetStart;
+                if (branchResolutionFinalized
+                        && telemetryBranch === _PROACTIVE_INTERVAL_AB_BRANCH
+                        && !serverHasIntervalPref
+                        && !userTouchedInterval
+                        && S.proactiveChatInterval === C.DEFAULT_PROACTIVE_CHAT_INTERVAL) {
+                    S.proactiveChatInterval = _PROACTIVE_INTERVAL_AB_VALUE;
+                    hasUpdate = true;
+                    console.log('[app-settings] A/B 实验组', telemetryBranch, '：主动搭话间隔默认', _PROACTIVE_INTERVAL_AB_VALUE, '秒');
                 }
 
                 // Roll the baseline to the merged state BEFORE the writeback

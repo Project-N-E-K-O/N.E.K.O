@@ -552,7 +552,7 @@ def test_numeric_v2_stress_freeform_uses_latest_visible_context():
 
 
 def test_numeric_v2_stress_freeform_does_not_quote_catgirl_action_or_echo_question():
-    # Free input should respond to visible facts, not copy the catgirl's actions or questions back as the player's own words.
+    # Free input should respond to visible facts, not copy the neko's actions or questions back as the player's own words.
     player_input, source = run_numeric_v2_stress.choose_player_input(
         strategy="freeform",
         attempt_index=1,

@@ -66,6 +66,75 @@ VMC 根节点独立于 `vrm.scene`，因此桌宠布局变换不会被导出。�
 
 当前渲染器会在长时间停顿后钳制帧 delta、缩小导入的 spring-bone 碰撞体半径，并通过光照配置缩放 MToon 描边宽度。这些是内部兼容保护，不是模型格式要求；不要为了复现它们而预先修改上传的 VRM 文件。
 
+碰撞体默认统一缩小到 50%（`VrmPhysicsProfile.DEFAULT_REDUCTION`）。这是经验值，用来抵消 UniVRM 导出时碰撞体半径没有随缩放归一的问题。某个模型需要不同的值时，用下面的每模型物理配置覆盖，不要改这个全局系数。
+
+## 每模型物理配置
+
+加载 VRM 时，`vrm-physics-profile.js` 会请求 `GET /api/model/vrm/physics_profile/{model_name}`，读取 `static/vrm/configs/{model_name}_physics.json`。读到可用配置就按配置写碰撞体半径和弹簧关节参数；没有文件、文件损坏、请求失败或超过 4 秒，都回到上面的 50% 缩减。仓库目前不附带任何 `_physics.json`，所以默认所有模型都走 50%。
+
+`model_name` 取模型 URL 的文件名去掉 `.vrm`（先做 URL 解码，解码失败时保留原样），与情绪映射用的是同一个名字。请求带 `cache: 'no-store'`，改完配置重新加载模型即可生效。控制台会输出一行 `[VRM] Physics profile: source=file|default, colliders=N, joints=N, reset=true|false`，用来确认实际命中了多少。
+
+配置可以由外部 Unity 工具 [vrm-physics-tuner](https://github.com/ylh440104/vrm-physics-tuner) 导出，本仓库不依赖它，也可以手写。
+
+### 文件格式
+
+顶层必须是 JSON 对象，`colliders` 和 `chains` 至少要有一个是数组，否则按没有配置处理。文件用 UTF-8 编码，允许 BOM（C# 默认会写）。`NaN` / `Infinity` 会在接口里换成 `null`，对应字段跳过。
+
+```json
+{
+  "colliders": [
+    { "bone": "J_Bip_C_Head", "shape": "sphere", "offset": [0, 0.05, 0], "radius": 0.06 },
+    { "bone": "J_Bip_C_Chest", "shape": "capsule", "offset": [0, 0, 0], "tail": [0, 0.1, 0], "radius": 0.08 }
+  ],
+  "chains": [
+    {
+      "bones": ["J_Sec_Hair1_01", "J_Sec_Hair2_01"],
+      "stiffness": 1.0,
+      "drag_force": 0.4,
+      "gravity_power": 0.0,
+      "gravity_dir": [0, -1, 0],
+      "hit_radius": 0.02
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `colliders[].bone` | 碰撞体所在骨骼的 glTF 节点原名 |
+| `colliders[].shape` | `sphere` 或 `capsule`，与 three-vrm 碰撞体的 `shape.type` 一致；省略时不检查形状 |
+| `colliders[].offset` | 碰撞体在骨骼局部空间的偏移。省略或 `[0,0,0]` 表示没有位置信息（tuner 导出的恒为 `[0,0,0]`） |
+| `colliders[].tail` | 胶囊尾端，只用来在同一骨骼的多个胶囊之间优先区分；tuner 写的是 Unity 坐标，对不上不算错 |
+| `colliders[].radius` | 模型缩放为 1 时的半径，运行时再乘当前缩放；必须是有限非负数，否则这个碰撞体仍按 50% 处理 |
+| `chains[].bones` | 这组参数作用到的骨骼原名列表 |
+| `chains[].stiffness`、`gravity_power` | 非负数 |
+| `chains[].drag_force` | 取值 [0, 1]（求解器按 `1 - dragForce` 衰减上一帧位移） |
+| `chains[].hit_radius` | 非负数，缩放为 1 时的值，随模型缩放 |
+| `chains[].gravity_dir` | 可选，三元数组 |
+
+关节参数超出取值范围时只跳过这一项，同一条链的其他参数照常写入。
+
+### 匹配规则
+
+- **骨骼名**：先按 GLTFLoader 保留在 `userData.name` 里的 glTF 原名匹配；节点没有记录原名时才用清洗后的名字（GLTFLoader 会把空白换成下划线、删掉 `[ ] . : /`）。节点有原名但配置里查不到时不回退到清洗名，避免 `hair.001` 和 `hair001` 这类清洗后同名的骨骼互相借配置。
+- **碰撞体**：只改模型已有碰撞体的半径，不增删碰撞体，也不改形状和位置。依次尝试：骨骼 + 形状 + offset + tail；骨骼 + 形状 + offset；同骨骼、同形状且配置没有位置信息时按出现顺序配对。形状不同、或 offset 明确对不上的保持未命中，走 50%。
+- **关节**：按骨骼找到链。同一骨骼出现在多条链里时按出现顺序依次分配；运行时关节比配置的链多时，多出来的保留模型自己的参数。
+- 写完后调用 `springBoneManager.reset()`，让弹簧骨从新参数重新开始。缩放模型时，碰撞体半径照旧随缩放；关节的 `hitRadius` 只有被配置写过的才随缩放，没有配置的模型与以前一样不变。
+
+### 已知限制
+
+- **按文件名查找。** 配置按模型文件名查找，与情绪映射一致。创意工坊里不同条目的同名 `model.vrm` 会共用一份配置。
+- **按骨骼名匹配，不按骨骼路径。** 同一骨骼出现在多条参数不同的链里时，按出现顺序分配。
+- **用 tuner 当前的导出，碰撞体基本不会生效。** 以仓库自带的 `sister1.0.vrm` 为例，tuner 导出 6 个胶囊碰撞体，而模型运行时是 28 个球体碰撞体，结果碰撞体 0/28 命中、关节 71/71 命中，实际只有弹簧关节参数生效。要让碰撞体也生效，需要 tuner 改成按模型现有碰撞体逐个导出半径。
+
+### 做成用户可见功能之前要先解决
+
+现在这套机制只面向开发者和调参者，还没有导入界面，也没有随包或通过创意工坊分发的配置。要做成用户可见功能，至少先解决下面三点：
+
+1. **存放位置。** 配置读自 `project_root/static/vrm/configs`，打包版的 `project_root` 是安装目录，不是用户数据目录。用户自己放进去的文件不适合长期保留，要先换到用户可写的目录，并兼容旧位置。情绪映射也存在同一个目录，最好一起迁移。
+2. **查找的名字。** 开始分发配置以后，按文件名查找会让工坊里的同名模型串用配置，需要换成能区分来源的名字。情绪映射用的是同一套规则，两者应一起改。
+3. **格式版本。** 文件没有版本字段，代码只看 `colliders` / `chains` 在不在。tuner 改格式之前（例如改成逐个导出碰撞体半径、改变字段含义），要先加版本字段，并约定旧版本怎么处理。
+
 ## API 摘要
 
 | 方法 | 端点 | 用途 |
@@ -77,6 +146,7 @@ VMC 根节点独立于 `vrm.scene`，因此桌宠布局变换不会被导出。�
 | `GET` | `/api/model/vrm/config` | 返回公共 VRM URL 前缀 |
 | `GET`、`POST` | `/api/model/vrm/emotion_mapping/{model_name}` | 读取或保存表情映射 |
 | `GET` | `/api/model/vrm/expressions/{model_name}` | 检查模型中的表情名称 |
+| `GET` | `/api/model/vrm/physics_profile/{model_name}` | 读取每模型物理配置 |
 | `DELETE` | `/api/model/vrm/model` | 按公共 URL 删除用户模型 |
 
 ## 宿主边界

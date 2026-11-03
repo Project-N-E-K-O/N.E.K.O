@@ -942,6 +942,9 @@ export default {
     connected: 'Connected',
     disconnected: 'Disconnected',
     connectionFailed: 'Log stream connection failed',
+    readFailed: 'Could not read log files. Check the log directory permissions.',
+    invalidPluginId: 'The plugin ID is invalid.',
+    invalidQuery: 'The log query is invalid.',
     exportLog: 'Export Logs Archive',
     openLogDirectory: 'Open Log Directory',
     exportSuccess: 'Log exported successfully',
@@ -1129,7 +1132,7 @@ export default {
         skipChat: 'Not now',
         sayHello: 'Hello',
       },
-      controlBanner: 'The catgirl is controlling the mouse',
+      controlBanner: 'The neko is controlling the mouse',
       lines: {
         introActivationHint: "Hang on a moment, I'll start talking soon, nyan~!",
         introGreetingReply:  "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",

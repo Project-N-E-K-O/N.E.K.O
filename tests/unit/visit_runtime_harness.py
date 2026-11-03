@@ -231,6 +231,9 @@ class FakeHost:
         self.resubmitted.extend(callbacks)
         self.events.append("resubmit")
 
+    async def warm_speech(self) -> None:
+        self.events.append("warm_speech")
+
     def open_speech_stream(self, *, metadata, request_id, on_enqueued, on_failed=None):
         if not self.voice_streams:
             return None
@@ -441,6 +444,7 @@ def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, n
         settings=settings, create_session=create_session, character_context=character_context,
         memory_block=memory_block, commit_region=commit_region, commit_summary=commit_summary,
         schedule_upload=schedule_upload, rng=random.Random(0), reply_gap_s=(0.0, 0.0),
+        human_reply_grace_s=0.0,
     )
     side = Side(name=name, role=role, host=FakeHost(name), deps=deps, config_dir=config_dir, replies=replies)
     side_holder["side"] = side

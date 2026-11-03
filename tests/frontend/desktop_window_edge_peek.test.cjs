@@ -325,6 +325,23 @@ test('the nearest valid left, right, or bottom edge becomes the target', async (
   assert.equal(bottom.window.NekoDesktopWindowEdgePeek.getState().targetTop, 344);
 });
 
+test('Start peeks clip against the visible panel rather than its surrounding 20px shadow', async () => {
+  const panel = { x: 656, y: 213, width: 1247, height: 1295 };
+  for (const entry of [{ edge: 'left', x: 500, y: 500, border: 656 },
+    { edge: 'right', x: 1940, y: 500, border: 1903 },
+    { edge: 'bottom', x: 1200, y: 1510, border: 1508 }]) {
+    const r = createRuntime({ catLeft: entry.x, catTop: entry.y, catWidth: 122, catHeight: 122,
+      innerWidth: 2560, innerHeight: 1600, screenX: 0, screenY: 0 });
+    r.setShared(sensingResult(1, panel));
+    await r.flushMicrotasks();
+    const state = r.window.NekoDesktopWindowEdgePeek.getState();
+    assert.equal(state.edge, entry.edge);
+    const cut = entry.edge === 'bottom' ? state.targetTop + 122 * 0.56 : state.targetLeft + 61;
+    // Public target coordinates are rounded to CSS pixels, like DOM placement.
+    assert.ok(Math.abs(cut - entry.border) <= 0.5, `${entry.edge}: crop line touches the painted border`);
+  }
+});
+
 test('walking direction is owned by edge-peek even when the previous generic facing remains', async () => {
   const left = createRuntime({ catLeft: 650, catTop: 300 });
   left.button.classList.add('is-cat1-facing-right');

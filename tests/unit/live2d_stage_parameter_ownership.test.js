@@ -894,8 +894,10 @@ test('editing and unavailable defaults never fall back to stale parameters or in
         f.apply({ ParamAngleX: 2 });
         const next = f.stage.acquire('pose');
         f.stage.setTemporaryParam('ParamAngleX', 9);
-        f.apply({});
+        // The default must already be unavailable when the override is released;
+        // a valid default is now restored during parameter publication itself.
         f.manager._getCoreParameterDefaultValue = () => undefined;
+        f.apply({});
         f.stage.release(next.id);
         assert.equal(f.value('ParamAngleX'), 9);
         assert.equal(f.runtime.warnings.filter(args => String(args[0]).includes('unavailable defaults')).length, 1);

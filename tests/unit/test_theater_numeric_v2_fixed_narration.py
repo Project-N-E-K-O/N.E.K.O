@@ -476,7 +476,7 @@ def test_fixed_dependencies_still_belong_to_review_and_delivery():
 
 
 def test_actor_receive_trigger_requires_player_handoff_direction():
-    """Conditions requiring the catgirl to receive something cannot be established by candidate prose alone; explicit player handover can still trigger them."""  # noqa: DOCSTRING_CJK
+    """Conditions requiring the neko to receive something cannot be established by candidate prose alone; explicit player handover can still trigger them."""  # noqa: DOCSTRING_CJK
 
     story = deepcopy(_engine().story)
     story['nodes'][0]['story_beat']['fixed_narrations'][1]['trigger']['condition'] = '小葵接过旧照片。'

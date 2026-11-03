@@ -463,15 +463,22 @@ export async function run(game, character, ui = {}) {
     // Playback needs a fresh trusted Play gesture after asynchronous selection.
     try {if(await load(row,automatic.enabled) && automatic.enabled)await play();}catch(error){status(error.message);if(automatic.enabled)automatic.next();}
   };
-  $('exit').onclick = async () => {
+  // The shared window controls bind before the SDK boots, so even a failed
+  // initialization leaves Exit usable. This hook only handles scene cleanup.
+  window.nekoBeforeWindowClose = async () => {
+    $('exit').disabled = true;
     automatic.stop();
     nextQueue.dispose();
-    try { await end(); }
-    catch(error) { status(error.message); }
-    finally {
-      game.dispose(); window.close();
-      setTimeout(()=>{if(!window.closed)location.href='/';},100);
-    }
+    selectionGeneration++;
+    // Preserve the SDK's page-exit beacon if saving progress or ending the
+    // route stalls/fails; disposing early would prevent that final release.
+    const cleanup = end().then(()=>{
+      if (['idle','ended','inactive'].includes(game.runtime.state)) game.dispose();
+    },error=>status(error.message));
+    let timer;
+    try {
+      await Promise.race([cleanup,new Promise(resolve=>{timer=setTimeout(resolve,1500);})]);
+    } finally { clearTimeout(timer); }
   };
   let watchOffset=0, watchNext=null, watchGeneration=0, watchLoading=false, watchRefreshPending=false;
   $('watches-previous').onclick=()=>refreshWatches(Math.max(0,watchOffset-50));

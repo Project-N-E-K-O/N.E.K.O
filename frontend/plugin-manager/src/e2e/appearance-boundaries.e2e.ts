@@ -510,6 +510,41 @@ appearanceTest('large card grids keep real track sizes when scrolling and filter
   expect(await page.locator('.plugin-card').evaluate(card => card.scrollHeight <= card.clientHeight + 1)).toBe(true)
 })
 
+appearanceTest('contrast checks use the card surface below transparent content', async ({ page }) => {
+  await installCardLayoutFixture(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
+  await expect(page.locator('.plugin-card')).toHaveCount(8)
+  const selector = '.plugin-card .plugin-description'
+  const card = page.locator('.plugin-card').first()
+  await card.evaluate(element => {
+    const card = element as HTMLElement
+    const surface = element.querySelector<HTMLElement>('.plugin-card__surface')!
+    const text = element.querySelector<HTMLElement>('.plugin-description')!
+    card.style.backgroundColor = 'white'
+    surface.style.backgroundColor = 'black'
+    text.style.color = 'black'
+  })
+  const failures = await contrastFailures(page, [selector])
+  expect(failures).toHaveLength(1)
+  expect(failures[0]).toMatchObject({ selector, background: [0, 0, 0], ratio: 1 })
+
+  // An opaque descendant still owns its own backdrop.
+  await card.locator('.plugin-description').evaluate(element => {
+    (element as HTMLElement).style.backgroundColor = 'white'
+  })
+  expect(await contrastFailures(page, [selector])).toEqual([])
+
+  // A translucent surface must be composited over the card's ancestor fill.
+  await card.evaluate(element => {
+    element.querySelector<HTMLElement>('.plugin-description')!.style.backgroundColor = 'transparent'
+    element.querySelector<HTMLElement>('.plugin-card__surface')!.style.backgroundColor = 'rgba(0, 0, 0, 0.5)'
+  })
+  const translucent = await contrastFailures(page, [selector], 7)
+  expect(translucent).toHaveLength(1)
+  expect(translucent[0]!.background).toEqual([127, 127, 127])
+})
+
 appearanceTest('dark surfaces and accent controls remain legible and restore the light palette', async ({ page }) => {
   await installCardLayoutFixture(page)
   // Keep the boot update popup from covering the controls under inspection.

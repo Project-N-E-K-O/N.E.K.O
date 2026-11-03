@@ -124,6 +124,9 @@ class VisitHost(Protocol):
         marker (TTS start / enqueue error, no worker, turn taken over).
         """
 
+    async def warm_speech(self) -> None:
+        """Start the TTS worker before the first line opens a stream (it can take seconds); never raises."""
+
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         """Record the family's visit line in the sync stream (never in private chat history)."""
 
@@ -339,13 +342,22 @@ class ManagerHost:
             return None
         return opener(metadata=metadata, request_id=request_id, on_enqueued=on_enqueued, on_failed=on_failed)
 
+    async def warm_speech(self) -> None:
+        warm = getattr(self._mgr, "ensure_tts_pipeline_alive", None)
+        if not callable(warm):
+            return
+        try:
+            await warm()
+        except Exception as exc:  # noqa: BLE001 - The first line starts it again and falls back on its own.
+            logger.warning("visit: TTS warm-up failed: %s", type(exc).__name__)
+
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(
         self, text: str, *, metadata: dict, request_id: str, finalize_turn: bool = False,
     ) -> None:
-        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary catgirl speech, spoken aloud and entering sync normally.
+        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary neko speech, spoken aloud and entering sync normally.
         # Bound this wait: finalization archives files and unregisters afterward, so a stuck page must not block them too.
         try:
             await asyncio.wait_for(

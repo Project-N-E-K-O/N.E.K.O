@@ -635,7 +635,7 @@ def test_numeric_v2_actor_inputs_share_existing_pacing(player_input, stage):
 
 @pytest.mark.parametrize("suggestions_only", [False, True])
 def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions_only):
-    """Neither ordinary suggestions nor lightweight refill may assign the catgirl's duties or possessions to the player."""
+    """Neither ordinary suggestions nor lightweight refill may assign the neko's duties or possessions to the player."""
 
     if suggestions_only:
         messages = numeric_v2_actor._suggestion_fill_messages(
@@ -1337,7 +1337,7 @@ def test_numeric_v2_prefilter_keeps_result_already_visible_in_performance():
 
 
 def test_numeric_v2_turn_prompt_keeps_real_current_scene_history():
-    # Committed player inputs/catgirl replies must enter story_so_far; recommendation drafts cannot replace actual history.
+    # Committed player inputs/neko replies must enter story_so_far; recommendation drafts cannot replace actual history.
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = _session(engine)
     history_record = {
@@ -2714,7 +2714,7 @@ def test_numeric_v2_review_reuses_same_call_for_pending_completion_fact_candidat
         "evidence_quote": "伤者已经脱困。",
     },)
 def test_numeric_v2_actor_keeps_body_when_suggestions_are_malformed():
-    # Malformed recommendations fall back only to an empty list; invalid auxiliary data must not discard an already-valid catgirl body.
+    # Malformed recommendations fall back only to an empty list; invalid auxiliary data must not discard an already-valid neko body.
     parsed = _parse_output(json.dumps({
         "performance": "（抬眼）我听到了。",
         "transition_offered": False,
@@ -3173,7 +3173,7 @@ def test_numeric_v2_actor_preserves_valid_suggestions_after_route_change(monkeyp
 
 
 def test_numeric_v2_actor_prompt_preserves_its_own_committed_proposals():
-    """Continuous performance cannot deny or covertly replace the catgirl's proposal from the preceding turn."""  # noqa: DOCSTRING_CJK
+    """Continuous performance cannot deny or covertly replace the neko's proposal from the preceding turn."""  # noqa: DOCSTRING_CJK
 
     turn_prompt = numeric_v2_actor._system_prompt(
         catgirl_name="测试猫娘",
