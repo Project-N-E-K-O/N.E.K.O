@@ -3027,6 +3027,11 @@
             catModelReturnProbe = { visitId: visitId, catgirl: catgirl };
             return true;
         }
+        if (result.status === 0) {
+            // No response: the end may still have landed, so the scene confirms it from state.
+            catModelReturnProbe = { visitId: visitId, catgirl: catgirl };
+            return 'unknown';
+        }
         toast(t('visit.error.generic', '没能完成，请稍后再试'));
         return false;
     }

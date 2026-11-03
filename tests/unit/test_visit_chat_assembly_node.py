@@ -1664,6 +1664,17 @@ const report = {};
     await raced.settle();
     raced.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 2 });
     releaseState();
+    // A lost response may still have ended the visit: keep the probe so state can confirm it.
+    const lostEnd = createHarness({ routes: {
+      '/api/visit/route/end': async () => { throw new Error('network down'); },
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    lostEnd.state('started');
+    const lostEndResult = await lostEnd.chat.endCatVisitForModelReturn(VID);
+    report.cat_return_lost_response = {
+      result: lostEndResult,
+      confirmed: await lostEnd.chat.confirmCatVisitEnded(VID),
+    };
     report.cat_return_reconcile = {
       idle: await idle.chat.confirmCatVisitEnded(VID),
       ending: await ending.chat.confirmCatVisitEnded(VID),
@@ -2536,6 +2547,10 @@ def test_backend_refusal_marks_that_bubble_and_restores_the_text(report):
     assert report["echo_no_dup"] == 0
     assert report["recipient_own"] == "neko_visit:own_cat"
     assert report["recipient_switch_refreshed_hit_geometry"] is True
+
+
+def test_cat_model_return_keeps_reconciling_after_a_lost_response(report):
+    assert report["cat_return_lost_response"] == {"result": "unknown", "confirmed": True}
 
 
 def test_cat_model_return_reconciliation_requires_authoritative_end(report):

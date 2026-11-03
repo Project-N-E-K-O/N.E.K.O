@@ -967,6 +967,30 @@ async def test_cat_world_is_host_authoritative_directional_and_commit_recovers(t
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_cat_world_refuses_while_the_host_page_cannot_take_it(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    try:
+        intent = {"intent_id": 1, "kind": "question_tap", "x_q16": 1, "y_q16": 2}
+        host.host.bound = False                  # The host page runs the world simulation.
+        status, body = await host.rt.request_cat_world_intent(intent)
+        assert status == 409 and body["code"] == "VISIT_DISPLAY_UNBOUND"
+        status, body = await guest.rt.request_cat_world_intent(intent)
+        assert status == 202                     # A guest intent goes to the host, not its own page.
+        host.host.bound = True
+        status, body = await host.rt.request_cat_world_intent(intent)
+        assert status == 202                     # The refused intent did not advance the cursor.
+
+        monkeypatch.setattr(host.rt, "_display_backlogged", lambda: True)
+        status, body = await host.rt.request_cat_world_intent({**intent, "intent_id": 2})
+        assert status == 429 and body["code"] == "VISIT_E_BUSY"
+        status, body = await host.rt.request_cat_world_state("commit", _cat_world(1))
+        assert status == 429 and body["code"] == "VISIT_E_BUSY"
+        status, body = await host.rt.request_cat_world_state("frame", _cat_world(1))
+        assert status == 202                     # Frames stay droppable.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_cat_pose_is_owner_projected_latest_wins_and_commit_recovers(tmp_path, monkeypatch):
     host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
     try:

@@ -2312,6 +2312,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if self._display_backlogged():
             # Intents are not droppable; a slow page must not queue lifecycle frames behind them.
             return 429, {"ok": False, "code": "VISIT_E_BUSY"}
+        if self.side == "host" and not self.host.display_bound():
+            # The host page runs the world: an intent it never receives would be lost silently.
+            return 409, {"ok": False, "code": "VISIT_DISPLAY_UNBOUND"}
         seq = 0
         if self.side == "guest":
             payload = {"t": "cat_world_intent", "v": 1,
@@ -2369,6 +2372,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         now = self.clock()
         if phase == "frame" and not self._cat_world_frame_bucket.take(1, now):
             return 429, {"ok": False, "code": "VISIT_CAT_WORLD_RATE"}
+        if phase == "commit" and self._display_backlogged():
+            # Commits are not droppable; the page retries them once the display queue drains.
+            return 429, {"ok": False, "code": "VISIT_E_BUSY"}
         payload = {"t": "cat_world_frame" if phase == "frame" else "cat_world_commit", "v": 1,
                    **{field: state[field] for field in CAT_WORLD_STATE_FIELDS}}
         try:

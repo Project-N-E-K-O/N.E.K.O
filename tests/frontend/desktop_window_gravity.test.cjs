@@ -905,6 +905,26 @@ test('cat visits keep local Playground gravity but register only the local cat b
   assert.equal(dropState.bodies.has('yarn'), true);
 });
 
+test('the real Playground starter forwards catOnly to body registration', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const registrations = [];
+  r.context._registerNekoIdleCat1PlaygroundPhysicsBodies = (button, options) => {
+    registrations.push({ button, options });
+    return true;
+  };
+  r.context._acquireNekoIdleCat1PlaygroundDropLifecycle = () => ({});
+  r.context._setNekoIdleCat1PlaygroundCatAirArt = () => {};
+  r.context._installNekoIdleCat1PlaygroundPointerListeners = () => {};
+  r.context._refreshNekoIdleCat1PlaygroundViewportBottom = () => {};
+  r.context._startNekoIdleCat1PlaygroundPhysics = () => {};
+  const start = r.context._startNekoIdleCat1PlaygroundDrop;
+  assert.equal(start(r.button, {}, { catOnly: true }), true);
+  assert.equal(start(r.button, {}), true);
+  assert.deepEqual(registrations.map((item) => item.options.catOnly), [true, false]);
+  assert.equal(registrations[0].button, r.button);
+});
+
 test('gravity preference on an ordinary model waits for active CAT1 and ignores a late entry after OFF', () => {
   const r = runtime();
   const { api, entries } = installPlaygroundSetting(r);
