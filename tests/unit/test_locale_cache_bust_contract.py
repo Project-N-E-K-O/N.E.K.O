@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-03-theater-market-news-overseas-merge",
         "2026-11-03-theater-market-systray-labels-merge",
         "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-theater-market-chat-sync-merge",
@@ -539,7 +540,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "071f6bda2b871cde84906c7e86f67a628ae4f84558d0854bd9abc528215b7bab"
+LOCALE_KEY_SIGNATURE = "20e517867c86fa4461b4e2054c98e6307abbc12b2b7cb94917ca1fb28d057bf2"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

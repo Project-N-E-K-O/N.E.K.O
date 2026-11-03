@@ -6920,6 +6920,7 @@
             "loginRequired": "請先在 N.E.K.O 設定裡登入喵宇宙",
             "mutualRequired": "你們已不再互相追蹤，無法傳送邀請",
             "targetOffline": "對方目前離線，暫時不能邀請",
+            "invitationCapacity": "目前邀請較多，請稍後再試",
             "communityUnavailable": "暫時連不上喵宇宙，稍後再試一次",
             "declined": "{{name}}這次不能來串門",
             "otherParty": "對方",
