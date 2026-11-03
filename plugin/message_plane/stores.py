@@ -68,7 +68,15 @@ class TopicStore:
 
     def publish_with_revision(self, topic: str, payload: Dict[str, Any]) -> tuple[Dict[str, Any], int]:
         with self._lock:
+            records = self.items.get(str(topic))
+            evicted = (
+                self.name == CONVERSATIONS_STORE_NAME and str(topic) == CONVERSATIONS_TOPIC
+                and records is not None and records.maxlen and len(records) == records.maxlen
+            )
             event = self.publish(topic, payload)
+            if evicted:
+                # Ingress-only metadata: keep legacy stored records unchanged.
+                event = {**event, "_evicted": True}
             return event, self._conversation_revisions.get(event["seq"], 0)
 
     def replace_topic_with_revisions(

@@ -1090,6 +1090,7 @@ class _GeminiMixin:
                         self._realtime_conversation_observation = {
                             "reply_id": uuid.uuid4().hex, "origin": None,
                             "started": False, "closed": False, "lifecycle": "realtime",
+                            "allow_text_continuations": True,
                         }
                         self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # Reset the first-chunk flag.

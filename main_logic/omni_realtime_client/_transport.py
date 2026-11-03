@@ -2419,11 +2419,18 @@ class _TransportMixin:
     async def _observed_text_callback(self, callback, *args):
         observation = getattr(self, "_realtime_conversation_observation", None)
         if observation and observation.get("closed"):
-            observation = None
+            if observation.get("allow_text_continuations") and observation.get("close_reason") == "completed":
+                # Gemini already classified this as the same turn. Reuse its
+                # transcript only during the callback; Core projects shown text.
+                observation["_text_snapshot"] = self._gemini_current_transcript
+            else:
+                observation = None
         token = conversation_reply_observation.set(observation)
         try:
             return await callback(*args)
         finally:
+            if observation is not None:
+                observation.pop("_text_snapshot", None)
             conversation_reply_observation.reset(token)
 
     def _close_realtime_conversation_observation(self, status: str) -> None:
@@ -2439,6 +2446,7 @@ class _TransportMixin:
             reason = "failed"
         else:
             reason = "unknown"
+        observation["close_reason"] = reason
         schedule_conversation_fact_observed_best_effort(
             self.lanlan_name,
             fact="reply.closed",

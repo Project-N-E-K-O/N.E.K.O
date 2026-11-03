@@ -127,6 +127,48 @@ async def test_correction_preserves_sequence_and_invalidates_view(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_filtered_view_refreshes_when_unmatched_record_evicts_its_message(monkeypatch):
+    state = FakeState()
+    monkeypatch.setattr(bus_module, "state", state)
+    changes = []
+    invalidated = asyncio.Event()
+
+    class Host:
+        async def push_bus_change(self, **kwargs):
+            changes.append(kwargs)
+            if kwargs["op"] == "view.invalidated":
+                invalidated.set()
+
+    state.hosts = {"p": Host()}
+    state.subs = {
+        sid: {"from_plugin": "p", "contract": "conversations_v2", "rules": ["record"],
+              "filters": {"role": "user"}, "view": view}
+        for sid, view in (("view", True), ("records", False))
+    }
+    store = TopicStore("conversations", 1)
+    manager = BusSubscriptionManager()
+    await manager.start()
+    try:
+        event, revision = store.publish_with_revision("all", record("user")["payload"])
+        manager.accept_conversation_record({**event, "_revision": revision})
+        for _ in range(30):
+            if len(changes) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(changes) == 2
+        payload = record("assistant")["payload"]
+        payload["metadata"]["turn_type"] = "assistant_message"
+        event, revision = store.publish_with_revision("all", payload)
+        manager.accept_conversation_record({**event, "_revision": revision})
+        assert store.conversation_messages(filters={"role": "user"}, limit=10, order="asc")[0] == []
+        await asyncio.wait_for(invalidated.wait(), 1)
+        assert [(item["sub_id"], item["op"]) for item in changes[2:]] == [("view", "view.invalidated")]
+        assert "_evicted" not in store.get_recent("all", 1)[0]
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
 async def test_slow_subscriber_queue_drops_old_and_coalesces_invalidation(monkeypatch):
     state = FakeState()
     monkeypatch.setattr(bus_module, "state", state)

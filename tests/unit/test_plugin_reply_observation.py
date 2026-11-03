@@ -241,6 +241,68 @@ async def test_native_gemini_accepted_turn_emits_observed_boundaries(monkeypatch
     assert facts[1][1]["close_reason"] == "completed"
 
 
+@pytest.mark.parametrize("defer_record", [False, True])
+async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch, defer_record):
+    from types import SimpleNamespace
+    import main_logic.omni_realtime_client._transport as transport_module
+    from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event
+    from plugin.message_plane.stores import TopicStore
+    from plugin.server.application.conversations import ConversationService
+
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance",
+                        lambda: SimpleNamespace(record=lambda **_: None))
+    store = TopicStore("conversations", 10)
+    service = ConversationService(store.conversation_message, update_message=store.patch_conversation)
+    facts, records, pending = [], [], []
+
+    def note(name, *, fact, payload):
+        facts.append((fact, payload))
+        service.accept_fact(fact, payload)
+
+    async def noop():
+        pass
+
+    def observed(name, **kwargs):
+        records.append(kwargs)
+        payload = {"id": "message", "content": kwargs["content"],
+                   "reply_id": kwargs["metadata"]["reply_id"],
+                   "metadata": {"turn_type": kwargs["turn_type"], "lanlan_name": name}}
+        if defer_record:
+            pending.append(payload)
+        else:
+            service.accept_message(store.publish("all", payload))
+        return noop()
+
+    monkeypatch.setattr(turn_module, "schedule_conversation_fact_observed_best_effort", note)
+    monkeypatch.setattr(transport_module, "schedule_conversation_fact_observed_best_effort", note)
+    monkeypatch.setattr(turn_module, "publish_conversation_turn_observed_best_effort", observed)
+    manager, client, provider = _client_manager()
+    client.lanlan_name = manager.lanlan_name
+    manager._note_ai_turn = lambda **_: None
+    manager._reset_ai_turn_buffer = turn_module.TurnMixin._reset_ai_turn_buffer.__get__(manager)
+    manager._fire_task = lambda coro: coro.close()
+
+    async def complete():
+        manager._flush_ai_turn_text_to_tracker()
+
+    client.on_response_done = complete
+    await _dispatch(client, provider, _event(text="first"))
+    await _dispatch(client, provider, _event(complete=True))
+    reply_id = facts[0][1]["reply_id"]
+    original_turn = facts[0][1]["turn_id"]
+    manager.current_speech_id = "after-terminal"
+    await _dispatch(client, provider, _event(text="<happy> continuation"))
+    await _dispatch(client, provider, _event(complete=True))
+    for payload in pending:
+        service.accept_message(store.publish("all", payload))
+    assert len(records) == 1
+    assert [fact for fact, _ in facts] == ["reply.started", "reply.closed", "reply.updated"]
+    assert {payload["reply_id"] for _, payload in facts} == {reply_id}
+    assert client._realtime_conversation_observation["turn_id"] == original_turn
+    assert service.get_reply(reply_id)["text"] == "first continuation"
+    assert store.conversation_message("message")["text"] == "first continuation"
+
+
 async def test_provider_failure_without_text_is_not_reported_completed(monkeypatch):
     from unittest.mock import MagicMock
     monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", MagicMock())

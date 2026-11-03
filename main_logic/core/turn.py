@@ -744,6 +744,9 @@ class TurnMixin:
         # a different task, whose context no longer carries the proactive sid.
         if client_owned:
             return
+        if observation is not None and observation.get("allow_text_continuations") and observation.get("_message_published"):
+            # Late Gemini chunks correct the retained message via reply.updated.
+            return
         try:
             # The existing scheduler requires a running loop. Check before
             # constructing a coroutine so synchronous teardown cannot leak it.
@@ -768,6 +771,8 @@ class TurnMixin:
                 },
                 ts=spoken_at,
             ))
+            if observation is not None and observation.get("allow_text_continuations"):
+                observation["_message_published"] = True
         except Exception:
             logger.debug("[plugin-bus] ai message not published", exc_info=True)
 
@@ -3071,8 +3076,18 @@ class TurnMixin:
                     turn_id=reply_owner.observation_turn_id,
                 )
         observation = conversation_reply_observation.get()
-        if reply_owner is None and observation is not None and text_clean.strip():
+        if reply_owner is None and observation is not None and text_clean.strip() and not observation.get("closed"):
             observation["turn_id"] = str(effective_turn_id) if effective_turn_id else None
+        if reply_owner is None and observation is not None and isinstance(observation.get("_text_snapshot"), str):
+            schedule_conversation_fact_observed_best_effort(
+                self.lanlan_name,
+                fact="reply.updated",
+                payload={
+                    "reply_id": observation["reply_id"], "character": self.lanlan_name,
+                    "text": self.emotion_pattern.sub('', observation["_text_snapshot"]).strip(),
+                    "occurred_at": published_at,
+                },
+            )
         if reply_owner is None and observation is not None and text_clean.strip() and not observation["started"]:
             observation["started"] = True
             schedule_conversation_fact_observed_best_effort(

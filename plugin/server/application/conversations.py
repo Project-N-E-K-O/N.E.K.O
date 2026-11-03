@@ -305,6 +305,8 @@ class ConversationService:
                 reply["audio_expected"] = audio
             if text is not None and reply["_message_id"] is None:
                 reply["text"] = text
+                if fact == "reply.updated":
+                    reply["_text_updated"] = True
             if fact == "reply.started":
                 reply["text_state"] = "started"
                 if reply["started_at"] is None:
@@ -333,19 +335,22 @@ class ConversationService:
             if fact in ("reply.started", "reply.closed"):
                 self._remember_turn(character, payload.get("turn_id"), reply_id)
         if fact == "reply.updated" and message_id and fields:
-            if self._update_message is None:
-                raise ServerDomainError(
-                    code="CAPABILITY_UNAVAILABLE",
-                    message="Message correction is unavailable",
-                    status_code=503,
-                )
-            if self._update_message(message_id, fields) is None:
-                raise ServerDomainError(
-                    code="CONVERSATION_MESSAGE_UNAVAILABLE",
-                    message="Message is no longer retained",
-                    status_code=409,
-                )
+            self._update_retained_message(message_id, fields)
         return fact, {"reply": self._reply_snapshot(reply)}
+
+    def _update_retained_message(self, message_id: str, fields: dict) -> None:
+        if self._update_message is None:
+            raise ServerDomainError(
+                code="CAPABILITY_UNAVAILABLE",
+                message="Message correction is unavailable",
+                status_code=503,
+            )
+        if self._update_message(message_id, fields) is None:
+            raise ServerDomainError(
+                code="CONVERSATION_MESSAGE_UNAVAILABLE",
+                message="Message is no longer retained",
+                status_code=409,
+            )
 
     @staticmethod
     def _merge_playback(playbacks: list[dict], event: dict) -> list[dict]:
@@ -471,6 +476,9 @@ class ConversationService:
             reply["_message_id"] = mid
             reply["character"] = reply["character"] or msg["character"]
             reply["input_id"] = reply["input_id"] or input_id
+            if reply.pop("_text_updated", False) and reply["text"] is not None:
+                # Facts and Message Plane records can arrive in either order.
+                self._update_retained_message(mid, {"text": reply["text"]})
             reply["text"] = None
             if msg["origin"] is not None:
                 reply["origin"] = copy.deepcopy(msg["origin"])
@@ -478,6 +486,7 @@ class ConversationService:
 
     def _reply_snapshot(self, reply: dict) -> dict:
         result = copy.deepcopy(reply)
+        result.pop("_text_updated", None)
         message_id = result.pop("_message_id")
         if message_id:
             message = self._read_message(message_id)

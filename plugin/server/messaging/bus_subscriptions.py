@@ -232,7 +232,10 @@ class BusSubscriptionManager:
                 for sid, info in subs.items():
                     if info.get("contract") != "conversations_v2":
                         continue
-                    if op in ("message.updated", "view.invalidated") and info.get("view"):
+                    if info.get("view") and (
+                        op in ("message.updated", "view.invalidated")
+                        or op == "record" and payload.get("_evicted") is True
+                    ):
                         self._conversation_invalidate(str(sid), info)
                     if op == "view.invalidated":
                         continue
