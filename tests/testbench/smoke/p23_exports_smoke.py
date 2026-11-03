@@ -123,7 +123,7 @@ def _seed_session() -> "object":
         "master_name": "Master",
         "character_name": "NEKO",
         "language": "zh",
-        "system_prompt": "You are NEKO, a cheerful cat-girl assistant.",
+        "system_prompt": "You are NEKO, a cheerful neko assistant.",
     }
     session.model_config = {
         "chat": {
