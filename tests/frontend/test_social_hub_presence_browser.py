@@ -1,6 +1,7 @@
 """Real-browser presence menu regression checks; run this file directly, without a server."""
 
 import mimetypes
+import time
 import unittest
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,6 +21,84 @@ BODY = {
     'recommendations': [{'id': f'rec-{i}', 'display_name': f'Recommended {i}', 'avatar_url': 'hue:120'}
                         for i in range(3)],
 }
+
+
+class SocialHubAccountSwitchBrowserTests(unittest.TestCase):
+    """Exercise the real first-reveal deadline with browser fetch scheduling."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.playwright = sync_playwright().start()
+        cls.browser = cls.playwright.chromium.launch(headless=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+
+    def test_account_switch_before_first_reveal_does_not_leave_hidden_or_reopen_closed_panel(self):
+        for outcome in ['fast', 'slow', 'closed']:
+            with self.subTest(outcome=outcome):
+                context = self.browser.new_context(viewport={'width': 1280, 'height': 800})
+                page = context.new_page()
+                pending, errors = [], []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+
+                def route(request_route):
+                    path = urlparse(request_route.request.url).path
+                    if path == '/':
+                        request_route.fulfill(content_type='text/html', body='''<!doctype html>
+                            <html><head><link rel="stylesheet" href="/static/css/social-hub.css"></head>
+                            <body><script>
+                            window.__owner = { generation: 1, accountKey: 'account-a', accountId: 'account-a',
+                              rolloutEnabled: true, realtimeEnabled: true, synced: true, replicaValid: true, items: [] };
+                            window.nekoSocial = {
+                              onInvitationsChanged(callback) { window.__changeOwner = callback; },
+                              getInvitations() { return Promise.resolve(window.__owner); }
+                            };
+                            </script><script src="/static/social-hub.js"></script></body></html>''')
+                    elif path == '/api/community/visit-hub':
+                        pending.append(request_route)
+                    else:
+                        asset = ROOT / path.lstrip('/')
+                        request_route.fulfill(status=200 if asset.is_file() else 404,
+                            body=asset.read_bytes() if asset.is_file() else b'',
+                            content_type=mimetypes.guess_type(asset.name)[0] or 'application/octet-stream')
+
+                try:
+                    page.route('**/*', route)
+                    page.goto('http://neko.test/')
+                    page.wait_for_function('window.__changeOwner && window.nekoSocialHub')
+                    page.evaluate('''() => {
+                        nekoSocialHub.open();
+                        __changeOwner({ ...__owner, generation: 2, accountKey: 'account-b', accountId: 'account-b' });
+                    }''')
+                    page.wait_for_function('window.nekoSocialHub._state.loading')
+                    deadline = time.monotonic() + 3
+                    while len(pending) < 2 and time.monotonic() < deadline:
+                        page.wait_for_timeout(10)
+                    self.assertEqual(len(pending), 2)
+                    old, replacement = pending
+                    old.fulfill(json={'logged_in': True, 'account': {'id': 'account-a'},
+                        'friends': [], 'recommendations': []})
+                    if outcome == 'closed':
+                        page.evaluate('nekoSocialHub.close()')
+                    elif outcome == 'slow':
+                        expect(page.locator(PANEL)).to_be_visible(timeout=2000)
+                        self.assertTrue(page.evaluate('nekoSocialHub._state.loading'))
+                    replacement.fulfill(json={'logged_in': True,
+                        'account': {'id': 'account-b', 'display_name': 'New Account'},
+                        'friends': [], 'recommendations': []})
+                    pending.clear()
+                    if outcome == 'closed':
+                        page.wait_for_timeout(350)
+                        expect(page.locator(PANEL)).to_be_hidden()
+                    else:
+                        expect(page.locator(PANEL)).to_be_visible()
+                        page.wait_for_function("nekoSocialHub._state.accountId === 'account-b' && !nekoSocialHub._state.loading")
+                    self.assertEqual(errors, [])
+                finally:
+                    context.close()
 
 
 class SocialHubPresenceBrowserTests(unittest.TestCase):

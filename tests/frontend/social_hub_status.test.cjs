@@ -65,6 +65,76 @@ function loadMountedHub(options = {}) {
   return { dom, hub: window.nekoSocialHub, document: window.document };
 }
 
+for (const realtime of [true, false]) {
+  for (const outcome of ['success', 'failure', 'slow', 'closed']) {
+    test(`account switch before first reveal keeps panel usable (${realtime}, ${outcome})`, async () => {
+      let changed;
+      const reads = [];
+      const initial = { generation: 1, accountKey: 'account-a', accountId: 'account-a',
+        rolloutEnabled: true, realtimeEnabled: true, synced: true, replicaValid: true, items: [] };
+      const { dom, hub, document } = loadMountedHub({ standalone: false,
+        social: { onInvitationsChanged(callback) { changed = callback; }, getInvitations: async () => initial },
+        fetch: () => new Promise((resolve, reject) => reads.push({ resolve, reject })),
+      });
+      const timers = new Map();
+      let nextTimer = 0;
+      dom.window.setTimeout = (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; };
+      dom.window.clearTimeout = (id) => timers.delete(id);
+      const revealTimers = () => {
+        for (const [id, timer] of Array.from(timers)) {
+          if (timer.delay === 300) { timers.delete(id); timer.callback(); }
+        }
+      };
+      try {
+        await new Promise(setImmediate);
+        hub.open();
+        const layer = document.querySelector('.neko-social-hub-layer');
+        assert.equal(layer.hidden, true);
+        changed({ ...initial, generation: 2, accountKey: 'account-b', accountId: 'account-b',
+          realtimeEnabled: realtime, synced: realtime, replicaValid: realtime });
+        assert.equal(reads.length, 2);
+        reads[0].resolve({ ok: true, json: async () => ({ logged_in: true, account: { id: 'account-a' } }) });
+        await new Promise(setImmediate);
+        if (outcome === 'slow') {
+          revealTimers();
+          assert.equal(layer.hidden, false, 'new generation must reveal loading during slow replacement read');
+        } else if (outcome === 'closed') hub.close();
+        if (outcome === 'failure') reads[1].reject(new Error('synthetic network failure'));
+        else reads[1].resolve({ ok: true, json: async () => ({ logged_in: true,
+          account: { id: 'account-b' }, friends: [], recommendations: [] }) });
+        await new Promise(setImmediate);
+        revealTimers();
+        assert.equal(layer.hidden, outcome === 'closed');
+        assert.equal(hub._state.open, outcome !== 'closed');
+        if (outcome === 'failure') assert.equal(hub._state.loadFailed, true);
+        else if (outcome !== 'closed') assert.equal(hub._state.accountId, 'account-b');
+      } finally { dom.window.close(); }
+    });
+  }
+}
+
+test('browser friend rows expose no outgoing invitation action without desktop bridge', async () => {
+  let creates = 0;
+  const calls = [];
+  const { dom, hub, document } = loadMountedHub({ social: null,
+    fetch: async (url, init) => {
+      calls.push({ url, method: init && init.method || 'GET' });
+      return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' },
+        friends: [{ id: 'friend', online: true, display_name: 'Online Friend' }], recommendations: [] }) };
+    },
+  });
+  dom.window.nekoVisitChat = { createDirectInvitation() { creates++; } };
+  try {
+    await new Promise(setImmediate);
+    const friend = document.querySelector('.neko-social-hub-friend');
+    assert.ok(friend);
+    assert.equal(friend.querySelectorAll('button').length, 0);
+    await hub._inviteFriend('friend');
+    assert.equal(creates, 0);
+    assert.ok(calls.every((call) => call.method === 'GET'));
+  } finally { dom.window.close(); }
+});
+
 test('invitation pushes update every hub locally without repeating the chat read', () => {
   const calls = [];
   const windows = ['chat', 'pet', 'friend-panel'].map(() => {

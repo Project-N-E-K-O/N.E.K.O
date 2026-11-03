@@ -246,6 +246,44 @@ const report = {};
     }
   }
   report.realtime_pages = [];
+  report.initial_invitation_snapshot_recovery = [];
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    for (const scenario of ['hung', 'late_realtime', 'ready_early']) {
+      let changed, resolveRead;
+      const social = { onInvitationsChanged(callback) { changed = callback; },
+        getInvitations: () => new Promise(() => {}) };
+      const snapshot = { generation: 1, accountKey: 'account-a', accountId: 'me',
+        realtimeEnabled: true, synced: true, items: [] };
+      const h = createHarness({ pathname, social, routes: {
+        '/api/community/visit-invitations': async () => {
+          if (scenario === 'late_realtime') return await new Promise((resolve) => { resolveRead = resolve; });
+          return { status: 200, body: { notifications_ok: true, incoming_invite_ids: [] } };
+        },
+      } });
+      h.chat.applyState({ enabled: true, active: false });
+      await h.settle();
+      if (scenario === 'ready_early') changed(snapshot);
+      h.advance(3500); await h.settle();
+      if (scenario === 'late_realtime') {
+        changed(snapshot);
+        if (resolveRead) resolveRead({ status: 200, body: { notifications_ok: true,
+          incoming_invite_ids: ['old-notification'], incoming_invite: { id: 'old-notification', visit_id: VID } } });
+        await h.settle();
+      }
+      h.advance(10000); await h.settle();
+      report.initial_invitation_snapshot_recovery.push({ pathname, scenario,
+        reads: h.fetches.filter((entry) => entry.url === '/api/community/visit-invitations').length,
+        presentations: h.fetches.filter((entry) => entry.url.includes('/direct/')).length,
+        pollTimers: h.timers.filter((entry) => entry.every === 5000).length,
+        statusListener: h.listeners.has('neko-visit-status-change') });
+    }
+  }
+  {
+    const h = createHarness({ social: null });
+    report.browser_outgoing_invitation = await h.chat.createDirectInvitation('friend')
+      .then(() => 'unexpected-success', () => 'desktop-required');
+    report.browser_outgoing_reads = h.fetches.length;
+  }
   report.realtime_failures = [];
   for (const scenario of ['question_failure', 'uncertain_delivery', 'connect_invalid', 'connect_invalid_raw', 'peer_blocked', 'character_switch', 'hung_question']) {
     let changed, claims = 0, releases = 0, invalid = 0, decisions = 0, delivery = 0, questions = 0;
@@ -2114,6 +2152,22 @@ def test_partial_invitation_bridges_keep_initialization_and_legacy_recovery(repo
         assert case["subscriptions"] == case["gets"] == 0
         assert case["statusListener"] and case["boundListener"]
         assert case["reads"] == 2 and case["pollTimers"] == 1
+
+
+def test_hung_initial_invitation_snapshot_recovers_and_late_realtime_stops_legacy_reads(report):
+    assert len(report["initial_invitation_snapshot_recovery"]) == 9
+    for case in report["initial_invitation_snapshot_recovery"]:
+        assert case["statusListener"] and case["presentations"] == 0, case
+        assert case["pollTimers"] == (1 if case["scenario"] == "hung" else 0), case
+        if case["scenario"] == "hung":
+            assert case["reads"] >= 1, case
+        else:
+            assert case["reads"] == (1 if case["scenario"] == "late_realtime" else 0), case
+
+
+def test_browser_receive_fallback_does_not_enable_desktop_only_outgoing_creation(report):
+    assert report["browser_outgoing_invitation"] == "desktop-required"
+    assert report["browser_outgoing_reads"] == 0
 
 
 def test_realtime_pages_use_owner_once_and_have_no_invitation_poll_over_ten_minutes(report):

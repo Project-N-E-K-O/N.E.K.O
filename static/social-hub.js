@@ -63,7 +63,14 @@
       state.accountId = ''; state.account = null; state.loggedIn = false;
       state.restoredAccountId = ''; recommendationCachedAt = 0; correctedPresenceGeneration = -1;
     }
-    if (!realtimeInvitations()) { startLegacyTimers(); return; }
+    if (!realtimeInvitations()) {
+      startLegacyTimers();
+      if (ownerAccountLoadPending && state.open) {
+        ownerAccountLoadPending = false;
+        void refreshOpenPanel(openGeneration);
+      }
+      return;
+    }
     legacyTimers.forEach(function (id) { clearInterval(id); }); legacyTimers = [];
     clearTimeout(incomingDeliveryTimer); incomingDeliveryKey = '';
     var items = Array.isArray(snapshot.items) ? snapshot.items : [];
@@ -99,7 +106,7 @@
     saveInvitations(); scheduleInvitationExpiry(); render();
     if (ownerAccountLoadPending && state.open) {
       ownerAccountLoadPending = false;
-      void refresh();
+      void refreshOpenPanel(openGeneration);
     }
     else if (state.open && snapshot.synced && correctedPresenceGeneration !== snapshot.generation && state.loggedIn) {
       // Presence deltas cannot add/remove mutuals. Reconcile the roster once
@@ -1459,6 +1466,18 @@
       panel.focus({ preventScroll: true });
     });
   }
+  function refreshOpenPanel(generation) {
+    if (!layer || !layer.hidden) return refresh();
+    // Account changes invalidate the opening generation too. The replacement
+    // read must own a new reveal, including the slow-read loading deadline.
+    var loadingRevealTimer = setTimeout(function () {
+      revealOpenPanel(generation);
+    }, 300);
+    return refresh().finally(function () {
+      clearTimeout(loadingRevealTimer);
+      if (layer.hidden) revealOpenPanel(generation);
+    });
+  }
   function open() {
     if (state.open && panel && !standalone) return true;
     mount();
@@ -1477,14 +1496,7 @@
     layer.hidden = true;
     if (!realtimeInvitations()) state.recommendations = [];
     state.recommendationBusy.clear();
-    var loadingRevealTimer = setTimeout(function () {
-      revealOpenPanel(generation);
-    }, 300);
-    refresh().finally(function () {
-      clearTimeout(loadingRevealTimer);
-      // 慢请求的 loading 已经展示并聚焦过；完成后只由 refresh() 更新内容。
-      if (layer.hidden) revealOpenPanel(generation);
-    });
+    void refreshOpenPanel(generation);
     return true;
   }
   function close() {

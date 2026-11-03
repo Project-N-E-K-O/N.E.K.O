@@ -337,12 +337,14 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "if (state.open && panel && !standalone) return true" in open_source
     assert "layer.hidden = true" in open_source
     assert "if (!realtimeInvitations()) state.recommendations = []" in open_source
-    assert "var loadingRevealTimer = setTimeout" in open_source
-    assert "}, 300)" in open_source
-    assert "clearTimeout(loadingRevealTimer)" in open_source
-    assert "refresh().finally(function ()" in open_source
-    assert "if (layer.hidden) revealOpenPanel(generation)" in open_source
-    assert open_source.index("layer.hidden = true") < open_source.index("refresh().finally")
+    assert "refreshOpenPanel(generation)" in open_source
+    assert open_source.index("layer.hidden = true") < open_source.index("refreshOpenPanel(generation)")
+    refresh_open_source = source.split("function refreshOpenPanel(generation)", 1)[1].split("function open()", 1)[0]
+    assert "var loadingRevealTimer = setTimeout" in refresh_open_source
+    assert "}, 300)" in refresh_open_source
+    assert "clearTimeout(loadingRevealTimer)" in refresh_open_source
+    assert "refresh().finally(function ()" in refresh_open_source
+    assert "if (layer.hidden) revealOpenPanel(generation)" in refresh_open_source
     reveal_source = source.split("function revealOpenPanel(generation)", 1)[1].split(
         "function open()", 1
     )[0]

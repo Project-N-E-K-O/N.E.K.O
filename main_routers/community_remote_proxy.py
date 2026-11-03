@@ -94,6 +94,8 @@ async def _community_notifications(client: httpx.AsyncClient, session: dict):
     """Read complete invitation pages, including pending invitations already read.
 
     Older Verse ignores visit_invitations and continues to return unread rows.
+    Both versions use matching filters for items and total_count. unread_count
+    is a separate, possibly wider counter and must not gate page completeness.
     """
     items = []
     cursor = None

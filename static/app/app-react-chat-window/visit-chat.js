@@ -1955,6 +1955,9 @@
 
     /** 好友面板使用：房间直接绑定接收账号，不生成、传递或兑换邀请码。 */
     async function createDirectInvitation(targetUserId) {
+        // Phase-one outgoing invitations are desktop-only: friendRow and
+        // inviteFriend require nekoSocial. Browser HTTP receive fallback does
+        // not enable an outgoing invitation entry point.
         if (!window.nekoSocial) throw new Error(t('visit.directInvite.unavailable', '现在还出不了门，可以再试一次'));
         targetUserId = String(targetUserId || '');
         if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
@@ -2404,8 +2407,16 @@
     var realtimeInvitationFlight = false;
     var realtimeInvitationWake = false;
     var legacyInvitationTimer = 0;
+    var invitationBridgeTimer = 0;
     var invitationBridgeReady = !(window.nekoSocial && typeof window.nekoSocial.getInvitations === 'function'
         && typeof window.nekoSocial.onInvitationsChanged === 'function');
+
+    function recoverLegacyInvitationRead() {
+        if (invitationBridgeReady) return;
+        invitationBridgeReady = true;
+        if (!legacyInvitationTimer) legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
+        void pollDirectInvitations();
+    }
 
     function realtimePayload(item, snapshot) {
         return { invitation_id: item.id, notification_id: item.notification_id || '',
@@ -2436,6 +2447,7 @@
                 || realtimeInvitationState && snapshot.generation < realtimeInvitationState.generation) return;
         realtimeInvitationState = snapshot;
         invitationBridgeReady = true;
+        clearTimeout(invitationBridgeTimer); invitationBridgeTimer = 0;
         if (snapshot.realtimeEnabled && legacyInvitationTimer) {
             clearInterval(legacyInvitationTimer); legacyInvitationTimer = 0;
         } else if (!snapshot.realtimeEnabled && isUiWindow() && !legacyInvitationTimer) {
@@ -3503,10 +3515,14 @@
         if (socialNotifications && typeof socialNotifications.onInvitationsChanged === 'function'
                 && typeof socialNotifications.getInvitations === 'function') {
             socialNotifications.onInvitationsChanged(receiveRealtimeInvitations);
-            socialNotifications.getInvitations().then(receiveRealtimeInvitations).catch(function () {
-                invitationBridgeReady = true;
-                if (!legacyInvitationTimer) legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
-            });
+            invitationBridgeTimer = setTimeout(recoverLegacyInvitationRead, 3000);
+            Promise.resolve().then(function () { return socialNotifications.getInvitations(); })
+                .then(function (snapshot) {
+                    receiveRealtimeInvitations(snapshot);
+                    if (!invitationBridgeReady) recoverLegacyInvitationRead();
+                }).catch(recoverLegacyInvitationRead).finally(function () {
+                    clearTimeout(invitationBridgeTimer); invitationBridgeTimer = 0;
+                });
         }
         window.addEventListener('neko-visit-status-change', function () { void reconcileRealtimeInvitations(); });
         window.addEventListener('neko-visit-bound', function () { void reconcileRealtimeInvitations(); });
