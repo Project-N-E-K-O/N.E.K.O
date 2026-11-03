@@ -250,13 +250,14 @@
         if (!candidate || characterName() !== name || candidate.name !== name) return;
         modelFlight = candidate.token;
         var failed = false;
+        var loaded = false;
         try {
             await window.handleModelReload(name, { temporaryConfig: {
                 model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
             }, suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true });
             if (characterName() !== name) return;
             var manager = window.live2dManager;
-            var loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
+            loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
                 && typeof manager.getCurrentModel === 'function' && manager.getCurrentModel());
             var receipt = await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: loaded });
             if (!receipt.applied && characterName() === name) {
@@ -266,7 +267,7 @@
         } catch (_) {
             failed = true;
             if (characterName() === name) {
-                await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
+                if (!loaded) await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
                 await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
             }
         } finally {

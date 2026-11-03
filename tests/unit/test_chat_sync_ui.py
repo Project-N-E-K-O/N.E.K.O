@@ -109,6 +109,54 @@ def test_cloud_model_failure_is_visible_after_restoration_without_false_admissio
     """.replace('FAILURE', json.dumps(failure)).replace('RESTORATION', json.dumps(restoration)))
 
 
+@pytest.mark.parametrize('lost_confirmation', ['before_commit', 'after_commit'])
+def test_model_confirmation_transport_loss_keeps_renderer_success_retryable(lost_confirmation):
+    run_script(r"""(async()=>{
+        const loss=LOSS,receipts=[],reloads=[];
+        let candidate={token:'candidate-token',path:'/user_live2d/candidate/model.model3.json',name:'Neko'};
+        const candidatePath=candidate.path;
+        let saved='/user_live2d/original/model.model3.json',lost=false,failed=false;
+        window.live2dManager={currentModel:{},_lastLoadedModelPath:saved,_modelLoadState:'ready',
+            getCurrentModel(){return this.currentModel;}};
+        window.showStatusToast=()=>{};
+        window.handleModelReload=async(name,options)=>{
+            assert.equal(name,'Neko');
+            const path=options.temporaryConfig?options.temporaryConfig.model_path:saved;
+            reloads.push(path);
+            window.live2dManager._lastLoadedModelPath=path;
+        };
+        global.fetch=async(path,options)=>{
+            let value;
+            if(path.endsWith('/status'))value={characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            else if(path.endsWith('/model-sync'))value=candidate?{candidate}:{failed};
+            else{
+                const receipt=JSON.parse(options.body);receipts.push(receipt);
+                if(!lost){
+                    lost=true;
+                    if(loss==='after_commit'){saved=candidatePath;candidate=null;}
+                    throw new Error('chat_sync_unavailable');
+                }
+                if(!receipt.loaded){failed=true;candidate=null;}
+                else{saved=candidatePath;candidate=null;}
+                value={applied:receipt.loaded};
+            }
+            return{ok:true,json:async()=>value};
+        };
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.deepEqual(receipts,[{loaded:true}]);
+        assert.equal(failed,false);
+        assert.equal(window.live2dManager._lastLoadedModelPath,saved);
+        assert.deepEqual(reloads,[candidatePath,saved]);
+        assert.equal(Boolean(candidate),loss==='before_commit');
+        await window.nekoChatSync.notifyMediaChanged();
+        assert(receipts.every(receipt=>receipt.loaded));
+        assert.equal(receipts.length,loss==='before_commit'?2:1);
+        assert.equal(candidate,null);
+        assert.equal(window.live2dManager._lastLoadedModelPath,candidatePath);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('LOSS', json.dumps(lost_confirmation)))
+
+
 @pytest.mark.parametrize('received_count', [50, 200])
 def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedback(received_count):
     """Comparing an uncropped batch must not replace the host's existing 50-message window."""

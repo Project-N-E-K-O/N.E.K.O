@@ -400,6 +400,8 @@ class DesktopModelSync:
                 await commit(self.store.put, domain.key(), state)
                 return False
             if (await self._head(domain, request))["revision"] != candidate["revision"]:
+                state.pop('candidate')
+                await commit(self.store.put, domain.key(), state)
                 return False
             if not await self.adapter.apply(uid, candidate["expected"], candidate["path"], commit):
                 return False

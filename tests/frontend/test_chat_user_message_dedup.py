@@ -35,24 +35,35 @@ def test_sync_memory_refresh_keeps_an_open_voice_session_running(mock_page: Page
 
 
 @pytest.mark.frontend
-@pytest.mark.parametrize('restoration', ['rejected', 'network'])
-def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_page: Page, restoration):
+@pytest.mark.parametrize('failure', ['configuration', 'receipt'])
+@pytest.mark.parametrize('restoration', ['rejected', 'network', 'model'])
+def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_page: Page, failure, restoration):
     root = Path(__file__).resolve().parents[2]
     mock_page.goto('about:blank')
     mock_page.set_content('<div id="live2d-container"></div><div id="vrm-container"></div>'
                           '<div id="mmd-container"></div><div id="status-toast" style="display:none"></div>'
                           '<span id="status"></span>')
-    mock_page.evaluate("""restoration => {
+    mock_page.evaluate("""({failure,restoration}) => {
+        window.candidateFailure=failure;
         window.lanlan_config={lanlan_name:'Neko',model_type:'live2d'};
         window.appState={dom:{}};
         window.appConst={};
-        window.live2dManager={currentModel:null,getCurrentModel(){return this.currentModel;}};
+        window.Live2DManager=function(){};
         window.t=key=>key==='app.modelSwitchFailed'?'Model switch failed':key;
-        window.syncProbe={receipts:[],configReads:0,restorations:0};
+        window.syncProbe={receipts:[],configReads:0,restorations:0,loads:[],removed:[]};
+        window.Live2DModel={from:async path=>{
+            window.syncProbe.loads.push(path);
+            if(path==='/user_live2d/saved/model.model3.json')throw new Error('saved model unavailable');
+            return{path,destroy(){}};
+        }};
+        window.invalidateModelManagerOverlapBounds=()=>{};
+        window.restoreLive2DIdleAnimationOnMainPage=()=>{};
         window.fetch=async(path,options)=>{
             if(path.startsWith('/api/config/page_config')){
                 window.syncProbe.configReads++;
                 if(restoration==='network')throw new Error('private restoration details');
+                if(restoration==='model')return{json:async()=>({success:true,model_type:'live2d',
+                    model_path:'/user_live2d/saved/model.model3.json'})};
                 return{json:async()=>({success:false,error:'private config details'})};
             }
             if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[
@@ -62,15 +73,28 @@ def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_pag
             window.syncProbe.receipts.push(JSON.parse(options.body));
             return{ok:true,json:async()=>({applied:false})};
         };
-    }""", restoration)
+    }""", {'failure': failure, 'restoration': restoration})
+    mock_page.add_script_tag(path=str(root / 'static/live2d/live2d-model.js'))
     mock_page.add_script_tag(path=str(root / 'static/app/app-ui/bootstrap-goodbye-and-toasts.js'))
     mock_page.add_script_tag(path=str(root / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'))
     mock_page.evaluate("""() => {
         const I=window.__appInterpageParts;
         I.isMainUIHiddenByModelManager=()=>false;
+        I.cleanupPNGTuberOverlayUI=()=>{};
+        window.live2dManager=Object.assign(new window.Live2DManager(),{
+            pixi_app:{view:{style:{}}},currentModel:{path:'/original'},
+            _activeLoadToken:0,_modelLoadState:'ready',_isModelReadyForInteraction:true,
+            _invalidateParameterReloadTickets(){},_resetDerivedModelMetadata(){},
+            _isLoadTokenActive(token){return token===this._activeLoadToken;},
+            loadUserPreferences:async()=>[],
+            async removeModel(){window.syncProbe.removed.push(this.currentModel.path);this.currentModel=null;},
+            async _configureLoadedModel(model,path){
+                this._lastLoadedModelPath=path;this._modelLoadState='ready';this._isModelReadyForInteraction=true;
+            },
+        });
         window.handleModelReload=async(name,options)=>{
-            if(options.temporaryConfig)throw new Error('private configuration details');
-            window.syncProbe.restorations++;
+            if(options.temporaryConfig&&window.candidateFailure==='configuration')throw new Error('private configuration details');
+            if(!options.temporaryConfig)window.syncProbe.restorations++;
             return I.handleModelReload(name,options);
         };
     }""")
@@ -78,11 +102,19 @@ def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_pag
     mock_page.evaluate('window.nekoChatSync.notifyMediaChanged()')
     expect(mock_page.locator('#status-toast')).to_be_visible()
     expect(mock_page.locator('#status')).to_have_text('Model switch failed')
-    assert mock_page.evaluate('window.syncProbe') == {
-        'receipts': [{'loaded': False}], 'configReads': 1, 'restorations': 1,
-    }
+    probe = mock_page.evaluate('window.syncProbe')
+    assert probe['receipts'] == [{'loaded': failure == 'receipt'}]
+    assert probe['configReads'] == 1 and probe['restorations'] == 1
+    candidate = '/user_live2d/candidate/model.model3.json'
+    fallback = '/static/yui-lolita/yui-lolita.model3.json'
+    assert probe['loads'] == ([candidate] if failure == 'receipt' else []) + (
+        ['/user_live2d/saved/model.model3.json', fallback] if restoration == 'model' else [])
+    if restoration == 'model':
+        assert mock_page.evaluate('window.live2dManager._lastLoadedModelPath') == fallback
+        assert mock_page.evaluate('window.live2dManager.getCurrentModel().path') == fallback
+        assert probe['removed'] == (['/original', candidate] if failure == 'receipt' else ['/original'])
     assert mock_page.evaluate('window._modelReloadInFlight') is False
-    assert mock_page.evaluate('window._lastModelReloadResult') is False
+    assert mock_page.evaluate('window._lastModelReloadResult') is (restoration == 'model')
 
 
 @pytest.mark.frontend

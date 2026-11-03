@@ -125,6 +125,10 @@ async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(
         service.model_revision = 2
         assert await runtime.models.finish(UID, status["candidate"]["token"], True) is False
         assert adapter.applied == 0
+        assert not (await runtime.models.status(UID)).get('candidate')
+        assert not (await runtime.models.status(UID))['failed']
+        assert await runtime.models.finish(UID, status['candidate']['token'], True) is False
+        assert adapter.applied == 0
         await runtime.models.step(UID, manual=True)
         latest = await runtime.models.status(UID)
         assert latest["candidate"]["token"] != status["candidate"]["token"]

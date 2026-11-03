@@ -470,7 +470,7 @@ def card_assist_form():
             for script in ('reserved_fields_utils.js', 'character_card_manager/core-and-upload.js',
                            'character_card_manager/card-companion.js', 'character_card_manager/master-profile.js'):
                 page.add_script_tag(path=str(ROOT / 'static/js' / script))
-            source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text()
+            source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding='utf-8')
             start = source.index("    {\n        const row = document.createElement('div');")
             page.evaluate("""code => {
                 window.t = key => key;
