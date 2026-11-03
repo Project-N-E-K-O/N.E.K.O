@@ -36,6 +36,28 @@ def test_empty_branch_file_waits_for_the_peer_writer_instead_of_healing(tmp_path
     assert _branch_file(tmp_path).read_text(encoding="utf-8").strip() == "proactive_interval_40s"
 
 
+def test_peer_write_landing_between_reads_is_adopted_not_healed(tmp_path):
+    tt._telemetry_branch_cache.clear()
+    path = _branch_file(tmp_path)
+    path.write_text("", encoding="utf-8")
+    real_read_text = type(path).read_text
+    calls = {"n": 0}
+
+    def read_text(self, *args, **kwargs):
+        value = real_read_text(self, *args, **kwargs)
+        if self == path:
+            calls["n"] += 1
+            if calls["n"] == 2:  # the peer finishes its write right after this reader saw it empty
+                path.write_text("proactive_interval_40s", encoding="utf-8")
+        return value
+
+    with patch.object(type(path), "read_text", read_text),             patch.object(telemetry.secrets, "choice", return_value="main"):
+        branch = tt._get_telemetry_branch(tmp_path)
+
+    assert branch == "proactive_interval_40s"
+    assert real_read_text(path, encoding="utf-8").strip() == "proactive_interval_40s"
+
+
 def test_concurrent_first_resolves_in_one_process_agree_with_disk(tmp_path):
     tt._telemetry_branch_cache.clear()
     results = []
@@ -51,6 +73,7 @@ def test_concurrent_first_resolves_in_one_process_agree_with_disk(tmp_path):
     for t in threads:
         t.join()
 
+    assert len(results) == 8, "every resolver thread must return a branch"
     on_disk = _branch_file(tmp_path).read_text(encoding="utf-8").strip()
     assert set(results) == {on_disk}
     assert on_disk in tt._TELEMETRY_BRANCHES

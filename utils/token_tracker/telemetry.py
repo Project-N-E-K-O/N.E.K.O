@@ -352,12 +352,15 @@ def _resolve_telemetry_branch(config_dir: Path) -> str:
     except FileExistsError:
         # Another process wrote first; reread its value so both processes return the same branch.
         # An empty file means that writer has not written yet, so wait for it instead of healing.
-        peer = _read()
+        # Judge validity from the same read that ended the wait, so a peer write landing between
+        # two reads is still taken as the peer's branch rather than healed over.
+        raw = p.read_text(encoding="utf-8").strip() if p.exists() else ""
         for _ in range(_BRANCH_FILE_PEER_WRITE_RETRIES):
-            if peer is not None or p.read_text(encoding="utf-8").strip():
+            if raw:
                 break
             time.sleep(_BRANCH_FILE_PEER_WRITE_WAIT_S)
-            peer = _read()
+            raw = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        peer = raw if raw in _TELEMETRY_BRANCHES else None
         if peer is not None:
             return _telemetry_branch_cache.setdefault(cache_key, peer)
         # peer=None means the file exists but contains a value outside _TELEMETRY_BRANCHES (truncated/corrupt/
