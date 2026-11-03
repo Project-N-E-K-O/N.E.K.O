@@ -633,8 +633,11 @@ class PinnedFactStore:
                 if action in _TARGETED_ACTIONS and (
                     withdrawn_in_view
                     # A removal whose target someone else already withdrew has
-                    # nothing left to do; retrying it could pin the cancellation.
-                    or (action == ACTION_REMOVE and retracted_at is not None)
+                    # nothing left to do, unless entries this decision never saw
+                    # appeared meanwhile ("exam moved to Thursday" next to the
+                    # withdrawal): then it is decided again with them in view.
+                    or (action == ACTION_REMOVE and retracted_at is not None
+                        and not (unseen and retry_stale))
                 ):
                     # Matched to an entry that was withdrawn. Removing it again
                     # does nothing (a second "cancelled" must not pin itself);
@@ -665,13 +668,16 @@ class PinnedFactStore:
                         )
                         target = None
                 elif (action == ACTION_ADD and unseen and retry_stale
-                        and not candidate.get("outdated")):
+                        and not candidate.get("outdated")
+                        and not candidate.get("retraction")):
                     counts["stale"] += 1
                     if stale_out is not None:
                         stale_out.append(index)
                     continue
-                if candidate.get("outdated") and action != ACTION_REMOVE:
-                    # Its own lifetime is over: it may only retract an entry.
+                if ((candidate.get("outdated") or candidate.get("retraction"))
+                        and action != ACTION_REMOVE):
+                    # Its own lifetime is over, or an earlier round already read it
+                    # as a retraction: it may only retract an entry, never pin itself.
                     action = None
                 if (action == ACTION_ADD
                         and noted < superseded.get(_text_key(candidate["text"]), float("-inf"))):
@@ -891,6 +897,10 @@ class PinnedFactStore:
             for key, value in counts.items():
                 if key != "stale":
                     totals[key] = totals.get(key, 0) + value
+            for i in stale:
+                if decisions[i][0] == ACTION_REMOVE:
+                    # Decided again on fresh state, but still a retraction.
+                    batch[i]["retraction"] = True
             pending = [pending[i] for i in stale]
         logger.info(
             "[PinnedFacts] %s: candidates=%d rounds=%d model=%s added=%d replaced=%d "

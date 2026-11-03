@@ -449,7 +449,9 @@ def test_a_decision_on_a_changed_entry_is_made_again(tmp_path, monkeypatch):
 
     assert len(prompts) == 2
     assert "主人的考试改到下周五" in prompts[1]
-    assert (counts["removed"], counts["renewed"]) == (0, 1)
+    # Read as a retraction in round one, it stays one: the model's renew in
+    # round two does nothing, and the newer entry is left alone.
+    assert (counts["removed"], counts["renewed"], counts["skipped"]) == (0, 0, 1)
     [entry] = store.get_active(_NAME, now=_T0 + 2)
     assert entry["text"] == "主人的考试改到下周五"
 
@@ -834,10 +836,15 @@ def test_a_target_withdrawn_after_the_snapshot_is_decided_again(tmp_path):
 
 
 def test_removing_what_someone_else_already_withdrew_is_not_retried(tmp_path):
-    # Cloud review #3598: the removal's goal is already met; a retry would
-    # see no entry to remove and might pin the cancellation instead.
+    # Cloud review #3598: with nothing new in the section the removal's goal
+    # is already met; a retry would only risk pinning the cancellation.
     store = _store(tmp_path)
-    exam, snapshot_revs = _exam_withdrawn_after_the_snapshot(store)
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+    snapshot_revs = {exam["id"]: exam["rev"]}
+    store.apply_decisions(_NAME, [_candidate("主人的考试取消了", 3, noted_at=_T0 + _DAY)],
+                          [("remove", exam["id"])], now=_T0 + _DAY)
 
     stale: list[int] = []
     counts = store.apply_decisions(
@@ -848,6 +855,73 @@ def test_removing_what_someone_else_already_withdrew_is_not_retried(tmp_path):
 
     assert stale == []
     assert (counts["skipped"], counts["added"], counts["removed"]) == (1, 0, 0)
+
+
+def _admit_cancellation_after_a_concurrent_move(store, monkeypatch, second_answer):
+    """Our "exam cancelled" was decided against Wednesday's exam; meanwhile
+    another admission withdrew it and pinned "moved to Thursday"."""
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+    real_snapshot = store.aget_snapshot
+    snapshots = 0
+
+    async def snapshot(name, *, now=None):
+        nonlocal snapshots
+        snapshots += 1
+        snap = await real_snapshot(name, now=now)
+        if snapshots == 1:
+            store.apply_decisions(
+                _NAME,
+                [_candidate("主人的考试改期了", 3, noted_at=_T0 + _DAY),
+                 _candidate("主人的考试改到下周四", 14, noted_at=_T0 + _DAY)],
+                [("remove", exam["id"]), ("add", None)], now=_T0 + _DAY,
+            )
+        return snap
+
+    monkeypatch.setattr(store, "aget_snapshot", snapshot)
+    prompts: list[str] = []
+
+    async def model(api_config, prompt, *, timeout, call_label):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            answer = [{"candidate": 1, "action": "remove", "target": exam["id"]}]
+        else:
+            [moved] = store.get_active(_NAME, now=_T0 + 2 * _DAY)
+            answer = [second_answer(moved["id"])]
+        return SimpleNamespace(content=json.dumps(answer)), 0
+
+    monkeypatch.setattr("memory.thinking_llm.ainvoke_thinking", model)
+    counts = asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人的考试取消了", 3)], noted_at=_T0 + 2 * _DAY, now=_T0 + 2 * _DAY,
+    ))
+    return counts, prompts
+
+
+def test_a_removal_is_decided_again_when_a_related_entry_appeared(tmp_path, monkeypatch):
+    # CodeRabbit #3598: "exam cancelled" must still reach "moved to Thursday",
+    # which appeared after the model's snapshot.
+    store = _store(tmp_path)
+    counts, prompts = _admit_cancellation_after_a_concurrent_move(
+        store, monkeypatch, lambda moved_id: {"candidate": 1, "action": "remove", "target": moved_id},
+    )
+
+    assert len(prompts) == 2 and "主人的考试改到下周四" in prompts[1]
+    assert (counts["removed"], counts["added"]) == (1, 0)
+    assert store.get_active(_NAME, now=_T0 + 2 * _DAY) == []
+
+
+def test_a_retried_removal_never_pins_itself(tmp_path, monkeypatch):
+    # Decided again, a retraction stays a retraction: if the model now answers
+    # add, the cancellation is dropped rather than pinned.
+    store = _store(tmp_path)
+    counts, prompts = _admit_cancellation_after_a_concurrent_move(
+        store, monkeypatch, lambda moved_id: {"candidate": 1, "action": "add", "target": None},
+    )
+
+    assert len(prompts) == 2
+    assert (counts["added"], counts["skipped"]) == (0, 1)
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 2 * _DAY)] == ["主人的考试改到下周四"]
 
 
 def test_last_round_never_brings_back_what_a_later_account_withdrew(tmp_path):
