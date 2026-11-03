@@ -78,20 +78,29 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
     return f"{index}. {title}{suffix}"
 
 
-def _is_grounded_news_phase1_source(source: Any, links: list[dict[str, Any]]) -> bool:
-    """Whether a Phase 1 pick names the source of an overseas grounded news candidate.
+def _unmatched_pick_may_be_grounded_news(
+    source: Any, links: list[dict[str, Any]]
+) -> bool:
+    """Whether an unmatched Phase 1 pick may come from overseas grounded news.
 
-    An unmatched pick from such a source must be skipped: Phase 2 would otherwise
-    receive only the model's own paraphrase, without the source facts and the
-    no-invention constraint that matched grounded candidates get.
+    Such a pick must be skipped: Phase 2 would otherwise receive only the
+    model's own paraphrase, without the source facts and the no-invention
+    constraint that matched grounded candidates get. When the round offers
+    grounded candidates, a missing or unrecognized source counts as possibly
+    grounded; a source that clearly names a non-grounded candidate keeps the
+    existing title-only path. Rounds without grounded candidates are unchanged.
     """
 
-    normalized = " ".join(str(source or "").split()).casefold()
-    return bool(normalized) and any(
-        link.get("grounded_news")
-        and " ".join(str(link.get("source") or "").split()).casefold() == normalized
-        for link in links
-    )
+    def _norm(value: Any) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    grounded_sources = {_norm(link.get("source")) for link in links if link.get("grounded_news")}
+    if not grounded_sources:
+        return False
+    normalized = _norm(source)
+    if not normalized or normalized in grounded_sources:
+        return True
+    return normalized not in {_norm(link.get("source")) for link in links}
 
 
 def _selected_web_link_from_match(

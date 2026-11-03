@@ -8,7 +8,7 @@ import pytest
 
 from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
-    _is_grounded_news_phase1_source,
+    _unmatched_pick_may_be_grounded_news,
     _selected_web_link_from_match,
 )
 from main_logic.proactive_chat.sources import _extract_links_from_raw
@@ -909,18 +909,31 @@ def test_unmatched_pick_from_grounded_news_source_is_recognized():
          "mode": "news", "grounded_news": True},
         {"title": "Moon Sweepers", "url": "https://store.steampowered.com/app/1/", "source": "Steam",
          "mode": "news", "grounded_news": True},
-        {"title": "微博话题", "url": "https://s.weibo.com/1", "source": "微博", "mode": "news"},
         {"title": "Some video", "url": "https://youtube.com/watch?v=1", "source": "YouTube", "mode": "video"},
     ]
 
-    assert _is_grounded_news_phase1_source("Steam", links)
-    assert _is_grounded_news_phase1_source("  twitter ", links)
-    # Non-grounded sources keep the existing title-only path.
-    assert not _is_grounded_news_phase1_source("微博", links)
-    assert not _is_grounded_news_phase1_source("YouTube", links)
-    assert not _is_grounded_news_phase1_source("", links)
-    assert not _is_grounded_news_phase1_source(None, links)
-    assert not _is_grounded_news_phase1_source("Steam", [])
+    assert _unmatched_pick_may_be_grounded_news("Steam", links)
+    assert _unmatched_pick_may_be_grounded_news("  twitter ", links)
+    # Missing or unrecognized sources cannot be ruled out as grounded news.
+    assert _unmatched_pick_may_be_grounded_news("", links)
+    assert _unmatched_pick_may_be_grounded_news(None, links)
+    assert _unmatched_pick_may_be_grounded_news("Google", links)
+    # A source that clearly names a non-grounded candidate keeps the title-only path.
+    assert not _unmatched_pick_may_be_grounded_news("YouTube", links)
+
+
+@pytest.mark.unit
+def test_rounds_without_grounded_news_keep_title_only_path():
+    china_links = [
+        {"title": "微博话题", "url": "https://s.weibo.com/1", "source": "微博", "mode": "news"},
+        {"title": "贴吧帖子", "url": "https://tieba.baidu.com/p/1", "source": "贴吧", "mode": "news"},
+    ]
+
+    assert not _unmatched_pick_may_be_grounded_news("微博", china_links)
+    assert not _unmatched_pick_may_be_grounded_news("", china_links)
+    assert not _unmatched_pick_may_be_grounded_news(None, china_links)
+    assert not _unmatched_pick_may_be_grounded_news("未知来源", china_links)
+    assert not _unmatched_pick_may_be_grounded_news("Steam", [])
 
 
 @pytest.mark.unit
@@ -933,7 +946,7 @@ def test_service_skips_unmatched_grounded_news_picks():
     calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and getattr(node.func, "id", "") == "_is_grounded_news_phase1_source"
+        and getattr(node.func, "id", "") == "_unmatched_pick_may_be_grounded_news"
     ]
     assert calls, "service must check unmatched picks against grounded news sources"
     # The check sits in the unmatched branch, next to the community-card skip.
