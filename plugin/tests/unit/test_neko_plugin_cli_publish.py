@@ -1364,11 +1364,12 @@ def test_publish_market_rejects_malformed_review_receipts(
 
 
 @pytest.mark.parametrize("retry_after", ["3", "120", "invalid", "nan", "Sun, 01 Jan 2023 00:02:00 GMT"])
+@pytest.mark.parametrize("pending_count", [1, 2])
 def test_publish_market_retries_only_pending_verification(
-    monkeypatch: pytest.MonkeyPatch, retry_after: str,
+    monkeypatch: pytest.MonkeyPatch, retry_after: str, pending_count: int,
 ) -> None:
     client = _RecordingClient(
-        httpx.Response(503, headers={"Retry-After": retry_after}, json={"code": "release_verification_pending"}),
+        *[httpx.Response(503, headers={"Retry-After": retry_after}, json={"code": "release_verification_pending"}) for _ in range(pending_count)],
         httpx.Response(201, json={"status": "published", "version": {"version": "1.2.0"}}),
     )
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
@@ -1376,9 +1377,9 @@ def test_publish_market_retries_only_pending_verification(
     patch_module_clock(monkeypatch, publish_cmd, sleep=sleeps.append, time=lambda: 1672531200.0)
     assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 0
     expected = 120.0 if retry_after.endswith("GMT") else float(retry_after) if retry_after in {"3", "120"} else 5.0
-    assert sleeps == [expected]
-    assert len(client.requests) == 2
-    assert client.requests[0] == client.requests[1]
+    assert sleeps == [expected] * pending_count
+    assert len(client.requests) == pending_count + 1
+    assert all(item == client.requests[0] for item in client.requests)
 
 
 def test_publish_market_pending_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
