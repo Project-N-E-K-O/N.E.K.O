@@ -166,6 +166,10 @@
   // yarn held on the host after the local drag has already ended.
   function callIntentApi(payload, visitId, token, delayMs) {
     return callApi('sendIntent', payload).then(function (result) {
+      // A retry whose earlier attempt landed (only the response was lost) comes
+      // back stale at exactly this id: that is acceptance, not an old id to renumber.
+      if (delayMs && result && result.stale === true
+          && Number(result.current_intent_id) === payload.intent_id) return { ok: true };
       if ((result && (result.ok === true || result.stale)) || !intentStillCurrent(visitId, token)) return result;
       var delay = delayMs ? Math.min(INTENT_RETRY_MAX_MS, delayMs * 2) : INTENT_RETRY_MIN_MS;
       return new Promise(function (resolve) { setTimeout(resolve, delay); }).then(function () {

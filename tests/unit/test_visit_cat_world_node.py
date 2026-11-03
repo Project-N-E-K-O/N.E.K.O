@@ -91,6 +91,8 @@ async function main() {
   let stateResponses = 0;
   let failStates = 0;
   let failIntents = 0;
+  let loseIntentResponse = false;
+  let acceptedLostIntent = 0;
 
   function schedule(fn, delay, interval) {
     const id = nextTimer++;
@@ -164,6 +166,15 @@ async function main() {
         if (failIntents > 0) {
           failIntents -= 1;
           return Promise.resolve(false);
+        }
+        if (loseIntentResponse) {
+          loseIntentResponse = false;
+          acceptedLostIntent = payload.intent_id;
+          return Promise.resolve(false);
+        }
+        if (acceptedLostIntent && payload.intent_id === acceptedLostIntent) {
+          acceptedLostIntent = 0;
+          return Promise.resolve({ stale: true, current_intent_id: payload.intent_id });
         }
         if (staleIntentOnce) {
           staleIntentOnce = false;
@@ -320,6 +331,20 @@ async function main() {
   assert.deepEqual(retriedIntents, ['yarn_grab', 'yarn_grab', 'yarn_grab', 'yarn_release']);
   assert.equal(failIntents, 0);
 
+  // The server accepted the grab but its response was lost: the retry comes
+  // back stale at the same id, which keeps that id instead of renumbering.
+  const beforeLost = calls.intent.length;
+  loseIntentResponse = true;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 6, clientX: 640, clientY: 260,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 6, clientX: 650, clientY: 270 });
+  await flush();
+  await advance(2000);
+  const lost = calls.intent.slice(beforeLost);
+  assert.deepEqual(lost.map((item) => item.kind), ['yarn_grab', 'yarn_grab', 'yarn_release']);
+  assert.equal(lost[0].intent_id, lost[1].intent_id);
+  assert.ok(lost[2].intent_id > lost[1].intent_id);
+
   // A pointer is accepted only from the actor and intent that currently owns the yarn.
   emit('neko-visit-cat-world-intent', {
     type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'yarn_grab',
@@ -459,7 +484,7 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 10
+    assert result["guestIntentCount"] == 13
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False
