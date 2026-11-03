@@ -104,6 +104,7 @@ class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
         self._conversation_service: ConversationService | None = None
+        self._conversation_service_ready = False
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
         # Guards ``ensure_delivery_path_started`` so the startup lifecycle and a
@@ -148,8 +149,8 @@ class ServerLifecycleService:
         bus_subscription_manager.accept_conversation_record(event)
 
     def conversation_service(self) -> ConversationService | None:
-        """Return only the instance owned by this delivery-path lifetime."""
-        return self._conversation_service
+        """Expose this lifetime's service only after a successful health probe."""
+        return self._conversation_service if self._conversation_service_ready else None
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -250,6 +251,7 @@ class ServerLifecycleService:
             return True
 
     def _close_conversation_service(self) -> None:
+        self._conversation_service_ready = False
         service = self._conversation_service
         self._conversation_service = None
         bus_subscription_manager.set_conversation_observers()
@@ -318,8 +320,10 @@ class ServerLifecycleService:
         """
         runner = self._message_plane_runner
         if runner is None:
+            self._conversation_service_ready = False
             return False
         if not self._message_plane_runner_is_alive():
+            self._conversation_service_ready = False
             logger.warning(
                 "message_plane threads are not all running; treating it as "
                 "unhealthy even if its RPC endpoint still answers"
@@ -328,17 +332,19 @@ class ServerLifecycleService:
         try:
             health_check_async = getattr(runner, "health_check_async", None)
             if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
-                return bool(await health_check_async(timeout_s=1.0))
-            # Fallback: runner only exposes the sync API — offload to a worker thread so we
-            # never block the event loop on the ~1s TCP probe + RPC round-trip.
-            return bool(await asyncio.to_thread(runner.health_check, timeout_s=1.0))
+                healthy = bool(await health_check_async(timeout_s=1.0))
+            else:
+                # Sync probes stay off the shared event loop.
+                healthy = bool(await asyncio.to_thread(runner.health_check, timeout_s=1.0))
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
             logger.warning(
                 "message_plane health check failed: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
-            return False
+            healthy = False
+        self._conversation_service_ready = healthy
+        return healthy
 
     async def _start_message_plane(self) -> bool:
         """Start the plane, or verify the one already standing. Returns usability."""

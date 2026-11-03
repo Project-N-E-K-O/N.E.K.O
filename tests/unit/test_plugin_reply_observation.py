@@ -328,7 +328,7 @@ async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch
         return
     proactive_reply = observation["reply_id"]
     assert proactive_reply != reply_id
-    assert service.get_reply(proactive_reply)["origin"]["is_proactive"] is True
+    assert service.get_reply(proactive_reply)["origin"] is None
     assert service.get_reply(proactive_reply)["text"] == "proactive"
     await _dispatch(client, provider, _event(text=" tail"))
     await _dispatch(client, provider, _event(complete=True))
@@ -337,6 +337,34 @@ async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch
     assert len(records) == 2
     assert service.get_reply(proactive_reply)["text"] == "proactive tail"
     assert service.get_reply(reply_id)["text"] == "first continuation"
+
+
+async def test_gemini_ambiguous_injection_retires_open_previous_observation(monkeypatch):
+    from types import SimpleNamespace
+    import main_logic.omni_realtime_client._transport as transport_module
+    from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event
+
+    facts = []
+    note = lambda name, *, fact, payload: facts.append((fact, payload))
+    monkeypatch.setattr(turn_module, "schedule_conversation_fact_observed_best_effort", note)
+    monkeypatch.setattr(transport_module, "schedule_conversation_fact_observed_best_effort", note)
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance",
+                        lambda: SimpleNamespace(record=lambda **_: None))
+    manager, client, provider = _client_manager()
+    client.lanlan_name = manager.lanlan_name
+    await _dispatch(client, provider, _event(text="original"))
+    previous = client._realtime_conversation_observation
+    await client.handle_interruption()
+    await _dispatch(client, provider, _event(complete=True))
+    assert previous["started"] and not previous["closed"]
+    owner = (client._connection_generation, provider, "new-inject", None, client._tool_scope_generation)
+    client._gemini_proactive_outcome_owner = owner
+    await _dispatch(client, provider, _event(text="ambiguous"))
+    assert previous["closed"] and client._realtime_conversation_observation is None
+    assert facts[-1][0] == "reply.closed"
+    assert facts[-1][1]["reply_id"] == previous["reply_id"]
+    assert facts[-1][1]["close_reason"] == "unknown"
+    assert client._gemini_proactive_outcome_owner is owner
 
 
 async def test_provider_failure_without_text_is_not_reported_completed(monkeypatch):

@@ -25,6 +25,7 @@ from the asyncio thread (local TCP latency is very low).
 import asyncio
 import concurrent.futures
 import contextvars
+import json
 import os
 import threading
 import time
@@ -952,6 +953,8 @@ CONVERSATION_FACT_OBSERVED_EVENT = "conversation_fact_observed"
 _conversation_fact_tasks: set[asyncio.Task] = set()
 _CONVERSATION_FACT_MAX_TASKS = 128
 _CONVERSATION_FACT_MAX_TEXT = 65536
+# Match ConversationService's serialized UTF-8 payload budget.
+_CONVERSATION_FACT_MAX_BYTES = 64 * 1024
 
 
 async def publish_conversation_fact_observed_best_effort(
@@ -980,8 +983,14 @@ def schedule_conversation_fact_observed_best_effort(
     if len(_conversation_fact_tasks) >= _CONVERSATION_FACT_MAX_TASKS:
         return False
     text = payload.get("text")
-    if isinstance(text, str) and len(text) > _CONVERSATION_FACT_MAX_TEXT:
-        if fact in ("reply.started", "reply.closed", "reply.updated"):
+    if isinstance(text, str) and fact in ("reply.started", "reply.closed", "reply.updated"):
+        try:
+            oversized = len(text) > _CONVERSATION_FACT_MAX_TEXT or len(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ) > _CONVERSATION_FACT_MAX_BYTES
+        except (TypeError, ValueError, UnicodeError):
+            return False
+        if oversized:
             payload = {**payload, "text": None}
             if fact in ("reply.closed", "reply.updated"):
                 payload["text_incomplete"] = True

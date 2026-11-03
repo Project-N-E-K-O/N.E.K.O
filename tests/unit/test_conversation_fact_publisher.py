@@ -39,10 +39,12 @@ async def test_fact_scheduler_is_bounded(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fact", ["reply.started", "reply.closed", "reply.updated"])
-async def test_oversized_reply_text_preserves_boundary_or_reports_missing_update(monkeypatch, fact):
+@pytest.mark.parametrize("text", ["x" * 65537, "猫" * 22000, "🐱" * 17000, "x" * 65000],
+                         ids=["ascii", "utf8", "emoji", "metadata"])
+async def test_oversized_reply_text_preserves_boundary_or_reports_missing_update(monkeypatch, fact, text):
     publish = AsyncMock(return_value=True)
     monkeypatch.setattr(bus, "publish_conversation_fact_observed_best_effort", publish)
-    payload = {"reply_id": "r", "text": "x" * (bus._CONVERSATION_FACT_MAX_TEXT + 1)}
+    payload = {"reply_id": "r", "text": text, "input_id": "i" * 256, "turn_id": "t" * 256}
     assert bus.schedule_conversation_fact_observed_best_effort("Lan", fact=fact, payload=payload)
     await asyncio.gather(*tuple(bus._conversation_fact_tasks))
     sent = publish.await_args.kwargs["payload"]

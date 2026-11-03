@@ -853,8 +853,9 @@ class _GeminiMixin:
         self._close_realtime_conversation_observation("unknown")
         self._realtime_conversation_observation = {
             "reply_id": uuid.uuid4().hex,
-            "origin": ({"kind": "unknown", "is_proactive": True, "plugin_id": None, "task_id": None}
-                       if proactive_token is not None else None),
+            # The UI's time-window boundary and a pending request token do not
+            # prove which request owns an ID-less provider frame.
+            "origin": None,
             "started": False, "closed": False, "lifecycle": "realtime",
             "allow_text_continuations": True,
             "_proactive_token": proactive_token,
@@ -1128,6 +1129,7 @@ class _GeminiMixin:
                             # The pending inject proves a new request, not which
                             # request owns these ID-less late frames. Do not
                             # correct the previous reply or guess a new owner.
+                            self._close_realtime_conversation_observation("unknown")
                             self._realtime_conversation_observation = None
                         logger.debug(
                             "Gemini: late content after premature turn_complete/interruption (%.2fs ago), treating as continuation",

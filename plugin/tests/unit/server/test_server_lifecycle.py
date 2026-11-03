@@ -663,18 +663,39 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
     assert service._delivery_path_started is False, "an unverified plane was latched"
     assert service._message_plane_runner is not None, "the runner was discarded"
     assert len(built) == 1
+    assert service.conversation_service() is None
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    monkeypatch.setattr(module, "_service", service)
+    for handler, request in (
+        (handlers.handle_conversation_reply_get, {"reply_id": "missing"}),
+        (handlers.handle_conversation_interaction_get, {"input_id": "missing"}),
+    ):
+        with pytest.raises(ServerDomainError) as not_ready:
+            await handler(None, request)
+        assert not_ready.value.code == "CONVERSATIONS_NOT_READY"
 
     # Still unhealthy on the next entry: reuse branch re-probes, still refuses,
     # and does not rebuild (rebuilding would hand its ports to a second runner).
     assert await service.ensure_delivery_path_started() is False
     assert service._delivery_path_started is False
     assert len(built) == 1, "the unhealthy plane was rebuilt, splitting its ports"
+    assert service.conversation_service() is None
 
     # It comes up late: the next retry re-probes, sees it, and latches.
     healthy = True
     await service.ensure_delivery_path_started()
     assert service._delivery_path_started is True
     assert len(built) == 1
+    conversations = service.conversation_service()
+    assert conversations is not None
+    healthy = False
+    assert await service._check_message_plane_health() is False
+    assert service.conversation_service() is None
+    healthy = True
+    assert await service._check_message_plane_health() is True
+    assert service.conversation_service() is conversations
 
 
 @pytest.mark.asyncio
