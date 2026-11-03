@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 try:
     from memory.embeddings import (
@@ -103,6 +104,7 @@ ACTIVE_INTERVAL_SECONDS = 5  # interval while there's still backlog
                              # before the next sweep)
 MAX_ENTRIES_PER_TICK = 64    # bound per-tick work to keep memory_server
                              # responsive during a large backfill
+_UNBOUNDED = sys.maxsize     # write-back rescans a whole store; the cap is the collected texts
 
 
 class EmbeddingWarmupWorker:
@@ -274,115 +276,165 @@ class EmbeddingWarmupWorker:
         once the per-tick budget is exhausted so a backlog doesn't
         starve the rest of memory_server. Remaining work picks up on
         the next sweep — eventual consistency is fine here.
+
+        Three phases, so inference never runs under a lock (#3601):
+
+          1. collect: under the sweep barrier and each store's lock,
+             copy out the texts of stale entries;
+          2. embed: no lock held — one tick of ONNX inference takes
+             seconds to tens of seconds on a single intra-op thread,
+             and /new_dialog waits on the persona / reflection locks
+             inside the settle lock with a 5 s caller timeout;
+          3. apply: under the barrier again, through the *current*
+             managers, reload each store under its lock and stamp only
+             entries that are still stale and still carry a text that
+             was embedded. A vector is a function of (text, model_id),
+             so an entry edited or removed meanwhile is simply not
+             written; it is picked up (or gone) on the next sweep.
         """
+        plan = await self._under_sweep_barrier(self._collect_sweep_plan)
+        if not plan:
+            return 0
+        model_id = self._service.model_id()
+        if model_id is None:
+            return 0
+        texts = list(dict.fromkeys(
+            text for _name, _kind, wanted in plan for text in wanted
+        ))
+        vectors = await self._embed_texts(texts)
+        if self._service.model_id() != model_id:
+            # The service flipped (disabled / reloaded) while embedding;
+            # these vectors belong to a model id that no longer applies.
+            return 0
+        return await self._under_sweep_barrier(
+            lambda: self._apply_sweep_plan(plan, vectors, model_id),
+        )
+
+    async def _under_sweep_barrier(self, step):
+        """Run ``step`` while the caller keeps component generation stable."""
         barrier = (
             self._get_sweep_barrier()
             if self._get_sweep_barrier is not None else None
         )
         if barrier is None:
-            return await self._sweep_once_under_barrier()
+            return await step()
         async with barrier:
-            return await self._sweep_once_under_barrier()
+            return await step()
 
-    async def _sweep_once_under_barrier(self) -> int:
-        """Run one sweep while the caller keeps component generation stable."""
+    async def _collect_sweep_plan(self) -> list[tuple[str, str, list[str]]]:
+        """Phase 1: ``[(name, store_kind, texts)]`` within the tick budget."""
         try:
             names = list(self._get_character_names())
         except Exception as e:  # noqa: BLE001
             logger.warning("[EmbeddingWorker] character lookup failed: %s", e)
-            return 0
-        if not names:
-            return 0
+            return []
 
         budget = MAX_ENTRIES_PER_TICK
-        total = 0
+        plan: list[tuple[str, str, list[str]]] = []
         for name in names:
             if budget <= 0 or self._stop_event.is_set():
                 break
-            spent = await self._sweep_persona(name, budget)
-            budget -= spent
-            total += spent
-            if budget <= 0:
-                break
-            spent = await self._sweep_reflections(name, budget)
-            budget -= spent
-            total += spent
-            if budget <= 0:
-                break
-            spent = await self._sweep_facts(name, budget)
-            budget -= spent
-            total += spent
+            for kind in ("persona", "reflection", "fact"):
+                if budget <= 0:
+                    break
+                texts = await self._load_stale_texts(name, kind, budget)
+                if texts:
+                    plan.append((name, kind, texts))
+                    budget -= len(texts)
+        return plan
+
+    async def _load_stale_texts(self, name: str, kind: str, budget: int) -> list[str]:
+        """Texts of one store's stale entries, read under that store's lock."""
+        if kind == "fact":
+            try:
+                facts = await self._get_fact_store().aload_facts(name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] fact load failed for %s: %s", name, e,
+                )
+                return []
+            return self._texts(self._collect_stale_simple_entries(facts, budget))
+
+        owner = (
+            self._get_persona_manager() if kind == "persona"
+            else self._get_reflection_engine()
+        )
+        async with owner._get_alock(name):
+            try:
+                if kind == "persona":
+                    persona = await owner._aensure_persona_locked(name)
+                    return self._texts(self._collect_stale_persona_entries(persona, budget))
+                reflections = await owner._aload_reflections_full(name)
+                return self._texts(self._collect_stale_simple_entries(reflections, budget))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingWorker] %s load failed for %s: %s", kind, name, e,
+                )
+                return []
+
+    async def _apply_sweep_plan(self, plan, vectors: dict, model_id: str) -> int:
+        """Phase 3: stamp the computed vectors into the current stores."""
+        total = 0
+        for name, kind, texts in plan:
+            if kind == "fact":
+                total += await self._apply_facts(name, texts, vectors, model_id)
+            else:
+                total += await self._apply_locked_store(name, kind, texts, vectors, model_id)
         return total
 
-    async def _sweep_persona(self, name: str, budget: int) -> int:
-        """Persona facts live in nested ``{entity: {facts: [...]}}``;
-        we walk every section and collect entries that need embedding.
+    async def _apply_locked_store(self, name, kind, texts, vectors, model_id) -> int:
+        """Persona / reflection write-back.
 
         Holds the per-character asyncio.Lock around the whole
-        load → mutate → save sequence so we don't race
+        reload → mutate → save sequence so we don't race
         ``aadd_fact`` / ``arecord_mentions`` / ``resolve_corrections``
-        and clobber their writes (Codex PR-956 P1). The lock is
-        already used by every other write path in PersonaManager so
-        the convention is safe here.
+        / synthesis / auto-promote and clobber their writes (Codex
+        PR-956 P1). The lock is already used by every other write path
+        in PersonaManager / ReflectionEngine so the convention is safe
+        here; only the inference moved out from under it.
         """
-        persona_manager = self._get_persona_manager()
-        async with persona_manager._get_alock(name):
+        owner = (
+            self._get_persona_manager() if kind == "persona"
+            else self._get_reflection_engine()
+        )
+        async with owner._get_alock(name):
             try:
-                persona = await persona_manager._aensure_persona_locked(name)
+                if kind == "persona":
+                    container = await owner._aensure_persona_locked(name)
+                    stale = self._collect_stale_persona_entries(container, _UNBOUNDED)
+                else:
+                    container = await owner._aload_reflections_full(name)
+                    stale = self._collect_stale_simple_entries(container, _UNBOUNDED)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "[EmbeddingWorker] persona load failed for %s: %s", name, e,
+                    "[EmbeddingWorker] %s load failed for %s: %s", kind, name, e,
                 )
                 return 0
-            targets = self._collect_stale_persona_entries(persona, budget)
-            if not targets:
+            touched = self._stamp_matching(stale, texts, vectors, model_id)
+            if not touched:
                 return 0
-            await self._fill_embeddings(targets)
             try:
-                await persona_manager.asave_persona(name, persona)
+                if kind == "persona":
+                    await owner.asave_persona(name, container)
+                else:
+                    await owner.asave_reflections(name, container)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "[EmbeddingWorker] persona save failed for %s: %s", name, e,
+                    "[EmbeddingWorker] %s save failed for %s: %s", kind, name, e,
                 )
-                # Returning len(targets) here would mark the batch as
+                # Returning len(touched) here would mark the batch as
                 # progress; combined with the no-sleep saturated-budget
                 # branch in _run, a persistent disk error (full / RO /
                 # permission) would hot-loop on the same entries. 0
                 # routes us through ACTIVE/POLL_INTERVAL backoff.
                 return 0
-            return len(targets)
+            return len(touched)
 
-    async def _sweep_reflections(self, name: str, budget: int) -> int:
-        """Same lock contract as persona — synthesis / auto-promote /
-        confirm-promotion all hold ``_get_alock(name)`` around their
-        load+save, so the worker must too (Codex PR-956 P1)."""
-        reflection_engine = self._get_reflection_engine()
-        async with reflection_engine._get_alock(name):
-            try:
-                reflections = await reflection_engine._aload_reflections_full(name)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[EmbeddingWorker] reflection load failed for %s: %s", name, e,
-                )
-                return 0
-            targets = self._collect_stale_simple_entries(reflections, budget)
-            if not targets:
-                return 0
-            await self._fill_embeddings(targets)
-            try:
-                await reflection_engine.asave_reflections(name, reflections)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "[EmbeddingWorker] reflection save failed for %s: %s", name, e,
-                )
-                return 0  # see _sweep_persona — same hot-loop guard
-            return len(targets)
-
-    async def _sweep_facts(self, name: str, budget: int) -> int:
-        """Embed stale fact rows in place, then opportunistically scan
-        the freshly-embedded rows for cosine collisions against the
-        rest of the fact pool — collisions go into the dedup queue
-        for the LLM-arbitrated resolve pass to handle later.
+    async def _apply_facts(self, name, texts, vectors, model_id) -> int:
+        """Stamp fact rows in place, then opportunistically scan the
+        freshly-embedded rows for cosine collisions against the rest of
+        the fact pool — collisions go into the dedup queue for the
+        LLM-arbitrated resolve pass to handle later.
 
         FactStore uses a threading.Lock around `asave_facts` (not an
         asyncio.Lock like persona/reflection), and the embedding triple
@@ -397,10 +449,11 @@ class EmbeddingWarmupWorker:
                 "[EmbeddingWorker] fact load failed for %s: %s", name, e,
             )
             return 0
-        targets = self._collect_stale_simple_entries(facts, budget)
+        targets = self._stamp_matching(
+            self._collect_stale_simple_entries(facts, _UNBOUNDED), texts, vectors, model_id,
+        )
         if not targets:
             return 0
-        await self._fill_embeddings(targets)
         try:
             await fact_store.asave_facts(name)
         except Exception as e:  # noqa: BLE001
@@ -410,7 +463,7 @@ class EmbeddingWarmupWorker:
             # Save failed — skip dedup enqueue (the embeddings the
             # resolver would key on aren't durable yet) and return 0
             # so the outer loop backs off instead of hot-looping on a
-            # persistent disk error. See _sweep_persona for context.
+            # persistent disk error. See _apply_locked_store for context.
             return 0
 
         # Dedup pass: only the rows we just embedded are candidates;
@@ -481,21 +534,41 @@ class EmbeddingWarmupWorker:
             return False
         return not is_cached_embedding_valid(entry, text, model_id)
 
-    async def _fill_embeddings(self, entries: list[dict]) -> None:
-        """Batch-embed ``entries`` in chunks of ``BATCH_SIZE`` and stamp
-        the cache fields in place. Caller is responsible for the save."""
-        model_id = self._service.model_id()
-        if model_id is None:
-            return
-        for i in range(0, len(entries), BATCH_SIZE):
-            chunk = entries[i : i + BATCH_SIZE]
-            texts = [(e.get("text") or "") for e in chunk]
-            vectors = await self._service.embed_batch(texts)
-            for entry, text, vec in zip(chunk, texts, vectors):
-                if vec is None:
-                    # One bad row in the batch shouldn't poison the rest;
-                    # leave the entry's embedding fields alone (they
-                    # stay None) so the next sweep retries.
-                    clear_embedding_fields(entry)
-                    continue
+    @staticmethod
+    def _entry_text(entry: dict) -> str:
+        return entry.get("text") or ""
+
+    @classmethod
+    def _texts(cls, entries: list[dict]) -> list[str]:
+        return [cls._entry_text(e) for e in entries]
+
+    def _stamp_matching(self, stale, texts, vectors, model_id) -> list[dict]:
+        """Stamp stale entries whose current text was embedded, at most
+        ``len(texts)`` of them (the collect phase's share of the budget).
+        Returns the entries touched; the caller saves."""
+        wanted = set(texts)
+        touched: list[dict] = []
+        for entry in stale:
+            if len(touched) >= len(texts):
+                break
+            text = self._entry_text(entry)
+            if text not in wanted or text not in vectors:
+                continue
+            vec = vectors[text]
+            if vec is None:
+                # One bad row in the batch shouldn't poison the rest;
+                # leave the entry's embedding fields empty so the next
+                # sweep retries.
+                clear_embedding_fields(entry)
+            else:
                 stamp_embedding_fields(entry, vec, text, model_id)
+            touched.append(entry)
+        return touched
+
+    async def _embed_texts(self, texts: list[str]) -> dict:
+        """Batch-embed ``texts`` in chunks of ``BATCH_SIZE``; no lock may be held here."""
+        vectors: dict = {}
+        for i in range(0, len(texts), BATCH_SIZE):
+            chunk = texts[i : i + BATCH_SIZE]
+            vectors.update(zip(chunk, await self._service.embed_batch(chunk)))
+        return vectors

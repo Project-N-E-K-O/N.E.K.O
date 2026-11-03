@@ -19,6 +19,7 @@ embed_batch trace as well as the on-disk side effects."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -721,52 +722,191 @@ async def test_dedup_resolver_observed_via_live_getter():
     # The NEW resolver got the enqueue, not the old one.
     assert len(new_resolver.calls) >= 1
     assert len(original_resolver.calls) == 1  # unchanged after reload
+class _GatedService(_FakeService):
+    """embed_batch parks until released, so a test can act mid-inference."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def embed_batch(self, texts):
+        self.started.set()
+        await self.release.wait()
+        return await super().embed_batch(texts)
+
+
+def _stale(text: str, **extra) -> dict:
+    return {"text": text, "embedding": None, "embedding_text_sha256": None,
+            "embedding_model_id": None, **extra}
+
+
+@contextlib.asynccontextmanager
+async def _mid_inference(lock: asyncio.Lock):
+    """Take a lock while embed_batch is parked; fails instead of hanging if the sweep holds it."""
+    await asyncio.wait_for(lock.acquire(), timeout=1)
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 @pytest.mark.asyncio
-async def test_sweep_barrier_drains_pre_reload_save_before_erasure():
-    """A reload/forget cannot erase first and then lose to an old save."""
-    embedding_started = asyncio.Event()
-    release_embedding = asyncio.Event()
+async def test_sweep_barrier_reload_during_inference_is_not_undone():
+    """A reload/forget may run while vectors are computed (#3601: the
+    barrier is no longer held across inference), but the write-back
+    re-takes the barrier and goes through the *current* managers, so an
+    old manager is never saved over the erasure and an erased row is
+    not brought back."""
+    service = _GatedService()
+    barrier = asyncio.Lock()
     order: list[str] = []
 
-    class _BlockingService(_FakeService):
-        async def embed_batch(self, texts):
-            embedding_started.set()
-            await release_embedding.wait()
-            return await super().embed_batch(texts)
-
     class _OrderedFact(_FactStub):
+        def __init__(self, label: str) -> None:
+            super().__init__()
+            self.label = label
+
         async def asave_facts(self, name: str) -> None:
-            order.append("old-save")
+            order.append(f"{self.label}-save")
             await super().asave_facts(name)
 
+    state = {"fact": _OrderedFact("old")}
+    state["fact"].store["小天"] = [_stale("pre-reload", id="old")]
+    worker = EmbeddingWarmupWorker(
+        get_persona_manager=lambda: persona,
+        get_reflection_engine=lambda: reflection,
+        get_fact_store=lambda: state["fact"],
+        get_character_names=lambda: ["小天"],
+        warmup_delay_seconds=0.01,
+        get_sweep_barrier=lambda: barrier,
+    )
+    persona, reflection = _PersonaStub(), _ReflectionStub()
+    worker._service = service
+
+    sweep_task = asyncio.create_task(worker._sweep_once())
+    await service.started.wait()
+
+    async with _mid_inference(barrier):
+        new_fact = _OrderedFact("new")
+        new_fact.store["小天"] = []  # the forget erased the row
+        state["fact"] = new_fact
+        order.append("erase")
+
+    service.release.set()
+    processed = await sweep_task
+
+    assert processed == 0
+    assert order == ["erase"]
+    assert new_fact.store["小天"] == []
+    assert state["fact"].save_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_inference_runs_without_store_locks_or_barrier():
+    """#3601: /new_dialog waits on the persona / reflection locks inside
+    the settle lock with a 5 s caller timeout, and one tick of ONNX
+    inference takes seconds to tens of seconds. None of the locks may be
+    held while embed_batch runs."""
+    service = _GatedService()
     barrier = asyncio.Lock()
-    old_fact = _OrderedFact()
-    old_fact.store["小天"] = [{
-        "id": "old", "text": "pre-reload",
-        "embedding": None, "embedding_text_sha256": None,
-        "embedding_model_id": None,
-    }]
+    persona = _PersonaStub()
+    persona.store["小天"] = {"master": {"facts": [_stale("persona fact")]}}
+    reflection = _ReflectionStub()
+    reflection.store["小天"] = [_stale("reflection text")]
     worker = _build_worker(
-        service=_BlockingService(), persona=_PersonaStub(),
-        reflection=_ReflectionStub(), fact=old_fact,
-        sweep_barrier=barrier,
+        service=service, persona=persona, reflection=reflection,
+        fact=_FactStub(), sweep_barrier=barrier,
     )
 
     sweep_task = asyncio.create_task(worker._sweep_once())
-    await embedding_started.wait()
+    await service.started.wait()
 
-    async def _reload_then_erase() -> None:
-        async with barrier:
-            order.append("erase")
+    for lock in (persona._get_alock("小天"), reflection._get_alock("小天"), barrier):
+        await asyncio.wait_for(lock.acquire(), timeout=1)
+        lock.release()
 
-    erase_task = asyncio.create_task(_reload_then_erase())
-    await asyncio.sleep(0)
-    assert not erase_task.done()
+    service.release.set()
+    assert await sweep_task == 2
+    assert persona.store["小天"]["master"]["facts"][0]["embedding"] is not None
+    assert reflection.store["小天"][0]["embedding"] is not None
 
-    release_embedding.set()
-    await sweep_task
-    await erase_task
 
-    assert order == ["old-save", "erase"]
+@pytest.mark.asyncio
+async def test_entry_edited_during_inference_is_not_written_back():
+    """A vector computed outside the lock belongs to the text it was
+    computed from: an entry whose text changed meanwhile keeps no stale
+    vector (the next sweep embeds its new text), while untouched entries
+    of the same batch are stamped and saved."""
+    service = _GatedService()
+    persona = _PersonaStub()
+    persona.store["小天"] = {"master": {"facts": [
+        _stale("will be edited", id="p1"), _stale("kept", id="p2"),
+    ]}}
+    reflection = _ReflectionStub()
+    reflection.store["小天"] = [_stale("old reflection", id="r1")]
+    worker = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=_FactStub(),
+    )
+
+    sweep_task = asyncio.create_task(worker._sweep_once())
+    await service.started.wait()
+    async with _mid_inference(persona._get_alock("小天")):
+        persona.store["小天"]["master"]["facts"][0]["text"] = "edited text"
+    async with _mid_inference(reflection._get_alock("小天")):
+        reflection.store["小天"][0]["text"] = "rewritten reflection"
+    service.release.set()
+    processed = await sweep_task
+
+    facts = persona.store["小天"]["master"]["facts"]
+    assert processed == 1
+    assert facts[0]["text"] == "edited text"
+    assert facts[0]["embedding"] is None
+    assert facts[1]["embedding"] is not None
+    assert facts[1]["embedding_text_sha256"] == _embedding_text_sha256("kept")
+    assert reflection.store["小天"][0]["embedding"] is None
+    assert reflection.save_calls == 0
+
+    # The edited texts are embedded on the next sweep.
+    service.release.set()
+    assert await worker._sweep_once() == 2
+    assert facts[0]["embedding_text_sha256"] == _embedding_text_sha256("edited text")
+
+
+@pytest.mark.asyncio
+async def test_entry_removed_during_inference_is_not_resurrected():
+    service = _GatedService()
+    reflection = _ReflectionStub()
+    reflection.store["小天"] = [_stale("to forget", id="r1"), _stale("to keep", id="r2")]
+    worker = _build_worker(
+        service=service, persona=_PersonaStub(), reflection=reflection, fact=_FactStub(),
+    )
+
+    sweep_task = asyncio.create_task(worker._sweep_once())
+    await service.started.wait()
+    async with _mid_inference(reflection._get_alock("小天")):
+        reflection.store["小天"] = [reflection.store["小天"][1]]
+    service.release.set()
+
+    assert await sweep_task == 1
+    assert [r["id"] for r in reflection.store["小天"]] == ["r2"]
+    assert reflection.store["小天"][0]["embedding"] is not None
+
+
+@pytest.mark.asyncio
+async def test_model_flip_during_inference_writes_nothing():
+    service = _GatedService(model_id="fake-4d-int8")
+    persona = _PersonaStub()
+    persona.store["小天"] = {"master": {"facts": [_stale("fact")]}}
+    worker = _build_worker(
+        service=service, persona=persona, reflection=_ReflectionStub(), fact=_FactStub(),
+    )
+
+    sweep_task = asyncio.create_task(worker._sweep_once())
+    await service.started.wait()
+    service._model_id = "fake-8d-int8"
+    service.release.set()
+
+    assert await sweep_task == 0
+    assert persona.store["小天"]["master"]["facts"][0]["embedding"] is None
+    assert persona.save_calls == 0
